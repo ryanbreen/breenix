@@ -8,6 +8,9 @@
 # replacing the prior target. Use a copy so ordinary boots keep their disk.
 # The image must contain /sbin/suite-SUITE_ID or /sbin/probe respectively.
 # When PID1_ELF is supplied, readback must match its bytes before accepting the image.
+# SEQUENCE (suite ids joined by commas, SUITE_ID first) also writes /etc/breenix/suite-sequence,
+# so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot");
+# each /sbin/suite-ID must match the ELF beside PID1_ELF, or without PID1_ELF be an ELF.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
 # and otherwise runs debugfs in an Alpine container.
@@ -100,7 +103,13 @@ if [ -n "$DEBUGFS" ]; then
         IFS=',' read -r -a sequence_ids <<< "$SEQUENCE"
         for id in "${sequence_ids[@]}"; do
             "$DEBUGFS" -R "dump /sbin/suite-$id $WORK/$id.elf" "$IMAGE" >/dev/null 2>&1 || true
-            cmp -s "$WORK/$id.elf" "$(dirname "$SUITE_ELF")/suite-$id.elf" || { echo "write-boot-target: stale sequence binary $id" >&2; exit 1; }
+            if [ -n "$SUITE_ELF" ]; then
+                cmp -s "$WORK/$id.elf" "$(dirname "$SUITE_ELF")/suite-$id.elf" || { echo "write-boot-target: stale sequence binary $id" >&2; exit 1; }
+            else
+                # Staging without the built binaries (the metal service container) checks that each is an ELF.
+                [ "$(head -c 4 "$WORK/$id.elf" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] ||
+                    { echo "write-boot-target: the image has no /sbin/suite-$id" >&2; exit 1; }
+            fi
         done
     fi
     written="$("$DEBUGFS" -R 'cat /etc/breenix/boot-target' "$IMAGE" 2>/dev/null || true)"

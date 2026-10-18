@@ -218,6 +218,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
@@ -326,9 +327,11 @@ if [ -n "$SUITE" ]; then
         echo "--suite is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode suite --suite ID)"
         exit 1
     fi
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE"
-        exit 1
+    # A comma-separated list runs several suites in one boot (docs/suites/README.md, "Several suites in one boot").
+    if [ "$PARALLELS" = true ]; then SUITE_TARGET=parallels; else SUITE_TARGET=vmware; fi
+    SUITE=$(python3 "$BREENIX_ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target "$SUITE_TARGET") || exit 1
+    if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
+        echo "--case watches one case of one suite, not a list"; exit 2
     fi
 fi
 
@@ -351,6 +354,10 @@ if [ "$PROBE" = true ]; then
 elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
 fi
+# The manifests of the suites this boot runs, for the quiet-host check.
+SUITE_MANIFESTS=()
+IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
+for id in ${SUITE_IDS[@]+"${SUITE_IDS[@]}"}; do SUITE_MANIFESTS+=("$BREENIX_ROOT/docs/suites/$id.json"); done
 
 # --tests: the testing kernel (--features testing) and its test loader, as
 # scripts/boot-interactive.sh --mode tests runs it on ARM64 QEMU.
@@ -416,8 +423,8 @@ stage_boot_ext2_disk() {
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
-        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "${SUITE%%,*}" \
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -470,13 +477,18 @@ bounded_vm_command() {
 
 # Read the VM's written disk only after stop has succeeded. VMware's deployed
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
+# A boot of several suites scores each of them here, the last with its disk checks.
 score_vm_suite_disk() {
     (
         # Whole-suite disk checks depend on other cases and are not one-case evidence.
         [ -z "${ONLY:-}" ] || exit 0
-        local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
+        local manifest="$BREENIX_ROOT/docs/suites/${SUITE##*,}.json" checks disk="" temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
-        [ "$checks" != 0 ] || exit 0
+        if [ "$checks" = 0 ]; then
+            [[ "$SUITE" == *,* ]] || exit 0
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG"
+            exit $?
+        fi
         if [ "$PARALLELS" = true ]; then
             disk=$(find "$EXT2_HDD_DIR" -name '*.hds' -type f) || exit $?
             if [ ! -f "$disk" ]; then
@@ -489,7 +501,11 @@ score_vm_suite_disk() {
             disk="$temporary/ext2.raw"
             bounded_vm_command qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
         fi
-        python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        if [[ "$SUITE" == *,* ]]; then
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --disk "$disk"
+        else
+            python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        fi
     )
 }
 
@@ -604,12 +620,13 @@ finish_vm_boot() {
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
     fi
-    if [ "$status" = 0 ] && [ "${BOOT_MODE:-}" = suite ]; then
+    if [ "${BOOT_MODE:-}" = suite ] && { [ "$status" = 0 ] || [[ "$SUITE" == *,* ]]; }; then
+        # Each suite of a sequence is scored even when the boot was stopped part way.
         if [ "$stopped" != true ]; then
             echo "FAIL: could not stop VM for suite disk checks"
-            status=1
+            [ "$status" != 0 ] || status=1
         else
-            score_vm_suite_disk || status=$?
+            score_vm_suite_disk || { [ "$status" != 0 ] || status=1; }
         fi
     fi
     host_slot_header "$SERIAL_LOG"
@@ -951,7 +968,7 @@ if [ "$PARALLELS" = true ]; then
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
@@ -1351,7 +1368,7 @@ VMXEOF
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     vmware_network_summary

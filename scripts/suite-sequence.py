@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Resolve and score boots that run several effort suites (docs/suites/README.md, "Several suites in one boot").
+
+    scripts/suite-sequence.py resolve SPEC --target TARGET [--gpu-3d]
+    scripts/suite-sequence.py score SUITES RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE]
+
+`resolve` prints the suite ids a boot runs, comma-separated, in order. SPEC is a suite id, ids joined by commas, or
+`all`: every suite of docs/efforts/path.json the target runs (x86-metal runs every main-path effort's), in path order,
+leaving out suites with no manifest and, on a target without a 3D GPU, suites that need one. TARGET is arm64-qemu,
+parallels, vmware or x86-metal; ARM64 QEMU has a 3D GPU only with `--gpu-3d` (boot-interactive.sh --gpu-gl). In a list
+of two or more, a manifest's `"sequence": "first"` suite must run first and its `"sequence": "last"` suite last.
+
+`score` scores each suite of SUITES (comma-separated) from the serial as scripts/suite-verdict.py scores it alone,
+and prints one line per suite: PASS, FAIL, STALLED (the runner's watchdog, or the boot, stopped it with the cases
+shown), NOT-RUN (it never printed START) or NOT-ISOLATED (its RESET named state it could not restore; its own
+verdict follows). The last suite's manifest diskChecks are read from --disk. Exits 0 only when every suite passes.
+"""
+
+import argparse
+import json
+from pathlib import Path
+import re
+import runpy
+import sys
+import tempfile
+
+REPO = Path(__file__).resolve().parent.parent
+TARGETS = ("arm64-qemu", "parallels", "vmware", "x86-metal")
+ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def read_repo(relative):
+    path = REPO / relative
+    return path.read_text() if path.is_file() else None
+
+
+def gpu_3d(target, gpu_gl=False):
+    """Whether the target has the 3D GPU a `needs3dGpu` suite renders on."""
+    return target in ("parallels", "vmware") or (target == "arm64-qemu" and gpu_gl)
+
+
+def resolve(spec, target, has_3d=False, read=read_repo):
+    """The suite ids a boot runs, and the (id, reason) pairs `all` left out. Raises ValueError for a list it refuses."""
+    if target not in TARGETS:
+        raise ValueError(f"unknown target {target!r} (expected one of {', '.join(TARGETS)})")
+
+    manifests = {}
+
+    def manifest(suite):
+        if suite not in manifests:
+            text = read(f"docs/suites/{suite}.json")
+            manifests[suite] = json.loads(text) if text else None
+        return manifests[suite]
+
+    skipped = []
+    if spec == "all":
+        ids = []
+        for effort in json.loads(read("docs/efforts/path.json"))["efforts"]:
+            suite = effort.get("suite")
+            if not suite:
+                continue
+            if target != "x86-metal" and target not in effort.get("targets", []):
+                skipped.append((suite, f"not an effort target of {target}"))
+            elif manifest(suite) is None:
+                skipped.append((suite, "no manifest"))
+            elif manifest(suite).get("needs3dGpu") and not has_3d:
+                skipped.append((suite, "needs a 3D GPU"))
+            elif suite not in ids:
+                ids.append(suite)
+        place = {suite: manifest(suite).get("sequence") for suite in ids}
+        ids = ([s for s in ids if place[s] == "first"] + [s for s in ids if place[s] not in ("first", "last")]
+               + [s for s in ids if place[s] == "last"])
+    else:
+        ids = spec.split(",")
+        for suite in ids:
+            if not ID.fullmatch(suite):
+                raise ValueError(f"not a suite id (lowercase words joined by '-'): {suite!r}")
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"a suite is listed twice: {spec}")
+        for suite in ids:
+            loaded = manifest(suite)
+            if loaded is None:
+                raise ValueError(f"no manifest docs/suites/{suite}.json")
+            if loaded.get("needs3dGpu") and not has_3d:
+                raise ValueError(f"suite {suite} needs a 3D GPU, which this {target} boot does not have")
+    if not ids:
+        raise ValueError(f"no suite to run on {target}")
+    if len(ids) > 1:
+        for index, suite in enumerate(ids):
+            place = manifest(suite).get("sequence")
+            # The kernel's console is not given back once a suite has taken the display, and a host disk check
+            # reads the disk after the boot, so no suite may run after it.
+            if place == "first" and index != 0:
+                raise ValueError(f"suite {suite} needs the kernel's own console on screen, so it runs first "
+                                 "(or in a boot of its own)")
+            if place == "last" and index != len(ids) - 1:
+                raise ValueError(f"suite {suite} checks the disk after the boot, so it runs last "
+                                 "(or in a boot of its own)")
+    return ids, skipped
+
+
+def lines(text):
+    """Complete lines only: a log write can stop anywhere in a record."""
+    return [line.rstrip("\r") for line in text.split("\n")[:-1]]
+
+
+def boundaries(text):
+    """How many suites have started or been stopped: each suite's DONE deadline counts from the latest of these."""
+    return sum(bool(re.fullmatch(r"SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+", line))
+               for line in lines(text))
+
+
+def windows(ids, records):
+    """Each suite's part of the serial: from where it begins (the boot's start, for the first) to where the next
+    suite begins (its RESET or START), so kernel output is held against the suite that was running."""
+    starts = [0]
+    for suite in ids[1:]:
+        begins = (index for index, line in enumerate(records)
+                  if line.startswith(f"SUITE_SEQUENCE RESET {suite} ") or re.fullmatch(rf"SUITE {suite} START cases=\d+", line))
+        starts.append(next(begins, len(records)))
+    # A suite that did not start ends where the one after it, or the serial, does.
+    ends = [min(starts[i + 1:] + [len(records)]) for i in range(len(ids))]
+    return [records[start:max(start, end)] for start, end in zip(starts, ends)]
+
+
+def score(ids, records_log, logs, disk=None, repo=REPO):
+    """(ok, rows): each row is (suite, status, detail)."""
+    scorer = runpy.run_path(str(repo / "scripts/suite-verdict.py"))
+    text = Path(records_log).read_bytes().decode("utf-8", errors="replace")
+    rows = []
+    with tempfile.TemporaryDirectory(prefix="suite-sequence-") as scratch:
+        for suite, records in zip(ids, windows(ids, [line.rstrip("\r") for line in text.split("\n")])):
+            window = Path(scratch) / f"{suite}.txt"
+            window.write_text("\n".join(records) + "\n")
+            rows.append(score_one(scorer, repo, suite, suite == ids[-1], records, window,
+                                  [window] + [Path(log) for log in logs[1:]], disk))
+    return all(status == "PASS" for _, status, _ in rows), rows
+
+
+def score_one(scorer, repo, suite, last, records, window, logs, disk):
+    manifest = json.loads((repo / "docs/suites" / f"{suite}.json").read_text())
+    started = any(re.fullmatch(rf"SUITE {suite} START cases=\d+", line) for line in records)
+    done = any(line.startswith(f"SUITE {suite} DONE ") for line in records)
+    stalled = next((m for m in (re.fullmatch(rf"SUITE_SEQUENCE STALLED {suite} cases=(\d+)/(\d+)", line)
+                                for line in records) if m), None)
+    resets = [line[len("SUITE_SEQUENCE RESET "):] for line in records
+              if line.startswith(f"SUITE_SEQUENCE RESET {suite} ")]
+    unrestored = [reset for reset in resets if " FAIL " in reset or not re.search(r" changed=0$", reset)]
+    if not started:
+        failed_exec = any(line == f"SUITE_SEQUENCE FAIL exec {suite}" for line in records)
+        return suite, "NOT-RUN", "its binary could not be started" if failed_exec else "it never printed START"
+    ok, detail = scorer["verdict"](manifest, window, logs)
+    if stalled:
+        status, detail = "STALLED", f"the runner's watchdog stopped it after {stalled[1]} of {stalled[2]} cases"
+    elif not done and not detail.startswith("fatal kernel output"):
+        reported = sum(bool(re.match(rf"SUITE {suite} CASE \S+ (?:PASS|FAIL|SKIP)", line)) for line in records)
+        status, detail = "STALLED", f"the boot ended after {reported} of its cases: {detail}"
+    else:
+        if ok and last:
+            ok, disk_detail = scorer["disk_verdict"](manifest.get("diskChecks", []), disk)
+            if disk_detail:
+                detail += f"; {disk_detail}"
+        status = "PASS" if ok else "FAIL"
+    if unrestored:
+        status, detail = "NOT-ISOLATED", f"RESET {'; '.join(unrestored)}; its own result: {status}: {detail}"
+    return suite, status, detail
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("resolve")
+    p.add_argument("spec")
+    p.add_argument("--target", required=True, choices=TARGETS)
+    p.add_argument("--gpu-3d", action="store_true", help="ARM64 QEMU with the GL device (boot-interactive.sh --gpu-gl)")
+    p = sub.add_parser("score")
+    p.add_argument("suites")
+    p.add_argument("logs", nargs="+")
+    p.add_argument("--disk")
+    args = parser.parse_args()
+    if args.command == "resolve":
+        try:
+            ids, skipped = resolve(args.spec, args.target, gpu_3d(args.target, args.gpu_3d))
+        except ValueError as error:
+            print(f"suite-sequence: {error}", file=sys.stderr)
+            return 2
+        for suite, why in skipped:
+            print(f"suite-sequence: leaving out {suite}: {why}", file=sys.stderr)
+        print(",".join(ids))
+        return 0
+    ids = args.suites.split(",")
+    ok, rows = score(ids, args.logs[0], args.logs, args.disk)
+    for suite, status, detail in rows:
+        print(f"{status} {suite}: {detail}")
+    passed = sum(status == "PASS" for _, status, _ in rows)
+    print(f"{'PASS' if ok else 'FAIL'}: {passed} of {len(rows)} suites passed")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

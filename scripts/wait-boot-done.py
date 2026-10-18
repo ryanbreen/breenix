@@ -67,6 +67,10 @@ def completion(serial, mode, suite, only=None):
         except (OSError, ValueError) as error:
             return False, f"incomplete exit accounting: {error}"
         return True, tally[0]
+    if mode == "suite" and "," in suite:
+        # Several suites: the boot is done once the last has handed off (docs/suites/README.md).
+        done = [line for line in lines if re.fullmatch(r"SUITE_SEQUENCE DONE suites=\d+", line)]
+        return (True, done[0]) if done else None
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
     done = [line for line in lines if line.startswith(prefix)]
     if not done:
@@ -107,6 +111,11 @@ def main():
             parser.error("BREENIX_SUITE_HOLD must be a nonnegative number of seconds")
     done_at = None
     deadline = time.monotonic() + args.timeout
+    # A boot of several suites gives each its own DONE deadline, from when it starts; the
+    # launcher scores them once the VM has stopped (suite-sequence.py score).
+    sequence = args.mode == "suite" and "," in args.suite
+    boundaries = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))["boundaries"] if sequence else None
+    started = 0
     while True:
         try:
             serial = args.serial.read_bytes().decode("utf-8", errors="replace")
@@ -114,7 +123,15 @@ def main():
             clock.observe(serial)
             result = completion(serial, args.mode, args.suite, args.only)
         except FileNotFoundError:
-            result = None
+            result = serial = None
+        if sequence and serial is not None and boundaries(serial) > started:
+            started, deadline = boundaries(serial), time.monotonic() + args.timeout
+        if result is not None and sequence:
+            ok, reason = result
+            clock_ok, clock_reason = clock.verdict()
+            print(clock_reason)
+            print(f"{'DONE' if ok else 'FAIL'}: {reason}")
+            return 0 if ok and clock_ok else 1
         if result is not None:
             ok, reason = result
             if args.mode == "suite" and args.only and not reason.startswith("fatal kernel output:"):
