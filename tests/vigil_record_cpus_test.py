@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from vigil_record_fixture import isolated_commands
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "vigil-record.sh"
@@ -30,7 +31,7 @@ class VigilRecordCpusTest(unittest.TestCase):
             if cpus is not None:
                 env["BREENIX_VIGIL_CPUS"] = cpus
             subprocess.run([str(SCRIPT), "start", "qemu", "suite", "processes", str(Path(tmp) / "serial.txt"), "", "", "", "0" * 40],
-                           env=env, check=True, capture_output=True, text=True)
+                           env=isolated_commands(env, tmp), check=True, capture_output=True, text=True)
             return log.read_text().split("\n")
 
     def test_a_set_count_reaches_vigil(self):
@@ -62,7 +63,7 @@ class VigilRecordOlderCliTest(unittest.TestCase):
         env["HOME"] = str(home)
         env["BREENIX_VIGIL_CPUS"] = cpus
         return subprocess.run([str(SCRIPT), "start", "qemu", "suite", "processes", str(home / "serial.txt"), "", "", "", "0" * 40],
-                              env=env, capture_output=True, text=True)
+                              env=isolated_commands(env, home), capture_output=True, text=True)
 
     def test_an_older_cli_is_passed_over_for_one_that_records_the_count(self):
         with tempfile.TemporaryDirectory() as tmp:
