@@ -59,6 +59,7 @@ name = "qemu-bios"
 test = false
 
 [workspace]
+exclude = ["libs/breenix-logo"]
 members = [
     "kernel",
     "parallels-loader",
