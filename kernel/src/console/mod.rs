@@ -217,9 +217,8 @@ pub fn log_record(level: log::Level, args: &fmt::Arguments) {
     let mut line = Line { bytes: [0; 256], len: 0 };
     let _ = write!(line, "{:>5}: {}", level, args);
     with_grid(|console| {
-        console.grid.begin_line();
-        console.grid.write(&line.bytes[..line.len]);
-        console.grid.write(b"\r\n");
+        console.grid.write_kernel(&line.bytes[..line.len], true);
+        console.grid.write_kernel(b"\n", false);
         console.kernel_line_open = false;
     });
 }
@@ -242,18 +241,7 @@ pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
         return;
     }
     with_grid(|console| {
-        if !console.kernel_line_open {
-            console.grid.begin_line();
-        }
-        for piece in bytes.split_inclusive(|&byte| byte == b'\n') {
-            match piece.strip_suffix(b"\n") {
-                Some(line) => {
-                    console.grid.write(line);
-                    console.grid.write(b"\r\n");
-                }
-                None => console.grid.write(piece),
-            }
-        }
+        console.grid.write_kernel(bytes, !console.kernel_line_open);
         console.kernel_line_open = !bytes.ends_with(b"\n");
     });
 }

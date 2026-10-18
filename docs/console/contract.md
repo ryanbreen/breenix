@@ -59,8 +59,10 @@ mode 0600.
 
 The kernel log is drawn on tty1 only, under C1's policy: records at INFO and above while tty1 belongs to
 init's session or to no session, then warnings and errors only once a getty or login session holds tty1.
-Serial keeps each record. Records written while another VT is in the foreground go into tty1's grid and
-scrollback and are not drawn over the foreground VT. While the splash is up, records go into tty1's grid, so
+Serial keeps each record. Screen records select the main screen, use the default pen and full-screen
+scrolling, and discard control bytes other than LF (which starts a new line). TTY parser state and drawing
+modes are preserved; an active alternate screen is left so warnings remain visible. Records written while
+another VT is in the foreground go into tty1's grid and scrollback and are not drawn over the foreground VT. While the splash is up, records go into tty1's grid, so
 Shift+PageUp after the hand-over shows the boot log.
 
 ### 1.4 Terminals in the background
@@ -318,7 +320,9 @@ A cell holds one character from the repertoire, a foreground and a background pa
 attribute bits bold, underline, reverse and invisible. The repertoire is U+0020-U+007E, U+00A0-U+00FF,
 U+0100-U+017F (from the font) and U+2500-U+257F (box drawing, generated geometrically at each cell size by
 Breenix's own code). A malformed UTF-8 sequence and a character outside the repertoire are shown as one cell
-of `?`. Characters are one cell wide.
+of `?`. Characters are one cell wide. U+00A0 draws as a space; U+00AD draws as a hyphen
+in this fixed grid. Erased, inserted and scrolled-in cells are spaces with the current colour pair and no
+attribute flags.
 
 - **Bold** draws the font's bold weight; it does not brighten the colour. **Reverse** swaps the pair as drawn.
   **Invisible** draws the background colour for the glyph. **Underline** fills the cell's first cursor-band

@@ -238,7 +238,50 @@ impl Grid {
         self.utf_left = 0;
     }
 
-    /// Kernel records have no terminal-input reply consumer.
+    /// Kernel records select the main screen and bypass terminal control functions.
+    /// TTY parser state and drawing modes survive; records use the default pen
+    /// and the whole screen so an application's SGR/scroll region cannot hide them.
+    pub fn write_kernel(&mut self, bytes: &[u8], begin: bool) {
+        if self.cols == 0 || self.rows == 0 {
+            return;
+        }
+        self.alternate_screen(false);
+        let (pen, first, last, autowrap) = (
+            self.state.cursor.pen,
+            self.state.first,
+            self.state.last,
+            self.autowrap,
+        );
+        let parser = (self.escape, self.utf_value, self.utf_min, self.utf_left);
+        self.state.cursor.pen = BLANK;
+        self.state.first = 0;
+        self.state.last = self.rows - 1;
+        self.autowrap = true;
+        self.escape = Escape::Ground;
+        self.utf_left = 0;
+        if begin {
+            self.begin_line();
+        }
+        for &byte in bytes {
+            match byte {
+                b'\n' => {
+                    self.utf_left = 0;
+                    self.c0(b'\r');
+                    self.c0(b'\n');
+                }
+                0x20..=0x7e | 0x80..=0xff => self.byte(byte, &mut |_| {}),
+                _ => {}
+            }
+        }
+        self.state.cursor.pen = pen;
+        self.state.first = first;
+        self.state.last = last;
+        self.autowrap = autowrap;
+        (self.escape, self.utf_value, self.utf_min, self.utf_left) = parser;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Write terminal output without collecting terminal-input replies.
     pub fn write(&mut self, bytes: &[u8]) {
         self.write_with_reply(bytes, |_| {});
     }
@@ -440,8 +483,8 @@ impl Grid {
 
     fn blank(&self) -> Cell {
         Cell {
-            glyph: b' ' as u16,
-            ..self.state.cursor.pen
+            colours: self.state.cursor.pen.colours,
+            ..BLANK
         }
     }
 

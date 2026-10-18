@@ -120,7 +120,12 @@ impl Font {
         } else {
             WEIGHT
         };
-        get_raster(cell.character(), weight, self.size)
+        let character = match cell.glyph {
+            0x00a0 => ' ', // Non-breaking space occupies a blank cell.
+            0x00ad => '-', // A soft hyphen has the hyphen shape in this fixed grid.
+            _ => cell.character(),
+        };
+        get_raster(character, weight, self.size)
             .or_else(|| get_raster('?', weight, self.size))
             .expect("the console font has '?'")
     }

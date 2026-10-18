@@ -30,6 +30,67 @@ mod grid_tests {
     }
 
     #[test]
+    fn kernel_records_escape_application_modes_and_control_injection() {
+        let mut g = grid(64, 6);
+        g.write(b"main\x1b[?1049h\x1b[8mhidden\x1b[2;3r\x1b[?7l\x1b[");
+        g.write_kernel(b"WARN: \x1bc\x1b[?1049h\x1b[8mvisible\x08\x7f\n", true);
+        assert_eq!(text(&g, 0), "main");
+        assert_eq!(text(&g, 1), "WARN: c[?1049h[8mvisible");
+        assert!(g.row(1).iter().all(|cell| *cell
+            == super::grid::Cell {
+                glyph: cell.glyph,
+                ..super::grid::BLANK
+            }));
+        // The interrupted TTY CSI is still pending; the record did not parse it.
+        g.write(b"31mR");
+        assert_eq!(text(&g, 2), "R");
+        assert_eq!(g.row(2)[0].colours, 1);
+        // Returning from the alternate screen cannot discard the warning.
+        g.write(b"\x1b[?1049l");
+        assert_eq!(text(&g, 1), "WARN: c[?1049h[8mvisible");
+        g.write(b"\x1b[8m");
+        g.write_kernel(b"WARN: still visible\n", true);
+        assert_eq!(text(&g, 3), "WARN: still visible");
+        assert_eq!(g.row(3)[0].flags, 0);
+        g.write(b"X");
+        assert_eq!(g.row(4)[0].flags, super::grid::INVISIBLE);
+    }
+
+    #[test]
+    fn kernel_fragments_use_default_pen_and_full_screen_scrolling() {
+        let mut g = grid(8, 4);
+        g.write(b"\x1b[2;3r\x1b[4;1H\x1b[8m\x1b[?7l");
+        g.write_kernel(b"WARN:", true);
+        g.write_kernel(b" abcdef\n", false);
+        assert_eq!(
+            [text(&g, 0), text(&g, 1), text(&g, 2), text(&g, 3)],
+            ["", "WARN: ab", "cdef", ""]
+        );
+        assert_eq!(g.row(1)[0].flags, 0);
+        assert_eq!(g.row(2)[0].flags, 0);
+        // The process's scrolling region and autowrap setting are restored.
+        g.write(b"\x1b[3;1HA\x1b[K\nB");
+        assert_eq!(text(&g, 1), "A");
+        g.write(b"\x1b[1;8Hxy");
+        assert_eq!(text(&g, 0), "       y");
+    }
+
+    #[test]
+    fn erased_inserted_and_scrolled_cells_keep_colours_without_attributes() {
+        let mut g = grid(8, 3);
+        g.write(b"\x1b[31;44;4;7;8m\x1b[2J");
+        let blank = super::grid::Cell {
+            colours: 0x41,
+            ..super::grid::BLANK
+        };
+        assert!((0..3).all(|row| g.row(row).iter().all(|&cell| cell == blank)));
+        g.write(b"x\x1b[H\x1b[@");
+        assert_eq!(g.row(0)[0], blank);
+        g.write(b"\x1b[3;1H\n");
+        assert!(g.row(2).iter().all(|&cell| cell == blank));
+    }
+
+    #[test]
     fn split_utf8_and_control_sequences_keep_their_state() {
         let bytes = "\x1b[31;4mĀé\x1b[2;3H┌\x1b[?25l".as_bytes();
         for split in 0..=bytes.len() {
@@ -248,6 +309,43 @@ mod raster_tests {
                 }
                 let padding = layout.line(y).end..(y + 1) * layout.stride_bytes;
                 assert!(frame[padding].iter().all(|&byte| byte == 0xaa));
+            }
+        }
+    }
+
+    #[test]
+    fn latin1_space_and_soft_hyphen_have_their_own_shapes() {
+        for size in Font::SIZES {
+            let font = Font::new(size);
+            for flags in [0, super::grid::BOLD] {
+                for (glyph, reference) in [(0x00a0, b' '), (0x00ad, b'-')] {
+                    let layout = layout(font, 4, 1, 0, 1, 0, 0);
+                    let mut actual = vec![0; layout.bytes()];
+                    let mut expected = vec![0; layout.bytes()];
+                    draw_row(
+                        &mut actual,
+                        &layout,
+                        0,
+                        &[Cell {
+                            glyph,
+                            flags,
+                            ..BLANK
+                        }],
+                        None,
+                    );
+                    draw_row(
+                        &mut expected,
+                        &layout,
+                        0,
+                        &[Cell {
+                            glyph: u16::from(reference),
+                            flags,
+                            ..BLANK
+                        }],
+                        None,
+                    );
+                    assert_eq!(actual, expected, "size {} glyph {glyph:x}", font.size());
+                }
             }
         }
     }
