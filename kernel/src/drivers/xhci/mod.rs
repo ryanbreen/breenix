@@ -1,12 +1,20 @@
-//! x86-metal xHCI host controller, written from Intel xHCI revision 1.2.
+//! xHCI host controller, written from Intel xHCI revision 1.2.
 //!
 //! Source authority: Intel's published xHCI 1.2 (4.2-4.6, 4.9, 4.17,
 //! 4.19, 4.22.1 and chapters 5-7); USB 2.0 chapter 9 for descriptors.
 //! The existing ARM USB stack is neither used nor a reference.
-//! DMA is coherent on x86. One worker owns the rings and device contexts;
+//! DMA is coherent on x86; ARM64 maintains caches at the ownership boundaries. One worker owns the rings and device contexts;
 //! the MSI handler accesses only published MMIO addresses and atomic work.
 //! `keyboard` adds HID boot keyboards, hot-plug and slot reclamation.
 mod keyboard;
+#[cfg(target_arch = "aarch64")]
+mod firmware;
+#[cfg(target_arch = "aarch64")]
+pub use firmware::set_rsdp as set_firmware_rsdp;
+mod platform;
+mod pointer;
+#[cfg(target_arch = "aarch64")]
+pub use platform::get_irq;
 mod spec;
 
 use crate::{
@@ -33,7 +41,18 @@ const ERDP: usize = 0x18;
 const EHB: u64 = 1 << 3; // RW1C, not a bit to preserve (5.5.2.3.3).
 static OP: AtomicUsize = AtomicUsize::new(0);
 static IR: AtomicUsize = AtomicUsize::new(0);
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// True after the controller has completed commands and device enumeration.
+pub fn is_initialized() -> bool {
+    INITIALIZED.load(Ordering::Acquire)
+}
+
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+pub fn interrupt_count() -> u64 {
+    INTERRUPTS.load(Ordering::Acquire)
+}
+
 static WORK: Work = Work::new();
 /// A thread-context request for the worker (the console session's replug
 /// exercise). It wakes the worker without claiming hardware work.
@@ -86,7 +105,7 @@ fn until(base: usize, offset: usize, mask: u32, value: u32, ns: u64) -> Result<(
 
 /// Hard IRQ: bounded MMIO acknowledgements and atomic publication only.
 /// EHB stays set until the worker has advanced the dequeue pointer.
-fn interrupt() {
+pub fn handle_interrupt() {
     let op = OP.load(Ordering::Acquire);
     let ir = IR.load(Ordering::Acquire);
     if op == 0 || ir == 0 {
@@ -96,6 +115,7 @@ fn interrupt() {
     wr(ir, IMAN, 3); // IP RW1C; retain IE. MSI may already have cleared IP.
     let _ = rd(ir, IMAN); // flush posted acknowledgements before APIC EOI
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    crate::tracing::providers::xhci::count_irq_entry();
     let tid = WORK.signal();
     if tid != 0 {
         // A persistent per-CPU bit cannot overflow the shared ISR TID queue.
@@ -139,6 +159,7 @@ impl Dma {
         unsafe {
             core::ptr::write_bytes(virt as *mut u8, 0, pages * 4096);
         }
+        platform::clean(virt, pages * 4096);
         Ok(Self {
             phys,
             virt,
@@ -148,17 +169,21 @@ impl Dma {
     fn put32(&self, offset: usize, value: u32) {
         assert!(offset + 4 <= self.bytes);
         wr(self.virt, offset, value);
+        platform::clean(self.virt + offset, 4);
     }
     fn put64(&self, offset: usize, value: u64) {
         assert!(offset + 8 <= self.bytes);
         wr64(self.virt, offset, value);
+        platform::clean(self.virt + offset, 8);
     }
     fn get32(&self, offset: usize) -> u32 {
         assert!(offset + 4 <= self.bytes);
+        platform::invalidate(self.virt + offset, 4);
         rd(self.virt, offset)
     }
     fn copy(&self, offset: usize, len: usize) -> Vec<u8> {
         assert!(offset + len <= self.bytes);
+        platform::invalidate(self.virt + offset, len);
         (offset..offset + len)
             .map(|i| unsafe { read_volatile((self.virt + i) as *const u8) })
             .collect()
@@ -166,16 +191,21 @@ impl Dma {
     fn put8(&self, offset: usize, value: u8) {
         assert!(offset < self.bytes);
         unsafe { write_volatile((self.virt + offset) as *mut u8, value) }
+        platform::clean(self.virt + offset, 1);
     }
     /// Return the frames. Only for memory the controller no longer owns: a
     /// device's, after its Disable Slot command completed (4.6.4).
     fn release(self) -> usize {
         let pages = self.bytes / 4096;
         for page in 0..pages {
-            let address = x86_64::PhysAddr::new(self.phys + (page * 4096) as u64);
-            crate::memory::frame_allocator::deallocate_frame(
-                x86_64::structures::paging::PhysFrame::containing_address(address),
-            );
+            #[cfg(target_arch = "aarch64")]
+            use crate::memory::arch_stub::{PhysAddr, PhysFrame};
+            #[cfg(target_arch = "x86_64")]
+            use x86_64::{structures::paging::PhysFrame, PhysAddr};
+            let address = PhysAddr::new(self.phys + (page * 4096) as u64);
+            crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+                address,
+            ));
         }
         pages
     }
@@ -242,6 +272,7 @@ struct Device {
     /// The first configuration's full descriptor, for class drivers.
     config: Vec<u8>,
     keyboard: Option<keyboard::Pipe>,
+    pointers: Vec<pointer::Pipe>,
     /// EP0 requests sent again since Address Device.
     ep0_retries: u32,
 }
@@ -272,7 +303,7 @@ struct Controller {
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
 pub fn init() {
-    if crate::drivers::fw_cfg::present() {
+    if platform::skip_controller() {
         return;
     }
     if let Some(device) = pci::find_by_class(pci::DeviceClass::SerialBus, 3, 0x30) {
@@ -297,6 +328,7 @@ pub fn init() {
 
 // PCI Local Bus 3.0 6.2.5.1: size both halves with decoding disabled,
 // restore the exact BARs and command register before mapping anything.
+#[cfg(target_arch = "x86_64")]
 fn size_bar(device: &pci::Device) -> Result<(u64, usize), &'static str> {
     let (bus, dev, fun) = (device.bus, device.device, device.function);
     let command = pci::pci_read_config_word(bus, dev, fun, 4);
@@ -341,10 +373,11 @@ fn size_bar(device: &pci::Device) -> Result<(u64, usize), &'static str> {
 }
 
 fn start(device: pci::Device) -> Result<(), &'static str> {
-    let (phys, size) = size_bar(&device)?;
+    let (phys, size) = platform::bar(&device)?;
+    #[cfg(target_arch = "x86_64")]
     pci::publish_xhci_bar0(&device, phys, size as u64);
     device.enable_memory_space();
-    let base = crate::memory::map_mmio(phys, size)?;
+    let base = platform::map_registers(phys, size)?;
     let cap = rd(base, 0);
     let caplen = (cap & 255) as usize;
     let hcs1 = rd(base, 4);
@@ -593,7 +626,7 @@ impl Controller {
         wr(self.ir, 4, 4000); // 1 ms moderation, 250 ns units (5.5.2.2)
         OP.store(self.op, Ordering::Release);
         IR.store(self.ir, Ordering::Release);
-        let vector = crate::arch_impl::x86_64::msi::enable(&self.pci, interrupt)?;
+        let vector = platform::enable_interrupt(&self.pci, handle_interrupt)?;
         self.pci.enable_bus_master();
         wr(self.op, USBSTS, EINT | (1 << 4));
         wr(self.ir, IMAN, 3);
@@ -643,6 +676,7 @@ impl Controller {
             }
         }
         log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
+        INITIALIZED.store(true, Ordering::Release);
         // Keep owning the event ring: class drivers, port changes, reclamation.
         self.serve()
     }
@@ -668,6 +702,7 @@ impl Controller {
                 status: self.events.get32(at + 8),
                 control,
             };
+            crate::tracing::providers::xhci::count_msi_event();
             match event.kind() {
                 32 | 33 => self.completions.push_back(event),
                 // PORTSC changes stay latched until `port_changed` acknowledges them.
@@ -729,7 +764,10 @@ impl Controller {
                 })
                 .unwrap_or(false)
                 {
+                    #[cfg(target_arch = "x86_64")]
                     crate::task::waitqueue::halt_blocked_current();
+                    #[cfg(target_arch = "aarch64")]
+                    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                 }
             }
             scheduler::with_current(|sched| {
@@ -897,6 +935,7 @@ impl Controller {
                 speed,
                 config: Vec::new(),
                 keyboard: None,
+                pointers: Vec::new(),
                 ep0_retries: 0,
             })
         })();
@@ -933,7 +972,10 @@ impl Controller {
         input.put32(slot_at, (1 << 27) | ((speed_id as u32) << 20));
         input.put32(slot_at + 4, (port as u32) << 16);
         let ep_at = self.contexts.input(1);
-        input.put32(ep_at + 4, (3 << 1) | (4 << 3) | ((device.packet as u32) << 16));
+        input.put32(
+            ep_at + 4,
+            (3 << 1) | (4 << 3) | ((device.packet as u32) << 16),
+        );
         input.put64(ep_at + 8, device.ep0.memory.phys | 1);
         input.put32(ep_at + 16, 8); // Average TRB length for control, 6.2.3.
         self.dcbaa.put64(slot as usize * 8, device.output.phys);
@@ -998,11 +1040,24 @@ impl Controller {
         index: u8,
         len: u16,
     ) -> Result<Vec<u8>, &'static str> {
-        let request = spec::get_descriptor(kind, index, len).parameter;
+        self.read_descriptor(
+            device,
+            spec::get_descriptor(kind, index, len).parameter,
+            len,
+        )
+    }
+    fn read_descriptor(
+        &mut self,
+        device: &mut Device,
+        request: u64,
+        len: u16,
+    ) -> Result<Vec<u8>, &'static str> {
         let event = self.ep0_transfer(device, request, &|device: &mut Device| {
             // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
             // The DMA allocation need not itself be 64 KiB aligned, so split there.
-            let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
+            let mut pointers = vec![device
+                .ep0
+                .push(Trb::new(2, request, 8, (1 << 6) | (3 << 16)))];
             let mut offset = 0usize;
             while offset < len as usize {
                 let phys = device.data.phys + offset as u64;
@@ -1029,7 +1084,7 @@ impl Controller {
         })?;
         if event.code() != 1 {
             log::error!(
-                "[xhci] slot {}: GET_DESCRIPTOR type={kind} completion code={}",
+                "[xhci] slot {}: GET_DESCRIPTOR completion code={}",
                 device.slot,
                 event.code()
             );

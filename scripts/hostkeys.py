@@ -64,6 +64,8 @@ import time
 REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)'
                      r' seq=(\d+) keys=([a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*)\r?$')
 
+POINTER_REQUEST = re.compile(r'^USB POINTER HOST seq=(\d+) x=(\d+) y=(\d+) buttons=([0-7]) wheel=(-?1|0)\r?$')
+
 MODIFIERS = ('ctrl', 'alt', 'shift', 'super', 'rctrl', 'ralt')
 NAMED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete', 'enter', 'tab',
          'backspace', 'esc', 'space', 'capslock')
@@ -237,6 +239,21 @@ class VNCKeys:
         finally:
             sock.close()
 
+    def pointer(self, x, y, buttons, wheel):
+        if not (0 <= x <= 65535 and 0 <= y <= 65535):
+            raise ValueError("RFB pointer coordinate exceeds 16 bits")
+        if not hasattr(self, '_pointer_socket'):
+            self._pointer_socket = self.connect()
+        # HID and RFB order middle/right differently. RFB wheel-up/down are
+        # momentary buttons 4/5 (RFB 3.8 section 7.5.5).
+        mask = (buttons & 1) | ((buttons & 4) >> 1) | ((buttons & 2) << 1)
+        def send(value):
+            self._pointer_socket.sendall(struct.pack('>BBHH', 5, value, x, y))
+        send(mask | (8 if wheel > 0 else 16 if wheel < 0 else 0))
+        if wheel:
+            time.sleep(0.05)
+            send(mask)
+
 
 class NoKeys:
     def __init__(self, why='no backend'):
@@ -274,6 +291,22 @@ class Watcher:
             self.line(line)
 
     def line(self, line):
+        pointer = POINTER_REQUEST.fullmatch(line)
+        if pointer:
+            seq, x, y, buttons, wheel = map(int, pointer.groups())
+            identity = ('usb-pointer', seq)
+            if identity in self.seen:
+                return
+            self.seen.add(identity)
+            try:
+                send = getattr(self.keys, 'pointer', None)
+                if send is None:
+                    raise NoPath('this backend has no pointer transport')
+                send(x, y, buttons, wheel)
+                self.log('[hostpointer] seq=%d sent via %s' % (seq, self.name))
+            except (NoPath, OSError, RuntimeError, ValueError) as error:
+                self.log('[hostpointer] seq=%d no host pointer input on %s: %s' % (seq, self.name, error))
+            return
         start = re.fullmatch(r'SUITE ([a-z0-9-]+) START .*\r?', line)
         if start:
             self.seen = {key for key in self.seen if key[0] != start.group(1)}

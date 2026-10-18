@@ -186,8 +186,8 @@ pub fn is_display_taken() -> bool {
 fn update_mouse_cursor() {
     let (mx, my) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_position()
-    } else if crate::drivers::usb::xhci::is_initialized() {
-        crate::drivers::usb::hid::mouse_position()
+    } else if crate::drivers::xhci::is_initialized() {
+        crate::drivers::hid_boot::state::mouse_position()
     } else {
         return;
     };

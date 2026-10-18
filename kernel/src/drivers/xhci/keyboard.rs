@@ -9,7 +9,9 @@
 //! and Appendices B and F. A refused configuration is retried on a reset
 //! device (4.10.2.1.2). Devices behind hubs are not driven: the machine's
 //! port census found its keyboard on a root port.
-use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, PORT_CHANGES, REPLUG, SECOND};
+use super::{
+    delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, PORT_CHANGES, REPLUG, SECOND,
+};
 use crate::drivers::hid_boot::{interface, report};
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, Ordering};
@@ -49,6 +51,11 @@ impl Controller {
         for port in ports {
             if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                 self.attach_keyboard(index, 0);
+                if let Some(index) = self.devices.iter().position(|d| d.port == port) {
+                    if let Err(error) = self.attach_pointers(index) {
+                        log::error!("[usb] port {port}: pointer attach FAILED: {error}");
+                    }
+                }
             }
         }
         loop {
@@ -85,6 +92,9 @@ impl Controller {
             // Commands and control transfers wait for their own completions;
             // anything else here is a keyboard's or a stale event.
             if event.kind() != 32 {
+                continue;
+            }
+            if self.dispatch_pointer(event) {
                 continue;
             }
             let dci = ((event.control >> 16) & 31) as u8;
@@ -138,7 +148,10 @@ impl Controller {
     /// and this attach has resets left.
     fn reset_device(&mut self, port: u8, resets: u32) {
         if resets < DEVICE_RESETS && self.portsc(port) & CCS != 0 {
-            log::warn!("[usb] port {port}: resetting the device ({} of {DEVICE_RESETS})", resets + 1);
+            log::warn!(
+                "[usb] port {port}: resetting the device ({} of {DEVICE_RESETS})",
+                resets + 1
+            );
             self.attach(port, resets + 1);
         }
     }
@@ -155,7 +168,11 @@ impl Controller {
         };
         let interval = spec::interrupt_interval(speed, boot.interval)?;
         let dci = boot.dci();
-        let burst = if speed >= 480_000_000 { boot.extra_transactions } else { 0 };
+        let burst = if speed >= 480_000_000 {
+            boot.extra_transactions
+        } else {
+            0
+        };
         let ring = Ring::new(self.address64)?;
         let buffer = match Dma::new(4096, self.address64) {
             Ok(buffer) => buffer,
@@ -174,15 +191,19 @@ impl Controller {
         d.input.put32(4, 1 | 1 << dci);
         let slot_at = self.contexts.input(0);
         for dword in 0..3 {
-            d.input
-                .put32(slot_at + dword * 4, d.output.get32(self.contexts.output(0) + dword * 4));
+            d.input.put32(
+                slot_at + dword * 4,
+                d.output.get32(self.contexts.output(0) + dword * 4),
+            );
         }
         let dw0 = d.input.get32(slot_at);
-        d.input.put32(slot_at, (dw0 & !(31 << 27)) | (dci as u32) << 27);
+        d.input
+            .put32(slot_at, (dw0 & !(31 << 27)) | (dci as u32) << 27);
         let ep_at = self.contexts.input(dci as usize);
-        for (i, value) in spec::interrupt_in_context(interval, boot.max_packet, burst, ring.memory.phys)
-            .iter()
-            .enumerate()
+        for (i, value) in
+            spec::interrupt_in_context(interval, boot.max_packet, burst, ring.memory.phys)
+                .iter()
+                .enumerate()
         {
             d.input.put32(ep_at + i * 4, *value);
         }
@@ -216,8 +237,14 @@ impl Controller {
         // USB 2.0 9.4.7, then HID 1.11 F.5: boot protocol after configuration;
         // Set_Idle(0) so reports come only on change (7.2.4, F.4).
         for (setup, what) in [
-            (spec::set_configuration(boot.configuration), "SET_CONFIGURATION"),
-            (interface::set_boot_protocol(boot.interface), "Set_Protocol(Boot)"),
+            (
+                spec::set_configuration(boot.configuration),
+                "SET_CONFIGURATION",
+            ),
+            (
+                interface::set_boot_protocol(boot.interface),
+                "Set_Protocol(Boot)",
+            ),
             (interface::set_idle_indefinite(boot.interface), "Set_Idle"),
         ] {
             let code = self.control(index, setup, None)?;
@@ -244,7 +271,12 @@ impl Controller {
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
     /// its completion code; a request that halted EP0 is recovered and resent
     /// (`Controller::ep0_transfer`).
-    fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
+    pub(super) fn control(
+        &mut self,
+        index: usize,
+        setup: u64,
+        out: Option<u8>,
+    ) -> Result<u8, &'static str> {
         // The device leaves the list for the transfer so the controller can
         // wait for it. The list is read by `dispatch`, between transfers.
         let mut device = self.devices.remove(index);
@@ -290,7 +322,10 @@ impl Controller {
         let Some(pipe) = self.devices[index].keyboard.as_ref() else {
             return "none";
         };
-        let (setup, leds) = (interface::set_led_report(pipe.interface), self.keyboard_leds);
+        let (setup, leds) = (
+            interface::set_led_report(pipe.interface),
+            self.keyboard_leds,
+        );
         match self.control(index, setup, Some(leds)) {
             Ok(1) => "accepted",
             Ok(_) => "refused",
@@ -302,8 +337,13 @@ impl Controller {
     fn queue_report(&mut self, index: usize) -> Result<(), &'static str> {
         let device = &mut self.devices[index];
         let slot = device.slot;
-        let pipe = device.keyboard.as_mut().ok_or("device has no keyboard pipe")?;
-        let pointer = pipe.ring.push(spec::normal_in(pipe.buffer.phys, pipe.request));
+        let pipe = device
+            .keyboard
+            .as_mut()
+            .ok_or("device has no keyboard pipe")?;
+        let pointer = pipe
+            .ring
+            .push(spec::normal_in(pipe.buffer.phys, pipe.request));
         pipe.outstanding = Some(pointer);
         let dci = pipe.dci;
         self.ring_doorbell(slot, dci as u32);
@@ -328,11 +368,15 @@ impl Controller {
                     Vec::new()
                 };
                 let now = now();
-                let Controller { devices, console, .. } = self;
+                let Controller {
+                    devices, console, ..
+                } = self;
                 let Some(pipe) = devices[index].keyboard.as_mut() else {
                     return;
                 };
-                match pipe.state.report(&report, now, &mut |code, value| console.event(port, code, value)) {
+                match pipe.state.report(&report, now, &mut |code, value| {
+                    console.event(port, code, value)
+                }) {
                     Ok(summary) => console.note_report(&summary),
                     Err(report::ReportError::Length(length)) => {
                         pipe.bad_reports += 1;
@@ -360,7 +404,10 @@ impl Controller {
             code => {
                 pipe.errors += 1;
                 if pipe.errors > ERRORS_BEFORE_TEARDOWN {
-                    log::error!("[usb] port {port}: interrupt-IN failed {} times, last code={code}", pipe.errors);
+                    log::error!(
+                        "[usb] port {port}: interrupt-IN failed {} times, last code={code}",
+                        pipe.errors
+                    );
                     self.teardown(index, "interrupt-IN errors");
                     return;
                 }
@@ -377,11 +424,14 @@ impl Controller {
 
     fn tick_keyboards(&mut self) {
         let now = now();
-        let Controller { devices, console, .. } = self;
+        let Controller {
+            devices, console, ..
+        } = self;
         for device in devices.iter_mut() {
             if let Some(pipe) = device.keyboard.as_mut() {
                 let port = device.port;
-                pipe.state.tick(now, &mut |code, value| console.event(port, code, value));
+                pipe.state
+                    .tick(now, &mut |code, value| console.event(port, code, value));
             }
         }
     }
@@ -420,6 +470,11 @@ impl Controller {
             Ok(()) => {
                 let index = self.devices.len() - 1;
                 self.attach_keyboard(index, resets);
+                if let Some(index) = self.devices.iter().position(|d| d.port == port) {
+                    if let Err(error) = self.attach_pointers(index) {
+                        log::error!("[usb] port {port}: pointer attach FAILED: {error}");
+                    }
+                }
             }
             Err(error) => {
                 // `enumerate` has given the slot back.
@@ -429,10 +484,13 @@ impl Controller {
         }
     }
 
-    fn teardown(&mut self, index: usize, why: &str) {
+    pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
+        #[cfg(target_arch = "aarch64")]
+        if !device.pointers.is_empty() { crate::drivers::hid_boot::state::release(device.port); }
         if let Some(pipe) = device.keyboard.as_mut() {
-            pipe.state.release_all(&mut |code, value| self.console.event(device.port, code, value));
+            pipe.state
+                .release_all(&mut |code, value| self.console.event(device.port, code, value));
         }
         let (port, slot, keyboard) = (device.port, device.slot, device.keyboard.is_some());
         let reclaimed = self.reclaim(device);
@@ -458,6 +516,7 @@ impl Controller {
         let slot = device.slot;
         let mut dcis = alloc::vec![1u8];
         dcis.extend(device.keyboard.as_ref().map(|p| p.dci));
+        dcis.extend(device.pointers.iter().map(|p| p.dci));
         for dci in dcis {
             match self.command_code(spec::stop_endpoint(slot, dci)) {
                 // Stopped, or not running (halted, stopped or not yet enabled).
@@ -470,7 +529,8 @@ impl Controller {
             }
         }
         // Each Stopped Transfer Event precedes its command's completion (4.6.9).
-        self.completions.retain(|e| !(e.kind() == 32 && e.slot() == slot));
+        self.completions
+            .retain(|e| !(e.kind() == 32 && e.slot() == slot));
         match self.command_code(spec::disable_slot(slot)) {
             Ok(1) => {}
             Ok(code) => {
@@ -489,6 +549,9 @@ impl Controller {
             + device.data.release();
         if let Some(pipe) = device.keyboard {
             pages += pipe.ring.memory.release() + pipe.buffer.release();
+        }
+        for pipe in device.pointers {
+            pages += pipe.release();
         }
         Some(pages)
     }
@@ -515,11 +578,19 @@ impl Controller {
         for port in ports {
             let mut reattached = 0;
             for round in 1..=REPLUG_ROUNDS {
-                if !self.devices.iter().any(|d| d.port == port && d.keyboard.is_some()) {
+                if !self
+                    .devices
+                    .iter()
+                    .any(|d| d.port == port && d.keyboard.is_some())
+                {
                     break;
                 }
                 self.replug(port, power, round);
-                if self.devices.iter().any(|d| d.port == port && d.keyboard.is_some()) {
+                if self
+                    .devices
+                    .iter()
+                    .any(|d| d.port == port && d.keyboard.is_some())
+                {
                     reattached += 1;
                 }
             }
@@ -530,7 +601,9 @@ impl Controller {
     fn replug(&mut self, port: u8, power: bool, round: u32) {
         let register = 0x400 + (port as usize - 1) * 16;
         if power {
-            log::info!("[usb] replug exercise: port {port}: round {round}: port power off, then on");
+            log::info!(
+                "[usb] replug exercise: port {port}: round {round}: port power off, then on"
+            );
             wr(self.op, register, spec::port_power_off(self.portsc(port)));
             // 5.4.8: confirm PP before writing it again.
             if super::until(self.op, register, PP, 0, SECOND).is_err() {

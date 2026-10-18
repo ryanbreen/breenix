@@ -660,6 +660,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::platform_config::init_from_parallels(config),
             "ARM64 boot: incompatible loader HardwareConfig"
         );
+        kernel::drivers::xhci::set_firmware_rsdp(config.rsdp_addr);
 
         // Breadcrumb: 'H' = linked HHDM entry and platform setup complete.
         unsafe {
@@ -1094,11 +1095,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // Initialize input devices (capability-based detection)
-    if kernel::drivers::usb::xhci::is_initialized() {
-        // USB HID keyboard/mouse via XHCI — already set up during drivers::init().
-        // Runtime input and command completion delivery are IRQ-driven.
-        serial_println!("[boot] USB HID input active via XHCI IRQ");
-    } else if kernel::platform_config::is_qemu() {
+    if kernel::platform_config::is_qemu() {
         // VirtIO keyboard/mouse MMIO (QEMU)
         serial_println!("[boot] Initializing VirtIO keyboard...");
         match input_mmio::init() {
@@ -1160,6 +1157,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::softirqd::init_softirq();
     kernel::net::init_loopback_pump();
     kernel::net::init_rx_poll();
+    kernel::drivers::xhci::init();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
@@ -1276,17 +1274,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     } else {
         None
     };
-
-    kernel::drivers::usb::xhci::activate_msi_if_ready();
-    // Boot-context observability for Parallels MSI delivery. This runs once,
-    // before timer init, so it does not depend on CPU0 timer polling.
-    serial_println!(
-        "[xhci] post-activation: MSI_EVENT_COUNT={} EVENT_COUNT={} POLL_COUNT={} SPI_ACTIVATED={}",
-        kernel::drivers::usb::xhci::MSI_EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
-        kernel::drivers::usb::xhci::EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
-        kernel::drivers::usb::xhci::POLL_COUNT.load(core::sync::atomic::Ordering::Relaxed),
-        kernel::drivers::usb::xhci::SPI_ACTIVATED.load(core::sync::atomic::Ordering::Relaxed),
-    );
 
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized

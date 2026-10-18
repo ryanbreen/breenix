@@ -1070,9 +1070,8 @@ if [ "$VMWARE" = true ]; then
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
-        if [ ! -f "$VMWARE_DIR/boot.vmdk" ]; then
-            echo "ERROR: No boot VMDK found at $VMWARE_DIR/boot.vmdk"
-            echo "Run without --no-build first to create it."
+        if [ ! -f "$LOADER_EFI" ] || [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: --no-build needs the selected loader and kernel artifacts"
             exit 1
         fi
     else
@@ -1342,19 +1341,16 @@ VMXEOF
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
-        # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
-        # "succeeds" (exit 0, no error to fall back from) even when nothing
-        # is watching it, so an unattended caller that wants no window on
-        # the operator's desktop has to skip the gui attempt entirely rather
-        # than rely on the error-fallback path below.
+        # An explicit headless request selects nogui for unattended callers.
+        # The default branch below requires a successful GUI start.
         echo "BREENIX_VMWARE_NOGUI set: starting headless (nogui)"
         CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
     else
         CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
-            echo "vmrun start failed with GUI, trying nogui..."
-            "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
+            echo "ERROR: VMware GUI start failed"
+            exit 1
         }
     fi
 

@@ -9,7 +9,13 @@
 //! The pure modules' host tests: `rustc --edition=2021 --test <file>.rs`.
 
 pub mod interface;
+pub mod pointer;
 pub mod report;
+#[cfg(target_arch = "aarch64")]
+pub mod state;
+
+/// Nonempty USB boot-keyboard reports observed by the production completion path.
+pub static NONZERO_KBD_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Where boot keyboard input meets the input core.
 pub struct Console {
@@ -38,6 +44,9 @@ impl Console {
     }
 
     pub fn note_report(&mut self, summary: &report::Summary) {
+        if summary.nonempty {
+            NONZERO_KBD_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         if self.armed && summary.nonempty && !self.first_report {
             self.first_report = true;
             log::info!("[hid] first key report");
@@ -46,7 +55,8 @@ impl Console {
 
     /// One key event for the input core.
     pub fn event(&mut self, port: u8, code: u16, value: i32) {
-        let sent = crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
+        let sent =
+            crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
         if sent == 0 {
             return;
         }
