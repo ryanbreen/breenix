@@ -350,6 +350,32 @@ fn cpuid_leaves() -> super::tsc_rate::Leaves {
     }
 }
 
+/// Platform-reported TSC rate for the boot clock calibration check.
+pub(crate) fn reported_tsc_frequency() -> Option<super::tsc_rate::Stated> {
+    use core::arch::x86_64::__cpuid;
+    use super::tsc_rate::Stated;
+
+    if let Some(rate) = super::tsc_rate::stated(cpuid_leaves()) {
+        return Some(rate);
+    }
+    // VMware's timing leaf reports the virtual TSC rate in kHz.
+    // SAFETY: CPUID is architectural on x86-64; check the signature and
+    // maximum hypervisor leaf before interpreting the timing leaf.
+    unsafe {
+        let hypervisor = __cpuid(0x4000_0000);
+        if [hypervisor.ebx, hypervisor.ecx, hypervisor.edx]
+            == [0x6177_4d56, 0x4d56_6572, 0x6572_6177]
+            && hypervisor.eax >= 0x4000_0010
+        {
+            let khz = __cpuid(0x4000_0010).eax;
+            if khz != 0 {
+                return Some(Stated { hz: u64::from(khz) * 1000, source: "hypervisor-timing" });
+            }
+        }
+    }
+    None
+}
+
 /// The ACPI power-management timer's fixed rate, in Hz (ACPI 6.5, 4.8.3.3).
 const PM_TIMER_HZ: u64 = 3_579_545;
 
