@@ -48,7 +48,8 @@
 #   BREENIX_QMP_SOCKET  if set, QEMU opens a QMP socket at this path (qemu-uefi.rs)
 #                       so a screendump can be taken while the VM runs. In suite
 #                       mode the gate also saves the final screen as screen.png in
-#                       the boot's output directory.
+#                       the boot's output directory, and the socket defaults to
+#                       $BREENIX_GATE_TMP/qmp.sock.
 #   BREENIX_GATE_TMP    base dir for boot output (default: /tmp). #797:
 #                       concurrent lanes on the shared beast container each
 #                       hardcoded /tmp/breenix_gate_$i, so one lane's rm -rf +
@@ -240,6 +241,8 @@ PYIDS
   done
   MODE="suite"
   FEATURES=""
+  # scripts/x86-suite-boot.py stops the VM and saves its final screen over QMP.
+  export BREENIX_QMP_SOCKET="${BREENIX_QMP_SOCKET:-$BREENIX_GATE_TMP/qmp.sock}"
   echo "[gate] suite=$SUITE (production kernel, /sbin/suite-$SUITE as PID 1)"
 fi
 # Seconds the VM stays up after the suite's DONE line, so its final screen can be captured.
