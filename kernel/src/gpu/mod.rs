@@ -1404,10 +1404,11 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         }
         let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(EXAMINE_NS)));
         // A queued wait holds the one preemption level syscall entry takes, and
-        // `wait_prepared` releases it only for the halt. Kernel threads (the console's
-        // render thread) hold none, so take it here: released unheld, the count goes
-        // below zero, the halt sees a caller that cannot be preempted and keeps the CPU,
-        // and a kgpu queued behind it never sends the request this wait needs (#1826).
+        // `wait_prepared` releases it only for the halt. A kernel thread (the console's
+        // render thread) runs at count 0, so it takes the level here. Released unheld,
+        // the count underflows, the halt sees a caller that cannot be preempted and keeps
+        // the CPU, and the request this wait needs stays queued for a kgpu waiting on
+        // that CPU (#1826).
         let unheld = crate::per_cpu::preempt_count() == 0;
         if unheld {
             crate::per_cpu::preempt_disable();

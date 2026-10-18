@@ -381,8 +381,8 @@ impl Screen {
         u32::from_le_bytes(out)
     }
     /// Device readback of the bound panic target (gpu-abi.md, READBACK's two-poison
-    /// observation), then every pixel against `expected`. None when the device did
-    /// not write the whole target; otherwise the mismatch count and the first one.
+    /// observation), then each of the target's pixels against `expected`. Returns the
+    /// mismatch count and the first mismatch when the two reads agree.
     #[cfg(feature = "capture_panic_oracle")]
     fn observe(&self, deadline: u64) -> Option<(u64, Option<(usize, usize, u32, u32)>)> {
         let bytes = self.pitch * HEIGHT as usize;
@@ -495,7 +495,7 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     report(s, true);
 }
 
-/// The capture build's screen proof, on serial after the panic record.
+/// The capture build's screen check, on serial after the panic record.
 #[cfg(feature = "capture_panic_oracle")]
 fn report(s: &Screen, shown: bool) {
     let deadline = crate::arch_impl::aarch64::timer::rdtsc()

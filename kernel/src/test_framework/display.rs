@@ -423,8 +423,8 @@ fn render_to_framebuffer() {
     {
         if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
             let mut guard = fb.lock();
-            // The GPU console retires the firmware canvas under this lock; nothing
-            // draws on it after handoff (gpu.md, firmware-handoff).
+            // The GPU console retires the firmware canvas under this lock, and the
+            // panel stops drawing on it then (gpu.md, firmware-handoff).
             if crate::gpu::console::active() {
                 return;
             }
