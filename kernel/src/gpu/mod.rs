@@ -77,11 +77,9 @@ const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
-/// Counts the state changes waiters wait for; a waiter sleeps only while it is unchanged.
+/// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
+/// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
-/// Counts the device's interrupts. Only `kgpu` waits for them: it takes the device's
-/// answers and tells waiters of the changes they wait for (`notify`).
-static IRQS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
 static ISR: AtomicU64 = AtomicU64::new(0);
 /// The control queue's notification address, and whether requests were queued since it
@@ -125,11 +123,6 @@ fn notify() {
     EVENTS.fetch_add(1, Ordering::AcqRel);
     WAITERS.wake_up();
     wake_reaper();
-}
-
-/// What `kgpu` sleeps on: state changes and interrupts.
-fn kgpu_events() -> u64 {
-    EVENTS.load(Ordering::Acquire).wrapping_add(IRQS.load(Ordering::Acquire))
 }
 
 /// Wake `kgpu` for work only it does: a reset, the catalogue's next warm-up step, or
@@ -865,9 +858,10 @@ impl Core {
         {
             self.fault();
         }
-        // The answers' handlers notify waiters of what they wait for: a fence published, a
-        // synchronous answer, a retired submission's holds, a fault. `kgpu` sends what the
-        // answers made room for.
+        // The interrupt woke the waiters, and the answers' handlers notify them of what they
+        // wait for: a fence published, a synchronous answer, a retired submission's holds, a
+        // fault. A chunk of a submission still in progress wakes nobody else. `kgpu` sends
+        // what the answers made room for.
         if any {
             wake_reaper();
         }
@@ -1479,14 +1473,11 @@ pub fn handle_interrupt() {
         if status & 2 != 0 {
             CONFIG_CHANGED.store(true, Ordering::Release);
         }
-        IRQS.fetch_add(1, Ordering::AcqRel);
+        EVENTS.fetch_add(1, Ordering::AcqRel);
+        WAITERS.wake_up();
         let tid = REAPER.load(Ordering::Acquire);
         if tid != 0 {
             crate::task::scheduler::wake_thread_any_context(tid);
-        } else {
-            // Before `kgpu` starts, waiters take the device's answers themselves.
-            EVENTS.fetch_add(1, Ordering::AcqRel);
-            WAITERS.wake_up();
         }
     }
     crate::tracing::providers::gpu::interrupt_end(start);
@@ -1523,7 +1514,7 @@ fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
         crate::task::scheduler::with_scheduler(|sched| {
             sched.block_current_for_io_with_timeout(wake);
         });
-        if kgpu_events() != seen {
+        if EVENTS.load(Ordering::Acquire) != seen {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
@@ -1543,7 +1534,7 @@ fn reaper() {
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
     loop {
-        let seen = kgpu_events();
+        let seen = EVENTS.load(Ordering::Acquire);
         let now = now_ns();
         let (deadline, busy, reset) = with_core(|c| {
             c.pump();
@@ -1578,7 +1569,7 @@ fn reset_device(tid: u64) {
     dev.begin_reset();
     let start = now_ns();
     while !dev.reset_done() && now_ns().saturating_sub(start) < RESET_BUDGET_NS {
-        reaper_block(tid, kgpu_events(), Some(now_ns() + 1_000_000));
+        reaper_block(tid, EVENTS.load(Ordering::Acquire), Some(now_ns() + 1_000_000));
     }
     if dev.reset_done() {
         let (held, up) = dev.restart();
