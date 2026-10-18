@@ -126,7 +126,7 @@ cd "$REPO_DIR" || { echo "GATE: FAIL (repo dir missing: $REPO_DIR)"; exit 1; }
 # A gate VM configured for the x86 build container (scripts/x86-gate-build.py) keeps builds
 # off its own reserved CPUs. A direct call from a private clone of the VM's canonical repository
 # hands the whole gate to scripts/gate-tree.py, which builds the clone's commit in the
-# container and boots it here, writing to the same BREENIX_GATE_TMP. A gate-cache tree that
+# container and boots it here, writing beneath BREENIX_GATE_TMP. A gate-cache tree that
 # asks for both halves comes from a launcher older than the container builds, and is refused.
 if [ "$PHASE" = all ] && [ -f "$HOME/.config/breenix-gate/build-host.env" ]; then
   if [ -n "${BREENIX_GATE_CACHE_DIR:-}" ]; then
@@ -146,6 +146,12 @@ if [ "$PHASE" = all ] && [ -f "$HOME/.config/breenix-gate/build-host.env" ]; the
   DIRECT_SHA=$(python3 "$REPO_DIR/scripts/effort-target-guard.py" \
     --repo "$REPO_DIR" --commit HEAD --target x86) || exit 1
   export BREENIX_TARGET_POLICY_CHECKED="x86:$DIRECT_SHA"
+  # gate-tree derives the run identity from the output directory's parent.
+  mkdir -p "$BREENIX_GATE_TMP" || exit 1
+  DIRECT_RUN=$(mktemp -d "$BREENIX_GATE_TMP/direct-x86-XXXXXXXX") || exit 1
+  export BREENIX_GATE_TMP="$DIRECT_RUN/gate-tmp"
+  mkdir -p "$BREENIX_GATE_TMP" || exit 1
+  echo "[gate] direct output: $BREENIX_GATE_TMP"
   # Direct calls share one cached tree, so each boot builds incrementally.
   DIRECT_LANE=$(printf '%s direct gate' "$DIRECT_CANONICAL" | sha256sum | cut -c1-64)
   echo "[gate] direct call: building ${DIRECT_SHA:0:12} in the x86 build container through scripts/gate-tree.py"

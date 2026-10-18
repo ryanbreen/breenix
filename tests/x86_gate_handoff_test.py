@@ -72,6 +72,27 @@ class DirectHandoffTests(unittest.TestCase):
         handoff = json.loads(accepted.stdout.splitlines()[-1])
         self.assertEqual(handoff['stamp'], 'x86:' + self.git(self.repo, 'rev-parse', 'HEAD'))
 
+    def test_default_and_new_output_directories_have_valid_run_identity(self):
+        outputs = []
+        for base in (None, self.base / 'new output' / 'nested'):
+            with self.subTest(base=base):
+                if base is None:
+                    self.env.pop('BREENIX_GATE_TMP', None)
+                else:
+                    self.env['BREENIX_GATE_TMP'] = str(base)
+                result = self.invoke()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                handoff = json.loads(result.stdout.splitlines()[-1])
+                output = Path(handoff['args'][3])
+                outputs.append(output)
+                self.addCleanup(shutil.rmtree, output.parent)
+                self.assertTrue(output.is_dir())
+                self.assertEqual(output.name, 'gate-tmp')
+                self.assertRegex(output.parent.name, r'^direct-x86-[A-Za-z0-9]+$')
+                self.assertEqual(output.parent.parent, base if base else Path('/tmp'))
+                self.assertEqual(handoff['stamp'], 'x86:' + self.main)
+        self.assertNotEqual(outputs[0].parent.name, outputs[1].parent.name)
+
 
 if __name__ == '__main__':
     unittest.main()
