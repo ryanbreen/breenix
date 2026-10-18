@@ -327,8 +327,11 @@ class Driver:
             self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
             return
         build = m.read_json(inputs / 'build.json', {})
-        if build.get('commit') != self.args.commit or build.get('profile') != 'production' or build.get('features') != []:
-            raise Finish(m.EXIT_CANCELLED, 'build provenance differs from the requested production commit')
+        # Only an xHCI fault boot takes a fault-test kernel, and it takes no other.
+        features = ['xhci_fault_inject'] if xhci_fault(self.args) else []
+        profile = 'fault-test' if features else 'production'
+        if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
+            raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
         self.delivery['build'] = build
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if (inputs / 'definition').is_dir():

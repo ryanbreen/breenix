@@ -1525,7 +1525,7 @@ class BuildSlotTest(unittest.TestCase):
             root = Path(temporary)
             args = SimpleNamespace(id='20261017T000012Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
-                                   guard_target='x86-metal')
+                                   guard_target='x86-metal', features='')
             clone, out, tmp = build.paths(args)
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
