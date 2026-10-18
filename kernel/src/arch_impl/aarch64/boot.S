@@ -746,8 +746,9 @@ irq_handler:
 
     // After a context switch x0 is the dispatched frame, staged on this CPU's
     // scheduler stack. Restore from the copy: once SP is off the old thread's
-    // kernel stack, the old thread can be requeued and run on another CPU
-    // (#1785). x0 == 0 leaves SP on the frame this exception pushed.
+    // kernel stack, clear the mark that holds another CPU off the old thread,
+    // which the switch has already requeued (#1785). The call is one store,
+    // with no lock. x0 == 0 leaves SP on the frame this exception pushed.
     cbz x0, .Lirq_frame_ready
     mov sp, x0
     bl aarch64_complete_exception_switch
