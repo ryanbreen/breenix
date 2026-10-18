@@ -40,9 +40,18 @@ struct Pointer {
     descriptor: Vec<u8>,
 }
 
+/// The attached pointers, once the xHCI worker has attached them: the program
+/// can start before the controller's port census ends, so wait up to 30 s.
 fn pointers() -> Result<Vec<Pointer>, String> {
-    let text = std::fs::read_to_string("/proc/xhci/pointers")
-        .map_err(|error| format!("reading /proc/xhci/pointers: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let text = loop {
+        let text = std::fs::read_to_string("/proc/xhci/pointers")
+            .map_err(|error| format!("reading /proc/xhci/pointers: {error}"))?;
+        if !text.is_empty() || Instant::now() >= deadline {
+            break text;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let mut found = Vec::new();
     for line in text.lines() {
         println!("USB POINTER DEVICE {line}");
@@ -505,7 +514,7 @@ fn main() {
     let attached = match pointers() {
         Ok(attached) if !attached.is_empty() => attached,
         Ok(_) => {
-            println!("USB POINTER FAIL no USB HID pointer is attached");
+            println!("USB POINTER FAIL no USB HID pointer attached within 30 s");
             std::process::exit(1);
         }
         Err(error) => {
