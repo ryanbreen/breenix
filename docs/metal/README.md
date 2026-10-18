@@ -670,9 +670,9 @@ the screen check and its row, logout, a keyboard-only session end, reacquisition
 observation path; no screenshot or framebuffer capture is used.
 
 The recovery form `--mode console --input sol --disk install` remains available.
-Ordinary console requests use the physical root, installing the current userspace
-build and credential only when their digest changes. Per-boot intent selects
-session or measurement behavior without changing the installed target.
+Ordinary console requests install a fresh physical root with the current userspace
+build and credentials before each boot. The current boot payload selects session
+or measurement behavior.
 
 ### The USB keyboard
 

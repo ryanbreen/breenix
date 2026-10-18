@@ -33,8 +33,8 @@ records the conditional idle probe and the separate completion-accounting failur
 The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
 The R240 disk-root work in [#1972](https://github.com/ryanbreen/breenix/issues/1972)
-extends installed-disk console boots to default and suite modes, with digest-keyed
-installation and cold raw writeback verification. The
+extends installed-disk console boots to default and suite modes, with a fresh root
+installation before each boot and cold raw writeback verification. The
 [physical-root evidence](../metal/1972-1973-evidence.md) records the three suite
 results and cold disk checks. SOL capture work is tracked in
 [#1973](https://github.com/ryanbreen/breenix/issues/1973). The earlier RAM-disk
