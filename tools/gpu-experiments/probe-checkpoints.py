@@ -21,7 +21,7 @@ N=64
 newimm=[f'IMM[{last_imm+1+k}] UINT32 {{{4*k}, {4*k+1}, {4*k+2}, {4*k+3}}}' for k in range(N//4)]
 def jref(j): return f'IMM[{last_imm+1+j//4}].{"xyzw"[j%4]*4}'
 block_start=[i for i,l in enumerate(lines) if l.startswith('USEQ TEMP[42].x, CONST[4].yyyy')][routine_block]
-block_end=next(i for i in range(block_start+1,len(lines)) if lines[i].startswith('USEQ TEMP[42].x, CONST[4].yyyy'))
+block_end=next((i for i in range(block_start+1,len(lines)) if lines[i].startswith('USEQ TEMP[42].x, CONST[4].yyyy')), len(lines))
 u2f=max(i for i in range(block_start,block_end) if lines[i].startswith('U2F '))
 pack=u2f-8
 m=re.match(r'^USHR TEMP\[\d+\]\.\w, (TEMP\[\d+\])\.',lines[pack]); assert m, lines[pack]

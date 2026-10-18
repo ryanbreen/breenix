@@ -25,6 +25,7 @@ exit 1 refuses and names why.
 """
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
@@ -150,6 +151,10 @@ def judge_record(path, wait):
         return "the sampler found no VM process"
     if vm.get("accel") is None or vm["accel"].lower() in ("off", "0", "no", "disabled"):
         return f"the VM's 3D acceleration is {vm.get('accel')!r}, not on"
+    if any(not math.isfinite(t) for t, _ in lines + samples):
+        return "the measurement timestamps are not finite"
+    if any(t1 <= t0 or n1 < n0 for (t0, n0), (t1, n1) in zip(samples, samples[1:])):
+        return "the GPU time samples are not strictly ordered or their counters decreased"
     begin = next((t for t, l in lines if l.startswith("SUITE_IDLE gpu performance begin")), None)
     end = next((t for t, l in lines if l.startswith("SUITE_IDLE gpu performance end")), None)
     perf = [t for t, l in lines if l.startswith("SUITE gpu CASE performance/")]
@@ -158,6 +163,10 @@ def judge_record(path, wait):
     if not perf:
         return "the serial carries no performance CASE record"
     stop = perf[-1]
+    # Batched serial reads cannot resolve an idle boundary and performance work at
+    # the same timestamp. Reject that interval before computing its wall-time floor.
+    if perf[0] <= end or stop <= end or any(b < a for a, b in zip(perf, perf[1:])):
+        return "the performance measurement interval is nonpositive or unresolved"
     idle_gpu = [gpu_at(samples, begin), gpu_at(samples, end)]
     cat_gpu = [gpu_at(samples, end), gpu_at(samples, stop)]
     if None in idle_gpu or None in cat_gpu:

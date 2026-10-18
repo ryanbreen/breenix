@@ -13,8 +13,8 @@
 //!
 //! `CONTEXT_CREATE` sends only the context's fixed state; `kgpu` warms the fixed rendering
 //! catalogue afterwards, one pipeline per step and one step on the device at a time, and
-//! not while a process is creating a context or resource, so creation and other requests wait
-//! behind at most one step. A draw whose pipeline has not warmed creates its programs in its
+//! after a fixed initial grace per context, so creation and other requests wait behind
+//! at most one step. A draw whose pipeline has not warmed creates its programs in its
 //! own submission and waits for no other pipeline (ruling 33, #1725).
 //!
 //! A fence's result reaching its callers and the device's use of the memory behind it
@@ -76,9 +76,8 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
-/// How long after a process's last context or resource creation the catalogue's warm-up
-/// waits before sending its next step. One control queue carries both, and a step's
-/// compilation can hold it for most of a second, so a burst of creations is not split by one.
+/// Initial grace after a context becomes live. Later creations cannot extend it: a
+/// process creating resources must not starve another context's catalogue warm-up.
 const WARM_GRACE_NS: u64 = 20_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
@@ -206,6 +205,8 @@ struct Ctx {
     /// The rendering pipelines whose warm-up step completed, one bit each
     /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
     warm: u32,
+    /// Fixed deadline for the initial warm-up grace, set when the context becomes live.
+    warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
     /// Device errors in a row, in fence order.
@@ -365,8 +366,6 @@ struct Core {
     resetting: bool,
     /// The one catalogue warm-up step the device has, if any.
     warm_step: Option<WarmStep>,
-    /// When a process last finished creating a context or resource.
-    creation_ended: u64,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -474,7 +473,6 @@ impl Core {
             reset_wanted: false,
             resetting: false,
             warm_step: None,
-            creation_ended: 0,
         }
     }
 
@@ -1275,8 +1273,10 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        // The end of the warm-up's grace after a creation, when a step may then be due.
-        let grace = Some(self.creation_ended + WARM_GRACE_NS).filter(|&g| g > now);
+        // The context's fixed grace deadline is independent of later creations.
+        let grace = self.contexts.values()
+            .filter(|x| x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).min()
     }
@@ -1637,9 +1637,9 @@ fn reset_device(tid: u64) {
 
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
-/// device at a time, and no step starts while a process is creating a context or resource,
-/// or while the device is resetting or suspected hung, so other requests wait behind at
-/// most one step. The step takes the context's submission slot while it is encoded and
+/// device at a time, after the context's fixed initial grace and while the device is
+/// neither resetting nor suspected hung, so other requests wait behind at most one step.
+/// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
 /// context under the watchdog that nobody waits on; their answers go to `warm_returned`.
@@ -1651,10 +1651,8 @@ fn warm_next() {
             && !c.resetting
             && !c.stalled
             && c.quarantined_at.is_none()
-            && !c.procs.values().any(|p| p.creating)
-            && now_ns().saturating_sub(c.creation_ended) >= WARM_GRACE_NS
     };
-    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
+    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
     if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
         return;
     }
@@ -1880,7 +1878,6 @@ impl Drop for CreationGuard {
             if let Some(p) = c.procs.get_mut(&self.0) {
                 p.creating = false;
             }
-            c.creation_ended = now_ns();
         });
         notify();
     }
@@ -2015,6 +2012,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 scratch,
                 scratch_texture,
                 warm: 0,
+                warm_after: 0,
                 warm_failures: 0,
                 errors_in_row: 0,
                 depth: None,
@@ -2045,6 +2043,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
             c.proc_mut(tgid).contexts.insert(h, id);
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
             ctx.state = CtxState::Live;
+            ctx.warm_after = now_ns().saturating_add(WARM_GRACE_NS);
             Ok((h, ctx.warmed()))
         })
         .unwrap_or(Err(ENODEV))
