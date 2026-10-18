@@ -44,7 +44,7 @@ else:
 ''')
         cli.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items() if k not in
-                    ("VIGIL_BOOT_ID", "BREENIX_VIGIL_CPUS", "BREENIX_VIGIL_DISPLAY", "BREENIX_HOST_RENDERER_JSON")}
+                    ("VIGIL_BOOT_ID", "BREENIX_VIGIL_CPUS", "BREENIX_VIGIL_DISPLAY", "BREENIX_HOST_RENDERER_JSON", "BREENIX_GPU_TIME_JSONL")}
         self.env.update(VIGIL_CLI=str(cli), VIGIL_TEST_HOME=str(self.root))
 
     def start(self, display):
@@ -79,6 +79,17 @@ else:
         self.assertEqual(result.stderr, "")
         self.assertEqual((self.folder / "run.json").read_bytes(), original)
         self.assertEqual((self.folder / "host-renderer.json").read_bytes(), self.renderer.read_bytes())
+        self.assertEqual((self.folder / "exit-status").read_text(), "1")
+
+    def test_finish_retains_gpu_time_even_for_a_refused_run(self):
+        self.start("true")
+        record = Path(str(self.serial) + ".gpu-time.jsonl")
+        record.write_bytes(b'{"event":"sample","gpu_ns":0}\n')
+        self.env["BREENIX_GPU_TIME_JSONL"] = str(record)
+        result = subprocess.run([str(RECORDER), "finish", BOOT_ID, "1"],
+                                env=self.env, capture_output=True, text=True, check=True)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual((self.folder / "gpu-time.jsonl").read_bytes(), record.read_bytes())
         self.assertEqual((self.folder / "exit-status").read_text(), "1")
 
 
