@@ -76,9 +76,9 @@ number of fixed rendering-catalogue programs warmed at the time of the result, e
 16 reserved. EAGAIN past 8 contexts per process. Creation queues catalogue compilation and warm-up on the
 GPU worker and returns without waiting for it; `warmed` is a progress snapshot, not the completion signal.
 Query `COUNTERS` with this context's handle to observe warm-up completion (state 0); state 3 means the
-context is live and still warming. The profile-only `probe_int` program is compiled and warmed on the
-first PROBE in that context; that first PROBE's cost is excluded from performance bounds. The watchdog
-and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
+context is live and still warming. The profile-only `probe_int` family has one program per routine
+(ruling 48); each is compiled and warmed on the first PROBE of that routine in that context.
+That first-use cost is excluded from performance bounds. The watchdog and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
 
 <!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
 **Handles.** `CONTEXT_CREATE` and `RESOURCE_CREATE` return handles private to the process: a value
@@ -87,7 +87,7 @@ the form of a user, kernel or physical address. No op writes back a kernel or de
 is a handle, a context fence, a device id below 2³² (record v2's `context` and `resource`), a count, a
 size, a serial, a generation, a status, an answer or a reason, a capability value, a string, or bytes of
 the caller's own pixels. G7 additionally reports the current scanout's pixels to its display owner
-and the FNV memory fingerprints defined in the G7 display interface.
+and the firmware write count and diagnostic FNV memory fingerprints defined in the G7 display interface.
 
 <!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
 **Reclamation.** The exit of a process's last thread, normal or by a signal, drops every handle the
@@ -97,7 +97,10 @@ parent reaping a process that had no work outstanding (`docs/gui/gpu.md` section
 has completed, and a resource when its hold set is empty (`docs/gui/gpu.md` section 1.4.1).
 
 **`CONTEXT_DESTROY`, `RESOURCE_DESTROY` (16 bytes):** `handle: u64`, 8 reserved. EINVAL for a handle the
-process does not hold.
+process does not hold. After the final hold ends, resource backing remains allocated and
+charged until the device answers its asynchronous unref (or a confirmed reset ends access).
+`textures/destroy-deferred` waits at most one second for that release, then requires the
+original exact charge (ruling 49).
 
 **`RESOURCE_CREATE` (48 bytes):** `kind: u32` (1 target, 2 texture, 3 buffer), `format: u32`, `width:
 u32`, `height: u32`, `size: u64` (bytes, buffers only), `handle: u64` out, `flags: u32` at 32,
@@ -195,6 +198,7 @@ DEVICE_HUNG and DEVICE_RESET do not themselves prove that device access has ende
 until actual device completion or a successfully confirmed reset supplies that proof; a failed reset
 leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
 
+<!-- claim-lint:ok: Normative catch-up interface requirements, rulings 47 and 50 (#1814), not measured results. -->
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
 `failed_submission: u64` out at 56. Waits for the accepted submissions that write the target, then reads
@@ -204,7 +208,10 @@ bytes (record `canonical` 1); the other formats read back as canonical BGRA, fou
 (`canonical` 0). A texture's record describes its last completed upload in the fields that describe a
 target's last submission: `context` is the upload's device context, `render_serial` its serial (numbered as
 a submission's), `render_fence` the fence its transfer carried, `render_status` the device's answer and
-`render_kind` `TRANSFER_TO_HOST_3D` (0x0205); they are 0 before its first upload.
+`render_kind` `TRANSFER_TO_HOST_3D` (0x0205) on backend 4 or `UPDATE_GB_SURFACE` (1102)
+on backend 5; they are 0 before its first upload. Successful statuses and readback/copy identities
+use the backend-specific values in `gpu.md` section 1.8 (ruling 47); they must never be
+normalized to another backend's values.
 Temporary whole-rectangle staging uses guest-backing frames, charged to the process's 192 MiB
 guest-backing quota and `RLIMIT_AS`. `READBACK` may fail with ENOMEM when staging cannot be charged to
 the process's guest-backing quota or `RLIMIT_AS`. `COUNTERS.resource_bytes` includes the staging while
@@ -258,13 +265,24 @@ belongs to an observation that passed both poisons.
 | 88 | `console_fixture_bytes: u64`, font-table bytes transferred to its GPU atlas |
 | 96 | `handoff: u64`, 1 after the first completed GPU console present, else 0 |
 | 104 | `firmware_hash_at_handoff: u64`, `firmware_hash_now: u64` at 112 |
-| 120 | Reserved through byte 255 (136 bytes, value 0) |
+| 120 | `firmware_writes_after_handoff: u64` |
+| 128 | Reserved through byte 255 (128 bytes, value 0) |
 
-The hashes are FNV-1a over the actual legacy framebuffer bytes (offset basis
-14695981039346656037, multiplier 1099511628211), sampled after quiescing kernel framebuffer
-writers at handoff and again at MODES. They measure memory, not a drawing-policy flag.
-They are intended to observe kernel console writes: programs using the legacy framebuffer
-API can still change that framebuffer until the BreenGL migration removes it.
+<!-- claim-lint:ok: Normative catch-up interface requirements, rulings 47 and 50 (#1814), not measured results. -->
+`firmware_writes_after_handoff` is a device-wide, monotonic, saturating count of kernel
+write operations to the firmware framebuffer after `handoff` first becomes 1. Count each
+pixel store, bulk fill or copy operation that writes any byte of that framebuffer, from
+any kernel writer (console, restore, panic or legacy framebuffer service); a write counts
+even when it stores the existing value. Reset it only at boot, never at MODES, ownership
+changes or mode changes. It is 0 before handoff and must remain 0 afterward. The counter
+tracks actual writes, not attempted calls that perform no store, a drawing-policy flag or
+framebuffer contents. Device DMA and userspace stores are not kernel writes.
+`present/firmware-handoff` checks this counter before and after restoring the GPU console
+on every backend (ruling 50).
+
+The hashes remain diagnostic FNV-1a over the actual firmware framebuffer bytes (offset
+basis 14695981039346656037, multiplier 1099511628211), sampled at handoff and at MODES.
+Device writes can change these bytes, so equality is not the kernel non-interference check.
 
 <!-- claim-lint:ok: Proposed G7 requirements implementing gpu.md sections 1.7 and 1.8. -->
 `SET_MODE` takes 16 bytes: `index: u32`, three reserved u32s, zero on input. An index other
@@ -335,13 +353,15 @@ work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest
 including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128, copy bytes 136
 (`copy_bytes`: `SUBMIT`'s private copies and device vertex storage charged to the process while they are
 held; the GPU memory quota limits `resource_bytes` and `copy_bytes` together); reserved to 256.
-For a context, `warmed` counts programs whose warm-up completed, including `probe_int` after its first
+For a context, `warmed` counts programs whose warm-up completed, including each `probe_int` routine after its first
 PROBE; it is not the completion signal for the rendering catalogue. A query with a nonzero context handle
 reports that context's warm-up state without waiting for warm-up. State 0 is reported only once its
 fixed rendering catalogue has warmed; state 3 permits the same operations as state 0, with the
 per-pipeline draw wait described above. A warm-up failure follows the existing quarantine/reset rules
 and does not report completion. `performance/first-draw-latency` measures a draw issued after the context
-reports state 0; neither its 10 ms bound nor case deadlines or work-estimate weights change.
+reports state 0; its 10 ms bound and work-estimate weights are unchanged. Ruling 52 moves only the start
+of `textures/upload-visibility`'s 10 s window until its contexts report state 0;
+other case deadlines are unchanged.
 A clear counts as one draw of one instance covering the target.
 
 ## The BGL command stream
@@ -535,7 +555,7 @@ defined; the ones G1 builds:
 |---|---|---|
 | 20 | `stale-fence` | the next submission's answer is taken as carrying the next fence; it completes `FENCE_MISMATCH` and no other submission completes by it |
 | 23 | `mask-capability` | the next admission decision counts the capability id in `param` as absent; one-shot (above) |
-| 27 | `device-error` | the next submission ends with fenced command type `0x02FF`, which is undefined by VirtIO and answered with an error. Armed before each of two consecutive submissions of one context, it quarantines that context only, as two ordinary device errors do; it never resets the device |
+| 27 | `device-error` | the next submission ends with an invalid device command (fenced type `0x02FF` on VirGL), answered with its native error: VirtIO 0x1200 through 0x12ff on backend 4, `SVGA_CB_STATUS_COMMAND_ERROR` 3 on backend 5. Armed before each of two consecutive submissions of one context, it quarantines that context only, as two ordinary device errors do; it does not reset the device |
 | 31 | `withhold-fence` | `param` 0: the next submission's completion is ignored, so the watchdog finds it hung; `param` 1: no completion is taken from the device until it is reset; `param` 2, fence depth: the answers to the next context's first four submissions are taken and kept unpublished, so their fences stay incomplete, until a fifth `SUBMIT` on that context waits at the four-in-flight limit; then the four are published in fence order and the fifth is admitted. No completion is invented and no watchdog deadline changes |
 
 G3 builds two more. `target` is the texture handle the point is armed for, 0 for any:

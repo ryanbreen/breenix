@@ -27,7 +27,7 @@ fn back() -> R<()> {
 }
 fn present(ctx: u64, t: u64) -> R<u64> {
     let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.answer == 0x1100 && p.fence != 0, || {
+    ensure(r == 0 && p.answer == native_success()? && p.fence != 0, || {
         format!(
             "PRESENT: {} answer {:#x} fence {}",
             errno(r),
@@ -64,7 +64,7 @@ fn shown(t: u64, want: &Canvas, fence: u64) -> R<u64> {
     ensure(
         u32_at(&rec, record::FLAGS) & 1 == 1
             && u64_at(&rec, record::PRESENT_FENCE) == fence
-            && u32_at(&rec, record::PRESENT_STATUS) == 0x1100,
+            && u32_at(&rec, record::PRESENT_STATUS) == native_success()?,
         || "record did not identify the completed present".to_string(),
     )?;
     let actual = expect(0, want, "current scanout pixels")?;
@@ -101,7 +101,7 @@ pub fn modes_listed() -> CaseResult {
             format!("MODES offset {at}: {} expected {want}", u32_at(&m, at))
         })?;
     }
-    ensure(m[120..].iter().all(|&b| b == 0), || {
+    ensure(m[128..].iter().all(|&b| b == 0), || {
         "MODES reserved bytes changed".to_string()
     })?;
     Ok(())
@@ -326,10 +326,8 @@ pub fn firmware_handoff() -> CaseResult {
     take()?;
     let before = modes()?;
     ensure(
-        u64_at(&before, 96) == 1
-            && u64_at(&before, 104) != 0
-            && u64_at(&before, 104) == u64_at(&before, 112),
-        || "firmware memory changed after GPU handoff".to_string(),
+        u64_at(&before, 96) == 1 && u64_at(&before, 120) == 0,
+        || "kernel wrote firmware framebuffer after GPU handoff".to_string(),
     )?;
     back()?;
     take()?;
@@ -337,7 +335,7 @@ pub fn firmware_handoff() -> CaseResult {
     let after = modes()?;
     value("handoff", u64_at(&after, 96) as i64, "", Some((1, 1)));
     ensure(
-        u64_at(&after, 104) == u64_at(&after, 112) && u64_at(&before, 104) == u64_at(&after, 104),
+        u64_at(&after, 96) == 1 && u64_at(&after, 120) == 0,
         || "GPU console restore wrote firmware pixels".to_string(),
     )?;
     Ok(())

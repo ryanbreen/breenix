@@ -309,7 +309,8 @@ pub fn upload_full() -> CaseResult {
         bytes += 37 * 11 * out_bpp(fmt) as u64;
         let rec = expect_image(t, fmt, &img, "a full upload")?;
         let canonical = if fmt == format::R8 { record::CANONICAL_R8 } else { record::CANONICAL_BGRA };
-        for (at, v) in [(record::FORMAT, fmt), (record::CANONICAL, canonical), (record::RENDER_KIND, 0x205), (record::RENDER_STATUS, 0x1100), (record::READBACK_KIND, 0x206)] {
+        let native = observation_backend(&rec)?;
+        for (at, v) in [(record::FORMAT, fmt), (record::CANONICAL, canonical), (record::RENDER_KIND, native.upload), (record::RENDER_STATUS, native.success), (record::READBACK_KIND, native.readback)] {
             ensure(u32_at(&rec, at) == v, || format!("record[{at}] is {}, expected {v}", u32_at(&rec, at)))?;
         }
         ensure(u64_at(&rec, record::GENERATION) == 1 && u64_at(&rec, record::RENDER_SERIAL) != 0 && u64_at(&rec, record::CONTEXT) != 0,
@@ -444,6 +445,8 @@ pub fn upload_visibility() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
     let second = context()?;
+    let checker = context()?;
+    libbreenix::suite::start_case_window()?;
     let tex = texture(format::B8G8R8A8, 16, 8)?;
     let x = scanout_target(format::B8G8R8A8, 24, 12)?;
     for (round, seed) in [70u32, 71].into_iter().enumerate() {
@@ -509,7 +512,7 @@ pub fn upload_visibility() -> CaseResult {
     }
     let img = Image::pattern(format::B8G8R8A8, 16, 8, 71);
     expect_image(tex, format::B8G8R8A8, &img, "texture unchanged after pre-transfer EINTR")?;
-    failed_uploads_invalidate(ctx, second, x)
+    failed_uploads_invalidate(ctx, second, checker, x)
 }
 
 /// A texture upload whose transfer was sent and then failed leaves the texture invalid
@@ -517,8 +520,7 @@ pub fn upload_visibility() -> CaseResult {
 /// taken, so each transfer is still outstanding when a signal interrupts its wait (EINTR) and
 /// when the watchdog ends it (EIO). Sampling either texture is then refused. The stall ends
 /// in the watchdog's device reset, which the case waits out.
-fn failed_uploads_invalidate(ctx: u64, second: u64, x: u64) -> CaseResult {
-    let checker = context()?;
+fn failed_uploads_invalidate(ctx: u64, second: u64, checker: u64, x: u64) -> CaseResult {
     let img = Image::pattern(format::B8G8R8A8, 8, 4, 72);
     let interrupted = texture(format::B8G8R8A8, 8, 4)?;
     let hung = texture(format::B8G8R8A8, 8, 4)?;
@@ -850,8 +852,15 @@ pub fn destroy_deferred() -> CaseResult {
     ensure(r == -EINVAL && sub.error == stream::error::BAD_HANDLE, || format!("sampling the destroyed handle returned {} code {}", errno(r), sub.error))?;
     release_depth(ctx, filler, 1)?;
     wait_ok(ctx, f, 2_000)?;
-    ensure(counters(0)?.resource_bytes == baseline.resource_bytes, || {
-        format!("after its fence the process holds {} bytes, expected {}", counters(0).map_or(0, |k| k.resource_bytes), baseline.resource_bytes)
+    // The unref answer, rather than the sampling fence, releases device backing.
+    let release_start = now_ns();
+    let mut remaining = counters(0)?.resource_bytes;
+    while remaining != baseline.resource_bytes && ms_since(release_start) < 1_000 {
+        let _ = libbreenix::time::sleep_ms(5);
+        remaining = counters(0)?.resource_bytes;
+    }
+    ensure(remaining == baseline.resource_bytes, || {
+        format!("one second after its fence the process holds {remaining} bytes, expected {}", baseline.resource_bytes)
     })?;
     show(ctx, x)?;
     let mut model = Image::filled(format::B8G8R8A8, 12, 6, &colour_bytes(BG));

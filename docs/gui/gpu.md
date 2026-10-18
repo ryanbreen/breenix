@@ -209,7 +209,7 @@ ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 |---|---|---|
 | 0 | `VERSION` | returns 1 |
 | 1 | `CAPS` | the profile record: backend, feature bits, formats, maximum sizes, catalogue version, the device's host renderer string where its capability set carries one |
-| 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation queues asynchronous warm-up of the fixed rendering catalogue on the GPU worker and returns; `probe_int` warms on its first PROBE (section 1.4.1) |
+| 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation queues asynchronous warm-up of the fixed rendering catalogue on the GPU worker and returns; `probe_int` routines warm on their first PROBE (section 1.4.1) |
 | 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; a scanout flag declares scanout targets at creation (section 1.7); ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
 | 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`, sent in a named context; visible to later submissions only; EINTR on an interrupted wait, ENOMEM if staging cannot be allocated or charged to the process's guest-backing quota or `RLIMIT_AS` |
 | 7 | `SUBMIT` | a BGL command stream, validated whole before anything is sent (EINVAL with the failing command's index), with its work estimate checked (EDQUOT past the cap); returns a fence |
@@ -257,11 +257,14 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   state 0 is live with catalogue warm-up complete. Quarantined and reset states keep their meanings
   (`docs/gui/gpu-abi.md`). Performance bounds, including `performance/first-draw-latency`, measure draws
   issued after that context reports warm-up complete, excluding application startup and warm-up.
-  The profile-only `probe_int` measuring program is excluded from catalogue warm-up and compiles and
-  warms on the first PROBE in that context. That first PROBE's cost is excluded from performance bounds;
-  later PROBEs use the warmed program.
-  `submit/context-create` retains the suite runner's existing 10 s case deadline. Case deadlines and
-  work-estimate weights do not change, including for cases waiting for warm-up completion.
+  The profile-only `probe_int` measuring programs are excluded from catalogue warm-up; each compiles and
+  warms on its routine's first PROBE in that context. That first-use cost is excluded from performance bounds;
+  later PROBEs use the warmed program for that routine. `probe_int` is a family with one
+  program per routine (ruling 48), compiled on that routine's first use. Each compilation remains
+  subject to the unchanged 2 s watchdog on every target.
+  `submit/context-create` retains the suite runner's existing 10 s case deadline. Except for the
+  timed-window start of `textures/upload-visibility` (ruling 52, below), case deadlines and work-estimate
+  weights do not change, including for cases waiting for warm-up completion.
   Each warm-up fence is subject to the same 2 s watchdog as any submission; compile time is not exempt
   from hang recovery. A kill during creation or a wait for a warming pipeline must end the caller within
   250 ms, without waiting for remaining programs to compile (`isolation/killable-wait`); the first PROBE
@@ -363,13 +366,26 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   completion or a successfully confirmed reset. Device completion with the fence still unpublished keeps
   the hold. A caller-visible error synthesized at quarantine or reset does not establish the end of
   device access; merely requesting reset or failing to reset cannot retire the hold. Reporting EIO or
-  EINTR does not by itself empty a hold set.
+  EINTR does not by itself empty a hold set. After the final hold ends, device unref is
+  asynchronous: backing remains allocated and charged until the device answers that unref
+  (ruling 49), or a confirmed reset ends device access.
 - **The render-completion handoff** (used by BreenGL's windows, section 2.1): each target records the fence of
   the last accepted submission that writes it. `COMMIT` records that fence with the commit and from then on
   refuses submissions that write the committed buffer. The compositor samples a commit only after that fence
   has completed OK; the kernel waits for it on the CPU before sending the compositor's submission, because
   fences on different device contexts are not ordered against each other. A commit whose fence completes with
   an error is refused (the window keeps its previous front and the client gets the commit's failure).
+
+<!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
+**Catch-up check windows (rulings 49, 50 and 52).** `textures/destroy-deferred` waits at
+most one second after its sampling fence completes for the asynchronous device unref to release the
+backing charge, then requires exactly the original expected `resource_bytes`, not a tolerance.
+`present/firmware-handoff` requires zero kernel writes to the firmware framebuffer after handoff on
+every target, using the MODES counter defined in `gpu-abi.md`; firmware memory hashes remain diagnostic.
+A device can rewrite its own firmware framebuffer while driving the display, so hash equality cannot
+prove kernel non-interference. `textures/upload-visibility` starts its 10 s timed window only once
+all contexts it needs report catalogue warm-up complete. Warm-up retains the per-compilation watchdog
+and kill bounds above; the runner and host still bound unfinished setup. Other case deadlines are unchanged.
 
 ### 1.5 The deterministic rendering profile
 
@@ -632,11 +648,15 @@ rests on host-side evidence that the gate checks, recorded with every run:
   (llvmpipe, softpipe, lavapipe, SwiftShader, or any renderer string containing "Software"), or names a
   renderer other than the target's declared one, and requires the guest's capset renderer string, where the
   capset carries one, to agree.
+<!-- claim-lint:ok: Normative renderer attestation threshold amended by ruling 51 (#1814); no measured result claimed. -->
 - **Parallels.** There is no host hook, but macOS's accelerator statistics attribute GPU time to each
   client process, and every GPU client the VM opens belongs to its VM process. The gate checks the VM's
   configuration has 3D acceleration on, reads that process's accumulated GPU time over an idle window just
   before the `performance` category and over the category itself, and requires the category's reading to
-  exceed the idle one by at least 10% of the category's length. This is a required acceptance threshold;
+  have a host GPU time rate at least ten times the idle window's rate (ruling 51). Compare
+  GPU-time deltas divided by their respective wall-time windows, not absolute deltas or a
+  percentage of wall time. A zero idle rate requires a positive category GPU-time delta.
+  This is a required acceptance threshold;
   the spike serial does not establish host GPU-time deltas (section 1.12). The negative control,
   the same boot with 3D acceleration off, runs in the Parallels catch-up; the device is expected then not to
   offer VirGL, and initialization refuses naming the missing feature.
@@ -675,7 +695,7 @@ rests on host-side evidence that the gate checks, recorded with every run:
   from its built-in font tables (`purpose` `Fixture`) through `bitmap_text`. Before it starts, the boot
   console and panic screen are CPU-written on the firmware framebuffer, and nowhere else (ruling R7).
 
-G7's argument layouts, ownership transitions, console observation, firmware-memory hashes and
+G7's argument layouts, ownership transitions, console observation, firmware write count and
 present fault effects are defined in `gpu-abi.md`, "G7 display interface". These definitions
 supply the observability for the existing present cases; their case counts and expectations stay fixed.
 
@@ -718,6 +738,26 @@ the process's guest-backing quota or `RLIMIT_AS`. The charge is released when th
 | 200 | `windows: [(window: u64, commit: u64, render_fence: u64, generation: u64); 16]`: every window in the composite, the commit sampled, the render fence that commit carried and the generation sampled |
 | 712 | `renderer: [u8; 64]`: the device's renderer string from its capability set, NUL-padded, empty if none |
 | 776 | reserved |
+
+<!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
+**Backend-specific observations (ruling 47).** A record's backend must match `CAPS.backend`;
+checks select the following native values by that backend, never accept a value from the other one.
+These are interface identifiers from VirtIO section 5.7.6.7 and VMware's published
+`svga3d_cmd.h` and `svga_reg.h` (section 1.9), not rendering-policy sources.
+
+| Field | Backend 4 (VirGL) | Backend 5 (SVGA3D DX) |
+|---|---|---|
+| Successful render, readback, copy and present status | `OK_NODATA` 0x1100 (copy fields remain 0) | `SVGA_CB_STATUS_COMPLETED` 1 |
+| Render kind after drawing | `SUBMIT_3D` 0x207 | `DX_DRAW` 1152 |
+| Render kind after texture upload | `TRANSFER_TO_HOST_3D` 0x205 | `UPDATE_GB_SURFACE` 1102 |
+| Readback kind | `TRANSFER_FROM_HOST_3D` 0x206 | `READBACK_GB_SURFACE` 1104 |
+| Readback surface and MOB | both 0 | both nonzero; dedicated readback surface differs from the judged resource |
+| Copy kind | 0 | `SURFACE_COPY` 1042 |
+| Forced device-error answer | VirtIO error response 0x1200 through 0x12ff | `SVGA_CB_STATUS_COMMAND_ERROR` 3 |
+
+<!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
+Pixel equality, both complementary poisons, fence and resource identities, all performance bounds,
+and the same 170 cases with zero skips remain required on both backends.
 
 A readback refuses with EIO and a named reason (the codes are in `docs/gui/gpu-abi.md`) when the two
 complementary-poison observations differ (unwritten), when any recorded fence belongs to another submission
@@ -948,8 +988,9 @@ a submission is not proof the GPU did the work: opaque overdraw may be culled, a
 prove pixel completion. Every measured interval ends with a dependent observation (a readback, or a draw
 that reads the result), and throughput cases use blended or discarding draws wherever
 opaque overdraw could be culled. Every bound is measured after the context reports its asynchronous fixed
-rendering-catalogue warm-up complete through `COUNTERS` (ruling 33, #1725). The profile-only program warms
-on the first PROBE in its context, whose cost is excluded from performance bounds (section 1.4.1).
+rendering-catalogue warm-up complete through `COUNTERS` (ruling 33, #1725). Each profile-only routine's program warms
+on that routine's first PROBE in its context; that first-use cost is excluded from performance
+bounds (section 1.4.1, ruling 48).
 
 | Case | Bound |
 |---|---|
@@ -1076,7 +1117,7 @@ no profile requirement is relaxed by these experiments.
 | VirGL requires `VIRGL` and `VERSION_1`, deduplicating capability set IDs | section 1.6 | Parallels' capability enumeration lacks blob, context-init and EDID and repeats its VirGL 2 set at multiple indices. |
 | VMware admits by capability entries | section 1.6.3 | The 3D-off control refuses at `DXCONTEXT=0`; the register's DX bit alone is insufficient. |
 | VMware uses queue 0, page-table-backed tables, version 1 surfaces and bare SM4 tokens with signatures | section 1.6.3 | The cited rendering commit submits and reads these primitives back; present command completion is not scanout verification. |
-| Attestation remains mandatory for implemented GPU layers | section 1.6.5 | The Parallels spike includes idle/load phases, but the cited serial alone does not establish host GPU-time deltas. The at-least-10% threshold is a required acceptance criterion, not a result proved by this spike. VMware's attestation remains configuration-based under R6. |
+| Attestation remains mandatory for implemented GPU layers | section 1.6.5 | The Parallels spike includes idle/load phases, but the cited serial alone does not establish host GPU-time deltas. The rate-ratio threshold of section 1.6.5 (amended by ruling 51) is a required acceptance criterion, not a measurement from this spike. VMware's attestation remains configuration-based under R6. |
 
 The suite has 170 cases rather than the outline's 168. `textures/unaligned-pitch` requires exact
 round trips at widths that exercise the backend layouts. `performance/first-draw-latency` adds a
