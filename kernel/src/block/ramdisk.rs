@@ -80,7 +80,7 @@ pub unsafe fn init(addr: Option<u64>, len: u64) -> Result<(), &'static str> {
     // A disk-root console boot carries only its per-boot intent here. It
     // must not become a root block device or change the installed filesystem.
     let bytes = core::slice::from_raw_parts_mut(addr as *mut u8, len);
-    if crate::boot::target::capture(bytes) {
+    if crate::boot::intent::capture(bytes) {
         return Ok(());
     }
     let disk = RamDisk::new(bytes)?;

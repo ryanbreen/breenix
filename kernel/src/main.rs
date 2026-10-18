@@ -1413,7 +1413,7 @@ fn x86_console_mode() -> Option<X86ConsoleMode> {
                 Some(X86ConsoleMode::Console {
                     idle_minutes: Some(idle_minutes),
                     replug,
-                    from: if kernel::boot::target::has_intent() { "intent" } else { "target" },
+                    from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
                 })
             },
             _ => None,

@@ -99,29 +99,11 @@ pub fn parse(text: &str) -> Result<Target, String> {
     }
 }
 
-static BOOT_INTENT: spin::Once<([u8; 256], usize)> = spin::Once::new();
-
-/// Retain a small per-boot target payload without creating a RAM block device.
-/// Parsing happens after allocator initialization, when PID 1 is selected.
-pub fn capture(bytes: &[u8]) -> bool {
-    let Some(line) = bytes.strip_prefix(b"BREENIX-BOOT 1\n") else { return false; };
-    if line.is_empty() || line.len() > 256 { return false; }
-    let mut saved = [0; 256];
-    saved[..line.len()].copy_from_slice(line);
-    BOOT_INTENT.call_once(|| (saved, line.len()));
-    true
-}
-
-/// Whether PID 1's target came from this boot's payload.
-pub fn has_intent() -> bool {
-    BOOT_INTENT.get().is_some()
-}
-
 /// Read the boot target from the mounted ext2 root. `Ok(None)` when there is no
 /// file (or no root filesystem); `Err` when the file exists but cannot be used.
 pub fn read() -> Result<Option<Target>, String> {
-    if let Some((bytes, len)) = BOOT_INTENT.get() {
-        let text = core::str::from_utf8(&bytes[..*len]).map_err(|_| String::from("boot intent is not text"))?;
+    if let Some(bytes) = crate::boot::intent::get() {
+        let text = core::str::from_utf8(bytes).map_err(|_| String::from("boot intent is not text"))?;
         return parse(text).map(Some);
     }
     let fs_guard = crate::fs::ext2::root_fs_read().map_err(String::from)?;
