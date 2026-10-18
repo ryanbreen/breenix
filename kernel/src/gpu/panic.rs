@@ -29,6 +29,18 @@ pub fn terminal() -> bool {
     TERMINAL.load(Ordering::Acquire)
 }
 
+/// Stop a peer at its next timer interrupt after its raw device access drains.
+/// An interrupted Access must resume so takeover can observe its counter reach zero.
+pub(crate) fn stop_if_terminal() {
+    if !terminal() {
+        return;
+    }
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    if USERS[cpu].load(Ordering::SeqCst) == 0 {
+        park();
+    }
+}
+
 static VALID: AtomicBool = AtomicBool::new(false);
 static STATE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
 static USERS: [AtomicUsize; crate::arch_impl::aarch64::constants::MAX_CPUS] =
