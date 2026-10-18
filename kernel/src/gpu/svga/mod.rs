@@ -28,6 +28,7 @@ pub mod memory;
 pub mod objects;
 pub mod sm4;
 pub mod encode;
+mod experiment;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
@@ -694,7 +695,9 @@ impl Device {
         dev.write(wire::reg::ENABLE, 1);
         dev.write(wire::reg::CONFIG_DONE, 1);
         dev.stopped = false;
-        if let Err(e) = dev.start_queue().and_then(|_| dev.init_tables()).and_then(|_| dev.init_objects()) {
+        let r = dev.start_queue().and_then(|_| dev.init_tables()).and_then(|_| dev.init_objects());
+        if r.is_ok() { experiment::run(&mut dev); }
+        if let Err(e) = r {
             // Initialization may have exposed a table to DMA. Failure is not evidence
             // that access ended, so retain it rather than freeing an ambiguous allocation.
             core::mem::forget(dev);
