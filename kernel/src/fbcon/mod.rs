@@ -417,13 +417,10 @@ pub fn start() {
         return;
     };
     match crate::task::kthread::kthread_run(move || render_thread(attached, layout), "fbcon") {
-        Ok(handle) => {
-            use crate::task::thread::SchedPolicy;
-            // It runs when its CPU has no other thread to run.
-            let idle = SchedPolicy { policy: SchedPolicy::IDLE, ..SchedPolicy::DEFAULT };
-            if !crate::task::scheduler::set_sched_policy(handle.tid(), idle) {
-                log::warn!("[fbcon] the render thread keeps the default policy");
-            }
+        Ok(_) => {
+            // Keep the normal time-sharing policy: an idle-policy thread can
+            // starve indefinitely behind a runnable graphics thread or users.
+            // The render loop blocks between passes to bound its CPU demand.
             RUNNING.store(true, Ordering::Release);
         }
         Err(error) => log::error!("[fbcon] no render thread: {:?}", error),
@@ -796,8 +793,20 @@ pub fn request_idle_check() {
 /// `/proc/fbcon/check`: the render thread reads the screen back; this reports
 /// whether it matches the shadow and the font, and the text rows drawn.
 pub fn proc_check() -> Result<String, i32> {
+    const EACCES: i32 = 13;
     const EBUSY: i32 = 16;
     const EIO: i32 = 5;
+    // Retained console text can contain privileged output. Authorize before
+    // requesting or consuming a snapshot; procfs generates it at open time.
+    let privileged = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
+        let guard = crate::process::manager();
+        guard.as_ref().is_some_and(|manager| {
+            manager.find_process_by_thread(tid).is_some_and(|(_, process)| process.cred.euid == 0)
+        })
+    });
+    if !privileged {
+        return Err(EACCES);
+    }
     if !RUNNING.load(Ordering::Acquire) {
         return Ok(String::from("fbcon check: no screen console\n"));
     }

@@ -114,7 +114,7 @@ display on the server's VGA port. It runs on x86 kernels built without `interact
   from interrupt context reach the screen too; a write is dropped, and counted, only if the lock stays held for
   milliseconds. A log line starts its own row, as it does on the UART. TTY output is interpreted as a terminal
   does: CR, LF, BS, HT, autowrap, and the CSI cursor and erase sequences.
-- **One screen writer.** The `fbcon` kernel thread (SCHED_IDLE) looks at the grid each 20 ms, draws the rows that
+- **One screen writer.** The `fbcon` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
   changed into a RAM shadow of the framebuffer, and copies only those rows' pixels to video memory, one text row with
   interrupts masked at a time. Drawing does not read video memory. A display owner's `fbdraw` flush and pixel
   read take the same row token, so they do not interleave with the console's rows. When a process takes the display
@@ -130,7 +130,7 @@ display on the server's VGA port. It runs on x86 kernels built without `interact
   the present page-table entries: each leaf mapping part of that BAR, wherever it is mapped, selects entry 1, and a
   large page that maps it only in part is split first so memory beside it keeps its type. The SDM does not support
   one physical page mapped with different types, so the physical memory map's alias is changed too.
-- **Read back.** At kernel idle, and for each read of `/proc/fbcon/check`, the render thread reads video memory back
+- **Read back.** At kernel idle, and for each root-only read of `/proc/fbcon/check`, the render thread reads video memory back
   and compares it with the shadow and with the pixels the font gives for the text each row was drawn with
   (`raster::expected_intensity`, which shares only the font with the drawing code). `/proc/fbcon/check` prints
   `fbcon check: shadow and screen identical, <n> glyph cells match the font` (or how many pixel rows and pixels
