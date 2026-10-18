@@ -2382,6 +2382,26 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         }
     };
 
+    // ReadPixel is a privileged display-owner diagnostic, as on x86.
+    // Read the scanout's memory/backing, without presenting console pixels.
+    if cmd.op == 32 {
+        let root = crate::syscall::memory_common::get_current_thread_id().is_some_and(|tid| {
+            let guard = crate::process::manager();
+            guard.as_ref().and_then(|manager| manager.find_process_by_thread(tid))
+                .is_some_and(|(_, process)| process.cred.euid == 0)
+        });
+        if !root || !caller_owns_display {
+            return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
+        }
+        if cmd.p1 < 0 || cmd.p2 < 0 {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        }
+        return match crate::console::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
+            Some(pixel) => SyscallResult::Ok(pixel as u64),
+            None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        };
+    }
+
     // VirGL/compositor ops (7=balls, 9=rects, 10-14=compositor) don't need the
     // software framebuffer — they go straight to the GPU or window registry.
     // Handle them before acquiring SHELL_FRAMEBUFFER.
