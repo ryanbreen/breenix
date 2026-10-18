@@ -1536,10 +1536,19 @@ pub fn collect_strand_census(
                 }
             }
 
+            // A queued thread that another CPU is still switching away from
+            // cannot run until that CPU clears its mark (#1785), so a mark
+            // that stays set leaves it stranded on its queue.
+            #[cfg(target_arch = "aarch64")]
+            let saving = crate::arch_impl::aarch64::switch_save::is_saving(tid);
+            #[cfg(not(target_arch = "aarch64"))]
+            let saving = false;
+
             let reachability_dimensions = [current, queued, previous, pending_next, deferred];
-            if reachability_dimensions
-                .into_iter()
-                .any(|reachable| reachable)
+            if !saving
+                && reachability_dimensions
+                    .into_iter()
+                    .any(|reachable| reachable)
             {
                 continue;
             }
@@ -3473,11 +3482,13 @@ impl Scheduler {
     ///
     /// Another CPU names a thread in `pending_next` from its selection to the
     /// commit of the switch to it, and in `current_thread` from that commit
-    /// until the commit of its switch away. On ARM64 it then names the thread
-    /// in `previous_thread` until its next exception entry drains the deferred
-    /// requeue: until then it is still on the thread's kernel stack, in the
-    /// exception frame it returns through. The wake paths decline to queue a
-    /// thread in that interval. A second CPU that ran the thread in any of the
+    /// until the commit of its switch away. On ARM64 an exception-return switch
+    /// that cannot stage its frame then names the thread in `previous_thread`
+    /// until its next exception entry drains the deferred requeue: until then
+    /// it is still on the thread's kernel stack, in the exception frame it
+    /// returns through. The wake paths decline to queue a thread in that
+    /// interval. A switch that stages its frame queues the thread at once and
+    /// marks it instead (`switch_save`), and selection waits for the mark. A second CPU that ran the thread in any of the
     /// three would run it on the same kernel stack, from a context its first
     /// CPU has not finished with. Idle threads are named only by their own CPU.
     fn foreign_owner(&self, thread_id: u64, cpu: usize) -> Option<(usize, &'static str)> {
@@ -4777,6 +4788,19 @@ impl Scheduler {
         // call commit_cpu_state_after_save() to finalize the switch. While cpu_state still
         // shows the old thread as "current", unblock() will see is_current_on_any_cpu()=true
         // and skip the ready_queue addition (the CPU running the thread will handle it).
+
+        // An exception-return switch queues its outgoing thread before its CPU
+        // has left the thread's kernel stack, with the thread marked as still
+        // being saved (#1785). That CPU clears the mark without a lock, so it
+        // can do so while this one holds the scheduler lock. If the mark
+        // outlasts the bound, the thread goes back on a queue and this CPU
+        // switches to idle.
+        if next_thread_id != self.cpu_state[current_cpu].idle_thread
+            && !crate::arch_impl::aarch64::switch_save::wait_until_saved(next_thread_id)
+        {
+            self.requeue_thread_after_save(next_thread_id);
+            next_thread_id = self.cpu_state[current_cpu].idle_thread;
+        }
 
         self.assert_no_foreign_owner(next_thread_id, current_cpu);
         if let Some(next) = self.get_thread_mut(next_thread_id) {
