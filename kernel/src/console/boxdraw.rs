@@ -217,12 +217,18 @@ pub fn coverage(glyph: u16, width: usize, height: usize, x: usize, y: usize) -> 
         _ => false,
     };
     let offset = light + 1;
-    // Extend double corners to the corresponding perpendicular lane, leaving
-    // the gap between the inner and outer strokes open.
+    // Corners join corresponding lanes. A branch off a continuing double
+    // stroke stops at the near lane, rather than bridging its central gap.
     let right_start = if shape.right == 3 && shape.up == 3 && shape.down == 0 {
         cx - (y - cy).signum() * offset
     } else if shape.right == 3 && shape.down == 3 && shape.up == 0 {
         cx + (y - cy).signum() * offset
+    } else if shape.up == 3 && shape.down == 3 {
+        if shape.left == 0 || shape.right == 3 {
+            cx + offset
+        } else {
+            cx
+        }
     } else if shape.up == 3 || shape.down == 3 {
         cx - offset
     } else {
@@ -232,6 +238,12 @@ pub fn coverage(glyph: u16, width: usize, height: usize, x: usize, y: usize) -> 
         cx + (y - cy).signum() * offset
     } else if shape.left == 3 && shape.down == 3 && shape.up == 0 {
         cx - (y - cy).signum() * offset
+    } else if shape.up == 3 && shape.down == 3 {
+        if shape.right == 0 || shape.left == 3 {
+            cx - offset
+        } else {
+            cx
+        }
     } else if shape.up == 3 || shape.down == 3 {
         cx + offset
     } else {
@@ -241,6 +253,12 @@ pub fn coverage(glyph: u16, width: usize, height: usize, x: usize, y: usize) -> 
         cy + (x - cx).signum() * offset
     } else if shape.down == 3 && shape.left == 3 && shape.right == 0 {
         cy - (x - cx).signum() * offset
+    } else if shape.right == 3 && shape.left == 3 {
+        if shape.up == 0 || shape.down == 3 {
+            cy + offset
+        } else {
+            cy
+        }
     } else if shape.right == 3 || shape.left == 3 {
         cy - offset
     } else {
@@ -250,15 +268,21 @@ pub fn coverage(glyph: u16, width: usize, height: usize, x: usize, y: usize) -> 
         cy - (x - cx).signum() * offset
     } else if shape.up == 3 && shape.left == 3 && shape.right == 0 {
         cy + (x - cx).signum() * offset
+    } else if shape.right == 3 && shape.left == 3 {
+        if shape.down == 0 || shape.up == 3 {
+            cy - offset
+        } else {
+            cy
+        }
     } else if shape.right == 3 || shape.left == 3 {
         cy + offset
     } else {
         cy
     };
-    let ink = (x >= right_start && stroke(shape.right, y, cy))
-        || (x <= left_end && stroke(shape.left, y, cy))
-        || (y >= down_start && stroke(shape.down, x, cx))
-        || (y <= up_end && stroke(shape.up, x, cx));
+    let ink = (x >= right_start - (light - 1) / 2 && stroke(shape.right, y, cy))
+        || (x <= left_end + light / 2 && stroke(shape.left, y, cy))
+        || (y >= down_start - (light - 1) / 2 && stroke(shape.down, x, cx))
+        || (y <= up_end + light / 2 && stroke(shape.up, x, cx));
     if ink {
         255
     } else {

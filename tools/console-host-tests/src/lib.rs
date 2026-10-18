@@ -253,6 +253,165 @@ mod raster_tests {
     }
 
     #[test]
+    fn double_junction_pixels_match_independent_lane_rectangles() {
+        // Explicit stroke rectangles, independent of the production arm table
+        // and junction endpoint calculation. Check ink AND the open lane gaps.
+        for size in Font::SIZES {
+            let font = Font::new(size);
+            let layout = layout(font, 4, 1, 0, 1, 0, 0);
+            let (w, h) = (font.glyph_width(), font.line_height());
+            let (cx, cy) = (w / 2, h / 2);
+            let thickness = h / 16;
+            let (xl, xr, yt, yb) = (
+                cx - thickness - 1,
+                cx + thickness + 1,
+                cy - thickness - 1,
+                cy + thickness + 1,
+            );
+            // Rectangles are inclusive, with thickness growing right/down.
+            let t = thickness - 1;
+            let vleft = (xl, 0, xl + t, h - 1);
+            let vright = (xr, 0, xr + t, h - 1);
+            let htop = (0, yt, w - 1, yt + t);
+            let hbottom = (0, yb, w - 1, yb + t);
+            let hright = vec![(xr, yt, w - 1, yt + t), (xr, yb, w - 1, yb + t)];
+            let hleft = vec![(0, yt, xl + t, yt + t), (0, yb, xl + t, yb + t)];
+            let vup = vec![(xl, 0, xl + t, yt + t), (xr, 0, xr + t, yt + t)];
+            let vdown = vec![(xl, yb, xl + t, h - 1), (xr, yb, xr + t, h - 1)];
+            let cases = [
+                (
+                    0x2552,
+                    vec![
+                        (cx, yt, w - 1, yt + t),
+                        (cx, yb, w - 1, yb + t),
+                        (cx, yt, cx + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2553,
+                    vec![
+                        (xl, cy, w - 1, cy + t),
+                        (xl, cy, xl + t, h - 1),
+                        (xr, cy, xr + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2555,
+                    vec![
+                        (0, yt, cx + t, yt + t),
+                        (0, yb, cx + t, yb + t),
+                        (cx, yt, cx + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2556,
+                    vec![
+                        (0, cy, xr + t, cy + t),
+                        (xl, cy, xl + t, h - 1),
+                        (xr, cy, xr + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2558,
+                    vec![
+                        (cx, yt, w - 1, yt + t),
+                        (cx, yb, w - 1, yb + t),
+                        (cx, 0, cx + t, yb + t),
+                    ],
+                ),
+                (
+                    0x2559,
+                    vec![
+                        (xl, cy, w - 1, cy + t),
+                        (xl, 0, xl + t, cy + t),
+                        (xr, 0, xr + t, cy + t),
+                    ],
+                ),
+                (
+                    0x255b,
+                    vec![
+                        (0, yt, cx + t, yt + t),
+                        (0, yb, cx + t, yb + t),
+                        (cx, 0, cx + t, yb + t),
+                    ],
+                ),
+                (
+                    0x255c,
+                    vec![
+                        (0, cy, xr + t, cy + t),
+                        (xl, 0, xl + t, cy + t),
+                        (xr, 0, xr + t, cy + t),
+                    ],
+                ),
+                (0x256a, vec![htop, hbottom, (cx, 0, cx + t, h - 1)]),
+                (0x256b, vec![vleft, vright, (0, cy, w - 1, cy + t)]),
+                (0x255f, vec![vleft, vright, (xr, cy, w - 1, cy + t)]),
+                (0x2562, vec![vleft, vright, (0, cy, xl + t, cy + t)]),
+                (
+                    0x2560,
+                    [
+                        vec![vleft],
+                        vup[1..].to_vec(),
+                        vdown[1..].to_vec(),
+                        hright.clone(),
+                    ]
+                    .concat(),
+                ),
+                (
+                    0x2563,
+                    [
+                        vec![vright],
+                        vup[..1].to_vec(),
+                        vdown[..1].to_vec(),
+                        hleft.clone(),
+                    ]
+                    .concat(),
+                ),
+                (0x2564, vec![htop, hbottom, (cx, yb, cx + t, h - 1)]),
+                (0x2567, vec![htop, hbottom, (cx, 0, cx + t, yt + t)]),
+                (
+                    0x2566,
+                    [
+                        vec![htop],
+                        hleft[1..].to_vec(),
+                        hright[1..].to_vec(),
+                        vdown.clone(),
+                    ]
+                    .concat(),
+                ),
+                (
+                    0x2569,
+                    [
+                        vec![hbottom],
+                        hleft[..1].to_vec(),
+                        hright[..1].to_vec(),
+                        vup.clone(),
+                    ]
+                    .concat(),
+                ),
+                (0x256c, [hleft, hright, vup, vdown].concat()),
+            ];
+            for (glyph, rectangles) in cases {
+                let mut frame = vec![0; layout.bytes()];
+                draw_row(&mut frame, &layout, 0, &[Cell { glyph, ..BLANK }], None);
+                for y in 0..h {
+                    for x in 0..w {
+                        let ink = rectangles
+                            .iter()
+                            .any(|&(x0, y0, x1, y1)| x >= x0 && x <= x1 && y >= y0 && y <= y1);
+                        let pixel = &frame[y * layout.stride_bytes + x * 4..][..4];
+                        assert!(
+                            layout.pixel_is(pixel, PALETTE[if ink { 7 } else { 0 }]),
+                            "size {} glyph {glyph:x} ({x},{y}) ink={ink}",
+                            font.size()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn drawn_rows_match_the_oracle_at_four_bytes_per_pixel() {
         check(SIZE_16, 4);
     }
