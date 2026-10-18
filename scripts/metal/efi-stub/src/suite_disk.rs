@@ -423,7 +423,10 @@ struct LoadedImage {
     device: Handle,
 }
 
-unsafe fn boot_http_binding(boot: &BootServices, image: Handle) -> Result<*mut Binding, Status> {
+unsafe fn boot_http_binding(
+    boot: &BootServices,
+    image: Handle,
+) -> Result<(*mut Binding, Access), Status> {
     const LOADED_IMAGE: Guid = Guid(
         0x5b1b_31a1,
         0x9562,
@@ -435,6 +438,35 @@ unsafe fn boot_http_binding(boot: &BootServices, image: Handle) -> Result<*mut B
     let device = (*loaded.cast::<LoadedImage>()).device;
     let mut path = null_mut();
     ok((boot.handle_protocol)(device, &DEVICE_PATH, &mut path))?;
+    // UEFI 2.10 §10.3.4.11: reuse this boot's DHCP/static source address.
+    // HTTP boot need not leave a default mapping for a newly created TCP child.
+    let bytes = core::slice::from_raw_parts(
+        path.cast::<u8>(),
+        path_length(path.cast()).ok_or(INVALID_PARAMETER)?,
+    );
+    let mut at = 0;
+    let mut access = None;
+    while at < bytes.len() {
+        let len = u16::from_le_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        let node = &bytes[at..at + len];
+        if node[0] == 3 && node[1] == 12 && len >= 27 {
+            let address: [u8; 4] = node[4..8].try_into().unwrap();
+            let subnet: [u8; 4] = node[23..27].try_into().unwrap();
+            if address != [0; 4] && subnet != [0; 4] {
+                access = Some(Access {
+                    default: 0,
+                    address,
+                    subnet,
+                    port: 0,
+                });
+            }
+        }
+        at += len;
+    }
+    let Some(access) = access else {
+        say!("disk readback needs the HTTP boot source IPv4 address and subnet");
+        return Err(NOT_FOUND);
+    };
     let mut remaining = path as *const u8;
     let mut nic = null_mut();
     ok((boot.locate_device_path)(
@@ -444,7 +476,7 @@ unsafe fn boot_http_binding(boot: &BootServices, image: Handle) -> Result<*mut B
     ))?;
     let mut binding = null_mut();
     ok((boot.handle_protocol)(nic, &HTTP_BINDING, &mut binding))?;
-    Ok(binding.cast())
+    Ok((binding.cast(), access))
 }
 
 unsafe fn upload(
@@ -455,7 +487,7 @@ unsafe fn upload(
     url: &[u8],
     image: Handle,
 ) -> Result<(), Status> {
-    let binding = boot_http_binding(boot, image)?;
+    let (binding, mut access) = boot_http_binding(boot, image)?;
     say!("disk readback uses the HTTP boot interface");
     let mut child = null_mut();
     ok(((*binding).create)(binding, &mut child))?;
@@ -463,12 +495,6 @@ unsafe fn upload(
     let result = (|| {
         ok((boot.handle_protocol)(child, &HTTP, &mut protocol))?;
         let http = protocol.cast::<Http>();
-        let mut access = Access {
-            default: 1,
-            address: [0; 4],
-            subnet: [0; 4],
-            port: 0,
-        };
         let config = Config {
             version: 1,
             timeout_ms: 60_000,
