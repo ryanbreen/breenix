@@ -210,13 +210,16 @@ fn foreground() -> Verdict<usize> {
     Ok(usize::from(tty0()?.state()?[0]))
 }
 
-/// Puts tty1 back in the foreground when the case ends, whatever it did.
+/// Puts tty1 back in the foreground when the case ends, whatever it did, and
+/// waits for that switch's acquisition to complete: `v_active` names tty1 as
+/// soon as it starts, and a request made before it completes is held
+/// (contract section 4.4). The case's children are reaped first (`Child` is
+/// declared after this guard), so no `VT_PROCESS` owner holds the switch.
 struct BackToTty1;
 
 impl Drop for BackToTty1 {
     fn drop(&mut self) {
-        let _ = activate(1);
-        within(4000, || foreground().is_ok_and(|fg| fg == 1));
+        let _ = switch_to(1);
     }
 }
 
