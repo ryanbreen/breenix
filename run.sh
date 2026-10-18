@@ -924,7 +924,16 @@ if [ "$PARALLELS" = true ]; then
         RETINA_POLICY="high-resolution=off high-resolution-in-guest=off"
         prlctl set "$PARALLELS_VM" --high-resolution off --high-resolution-in-guest off
     fi
-    prlctl set "$PARALLELS_VM" --vertical-sync on
+    # With vertical sync on, Parallels answers RESOURCE_FLUSH on the host display's refresh,
+    # and the GPU core's PRESENT returns that answer: alternating 2560x1600 presents ran at
+    # 10 to 94 a second across four boots, with a 101.9 ms median flush answer in one of
+    # them. With it off the median answer was 0.22 ms. GPU-core boots run with it off;
+    # other boots keep it on.
+    if [ "$GPU_CORE" = true ]; then
+        prlctl set "$PARALLELS_VM" --vertical-sync off
+    else
+        prlctl set "$PARALLELS_VM" --vertical-sync on
+    fi
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
