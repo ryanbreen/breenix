@@ -611,6 +611,7 @@ manager.create_process [ARM64]: SUCCESS - returning PID 86
 [PIN_GUARD_ORACLE:aarch64:home=1:here=0:reclaim=1:requeue=1:previous=1:on_home=3:refused=3:census_clean=1:verdict=PASS]
 [PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=0:stack_home_conflict=0]
 [TIMER_WAKE_LATENCY_ORACLE:aarch64:sleep_ms=10:peers=8:overrun_ms=8:bound_ms=100:quantum_ms=10:round_ms=80:wake_enqueues=1:peers_started=8:peers_spinning=8:backstops=0:setup_ms=4:window_ms=50:measured=1:PASS]
+[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=28:bound_ms=1000:mechanism_ms=132:daemon_passes=1:cleaned=1:backstops=0:PASS]
 
 ========================================
   Breenix ARM64 Boot Complete!
