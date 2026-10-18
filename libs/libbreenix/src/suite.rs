@@ -308,6 +308,29 @@ pub fn pulses(every_us: i64, limit_us: i64, at_us: &[i64]) {
     record("PULSES", &rest);
 }
 
+/// End the boot splash, so the console's text has the screen: `KDSETMODE(KD_TEXT)`
+/// on tty1 (`docs/console/contract.md`, sections 7 and 12), then wait, at most three
+/// seconds, until `/proc/console/check` no longer reports the splash.
+fn console_takes_screen() {
+    const KDSETMODE: u64 = 0x4B3A;
+    const KD_TEXT: u64 = 0;
+    // `O_NOCTTY`: the open must not give the suite a controlling terminal.
+    const O_NOCTTY: u32 = 0o400;
+    if let Ok(fd) = fs::open("/dev/console", fs::O_RDWR | O_NOCTTY) {
+        // SAFETY: KDSETMODE takes its mode by value.
+        let _ = unsafe { crate::syscall::raw::syscall3(crate::syscall::nr::IOCTL, fd.raw(), KDSETMODE, KD_TEXT) };
+        let _ = io::close(fd);
+    }
+    for _ in 0..30 {
+        let splash = std::fs::read_to_string("/proc/console/check")
+            .is_ok_and(|text| text.contains("the boot splash has the display"));
+        if !splash {
+            return;
+        }
+        let _ = time::sleep_ms(100);
+    }
+}
+
 /// A suite: its id, title and categories, run in order.
 pub struct Suite {
     pub id: &'static str,
@@ -328,6 +351,7 @@ impl Suite {
     }
 
     /// Leave the console available to cases; take the display only for the final panel.
+    /// The cases run on the console itself, so the run starts by ending the boot splash.
     pub const fn defer_display(self) -> Suite {
         Suite { defer_display: true, ..self }
     }
@@ -369,6 +393,7 @@ impl Suite {
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
         let mut screen = if self.defer_display {
+            console_takes_screen();
             Screen { fb: None, live: false, area: None }
         } else {
             Screen::open()

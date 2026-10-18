@@ -1,7 +1,7 @@
 //! Parallels with VirGL: the kernel's screens draw into the guest backing of
 //! the resource the virtio-gpu PCI driver scans out (the VirGL 3D resource once
 //! VirGL holds the scanout, the 2D resource before) and present it through the
-//! driver, as the boot screen does, until userspace takes the display. Which
+//! driver, as the diagnostics screen does, until userspace takes the display. Which
 //! backing that is can change while the console runs, so it is asked for at
 //! each write.
 //!
