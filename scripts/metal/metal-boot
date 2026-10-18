@@ -10,7 +10,7 @@
   metal-boot status                 the lease, the machine reading and the newest records, as JSON
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-Run options: --payload image|hang|none, --mode default|shell|probe|suite, --commit SHA, --target main|branch:NAME,
+Run options: --payload image|hang|none, --mode default|shell|probe|suite|console, --commit SHA, --target main|branch:NAME,
 --task NAME, --no-wait, --inject forceoff-fail, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
 for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
 its stage folder, and serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as
@@ -40,13 +40,13 @@ import metal_score  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-MODES = ('default', 'shell', 'probe', 'suite')
+MODES = ('default', 'shell', 'probe', 'suite', 'console')
 DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
-CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320}
-MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420}
+CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900}
+MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300}
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
 CONSOLE_WAIT_SECONDS = 20

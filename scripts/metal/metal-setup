@@ -161,6 +161,17 @@ def forget_completed_settings_jobs(note, only=None):
         note('completed-job-record-deleted', job=job['Id'])
 
 
+def save_originals(holder, current, pending, manager, lc, expected):
+    """Retain applied and pending BIOS values before the first write, in the private setup store."""
+    path = m.STATE / 'setup' / (holder + '-original.json')
+    m.write_json(path, {'t': m.now(), 'bios': current, 'pending': pending,
+                        'requested': expected,
+                        'manager': {key: manager.get(key) for key in ('IPMILan.1.Enable',)},
+                        'lc': {key: lc.get(key) for key in m.EXPECTED_LC}})
+    path.chmod(0o600)
+    return path
+
+
 def apply(args):
     site = m.load_site()
     holder = 'setup-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
@@ -180,13 +191,18 @@ def apply(args):
     csior = 'LCAttributes.1.CollectSystemInventoryOnRestart'
     try:
         manager = m.rf_get(m.MANAGER_ATTRIBUTES).get('Attributes', {})
-        if manager.get('IPMILan.1.Enable') != 'Enabled':
-            reply = m.rf('PATCH', m.MANAGER_ATTRIBUTES, {'Attributes': {'IPMILan.1.Enable': 'Enabled'}})
-            note('ipmi-lan-enabled', status=reply.get('status'))
         current = m.rf_get(m.SYSTEM + '/Bios').get('Attributes', {})
         listed = m.rf_get(m.SYSTEM + '/Bios/Settings').get('Attributes', {})
         pending = changes(listed, current)
         expected = m.expected_bios(site)
+        lc = m.rf_get(m.LC_ATTRIBUTES).get('Attributes', {})
+        original = save_originals(holder, current, listed, manager, lc, expected)
+        note('original-settings-saved', file=original.name)
+        if pending:
+            raise SystemExit('unapplied BIOS settings exist; originals saved, resolve them before apply')
+        if manager.get('IPMILan.1.Enable') != 'Enabled':
+            reply = m.rf('PATCH', m.MANAGER_ATTRIBUTES, {'Attributes': {'IPMILan.1.Enable': 'Enabled'}})
+            note('ipmi-lan-enabled', status=reply.get('status'))
         wanted = {k: v for k, v in expected.items() if current.get(k) != v}
         note('bios-diff', attributes=sorted(wanted), pending=sorted(pending))
         if wanted and listed and not pending:

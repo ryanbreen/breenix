@@ -24,6 +24,10 @@
     "suite": {
       "title": "Suite",
       "summary": "Run a manifest suite as PID 1 from the RAM disk."
+    },
+    "console": {
+      "title": "Console",
+      "summary": "A login prompt on the console, typed at the keyboard."
     }
   },
   "milestones": [
@@ -413,6 +417,141 @@
       "bootShapes": [
         "disk-root"
       ]
+    },
+    {
+      "id": "fb-console",
+      "title": "Framebuffer console",
+      "summary": "Not yet measured: the producing lane has not landed.",
+      "stub": true,
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ],
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "Framebuffer is the display BAR",
+            "marker": "[fbcon] framebuffer in display BAR: "
+          },
+          {
+            "name": "Write-combining mapping",
+            "marker": "[fbcon] aperture mapped write-combining"
+          },
+          {
+            "name": "Console on the screen",
+            "marker": "[fbcon] console tty and kernel log on the screen"
+          },
+          {
+            "name": "Screen read back",
+            "marker": "[fbcon] screen read back identical: "
+          }
+        ]
+      }
+    },
+    {
+      "id": "xhci",
+      "title": "USB controller by MSI",
+      "summary": "Not yet measured: the producing lane has not landed.",
+      "stub": true,
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ],
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "Controller found",
+            "marker": "[xhci] found "
+          },
+          {
+            "name": "Firmware released the controller",
+            "marker": "[xhci] firmware handoff: "
+          },
+          {
+            "name": "Reset and running",
+            "marker": "[xhci] running: "
+          },
+          {
+            "name": "Command completed by MSI",
+            "marker": "[xhci] no-op completed by MSI"
+          },
+          {
+            "name": "Port census",
+            "marker": "[xhci] port census: "
+          }
+        ]
+      }
+    },
+    {
+      "id": "usb-keyboard",
+      "title": "USB keyboard into the console",
+      "summary": "Not yet measured: the producing lane has not landed.",
+      "stub": true,
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ],
+      "stages": {
+        "console": [
+          {
+            "name": "Boot keyboard attached",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "First key report",
+            "marker": "[hid] first key report"
+          },
+          {
+            "name": "Keys reached the console TTY",
+            "marker": "[hid] typed into the console tty: "
+          }
+        ]
+      }
+    },
+    {
+      "id": "console-login",
+      "title": "Login at the machine's own console",
+      "summary": "Not yet measured: the producing lane has not landed.",
+      "stub": true,
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ],
+      "stages": {
+        "console": [
+          {
+            "name": "Getty on the console",
+            "marker": "[init] getty on the console"
+          },
+          {
+            "name": "Login prompt",
+            "marker": "login: "
+          },
+          {
+            "name": "Wrong password refused",
+            "marker": "Login incorrect"
+          },
+          {
+            "name": "Logged-in computation answered",
+            "marker": "metal-login-ok 42",
+            "match": "line"
+          },
+          {
+            "name": "The session is on the screen",
+            "marker": "fbcon check: shadow and screen identical"
+          },
+          {
+            "name": "The answer is on the screen",
+            "marker": "fbcon row: metal-login-ok 42"
+          }
+        ]
+      }
     }
   ],
   "firsts": [
@@ -456,6 +595,11 @@
       "title": "Networking suite passes on real hardware",
       "stage": "Suite finished",
       "suite": "networking"
+    },
+    {
+      "id": "first-local-login",
+      "title": "First login at the machine's own console",
+      "stage": "Logged-in computation answered"
     }
   ]
 }

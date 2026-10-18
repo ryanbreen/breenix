@@ -436,6 +436,10 @@ when each row matches). They are firmware and controller settings; they write no
 | `ErrPrompt` | Disabled | POST does not stop for an error prompt |
 | `AcPwrRcvry` | Off | After a power cut the machine stays off |
 | `EmbSata` | Site `SATA_MODE` (default `AhciMode`) | The operator's ruling keeps SATA on in AHCI mode; pre-flight checks the selected value. The kernel sends the SSD no commands: AHCI does not attach where PCI INTx routing is unknown |
+| `UsbPorts` | AllOn | Host USB ports available for the local keyboard |
+| `GenericUsbBoot` | Disabled | Disable generic USB boot |
+| `EmbVideo` | Enabled | Firmware framebuffer and local video output |
+| `InternalUsb` / `UsbManagedPort` | Site `INTERNAL_USB` / `USB_MANAGED_PORT`, read fresh before setup | Preserve and check the internal port and management-only USB port as found |
 | IPMI over LAN | Enabled | SOL's transport and the reaper's second power-off path |
 | Lifecycle Controller `CollectSystemInventoryOnRestart` | Disabled | Shorter POST |
 | An automation account | Administrator role, SOL and IPMI LAN privilege | Revocable apart from the operator's own login; its credential lives only in the site file |
@@ -460,10 +464,39 @@ scheduled or running one) before creating a job. Pending values that equal the c
 the read-back. The first power-on after a settings job runs POST twice (about 105 s instead of 33 s). claim-lint:ok:
 seen after 3 of 3 settings jobs in L0's setup records.
 
+### Saving and restoring firmware settings
+
+Before any setup write, `apply` saves `<setup-id>-original.json` (mode 0600) in the private setup store.
+It includes the applied BIOS attributes, the complete pending attribute map (including entries equal to current),
+the requested BIOS values, and the management and inventory attributes setup can change. Unapplied BIOS
+changes stop setup before writes: resolve them separately, then retry. Setup never commits someone else's pending job.
+Copy this receipt to the effort's private evidence folder before changing the machine again. claim-lint:ok:
+`SetupOriginalsTest` in `tests/metal_tools_test.py` checks the saved pending map and refusal to apply it.
+
+Restore under the same machine lease and heartbeat used by `apply`, with power off and no staged payload.
+Compare the receipt's `requested` with `bios` to identify the attributes setup changed; patch just those attributes
+back to their saved `bios` values through the queued BIOS Settings path. Use the existing OnReset settings job,
+inventory-on-restart refresh, completion polling and power-off sequence, then read back each restored attribute.
+Do not restore unrelated attributes changed by another lane. After deleting only the completed restore job's record,
+clear its no-op pending entries and re-stage the receipt's original `pending` map with OnReset apply time.
+Retain any returned pending job without triggering it or powering on; read the pending values back against the receipt,
+and restore the saved management and inventory attributes through the queue. Retain
+both read-backs privately. A restored baseline may deliberately fail the current pre-flight; do not boot until the
+operator resolves that difference. No restore step writes storage.
+
+### Local console definition
+
+The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
+Their proposed stage lists cover RAM-disk, install and disk-root shapes. Each is `stub: true` (not yet measured)
+until its producing lane lands; existing modes keep their measured stages and completion markers.
+The `console` mode is reserved for keyboard-driven login. Image staging and login input arrive in the login lane;
+until then a console boot is refused during staging, before power-on. SOL login development leaves physical
+keyboard typing unmeasured. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
+
 ## Files
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
-`IDRAC_ACCOUNT_SLOT`, `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
+`IDRAC_ACCOUNT_SLOT`, `INTERNAL_USB`, `USB_MANAGED_PORT` (fresh as-found BIOS values), `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`) and `REDACT_IDENTIFIERS`. It must also be valid
 `sh`, because `metal-sol` sources it.
 
