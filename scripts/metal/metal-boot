@@ -332,6 +332,8 @@ class Driver:
         profile = 'fault-test' if features else 'production'
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
+        if build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
+            raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
         self.delivery['build'] = build
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if (inputs / 'definition').is_dir():

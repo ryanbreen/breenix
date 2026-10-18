@@ -161,13 +161,15 @@ def boot(args):
         with (logs / f'{boot_id}.log').open('w') as log:
             # An xHCI fault boot gets a fault-test kernel; every other boot the production one.
             features = ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else []
-            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features,
+            # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
+            suite = ['--suite', args.suite] if args.suite else []
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite,
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     return 0
 
 
-def build(boot_id, sha, features=None):
+def build(boot_id, sha, features=None, suite=None):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -198,7 +200,8 @@ def build(boot_id, sha, features=None):
     status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
                       '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
-                      '--stub', f'{tools}/efi-stub', *(['--features', features] if features else [])).returncode
+                      '--stub', f'{tools}/efi-stub', *(['--features', features] if features else []),
+                      *(['--suite', suite] if suite else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
@@ -259,11 +262,12 @@ def main():
     p.add_argument('id')
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE,))
+    p.add_argument('--suite')
     args = parser.parse_args()
     if args.command == 'boot':
         return boot(args)
     if args.command == '_build':
-        return build(args.id, args.sha, args.features)
+        return build(args.id, args.sha, args.features, args.suite)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)

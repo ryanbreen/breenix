@@ -358,9 +358,9 @@ fi
 # pins the profile's constants and that verdict. mechanism_ms is 100 ms of
 # idle sleep plus a dispatch (10 ms quantum + 1 ms tick), a 10 ms retry and
 # another dispatch.
-RECLAIM_BUSY_CPU_ORACLE_PATTERN='\[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=[0-9]+:bound_ms=1000:mechanism_ms=132:daemon_passes=[1-9][0-9]*:cleaned=1:backstops=0:PASS\]'
+RECLAIM_BUSY_CPU_ORACLE_PATTERN='\[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=[0-9]+:bound_ms=1000:mechanism_ms=132:daemon_passes=[1-9][0-9]*:enqueued=2:completed=2:cleaned=1:backstops=0:PASS\]'
 reclaim_busy_oracle_sample() {
-    printf '[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=%s:latency_ms=%s:bound_ms=1000:mechanism_ms=132:daemon_passes=3:cleaned=1:backstops=0:%s]\n' "$1" "$2" "$3"
+    printf '[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=%s:latency_ms=%s:bound_ms=1000:mechanism_ms=132:daemon_passes=3:enqueued=%s:completed=%s:cleaned=1:backstops=0:%s]\n' "$1" "$2" "${4:-2}" "${5:-2}" "$3"
 }
 if reclaim_busy_oracle_sample none 30000 FAIL | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
     echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts a receipt nothing retired, so this gate would score green on the strand it exists to catch"
@@ -374,6 +374,16 @@ if ! reclaim_busy_oracle_sample daemon 40 PASS | grep -qE "$RECLAIM_BUSY_CPU_ORA
     echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN rejects a daemon retirement inside the bound, so this gate can never pass"
     exit 1
 fi
+
+# An empty queue (cleaned=1 in the old oracle) cannot stand in for either
+# successful publication or completion of both receipts (#1969).
+for receipts in '1 2' '2 1' '0 0'; do
+    read -r enqueued completed <<< "$receipts"
+    if reclaim_busy_oracle_sample daemon 40 PASS "$enqueued" "$completed" | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+        echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts incomplete receipt retirement"
+        exit 1
+    fi
+done
 
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
