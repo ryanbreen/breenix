@@ -183,4 +183,12 @@ fn carrier_without_completed_negotiation_is_not_ready() {
     let f = Function::new(BMCR_AUTONEG_ENABLE);
     f.model.borrow_mut().registers[MII_BMSR as usize] = BMSR_LINK;
     assert!(f.phy_resolved().unwrap().is_none());
+    f.phy_configure().unwrap();
+    let m = f.model.borrow();
+    assert_eq!(m.writes.first(), Some(&(MII_BMCR, BMCR_RESET)));
+    assert_eq!(m.registers[MII_ADVERTISE as usize], ADVERTISE_ALL);
+    assert_eq!(
+        m.writes.last(),
+        Some(&(MII_BMCR, BMCR_AUTONEG_ENABLE | BMCR_RESTART_AUTONEG))
+    );
 }

@@ -256,7 +256,14 @@ specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide
   and is retained from firmware HTTP boot. Otherwise the PHY is reset and
   advertises 10, 100 and 1000 Mb/s; the loopback step requires current link-down
   (two reads of latch-low status) before restarting negotiation and fails if the
-  link has not dropped within 15 ms.
+  link remains up after 1500 polls. Those polls include 15 ms of explicit
+  delays plus two MDIO reads per poll, so the error's "15 ms" describes the
+  explicit delay budget rather than elapsed time.
+  PR #1795's five hardware attempts exercised the retained-link path; they
+  did not exercise loopback fallback or establish that carrier survives a
+  PHY software reset on hardware. The host register model assumes carrier
+  survives reset to exercise stale latch-low handling; that is a model
+  scenario, not a measured hardware defect.
 - **Production rings.** A send-ring slot owns a separate DMA buffer until the
   controller's send consumer index retires it; a full ring returns backpressure.
   MSI acknowledges the device and raises NetRx. The bounded bottom half copies
