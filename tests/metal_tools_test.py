@@ -718,13 +718,48 @@ class StagingPrerequisiteTest(unittest.TestCase):
     def test_missing_tool_reports_install_command_before_staging(self):
         import metal_root
         with patch.object(metal_root.shutil, 'which', return_value=None):
-            with self.assertRaisesRegex(SystemExit, 'missing prerequisite: debugfs .*install with: .*e2fsprogs'):
+            with self.assertRaisesRegex(ValueError, 'missing prerequisite: debugfs .*install with: .*e2fsprogs'):
                 metal_root.require_e2fsprogs('debugfs')
 
     def test_distribution_sbin_is_searched_when_it_is_not_on_path(self):
         import metal_root
         with patch.object(metal_root.shutil, 'which', side_effect=lambda p: p if p == '/usr/sbin/debugfs' else None):
             self.assertEqual(metal_root.require_e2fsprogs('debugfs'), ['/usr/sbin/debugfs'])
+
+
+class MissingStagingToolCleanupTest(StateTest):
+    def test_missing_debugfs_cancels_claimed_boot_and_cleans_resources(self):
+        import metal_root
+        args = SimpleNamespace(id='missing-tool-fixture', payload='image', mode='default',
+                               target='main', task=None, commit=None, inject=None)
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+
+        def claim():
+            driver.claimed = True
+            driver.stage.mkdir(parents=True)
+
+        with patch.object(driver, 'claim', side_effect=claim), \
+                patch.object(driver, 'prepare_payload', side_effect=lambda: metal_root.stage_root(
+                    driver.stage / 'root.img', 'default', None, {})), \
+                patch.object(driver, 'pump_serial'), \
+                patch.object(metal_root.shutil, 'which', return_value=None), \
+                patch.object(m, 'clear_override') as clear, \
+                patch.object(m, 'unstage') as unstage, \
+                patch.object(m, 'sol_deactivate') as sol, \
+                patch.object(m, 'release_lease') as release, \
+                patch.object(boot.subprocess, 'run') as command:
+            self.assertEqual(driver.run(), m.EXIT_CANCELLED)
+        self.assertFalse(driver.stage.exists())
+        clear.assert_called_once_with()
+        unstage.assert_called_once_with(driver.id)
+        sol.assert_called_once_with()
+        release.assert_called_once_with(driver.id)
+        command.assert_called_once_with(driver.tmux + ['kill-server'], capture_output=True)
+        events = [json.loads(line) for line in (driver.dir / 'events.jsonl').read_text().splitlines()]
+        self.assertTrue(any(event.get('event') == 'driver-error'
+                            for event in events))
+        self.assertEqual(int((driver.dir / 'exit-status').read_text()), m.EXIT_CANCELLED)
 
 
 class RootStagingTest(unittest.TestCase):
@@ -1583,5 +1618,8 @@ class PublicRepositoryTest(unittest.TestCase):
 
 if __name__ == '__main__':
     import metal_root
-    metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+    try:
+        metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     unittest.main()

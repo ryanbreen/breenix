@@ -28,7 +28,7 @@ def require_e2fsprogs(*commands):
         executable = next((path for candidate in candidates if (path := shutil.which(candidate))), None)
         if executable is None:
             install = 'brew install e2fsprogs' if sys.platform == 'darwin' else 'sudo apt-get install e2fsprogs'
-            raise SystemExit(f'missing prerequisite: {command} (e2fsprogs); install with: {install}')
+            raise ValueError(f'missing prerequisite: {command} (e2fsprogs); install with: {install}')
         found.append(executable)
     return found
 
