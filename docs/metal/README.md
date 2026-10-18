@@ -753,7 +753,8 @@ python3 ~/.local/share/breenix-metal/metal-run boot --mode console --attended
 ```
 
 The driver builds main, takes the machine lease and powers on. **Hands off the keyboard until `Breenix login:`
-appears.** Then type, pressing **Enter** after each line:
+appears, then wait five seconds** while the kernel detaches and re-attaches the keyboard ten times (about 3 s on
+this machine). Then type, pressing **Enter** after each line:
 
 1. `root`, then at `Password:` any wrong password. Wait for `Login incorrect` and a new `Breenix login:`.
 2. `root`, then at `Password:` the real password. Wait for the `bsh` prompt.
@@ -763,8 +764,7 @@ appears.** Then type, pressing **Enter** after each line:
 
 - A typo is fine: a failed login just returns to `Breenix login:`; start that step again. Any number of failed
   attempts may come before the real one, and at least one must.
-- If keys do not appear just after the prompt, the keyboard is still being re-attached; wait a few seconds and
-  type the line again.
+- If keys do not appear, the keyboard was still being re-attached; press **Enter** and start that step again.
 - Do not type the password at `Breenix login:`. That prompt echoes, so it would be shown on the screen and kept in
   the private serial record (exports mask it).
 
