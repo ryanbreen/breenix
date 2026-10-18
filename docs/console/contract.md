@@ -577,8 +577,9 @@ show as reached when it is first drawn.
   over.
 - A testing kernel (`tests` mode) keeps the splash until the backstop or the end of the run: there the
   `reader`, `kd-text` and `key` triggers have no effect.
-- **The two read-backs (V2b).** The render thread makes the first once it owns the splash and the screen
-  shows the whole shadow, and the second on its first pass where the stages reached, the bar's width and
+- **The two read-backs (V2b).** The boot thread makes the first once the screen shows the whole shadow,
+  preserving that sample when the render thread takes over. The second is made on the first boot or
+  render pass where the stages reached, the bar's width and
   the cursor's phase each differ from the first's. When a trigger arrives after the bar has moved but
   before the second read-back, the hand-over waits up to 520 ms (half a blink and a pass) so it can still
   be made; it does not wait otherwise.

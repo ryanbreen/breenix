@@ -115,10 +115,7 @@ static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 /// thread keeps up to date until the render thread takes them.
 struct Attached {
     shadow: Vec<u8>,
-    painter: splash::Painter,
-    /// The screen shows the whole shadow: the last splash pass wrote and
-    /// flushed each row it changed.
-    shown: bool,
+    splash: SplashRun,
     #[cfg(target_arch = "x86_64")]
     write_combining: Result<crate::arch_impl::x86_64::pagewalk::Report, &'static str>,
 }
@@ -202,8 +199,14 @@ fn prepare(
     );
     *ATTACHED.lock() = Some(Attached {
         shadow,
-        painter: splash::Painter::new(layout, bgr),
-        shown: false,
+        splash: SplashRun {
+            painter: splash::Painter::new(layout, bgr),
+            shown: false,
+            first: None,
+            progress_checked: false,
+            failed: false,
+            wait_until: None,
+        },
         #[cfg(target_arch = "x86_64")]
         write_combining,
     });
@@ -223,7 +226,13 @@ pub(crate) fn splash_boot_pass() {
         return;
     };
     if let Some(attached) = attached.as_mut() {
-        attached.shown = present_splash(display, &mut attached.shadow, &mut attached.painter);
+        let run = &mut attached.splash;
+        run.shown = present_splash(display, &mut attached.shadow, &mut run.painter);
+        // CPU0 may stay pinned through the final boot stage. Capture real
+        // early pixels here and carry the sample into the render thread.
+        if run.shown && !run.failed {
+            run.read_back(display, &attached.shadow);
+        }
     }
 }
 
@@ -534,6 +543,20 @@ pub fn attach() {
     prepare(arm64_fb::FB_INFO_CACHE.get().is_none_or(|info| info.is_bgr));
 }
 
+/// Draw directly into GOP scanout before allocating or copying any shadow.
+#[cfg(target_arch = "aarch64")]
+pub fn init_gop_early() {
+    let Some(display) = gop_display() else {
+        return;
+    };
+    let Some(buffer) = crate::graphics::arm64_fb::gop_framebuffer() else {
+        return;
+    };
+    let layout = display.layout();
+    splash::Look::new(layout, layout.bgr).draw_all(buffer, &splash::View::now(0));
+    display::drain_writes();
+}
+
 #[cfg(target_arch = "aarch64")]
 fn gop_display() -> Option<Display> {
     use crate::graphics::arm64_fb;
@@ -661,14 +684,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cursor_visible: true,
         generation: u64::MAX,
     };
-    let mut splash_run = SplashRun {
-        painter: attached.painter,
-        shown: attached.shown,
-        first: None,
-        progress_checked: false,
-        failed: false,
-        wait_until: None,
-    };
+    let mut splash_run = attached.splash;
     let mut screen = Screen {
         display,
         layout,
@@ -761,7 +777,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
     }
 }
 
-/// The render thread's part of the splash: keeping it up to date, its two
+/// The splash state shared in turn by the boot and render threads: its two
 /// read-backs and the hand-over.
 struct SplashRun {
     painter: splash::Painter,

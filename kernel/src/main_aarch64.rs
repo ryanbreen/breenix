@@ -1066,6 +1066,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
+    // Replace the firmware image before double buffering allocates and copies.
+    if has_display && arm64_fb::is_gop_active() {
+        kernel::console::init_gop_early();
+    }
+
     // Track whether VirGL owns the display (Phase 1: textured quad test only)
     let virgl_display = kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::drivers::virtio::gpu_pci::is_virgl_enabled();
@@ -1682,6 +1687,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             online_cpus,
             reported_cpus
         );
+    }
+    if online_cpus == reported_cpus {
         splash::stage(Stage::AllCpusOnline);
     }
 

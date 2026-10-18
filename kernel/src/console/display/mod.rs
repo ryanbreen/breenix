@@ -38,7 +38,7 @@ static SCREEN_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// Drain this CPU's writes to the screen before it is released or read.
 #[inline(always)]
-fn drain_writes() {
+pub(super) fn drain_writes() {
     // SAFETY: barriers only.
     unsafe {
         #[cfg(target_arch = "x86_64")]
