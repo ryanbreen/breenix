@@ -2490,6 +2490,18 @@ fn each_of_pid(pid: u64, mut f: impl FnMut(u64, bool)) {
     }
 }
 
+/// Sample a wait without spinning, including when this CPU owns the thread.
+/// Recheck ownership under the lock before dereferencing the thread.
+pub(super) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
+    let owner = owner(tid)?;
+    let mut held = try_remote(owner)?;
+    if self::owner(tid) != Some(owner) {
+        return None;
+    }
+    let thread = held.thread(tid)?;
+    Some((thread.state, thread.wake_time_ns))
+}
+
 /// `f` on `tid` under its owner's lock, tried `OWNER_TRIES` times: None when
 /// that lock stays busy, the thread is not indexed, or before the live
 /// scheduler exists. Interrupts masked.
