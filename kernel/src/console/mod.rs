@@ -375,26 +375,70 @@ pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
     });
 }
 
-/// Put console TTY output (tty1's) on the console.
-pub fn write_tty(bytes: &[u8]) {
-    write_vt(1, bytes);
+/// Put console TTY output (tty1's) into its grid, and hand `serial` the
+/// bytes tty1's serial copy carries (contract section 5.4). While the render
+/// thread runs to deliver them, the screen answers tty1's report requests and
+/// the serial copy leaves out each one it answered, so a terminal on serial
+/// does not answer it too; before that the screen does not answer and serial
+/// gets the bytes as written.
+pub fn write_tty(bytes: &[u8], mut serial: impl FnMut(&[u8])) {
+    const CHUNK: usize = 256;
+    vt::ensure_history(0);
+    let answering = RUNNING.load(Ordering::Acquire);
+    for chunk in bytes.chunks(CHUNK) {
+        let mut out = [0u8; CHUNK + grid::HELD];
+        let forwarded = with_grid(|console| {
+            if console.kernel_line_open {
+                console.vts[0].grid.begin_line();
+                console.kernel_line_open = false;
+            }
+            let vt::Vt { grid, replies, .. } = &mut console.vts[0];
+            if answering {
+                grid.write_forwarding(chunk, |reply| replies.push(reply), &mut out)
+            } else {
+                grid.write(chunk);
+                out[..chunk.len()].copy_from_slice(chunk);
+                chunk.len()
+            }
+        });
+        match forwarded {
+            Some(n) => serial(&out[..n]),
+            None => serial(chunk),
+        }
+    }
 }
 
-/// Put terminal `number`'s (1-based) output into its grid. A terminal that
-/// is not in the foreground keeps it there, shown when it returns.
+/// Put the output of terminal `number` (2 to 6; tty1's is `write_tty`) into
+/// its grid. A terminal that is not in the foreground keeps it there, shown
+/// when it returns.
 pub fn write_vt(number: usize, bytes: &[u8]) {
     let index = number - 1;
     vt::ensure_history(index);
     with_grid(|console| {
-        if index == 0 && console.kernel_line_open {
-            console.vts[0].grid.begin_line();
-            console.kernel_line_open = false;
-        }
         let vt::Vt { grid, replies, .. } = &mut console.vts[index];
         // Keep whole replies until the input ring accepts them. The writer
         // may be echoing in IRQ context, so it only queues fixed storage.
-        grid.write_with_reply(bytes, |reply| replies.push(reply));
+        grid.write_with_reply(bytes, |reply| {
+            replies.push(reply);
+        });
     });
+}
+
+/// Hand each terminal's replies to its input, outside the grid's lock: the
+/// line discipline echoes into the grid. Replies are input, independent of
+/// which owner currently draws. A byte the input cannot take yet stays queued,
+/// with those behind it, for the next pass, so contention loses no CPR byte.
+fn deliver_replies() {
+    for index in 0..vt::VT_COUNT {
+        let mut bytes = [0u8; 64];
+        let Some(n) = with_grid(|console| console.vts[index].replies.peek(&mut bytes)) else {
+            continue;
+        };
+        let taken = bytes[..n].iter().take_while(|&&byte| crate::tty::driver::push_reply(index + 1, byte)).count();
+        if taken != 0 {
+            with_grid(|console| console.vts[index].replies.consume(taken));
+        }
+    }
 }
 
 /// A session other than init's took the console as its controlling terminal
@@ -818,14 +862,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut announced = false;
     let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
-        // Replies are input, independent of which owner currently draws. Retry
-        // on a busy/full input ring instead of losing a CPR byte to contention.
-        // Each terminal's replies go to its own input queue.
-        with_grid(|console| {
-            for (index, terminal) in console.vts.iter_mut().enumerate() {
-                terminal.replies.drain(|byte| crate::tty::driver::push_reply(index + 1, byte));
-            }
-        });
+        deliver_replies();
         crate::tty::driver::drain_keyboard_input();
         // A switch a key asked for, then switch deadlines, whichever owner draws.
         vt::take_key_switch();
@@ -844,7 +881,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             continue;
         }
         // Publish before checking ownership. A taker either observes this
-        // pass and waits, or this pass observes the take and submits nothing.
+        // pass and waits, or this pass observes the take and submits no frame.
         PRESENTING.store(true, Ordering::SeqCst);
         if !may_draw() {
             // A completed text acquisition can change KD mode before this pass.

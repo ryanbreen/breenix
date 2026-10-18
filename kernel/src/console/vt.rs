@@ -74,26 +74,33 @@ impl Replies {
         Self { bytes: [0; 1024], head: 0, len: 0 }
     }
 
-    /// Keep a whole reply, or drop it when it does not fit.
-    pub(super) fn push(&mut self, reply: &[u8]) {
+    /// Keep a whole reply, or drop it when it does not fit; whether it was kept.
+    pub(super) fn push(&mut self, reply: &[u8]) -> bool {
         let capacity = self.bytes.len();
-        if reply.len() <= capacity - self.len {
-            for &byte in reply {
-                self.bytes[(self.head + self.len) % capacity] = byte;
-                self.len += 1;
-            }
+        if reply.len() > capacity - self.len {
+            return false;
         }
+        for &byte in reply {
+            self.bytes[(self.head + self.len) % capacity] = byte;
+            self.len += 1;
+        }
+        true
     }
 
-    /// Hand bytes to `sink` until it refuses one.
-    pub(super) fn drain(&mut self, mut sink: impl FnMut(u8) -> bool) {
-        while self.len != 0 {
-            if !sink(self.bytes[self.head]) {
-                break;
-            }
-            self.head = (self.head + 1) % self.bytes.len();
-            self.len -= 1;
+    /// Copy the oldest bytes into `out`, keeping them; how many.
+    pub(super) fn peek(&self, out: &mut [u8]) -> usize {
+        let n = self.len.min(out.len());
+        for (index, byte) in out[..n].iter_mut().enumerate() {
+            *byte = self.bytes[(self.head + index) % self.bytes.len()];
         }
+        n
+    }
+
+    /// Forget the `n` oldest bytes.
+    pub(super) fn consume(&mut self, n: usize) {
+        let n = n.min(self.len);
+        self.head = (self.head + n) % self.bytes.len();
+        self.len -= n;
     }
 }
 

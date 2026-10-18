@@ -424,6 +424,15 @@ Other parameters are parsed and have no effect.
   character first moves to the start of the next line (scrolling the region at its bottom). A cursor movement
   clears the pending wrap. With autowrap off, characters past the last column overwrite it.
 - Tab stops start at each 8th column. HT moves to the next stop, or to the last column.
+- **Reports** (the DSR answers) are the VT's input, as keys are: they join the VT's keyboard queue behind the
+  keys already in it and go through its line discipline, so in canonical mode an answer becomes part of the
+  line being typed and is read with it (`keys/report-joins-typed-line`). tty1's output also goes to serial,
+  where a terminal could answer the same request. **On tty1 the screen is the one terminal that answers**,
+  because tty1's window size is its grid's: while the render thread runs to deliver answers, the serial copy
+  of tty1's output leaves out each request the screen answered (control characters inside it still go), so
+  a terminal on serial is not asked. Any other escape sequence reaches serial whole and in order, held back
+  only until it ends. A request the screen does not answer, because it came before the render thread ran,
+  its answer did not fit the VT's reply queue, or it was longer than 64 bytes, goes to serial unchanged.
 - Sequences not listed are consumed without effect.
 - Login and init set `TERM=breenix`. A terminfo source entry is added when a curses library arrives.
 

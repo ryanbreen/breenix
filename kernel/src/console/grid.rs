@@ -15,6 +15,8 @@ pub const MAX_ROWS: usize = 255;
 const MAX_PARAMS: usize = 16;
 /// Lines of scrollback per terminal (contract section 1.6).
 pub const HISTORY_LINES: usize = 1000;
+/// Bytes of an escape sequence a forwarding write holds back (`write_forwarding`).
+pub const HELD: usize = 64;
 
 pub const BOLD: u8 = 1;
 pub const UNDERLINE: u8 = 2;
@@ -148,6 +150,10 @@ pub struct Grid {
     param_index: usize,
     private: bool,
     ignored: bool,
+    /// For `write_forwarding`: the escape sequence in progress, held back from
+    /// the second terminal until it ends.
+    held: [u8; HELD],
+    held_len: usize,
     utf_value: u32,
     utf_min: u32,
     utf_left: u8,
@@ -177,6 +183,8 @@ impl Grid {
             param_index: 0,
             private: false,
             ignored: false,
+            held: [0; HELD],
+            held_len: 0,
             utf_value: 0,
             utf_min: 0,
             utf_left: 0,
@@ -410,6 +418,66 @@ impl Grid {
             self.byte(byte, &mut reply);
         }
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// `write_with_reply` for a terminal whose output also goes, as it is, to
+    /// a second terminal (tty1's serial; contract section 5.4). Returns how
+    /// many bytes of the caller's buffer `out` to send that terminal: the
+    /// bytes written, except each report request this grid answered, so the
+    /// other terminal does not answer it as well; control characters inside
+    /// such a request still go. An escape sequence is held back until it ends.
+    /// `reply` returns whether it kept the reply; a reply it could not keep
+    /// leaves the request forwarded, as does a sequence longer than `HELD`
+    /// bytes, which is then not answered. `out` must hold `bytes.len() + HELD`.
+    pub fn write_forwarding(&mut self, bytes: &[u8], mut reply: impl FnMut(&[u8]) -> bool, out: &mut [u8]) -> usize {
+        let mut n = 0;
+        let mut emit = |bytes: &[u8]| {
+            out[n..n + bytes.len()].copy_from_slice(bytes);
+            n += bytes.len();
+        };
+        if self.cols == 0 || self.rows == 0 {
+            emit(bytes);
+            return n;
+        }
+        for &byte in bytes {
+            // Answer only a request held whole, from its ESC.
+            let holding = self.held_len != 0 && self.held_len < HELD;
+            let mut answered = false;
+            self.byte(byte, &mut |answer| answered = holding && reply(answer));
+            let in_sequence = matches!(self.escape, Escape::Esc | Escape::EscIgnore | Escape::Csi);
+            if byte == 0x1b && self.escape == Escape::Esc {
+                // A new sequence; one it interrupted was not answered.
+                emit(&self.held[..self.held_len]);
+                self.held[0] = byte;
+                self.held_len = 1;
+            } else if self.held_len != 0 {
+                if holding {
+                    self.held[self.held_len] = byte;
+                    self.held_len += 1;
+                } else {
+                    // Too long to hold: the rest goes as it comes.
+                    emit(&self.held[..self.held_len]);
+                    emit(&[byte]);
+                    self.held_len = 0;
+                }
+                if !in_sequence && self.held_len != 0 {
+                    if answered {
+                        for index in 0..self.held_len {
+                            if self.held[index] < 0x20 && self.held[index] != 0x1b {
+                                emit(&[self.held[index]]);
+                            }
+                        }
+                    } else {
+                        emit(&self.held[..self.held_len]);
+                    }
+                    self.held_len = 0;
+                }
+            } else {
+                emit(&[byte]);
+            }
+        }
+        self.generation = self.generation.wrapping_add(1);
+        n
     }
 
     fn byte(&mut self, byte: u8, reply: &mut impl FnMut(&[u8])) {
