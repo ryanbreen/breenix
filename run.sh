@@ -50,8 +50,6 @@ RUN_ARGS=("$@")
 # QEMU process, and exit before reaching here. #834 extended this lock's
 # coverage from docker/qemu/*.sh (its original #826/R181 scope) to run.sh
 # as well; #865 closed the x86_64-leg gap this comment used to disclose.
-# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
-source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # Defaults: ARM64 with graphics
 ARCH="arm64"
@@ -253,6 +251,9 @@ if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
 if [ "$PARALLELS" = true ]; then TARGET=parallels
 elif [ "$VMWARE" = true ]; then TARGET=vmware
 fi
+if [ "$TARGET" = x86 ] && [ "$DRY_RUN" != true ]; then
+    source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
+fi
 if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
     case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
         ''|0|false|no) BREENIX_CATCHUP=0 ;;
@@ -274,6 +275,9 @@ if [ "$DRY_RUN" = true ]; then
     echo "Target policy accepted; no build or boot requested."
     exit 0
 fi
+# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
@@ -303,7 +307,7 @@ fi
 # Opt in for constrained build hosts; VM execution retains normal priority.
 run_build() {
     if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
-        taskpolicy -b "$@"
+        "$BREENIX_ROOT/scripts/build-background.sh" "$@"
     else
         "$@"
     fi
@@ -534,7 +538,9 @@ delete_vmware_bundle() {
             echo "WARNING: vmrun deleteVM kept $bundle: $output"
         fi
     else
-        mv "$bundle" "$scratch/" || true
+        # An interrupted setup may have copied disks without writing a VMX.
+        # Leave any other contents in place so reuse fails safely.
+        rm -f "$bundle/boot.vmdk" "$bundle/ext2-data.vmdk"
     fi
     # Fusion removes its known VM files but preserves our ownership marker.
     # Remove only that marker, the window frame we wrote and an empty
@@ -544,6 +550,28 @@ delete_vmware_bundle() {
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
+}
+
+vmware_boot_name() {
+    local identity
+    if [ "${BREENIX_BOOT_NO_QUEUE:-0}" = 1 ]; then
+        # An unqueued boot owns no slot identity and must not reuse its bundle.
+        identity=$(uuidgen) || return $?
+        printf 'breenix-unqueued-%s\n' "$identity"
+    else
+        identity=$(host_slot_number mac-boot) || return $?
+        printf 'breenix-mac-boot-%s\n' "$identity"
+    fi
+}
+
+prune_vmware_inventory() {
+    python3 "$BREENIX_ROOT/scripts/vmware-inventory.py" \
+        || echo "WARNING: could not prune VMware library"
+}
+
+cleanup_vmware_bundle() {
+    delete_vmware_bundle "$VM_BUNDLE"
+    prune_vmware_inventory
 }
 
 # Fusion opens a VM's window at the frame saved in <name>.plist in its bundle and, unless
@@ -614,12 +642,12 @@ finish_vm_boot() {
         fi
         host_slot_release mac-boot
     elif [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
-        # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
-        # vmware.log stays beside the serial log.
+        # Delete and prune while the slot is still ours. The supervisor keeps
+        # the lease through its final VM stop, so it cannot stop the next boot.
         cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
-        host_slot_release mac-boot
         delete_vmware_bundle "$VM_BUNDLE"
     fi
+    [ "$PARALLELS" = true ] || prune_vmware_inventory
     exit "$status"
 }
 
@@ -890,6 +918,10 @@ if [ "$PARALLELS" = true ]; then
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
     prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
+    # Disable app sharing; this is expected to reduce host app indexing activity.
+    if ! prlctl set "$PARALLELS_VM" --sh-app-guest-to-host off --sh-app-host-to-guest off; then
+        echo "WARNING: could not disable Parallels application sharing" >&2
+    fi
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
@@ -1065,6 +1097,7 @@ if [ "$VMWARE" = true ]; then
         echo "ERROR: vmrun not found. Is VMware Fusion installed?"
         exit 1
     fi
+    prune_vmware_inventory
 
     # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
     # disconnected, even when the VMX requests a connected adapter.
@@ -1201,16 +1234,25 @@ if [ "$VMWARE" = true ]; then
     echo ""
     echo "--- Configuring VMware VM ---"
 
-    # Exclusive creation prevents clock rollback or name collisions from
-    # granting cleanup ownership of another VM. Never sweep unowned bundles.
-    VM_NAME="breenix-$(date +%s)-$(uuidgen)"
+    # One library identity per leased slot, including after a crashed run.
+    # The supervisor refuses a slot number unless this session holds its lease.
+    VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
+    if [ -d "$VM_BUNDLE" ] && [ ! -L "$VM_BUNDLE" ] \
+        && [ -f "$VM_BUNDLE/.breenix-run-owner" ] \
+        && [ "$(cat "$VM_BUNDLE/.breenix-run-owner")" = "$VM_NAME" ]; then
+        VM_BUNDLE_OWNED=true
+        delete_vmware_bundle "$VM_BUNDLE"
+        VM_BUNDLE_OWNED=false
+    fi
+    # Exclusive creation fails if a running, unowned or unknown-content bundle
+    # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
     echo "VM name: $VM_NAME"
-    trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
+    trap cleanup_vmware_bundle EXIT
     trap 'exit 130' INT
     trap 'exit 129' HUP
     trap 'exit 143' TERM

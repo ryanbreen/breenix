@@ -4377,6 +4377,22 @@ impl Scheduler {
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
+        // Consume the default profile's idle-inline selection marker. The live
+        // profile instead reserves the victim for its dedicated driver.
+        #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+        let idle_inline = IDLE_INLINE_SELECT[cpu].swap(false, Ordering::Relaxed);
+        #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+        if idle_inline {
+            super::strand_oracle::note_idle_inline_select();
+        }
+        #[cfg(all(feature = "boot_tests", not(feature = "strand_inject_live_outgoing")))]
+        let injection_handoff = idle_inline;
+        #[cfg(feature = "strand_inject_live_outgoing")]
+        let injection_handoff = self.cpu_state[cpu]
+            .current_thread
+            .is_some_and(super::ret_zero_pc_oracle::is_strand_live_driver);
+        #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+        let mut victim_withheld = false;
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
         self.reclaim_unschedulable_cpu_queues();
         if self.drains_wake_inboxes {
@@ -4534,6 +4550,12 @@ impl Scheduler {
                     }
                     continue;
                 }
+                #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                if super::strand_oracle::withhold_victim(n, injection_handoff) {
+                    self.per_cpu_queues[current_cpu].push_back(n);
+                    victim_withheld = true;
+                    continue;
+                }
                 break 'sched_outer n;
             }
             // Work-steal from other CPUs
@@ -4604,12 +4626,29 @@ impl Scheduler {
                         }
                         continue;
                     }
+                    #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+                    if super::strand_oracle::withhold_victim(n, injection_handoff) {
+                        self.per_cpu_queues[steal_cpu].push_back(n);
+                        victim_withheld = true;
+                        continue;
+                    }
                     break 'sched_outer n;
                 }
             }
             break self.cpu_state[current_cpu].idle_thread;
             }
         };
+
+        // An idle CPU that passed over the withheld victim here (its interrupt
+        // return) leaves need_resched set, so its idle loop schedules inline
+        // next and takes the victim there.
+        #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+        if victim_withheld
+            && current_is_idle
+            && next_thread_id == self.cpu_state[current_cpu].idle_thread
+        {
+            set_need_resched();
+        }
 
         // Nothing else is runnable. The outgoing thread is not on any queue --
         // it is requeued only after its context is saved -- so the search
@@ -7637,6 +7676,10 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn fix_stale_current_thread_when_idle_executing(&mut self) {
         let cpu = Self::current_cpu_id();
+        // Only an idle CPU's inline schedule calls this, just before its
+        // selection: the strand injection's victim may be chosen there.
+        #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+        IDLE_INLINE_SELECT[cpu].store(true, Ordering::Relaxed);
         let idle = self.cpu_state[cpu].idle_thread;
         if let Some(current) = self.cpu_state[cpu].current_thread {
             if current != idle {
@@ -9423,6 +9466,20 @@ pub fn thread_state(tid: u64) -> Option<ThreadState> {
     with_scheduler(|sched| sched.get_thread(tid).map(|thread| thread.state)).flatten()
 }
 
+/// Thread `tid`'s state and deadline in one nonblocking lock hold. A busy
+/// owner or concurrent migration leaves the census sample unavailable.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
+    without_interrupts(|| {
+        if rq_live() {
+            return rq::thread_wait(tid);
+        }
+        let mut scheduler = try_lock_scheduler()?;
+        let thread = scheduler.as_mut()?.get_thread(tid)?;
+        Some((thread.state, thread.wake_time_ns))
+    })
+}
+
 /// Whether a user thread has not terminated. x86_64: read from the thread
 /// index without a lock.
 pub fn has_live_user_threads() -> bool {
@@ -9697,6 +9754,7 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
         let scheduler = scheduler_lock.as_ref()?;
 
         let mut saw_ready = false;
+        let mut saw_disk_sleep = false;
         let mut saw_blocked = false;
         let mut saw_terminated = false;
 
@@ -9708,6 +9766,9 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
             match thread.state {
                 super::thread::ThreadState::Running => return Some("Running"),
                 super::thread::ThreadState::Ready => saw_ready = true,
+                super::thread::ThreadState::BlockedOnIO if thread.uninterruptible_io => {
+                    saw_disk_sleep = true
+                }
                 super::thread::ThreadState::Blocked
                 | super::thread::ThreadState::BlockedOnSignal
                 | super::thread::ThreadState::BlockedOnChildExit
@@ -9719,6 +9780,8 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
 
         if saw_ready {
             Some("Ready")
+        } else if saw_disk_sleep {
+            Some("Disk sleep")
         } else if saw_blocked {
             Some("Blocked")
         } else if saw_terminated {
@@ -9782,6 +9845,11 @@ pub fn yield_current() {
 // context switch will follow immediately. Violating this invariant will desync
 // scheduler.current_thread from reality, causing register corruption in child processes.
 // See commit f59bccd for the full bug investigation.
+
+/// Set on a CPU whose next selection is its idle thread's inline schedule
+/// (`fix_stale_current_thread_when_idle_executing`); that selection takes it.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+static IDLE_INLINE_SELECT: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// Allocate a new thread ID
 #[allow(dead_code)]

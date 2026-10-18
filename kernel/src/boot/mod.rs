@@ -20,3 +20,9 @@ pub mod init_image;
 // The boot-target file (/etc/breenix/boot-target): `suite <id>` runs that effort
 // suite as PID 1. Read by both architectures' production init launch.
 pub mod target;
+
+// Per-boot measurement/session intent for an installed console target.
+pub mod console_intent;
+
+#[cfg(target_arch = "x86_64")]
+pub mod console_start;

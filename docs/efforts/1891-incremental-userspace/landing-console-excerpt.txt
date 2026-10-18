@@ -1,0 +1,15 @@
+==> Building the image
+==> Assembling the image
+==> Checking the machine
+==> Console ready
+==> Power on
+==> Firmware output
+==> POST code 0x41 · 21 s
+==> Image requested · 33 s after power-on
+==> Fetching boot image · 63 of 303 MB
+==> Delivery stub: attaching the boot disk
+==> Image fetched in 5.3 s
+==> Bootloader
+==> Handoff: the kernel is starting
+==> Done: the mode and its kernel stages finished
+==> Powered off

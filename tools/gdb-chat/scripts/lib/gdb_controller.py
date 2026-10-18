@@ -50,6 +50,10 @@ class GDBSession:
     def start(self, timeout: int = 300) -> Dict[str, Any]:
         """Start GDB session and connect to QEMU."""
 
+        policy = subprocess.run(["bash", str(Path(__file__).resolve().parents[4] / "scripts/x86-qemu-policy.sh")])
+        if policy.returncode:
+            raise SystemExit(policy.returncode)
+
         # 1. Start QEMU
         self.qemu_process = self._start_qemu()
         time.sleep(3)

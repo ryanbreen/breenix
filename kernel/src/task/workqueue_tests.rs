@@ -8,6 +8,7 @@
 //! 5. Multi-item flush
 //! 6. Shutdown with new workqueue
 //! 7. Error path re-queue
+//! 8. Release after the coordinator is preempted (x86)
 
 use crate::task::workqueue::{
     flush_system_workqueue, schedule_work, schedule_work_fn, Work, Workqueue, WorkqueueFlags,
@@ -228,6 +229,66 @@ pub fn test_workqueue() {
     ERROR_PATH_BLOCK.store(true, Ordering::Release);
     error_work.wait();
     log::info!("WORKQUEUE_TEST: error path test passed");
+
+    // Test 8: release after the coordinator is preempted. On x86 this
+    // coordinator is the boot CPU's idle thread; observe its saved context
+    // changing while the worker spins for it, and the kernel
+    // threads that stay runnable must not keep it off the CPU (#1848). ARM64
+    // holds CPU 0's boot preempt pin through these tests, so its coordinator
+    // stays on the CPU.
+    // claim-lint:ok: kernel/src/main_aarch64.rs release_boot_preempt_pin runs after this test's call site.
+    #[cfg(target_arch = "x86_64")]
+    {
+        log::info!("WORKQUEUE_TEST: Testing release after the coordinator is preempted...");
+        static PREEMPTED_RELEASE: AtomicBool = AtomicBool::new(false);
+        PREEMPTED_RELEASE.store(false, Ordering::SeqCst);
+        // Read through the existing scheduler observation. save_thread_frame
+        // updates RIP/RSP after a distinct thread is selected for dispatch.
+        let saved_context = || {
+            crate::task::scheduler::with_current(|sched| {
+                let thread = sched.current_thread_mut().expect("coordinator thread");
+                (thread.id(), thread.context.rip, thread.context.rsp)
+            })
+            .expect("coordinator scheduler")
+        };
+        // Keep the snapshot and queueing in the same interrupt-disabled
+        // interval: a switch before the work is queued cannot satisfy S20.
+        let (before, preempted_work) = x86_64::instructions::interrupts::without_interrupts(|| {
+            let before = saved_context();
+            let work = schedule_work_fn(
+                || {
+                    while !PREEMPTED_RELEASE.load(Ordering::Acquire) {
+                        arch_halt();
+                    }
+                },
+                "preempted_release_work",
+            );
+            (before, work)
+        });
+        let tick = crate::time::get_ticks();
+        while crate::time::get_ticks() == tick {
+            core::hint::spin_loop();
+        }
+        let deadline = crate::time::get_ticks() + 1000;
+        let after = loop {
+            let after = saved_context();
+            assert_eq!(before.0, after.0, "coordinator identity changed");
+            if (after.1, after.2) != (before.1, before.2) {
+                break after;
+            }
+            assert!(
+                crate::time::get_ticks() < deadline,
+                "WORKQUEUE_TEST: race not exercised: coordinator was not preempted while release=false"
+            );
+            core::hint::spin_loop();
+        };
+        assert!(!PREEMPTED_RELEASE.load(Ordering::Acquire));
+        PREEMPTED_RELEASE.store(true, Ordering::Release);
+        preempted_work.wait();
+        log::info!("WORKQUEUE_TEST: observed coordinator {} switch while release=false (saved frame changed={})",
+            after.0, (after.1, after.2) != (before.1, before.2));
+        log::info!("WORKQUEUE_TEST: preempted release passed");
+    }
 
     unsafe {
         arch_disable_interrupts();

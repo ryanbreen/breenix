@@ -777,7 +777,7 @@ fn init_device(
 
     // Initialize the device (reset, ack, driver, features)
     // Leave FLUSH unnegotiated to preserve the device's writethrough mode.
-    device.init(0)?;
+    device.init(features::RO)?;
 
     // Get device features to check for read-only flag
     let device_features = device.device_features();
@@ -1206,6 +1206,7 @@ pub fn write_sector(
     buffer: &[u8; SECTOR_SIZE],
 ) -> Result<(), &'static str> {
     let state = block_device_state(device_index)?;
+    if state.device_features & features::RO != 0 { return Err("Read-only filesystem"); }
     if sector >= state.capacity {
         return Err("Sector out of range");
     }

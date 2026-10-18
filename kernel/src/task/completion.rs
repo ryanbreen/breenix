@@ -132,6 +132,7 @@ fn finish_wait_current() {
     crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
+            thread.uninterruptible_io = false;
             if thread.state == crate::task::thread::ThreadState::BlockedOnIO {
                 thread.set_running();
                 thread.wake_time_ns = None;
@@ -465,6 +466,9 @@ impl Completion {
                         if self.done.load(Ordering::Acquire) == expected_token {
                             true
                         } else {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.uninterruptible_io = !interruptible;
+                            }
                             sched.block_current_for_io_with_timeout(Some(deadline_ns));
                             false
                         }

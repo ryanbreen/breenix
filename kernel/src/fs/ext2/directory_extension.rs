@@ -162,6 +162,8 @@ impl<'a, B: BlockDevice + ?Sized> Extension<'a, B> {
     }
 }
 impl<B: BlockDevice + ?Sized> BlockDevice for Extension<'_, B> {
+    fn is_read_only(&self) -> bool { self.device.is_read_only() }
+
     fn identity(&self) -> usize {
         self.device.identity()
     }
