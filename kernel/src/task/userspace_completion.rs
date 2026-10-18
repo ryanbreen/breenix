@@ -46,8 +46,12 @@ fn report_when_finished() {
                 if !teardown_test_started {
                     // Its exact per-victim/bucket accounting must not race
                     // other tests that deliberately kill their own children.
-                    if exited < super::exit_tally::started() {
-                        panic!("exit accounting incomplete before teardown test");
+                    let started = super::exit_tally::started();
+                    if exited < started {
+                        panic!(
+                            "exit accounting incomplete before teardown test: exited={} started={} withdrawn={}",
+                            exited, started, super::exit_tally::withdrawn()
+                        );
                     }
                     let binary = crate::userspace_test::get_test_binary("sigkill_teardown_test");
                     crate::process::creation::create_user_process(

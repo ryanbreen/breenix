@@ -16,6 +16,8 @@ mod directory_extension;
 pub mod reclaim;
 #[path = "../../../kernel/src/fs/ext2/superblock.rs"]
 pub mod superblock;
+#[path = "../../../kernel/src/fs/ext2/mount_device.rs"]
+mod mount_device;
 #[path = "../../../kernel/src/fs/ext2/sector_cache.rs"]
 mod sector_cache;
 pub use block_group::*;

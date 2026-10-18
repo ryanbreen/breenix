@@ -158,7 +158,11 @@ the kernel completes keyboard attachment and the exercise before starting init a
 Disk-root console boots carry a small per-boot intent payload through the bootloader's RAM-payload slot; the
 kernel consumes it as metadata, without registering a RAM block device or changing the installed root. A
 session intent suppresses an installed measurement flag; a test intent requests the exercise even on a plain
-installed console target.
+installed console target. Input preparation starts only after `/sbin/init` is read and published, so an init
+that cannot be read or launched leaves the keyboard alone. The kernel then prints
+`[console] input preparation: replug requested|not requested by intent|target|fw_cfg`. On a disk-root console
+boot the driver requires `by intent` with the staged choice (event `console-intent`; a test boot that disagrees
+ends short), and `image-assembled` records `consoleIntent` with `ramdisk` false, since no RAM-disk root is delivered.
 
 Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
 the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
@@ -517,7 +521,7 @@ padding to the end of the sector.
   compares that line with `disk-write.json` (event `disk-write-verified`) and, when they agree, records the disk's
   contents in the service's `disk.json`. Root then mounts from the RAM disk, the hardware disks are read-only
   again, and the `ramdisk-root` milestone's stages print as on any RAM-disk boot.
-- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload); the driver
+- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload, checked as event `console-intent`); the driver
   refuses to start one when `disk.json` records no verified install. The kernel reads the first sector of each
   attached hardware disk, needs exactly one root record, reports it, says whether the image after the record still has the
   recorded SHA-256 (true on the first boot after an install; later boots write the root, so this is a report, not a
