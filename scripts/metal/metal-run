@@ -79,6 +79,8 @@ def verify_target(env, sha, branch):
 
 
 def boot(args):
+    if (args.mode == 'console') != (args.input == 'sol'):
+        raise SystemExit('console mode requires --input sol; --input requires console mode')
     env = host_env()
     payload = args.payload
     sha = target = ''
@@ -93,6 +95,8 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode]
+    if args.mode == 'console':
+        command += ['--input', args.input]
     if args.suite:
         command += ['--suite', args.suite]
     if sha:
@@ -207,6 +211,7 @@ def main():
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console'), default='default')
+    p.add_argument('--input', choices=('sol',))
     p.add_argument('--disk', choices=('install', 'root'),
                    help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
     p.add_argument('--suite')

@@ -35,6 +35,8 @@ def score(directory):
         cursor, reached = 0, 0
         for stage in stages:
             spec = catalog[stage] if isinstance(stage, str) else stage
+            if spec.get('input') and spec['input'] != run.get('input'):
+                continue
             if 'host' in spec:
                 reached += host[spec['host']] in events
                 continue

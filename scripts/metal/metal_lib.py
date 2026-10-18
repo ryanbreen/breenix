@@ -493,7 +493,7 @@ class Redactor:
         # Short configuration values (slots, switches, counters) do not name
         # a private entity. Explicit identifiers and credentials still count.
         literals = {value for key, value in site.items()
-                    if value and (len(value) >= 4 or SECRET_KEYS.search(key) or value in self.identifiers)}
+                    if key != 'CONSOLE_USER' and value and (len(value) >= 4 or SECRET_KEYS.search(key) or value in self.identifiers)}
         for value in list(literals):
             # The complete URL, host and path are site literals independently.
             if '://' in value:
@@ -539,7 +539,7 @@ def identifier_list(site):
     """Names to mask that are not secrets: the listed identifiers plus non-secret site values that name things."""
     names = set(re.split(r'[\s,]+', site.get('REDACT_IDENTIFIERS', '').strip())) - {''}
     for key, value in site.items():
-        if key != 'REDACT_IDENTIFIERS' and value and not SECRET_KEYS.search(key) and re.search(r'[A-Za-z]', value) \
+        if key not in ('REDACT_IDENTIFIERS', 'CONSOLE_USER') and value and not SECRET_KEYS.search(key) and re.search(r'[A-Za-z]', value) \
                 and key.endswith(('_USER', '_HOST', '_NAME')):
             names.add(value)
     return names
