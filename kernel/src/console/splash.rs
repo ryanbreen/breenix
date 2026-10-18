@@ -353,14 +353,12 @@ pub fn reader() {
 }
 
 /// A key was pressed on the keyboard. True when the splash consumes it: the
-/// press that ends the splash is not delivered (nor the rest of its bytes,
-/// until the render thread has handed over).
+/// byte that requests the hand-over is not delivered; subsequent bytes are.
 pub fn key() -> bool {
     if TESTING || !is_up() {
         return false;
     }
-    request(Reason::Key);
-    requested() == Some(Reason::Key)
+    REQUESTED.compare_exchange(0, Reason::Key as u8, Ordering::AcqRel, Ordering::Acquire).is_ok()
 }
 
 /// The first process started: the backstop runs from here.
