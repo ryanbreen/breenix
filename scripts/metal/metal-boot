@@ -122,6 +122,7 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
+        self.input_clock_alive = None
         self.last_stage = None
         self.complete_at = None
         self.first_byte_at = None
@@ -673,6 +674,8 @@ class Driver:
         if '[init] shell ready' in line:
             self.shell_ready = True
         if session(self.args) and self.kernel_started and self.fatal_at is None:
+            if line == '[console] input clock alive':
+                self.input_clock_alive = observed_at
             idle = getattr(self.args, 'idle_minutes', 30)
             if line == f'[console] input idle {idle} min':
                 raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
@@ -818,6 +821,10 @@ class Driver:
             if 'error' in reading:
                 self.event('bmc-read-error', observed_at=observed_at, error=reading['error'])
                 continue
+            if reading.get('power') == 'Off':
+                self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
+                raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
+                             'the machine powered off during the boot')
             code = reading.get('postCode')
             progress = reading.get('progress') or {}
             if code is not None and code != self.post_code:
@@ -878,7 +885,10 @@ class Driver:
                 raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after the bootloader started', hung=True)
             return
         if session(self.args):
-            return  # Only the kernel input clock or session ceiling ends an idle session.
+            quiet = m.now() - (self.input_clock_alive or self.kernel_started)
+            if quiet > SILENCE_SECONDS:
+                raise Finish(m.EXIT_HUNG, f'console input clock silent for {SILENCE_SECONDS} s', hung=True)
+            return
         quiet = m.now() - max(self.last_serial or 0, self.kernel_started)
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage}', hung=True)

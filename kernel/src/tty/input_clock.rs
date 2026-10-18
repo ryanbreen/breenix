@@ -19,15 +19,23 @@ pub fn start(minutes: u16) {
 
 fn idle_worker() {
     let sleeper = crate::task::completion::Completion::new();
+    let mut next_alive = 0;
     loop {
         crate::per_cpu::preempt_disable();
         let _ = sleeper.wait_timeout_uninterruptible(1, 1_000_000_000);
         crate::per_cpu::preempt_enable();
-        if CLOCK.expire(crate::time::get_monotonic_time()) {
+        let now = crate::time::get_monotonic_time();
+        if CLOCK.expire(now) {
             // Thread context only: the input path stores a timestamp, never logs.
             // claim-lint:ok: record_input in kernel/src/tty/input_clock.rs calls only CLOCK.input and the clock read.
             crate::serial_println!("[console] input idle {} min", CLOCK.minutes());
             return;
+        }
+        if now >= next_alive {
+            // A quiet login prompt still needs a live input clock. This serial-only
+            // pulse lets the host bound a hang or an idle marker lost during SOL recovery.
+            crate::serial_println!("[console] input clock alive");
+            next_alive = now.saturating_add(30_000);
         }
     }
 }

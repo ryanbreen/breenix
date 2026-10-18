@@ -36,11 +36,40 @@ class SessionTest(existing.StateTest):
         self.assertEqual(d.lease_ceiling, 102 + 4 * 3600)
         self.assertEqual(update.call_args.kwargs['ceilingAt'], d.lease_ceiling)
         d.kernel_started = d.complete_at = d.request_at = 110
+        d.on_line('[console] input clock alive', observed_at=d.lease_ceiling - 2)
         with patch.object(m, 'now', return_value=d.lease_ceiling - 1):
             d.check_deadlines()  # Neither output silence nor the usual console deadline applies.
         with patch.object(m, 'now', return_value=d.lease_ceiling):
             with self.assertRaises(boot.Finish) as result:
                 d.check_deadlines()
+        self.assertEqual(result.exception.status, m.EXIT_DONE)
+        self.assertFalse(result.exception.hung)
+
+    def test_quiet_session_needs_live_input_clock_even_when_other_output_continues(self):
+        d = self.driver
+        d.kernel_started = d.complete_at = d.request_at = 110
+        d.last_serial = 500
+        with patch.object(m, 'now', return_value=231):
+            with self.assertRaises(boot.Finish) as result:
+                d.check_deadlines()
+        self.assertEqual(result.exception.status, m.EXIT_HUNG)
+        self.assertTrue(result.exception.hung)
+        d.on_line('[console] input clock alive', observed_at=231)
+        with patch.object(m, 'now', return_value=351):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=352):
+            with self.assertRaises(boot.Finish) as result:
+                d.check_deadlines()
+        self.assertEqual(result.exception.status, m.EXIT_HUNG)
+
+    def test_power_off_observation_ends_session_without_waiting_for_idle_or_ceiling(self):
+        d = self.driver
+        for reading in [{'t': 120, 'error': 'unavailable'}, {'t': 121, 'power': 'On'}]:
+            d.bmc_events = [reading]
+            d.pump_bmc()
+        d.bmc_events = [{'t': 122, 'power': 'Off'}]
+        with self.assertRaises(boot.Finish) as result:
+            d.pump_bmc()
         self.assertEqual(result.exception.status, m.EXIT_DONE)
         self.assertFalse(result.exception.hung)
 

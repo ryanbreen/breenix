@@ -105,8 +105,8 @@ boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_co
 
 ## Starting and ending an operator session
 
-Ask an agent to start a console session, or choose **Boot → Console** in Vigil with the session option.
-The boot host command is:
+Ask an agent to start a console session with the boot host command below. Vigil's Boot control does not yet
+offer Console sessions; that application control remains to be built.
 
 ```sh
 metal-run boot --mode console --session
@@ -115,7 +115,8 @@ metal-run stop ID
 ```
 
 Keep the returned boot ID: `follow` shows the text console and `stop` ends that session immediately,
-then powers off through the normal driver cleanup. At the machine, use the monitor and USB keyboard
+then powers off through the normal driver cleanup. `follow` is read-only; the repository does not yet offer
+operator typing over SOL while the driver owns it. At the machine, use the monitor and USB keyboard
 once their console support has landed. The login credentials are in the operator's private credential store;
 ask an agent to locate them. A session leaves the login prompt and typing to the operator. It never types the
 automated login challenge. SOL and the local keyboard feed the same console TTY.
@@ -126,6 +127,7 @@ A stray power-on has no image to fetch and the reaper turns it off. Do not use t
 claim-lint:ok: the unstaged image-server contract in "Delivery" and the stray-power-on cases in `tests/metal_tools_test.py`.
 
 A session ends after **30 minutes without console input**, **four hours from power-on**, or `metal-run stop ID`.
+An observed power-off also closes the session at the next running-machine poll (30 seconds).
 The kernel timestamps input on TTY 0, including editing and control characters from either source. Output does
 not reset the clock: kernel census lines, a busy program and SOL traffic cannot keep a session alive. At expiry,
 the kernel emits the one-shot line `[console] input idle 30 min`; the driver powers the machine off and releases
@@ -133,7 +135,14 @@ the lease. The reaper honours the same four-hour ceiling even if the driver fail
 promptly. The boot record has kind `console-session`, is evidence-ineligible, and is never scored because its
 capture holds the operator's typing. Captures remain in the private boot store.
 claim-lint:ok: `tests/metal_session_test.py` checks the deadline, record kind, scoring refusal and reaper;
-`kernel/src/tty/input_activity.rs` checks the input expiry boundary and one-shot state.
+`tests/console_input_activity.rs` includes the kernel input clock's expiry-boundary and one-shot tests.
+
+The input-clock worker emits a serial-only `[console] input clock alive` pulse each 30 seconds until expiry.
+If that pulse disappears for more than 120 seconds after handoff or the last pulse, the driver ends the boot as
+hung through its normal power-off cleanup, even if other serial output continues. This bounds a stopped clock
+or an idle line lost during SOL recovery without treating a quiet login prompt as a hang.
+claim-lint:ok: the worker in `kernel/src/tty/input_clock.rs` produces the pulse; `tests/metal_session_test.py`
+checks the missing-pulse boundary and powered-off reading.
 
 Sessions use a fresh RAM-disk root by default; files disappear at power-off. `--disk root` uses a console image
 previously installed by the storage lane, with the existing commit and credential checks. A session cannot install
