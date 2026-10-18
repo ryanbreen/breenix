@@ -130,7 +130,7 @@ for i in $(seq 1 $COUNT); do
             -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
             -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" \
             -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-            -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
+            -drive "if=none,id=ext2disk,format=raw,snapshot=on,file=$BREENIX_ROOT/target/ext2.img" \
             -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
             -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
             -display none -no-reboot -no-shutdown \
@@ -153,7 +153,7 @@ for i in $(seq 1 $COUNT); do
                 -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
                 -drive if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img \
                 -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-                -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img \
+                -drive if=none,id=ext2disk,format=raw,snapshot=on,file=/breenix/ext2.img \
                 -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
                 -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
                 -display none -no-reboot -no-shutdown \
