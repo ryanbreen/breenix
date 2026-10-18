@@ -40,6 +40,10 @@ class DirectHandoffTests(unittest.TestCase):
         self.git(self.canonical, 'add', '.')
         self.git(self.canonical, 'commit', '-qm', 'fixture')
         self.main = self.git(self.canonical, 'rev-parse', 'HEAD')
+        self.project = self.base / "project's origin"
+        self.git(self.base, 'init', '--bare', '-q', '-b', 'main', str(self.project))
+        self.git(self.canonical, 'remote', 'add', 'origin', str(self.project))
+        self.git(self.canonical, 'push', '-q', 'origin', 'main')
         self.git(self.base, 'clone', '-q', str(self.canonical), str(self.repo))
         for key in ('user.name', 'user.email', 'core.hooksPath', 'commit.gpgsign'):
             self.git(self.repo, 'config', key, self.git(self.canonical, 'config', key))
@@ -92,6 +96,25 @@ class DirectHandoffTests(unittest.TestCase):
                 self.assertEqual(output.parent.parent, base if base else Path('/tmp'))
                 self.assertEqual(handoff['stamp'], 'x86:' + self.main)
         self.assertNotEqual(outputs[0].parent.name, outputs[1].parent.name)
+
+    def test_stale_canonical_heads_do_not_refuse_merged_effort(self):
+        self.git(self.canonical, 'switch', '-qc', 'breengel/stale')
+        (self.canonical / 'merged').touch()
+        self.git(self.canonical, 'add', 'merged')
+        self.git(self.canonical, 'commit', '-qm', 'merged effort')
+        merged = self.git(self.canonical, 'rev-parse', 'HEAD')
+        self.git(self.canonical, 'push', '-q', 'origin', 'HEAD:refs/heads/main')
+        self.git(self.repo, 'fetch', '-q', 'origin')
+        self.git(self.repo, 'checkout', '-q', '--detach', merged)
+        origin = self.git(self.repo, 'remote', 'get-url', 'origin')
+        # A caller's Git configuration must survive the temporary origin override.
+        self.env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='core.quotePath', GIT_CONFIG_VALUE_0='false')
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        handoff = json.loads(result.stdout.splitlines()[-1])
+        self.addCleanup(shutil.rmtree, Path(handoff['args'][3]).parent)
+        self.assertEqual(handoff['stamp'], 'x86:' + merged)
+        self.assertEqual(self.git(self.repo, 'remote', 'get-url', 'origin'), origin)
 
 
 if __name__ == '__main__':

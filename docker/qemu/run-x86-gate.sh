@@ -143,7 +143,12 @@ if [ "$PHASE" = all ] && [ -f "$HOME/.config/breenix-gate/build-host.env" ]; the
     exit 1
   fi
   # Check here while the private clone's local effort refs are still visible.
-  DIRECT_SHA=$(python3 "$REPO_DIR/scripts/effort-target-guard.py" \
+  # Read the project's heads, rather than the canonical cache's stale local heads.
+  DIRECT_ORIGIN=$(git -C "$DIRECT_CANONICAL" remote get-url origin) || exit 1
+  DIRECT_SHA=$(env "GIT_CONFIG_COUNT=$(( ${GIT_CONFIG_COUNT:-0} + 1 ))" \
+    "GIT_CONFIG_KEY_${GIT_CONFIG_COUNT:-0}=url.$DIRECT_ORIGIN.insteadOf" \
+    "GIT_CONFIG_VALUE_${GIT_CONFIG_COUNT:-0}=$DIRECT_CANONICAL" \
+    python3 "$REPO_DIR/scripts/effort-target-guard.py" \
     --repo "$REPO_DIR" --commit HEAD --target x86) || exit 1
   export BREENIX_TARGET_POLICY_CHECKED="x86:$DIRECT_SHA"
   # gate-tree derives the run identity from the output directory's parent.
