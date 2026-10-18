@@ -57,7 +57,8 @@ class CacheTests(unittest.TestCase):
     def call(self, *flags):
         with patch.object(artifacts, 'checked'), patch.object(artifacts, 'key', return_value='a' * 64), \
                 patch.object(artifacts, 'metal_toolchain_key', return_value='b' * 64), \
-                patch.object(artifacts, 'metal_source_times'), patch.object(artifacts.sys, 'argv',
+                patch.object(artifacts, 'metal_source_times'), \
+                patch.object(artifacts, 'metal_retire_binaries'), patch.object(artifacts.sys, 'argv',
                 ['gate-artifacts.py', *flags, str(self.repo), str(self.logs)]):
             artifacts.main()
 
@@ -299,6 +300,44 @@ class CacheTests(unittest.TestCase):
             artifacts.metal_source_times(self.repo, targets)
         self.assertEqual(source.stat().st_mtime_ns, 30000000000)
         self.assertEqual(fork.stat().st_mtime_ns, 10000000000)
+
+    def test_removed_cargo_target_cannot_survive_in_historical_installer_pool(self):
+        targets = self.cache / 'metal-targets/compiler'
+        release = targets / 'programs/x86_64-breenix/release'
+        release.mkdir(parents=True)
+        for name, data in [('current', b'\x7fELFnew'), ('removed', b'\x7fELFold'),
+                           ('removed.d', b'dependency metadata')]:
+            (release / name).write_bytes(data)
+        metadata = {'packages': [{'manifest_path': str(self.repo / 'userspace/programs/Cargo.toml'),
+                                 'targets': [{'name': 'current', 'kind': ['bin']}]}]}
+        with patch.object(artifacts.subprocess, 'check_output', return_value=json.dumps(metadata)):
+            artifacts.metal_retire_binaries(self.repo, targets)
+        self.assertTrue((release / 'current').exists())
+        self.assertFalse((release / 'removed').exists())
+        self.assertTrue((release / 'removed.d').exists())
+
+    def test_linker_content_change_discards_program_targets_for_historical_build_scripts(self):
+        subprocess.run(['git', 'init', '--quiet', str(self.repo)], check=True)
+        linker = self.repo / 'userspace/programs/linker.ld'
+        linker.parent.mkdir(parents=True)
+        linker.write_text('first linker script')
+        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
+        targets = self.cache / 'metal-targets/compiler'
+        (targets / 'programs').mkdir(parents=True)
+        (targets / 'libc').mkdir()
+        archive = targets / 'libc/archive'
+        archive.write_bytes(b'unchanged libc')
+        artifacts.metal_source_times(self.repo, targets)
+        executable = targets / 'programs/old-executable'
+        executable.write_bytes(b'stale executable')
+        os.utime(linker, ns=(1, 1))
+        artifacts.metal_source_times(self.repo, targets)
+        self.assertTrue(executable.exists())
+        linker.write_text('other linker script')
+        artifacts.metal_source_times(self.repo, targets)
+        self.assertFalse(executable.exists())
+        self.assertTrue((targets / 'programs').is_dir())
+        self.assertEqual(archive.read_bytes(), b'unchanged libc')
 
     def test_metal_targets_are_evicted_after_failure_when_over_budget(self):
         def failed(repo, logs, label, *, targets):

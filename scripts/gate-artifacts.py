@@ -294,12 +294,33 @@ def metal_source_times(repo, targets):
         name = str(path.relative_to(repo))
         checksum = digest(path)
         old = previous.get(name)
+        if name == 'userspace/programs/linker.ld' and (not old or old[0] != checksum):
+            # Historical commits may lack build.rs's linker dependency. Their
+            # stable -T path cannot make Cargo notice changed linker contents.
+            shutil.rmtree(targets / 'programs', ignore_errors=True)
+            (targets / 'programs').mkdir(parents=True)
         timestamp = old[1] if old and old[0] == checksum else now
         os.utime(path, ns=(timestamp, timestamp))
         current[name] = [checksum, timestamp]
     temporary = record.with_suffix('.tmp')
     temporary.write_text(json.dumps(current, sort_keys=True) + '\n')
     temporary.replace(record)
+
+
+def metal_retire_binaries(repo, targets):
+    """Older installers must not find executables for removed Cargo targets."""
+    workspace = repo / 'userspace/programs'
+    metadata = json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=workspace))
+    names = {target['name'] for package in metadata['packages']
+             if Path(package['manifest_path']).resolve() == (workspace / 'Cargo.toml').resolve()
+             for target in package['targets'] if 'bin' in target['kind']}
+    for path in (targets / 'programs/x86_64-breenix/release').glob('*'):
+        if path.is_file() and path.name not in names:
+            with path.open('rb') as handle:
+                executable = handle.read(4) == b'\x7fELF'
+            if executable:
+                path.unlink()
 
 
 def metal_incremental_build(repo, logs, root):
@@ -309,6 +330,7 @@ def metal_incremental_build(repo, logs, root):
         for name in ('programs', 'libc'):
             (targets / name).mkdir(parents=True, exist_ok=True)
         metal_source_times(repo, targets)
+        metal_retire_binaries(repo, targets)
         print(f'[gate-cache] incremental targets={cache_key}', flush=True)
         try:
             build(repo, logs, 'metal', targets=targets)
