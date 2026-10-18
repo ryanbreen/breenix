@@ -1,7 +1,4 @@
-//! Exercise the real census with controlled scheduler samples and serial output.
-// Including the production module also brings its boot-only startup APIs into
-// this host harness; those APIs are intentionally not invoked here.
-#![allow(dead_code)]
+//! Exercise console startup, record admission and census emission.
 extern crate alloc;
 extern crate self as log;
 #[macro_export]
@@ -94,6 +91,8 @@ pub mod kthread {
         Ok(())
     }
 }
+// The included production modules also expose boot-only APIs outside this harness.
+#[allow(dead_code)]
 #[path = "../kernel/src/task/dispatch_strand_census.rs"]
 mod census;
 
@@ -132,12 +131,14 @@ impl std::fmt::Display for Level {
         })
     }
 }
+#[allow(dead_code)]
 #[path = "../kernel/src/fbcon/grid.rs"]
 mod grid;
 static GRID: std::sync::Mutex<grid::Grid> = std::sync::Mutex::new(grid::Grid::new());
 fn with_grid<R>(f: impl FnOnce(&mut grid::Grid) -> R) -> Option<R> {
     Some(f(&mut GRID.lock().unwrap()))
 }
+#[allow(dead_code)]
 #[path = "../kernel/src/fbcon/records.rs"]
 mod records;
 
@@ -189,8 +190,21 @@ fn login_prompt_survives_usb_records_and_periodic_and_immediate_census() {
     ] {
         records::log_record(Level::Info, &format_args!("{message}"));
     }
+    census::note_save(7);
+    *scheduler::SAMPLE.lock().unwrap() = Some((thread::ThreadState::BlockedOnIO, None));
+    serial::OUTPUT.lock().unwrap().clear();
     census::report_snapshot();
+    let immediate = serial::OUTPUT.lock().unwrap().clone();
+    assert!(immediate.contains("DISPATCH_STRAND_CENSUS:seq=1:"));
+    assert!(immediate.contains(":saved=1:stranded=0:"));
+    assert!(immediate.contains(":waiting=1]"));
+    *scheduler::SAMPLE.lock().unwrap() = Some((thread::ThreadState::BlockedOnTimer, Some(1)));
+    serial::OUTPUT.lock().unwrap().clear();
     census::report_heartbeat_if_due();
+    let periodic = serial::OUTPUT.lock().unwrap().clone();
+    assert!(periodic.contains("DISPATCH_STRAND_CENSUS:seq=2:"));
+    assert!(periodic.contains(":saved=1:stranded=1:tids=7:"));
+    assert!(periodic.contains(":waiting=0]"));
     assert_eq!(with_grid(|g| (g.generation(), g.cursor())).unwrap(), before);
     let screen = with_grid(|g| {
         (0..g.rows())
@@ -215,8 +229,7 @@ fn login_prompt_survives_usb_records_and_periodic_and_immediate_census() {
     assert!(with_grid(|g| g.generation()).unwrap() > before);
 }
 
-// Keep the independent disk-intent and init-publication guards; the startup
-// failure and console-admission snapshots above are replaced by behavior.
+// Source guards tie the host doubles to hardware-only producers and sinks.
 fn source(path: &str) -> String {
     let test = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file!());
     std::fs::read_to_string(test.parent().unwrap().parent().unwrap().join(path)).unwrap()
@@ -259,5 +272,37 @@ fn keyboard_preparation_starts_only_after_init_is_published() {
             launch.find(start).unwrap() > published,
             "{start} precedes init publication"
         );
+    }
+}
+
+#[test]
+fn readiness_producer_orders_preparation_before_completion_and_wait_rejects_timeout() {
+    let keyboard = source("kernel/src/drivers/xhci/keyboard.rs");
+    let serve = &keyboard[keyboard.find("pub(super) fn serve(").unwrap()..];
+    let request = &serve[serve.find("if CONSOLE_START.swap").unwrap()..];
+    let replug = request.find("self.replug_exercise();").unwrap();
+    let arm = request.find("self.console.arm();").unwrap();
+    let ready = request.find("CONSOLE_READY.complete(1);").unwrap();
+    assert!(replug < arm && arm < ready);
+    assert!(request[..replug].contains("if REPLUG.swap(false, Ordering::Relaxed)"));
+    let xhci = source("kernel/src/drivers/xhci/mod.rs");
+    let wait = body(&xhci, "pub fn wait_console_ready()");
+    assert!(wait.contains("CONSOLE_READY.wait_timeout_uninterruptible(1, 60 * SECOND)"));
+    assert!(wait.contains("matches!(completed, Ok(true)) && !FAILED.load(Ordering::Acquire)"));
+}
+
+#[test]
+fn real_usb_levels_and_census_sinks_match_host_inputs() {
+    let keyboard = source("kernel/src/drivers/xhci/keyboard.rs");
+    let compact = keyboard.split_whitespace().collect::<String>();
+    for event in ["attached", "detached"] {
+        assert!(compact.contains(&format!("log::info!(\"[usb]bootkeyboard{event}:")));
+    }
+    let census = source("kernel/src/task/dispatch_strand_census.rs");
+    let snapshot = body(&census, "fn snapshot(deferred: bool)");
+    assert!(snapshot.contains("crate::serial::enqueue_log(args)"));
+    assert!(snapshot.contains("crate::serial::_log_print(args)"));
+    for sink in ["log::", "fbcon::", "tty::", "serial::_print(", "serial_print!"] {
+        assert!(!snapshot.contains(sink), "census enters console sink {sink}");
     }
 }
