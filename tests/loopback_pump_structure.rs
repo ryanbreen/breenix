@@ -4388,7 +4388,7 @@ mod tracing { pub mod output { pub struct Record; impl Record { pub fn new() -> 
 fn arch_can_dispatch_here() -> bool { true }
 fn last_interrupt_return_tick(_cpu: usize) -> u64 { 0 }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
-#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
+#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool, relocating: bool }
 struct Context { sp: u64 }
 struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context }
 struct CpuState { last_schedule_ticks: u64, current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
@@ -4438,6 +4438,10 @@ fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
             "pin_guard_oracle_where",
             "fn pin_guard_oracle_where(&self, tid: u64) -> usize".into(),
         ),
+        (
+            "end_pin_relocation",
+            "fn end_pin_relocation(&mut self, thread_id: u64)".into(),
+        ),
     ] {
         let body = function_body(&source, name)
             .expect("production/probe method body")
@@ -4456,7 +4460,7 @@ pub fn run(offline: bool) {
     let mut s = Scheduler {
         per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
         cpu_state: std::array::from_fn(|_| CpuState { last_schedule_ticks: 0, current_thread: None, previous_thread: None, pending_next: None }),
-        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true }), context: Context { sp: 0 } },
+        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true, relocating: false }), context: Context { sp: 0 } },
     };
     assert!(offline || s.cpu_dispatch_stale(home));
     s.per_cpu_queues[home].push_back(7);
