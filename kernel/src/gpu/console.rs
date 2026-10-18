@@ -535,7 +535,13 @@ impl ConsoleLease {
 }
 impl Drop for ConsoleLease {
     fn drop(&mut self) {
-        *CONSOLE.lock() = self.0.take();
+        // Releasing resources may wait for the device. Move the displaced
+        // console out while masked, then destroy it after the guard restores IRQs.
+        let displaced = {
+            let mut slot = CONSOLE.lock();
+            core::mem::replace(&mut *slot, self.0.take())
+        };
+        drop(displaced);
     }
 }
 pub(super) fn redraw() -> Result<(), i64> {
