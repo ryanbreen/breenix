@@ -313,10 +313,6 @@ before setting `fg := to`; the pending `from` loses presentation authority if it
   and wake `VT_WAITACTIVE` waiters. An owner's exit resets its mode as in section 4.3; if this makes the
   destination `KD_TEXT`, the resulting redraw must finish too.
 - A held next switch then starts as a new request.
-- **While a completed switch's read-back is pending** (section 8), the displayed frame is held for it: a
-  request whose first step is a release (the foreground VT is `VT_PROCESS`) is made at once, and a request
-  acting on that pending release (latest wins, cancellation) is handled as above. The acquiring step, and any
-  other request, waits for the read-back's verdict and then proceeds.
 - **While the boot splash is up**, tty1's screen is the splash's: a switch is recorded at once (`fg := to`),
   and its acquisition completes with the first frame drawn after the splash gives way (V4).
 

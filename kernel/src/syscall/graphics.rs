@@ -2949,9 +2949,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 /// # Returns
 /// * 0 on Flush success, or the RGB pixel for ReadPixel
 /// * -EFAULT if cmd_ptr is invalid
-/// * -EINVAL for an unsupported op, invalid pixel coordinate, or no fb_mmap pane
+/// * -EINVAL for an unsupported op, invalid pixel coordinate, or Flush without a fb_mmap pane
 /// * -EPERM if the caller does not own the display, or ReadPixel is not privileged
-/// * -EBUSY if the screen console is writing a row (flush or read again)
+/// * -EBUSY if the screen console is writing a row, or ReadPixel cannot read the display
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     use crate::syscall::memory_common::get_current_thread_id;
