@@ -17,7 +17,8 @@
 //! bootcode mailbox handshake, then the "Initialization Procedure" (Section 7,
 //! pp. 140-147) with one send ring, one standard receive producer ring and one
 //! receive return ring in host memory, MSI through the local APIC
-//! (`arch_impl::x86_64::msi`), and the PHY's autonegotiation restarted.
+//! (`arch_impl::x86_64::msi`), keeping the PHY's negotiated firmware link when
+//! operational and restarting autonegotiation otherwise.
 //!
 //! Frames pass through the common network stack. MSI masks the device and
 //! raises NetRx; the bounded bottom half returns receive buffers and rearms
@@ -393,7 +394,7 @@ struct Port {
     send_producer: u32,
     std_producer: u32,
     return_consumer: u32,
-    autoneg_started_ms: u64,
+    phy_configured_ms: u64,
     /// The Receive BD Initiator Mode register before initialization set it.
     rbdi_at_init: u32,
     /// Return ring entries flagged in error, and the last one's error flags.
@@ -447,19 +448,19 @@ impl Port {
             send_producer: 0,
             std_producer: 0,
             return_consumer: 0,
-            autoneg_started_ms: 0,
+            phy_configured_ms: 0,
             rbdi_at_init: 0,
             rx_errored: 0,
             rx_last_error_flags: 0,
         };
         port.initialize();
-        port.f.phy_start_autonegotiation()?;
-        port.autoneg_started_ms = now_ms();
+        port.f.phy_configure()?;
+        port.phy_configured_ms = now_ms();
         port.post_receive_buffers();
         IRQ_REGS[slot].store(port.f.regs, Ordering::Release);
         port.enable_interrupts();
         log::info!(
-            "[bcm5720] {}: MSI vector {:#x}; send ring {}, standard receive ring {}, return ring {}; receive BD initiator found {:#x}; autonegotiation started",
+            "[bcm5720] {}: MSI vector {:#x}; send ring {}, standard receive ring {}, return ring {}; receive BD initiator found {:#x}; PHY configured",
             port.f.bdf(),
             vector,
             SEND_RING_ENTRIES,
@@ -886,9 +887,9 @@ impl Port {
                     return;
                 }
             }
-            if now_ms() - self.autoneg_started_ms > LINK_TIMEOUT_MS {
+            if now_ms() - self.phy_configured_ms > LINK_TIMEOUT_MS {
                 log::warn!(
-                    "[bcm5720] {bdf}: no link {LINK_TIMEOUT_MS} ms after autonegotiation started"
+                    "[bcm5720] {bdf}: no link {LINK_TIMEOUT_MS} ms after PHY configuration"
                 );
                 return;
             }
@@ -896,10 +897,10 @@ impl Port {
         };
         self.set_link(link);
         log::info!(
-            "[bcm5720] link up {} Mb/s {} duplex, {} ms after autonegotiation started",
+            "[bcm5720] link up {} Mb/s {} duplex, {} ms after PHY configuration",
             link.mbps,
             if link.full_duplex { "full" } else { "half" },
-            now_ms() - self.autoneg_started_ms
+            now_ms() - self.phy_configured_ms
         );
 
         // Where the tick census runs (no fw_cfg), it reports the interrupt and
