@@ -1007,6 +1007,11 @@ renderer follows TGSI's definition: the G5 programs, which relied on it, pass th
 
 ## B19: Parallels folding of literal-only instructions
 
+The original diagnostic shader and watchdog patch were not committed; this experiment
+is not reproducible from the recorded revision and remains unverified in #1871.
+The corrected command below describes the historical invocation shape, not a
+reconstruction with the current per-routine checkpoint tool.
+
 On Parallels, `profile/binary32-emulation` and the three `coverage_spans` cases read wrong pixels while
 the integer routines passed; the probe program's binary32 routines returned, for example, `0x3f7ffffb`
 for 1.0 + 2^-24 (want `0x3f800000`) and 1 for 3 × 0.5 (want 2). Each of these failures was a run of the
@@ -1019,7 +1024,7 @@ A run with a twelve-instruction diagnostic program in place of `probe_int` (XOR 
 with `0x80000000`, AND with `0xffffffff`) returned 12 of 12 words exactly, so the host keeps those bit
 patterns through registers and constant operands.
 
-`tools/gpu-experiments/probe-checkpoints.py "$PROFILE" 600 1194 12 "$OUT"`, with PROFILE the probe program
+`tools/gpu-experiments/probe-checkpoints.py "$PROFILE" 600 1194 "$OUT"`, with PROFILE the probe program
 at `9d8cebd1`, gave a diagnostic program of 64 checkpoints in routine 12 (binary32 add). A 64-pixel PROBE
 row of routine 12 with operands `0x3f800000, 0x33800000` was read back on Parallels and compared with
 the generator's interpreter on the same text:
