@@ -122,7 +122,13 @@ impl Controller {
         let dci = boot.dci();
         let burst = if speed >= 480_000_000 { boot.extra_transactions } else { 0 };
         let ring = Ring::new(self.address64)?;
-        let buffer = Dma::new(4096, self.address64)?;
+        let buffer = match Dma::new(4096, self.address64) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                ring.memory.release();
+                return Err(error);
+            }
+        };
         let request = (boot.max_packet as u32).max(report::REPORT_LEN as u32);
         // Input Control (A0 and the endpoint), Slot (Context Entries) and the
         // endpoint's context; the rest of the input context zeroed (4.6.6, 6.2.2.2, 6.2.3.2).

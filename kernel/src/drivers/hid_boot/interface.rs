@@ -90,6 +90,13 @@ pub fn find(config: &[u8]) -> Result<Option<BootKeyboard>, &'static str> {
     Ok(None)
 }
 
+/// Retain the first configuration unless a later one supplies a boot keyboard
+/// that the retained configuration lacks (HID 1.11 F.5).
+pub fn prefer_configuration(current: &[u8], candidate: &[u8]) -> bool {
+    current.is_empty()
+        || (!matches!(find(current), Ok(Some(_))) && matches!(find(candidate), Ok(Some(_))))
+}
+
 /// A setup packet as the 8 bytes of a Setup Stage TRB's parameter, little-endian.
 const fn setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
     request_type as u64 | (request as u64) << 8 | (value as u64) << 16 | (index as u64) << 32 | (length as u64) << 48
@@ -170,6 +177,23 @@ mod tests {
         let keyboard = find(&c).unwrap().unwrap();
         assert_eq!((keyboard.configuration, keyboard.interface, keyboard.endpoint), (2, 3, 0x83));
         assert_eq!((keyboard.max_packet, keyboard.extra_transactions, keyboard.dci()), (64, 1, 7));
+    }
+
+    #[test]
+    fn a_later_keyboard_configuration_replaces_a_non_keyboard_configuration() {
+        let mut mouse = composite();
+        mouse[9 + 7] = 2;
+        let mut keyboard = composite();
+        keyboard[5] = 7;
+        let mut selected = Vec::new();
+        for config in [&mouse, &keyboard, &mouse] {
+            if prefer_configuration(&selected, config) {
+                selected = config.clone();
+            }
+        }
+        assert_eq!(find(&selected).unwrap().unwrap().configuration, 7);
+        assert!(!prefer_configuration(&selected, &composite()));
+        assert!(prefer_configuration(&[], &mouse));
     }
 
     #[test]

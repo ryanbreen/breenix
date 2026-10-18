@@ -980,7 +980,7 @@ impl Controller {
                 return Err("configuration length/header changed");
             }
             self.report_configuration(port, &config)?;
-            if index == 0 {
+            if crate::drivers::hid_boot::interface::prefer_configuration(&device.config, &config) {
                 device.config = config;
             }
         }
