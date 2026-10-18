@@ -876,7 +876,15 @@ impl LoginAccount {
             require(n > 0, "getrandom made no progress")?;
             at += n;
         }
-        let password: String = random[..8].iter().map(|b| format!("{b:02x}")).collect();
+        // Encode the same 64 random bits in 11 keyboard chords. Two logins
+        // plus logout and respawn must fit the suite's ten-second case limit.
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
+        let mut password = String::new();
+        for _ in 0..11 {
+            password.push(ALPHABET[(bits % 62) as usize] as char);
+            bits /= 62;
+        }
         let salt: String = random[8..].iter().map(|b| format!("{b:02x}")).collect();
         let mut hash = [0; libbreenix::crypto::sha512_crypt::MAX_OUTPUT];
         let n = libbreenix::crypto::sha512_crypt::sha512_crypt(password.as_bytes(), &format!("$6${salt}"), &mut hash)
@@ -949,8 +957,10 @@ fn wait_vt(number: usize, needle: &str) -> Verdict<String> {
 }
 
 fn type_line(text: &str) -> Verdict {
-    require(text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "unsupported keyboard text")?;
-    let mut keys: Vec<_> = text.chars().map(|c| c.to_string()).collect();
+    require(text.bytes().all(|b| b.is_ascii_alphanumeric()), "unsupported keyboard text")?;
+    let mut keys: Vec<_> = text.chars().map(|c| {
+        if c.is_ascii_uppercase() { format!("shift-{}", c.to_ascii_lowercase()) } else { c.to_string() }
+    }).collect();
     keys.push("enter".into());
     libbreenix::suite::hostkeys(&keys.join(",")).map(|_| ())
 }
