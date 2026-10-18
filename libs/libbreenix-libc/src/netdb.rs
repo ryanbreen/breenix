@@ -238,7 +238,7 @@ fn dns_lookup(name: &[u8], out: &mut Addresses) -> Result<(), i32> {
                 | DnsError::HostnameTooLong,
             ) => return Err(EAI_NONAME),
             Err(DnsError::NoAddress) => return Err(NO_ADDRESS),
-            Err(DnsError::Timeout | DnsError::ServerError(2)) => failure = EAI_AGAIN,
+            Err(DnsError::Timeout | DnsError::ResolutionDeadline | DnsError::ServerError(2)) => failure = EAI_AGAIN,
             Err(
                 DnsError::SocketError
                 | DnsError::BindError
