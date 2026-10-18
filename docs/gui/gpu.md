@@ -687,8 +687,17 @@ rests on host-side evidence that the gate checks, recorded with every run:
   and its fence is `ns << 32 | n` in that context's fence sequence, shared with its `SUBMIT`s, so `WAIT` on
   that context accepts it and it orders after the context's earlier fences. `PRESENT` never returns a raw
   device-wide fence number, and neither does the observation record (offset 184, section 1.8). There is no vblank on these devices; the present rate is measured, not assumed.
-  A minimal scanout bind of the current case's target arrives in G2 (section 1.11), so runs are watchable from
-  then; modes, flipping and the ownership stack arrive in G7.
+  The display keeps the selected mode when a suite case renders a differently sized target (ruling 53,
+  #1956). A smaller target is presented by GPU-copying its whole contents, without scaling, to origin
+  (0,0) of a separate display-sized scanout target, clearing the remainder first. Only that
+  display-sized target is bound. A target wider or taller than the display is observed by full device
+  readback and is never bound as a scanout. These viewing operations do not change the case's source
+  dimensions, pixel expectations, work bounds or performance intervals.
+  The source observation names the case target and its device resource; the scanout observation names
+  the actual display-sized resource and checks the same source pixels at (0,0). They are distinct
+  identities when a copy is needed, never an offscreen source reported as the bound resource.
+  A minimal scanout bind arrives in G2 (section 1.11), so runs are watchable from then; modes,
+  flipping and the ownership stack arrive in G7.
 - **Ownership.** The display ownership stack (`take_over_display` 431, `give_back_display` 432, §18) keeps
   each owner's last presented target; giving the display back presents the previous owner's target again,
   exactly. After the GPU driver starts, the kernel's console is drawn by the GPU from a glyph atlas uploaded
@@ -927,8 +936,15 @@ it measures; `device/version` is already its real check. ARM64 QEMU boots of the
 **No CPU canvas in the suite.** The suite does not use `Suite::gui()`, `suite_stage` or
 `suite::judged(&FrameBuf)`, which rasterize and compare CPU framebuffers. It judges with
 `suite::judged_readback(&Readback, &Expected)` over read-back bytes and their record (comparison, not
-rendering). From G2 each rendering case binds its target to the scanout while it owns the display, and the
-runner draws a status strip of solid tiles (one per case, pass or fail colour) with BGL's `solid` pipeline;
+rendering). From G2 each rendering case shows its result while it owns the display, using section 1.7's
+viewing path (ruling 53, #1956). A smaller case target is GPU-copied at origin (0,0) into a
+separate display-sized scanout; an oversized case retains its full offscreen readback and never binds
+that target. Source and scanout observations retain their actual resource identities; scanout checks
+judge the source pixels at that origin and the completed present fence of the display-sized resource.
+The 17x9 record-fields source remains 17x9 with scanout bit clear, and its separate scanout record has
+the display dimensions, scanout bit set and the present fence. A viewing copy consumes its own SUBMIT
+fence before PRESENT; fence-sequence checks include that operation. Direct scanout fault and ownership
+checks use display-sized targets. The runner draws a status strip of solid tiles (one per case, pass or fail colour) with BGL's `solid` pipeline;
 case names stay on serial. Text on the stage arrives with BreenGL's GPU stage. Until G2 the shared runner
 draws its usual scored panel through the existing display path, as every program on main does (section 1.1),
 and judges nothing with it.
