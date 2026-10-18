@@ -851,6 +851,59 @@ class MilestoneScoreTest(StateTest):
             self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
 
 
+class ModeApplicabilityTest(StateTest):
+    def setUp(self):
+        super().setUp()
+        root = TOOLS.parents[1]
+        self.definition = json.loads((root / 'docs/metal/boot-path.json').read_text())
+        self.fbcon = next(item for item in self.definition['milestones'] if item['id'] == 'fb-console')
+
+    def test_definition_and_driver_measure_fbcon_only_when_console_keeps_screen(self):
+        import metal_score
+        fb_markers = [(stage['marker'], 'contains') for stage in self.fbcon['stages']['x86_64']]
+        self.assertEqual(len(fb_markers), 4)
+        for shape in ('ramdisk', 'install', 'disk-root'):
+            for mode in self.definition['modes']:
+                with self.subTest(shape=shape, mode=mode):
+                    applies = mode in ('default', 'shell', 'console')
+                    self.assertEqual(metal_score.measures(self.fbcon, shape, mode), applies)
+                    groups = boot.measured_stages({'milestones': [self.fbcon], 'gateArch': 'x86_64'},
+                                                  mode, {}, shape)
+                    self.assertEqual(groups, [fb_markers] if applies else [])
+
+    def test_final_marker_skips_mode_excluded_kernel_milestone(self):
+        definition = {'gateArch': 'x86_64', 'milestones': [
+            {'kernel': True, 'bootShapes': ['ramdisk'],
+             'stages': {'x86_64': [{'marker': 'kernel ready'}]}}, self.fbcon]}
+        self.assertEqual(boot.final_marker(definition, 'probe', {}), ('kernel ready', 'contains'))
+        self.assertEqual(boot.final_marker(definition, 'shell', {}),
+                         ('[fbcon] screen read back identical: ', 'contains'))
+
+    def test_scorer_omits_inapplicable_milestone_and_keeps_four_stage_requirement(self):
+        import metal_score
+        directory = m.STATE / 'boot'
+        definition = directory / 'definition'
+        path = definition / 'docs/metal/boot-path.json'
+        path.parent.mkdir(parents=True)
+        m.write_json(path, {'gateArch': 'x86_64', 'milestones': [self.fbcon]})
+        catalog = definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'
+        catalog.parent.mkdir(parents=True)
+        m.write_json(catalog, {'stages': []})
+        (directory / 'events.jsonl').write_text('')
+        stages = self.fbcon['stages']['x86_64']
+        for disk in (None, 'install', 'root'):
+            for mode in self.definition['modes']:
+                for count in (2, 4):
+                    with self.subTest(disk=disk, mode=mode, count=count):
+                        m.write_json(directory / 'run.json', {'disk': disk, 'mode': mode})
+                        (directory / 'serial.txt').write_text('\n'.join(stage['marker'] for stage in stages[:count]))
+                        verdict = metal_score.score(directory)
+                        applies = mode in ('default', 'shell', 'console')
+                        self.assertEqual(verdict['milestones'], {'fb-console': {
+                            'reached': count, 'total': 4, 'passed': count == 4}} if applies else {})
+                        self.assertEqual(metal_score.falls_short(verdict), applies and count < 4)
+
+
 class DriverTest(StateTest):
     def setUp(self):
         super().setUp()
