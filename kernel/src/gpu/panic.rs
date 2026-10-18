@@ -30,7 +30,7 @@ pub fn terminal() -> bool {
 }
 
 /// Stop a peer at its next timer interrupt after its raw device access drains.
-/// An interrupted Access must resume so takeover can observe its counter reach zero.
+/// Let an interrupted Access finish before parking its CPU.
 pub(crate) fn stop_if_terminal() {
     if !terminal() {
         return;
