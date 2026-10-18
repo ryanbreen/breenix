@@ -2758,8 +2758,8 @@ fn root_free_blocks() -> Result<u64, String> {
     Ok(counts[0])
 }
 
-// These cases destroy their dense inputs. Recreate them for persistent roots,
-// retaining the allocation and free-count checks below.
+// These cases consume dense inputs. Prepare them before the allocation and
+// free-count checks below.
 fn prepare_large_truncate_fixture(path: &str) -> CaseResult {
     let fd = fs::open(path, O_CREAT | O_TRUNC | O_RDWR)?;
     let result = (|| -> CaseResult {
