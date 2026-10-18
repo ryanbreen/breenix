@@ -2677,7 +2677,7 @@ fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
     .unwrap_or_else(|error| panic!("failed to create EC0 fault injector: {}", error));
     let thread_id = thread.id();
     EC0_FAULT_INJECT_TID.store(thread_id, Ordering::Release);
-    scheduler.threads.push(Box::new(thread));
+    scheduler.admit_thread(Box::new(thread));
     scheduler.per_cpu_queues[0].push_back(thread_id);
 }
 
@@ -3026,8 +3026,8 @@ impl Scheduler {
             unsafe { core::mem::transmute::<_, [VecDeque<u64>; MAX_CPUS]>(arr) }
         };
 
-        let scheduler = Self {
-            threads: alloc::vec![idle_thread],
+        let mut scheduler = Self {
+            threads: alloc::vec::Vec::new(),
             per_cpu_queues,
             cpu_state,
             timer_heap: TimerHeaps::new(),
@@ -3040,6 +3040,7 @@ impl Scheduler {
             #[cfg(target_arch = "x86_64")]
             unpinned_free: alloc::vec::Vec::new(),
         };
+        scheduler.admit_thread(idle_thread);
 
         scheduler
     }
@@ -3172,7 +3173,7 @@ impl Scheduler {
             return;
         }
         let idle_id = idle_thread.id();
-        self.threads.push(idle_thread);
+        self.admit_thread(idle_thread);
         #[cfg(target_arch = "x86_64")]
         if rq::is_live(self) {
             if let Some(thread) = self.threads.last_mut() {
@@ -3219,6 +3220,30 @@ impl Scheduler {
         state.last_dispatch_promoted = promoted;
     }
 
+    /// Add `thread` to the thread list, first growing each of the MAX_CPUS
+    /// per-CPU ready queues to hold one entry per thread in the list (#1785,
+    /// ruling S12). A queue holds distinct listed threads, and reaping takes a
+    /// thread off the queues with its row, so a queue does not outgrow this
+    /// reservation and the switch-time requeue
+    /// (`requeue_thread_after_save_onto`, which asserts it) does not allocate.
+    /// No queue is shrunk.
+    /// claim-lint:ok: 11 of 11 adds to `threads` call this function; the one
+    /// remaining `threads.push` in kernel/src is its own, counted by grep
+    /// x86_64 does not reserve: its spawns reach a queue before this list
+    /// (`rq::splice_spawned`), and the asserting requeue is ARM64-only.
+    fn admit_thread(&mut self, thread: Box<Thread>) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let admitted = self.threads.len() + 1;
+            for queue in self.per_cpu_queues.iter_mut() {
+                if queue.capacity() < admitted {
+                    queue.reserve(admitted - queue.len());
+                }
+            }
+        }
+        self.threads.push(thread);
+    }
+
     /// Queue a new thread and return the CPU whose queue it went to.
     pub fn add_thread(&mut self, thread: Box<Thread>) -> usize {
         self.add_thread_inner(thread, false)
@@ -3235,7 +3260,7 @@ impl Scheduler {
     fn add_thread_on_cpu_for_test(&mut self, thread: Box<Thread>, cpu: usize) {
         debug_assert!(cpu < MAX_CPUS);
         let thread_id = thread.id();
-        self.threads.push(thread);
+        self.admit_thread(thread);
         self.per_cpu_queues[cpu].push_back(thread_id);
     }
 
@@ -3244,7 +3269,7 @@ impl Scheduler {
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         let cpu_affinity = thread.cpu_affinity;
-        self.threads.push(thread);
+        self.admit_thread(thread);
         // Indexed before it is queued; the queue's CPU owns it, which the
         // release of this lock records.
         #[cfg(target_arch = "x86_64")]
@@ -3418,7 +3443,7 @@ impl Scheduler {
         // Mark thread as running
         thread.state = ThreadState::Running;
         thread.has_started = true;
-        self.threads.push(thread);
+        self.admit_thread(thread);
         let cpu = Self::current_cpu_id();
         #[cfg(target_arch = "x86_64")]
         if rq::is_live(self) {
@@ -5043,6 +5068,14 @@ impl Scheduler {
                     .get_thread_mut(thread_id)
                     .is_some_and(|thread| core::mem::take(&mut thread.sched.head_on_requeue));
             if !self.retain_cpu_affine_thread(thread_id, target_cpu) {
+                // The context switch may not allocate (ruling S12): the
+                // queue's storage was reserved when the thread was admitted
+                // (`admit_thread`), and this fails if the push would grow it.
+                let queue = &self.per_cpu_queues[target_cpu];
+                assert!(
+                    queue.len() < queue.capacity(),
+                    "requeue would grow a ready queue past its admission reservation"
+                );
                 if holds_head {
                     self.per_cpu_queues[target_cpu].push_front(thread_id);
                 } else {
@@ -7257,7 +7290,7 @@ impl Scheduler {
         // so the refusal site can attribute the 3 refusals below to the probe.
         PIN_GUARD_ORACLE_PROBE_TID.store(tid, Ordering::Relaxed);
         thread.set_ready();
-        self.threads.push(thread);
+        self.admit_thread(thread);
 
         let census_before = (
             PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
@@ -10478,7 +10511,7 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
     dying.set_terminated();
     dying.owner_pid = Some(DYING_PID);
     let dying_id = dying.id();
-    sched.threads.push(dying);
+    sched.admit_thread(dying);
     sched.cpu_state[other].current_thread = Some(dying_id);
 
     let mut running_id = None;
@@ -10486,7 +10519,7 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
         let mut running = boot_test_thread(ThreadPrivilege::Kernel)?;
         running.set_running();
         let id = running.id();
-        sched.threads.push(running);
+        sched.admit_thread(running);
         sched.cpu_state[cpu].current_thread = Some(id);
         sched.per_cpu_queues[cpu].push_back(id);
         running_id = Some(id);
@@ -10551,7 +10584,7 @@ fn switched_out_owner() -> Result<(), &'static str> {
     let mut sched = Scheduler::new(idle);
     let thread = boot_test_thread(ThreadPrivilege::User)?;
     let tid = thread.id();
-    sched.threads.push(thread);
+    sched.admit_thread(thread);
 
     if sched.foreign_owner(tid, SELECTING).is_some() {
         return Err("a thread no CPU names was reported owned by another CPU");

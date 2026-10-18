@@ -2269,7 +2269,7 @@ pub(super) fn splice_spawned(scheduler: &mut Scheduler) {
         // once, here, by the swap above.
         let spawned = unsafe { Box::from_raw(node) };
         node = spawned.next;
-        scheduler.threads.push(spawned.thread);
+        scheduler.admit_thread(spawned.thread);
     }
     scheduler.threads[start..].reverse();
 }
