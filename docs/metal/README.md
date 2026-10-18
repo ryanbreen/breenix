@@ -589,9 +589,10 @@ operator resolves that difference. No restore step writes storage.
 ### Local console definition
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
-Their stage lists cover RAM-disk, install and disk-root shapes. `fb-console` is measured ("The screen console");
-the other milestones stay stubbed until their producing lanes land; existing modes keep their measured stages
-and completion markers.
+Their stage lists cover RAM-disk, install and disk-root shapes. Each is measured; the `usb-keyboard` and
+`console-login` stages tagged `input: keyboard` are required only of an attended boot, so a SOL boot finishes
+without them and is scored short of those two milestones. Existing modes keep their measured stages and
+completion markers.
 Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
 which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
 Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,
@@ -608,11 +609,20 @@ salt and hashes through a host helper compiled from the same Breenix SHA-512-cry
 It writes and reads back `/etc/shadow` with root ownership and mode 0600. The cached image has no password.
 Passwords reach the helper and SOL input over stdin, without command arguments or event text.
 
-The SOL challenge requires a wrong password refusal before the successful authentication, a whole computation
-answer line, logout, checked controlling-terminal reacquisition and a new login prompt. Its run records
-`input: sol` and `evidenceEligible: false`. The console-login definition records these producing stages and
-retains the screen and keyboard stages for SOL development. M8 adds the attended challenge described
-in the run sheet; `first-local-login` awaits an attended measurement. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
+The SOL challenge requires a wrong password refusal before the successful authentication, the whole answer line
+`metal-login-ok 42`, `cat /proc/fbcon/check` showing the screen matches its shadow with that answer on a row,
+logout, checked controlling-terminal reacquisition and a new login prompt. Its run records `input: sol` and
+`evidenceEligible: false`.
+
+An attended boot (ruling M8, the run sheet below) scores console-login from the milestone's `attendedStages`,
+in order; the driver and the scorer read that one list. Getty starts a fresh input window on each start; login
+reports a refusal or an acceptance against it, and the next getty reports the ended session's input. The kernel
+prints these as `[console] login refused|login accepted|session ended input=keyboard|other`, from the sources it
+recorded, without keeping any byte; the request is root-only. The stages are a keyboard refusal and login's
+`Login incorrect` (any number of refused attempts may come before), a keyboard acceptance, `metal-login-ok 42`,
+the screen check and its row, logout, a keyboard-only session end, reacquisition and a new prompt. A line naming
+`input=other` ends the boot short. `first-local-login` is the attended computation stage. Text over SOL is the
+observation path; no screenshot or framebuffer capture is used.
 
 Only the storage lane may run `--mode console --input sol --disk install`: the console target and shadow
 then ride the verified image copy. A subsequent `--disk root` console request requires that recorded install's
@@ -628,21 +638,21 @@ and the HID Usage Tables; their comments cite the sections.
 - **Attach.** After the port census, and for each connection a Port Status Change Event reports later, the
   driver looks in the device's first configuration for interface class 03, subclass 01, protocol 01 at
   alternate setting 0 and its interrupt-IN endpoint. It issues Configure Endpoint for that endpoint (the
-  interval converted as xHCI 6.2.3.6 gives it), and only after that command succeeds sends SET_CONFIGURATION
+  interval converted as the Endpoint Context's Interval field, xHCI 6.2.3, gives it), and only after that command succeeds sends SET_CONFIGURATION
   (xHCI 4.3.5), then Set_Protocol(Boot) and Set_Idle with an indefinite duration to that interface number,
   then the LED state with Set_Report(Output). It prints `[usb] boot keyboard attached:` with the port, speed,
   interface, endpoint, whether the keyboard accepted the LED report, and the EP0 resends (`ep0-retries`) and
   device resets the attach took. Set_Report is optional for a boot keyboard, so a refusal is reported, not fatal.
 - **Address and EP0 recovery.** After Address Device the driver waits the 2 ms SetAddress() recovery interval
-  (USB 2.0 9.2.6.3), which xHCI 4.6.5 leaves to software, before the first request to the new address. A
+  (USB 2.0 9.2.6, "Set Address Processing"), which xHCI 4.6.5 leaves to software, before the first request to the new address. A
   control transfer that halts EP0 (Stall, Transaction Error, Babble or Split Transaction Error) is recovered
   with Reset Endpoint and a Set TR Dequeue Pointer onto the next Setup TD (xHCI 4.6.8, 4.8.3), then sent again
-  50 ms later (the USB 2.0 9.2.6.4 bound), up to three attempts; the device clears a protocol stall on that
+  50 ms later (the USB 2.0 9.2.6 "Standard Device Requests" bound), up to three attempts; the device clears a protocol stall on that
   SETUP. A descriptor read that comes back short does not halt EP0: once its Status stage completes
-  (xHCI 4.10.1.1), it is sent again on the same terms. Each resend prints `[usb] slot <n>: EP0 request <setup
+  (xHCI 4.10.1, "Short Transfers"), it is sent again on the same terms. Each resend prints `[usb] slot <n>: EP0 request <setup
   packet> completed with code=<c> on attempt <k>; sending it again`. When the keyboard still refuses its
   configuration, or a reattach's enumeration fails, the slot is disabled and returned and the device is reset
-  and enumerated again (xHCI 4.10.2.1.2), at most twice per attach.
+  and enumerated again (xHCI 4.10.2, "Stall Error" on control endpoints), at most twice per attach.
 - **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
   ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
   leaves the previous keys standing. The US layout follows the Keyboard/Keypad page's usage names; Shift,
@@ -651,10 +661,11 @@ and the HID Usage Tables; their comments cite the sections.
   `ESC [ A`-`D`, `ESC [ H`, `ESC [ F` and `ESC [ 2~`, `3~`, `5~`, `6~`. Typematic is the host's: 500 ms, then
   one repeat each 33.3 ms. Alt+F1 to Alt+F6, Alt+Left and Alt+Right decode as distinct chord events for the
   virtual-terminal layer and send no bytes yet.
-- **Into TTY 0.** Bytes wait in a 4096-byte queue until `tty::push_char_nonblock` accepts them; a byte the
-  TTY refuses (its lock is held) stays at the head and is offered again 5 ms later. A key event is queued whole
-  or refused whole. `[hid] first key report` and `[hid] typed into the console tty: <n> bytes` print once each;
-  no key value is logged.
+- **Into TTY 0.** Bytes wait in a 4096-byte queue until `tty::push_char_nonblock_from` accepts them, tagged as
+  USB keyboard input; a byte the TTY refuses (its lock is held) stays at the head and is offered again 5 ms
+  later. A key event is queued whole or refused whole. `[hid] first key report`, `[hid] typed into the console
+  tty: <n> bytes` and TTY 0's `[console] first input byte input=keyboard` print once each, for the first key
+  after the replug exercise, so a key pressed earlier is not reported first; no key value is logged.
 - **Detach.** A disconnect, a disabled port or a new connection on a keyboard's port tears the device down:
   Stop Endpoint for EP0 and the keyboard endpoint, the slot's transfer events discarded once those commands
   complete, Disable Slot, its DCBAA entry cleared, and then its contexts, rings and buffers returned to the
@@ -665,8 +676,8 @@ and the HID Usage Tables; their comments cite the sections.
   with port power control (HCCPARAMS1.PPC) it powers the port off and on and attaches the connection the port
   then reports; without it, it disables the port and resets it. `[usb] replug exercise: port <n>: reattached
   <k> of 10 rounds` closes the exercise. The `usb-keyboard` milestone's stages are
-  the attach, the detach and the second attach; its typed-key stages are `input: keyboard` and wait for the
-  injector (ruling M2), which a SOL boot's `input: sol` record does not meet.
+  the attach, the detach and the second attach; its typed-key stages are `input: keyboard`, required only of an
+  attended boot.
 - **Hubs.** The machine's census found its keyboard device on a root port, so there is no hub class driver;
   a keyboard behind a hub is not attached.
 
@@ -729,53 +740,36 @@ Probe completion requires `PROBE DONE` and the measured kernel and fetch stages.
 
 ## Attended console run sheet
 
-Start an attended boot on the configured boot host (ask the agent to run it, or run
-this command there). The power button alone does not stage a boot image.
+This boot measures `usb-keyboard` and `console-login` from keys typed at the machine. The driver sends no input; the
+kernel marks which source delivered each byte, and only USB keyboard bytes count.
+
+**Before power-on:** a monitor on the VGA port, and a plain USB keyboard plugged directly into a USB port (not
+through a hub). Have `CONSOLE_PASSWORD` from your private credentials store; the account is `root`.
+
+**Start it** (or ask the agent to), on the boot host:
 
 ```sh
-python3 ~/.local/share/breenix-metal/metal-run boot --branch metal-console/attended --mode console --attended
+python3 ~/.local/share/breenix-metal/metal-run boot --mode console --attended
 ```
 
-Use the branch argument while this change is awaiting merge; after it lands,
-omit `--branch metal-console/attended` to use main.
+The driver builds main, takes the machine lease and powers on. **Hands off the keyboard until `Breenix login:`
+appears.** Then type, pressing **Enter** after each line:
 
-The driver builds the image, acquires the machine lease, starts SOL capture and
-powers on. It sends **no keystrokes**. Use the monitor connected to the machine's
-VGA port and a plain USB boot keyboard plugged directly into a USB port. The
-monitor shows boot messages, then `Breenix login:`. Allow time for the build and
-firmware startup before expecting that prompt.
+1. `root`, then at `Password:` any wrong password. Wait for `Login incorrect` and a new `Breenix login:`.
+2. `root`, then at `Password:` the real password. Wait for the `bsh` prompt.
+3. `print("metal-login-ok", 6*7)`, and look for `metal-login-ok 42` on its own line.
+4. `cat /proc/fbcon/check`, and look for `fbcon check: shadow and screen identical`.
+5. `logout`, and wait for a new `Breenix login:`. The driver then powers the machine off.
 
-Read `CONSOLE_USER` and `CONSOLE_PASSWORD` yourself from
-`~/agent-credentials/breenix-metal-console/.env` on your own computer. The staged
-account is `root`. Keep the password private; do not paste it into chat, commands
-on the boot host, or logs. It is not displayed while you type it.
+- A typo is fine: a failed login just returns to `Breenix login:`; start that step again. Any number of failed
+  attempts may come before the real one, and at least one must.
+- If keys do not appear just after the prompt, the keyboard is still being re-attached; wait a few seconds and
+  type the line again.
+- Do not type the password at `Breenix login:`. That prompt echoes, so it would be shown on the screen and kept in
+  the private serial record (exports mask it).
 
-Type these keys **in this order**, waiting for each indicated response:
-
-1. At `login:`, type `root`, then **Enter**.
-2. At `Password:`, type `deliberately-wrong-password`, then **Enter**.
-   Wait for `Login incorrect` and a new `login:` prompt.
-3. Type `root`, then **Enter**. At `Password:`, type the real password from
-   the private file, then **Enter**. Wait for the `bsh` shell prompt.
-4. Type `print("metal-console-ok", 6*7)`, then **Enter**.
-   Look for the answer on its own line: `metal-console-ok 42`.
-5. Type `logout`, then **Enter**. Wait for a new `Breenix login:` prompt.
-
-<!-- claim-lint:ok: protocol requirements tested in tests/metal_attended_test.py. -->
-Success requires the refused password, a successful login whose input all came
-from the USB keyboard, the exact computed answer and return to getty after
-logout, with USB-only session input. SOL typing cannot prove these stages. The
-boot record retains source markers and the challenge result, with password echo
-disabled; it is scored evidence, not a long-lived session. No screenshot is taken.
-The driver powers off when the challenge and required boot stages finish.
-
-<!-- claim-lint:ok: wait boundary checked in tests/metal_attended_test.py. -->
-You have **30 minutes from kernel handoff** by default. `--wait MIN` changes this
-wait (positive minutes, up to 240; fractions allow short unattended timeout checks).
-If nobody types, or the challenge is incomplete, the driver records the missing
-stages and powers off at the deadline. To cancel sooner, run `metal-run stop ID`
-on the configured boot host, using the ID printed when the boot started. To stay
-logged in for ordinary use, request a separate `--session` boot after this proof.
+You have 30 minutes from kernel handoff (`--wait MIN` changes it, up to 240). With nobody typing, the driver
+records the missing stages and powers off at the deadline. `metal-run stop ID` ends it sooner.
 
 ## Redaction
 
