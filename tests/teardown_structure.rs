@@ -4492,6 +4492,9 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_prove_nested_drain_refusal", 1),
+    // Ruling S26: the reclaim daemon drains on a timer, so a machine whose CPUs
+    // stay busy still retires dead processes' page tables and address spaces.
+    ("kernel/src/task/process_task.rs", "fn reclaim_daemon", 1),
 ];
 /// Whole-tree writes include the boot-test alias arm. The separate production
 /// subset check in the page-table validator remains fixed to clone.rs +

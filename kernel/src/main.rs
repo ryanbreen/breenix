@@ -657,6 +657,9 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     task::start_dispatch_strand_census_kthread();
     // Deferred user-fault process exits run in their own kernel thread (#511).
     task::process_task::start_fault_exit_daemon();
+    // Deferred reclamation drains on a timer too, not only when a CPU idles
+    // or a process starts or ends (ruling S26).
+    task::process_task::start_reclaim_daemon();
     // Queued COM1 output goes to the UART from its own kernel thread (#1415).
     serial::start_transmitter();
     #[cfg(feature = "btrt")]
@@ -969,6 +972,12 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // flag it finds, so the boot sequence below inherits the state it had.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     kernel::task::timer_wake_oracle::run();
+
+    // Ruling S26: deferred reclamation retires a CLONE_VM-only child's receipt
+    // while a spinning thread holds each CPU. Placed beside the leg above for the same
+    // reasons; it leaves the reclaim queues empty for the boot tests below.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    kernel::task::reclaim_busy_oracle::run();
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
