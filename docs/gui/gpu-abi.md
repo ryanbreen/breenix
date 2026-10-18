@@ -86,7 +86,8 @@ another process holds names nothing here. A handle's top byte is neither 0x00 no
 the form of a user, kernel or physical address. No op writes back a kernel or device address: each output
 is a handle, a context fence, a device id below 2³² (record v2's `context` and `resource`), a count, a
 size, a serial, a generation, a status, an answer or a reason, a capability value, a string, or bytes of
-the caller's own pixels.
+the caller's own pixels. G7 additionally reports the current scanout's pixels to its display owner
+and the FNV memory fingerprints defined in the G7 display interface.
 
 <!-- claim-lint:ok: Normative G6 interface requirement from docs/gui/gpu.md section 1.16, not a measured result. -->
 **Reclamation.** The exit of a process's last thread, normal or by a signal, drops every handle the
@@ -238,6 +239,76 @@ nothing written or counted. The kernel cannot hold those pages against the calle
 unmapped or made read-only after that check, the call returns EFAULT, the readback is not counted, and the
 contents of the three output ranges are unspecified, except that every byte the kernel wrote to the pixels
 belongs to an observation that passed both poisons.
+
+## G7 display interface
+
+<!-- claim-lint:ok: Proposed G7 interface requirements implementing gpu.md section 1.7, not measured results. -->
+`MODES` takes a 256-byte output record, initially zero. Fields are little-endian:
+
+| Offset | Field |
+|---|---|
+| 0 | `version: u32` (1), `size: u32` (256) |
+| 8 | `count: u32` (2), `current: u32` (mode index, initially 1) |
+| 16 | `max_width: u32`, `max_height: u32`, from CAPS |
+| 24 | `owner_depth: u32` (0 to 4, excluding the kernel), `binding_known: u32` |
+| 32 | Two 16-byte modes: `width, height, scale, reserved: u32`; index 0 is 1280x800 at scale 1, index 1 is 2560x1600 at scale 2 |
+| 64 | `scanout_resource: u64`, the completed binding's device resource id, or 0 |
+| 72 | `console_resource: u64`, the kernel console's device resource id, or 0 before creation |
+| 80 | `console_draws: u64`, completed bitmap_text draws |
+| 88 | `console_fixture_bytes: u64`, font-table bytes transferred to its GPU atlas |
+| 96 | `handoff: u64`, 1 after the first completed GPU console present, else 0 |
+| 104 | `firmware_hash_at_handoff: u64`, `firmware_hash_now: u64` at 112 |
+| 120 | Reserved through byte 255 (136 bytes, value 0) |
+
+The hashes are FNV-1a over the actual legacy framebuffer bytes (offset basis
+14695981039346656037, multiplier 1099511628211), sampled after quiescing kernel framebuffer
+writers at handoff and again at MODES. They measure memory, not a drawing-policy flag.
+They are intended to observe kernel console writes: programs using the legacy framebuffer
+API can still change that framebuffer until the BreenGL migration removes it.
+
+<!-- claim-lint:ok: Proposed G7 requirements implementing gpu.md sections 1.7 and 1.8. -->
+`SET_MODE` takes 16 bytes: `index: u32`, three reserved u32s, zero on input. An index other
+than 0 or 1 is EINVAL. Ownership is checked before argument validation: a non-owner
+gets EPERM even with malformed arguments. The owner's SET_MODE(NULL, 0) returns EINVAL.
+The selection belongs to the current owner and is restored with that owner. SET_MODE does
+not resize existing resources: subsequent full-screen targets use the selected dimensions;
+small diagnostic scanout targets accepted since G2 remain legal. SET_MODE itself neither
+reinterprets nor destroys a previously drawn target.
+
+<!-- claim-lint:ok: Proposed G7 requirements implementing the ownership stack in gpu.md section 1.7. -->
+Syscalls 431 and 432 retain their argument-free interface. TAKE_DISPLAY of the current owner
+is idempotent; taking again as an owner already lower in the stack is a cycle and returns
+EBUSY. Direct take-over requires uid 0. A new owner pushes, up to four userspace owners; a
+fifth returns EBUSY without a change. GIVE_DISPLAY from anyone other than the current owner returns
+EPERM. Giving back pops, restores the previous owner's mode and last presented target, and
+waits for that restore's device flush. Giving back the last user owner redraws and presents
+the kernel console. Exit or exec removes that owner's entry; removing the top restores the
+previous live owner, or the kernel. Saved targets retain their backing independently of
+userspace handles until their stack entry is replaced or removed.
+
+<!-- claim-lint:ok: Proposed G7 observation requirements implementing gpu.md sections 1.7 and 1.8. -->
+READBACK with target 0 means the current scanout, available only to the current display
+owner. A live process that is not the current owner gets EPERM for target 0. When a child
+owner exits, the previous live parent owner is restored and can read back target 0.
+It uses the completed binding's actual resource and rendering context, including the
+kernel console's; no foreign resource handle is exposed. Unknown binding returns EIO,
+reason 10. Its record has target 0 and the actual device resource id; its pixels pass the
+same two-poison observation as an ordinary target. This allows a new owner to observe the
+screen left by its predecessor before presenting its own frame. Explicit foreign handles
+remain EINVAL. The console uses the built-in Noto Sans Mono 16 px coverage tables through
+bitmap_text, with a fixed header `Breenix GPU console` at physical (16,16), scale 1,
+foreground BGRA 0xFFE8EDF2 over background 0xFF181512; log lines follow below it.
+
+<!-- claim-lint:ok: Proposed G7 fault requirements implementing points 25 and 26 in gpu.md section 1.8. -->
+Point 25, skip-present-flush, matches the target handle (0 for any). It sends SET_SCANOUT
+but omits RESOURCE_FLUSH. PRESENT returns EIO with answer 0 and fence 0: no flush completion
+is invented, the binding stays unknown, and scanout readback returns reason 10 until a
+later completed present. Point 26, wrong-scanout, binds the first-created other live scanout
+target of the process, then flushes that actual resource. With none it stays armed. PRESENT
+returns its normal fence, but MODES and READBACK target 0 identify the resource actually
+named by the binding command, and an observation of the requested target has scanout bit 0
+clear. Detection compares the observed binding and pixels with the intended target; it
+never consults the armed fault to decide what was displayed.
 
 **`PRESENT` (32 bytes):** `target: u64`, `fence: u64` out at 8, `answer: u32` out at 16, 4 reserved,
 `context: u64` at 24. Display owner only (EPERM otherwise). `context` is one of the caller's contexts
