@@ -24,6 +24,35 @@ slots.RESOURCES['x86-build'] = 2
 
 
 class HostSlotsTest(unittest.TestCase):
+    def test_vmware_names_are_reused_per_held_mac_boot_slot(self):
+        # Use the launcher's actual naming expression against two real leases.
+        source = (HELPER.parents[1] / 'run.sh').read_text()
+        name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
+        script = (f'source {HELPER.with_suffix(".sh")}; '
+                  'host_slot_acquire mac-boot; ' + name + '; '
+                  'echo READY:$VM_NAME; read -r release')
+        first = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
+        self.assertIn('READY:breenix-mac-boot-1', self.line_matching(first, 'READY:'))
+        second = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
+        self.assertIn('READY:breenix-mac-boot-2', self.line_matching(second, 'READY:'))
+        first.communicate(input=b'finish\n', timeout=15)
+        self.assertEqual(first.returncode, 0)
+        again = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
+        self.assertIn('READY:breenix-mac-boot-1', self.line_matching(again, 'READY:'))
+        for process in (second, again):
+            process.communicate(input=b'finish\n', timeout=15)
+            self.assertEqual(process.returncode, 0)
+
+    def test_slot_number_requires_a_held_lease(self):
+        script = (self.request('number', 'mac-boot') + '; test $? != 0; '
+                  + self.request('acquire', 'mac-boot') + '; '
+                  + self.request('release', 'mac-boot') + '; '
+                  + self.request('number', 'mac-boot') + '; test $? != 0')
+        process = self.launch(script)
+        output = process.communicate(timeout=15)[0].decode()
+        self.assertEqual(process.returncode, 0, output)
+        self.assertEqual(output.count('RuntimeError: resource lease is not held'), 2, output)
+
     def test_staged_classifier_stops_checkout_without_watchdog(self):
         bundle = self.root / 'watchdog'
         repo = HELPER.parents[1]
