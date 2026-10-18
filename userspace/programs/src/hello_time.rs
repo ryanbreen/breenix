@@ -17,7 +17,7 @@ fn main() {
 
     // Print greeting with time info
     let ticks_ns = ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64;
-    print!("Hello from userspace (incremental cache baseline)! Current time: {} ticks\n", ticks_ns);
+    print!("Hello from userspace! Current time: {} ticks\n", ticks_ns);
 
     // Exit cleanly with code 0
     process::exit(0);
