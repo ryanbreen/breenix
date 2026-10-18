@@ -19,16 +19,12 @@ fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; re
     let r = gpu::call_with(abi::op::READBACK, &mut a);
     (r, a)
 }
-/// Bind a target this case drew to the scanout (section 1.10: each rendering case binds
-/// its target while it owns the display).
+/// Present a judged source through the display-sized viewing path (ruling 53).
 fn present_fence(ctx: u64, t: u64) -> Result<u64, libbreenix::suite::CaseError> {
-    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.fence != 0 && p.answer == native_success()?, || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
-    let (r, w) = gpu::wait(ctx, p.fence, 2_000_000_000);
-    ensure(r == 0 && w.status == abi::fence_status::OK, || format!("WAIT PRESENT: {} status={}", errno(r), w.status))?;
+    let p = present_view(ctx, t)?.ok_or_else(|| fail_msg("present fence requested for oversized source".to_string()))?;
     Ok(p.fence)
 }
+
 fn present(ctx: u64, t: u64) -> CaseResult {
     present_fence(ctx, t).map(|_| ())
 }
@@ -79,7 +75,7 @@ pub fn full_target() -> CaseResult {
     let second = frame(ctx, &scene(t, B, &[]))?;
     ensure(second as u32 == 2, || "offscreen PRESENT consumed a context fence".to_string())?;
     let presented = present_fence(ctx, t)?;
-    ensure(presented as u32 == 3, || "PRESENT did not follow the context's submissions".to_string())?;
+    ensure(presented as u32 == 4, || "PRESENT did not follow the context's submissions".to_string())?;
     expect(t, &scene_canvas(47, 13, B, &[]), "full clear")?;
     pass()
 }
@@ -150,19 +146,30 @@ pub fn record_fields() -> CaseResult {
     frame(ctx, &scene(t, B, &[([1, 1, 4, 3], B), ([3, 2, 7, 5], C)]))?;
     let presented = present_fence(ctx, t)?;
     let (px, rec) = read(t, 17, 9)?;
-    ensure(u64_at(&rec, 184) == presented, || format!("record present fence {} differs from PRESENT {presented}", u64_at(&rec, 184)))?;
+    let (_, scanout) = read(0, 17, 9)?;
+    ensure(u64_at(&scanout, 184) == presented && u32_at(&scanout, 24) == 1,
+        || "display record lost completed present".to_string())?;
+    let mut modes = abi::Modes::ZERO;
+    ensure(gpu::call_with(abi::op::MODES, &mut modes) == 0, || "MODES failed".to_string())?;
+    let display = modes.modes[modes.current as usize];
+    ensure(u32_at(&scanout, 48) == display.width && u32_at(&scanout, 52) == display.height
+        && u64_at(&scanout, 80) != u64_at(&rec, 80)
+        && u64_at(&scanout, 80) == modes.scanout_resource,
+        || "record-fields confused source and display geometry or identity".to_string())?;
+    let (shown, _) = read(0, 17, 9)?;
+    want(17, 9, B).matches(&shown, "source pixels at display origin")?;
     want(17, 9, B).matches(&px, "record's pixels")?;
     let native = observation_backend(&rec)?;
-    for (at, v) in [(0, 2), (4, 1024), (16, caps()?.backend), (20, 4), (24, 1), (28, 0), (32, 0), (36, 0),
+    for (at, v) in [(0, 2), (4, 1024), (16, caps()?.backend), (20, 4), (24, 0), (28, 0), (32, 0), (36, 0),
         (40, 17), (44, 9), (48, 17), (52, 9), (56, 68), (60, 0), (112, native.success), (116, native.draw),
-        (128, native.success), (132, native.readback), (160, A), (164, 0), (192, native.success), (196, 0)] {
+        (128, native.success), (132, native.readback), (160, A), (164, 0), (192, 0), (196, 0)] {
         ensure(u32_at(&rec, at) == v, || format!("record[{at}]={} expected {v}", u32_at(&rec, at)))?;
     }
-    for at in [8, 64, 80, 88, 96, 104, 120, 184] {
+    for at in [8, 64, 80, 88, 96, 104, 120] {
         ensure(u64_at(&rec, at) != 0, || format!("record[{at}] is zero"))?;
     }
     ensure(u64_at(&rec, 72) == t, || "record target handle".to_string())?;
-    for range in [168..184, 200..712, 776..1024] {
+    for range in [168..192, 200..712, 776..1024] {
         ensure(rec[range.clone()].iter().all(|&b| b == 0), || format!("nonzero reserved/window range {range:?}"))?;
     }
     ensure(rec[712..776] == caps()?.renderer, || "renderer differs from CAPS".to_string())?;

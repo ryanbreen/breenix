@@ -100,11 +100,7 @@ fn expect_draw(
 
 fn observe(ctx: u64, t: u64, want: &Canvas, what: &str) -> R<[u8; record::SIZE]> {
     let rec = super::common::expect(t, want, what)?;
-    libbreenix::graphics::take_over_display()
-        .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0, || format!("PRESENT: {}", errno(r)))?;
-    wait_ok(ctx, p.fence, 2_000)?;
+    present_view(ctx, t)?;
     Ok(rec)
 }
 

@@ -5,7 +5,7 @@
 
 use libbreenix::gpu::{self, abi, abi::Plain};
 use libbreenix::suite::{case_ms_left, value, wait_for, CaseError, CaseResult};
-use libbreenix::{graphics, memory, time};
+use libbreenix::{memory, time};
 use libbreenix::signal::{self, Itimerval, Sigaction, Timeval, ITIMER_REAL, SIGALRM};
 use super::common::*;
 use abi::{purpose, upload_source as src};
@@ -179,13 +179,10 @@ fn expect_image(t: u64, fmt: u32, want: &Image, what: &str) -> R<[u8; record::SI
     Ok(rec)
 }
 
-/// Bind a target this case drew to the scanout (section 1.10: each rendering case binds its
-/// target while it owns the display).
+/// Show a judged target through the display-sized viewing path (ruling 53).
 fn show(ctx: u64, t: u64) -> R<()> {
-    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0, || format!("PRESENT returned {}", errno(r)))?;
-    wait_ok(ctx, p.fence, 2_000)
+    present_view(ctx, t)?;
+    Ok(())
 }
 
 /// A frame that clears target `t` to `bg` and draws `instances` from `tex` with `copy`.
