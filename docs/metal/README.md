@@ -489,9 +489,32 @@ operator resolves that difference. No restore step writes storage.
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
 Their proposed stage lists cover RAM-disk, install and disk-root shapes. Each is `stub: true` (not yet measured)
 until its producing lane lands; existing modes keep their measured stages and completion markers.
-The `console` mode is reserved for keyboard-driven login. Image staging and login input arrive in the login lane;
-until then a console boot is refused during staging, before power-on. SOL login development leaves physical
-keyboard typing unmeasured. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
+Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
+which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
+Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,
+sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled,
+verifies the staged SHA-512-crypt hash, clears supplementary groups, sets the account's group and user IDs,
+changes to its home and executes the shell with a login argv[0] and a fresh environment.
+Missing, locked or unsupported shadow entries refuse authentication.
+
+The private site file supplies `CONSOLE_USER=root` and a generated `CONSOLE_PASSWORD`; the operator's
+copy belongs in their private credentials store. `CONSOLE_IDENTITY_KEY` is a separate random 32-byte key
+encoded as 64 lowercase hex digits. The kept credential identity is an HMAC-SHA256 under that key,
+so records alone do not provide a password verifier. These fields are host-only. Staging builds a fresh random
+salt and hashes through a host helper compiled from the same Breenix SHA-512-crypt code used by login.
+It writes and reads back `/etc/shadow` with root ownership and mode 0600. The cached image has no password.
+Passwords reach the helper and SOL input over stdin, without command arguments or event text.
+
+The SOL challenge requires a wrong password refusal before the successful authentication, a whole computation
+answer line, logout, checked controlling-terminal reacquisition and a new login prompt. Its run records
+`input: sol` and `evidenceEligible: false`. The console-login definition records these producing stages and
+retains the screen and keyboard stages in its active stage list, with the milestone stubbed until a local measurement. The `first-local-login` stage remains waiting for the injector
+under ruling M2. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
+
+Only the storage lane may run `--mode console --input sol --disk install`: the console target and shadow
+then ride the verified image copy. A subsequent `--disk root` console request requires that recorded install's
+commit, console mode and credential identity to match. It does not restage or change credentials on the SSD.
+A changed credential requires the storage lane to install again. This lane uses a RAM-disk hardware boot.
 
 ## Files
 
@@ -734,3 +757,7 @@ Both builds acquired `metal-build` with zero wait. The install built userspace o
 entry. The root record identified the install boot above. The later conflict-free main integration `4f5e0540`
 brought in thread retention changes; these storage measurements describe `cad77796`, not that later kernel.
 claim-lint:ok: 2 of 2 retained host build logs report acquired metal-build waited=0.0s and record userspace cache provenance.
+
+For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PATH`, compile
+`scripts/metal/sha512-crypt.rs` with `rustc --edition=2021 -O` to a temporary helper, then set
+`CONSOLE_HASH_HELPER` to that helper and run `python3 tests/metal_console_test.py`.

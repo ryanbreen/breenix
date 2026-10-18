@@ -1211,11 +1211,11 @@ fn launch_x86_production_init(
     exe_path: &[u8],
     elf_data: &[u8],
     only: Option<&str>,
-    shell: bool,
+    console_mode: Option<&str>,
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
-    if shell {
+    if console_mode.is_some() {
         serial::command::use_tty_input();
     }
     let (thread, designated_pid_raw, reserved_collisions) = {
@@ -1226,8 +1226,8 @@ fn launch_x86_production_init(
 
         let path = alloc::format!("/sbin/{}", name);
         let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
-        if shell {
-            argv.push(b"shell");
+        if let Some(mode) = console_mode {
+            argv.push(mode.as_bytes());
         }
         if let Some(case) = only {
             argv.extend_from_slice(&[b"--case", case.as_bytes()]);
@@ -1291,7 +1291,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Shell)) => None,
+            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console)) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(None) => None,
             Err(why) => {
@@ -1299,7 +1299,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
                 None
             }
         },
-        Some("default" | "shell") => None,
+        Some("default" | "shell" | "console") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1334,13 +1334,18 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     }
 }
 
-/// Select init's shell argument through the same fw_cfg-before-file rule.
+/// Select init's interactive argument through the same fw_cfg-before-file rule.
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
-fn x86_boot_shell() -> bool {
+fn x86_console_mode() -> Option<&'static str> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
-        Some("shell") => true,
-        None | Some("") => matches!(kernel::boot::target::read(), Ok(Some(kernel::boot::target::Target::Shell))),
-        _ => false,
+        Some("shell") => Some("shell"),
+        Some("console") => Some("console"),
+        None | Some("") => match kernel::boot::target::read() {
+            Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
+            Ok(Some(kernel::boot::target::Target::Console)) => Some("console"),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -1358,7 +1363,7 @@ fn x86_boot_shell() -> bool {
     ))
 ))]
 fn read_x86_production_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, bool), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
     let suite = match x86_boot_target() {
@@ -1369,7 +1374,7 @@ fn read_x86_production_init(
             {
                 Ok((elf_data, exe_path)) => {
                     log::info!("[boot] Boot mode: probe");
-                    return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, false));
+                    return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, None));
                 }
                 Err(e) => log::warn!("[boot] Ignoring boot mode \"probe\": /sbin/probe could not be loaded ({})", e),
             }
@@ -1389,7 +1394,7 @@ fn read_x86_production_init(
                 } else {
                     log::info!("[boot] Boot mode: suite {}", id);
                 }
-                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case, false));
+                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case, None));
             }
             Err(e) => log::warn!(
                 "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
@@ -1411,11 +1416,11 @@ fn read_x86_production_init(
     ))
 ))]
 fn read_default_x86_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, bool), &'static str> {
-    let shell = x86_boot_shell();
-    log::info!("[boot] Boot mode: {}", if shell { "shell" } else { "default" });
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
+    let mode = x86_console_mode();
+    log::info!("[boot] Boot mode: {}", mode.unwrap_or("default"));
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
-        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, shell))
+        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, mode))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -2020,9 +2025,9 @@ fn kernel_main_continue() -> ! {
         let mut image = read_x86_production_init();
         loop {
             match image {
-                Ok((name, exe_path, elf_data, only, shell)) => {
+                Ok((name, exe_path, elf_data, only, mode)) => {
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), shell)
+                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), mode)
                     });
                     match launched {
                         Ok(()) => {}

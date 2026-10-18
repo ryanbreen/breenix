@@ -119,6 +119,8 @@ struct Evidence {
     kick_all_ticks: u64,
     masked_accounting: u64,
     kick_masked_cpus: u64,
+    kick_held: u64,
+    kick_held_cpu: u64,
     kick_cpu: u64,
     kick_sender_cpu: u64,
     kick_vcpu: u64,
@@ -164,6 +166,8 @@ fn evidence(pid: i32) -> Evidence {
         kick_all_ticks: parse_value(&contents, "kick_all_ticks"),
         masked_accounting: parse_value(&contents, "masked_accounting"),
         kick_masked_cpus: parse_value(&contents, "kick_masked_cpus"),
+        kick_held: parse_value(&contents, "kick_held"),
+        kick_held_cpu: parse_value(&contents, "kick_held_cpu"),
         kick_cpu: parse_value(&contents, "kick_cpu"),
         kick_sender_cpu: parse_value(&contents, "kick_sender_cpu"),
         kick_vcpu: parse_value(&contents, "kick_vcpu"),
@@ -266,10 +270,19 @@ const STARVED_NS_PER_TICK: u128 = 15_000_000_000 / 250;
 /// run inconclusive: neither a pass nor a kernel failure.
 static STARVED_WINDOWS: AtomicU64 = AtomicU64::new(0);
 
+/// Why a window of a tick or more was starved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Starvation {
+    /// The counter ran past `STARVED_NS_PER_TICK` per delivered tick.
+    Ticks,
+    /// A CPU was held off a due tick for at least `held_needed` of the window.
+    Held,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KickVerdict {
     Pass,
-    Starved,
+    Starved(Starvation),
     Fail,
 }
 
@@ -286,8 +299,17 @@ enum KickVerdict {
 /// Otherwise the window is starved only if the host's own record shows the
 /// stall, which this test cannot see: it prints the window for the gate's
 /// scorer, which fails it without that record (scripts/score-sigkill-teardown.py).
-/// claim-lint:ok: the rule is #1715's; the masking accounting is
-/// kernel/src/arch_impl/aarch64/irq_mask_account.rs.
+///
+/// A host stall rarely leaves a window like that: when it ends, each CPU takes
+/// its overdue tick first, and a CPU stopped inside a masked section reads as
+/// masked. So where the kernel accounts masking, a window is also starved when
+/// one CPU spent at least `held_needed` of it with interrupts enabled and its
+/// tick due but not taken (`kick_held`). A running CPU with interrupts enabled
+/// takes a due tick when it is delivered, so the guest cannot cause that time.
+/// Any other window of a tick or more fails, including one where a CPU masked
+/// interrupts too long or the kill path itself was slow.
+/// claim-lint:ok: the rule is #1715's and #1737's; the masking accounting and
+/// the held time are kernel/src/arch_impl/aarch64/irq_mask_account.rs's.
 fn kick_verdict(current: &Evidence) -> KickVerdict {
     if current.kick_interval == 0 {
         return KickVerdict::Fail;
@@ -300,15 +322,30 @@ fn kick_verdict(current: &Evidence) -> KickVerdict {
     let observer_starved = interval_ns > STARVED_NS_PER_TICK * u128::from(current.kick_ticks);
     let all_starved = interval_ns * u128::from(current.online_cpus)
         > STARVED_NS_PER_TICK * u128::from(current.kick_all_ticks);
-    if !(observer_starved && all_starved) {
-        return KickVerdict::Fail;
+    let ticks_starved = observer_starved
+        && all_starved
+        && (current.masked_accounting != 1
+            || (current.kick_all_ticks == 0 && current.kick_masked_cpus == 0));
+    if ticks_starved {
+        return KickVerdict::Starved(Starvation::Ticks);
     }
-    if current.masked_accounting == 1
-        && (current.kick_all_ticks != 0 || current.kick_masked_cpus != 0)
-    {
-        return KickVerdict::Fail;
+    if current.masked_accounting == 1 && current.kick_held >= held_needed(current) {
+        return KickVerdict::Starved(Starvation::Held);
     }
-    KickVerdict::Starved
+    KickVerdict::Fail
+}
+
+/// The held time, in counter ticks, that makes a window of a tick or more
+/// starved: more than the window's excess over one tick, so the host's stall
+/// accounts for the excess, and at least half a tick (500 us at 1 ms ticks),
+/// a margin over ordinary interrupt delivery. 0 for a window under one tick.
+/// claim-lint:ok: the 400 send-to-observe windows measured on main for #1737
+/// peaked at 266 us.
+fn held_needed(current: &Evidence) -> u64 {
+    if current.kick_interval < current.tick_period {
+        return 0;
+    }
+    (current.kick_interval - current.tick_period + 1).max(current.tick_period / 2)
 }
 
 /// Counter microseconds per delivered tick, as `ms.mmm`, for the evidence line.
@@ -344,7 +381,7 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
         let tick_us =
             u128::from(current.tick_period) * 1_000 / u128::from(current.counter_ticks_per_ms);
         println!(
-            "SIGKILL_TEARDOWN_TEST: pid={pid} defer={} reclaim={} kick_cpu={} sender_cpu={} counter_interval={} tick_period={} counter_ticks_per_ms={} interval_us={} tick_us={} observer_ticks={} all_ticks={} online_cpus={} observer_ms_per_tick={} all_ms_per_tick={} starved_ms_per_tick={} kick_at={} observer_vcpu={} sender_vcpu={} masked_cpus={} starvation_check={} verdict={}",
+            "SIGKILL_TEARDOWN_TEST: pid={pid} defer={} reclaim={} kick_cpu={} sender_cpu={} counter_interval={} tick_period={} counter_ticks_per_ms={} interval_us={} tick_us={} observer_ticks={} all_ticks={} online_cpus={} observer_ms_per_tick={} all_ms_per_tick={} starved_ms_per_tick={} kick_at={} observer_vcpu={} sender_vcpu={} masked_cpus={} held={} held_cpu={} held_needed={} starved_by={} starvation_check={} verdict={}",
             current.defer, current.reclaim, current.kick_cpu, current.kick_sender_cpu,
             current.kick_interval, current.tick_period, current.counter_ticks_per_ms,
             interval_us, tick_us, current.kick_ticks, current.kick_all_ticks, current.online_cpus,
@@ -353,16 +390,22 @@ fn assert_kill_evidence(pid: i32, current: Evidence) {
             STARVED_NS_PER_TICK / 1_000_000,
             current.kick_at, current.kick_vcpu, current.kick_sender_vcpu,
             current.kick_masked_cpus,
+            current.kick_held, current.kick_held_cpu, held_needed(&current),
+            match verdict {
+                KickVerdict::Starved(Starvation::Ticks) => "ticks",
+                KickVerdict::Starved(Starvation::Held) => "held",
+                KickVerdict::Pass | KickVerdict::Fail => "none",
+            },
             if current.masked_accounting == 1 { "guest" } else { "host" },
             match verdict {
                 KickVerdict::Pass => "pass",
-                KickVerdict::Starved => "STARVED",
+                KickVerdict::Starved(_) => "STARVED",
                 KickVerdict::Fail => "fail",
             }
         );
         match verdict {
             KickVerdict::Pass => {}
-            KickVerdict::Starved => {
+            KickVerdict::Starved(_) => {
                 STARVED_WINDOWS.fetch_add(1, Ordering::Relaxed);
             }
             KickVerdict::Fail => fail("send-to-observe interval was not strictly shorter than one tick, and the window was not starved"),

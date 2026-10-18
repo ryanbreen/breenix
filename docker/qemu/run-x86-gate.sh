@@ -48,14 +48,16 @@
 #   BREENIX_QMP_SOCKET  if set, QEMU opens a QMP socket at this path (qemu-uefi.rs)
 #                       so a screendump can be taken while the VM runs. In suite
 #                       mode the gate also saves the final screen as screen.png in
-#                       the boot's output directory.
+#                       the boot's output directory, and the socket defaults to
+#                       $BREENIX_GATE_TMP/qmp.sock.
 #   BREENIX_GATE_TMP    base dir for boot output (default: /tmp). #797:
 #                       concurrent lanes on the shared beast container each
 #                       hardcoded /tmp/breenix_gate_$i, so one lane's rm -rf +
 #                       mkdir could clobber another lane's in-flight run and
 #                       score its serial as its own; a concurrent-lane
 #                       launcher sets this to a per-clone directory instead.
-#   BREENIX_GATE_PHASE  all (default): build, then boot. build: only the build half;
+#   BREENIX_GATE_PHASE  all (default): build, then boot (on a gate VM configured for the
+#                       build container, through scripts/gate-tree.py). build: only the build half;
 #                       it writes the files the boot half needs and its kernel build
 #                       seconds as JSON to BREENIX_GATE_OUTPUTS, then exits.
 #                       scripts/x86-gate-build.py runs this phase in the x86 build
@@ -120,6 +122,47 @@ if [ "$COUNT" -gt "$MAX_CONCURRENCY" ]; then
 fi
 
 cd "$REPO_DIR" || { echo "GATE: FAIL (repo dir missing: $REPO_DIR)"; exit 1; }
+
+# A gate VM configured for the x86 build container (scripts/x86-gate-build.py) keeps builds
+# off its own reserved CPUs. A direct call from a private clone of the VM's canonical repository
+# hands the whole gate to scripts/gate-tree.py, which builds the clone's commit in the
+# container and boots it here, writing beneath BREENIX_GATE_TMP. A gate-cache tree that
+# asks for both halves comes from a launcher older than the container builds, and is refused.
+if [ "$PHASE" = all ] && [ -f "$HOME/.config/breenix-gate/build-host.env" ]; then
+  if [ -n "${BREENIX_GATE_CACHE_DIR:-}" ]; then
+    echo "GATE: FAIL (this gate VM builds in the x86 build container, and this launcher's scripts/gate-tree.py builds here; run the current breenix-runs)"
+    exit 1
+  fi
+  DIRECT_CANONICAL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null) || DIRECT_CANONICAL=""
+  if [[ "$DIRECT_CANONICAL" != /* ]] || [ ! -d "$DIRECT_CANONICAL/.git" ]; then
+    echo "GATE: FAIL (a direct gate call on this VM must run in a clone of its canonical repository; origin is '$DIRECT_CANONICAL')"
+    exit 1
+  fi
+  if [ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]; then
+    echo "GATE: FAIL (the container builds a commit, and $REPO_DIR has uncommitted changes)"
+    exit 1
+  fi
+  # Check here while the private clone's local effort refs are still visible.
+  # Read the project's heads, rather than the canonical cache's stale local heads.
+  DIRECT_ORIGIN=$(git -C "$DIRECT_CANONICAL" remote get-url origin) || exit 1
+  DIRECT_SHA=$(env "GIT_CONFIG_COUNT=$(( ${GIT_CONFIG_COUNT:-0} + 1 ))" \
+    "GIT_CONFIG_KEY_${GIT_CONFIG_COUNT:-0}=url.$DIRECT_ORIGIN.insteadOf" \
+    "GIT_CONFIG_VALUE_${GIT_CONFIG_COUNT:-0}=$DIRECT_CANONICAL" \
+    python3 "$REPO_DIR/scripts/effort-target-guard.py" \
+    --repo "$REPO_DIR" --commit HEAD --target x86) || exit 1
+  export BREENIX_TARGET_POLICY_CHECKED="x86:$DIRECT_SHA"
+  # gate-tree derives the run identity from the output directory's parent.
+  mkdir -p "$BREENIX_GATE_TMP" || exit 1
+  DIRECT_RUN=$(mktemp -d "$BREENIX_GATE_TMP/direct-x86-XXXXXXXX") || exit 1
+  export BREENIX_GATE_TMP="$DIRECT_RUN/gate-tmp"
+  mkdir -p "$BREENIX_GATE_TMP" || exit 1
+  echo "[gate] direct output: $BREENIX_GATE_TMP"
+  # Direct calls share one cached tree, so each boot builds incrementally.
+  DIRECT_LANE=$(printf '%s direct gate' "$DIRECT_CANONICAL" | sha256sum | cut -c1-64)
+  echo "[gate] direct call: building ${DIRECT_SHA:0:12} in the x86 build container through scripts/gate-tree.py"
+  exec python3 "$REPO_DIR/scripts/gate-tree.py" "$DIRECT_CANONICAL" "$DIRECT_LANE" "$DIRECT_SHA" \
+    "$BREENIX_GATE_TMP" "$COUNT" "$MODE"
+fi
 
 
 # Validate against the catalog before any build or disk packing. An explicitly
@@ -212,6 +255,8 @@ PYIDS
   done
   MODE="suite"
   FEATURES=""
+  # scripts/x86-suite-boot.py stops the VM and saves its final screen over QMP.
+  export BREENIX_QMP_SOCKET="${BREENIX_QMP_SOCKET:-$BREENIX_GATE_TMP/qmp.sock}"
   echo "[gate] suite=$SUITE (production kernel, /sbin/suite-$SUITE as PID 1)"
 fi
 # Seconds the VM stays up after the suite's DONE line, so its final screen can be captured.

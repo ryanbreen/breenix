@@ -133,6 +133,8 @@ class Driver:
         self.required_stages = []
         self.shell_ready = False
         self.shell_sent = False
+        self.console_step = 0
+        self.console_done = False
         self.delivery = {}
         self.payload_facts = None
         self.last_phase_progress = 0.0
@@ -167,7 +169,9 @@ class Driver:
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'suite': getattr(self.args, 'suite', None), 'inject': self.args.inject or None,
-               'disk': getattr(self.args, 'disk', None), 'toolsCommit': tools_commit()}
+               'disk': getattr(self.args, 'disk', None), 'toolsCommit': tools_commit(),
+               'input': getattr(self.args, 'input', None),
+               'evidenceEligible': self.args.mode != 'console'}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -294,12 +298,19 @@ class Driver:
                 raise Finish(m.EXIT_CANCELLED, 'no verified install is recorded for the disk')
             if installed.get('commit') != self.args.commit:
                 raise Finish(m.EXIT_CANCELLED, 'the recorded install is from a different commit; install this commit first')
+            if self.args.mode == 'console':
+                if (installed.get('mode') != 'console'
+                        or installed.get('consoleIdentity') != metal_root.console_identity(self.site)):
+                    raise Finish(m.EXIT_CANCELLED, 'the installed root has a different console target or credential')
+            elif installed.get('mode', 'probe') != self.args.mode:
+                raise Finish(m.EXIT_CANCELLED, 'the installed root has a different boot target')
             self.delivery['diskRoot'] = installed
             self.event('disk-root-expected', installedBy=installed.get('installedBy'), bytes=installed.get('bytes'))
         else:
             self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
                                                            getattr(self.args, 'suite', None), self.site,
-                                                           install=self.id if disk == 'install' else None)
+                                                           install=self.id if disk == 'install' else None,
+                                                           hasher=inputs / 'sha512-crypt')
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -491,7 +502,12 @@ class Driver:
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
-        self.challenge_shell(self.line)
+        try:
+            self.challenge_shell(self.line)
+            self.challenge_console(self.line)
+        except Finish as finish:
+            if decision is None or finish.status != m.EXIT_DONE:
+                decision = finish
         if self.fatal_at is not None and decision is not None and decision.status == m.EXIT_DONE:
             return  # The fatal grace interval captures its backtrace before failing.
         if decision is not None:
@@ -544,6 +560,48 @@ class Driver:
             subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'Enter'], check=True)
             self.shell_sent = True
             self.event('shell-challenge-sent')
+
+    def console_send(self, text):
+        # stdin transport keeps a password out of process argv, events and logs.
+        subprocess.run(self.tmux + ['load-buffer', '-'], input=(text + '\r').encode(),
+                       check=True, capture_output=True)
+        subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
+
+    def challenge_console(self, text):
+        if self.args.mode != 'console' or self.fatal_at is not None:
+            return
+        step = self.console_step
+        if step in (0, 3) and 'login: ' in text:
+            self.console_step += 1
+            self.console_send(self.site['CONSOLE_USER'])
+        elif step in (1, 4) and 'Password: ' in text:
+            self.console_step += 1
+            self.console_send('deliberately-wrong-password' if step == 1 else self.site['CONSOLE_PASSWORD'])
+        elif step == 2 and 'Login incorrect' in text:
+            self.console_step = 3
+            self.event('console-wrong-password-refused')
+        elif step == 5 and re.search(r'bsh [^\n]*>', text):
+            self.console_step = 6
+            self.console_send('print("metal-login-ok", 6*7)')
+        elif step == 6 and text.strip() == 'metal-login-ok 42':
+            self.console_step = 7
+            self.event('console-computation-answered')
+            self.console_send('exit')
+        elif step == 7 and '[init] console session ended; restarting getty' in text:
+            self.console_step = 8
+        elif step == 8 and '[getty] console acquired' in text:
+            self.console_step = 9
+        elif step == 9 and 'login: ' in text:
+            self.console_step = 10
+            self.console_done = True
+            self.event('console-logout-returned-to-getty')
+            # Prompts do not end in a newline. Re-evaluate completion against the
+            # measured reacquisition marker after this new prompt has arrived.
+            disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
+            if (self.final_seen and not any(self.required_stages) and self.fatal_at is None
+                    and (disk_evidence is None or disk_evidence in self.seen)):
+                self.completion_reported = True
+                raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out; keyboard proof waiting')
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line, *, observed_at=None):
@@ -601,15 +659,17 @@ class Driver:
             self.shell_ready = True
         self.on_disk_line(line, observed_at)
         self.challenge_shell(line)
+        self.challenge_console(line)
         for stages in self.required_stages:
-            if stages and marker_matches(stages[0], line):
+            if stages and marker_matches(stages[0], line, getattr(self.args, 'input', None)):
                 stages.pop(0)
-        if (self.final_marker and marker_matches(self.final_marker, line)
+        if (self.final_marker and marker_matches(self.final_marker, line, getattr(self.args, 'input', None))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
         if (self.final_marker and self.final_seen and not any(self.required_stages)
                 and (disk_evidence is None or disk_evidence in self.seen)
+                and (self.args.mode != 'console' or self.console_done)
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
@@ -629,7 +689,8 @@ class Driver:
             if not matched:
                 raise Finish(m.EXIT_SHORT, 'the installed bytes or digest differ from the staged image')
             # The disk now holds this boot's root: a later disk-root boot expects this install.
-            m.write_json(m.STATE / 'disk.json', dict(write, commit=self.args.commit, verifiedAt=observed_at))
+            m.write_json(m.STATE / 'disk.json', dict(write, commit=self.args.commit, verifiedAt=observed_at, mode=self.args.mode,
+                                                               consoleIdentity=self.delivery['root'].get('consoleIdentity')))
         if disk == 'root' and 'disk-root' not in self.seen and (found := ROOT_RECORD_LINE.search(line)):
             self.seen.add('disk-root')
             installed = self.delivery['diskRoot']
@@ -972,9 +1033,14 @@ def progress_key(progress):
     return (progress.get('LastState'), progress.get('OemLastState') or '', progress.get('LastStateTime'))
 
 
-def marker_matches(spec, line):
+def marker_matches(spec, line, input_kind=None):
     """Pipe-separated literal alternatives; line matching requires the entire serial line."""
-    marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
+    if isinstance(spec, tuple) and len(spec) == 3:
+        marker, match, required_input = spec
+        if required_input != input_kind:
+            return False
+    else:
+        marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
     alternatives = marker.split('|')
     if match == 'line':
         return line in alternatives
@@ -1001,7 +1067,8 @@ def measured_stages(metal, mode, catalog, shape='ramdisk'):
                 continue  # These are checked by preflight, delivery and console setup.
             if not spec.get('marker'):
                 raise ValueError('unresolved measured serial stage')
-            group.append((spec['marker'], spec.get('match', 'contains')))
+            group.append((spec['marker'], spec.get('match', 'contains')) +
+                         ((spec['input'],) if spec.get('input') else ()))
         if group:
             groups.append(group)
     return groups
@@ -1027,7 +1094,7 @@ def final_marker(metal, mode, catalog, shape='ramdisk'):
                 continue
             stage = stage if isinstance(stage, dict) else markers.get(stage, {})
             if stage.get('marker'):
-                return (stage['marker'], stage.get('match', 'contains'))
+                return (stage['marker'], stage.get('match', 'contains')) + ((stage['input'],) if stage.get('input') else ())
             return None
     return None
 
@@ -1078,6 +1145,7 @@ def main():
         p.add_argument('--id')
         p.add_argument('--payload', choices=PAYLOADS, default='image')
         p.add_argument('--mode', choices=MODES, default='default')
+        p.add_argument('--input', choices=('sol',))
         p.add_argument('--suite')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
@@ -1110,8 +1178,12 @@ def main():
             parser.error('--suite needs suite mode')
         if args.payload != 'image' and args.mode != 'default':
             parser.error('boot modes need an image payload')
-        if args.disk and args.mode != 'probe':
-            parser.error('--disk needs probe mode')
+        if args.disk and args.mode not in ('probe', 'console'):
+            parser.error('--disk needs probe or console mode')
+        if args.mode == 'console' and args.input != 'sol':
+            parser.error('console typing waits for the injector; development boots require --input sol')
+        if args.input and args.mode != 'console':
+            parser.error('--input needs console mode')
     if args.command == 'launch':
         extra = sys.argv[2:]
         if args.id:
