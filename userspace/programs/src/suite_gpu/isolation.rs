@@ -1549,6 +1549,7 @@ pub fn client_cannot_scanout() -> CaseResult {
         let own = child(scanout_target(format::B8G8R8A8, 16, 12))?;
         child(frame(c, &scene(own, GREEN, &[])).map(drop))?;
         let eperm = -abi::errno::EPERM;
+        need(gpu::set_mode(0) == eperm, || "a client's valid SET_MODE was not refused with EPERM".to_string())?;
         let (r, a) = gpu::present(c, own);
         need(r == eperm && a.fence == 0, || format!("a client's PRESENT returned {} with fence {:#x}", errno(r), a.fence))?;
         let mut junk = [0xEEu8; 64];
@@ -1569,7 +1570,7 @@ pub fn client_cannot_scanout() -> CaseResult {
         || "the client changed the scanout binding".to_string())?;
     // SAFETY: SET_MODE with no argument.
     let r = unsafe { gpu::call(abi::op::SET_MODE, core::ptr::null_mut(), 0) };
-    ensure(r == -ENOSYS, || format!("the owner's SET_MODE before G7 returned {}, expected ENOSYS", errno(r)))?;
+    ensure(r == -EINVAL, || format!("the owner's SET_MODE(NULL, 0) returned {}, expected EINVAL", errno(r)))?;
     pass()
 }
 
