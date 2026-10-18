@@ -223,6 +223,9 @@ fn threads(fd: Fd, tids: &[String]) -> ! {
     let pid = process::getpid().map(|p| p.raw() as i64).unwrap_or(-1);
     let _ = writeln!(out, "pid={pid}");
     let _ = writeln!(out, "ppid={}", sys(nr::GETPPID, [0; 4]));
+    let mut pending = 0u64;
+    if libbreenix::signal::sigpending(&mut pending).is_err() { process::exit(2) }
+    let _ = writeln!(out, "pending={pending:x}");
     for tid in tids {
         let Ok(tid) = tid.parse::<u64>() else { process::exit(2) };
         let r = sys(nr::TGKILL, [pid as u64, tid, 0, 0]);

@@ -2442,6 +2442,7 @@ impl ProcessManager {
         let Some((pid, target)) = self.find_process_by_thread(tid) else {
             return;
         };
+        if target.killed_by_exec { return; }
         let group = target.thread_group_id.unwrap_or(pid.as_u64());
         let eligible =
             !target.signals.blocked() | target.signals.thread.wait_set.load(Ordering::Acquire);
@@ -2477,12 +2478,13 @@ impl ProcessManager {
     pub fn signal_recipient(&self, pid: ProcessId, sig: u32) -> ProcessId {
         use core::sync::atomic::Ordering;
         let Some(group) = self.thread_group_of(pid) else { return pid; };
+        let survivor = || self.group_rows(group).find(|p| !p.killed_by_exec).map(|p| p.id).unwrap_or(pid);
         self.group_rows(group).find(|p| {
-            (!p.signals.is_blocked(sig)
+            !p.killed_by_exec && (!p.signals.is_blocked(sig)
                 || p.signals.thread.wait_set.load(Ordering::Acquire)
                     & crate::signal::constants::sig_mask(sig) != 0)
                 && p.main_thread.is_some()
-        }).map(|p| p.id).unwrap_or(pid)
+        }).map(|p| p.id).unwrap_or_else(survivor)
     }
 
     /// Queue a process signal and return its eligible recipient for the caller

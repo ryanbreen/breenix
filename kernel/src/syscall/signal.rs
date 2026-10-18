@@ -397,6 +397,9 @@ fn send_signal_lockless(target: ProcessId, sig: u32, sender: &Sender, info: &Sig
             .find(|(_, member)| accepts(member))
             .map_or((tid, signals, true), |(member, signals)| (member, signals, false)),
     };
+    if to == Recipient::Process && signals.exec_victim.load(Ordering::Acquire) {
+        return None;
+    }
     // Read before the dispositions: an unchanged count after the post shows
     // that no ignore was installed, and the signal discarded, meanwhile.
     let generation = signals.mirror.generation()?;
@@ -418,6 +421,14 @@ fn send_signal_lockless(target: ProcessId, sig: u32, sender: &Sender, info: &Sig
     // fence). Then the signal is taken back, if it is still there, and the
     // process-manager path, which serializes with both, generates it.
     core::sync::atomic::fence(Ordering::SeqCst);
+    if to == Recipient::Process && signals.exec_victim.load(Ordering::Acquire) {
+        // If exec already drained our post it preserved the signal. Otherwise
+        // withdraw it and let PM select the survivor, even if it blocks sig.
+        if !posted || signals.take_sent(sig).is_some() {
+            return None;
+        }
+        return Some(SyscallResult::Ok(0));
+    }
     if posted
         && (signals.mirror.generation() != Some(generation)
             || (fallback
@@ -519,6 +530,20 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
             }
         };
 
+        // Process signals belong to the surviving row once exec has marked
+        // its peers, even while the old leader remains inside a syscall.
+        let target = if to == Recipient::Process || sig == SIGKILL {
+            match manager.get_process(target) {
+                Some(row) if row.killed_by_exec => manager
+                    .group_rows(group)
+                    .find(|row| !row.killed_by_exec)
+                    .map_or(target, |row| row.id),
+                _ => target,
+            }
+        } else {
+            target
+        };
+
         // SIGKILL cannot be caught or blocked, and ends every thread of the
         // process, whichever of them its sender named. The target is claimed
         // here, in the acquisition that checked it (for
@@ -530,16 +555,6 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         // here and claiming only after the release let the target take
         // SIGKILL itself at an interrupt return in between (#1414).
         if sig == SIGKILL {
-            // A thread an exec killed dies alone (`Process::killed_by_exec`):
-            // the process's SIGKILL is for the thread that exec'd, whose death
-            // then ends the rest.
-            let target = match manager.get_process(target) {
-                Some(row) if row.killed_by_exec => manager
-                    .group_rows(group)
-                    .find(|row| !row.killed_by_exec)
-                    .map_or(target, |row| row.id),
-                _ => target,
-            };
             let claimed = claim_kill_locked(manager, target, -(SIGKILL as i32));
             drop(manager_guard);
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
@@ -564,6 +579,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                 .iter_processes()
                 .find(|(pid, p)| {
                     !p.is_terminated()
+                        && !p.killed_by_exec
                         && p.thread_group_id.unwrap_or(pid.as_u64()) == group
                         && (!p.signals.is_blocked(sig)
                             || p.signals

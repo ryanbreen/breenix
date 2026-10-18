@@ -3817,6 +3817,38 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             group_waited += 1;
         }
 
+        // Model exec's marked but still-live victims. A process signal sent
+        // to the old leader must reach the survivor even when it blocks it.
+        let old_mask = crate::process::with_process_manager(|manager| {
+            for victim in [leader_pid, sibling_pid] {
+                let row = manager.get_process_mut(victim).unwrap();
+                row.killed_by_exec = true;
+                row.signals.set_pending(crate::signal::constants::SIGKILL);
+            }
+            let row = manager.get_process_mut(member_pid).unwrap();
+            let mask = row.signals.blocked();
+            row.signals.block_signals(crate::signal::constants::sig_mask(crate::signal::constants::SIGTERM));
+            mask
+        }).unwrap();
+        crate::syscall::signal::signal_process_from_kernel(leader_pid, crate::signal::constants::SIGTERM);
+        let routed = crate::process::with_process_manager(|manager| {
+            let bit = crate::signal::constants::sig_mask(crate::signal::constants::SIGTERM);
+            let old_received = manager.get_process(leader_pid).unwrap().signals.pending() & bit != 0;
+            let row = manager.get_process_mut(member_pid).unwrap();
+            let survived = row.signals.pending() & bit != 0;
+            row.signals.clear_pending(crate::signal::constants::SIGTERM);
+            row.signals.set_blocked(old_mask);
+            for victim in [leader_pid, sibling_pid] {
+                let row = manager.get_process_mut(victim).unwrap();
+                row.killed_by_exec = false;
+                row.signals.clear_pending(crate::signal::constants::SIGKILL);
+            }
+            survived && !old_received
+        }).unwrap_or(false);
+        if !routed && first_failure.is_none() {
+            first_failure = Some("a process signal sent to an exec victim missed the survivor");
+        }
+
         // The group ends: the sibling exits, then the leader, which hands its
         // address space to the member and retires. The member then takes over
         // the process's row and its exec commits under the process's ID.

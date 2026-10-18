@@ -1923,6 +1923,8 @@ fn exec_from_thread() -> CaseResult {
     let child = Child::start(move || {
         let _ = io::close(r);
         let fail = |msg: String| { let _ = io::write(Fd::from_raw(report), msg.as_bytes()); 126 };
+        if block(bit(SIGUSR1)).is_err() { return fail("setup=block SIGUSR1 failed\n".into()); }
+        if kill(pid(), SIGUSR1) != 0 { return fail("setup=queue SIGUSR1 failed\n".into()); }
         let first = sc(libbreenix::syscall::nr::GETTID, &[]);
         let Ok((hold_r, _hold_w)) = io::pipe2(O_CLOEXEC) else { return fail("setup=pipe2 failed\n".into()) };
         let waiting = std::sync::Arc::new(AtomicI64::new(0));
@@ -1968,6 +1970,8 @@ fn exec_from_thread() -> CaseResult {
     if let Some(errno) = state.get("exec") { return fail(format!("execve from a thread failed with errno {}", &errno[1..])); }
     state_is(&state, "pid", &child.pid.to_string(), "the process ID")?;
     state_is(&state, "ppid", &me.to_string(), "the parent process ID")?;
+    let pending = u64::from_str_radix(state.get("pending").map_or("", String::as_str), 16).unwrap_or(0);
+    check(pending & bit(SIGUSR1) != 0, "exec lost the process-directed SIGUSR1 queued on its old leader")?;
     let gone: Vec<(&String, &String)> = state.iter().filter(|(k, _)| k.starts_with("tid")).collect();
     check(gone.len() == 2, &format!("the exec'd program reported {} old threads, expected 2", gone.len()))?;
     for (key, value) in gone {

@@ -1820,6 +1820,35 @@ pub fn terminate_peers_for_exec(pid: crate::process::ProcessId) -> bool {
         if caller.group_exit_code.is_some() || sigkill_pending(caller) {
             return None;
         }
+        let peers = manager.thread_group_peers(pid);
+        // Reserve before excluding any peer: failure leaves the group intact.
+        let capacity = peers.iter().filter_map(|peer| manager.get_process(*peer))
+            .fold(0usize, |n, row| n.saturating_add(row.signals.exec_pending_capacity()));
+        if !manager.get_process_mut(pid)?.signals.reserve_exec_pending(capacity) {
+            return None;
+        }
+        for peer in &peers {
+            if let Some(row) = manager.get_process_mut(*peer) {
+                row.signals.thread.exec_victim.store(true, core::sync::atomic::Ordering::Release);
+            }
+        }
+        // A sender either precedes this drain or observes exec_victim after
+        // its post and regenerates under PM on the surviving thread.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        for peer in peers {
+            if let Some(row) = manager.get_process_mut(peer) {
+                row.signals.collect_sent_signals();
+            }
+            loop {
+                let row = manager.get_process_mut(peer)?;
+                let bits = row.signals.process_pending;
+                if bits == 0 { break; }
+                let sig = bits.trailing_zeros() + 1;
+                if let Some(moved) = row.signals.take_process_directed(sig) {
+                    manager.get_process_mut(pid)?.signals.accept_moved(moved, sig);
+                }
+            }
+        }
         Some(mark_thread_group_peers(manager, pid, 0, current, true))
     })
     .flatten();
