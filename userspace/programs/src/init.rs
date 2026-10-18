@@ -550,6 +550,17 @@ fn run_bssh_exec_autorun(host: &str) {
     }
 }
 
+/// The boot script is done: give the console's text the screen, which ends the
+/// boot splash (`KDSETMODE(KD_TEXT)` on tty1, `docs/console/contract.md` section 7).
+fn console_text_mode() {
+    extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
+    const KDSETMODE: u64 = 0x4B3A;
+    const KD_TEXT: u64 = 0;
+    if unsafe { ioctl(0, KDSETMODE, KD_TEXT) } != 0 {
+        print!("[init] KDSETMODE(KD_TEXT) on the console failed: {}\n", std::io::Error::last_os_error());
+    }
+}
+
 fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
@@ -562,6 +573,7 @@ fn run_boot_script() {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
             }
         }
+        console_text_mode();
         print!("[init] Boot script completed\n");
         return;
     }
@@ -584,6 +596,7 @@ fn run_boot_script() {
             if exit_code != 0 {
                 print!("[init] Boot script exited with code {}\n", exit_code);
             } else {
+                console_text_mode();
                 print!("[init] Boot script completed\n");
             }
         }

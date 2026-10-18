@@ -75,6 +75,30 @@
       "checkHint": "Check tty::init()"
     },
     {
+      "name": "Logo drawn",
+      "marker": "[splash] logo drawn: ",
+      "failureMeaning": "The boot splash was not drawn: no display the console can draw on, or its first write or flush failed",
+      "checkHint": "Check console::attach() and console::splash_boot_pass() in kernel/src/console/mod.rs; the display is the virtio-gpu 2D resource on QEMU and the GOP framebuffer on Parallels and VMware"
+    },
+    {
+      "name": "Boot progress shown",
+      "marker": "[splash] progress shown: ",
+      "failureMeaning": "The splash's first frame, with the progress bar and milestone dots, was not shown",
+      "checkHint": "Check console::splash::Painter::paint() and announce() in kernel/src/console/splash.rs"
+    },
+    {
+      "name": "Logo read back",
+      "marker": "[splash] logo read back: ",
+      "failureMeaning": "The render thread's first read-back of the splash did not match the shadow and the logo oracle, or never ran",
+      "checkHint": "Check SplashRun::read_back() in kernel/src/console/mod.rs and Painter::check() in kernel/src/console/splash.rs; a mismatch prints `[splash] logo read back differs`"
+    },
+    {
+      "name": "Progress read back as it advanced",
+      "marker": "[splash] progress read back: ",
+      "failureMeaning": "No second read-back matched at a later stage count, bar width and cursor phase than the first: the splash's live progress is not proven",
+      "checkHint": "Check that the ARM64 boot path's stages after the first read-back reach console::splash::stage(), and SplashRun::read_back() and progress_pending() in kernel/src/console/mod.rs"
+    },
+    {
       "name": "Per-CPU data initialized",
       "marker": "[boot] Per-CPU data initialized",
       "failureMeaning": "Per-CPU storage initialization failed",

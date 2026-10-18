@@ -325,6 +325,30 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "time::init() - timer frequency setup",
         },
         BootStage {
+            name: "Logo drawn",
+            marker: "[splash] logo drawn: ",
+            failure_meaning: "The boot splash was not drawn: no display the console can draw on, or its first write or flush failed",
+            check_hint: "Check console::attach() and console::splash_boot_pass() in kernel/src/console/mod.rs; x86-64 draws the splash into the firmware framebuffer at console::init_early() and into the shadow from console::attach()",
+        },
+        BootStage {
+            name: "Boot progress shown",
+            marker: "[splash] progress shown: ",
+            failure_meaning: "The splash's first frame, with the progress bar and milestone dots, was not shown",
+            check_hint: "Check console::splash::Painter::paint() and announce() in kernel/src/console/splash.rs",
+        },
+        BootStage {
+            name: "Logo read back",
+            marker: "[splash] logo read back: ",
+            failure_meaning: "The render thread's first read-back of the splash did not match the shadow and the logo oracle, or never ran",
+            check_hint: "Check SplashRun::read_back() in kernel/src/console/mod.rs and Painter::check() in kernel/src/console/splash.rs; a mismatch prints `[splash] logo read back differs`",
+        },
+        BootStage {
+            name: "Progress read back as it advanced",
+            marker: "[splash] progress read back: ",
+            failure_meaning: "No second read-back matched at a later stage count, bar width and cursor phase than the first: the splash's live progress is not proven",
+            check_hint: "Check that the x86-64 boot path's stages after the first read-back reach console::splash::stage(), and SplashRun::read_back() and progress_pending() in kernel/src/console/mod.rs",
+        },
+        BootStage {
             name: "HAL timer calibrated",
             marker: "HAL_TIMER_CALIBRATED",
             failure_meaning: "HAL timer abstraction layer failed to calibrate TSC",
@@ -571,6 +595,30 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             marker: "[boot] TTY subsystem initialized",
             failure_meaning: "TTY console/PTY infrastructure initialization failed",
             check_hint: "Check tty::init()",
+        },
+        BootStage {
+            name: "Logo drawn",
+            marker: "[splash] logo drawn: ",
+            failure_meaning: "The boot splash was not drawn: no display the console can draw on, or its first write or flush failed",
+            check_hint: "Check console::attach() and console::splash_boot_pass() in kernel/src/console/mod.rs; the display is the virtio-gpu 2D resource on QEMU and the GOP framebuffer on Parallels and VMware",
+        },
+        BootStage {
+            name: "Boot progress shown",
+            marker: "[splash] progress shown: ",
+            failure_meaning: "The splash's first frame, with the progress bar and milestone dots, was not shown",
+            check_hint: "Check console::splash::Painter::paint() and announce() in kernel/src/console/splash.rs",
+        },
+        BootStage {
+            name: "Logo read back",
+            marker: "[splash] logo read back: ",
+            failure_meaning: "The render thread's first read-back of the splash did not match the shadow and the logo oracle, or never ran",
+            check_hint: "Check SplashRun::read_back() in kernel/src/console/mod.rs and Painter::check() in kernel/src/console/splash.rs; a mismatch prints `[splash] logo read back differs`",
+        },
+        BootStage {
+            name: "Progress read back as it advanced",
+            marker: "[splash] progress read back: ",
+            failure_meaning: "No second read-back matched at a later stage count, bar width and cursor phase than the first: the splash's live progress is not proven",
+            check_hint: "Check that the ARM64 boot path's stages after the first read-back reach console::splash::stage(), and SplashRun::read_back() and progress_pending() in kernel/src/console/mod.rs",
         },
         BootStage {
             name: "Per-CPU data initialized",

@@ -122,6 +122,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Now we can use log! macros immediately - they'll be buffered
     log::info!("Kernel entry point reached");
+    kernel::console::splash::stage(kernel::console::splash::Stage::KernelEntry);
     log::debug!("Boot info address: {:p}", boot_info);
 
     // The console rule picks the log's UART before the buffered lines are
@@ -156,6 +157,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         apic_handoff.msr
     );
     log::info!("Serial port initialized and buffer flushed");
+    kernel::console::splash::stage(kernel::console::splash::Stage::SerialPort);
     if !qemu {
         let mcfg = boot_info.physical_memory_offset.into_option().and_then(|offset| {
             kernel::arch_impl::x86_64::acpi::read_mcfg(boot_info.rsdp_addr.into_option(), offset, |entry| {
@@ -180,6 +182,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize GDT and IDT
     interrupts::init();
     log::info!("GDT and IDT initialized");
+    kernel::console::splash::stage(kernel::console::splash::Stage::GdtIdt);
 
     // Run GDT validation tests (after GDT/IDT init, before per-CPU setup)
     #[cfg(feature = "testing")]
@@ -216,6 +219,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let rsdp_addr = boot_info.rsdp_addr.into_option();
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+    kernel::console::splash::stage(kernel::console::splash::Stage::Heap);
 
     // BootInfo owns this writable mapping for the kernel lifetime.
     unsafe { kernel::block::ramdisk::init(boot_info.ramdisk_addr.into_option(), boot_info.ramdisk_len) }
@@ -255,6 +259,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // command deadlines on it. time::init() keeps this calibration.
     time::tsc::calibrate();
     kernel::arch_impl::x86_64::irq::init(rsdp_addr, physical_memory_offset.as_u64());
+    kernel::console::splash::stage(kernel::console::splash::Stage::InterruptController);
 
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
@@ -262,11 +267,13 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         "PCI subsystem initialized: {} devices found",
         pci_device_count
     );
+    kernel::console::splash::stage(kernel::console::splash::Stage::PciEnumerated);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
+    kernel::console::splash::stage(kernel::console::splash::Stage::NetworkStack);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
@@ -293,6 +300,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     log::info!("procfs initialized at /proc");
+    kernel::console::splash::stage(kernel::console::splash::Stage::Procfs);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
@@ -351,6 +359,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Configure the scheduler tick before interrupts are enabled.
     time::init();
     log::info!("Timer initialized");
+    kernel::console::splash::stage(kernel::console::splash::Stage::Timer);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TIMER_INIT);
 
@@ -542,6 +551,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // This follows Linux where the boot thread becomes the idle task
     task::scheduler::init_with_current(init_task);
     log::info!("Threading subsystem initialized with init_task (swapper/0)");
+    kernel::console::splash::stage(kernel::console::splash::Stage::Threading);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
@@ -555,6 +565,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     log::info!("Initializing process management...");
     process::init();
     log::info!("Process management initialized");
+    kernel::console::splash::stage(kernel::console::splash::Stage::ProcessManagement);
 
     // Start the application processors now that the scheduler and process
     // manager exist, then report what came online.
@@ -1311,6 +1322,7 @@ fn read_x86_production_init(
             {
                 Ok((elf_data, exe_path)) => {
                     log::info!("[boot] Boot mode: probe");
+                    kernel::console::splash::set_mode(format_args!("probe"));
                     return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, None));
                 }
                 Err(e) => log::warn!("[boot] Ignoring boot mode \"probe\": /sbin/probe could not be loaded ({})", e),
@@ -1328,8 +1340,10 @@ fn read_x86_production_init(
             Ok((elf_data, exe_path)) => {
                 if let Some(case) = &suite.case {
                     log::info!("[boot] Boot mode: suite {} case {}", id, case);
+                    kernel::console::splash::set_mode(format_args!("suite {} case {}", id, case));
                 } else {
                     log::info!("[boot] Boot mode: suite {}", id);
+                    kernel::console::splash::set_mode(format_args!("suite {}", id));
                 }
                 return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case, None));
             }
@@ -1356,6 +1370,7 @@ fn read_default_x86_init(
 ) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
     let mode = x86_console_mode();
     log::info!("[boot] Boot mode: {}", mode.unwrap_or("default"));
+    kernel::console::splash::set_mode(format_args!("{}", mode.unwrap_or("default")));
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
         .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, mode))
 }
@@ -1963,11 +1978,15 @@ fn kernel_main_continue() -> ! {
         loop {
             match image {
                 Ok((name, exe_path, elf_data, only, mode)) => {
+                    kernel::console::splash::set_status(format_args!("Starting {}", name));
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
                         launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), mode)
                     });
                     match launched {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            kernel::console::splash::stage(kernel::console::splash::Stage::StartingPid1);
+                            kernel::console::splash::first_process_started();
+                        }
                         Err(e) if name != "init" => {
                             log::error!(
                                 "PRODUCTION INIT: failed to launch {}: {}; running /sbin/init",
@@ -2455,6 +2474,7 @@ fn kernel_main_continue() -> ! {
     // Once interrupts are enabled, the scheduler will preempt to userspace
     // and kernel_main may never execute again
     log::info!("✅ Kernel initialization complete!");
+    kernel::console::splash::stage(kernel::console::splash::Stage::KernelInitComplete);
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all

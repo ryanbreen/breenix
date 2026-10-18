@@ -505,6 +505,16 @@ origin unless given as screen coordinates:
   in the running colour while some are, and a `ring(…, 3k, 2k)` in the pending colour while no stage of it is.
 - **The stage name** is the latest stage reached. The boot-mode line reads `Boot mode: <mode>` and the status
   line names the next step, as today's boot screen does. Text is outside the crate's composition.
+- **The stages counted (V2b).** ARM64 counts the 23 kernel stages of those milestones in
+  `docs/boot-path.json` that the kernel reaches before PID 1 (each but `User work ran on every online
+  CPU`), and `Starting PID 1` for `first-userspace`: 24 in all, by dot 4, 5, 2, 5, 7 and 1. x86-64's lists
+  are long and mostly in-kernel tests, so it counts 13 catalog stages that `main.rs` reaches at the
+  milestones' boundaries: `Kernel entry point`, `Serial port initialized`, `GDT and IDT initialized`,
+  `Kernel heap initialized`; `Interrupt controller initialized`, `Timer initialized`; `PCI bus
+  enumerated`, `Network stack initialized`; `procfs initialized`; `Threading subsystem ready`, `Process
+  management ready`, `Kernel initialization complete`; and `Starting PID 1`, when the production kernel
+  launches its first process. A testing kernel's last stage is labelled `Starting test programs`.
+  claim-lint:ok: the one 'every' above is inside a stage name quoted from docs/boot-path.json.
 - **The cursor block blinks:** drawn during the first 500 ms of each second since the splash was first
   drawn, and not drawn (the badge shows) in the second 500 ms; held lit after boot hand-over.
 
@@ -565,7 +575,14 @@ show as reached when it is first drawn.
 - **Init issues `KDSETMODE(KD_TEXT)` on tty1 in `default` mode only**, immediately before it prints
   `[init] Boot script completed`. In `shell` and `console` modes it does not; the `reader` trigger hands
   over.
-- A testing kernel (`tests` mode) keeps the splash until the backstop or the end of the run.
+- A testing kernel (`tests` mode) keeps the splash until the backstop or the end of the run: there the
+  `reader`, `kd-text` and `key` triggers have no effect.
+- **The two read-backs (V2b).** The boot thread makes the first once the screen shows the whole shadow,
+  preserving that sample when the render thread takes over. The second is made on the first boot or
+  render pass where the stages reached, the bar's width and
+  the cursor's phase each differ from the first's. When a trigger arrives after the bar has moved but
+  before the second read-back, the hand-over waits up to 520 ms (half a blink and a pass) so it can still
+  be made; it does not wait otherwise.
 
 **Markers** (V2b lands the exact strings with its code and the stage catalog, replacing the stub in
 `docs/boot-path.json`):
@@ -756,8 +773,10 @@ expectations to make this target green.
   `/dev/console` for the terminal layers. Once the kernel answers, a case whose check has not been written yet
   fails saying so. No case skips. A lane writes a case's check from this contract in its own commit, before
   the implementation it measures.
-- **The suite takes the display only after its last case** (Q17), so its cases run on the console itself. That
+- **The suite takes the display only after its last case** (Q17), so its cases run on the console itself.
+  That
   is the `Suite::defer_display()` runner option, supplied by D0 and enabled by the console skeleton. The runner
   neither takes nor maps the display and draws no panel during cases; it opens the display for the final panel
-  after the last case. Other suites keep their live panels.
+  after the last case. Before the first case it ends the splash with `KDSETMODE(KD_TEXT)` on tty1 and waits
+  until `/proc/console/check` no longer reports the splash (V2b). Other suites keep their live panels.
 - The suite is `timingSensitive`: its cases wait on switches and on host keys.

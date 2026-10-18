@@ -400,10 +400,10 @@ fn render_to_framebuffer() {
         }
     }
 
-    // Only while the boot screen has the display: once the screen console, a
-    // display owner or the diagnostics screen has it, the panel would be drawn
-    // over their pixels.
-    if !crate::graphics::boot_screen::is_up() {
+    // Only while no one else has the display: once the screen console (its
+    // splash, then its text), a display owner or the diagnostics screen has
+    // it, the panel would be drawn over their pixels.
+    if crate::console::owns_screen() || crate::graphics::boot_screen::diagnostics_up() {
         return;
     }
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {

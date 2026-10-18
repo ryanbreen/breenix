@@ -1126,6 +1126,10 @@ pub fn write_unprocessed(buf: &[u8]) {
 /// Used by keyboard interrupt handler when routing through TTY from ISR.
 #[allow(dead_code)]
 pub fn push_char_nonblock(c: u8) -> bool {
+    // A key press while the boot splash is up ends it and is not delivered.
+    if crate::console::splash::key() {
+        return true;
+    }
     // Try to get console without blocking
     if let Some(guard) = CONSOLE_TTY.try_lock() {
         if let Some(ref tty) = *guard {

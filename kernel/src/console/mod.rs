@@ -19,12 +19,18 @@
 //! scanout 0 after a completed flush of the whole screen
 //! (`display::Display::settle`).
 //!
-//! **x86-64** draws from `init_early` on; its log lines and `/proc/fbcon/check`
+//! Until the console takes the screen, it shows the boot splash (`splash`): the
+//! logo and boot progress, drawn as soon as the display exists, which gives way
+//! to the text on the first of the contract's triggers (a reader on tty1,
+//! `KDSETMODE(KD_TEXT)`, a key, a display owner, a panic, or the backstop). The
+//! grid keeps the kernel log meanwhile.
+//!
+//! **x86-64** draws the splash straight into the framebuffer at `init_early`,
+//! and into the shadow from `attach` on; its log lines and `/proc/fbcon/check`
 //! keep the `[fbcon]` and `fbcon` text the x86-metal boot path measures.
-//! **ARM64** keeps the kernel log from the moment the display exists, and takes
-//! the screen from the boot screen when the first process starts (`take_screen`).
-//! ARM64 carries structured log severity through `serial_line`; unlevelled
-//! serial records (`log_bytes`) are drawn as INFO.
+//! **ARM64** draws it when the display exists (`attach`). ARM64 carries
+//! structured log severity through `serial_line`; unlevelled serial records
+//! (`log_bytes`) are drawn as INFO.
 //!
 //! The console starts in init's session. While it is there, or in no session,
 //! kernel log records of INFO and above are drawn; while another session has
@@ -37,6 +43,7 @@ pub mod boxdraw;
 pub mod display;
 pub mod grid;
 pub mod raster;
+pub mod splash;
 #[path = "../../../libs/libbreenix/src/crypto/sha256.rs"]
 mod sha256;
 
@@ -97,15 +104,18 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 /// A session other than init's has the console as its controlling terminal.
 static SESSION: AtomicBool = AtomicBool::new(false);
 
-/// The console has the screen: on x86 once attached, on ARM64 once the boot
-/// screen gave way.
+/// The console's text has the screen: the splash gave way.
 static SCREEN: AtomicBool = AtomicBool::new(false);
+/// The splash has been drawn on the screen: the console owns it from here.
+static SPLASH_DRAWN: AtomicBool = AtomicBool::new(false);
 /// A process has the display.
 static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 
-/// What `attach` set up, for the render thread.
+/// What `attach` set up: the shadow and the splash drawn in it, which the boot
+/// thread keeps up to date until the render thread takes them.
 struct Attached {
     shadow: Vec<u8>,
+    splash: SplashRun,
     #[cfg(target_arch = "x86_64")]
     write_combining: Result<crate::arch_impl::x86_64::pagewalk::Report, &'static str>,
 }
@@ -159,8 +169,11 @@ fn set_display(display: Display) {
     }
 }
 
-/// Allocate the shadow for the render thread, and say what the console draws on.
-fn prepare(#[cfg(target_arch = "x86_64")] write_combining: Result<crate::arch_impl::x86_64::pagewalk::Report, &'static str>) {
+/// Allocate the shadow, say what the console draws on, and draw the splash.
+fn prepare(
+    bgr: bool,
+    #[cfg(target_arch = "x86_64")] write_combining: Result<crate::arch_impl::x86_64::pagewalk::Report, &'static str>,
+) {
     let Some(display) = DISPLAY.get() else {
         return;
     };
@@ -186,9 +199,66 @@ fn prepare(#[cfg(target_arch = "x86_64")] write_combining: Result<crate::arch_im
     );
     *ATTACHED.lock() = Some(Attached {
         shadow,
+        splash: SplashRun {
+            painter: splash::Painter::new(layout, bgr),
+            shown: false,
+            first: None,
+            progress_checked: false,
+            failed: false,
+            wait_until: None,
+        },
         #[cfg(target_arch = "x86_64")]
         write_combining,
     });
+    splash_boot_pass();
+}
+
+/// Bring the splash on the screen up to date from the boot thread, until the
+/// render thread takes it over (`start`).
+pub(crate) fn splash_boot_pass() {
+    if !splash::is_up() {
+        return;
+    }
+    let Some(display) = DISPLAY.get() else {
+        return;
+    };
+    let Some(mut attached) = ATTACHED.try_lock() else {
+        return;
+    };
+    if let Some(attached) = attached.as_mut() {
+        let run = &mut attached.splash;
+        run.shown = present_splash(display, &mut attached.shadow, &mut run.painter);
+        // CPU0 may stay pinned through the final boot stage. Capture real
+        // early pixels here and carry the sample into the render thread.
+        if run.shown && !run.failed {
+            run.read_back(display, &attached.shadow);
+        }
+    }
+}
+
+/// Draw what changed on the splash into the shadow and copy those rows to the
+/// screen; true when the screen then shows the whole shadow. The first time it
+/// is shown, say what was drawn.
+fn present_splash(display: &Display, shadow: &mut [u8], painter: &mut splash::Painter) -> bool {
+    let bands = painter.paint(shadow, splash::now_ms());
+    let shown = bands
+        .iter()
+        .all(|rows| display.write(shadow, rows.clone(), may_draw) && may_draw() && display.flush(rows).is_ok());
+    if !shown {
+        painter.forget();
+        return false;
+    }
+    if !SPLASH_DRAWN.swap(true, Ordering::AcqRel) {
+        painter.announce();
+        #[cfg(target_arch = "aarch64")]
+        crate::graphics::boot_screen::console_drew();
+    }
+    true
+}
+
+/// Whether the console has drawn on the screen (the splash, then its text).
+pub fn owns_screen() -> bool {
+    SPLASH_DRAWN.load(Ordering::Acquire)
 }
 
 /// A log line formatted into fixed storage; longer lines are cut short.
@@ -277,6 +347,7 @@ pub fn console_session(held: bool) {
 /// A process has the display: stop drawing on it. Returns once no row of the
 /// console's is being written, so the new owner's first draw is not overwritten.
 pub fn take_display() {
+    splash::request(splash::Reason::DisplayTaken);
     DISPLAY_TAKEN.store(true, Ordering::SeqCst);
     while PRESENTING.load(Ordering::SeqCst) {
         sleep_ms(1);
@@ -338,6 +409,11 @@ pub fn init_early(buffer: &'static mut [u8], info: bootloader_api::info::FrameBu
         bgr: matches!(info.pixel_format, PixelFormat::Bgr),
         font: raster::Font::for_display(info.width, info.height),
     };
+    // The splash, straight into the framebuffer: the shadow needs the heap,
+    // which comes later (`attach`).
+    if layout.bytes() <= buffer.len() {
+        splash::Look::new(layout, info.pixel_format == PixelFormat::Bgr).draw_all(buffer, &splash::View::now(0));
+    }
     // SAFETY: the bootloader's framebuffer mapping lives for the kernel's lifetime.
     if let Some(linear) = unsafe { display::linear::Linear::new(buffer.as_mut_ptr(), buffer.len(), layout) } {
         set_display(Display::Linear(linear));
@@ -362,8 +438,7 @@ pub fn attach() {
     let Some(attached) = display::linear::attach(linear, info.pixel_format, info.stride) else {
         return;
     };
-    prepare(attached.write_combining);
-    SCREEN.store(true, Ordering::Release);
+    prepare(info.pixel_format == bootloader_api::info::PixelFormat::Bgr, attached.write_combining);
 }
 
 /// The framebuffer's layout: width, height and stride in pixels, bytes per
@@ -439,9 +514,9 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
 // ARM64: the GOP framebuffer, or a virtio-gpu resource.
 // ---------------------------------------------------------------------------
 
-/// Pick the display the kernel's boot screen drew on, size the grid for it,
-/// put the kernel log so far into the grid, and allocate the shadow. Called
-/// once the framebuffer exists and the heap is up.
+/// Pick the display, size the grid for it, put the kernel log so far into the
+/// grid, allocate the shadow and draw the splash. Called once the framebuffer
+/// exists and the heap is up.
 #[cfg(target_arch = "aarch64")]
 pub fn attach() {
     use crate::graphics::arm64_fb;
@@ -465,7 +540,21 @@ pub fn attach() {
         let n = crate::log_buffer::copy_tail(&mut boot_log);
         log_bytes(&boot_log[..n]);
     }
-    prepare();
+    prepare(arm64_fb::FB_INFO_CACHE.get().is_none_or(|info| info.is_bgr));
+}
+
+/// Draw directly into GOP scanout before allocating or copying any shadow.
+#[cfg(target_arch = "aarch64")]
+pub fn init_gop_early() {
+    let Some(display) = gop_display() else {
+        return;
+    };
+    let Some(buffer) = crate::graphics::arm64_fb::gop_framebuffer() else {
+        return;
+    };
+    let layout = display.layout();
+    splash::Look::new(layout, layout.bgr).draw_all(buffer, &splash::View::now(0));
+    display::drain_writes();
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -491,29 +580,25 @@ fn gop_display() -> Option<Display> {
     Some(Display::Linear(linear))
 }
 
-/// The boot screen gives the screen to the console: called when the first
-/// process starts. The console does not take it once the diagnostics screen is
-/// up or a process has taken the display.
-#[cfg(target_arch = "aarch64")]
-pub fn take_screen() {
-    if DISPLAY.get().is_some() && crate::graphics::boot_screen::give_way() {
-        SCREEN.store(true, Ordering::Release);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The render thread.
 // ---------------------------------------------------------------------------
 
-/// Start the render thread, if `attach` found the display.
+/// Start the render thread, if `attach` found the display. The boot thread
+/// keeps drawing the splash until the thread first runs and takes it.
 pub fn start() {
-    let Some(attached) = ATTACHED.lock().take() else {
+    if ATTACHED.lock().is_none() {
         return;
-    };
+    }
     let Some(display) = DISPLAY.get() else {
         return;
     };
-    match crate::task::kthread::kthread_run(move || render_thread(display, attached), "console") {
+    let render = move || {
+        if let Some(attached) = ATTACHED.lock().take() {
+            render_thread(display, attached);
+        }
+    };
+    match crate::task::kthread::kthread_run(render, "console") {
         Ok(_) => {
             // Keep the normal time-sharing policy: an idle-policy thread can
             // starve indefinitely behind a runnable graphics thread or users.
@@ -599,6 +684,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cursor_visible: true,
         generation: u64::MAX,
     };
+    let mut splash_run = attached.splash;
     let mut screen = Screen {
         display,
         layout,
@@ -624,8 +710,16 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 console.reply_len -= 1;
             }
         });
+        if splash::is_up() {
+            PRESENTING.store(true, Ordering::SeqCst);
+            splash_run.pass(display, &mut screen.shadow);
+            answer_checks(Err(Absent::NotYet), false);
+            PRESENTING.store(false, Ordering::SeqCst);
+            sleep_ms(PASS_INTERVAL_MS);
+            continue;
+        }
         if !SCREEN.load(Ordering::Acquire) {
-            answer_checks(Err(Absent::NotYet));
+            answer_checks(Err(Absent::NotYet), false);
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
@@ -634,7 +728,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         PRESENTING.store(true, Ordering::SeqCst);
         if !may_draw() {
             PRESENTING.store(false, Ordering::SeqCst);
-            answer_checks(Err(Absent::Taken));
+            answer_checks(Err(Absent::Taken), true);
             sleep_ms(PASS_INTERVAL_MS * 10);
             continue;
         }
@@ -676,10 +770,157 @@ fn render_thread(display: &'static Display, attached: Attached) {
             last_session = session;
         }
         if announced {
-            answer_checks(Ok(&screen));
+            answer_checks(Ok(&screen), true);
         }
         PRESENTING.store(false, Ordering::SeqCst);
         sleep_ms(PASS_INTERVAL_MS);
+    }
+}
+
+/// The splash state shared in turn by the boot and render threads: its two
+/// read-backs and the hand-over.
+struct SplashRun {
+    painter: splash::Painter,
+    /// The screen shows the whole shadow.
+    shown: bool,
+    /// What the first read-back saw, once it matched.
+    first: Option<splash::View>,
+    progress_checked: bool,
+    /// A read-back differed: no more are made.
+    failed: bool,
+    /// The hand-over waits until then for the progress read-back.
+    wait_until: Option<u64>,
+}
+
+/// How long a hand-over waits for the cursor's other phase, so the progress
+/// read-back can still be made: half a blink and a pass.
+const PROGRESS_WAIT_MS: u64 = 520;
+
+impl SplashRun {
+    fn pass(&mut self, display: &Display, shadow: &mut [u8]) {
+        if !may_draw() {
+            #[cfg(target_arch = "aarch64")]
+            if crate::graphics::boot_screen::diagnostics_up() {
+                self.hand_over(splash::Reason::Panic);
+                return;
+            }
+            self.hand_over(splash::requested().unwrap_or(splash::Reason::DisplayTaken));
+            return;
+        }
+        splash::check_backstop();
+        self.shown = present_splash(display, shadow, &mut self.painter);
+        if self.shown && !self.failed {
+            self.read_back(display, shadow);
+        }
+        let Some(reason) = splash::requested() else {
+            return;
+        };
+        if self.progress_pending() {
+            let now = splash::now_ms();
+            let until = *self.wait_until.get_or_insert(now + PROGRESS_WAIT_MS);
+            if now < until {
+                return;
+            }
+        }
+        self.hand_over(reason);
+    }
+
+    /// The progress read-back can still be made: the bar has moved since the
+    /// first, and the cursor's other phase is at most half a blink away.
+    fn progress_pending(&self) -> bool {
+        match (self.first, self.painter.drawn()) {
+            (Some(first), Some(now)) => {
+                !self.failed && !self.progress_checked && now.reached != first.reached && now.bar_units() != first.bar_units()
+            }
+            _ => false,
+        }
+    }
+
+    /// The first read-back once the splash is shown, and the progress
+    /// read-back once the stages reached, the bar's width and the cursor's
+    /// phase each differ from the first's.
+    fn read_back(&mut self, display: &Display, shadow: &[u8]) {
+        let Some(view) = self.painter.drawn() else {
+            return;
+        };
+        let due = match self.first {
+            None => true,
+            Some(first) => {
+                !self.progress_checked
+                    && view.reached != first.reached
+                    && view.bar_units() != first.bar_units()
+                    && view.lit != first.lit
+            }
+        };
+        if !due {
+            return;
+        }
+        let Some(readback) = self.painter.check(display, shadow, may_draw) else {
+            return;
+        };
+        if readback.source.is_err() && !may_draw() {
+            // The display changed hands during the read, so it compared no pixels.
+            return;
+        }
+        if !readback.identical() {
+            readback.report_difference();
+            self.failed = true;
+            return;
+        }
+        let source = readback.source.as_ref().ok();
+        match self.first {
+            None => {
+                log::info!(
+                    "[splash] logo read back: shadow and screen identical, {} of {} logo probes match the oracle, stages {} of {}, bar {} units, cursor {}, sha256 {}; {}",
+                    readback.probes - readback.mismatches,
+                    readback.probes,
+                    view.completed(),
+                    view.total(),
+                    view.bar_units(),
+                    view.cursor(),
+                    Hex(&readback.sha256),
+                    ReadFrom(source)
+                );
+                self.first = Some(readback.view);
+            }
+            Some(first) => {
+                log::info!(
+                    "[splash] progress read back: shadow and screen identical, {} of {} logo probes match the oracle, stages {} -> {} of {}, bar {} -> {} units, cursor {} -> {}, sha256 {}; {}",
+                    readback.probes - readback.mismatches,
+                    readback.probes,
+                    first.completed(),
+                    view.completed(),
+                    view.total(),
+                    first.bar_units(),
+                    view.bar_units(),
+                    first.cursor(),
+                    view.cursor(),
+                    Hex(&readback.sha256),
+                    ReadFrom(source)
+                );
+                self.progress_checked = true;
+            }
+        }
+    }
+
+    /// Give tty1's text the screen.
+    fn hand_over(&mut self, reason: splash::Reason) {
+        splash::end();
+        REDRAW.store(true, Ordering::Release);
+        SCREEN.store(true, Ordering::Release);
+        log::info!("[splash] console took the screen: {}", reason.name());
+    }
+}
+
+/// What a read-back read, for its log line.
+struct ReadFrom<'a>(Option<&'a Source>);
+
+impl fmt::Display for ReadFrom<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(source) => write!(f, "{}", source),
+            None => Ok(()),
+        }
     }
 }
 
@@ -882,7 +1123,7 @@ impl Check {
 /// Why a check had no screen to read.
 #[derive(Clone, Copy)]
 enum Absent {
-    /// ARM64: the boot screen still has the display.
+    /// The boot splash still has the display.
     NotYet,
     /// A process has the display, or the diagnostics screen is up.
     Taken,
@@ -899,9 +1140,10 @@ impl fmt::Display for Hex<'_> {
 }
 
 /// Answer the checks asked for: on the render thread, after a pass, so the
-/// screen is what `shown` says it is.
-fn answer_checks(screen: Result<&Screen, Absent>) {
-    let idle = IDLE_CHECK.swap(false, Ordering::AcqRel);
+/// screen is what `shown` says it is. The idle read-back waits for a pass that
+/// may answer it (`idle_allowed`): it reads the console's text, not the splash.
+fn answer_checks(screen: Result<&Screen, Absent>, idle_allowed: bool) {
+    let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
     let token = PROC_CHECK.swap(0, Ordering::AcqRel);
     if !idle && token == 0 {
         return;
@@ -941,7 +1183,7 @@ fn answer_checks(screen: Result<&Screen, Absent>) {
                     check.font_mismatches
                 ),
             },
-            Err(Absent::NotYet) => say!(info, "{} screen not read back: the boot screen has the display", TAG),
+            Err(Absent::NotYet) => say!(info, "{} screen not read back: the boot splash has the display", TAG),
             Err(Absent::Taken) => say!(info, "{} screen not read back: a process has the display", TAG),
         }
     }
@@ -1015,7 +1257,7 @@ pub fn proc_console_check() -> Result<String, i32> {
     let mut text = String::new();
     match proc_answer()? {
         None => text.push_str("console check: no screen console\n"),
-        Some(Err(Absent::NotYet)) => text.push_str("console check: the boot screen has the display\n"),
+        Some(Err(Absent::NotYet)) => text.push_str("console check: the boot splash has the display\n"),
         Some(Err(Absent::Taken)) => text.push_str("console check: a process has the display\n"),
         Some(Ok(check)) => {
             let layout = check.layout;

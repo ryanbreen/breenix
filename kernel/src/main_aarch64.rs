@@ -227,18 +227,18 @@ fn announce_boot_mode(mode: BootMode, arg: Option<&str>, only: Option<&str>) {
     match (mode, arg, only) {
         (BootMode::Suite, Some(arg), Some(case)) => {
             serial_println!("[boot] Boot mode: suite {} case {}", arg, case);
-            boot_screen::set_mode(format_args!("suite {} case {}", arg, case));
+            splash::set_mode(format_args!("suite {} case {}", arg, case));
         }
         (BootMode::Program | BootMode::Suite, Some(arg), _) => {
             serial_println!("[boot] Boot mode: {} {}", mode.name(), arg);
-            boot_screen::set_mode(format_args!("{} {}", mode.name(), arg));
+            splash::set_mode(format_args!("{} {}", mode.name(), arg));
         }
         _ => {
             serial_println!("[boot] Boot mode: {}", mode.name());
             if cfg!(feature = "testing") {
-                boot_screen::set_mode(format_args!("tests (testing kernel)"));
+                splash::set_mode(format_args!("tests (testing kernel)"));
             } else {
-                boot_screen::set_mode(format_args!("{}", mode.name()));
+                splash::set_mode(format_args!("{}", mode.name()));
             }
         }
     }
@@ -309,9 +309,9 @@ impl InitLaunch {
         let exe_path = kernel::fs::namei::resolve_file(&self.path)
             .map(|(_, _, _, path)| path)
             .map_err(|_| "init pathname does not resolve")?;
-        boot_screen::stage(Stage::StartingPid1);
-        boot_screen::set_status(format_args!("Starting {}", shown));
-        kernel::console::take_screen();
+        splash::stage(Stage::StartingPid1);
+        splash::set_status(format_args!("Starting {}", shown));
+        splash::first_process_started();
         launch_init_from_elf(elf_data, &self.path, &exe_path, &argv)
     }
 }
@@ -591,7 +591,7 @@ use kernel::drivers::virtio::input_mmio;
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::arm64_fb;
 #[cfg(target_arch = "aarch64")]
-use kernel::graphics::boot_screen::{self, Stage};
+use kernel::console::splash::{self, Stage};
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
 
@@ -740,7 +740,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("  BUILD_ID: {}", env!("BREENIX_BUILD_ID"));
     serial_println!("========================================");
     serial_println!();
-    boot_screen::stage(Stage::KernelStarting);
+    splash::stage(Stage::KernelStarting);
 
     // #596 anti-vacuity: name the inline-save resume-point oracle and whether
     // the forced-ERET repro knob is compiled in. Emitted after serial init, so
@@ -771,11 +771,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     let el = current_exception_level();
     serial_println!("[boot] Current exception level: EL{}", el);
     if el == 1 {
-        boot_screen::stage(Stage::RunningAtEl1);
+        splash::stage(Stage::RunningAtEl1);
     }
 
     serial_println!("[boot] MMU already enabled (high-half kernel)");
-    boot_screen::stage(Stage::MmuEnabled);
+    splash::stage(Stage::MmuEnabled);
 
     // Zero the boot identity map L0 entry to prevent new TLB entries from
     // being created for the user VA range while we're still in kernel init.
@@ -802,7 +802,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
-    boot_screen::stage(Stage::MemoryReady);
+    splash::stage(Stage::MemoryReady);
 
     // Initialize BTRT (requires memory and serial)
     #[cfg(feature = "btrt")]
@@ -826,7 +826,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         freq,
         freq / 1_000_000
     );
-    boot_screen::stage(Stage::TimerCalibrated);
+    splash::stage(Stage::TimerCalibrated);
 
     // Initialize RTC for wall-clock time (PL031 on QEMU virt)
     serial_println!("[boot] Initializing PL031 RTC...");
@@ -835,13 +835,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Read current timestamp
     let ts = timer::rdtsc();
     serial_println!("[boot] Current timestamp: {}", ts);
-    boot_screen::stage(Stage::RtcRead);
+    splash::stage(Stage::RtcRead);
 
     // Initialize GIC
     serial_println!("[boot] Initializing GIC...");
     Gicv2::init();
     serial_println!("[boot] GIC initialized (version {})", gic::active_version());
-    boot_screen::stage(Stage::GicInitialized);
+    splash::stage(Stage::GicInitialized);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_GIC_INIT);
 
@@ -859,7 +859,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::arch_impl::aarch64::gic::dump_irq_state(33);
 
     serial_println!("[boot] UART interrupts enabled");
-    boot_screen::stage(Stage::UartInterrupts);
+    splash::stage(Stage::UartInterrupts);
 
     // Enable interrupts
     serial_println!("[boot] Enabling interrupts...");
@@ -868,7 +868,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
-    boot_screen::stage(Stage::InterruptsEnabled);
+    splash::stage(Stage::InterruptsEnabled);
 
     // Read display resolution from fw_cfg before driver init (QEMU only;
     // fw_cfg device at 0x09020000 doesn't exist on Parallels)
@@ -891,9 +891,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
-    boot_screen::stage(Stage::DriversInitialized);
+    splash::stage(Stage::DriversInitialized);
     kernel::drivers::run_post_init_self_tests();
-    boot_screen::stage(Stage::DriverSelfTests);
+    splash::stage(Stage::DriverSelfTests);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
@@ -910,7 +910,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             serial_println!("[boot] ext2 root filesystem mounted");
-            boot_screen::stage(Stage::Ext2Mounted);
+            splash::stage(Stage::Ext2Mounted);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
@@ -940,12 +940,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
     serial_println!("[boot] devfs initialized at /dev");
-    boot_screen::stage(Stage::Devfs);
+    splash::stage(Stage::Devfs);
 
     // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
     kernel::fs::devptsfs::init();
     serial_println!("[boot] devptsfs initialized at /dev/pts");
-    boot_screen::stage(Stage::Devpts);
+    splash::stage(Stage::Devpts);
 
     // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
     kernel::arch_impl::aarch64::cpuinfo::init();
@@ -962,14 +962,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     serial_println!("[boot] procfs initialized at /proc");
-    boot_screen::stage(Stage::Procfs);
+    splash::stage(Stage::Procfs);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
     // Initialize TTY subsystem (console + PTY infrastructure)
     kernel::tty::init();
     serial_println!("[boot] TTY subsystem initialized");
-    boot_screen::stage(Stage::Tty);
+    splash::stage(Stage::Tty);
 
     // Initialize graphics based on available hardware (capability-based detection)
     //
@@ -1066,6 +1066,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
+    // Replace the firmware image before double buffering allocates and copies.
+    if has_display && arm64_fb::is_gop_active() {
+        kernel::console::init_gop_early();
+    }
+
     // Track whether VirGL owns the display (Phase 1: textured quad test only)
     let virgl_display = kernel::drivers::virtio::gpu_pci::is_initialized()
         && kernel::drivers::virtio::gpu_pci::is_virgl_enabled();
@@ -1077,15 +1082,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // screen presents it synchronously and stops once userspace takes the display.
     if has_display && arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
         kernel::graphics::arm64_fb::upgrade_to_double_buffer();
-        boot_screen::set_last_stage_label(if cfg!(feature = "testing") {
+        splash::set_last_stage_label(if cfg!(feature = "testing") {
             "Starting test programs"
         } else {
             "Starting PID 1"
         });
-        boot_screen::show();
-        // The screen console keeps the kernel log and the console TTY from
-        // here, and takes the screen from the boot screen when the first
-        // process starts.
+        // The screen console draws the boot splash from here, keeps the kernel
+        // log and the console TTY, and gives them the screen when the splash
+        // gives way.
         kernel::console::attach();
     }
 
@@ -1120,7 +1124,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
     kernel::arch_impl::aarch64::cache::grant_el0_cache_maintenance();
     serial_println!("[boot] Per-CPU data initialized");
-    boot_screen::stage(Stage::PerCpu);
+    splash::stage(Stage::PerCpu);
 
     // Disable preemption for the boot sequence on CPU 0.
     // The timer interrupt fires while kernel_main is running and the scheduler
@@ -1135,13 +1139,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing process manager...");
     kernel::process::init();
     serial_println!("[boot] Process manager initialized");
-    boot_screen::stage(Stage::ProcessManager);
+    splash::stage(Stage::ProcessManager);
 
     // Initialize scheduler with an idle task
     serial_println!("[boot] Initializing scheduler...");
     init_scheduler();
     serial_println!("[boot] Scheduler initialized");
-    boot_screen::stage(Stage::Scheduler);
+    splash::stage(Stage::Scheduler);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
@@ -1289,7 +1293,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing timer interrupt...");
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
-    boot_screen::stage(Stage::TimerInterrupt);
+    splash::stage(Stage::TimerInterrupt);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
@@ -1661,7 +1665,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             "[smp] {} CPUs online",
             kernel::arch_impl::aarch64::smp::cpus_online()
         );
-        boot_screen::stage(Stage::SmpOnline);
+        splash::stage(Stage::SmpOnline);
         kernel::arch_impl::aarch64::gic::init_gicr_rdist_map(
             kernel::arch_impl::aarch64::smp::cpus_online() as usize,
         );
@@ -1683,6 +1687,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             online_cpus,
             reported_cpus
         );
+    }
+    if online_cpus == reported_cpus {
+        splash::stage(Stage::AllCpusOnline);
     }
 
     kernel::task::softirqd::init_online_daemons();
@@ -1848,7 +1855,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
     serial_println!("Hello from ARM64!");
     serial_println!();
-    boot_screen::stage(Stage::BootComplete);
+    splash::stage(Stage::BootComplete);
 
     // In testing mode, load test binaries from ext2 and let the scheduler
     // dispatch them. Do NOT call launch_init_from_elf() - its manual
@@ -2000,8 +2007,8 @@ fn run_test_loader() {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::end_loading();
     kernel::per_cpu_aarch64::preempt_enable();
-    boot_screen::stage(Stage::StartingPid1);
-    kernel::console::take_screen();
+    splash::stage(Stage::StartingPid1);
+    splash::first_process_started();
     serial_println!("[test] Test processes loaded - will run via timer interrupts");
     serial_println!("[test] Entering scheduler idle loop");
     // The prompt signals to the test harness that boot is complete. It is the
@@ -2046,7 +2053,7 @@ fn load_test_binaries_from_ext2() {
 
     for (index, name) in test_binaries.iter().enumerate() {
         // Show which program is loading, so a hang names it on screen.
-        boot_screen::set_status(format_args!(
+        splash::set_status(format_args!(
             "Loading test programs {} of {}: {}",
             index + 1,
             test_binaries.len(),
@@ -2158,7 +2165,7 @@ fn load_test_binaries_from_ext2() {
         failed,
         test_binaries.len() - loaded - failed
     );
-    boot_screen::set_status(format_args!(
+    splash::set_status(format_args!(
         "Loaded {} test programs ({} failed); running them",
         loaded, failed
     ));
@@ -2474,7 +2481,7 @@ fn panic(info: &PanicInfo) -> ! {
 
     // The screen drawn below shows the log as it stands now, ending with this
     // banner, not the dumps printed in between.
-    boot_screen::capture_panic_log();
+    kernel::graphics::boot_screen::capture_panic_log();
 
     // Failure-capture PR-4: the bounded, lock-free BXCAP record.
     //
@@ -2508,7 +2515,7 @@ fn panic(info: &PanicInfo) -> ! {
     // GPU commands cannot delay or lose them. It does not print or block on a
     // lock: skipped if the framebuffer lock is held, and left for the render or
     // presenter thread if the GPU lock stays held (possibly by this CPU).
-    boot_screen::show_panic(info);
+    kernel::graphics::boot_screen::show_panic(info);
 
     loop {
         unsafe {

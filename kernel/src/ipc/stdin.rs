@@ -140,6 +140,8 @@ fn wake_blocked_readers_try() {
 /// Read bytes from stdin buffer
 /// Returns Ok(n) with bytes read, or Err(EAGAIN) if would block
 pub fn read_bytes(buf: &mut [u8]) -> Result<usize, i32> {
+    // A process reading the console ends the boot splash.
+    crate::console::splash::reader();
     let mut buffer = STDIN_BUFFER.lock();
 
     if buffer.is_empty() {
@@ -249,6 +251,8 @@ pub(crate) fn read_or_prepare(
     buf: &mut [u8],
     is_nonblocking: bool,
 ) -> Result<usize, PrepareOutcome> {
+    // A process reading the console ends the boot splash.
+    crate::console::splash::reader();
     crate::arch_without_interrupts(|| {
         let mut buffer = STDIN_BUFFER.lock();
         if !buffer.is_empty() || buf.is_empty() {
