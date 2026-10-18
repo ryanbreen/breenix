@@ -355,17 +355,29 @@ pub fn wait_no_spin() -> CaseResult {
     let ctx = context()?;
     let t = target(format::B8G8R8A8, W, H)?;
     frame(ctx, &scene(t, BG, &[]))?;
-    // Work the device takes long enough over that a spinning wait would show: 1x1
-    // rectangles at distinct pixels, one draw each, more submissions in flight each round
-    // until the wait lasts 50 ms; a shorter wait is not counted.
-    for round in 0..8u32 {
+    // Work the device takes long enough over that a spinning wait would show: draws of one
+    // pixel each at distinct pixels, cycling through five pipelines so that consecutive
+    // draws change the device's state. Each round adds draws, then submissions in flight,
+    // until a wait lasts 20 ms; a shorter wait is not counted.
+    let cycle = [pipeline::SOLID, pipeline::LINE, pipeline::CIRCLE_FILL, pipeline::ROUNDED_RECT, pipeline::TRIANGLE];
+    let mut round = 0u32;
+    while libbreenix::suite::case_ms_left() > 1_500 {
         let draws = 4096usize << round.min(4);
         let in_flight = 1 + (round.saturating_sub(4) as usize).min(3);
+        round += 1;
         let mut s = Vec::new();
         encode::begin(&mut s, t);
+        let c = colour(round as u64);
         for i in 0..draws {
             let (x, y) = ((i % W as usize) as i32, (i / W as usize) as i32);
-            encode::draw(&mut s, pipeline::SOLID, colour(round as u64), &[[x, y, x + 1, y + 1]]);
+            let px = [x, y, x + 1, y + 1];
+            match cycle[i % cycle.len()] {
+                pipeline::SOLID => encode::draw(&mut s, pipeline::SOLID, c, &[px]),
+                pipeline::LINE => draw::encode(&mut s, pipeline::LINE, c, 0, 0, 0, &[instance(px, &[x, y, x, y])]),
+                pipeline::CIRCLE_FILL => draw::encode(&mut s, pipeline::CIRCLE_FILL, c, 0, 0, 0, &[instance(px, &[x, y, 1])]),
+                pipeline::ROUNDED_RECT => draw::encode(&mut s, pipeline::ROUNDED_RECT, c, 0, 0, 0, &[instance(px, &[x, y, 1, 1, 0])]),
+                p => draw::encode(&mut s, p, c, 0, 0, 0, &[instance(px, &[x, y, x + 2, y, x, y + 2])]),
+            }
         }
         let mut fence = 0;
         for _ in 0..in_flight {
@@ -379,10 +391,11 @@ pub fn wait_no_spin() -> CaseResult {
         let (cpu, wall) = (thread_cpu_ns()?, now_ns());
         wait_ok(ctx, fence, 2_000)?;
         let (cpu, wall) = (thread_cpu_ns()? - cpu, now_ns() - wall);
-        let last = draws - 1;
+        // The last solid draw's pixel.
+        let last = (draws - 1) / cycle.len() * cycle.len();
         let p = read_rect(t, [(last % W as usize) as u32, (last / W as usize) as u32, 1, 1])?;
-        all(&p, colour(round as u64), "the last rectangle after the wait")?;
-        if wall < 50_000_000 {
+        all(&p, c, "the last solid pixel after the wait")?;
+        if wall < 20_000_000 {
             continue;
         }
         value("wait-us", (wall / 1_000) as i64, "us", None);
@@ -391,7 +404,7 @@ pub fn wait_no_spin() -> CaseResult {
             format!("waiting {} us on a fence used {} us of CPU time", wall / 1_000, cpu / 1_000)
         });
     }
-    Err(fail_msg("no submission kept its fence outstanding for 50 ms, so no wait was measured".to_string()))
+    Err(fail_msg("no submission kept its fence outstanding for 20 ms before the case's deadline, so no wait was measured".to_string()))
 }
 
 pub fn present_rate_2560() -> CaseResult {
