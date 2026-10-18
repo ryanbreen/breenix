@@ -1,0 +1,6 @@
+boot 20261018T155716Z-metal commit e8b764980c2f7a1cc33f3f1d40ba2b242c8e214c
+[DISPATCH_STRAND_CENSUS:seq=1:tick=62:ms=1689:saved=0:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=0:idle_no_stack=0:kthread_no_info=0:user_no_kstack=0:sig_deliverable_user=0:waiting=0]
+[DISPATCH_STRAND_CENSUS:seq=4:tick=685:ms=4801:saved=2:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=0:idle_no_stack=0:kthread_no_info=0:user_no_kstack=0:sig_deliverable_user=0:waiting=2]
+[console] input idle 10 min
+[DISPATCH_STRAND_CENSUS:seq=606:tick=121118:ms=606965:saved=2:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=0:idle_no_stack=0:kthread_no_info=0:user_no_kstack=0:sig_deliverable_user=0:waiting=2]
+driver exit-status=0 capture-complete=true power-off=true power-off-seconds=9.7
