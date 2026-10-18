@@ -2,7 +2,7 @@
 
 # Expect script to test timer preemption
 if {![info exists env(BREENIX_ALLOW_X86_QEMU)] || $env(BREENIX_ALLOW_X86_QEMU) ne "1"} {
-    puts stderr "x86 QEMU refused by the 2026-10-18 bare-metal-only policy (S23); use the R240 metal boot loop (scripts/metal/metal-run); operator override: BREENIX_ALLOW_X86_QEMU=1."
+    puts stderr "x86 QEMU refused by the 2026-10-18 bare-metal-only policy (S23); use the x86-metal boot loop (scripts/metal/metal-run); operator override: BREENIX_ALLOW_X86_QEMU=1."
     exit 1
 }
 set timeout 30

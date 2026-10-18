@@ -6,7 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 REFUSAL = ('x86 QEMU refused by the 2026-10-18 bare-metal-only policy (S23); '
-           'use the R240 metal boot loop (scripts/metal/metal-run); '
+           'use the x86-metal boot loop (scripts/metal/metal-run); '
            'operator override: BREENIX_ALLOW_X86_QEMU=1.')
 
 
@@ -20,7 +20,7 @@ class X86QemuPolicyTests(unittest.TestCase):
             ('docker/qemu/run-fs-fault-gate.sh', '--x86'),
             ('scripts/ext2-acceptance.sh', 'x86', 'accept', '/unused'),
             ('scripts/test_tracing_via_gdb.sh', '--arch', 'x86_64'),
-            ('tools/gdb-chat/scripts/gdb_session.sh', 'start'),
+            ('tools/gdb-chat/scripts/gdb_session.sh', 'start', '--arch', 'x86_64'),
         ]
         shell += [('docker/qemu/' + name,) for name in (
             'run-blocking-recv-test.sh', 'run-boot-parallel.sh', 'run-dns-test.sh',
@@ -44,9 +44,9 @@ class X86QemuPolicyTests(unittest.TestCase):
         commands += [('GDBSession.start', ['python3', '-c', controller,
                      str(ROOT / 'tools/gdb-chat/scripts')])]
         commands += [('scripts/test_timer_preemption.exp', ['expect', str(ROOT / 'scripts/test_timer_preemption.exp')])]
-        binaries = Path(os.environ['BREENIX_POLICY_BIN_DIR'])
+        binaries = Path(os.environ.get('BREENIX_POLICY_BIN_DIR', str(ROOT / 'target/release')))
         commands += [(name, [str(binaries / name)]) for name in ('qemu-uefi', 'qemu-bios')]
-        xtask = Path(os.environ['BREENIX_POLICY_XTASK'])
+        xtask = Path(os.environ.get('BREENIX_POLICY_XTASK', str(ROOT / 'target/debug/xtask')))
         commands += [('xtask ' + ' '.join(args), [str(xtask), *args]) for args in (
             ['boot-stages'], ['ring3-smoke'], ['ring3-enosys'], ['interactive'], ['interactive-test'],
             ['kthread-stress'], ['dns-test'], ['boot-test-btrt', '--arch', 'x86_64'],

@@ -232,7 +232,6 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # domain depending on which leg is running. #865 closed the gap this
 # comment used to disclose (the x86 leg reaching beast with no lock of its
 # own).
-# shellcheck source=lib/qemu-host-lock.sh
 
 # #797: concurrent lanes sharing one host (e.g. the beast build environment,
 # reached here via --x86) each invoking this script hardcode the identical
@@ -310,6 +309,7 @@ if [ "$ARCH" = x86 ]; then
     source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
 fi
 
+# shellcheck source=lib/qemu-host-lock.sh
 source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 FEATURES="boot_tests,ext2_lock_race"

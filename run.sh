@@ -50,7 +50,6 @@ RUN_ARGS=("$@")
 # QEMU process, and exit before reaching here. #834 extended this lock's
 # coverage from docker/qemu/*.sh (its original #826/R181 scope) to run.sh
 # as well; #865 closed the x86_64-leg gap this comment used to disclose.
-# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
 
 # Defaults: ARM64 with graphics
 ARCH="arm64"
@@ -252,7 +251,7 @@ if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
 if [ "$PARALLELS" = true ]; then TARGET=parallels
 elif [ "$VMWARE" = true ]; then TARGET=vmware
 fi
-if [ "$TARGET" = x86 ]; then
+if [ "$TARGET" = x86 ] && [ "$DRY_RUN" != true ]; then
     source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
 fi
 if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
@@ -276,6 +275,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "Target policy accepted; no build or boot requested."
     exit 0
 fi
+# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
 source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"

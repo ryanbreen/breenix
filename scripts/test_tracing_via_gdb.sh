@@ -53,7 +53,6 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # #834 extended this lock's coverage from docker/qemu/*.sh (its original
 # #826/R181 scope) to scripts/ as well; #865 closed the x86_64-leg gap this
 # comment used to disclose here (and in run.sh's own x86_64 leg).
-# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 
 # #825: without --out, two concurrent invocations of this harness for the
 # same --arch hardcoded the identical /tmp/breenix_trace_test_$ARCH path, so
@@ -97,6 +96,7 @@ if [ "$ARCH" = x86_64 ]; then
     source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
 fi
 
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 if [ -z "$OUTPUT_DIR" ]; then
