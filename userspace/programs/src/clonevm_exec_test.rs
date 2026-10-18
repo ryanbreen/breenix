@@ -5,6 +5,7 @@
 //! After exec they exercise futex keys from the new address-space identity.
 
 use libbreenix::errno::Errno;
+use libbreenix::error::Error;
 use libbreenix::{io, Fd};
 use libbreenix::memory;
 use libbreenix::process;
@@ -409,6 +410,25 @@ fn second_stage_argv() -> [*const u8; 3] {
     [ARG0.as_ptr(), SECOND_STAGE_ARG.as_ptr(), ptr::null()]
 }
 
+/// CLONE_FILES shares descriptor custody, so neither old sharer closes the
+/// other endpoint. Nonblocking pipes keep a missing producer bounded instead.
+unsafe fn receive_handoff(fd: Fd) -> bool {
+    let deadline = monotonic_ns(b"CLONEVM_EXEC_TEST: ERROR handoff clock failed\n")
+        .saturating_add(5_000_000_000);
+    loop {
+        let mut byte = [0];
+        match io::read(fd, &mut byte) {
+            Ok(1) => return byte == [1],
+            Err(Error::Os(Errno::EAGAIN)) => {},
+            _ => return false,
+        }
+        if monotonic_ns(b"CLONEVM_EXEC_TEST: ERROR handoff clock failed\n") >= deadline {
+            return false;
+        }
+        sys_yield();
+    }
+}
+
 /// These two processes retain the original mapping across their owner's exec.
 /// Their handshake must still use the same futex key after custody transfers.
 extern "C" fn retained_waiter(arg: *mut u8) -> *mut u8 {
@@ -427,8 +447,6 @@ extern "C" fn retained_coordinator(arg: *mut u8) -> *mut u8 {
     unsafe {
         let trigger = Fd::from_raw(core::ptr::read_volatile(arg.add(56) as *mut u64));
         let report = Fd::from_raw(core::ptr::read_volatile(arg.add(64) as *mut u64));
-        let _ = io::close(Fd::from_raw(core::ptr::read_volatile(arg.add(72) as *mut u64)));
-        let _ = io::close(Fd::from_raw(core::ptr::read_volatile(arg.add(80) as *mut u64)));
         let stack = map_region(CHILD_STACK_SIZE,
             b"CLONEVM_EXEC_TEST: ERROR retained waiter stack failed\n");
         let tid = arg.add(RENDEZVOUS_TID_OFFSET) as *mut u32;
@@ -440,11 +458,10 @@ extern "C" fn retained_coordinator(arg: *mut u8) -> *mut u8 {
             thread_exit(1);
         }
         core::ptr::write_volatile(arg as *mut u64, process::getpid().unwrap().raw());
-        let mut byte = [0];
-        if io::read(trigger, &mut byte).ok() != Some(1) || byte != [1] {
+        if !receive_handoff(trigger) {
             thread_exit(1);
         }
-        // The new image alone holds the trigger's writer. Reaching this point
+        // Only the new image writes the trigger. Reaching this point
         // proves the owner has exec'd; both accesses below use the old root.
         if IMAGE_GENERATION.load(Ordering::SeqCst) != 37
             || core::ptr::read_volatile(arg.add(SHARED_COMMAND_OFFSET) as *mut u64) != 7
@@ -471,10 +488,9 @@ unsafe fn owner_second_stage() -> ! {
     let trigger = Fd::from_raw(args[2].parse().unwrap());
     let report = Fd::from_raw(args[3].parse().unwrap());
     let child: i32 = args[4].parse().unwrap();
-    let mut byte = [0];
     let mut status = 0;
     if io::write(trigger, &[1]).ok() != Some(1)
-        || io::read(report, &mut byte).ok() != Some(1) || byte != [1]
+        || !receive_handoff(report)
         || process::waitpid(child, &mut status, 0).map(|pid| pid.raw() as i32).ok() != Some(child)
         || !process::wifexited(status) || process::wexitstatus(status) != 0 {
         fail_closed(b"CLONEVM_EXEC_TEST: ERROR retained sharers failed after owner exec\n");
@@ -648,12 +664,10 @@ unsafe fn first_stage() -> ! {
     core::ptr::write_volatile(command, 0);
     core::ptr::write_volatile(tid_addr, u32::MAX);
 
-    let (trigger_read, trigger_write) = io::pipe().unwrap();
-    let (report_read, report_write) = io::pipe().unwrap();
+    let (trigger_read, trigger_write) = io::pipe2(0x800).unwrap();
+    let (report_read, report_write) = io::pipe2(0x800).unwrap();
     core::ptr::write_volatile(shared.add(56) as *mut u64, trigger_read.raw());
     core::ptr::write_volatile(shared.add(64) as *mut u64, report_write.raw());
-    core::ptr::write_volatile(shared.add(72) as *mut u64, trigger_write.raw());
-    core::ptr::write_volatile(shared.add(80) as *mut u64, report_read.raw());
     core::ptr::write_volatile(command, 7);
     if clone_vm_child(stack, retained_coordinator, shared, tid_addr) < 0 {
         fail_closed(b"CLONEVM_EXEC_TEST: ERROR retained coordinator clone failed\n");
@@ -662,8 +676,6 @@ unsafe fn first_stage() -> ! {
     wait_for_nonzero_u64(alive, b"CLONEVM_EXEC_TEST: ERROR retained sharers not live\n");
     prove_child_still_live(alive, tid_addr);
     let child_pid = core::ptr::read_volatile(alive);
-    io::close(trigger_read).unwrap();
-    io::close(report_write).unwrap();
     // Pipe descriptors and the child PID survive exec; no old address is
     // passed to the new image. Its futex checks run on a fresh mapping.
     let owner_arg = b"--owner-second-stage\0";
