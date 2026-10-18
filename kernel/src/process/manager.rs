@@ -4238,7 +4238,7 @@ impl ProcessManager {
 
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
 
         if self.exec_blocked_by_group(pid) {
@@ -4723,7 +4723,7 @@ impl ProcessManager {
 
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
 
         // Rows still on the old address space that share no thread group with
@@ -5131,7 +5131,7 @@ impl ProcessManager {
         let new_entry_point = loaded_elf.entry_point;
 
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
 
         // Rows still on the old address space that share no thread group with
@@ -5476,7 +5476,7 @@ impl ProcessManager {
         );
 
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
 
         if self.exec_blocked_by_group(pid) {

@@ -3969,7 +3969,10 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             roots_created = roots_created.saturating_add(1);
         }
         let process_root_fresh =
-            address_space_of(leader_pid).is_some_and(|(root, _)| root != shared_root);
+            address_space_of(leader_pid).is_some_and(|(root, lifetime)| {
+                root != shared_root
+                    && address_space_of(sharer_pid).is_some_and(|(_, old)| lifetime.id != old.id)
+            });
         let sharer_owns_old_root =
             address_space_of(sharer_pid).is_some_and(|(root, _)| root == shared_root);
         if shared_exec.is_err() && first_failure.is_none() {

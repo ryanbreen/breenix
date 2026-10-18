@@ -216,6 +216,13 @@ pub(crate) struct AddressSpaceLifetime {
     pub(crate) id: u64,
 }
 
+impl AddressSpaceLifetime {
+    pub(crate) fn new() -> Self {
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        Self { id: NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed) }
+    }
+}
+
 /// A process represents a running program and an address-space owner.
 pub struct Process {
     pub limits: alloc::sync::Arc<super::limits::Limits>,
@@ -527,7 +534,7 @@ impl Process {
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
-            address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime { id: id.as_u64() })),
+            address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime::new())),
             heap_start: 0,
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),
