@@ -450,6 +450,7 @@ pub fn sys_clone_thread(
         privilege: ThreadPrivilege::User,
         has_started: false, // Will be set up via first_userspace_entry
         blocked_in_syscall: false,
+        uninterruptible_io: false,
         saved_by_inline_schedule: false,
         inline_schedule_spsr: 0,
         inline_schedule_prev_elr: 0,

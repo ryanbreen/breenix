@@ -762,6 +762,12 @@ pub struct Thread {
     /// This prevents the scheduler from restoring stale userspace context.
     pub blocked_in_syscall: bool,
 
+    /// Set while the thread sleeps in a device completion wait that signals
+    /// cannot end (`Completion::wait_timeout_uninterruptible`), so procfs
+    /// reports it in Linux's uninterruptible state `D`. Meaningful only while
+    /// the state is `BlockedOnIO`; the wait clears it when it resumes.
+    pub uninterruptible_io: bool,
+
     /// Was this thread's context saved by schedule_from_kernel() (inline schedule)?
     /// When true, the thread should be resumed via ret-based dispatch (restore
     /// callee-saved regs + SP, then ret to x30) instead of ERET. This avoids
@@ -1325,6 +1331,7 @@ impl Clone for Thread {
             privilege: self.privilege,
             has_started: self.has_started,
             blocked_in_syscall: self.blocked_in_syscall,
+            uninterruptible_io: self.uninterruptible_io,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1454,6 +1461,7 @@ impl Thread {
             privilege: ThreadPrivilege::Kernel,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1531,6 +1539,7 @@ impl Thread {
             privilege: ThreadPrivilege::Kernel,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1595,6 +1604,7 @@ impl Thread {
             privilege,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1658,6 +1668,7 @@ impl Thread {
             privilege,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1734,6 +1745,7 @@ impl Thread {
             privilege: ThreadPrivilege::User,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1805,6 +1817,7 @@ impl Thread {
             privilege: ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1906,6 +1919,7 @@ impl Thread {
             privilege,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1965,6 +1979,7 @@ impl Thread {
             privilege,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
