@@ -162,7 +162,12 @@ impl CpuContext {
             rsi: 0,
             rdi: 0,
             rbp: 0,
-            rsp: stack_pointer.as_u64(),
+            // IRETQ enters kernel Rust without CALL pushing a return address.
+            // Reserve its slot so the SysV callee starts with RSP % 16 == 8.
+            rsp: match privilege {
+                ThreadPrivilege::Kernel => (stack_pointer.as_u64() & !0xF).saturating_sub(8),
+                ThreadPrivilege::User => stack_pointer.as_u64(),
+            },
             r8: 0,
             r9: 0,
             r10: 0,
