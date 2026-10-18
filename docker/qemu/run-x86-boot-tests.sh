@@ -650,6 +650,7 @@ while [ "$i" -le "$COUNT" ]; do
     HOST_MS_START="$(gbf_host_ms_now)"
     QEMU_AT_START="$(qemu_host_lock_count qemu-system-x86_64)"
     LOAD_AT_START="$(gbf_load_1m)"
+    # Filesystem mutation tests need writes; discard them after each boot.
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -657,7 +658,7 @@ while [ "$i" -le "$COUNT" ]; do
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
         -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" \
         -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-        -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
+        -drive "if=none,id=ext2disk,format=raw,snapshot=on,file=$BREENIX_ROOT/target/ext2.img" \
         -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
         -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
         -display none -no-reboot -no-shutdown \
