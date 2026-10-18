@@ -1,12 +1,20 @@
 //! Retained terminal cells and streaming UTF-8/control-function decoding.
 //!
-//! The contract is docs/console/contract.md section 5. Cells use fixed arrays:
-//! kernel records and TTY echo can arrive with IRQs masked. The alternate screen has separate storage; full-screen scrolling
-//! rotates rows and partial-region scrolling moves only those rows.
+//! The contract is docs/console/contract.md section 5. Cells live in storage the
+//! grid is given once (`set_storage`), not allocated while writing: kernel
+//! records and TTY echo can arrive with IRQs masked. The alternate screen has
+//! separate storage; full-screen scrolling rotates rows and partial-region
+//! scrolling moves only those rows.
+//!
+//! Lines scrolled off the top of the main screen go into the scrollback
+//! (section 1.6) once it is installed (`set_history`): a ring of whole rows.
+//! The view is how many lines back from the live screen the VT is shown.
 
 pub const MAX_COLS: usize = 255;
 pub const MAX_ROWS: usize = 255;
 const MAX_PARAMS: usize = 16;
+/// Lines of scrollback per terminal (contract section 1.6).
+pub const HISTORY_LINES: usize = 1000;
 
 pub const BOLD: u8 = 1;
 pub const UNDERLINE: u8 = 2;
@@ -119,8 +127,16 @@ enum Escape {
 pub struct Grid {
     cols: usize,
     rows: usize,
-    cells: [Cell; MAX_COLS * MAX_ROWS],
-    alternate: [Cell; MAX_COLS * MAX_ROWS],
+    /// The main and alternate screens, `cols` cells per row.
+    cells: &'static mut [Cell],
+    alternate: &'static mut [Cell],
+    /// Scrollback: `HISTORY_LINES` rows of `cols` cells, the oldest at
+    /// `history_start`, `history_len` of them filled.
+    history: &'static mut [Cell],
+    history_start: usize,
+    history_len: usize,
+    /// Lines back from the live screen that are shown (0: the live screen).
+    view: usize,
     alt: bool,
     state: State,
     main: State,
@@ -143,9 +159,13 @@ impl Grid {
         Self {
             cols: 0,
             rows: 0,
-            // set_size initializes these cell arrays before they are read.
-            cells: [ZERO; MAX_COLS * MAX_ROWS],
-            alternate: [ZERO; MAX_COLS * MAX_ROWS],
+            // set_storage provides the cells before the grid has a size.
+            cells: &mut [],
+            alternate: &mut [],
+            history: &mut [],
+            history_start: 0,
+            history_len: 0,
+            view: 0,
             alt: false,
             state: State::ZERO,
             main: State::ZERO,
@@ -164,10 +184,39 @@ impl Grid {
         }
     }
 
+    /// Give the grid its screens' cells. Each must hold the size it is then
+    /// given (`set_size`); a size they cannot hold leaves the grid empty.
+    pub fn set_storage(&mut self, cells: &'static mut [Cell], alternate: &'static mut [Cell]) {
+        self.cells = cells;
+        self.alternate = alternate;
+    }
+
     pub fn set_size(&mut self, cols: usize, rows: usize) {
-        self.cols = cols.min(MAX_COLS);
-        self.rows = rows.min(MAX_ROWS);
+        let (cols, rows) = (cols.min(MAX_COLS), rows.min(MAX_ROWS));
+        if cols * rows > self.cells.len().min(self.alternate.len()) {
+            self.cols = 0;
+            self.rows = 0;
+            return;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.history_start = 0;
+        self.history_len = 0;
+        self.view = 0;
         self.reset();
+    }
+
+    /// Install the scrollback: `HISTORY_LINES` rows of the grid's width.
+    pub fn set_history(&mut self, history: &'static mut [Cell]) {
+        if history.len() >= HISTORY_LINES * self.cols && self.cols != 0 {
+            self.history = history;
+            self.history_start = 0;
+            self.history_len = 0;
+        }
+    }
+
+    pub fn has_history(&self) -> bool {
+        !self.history.is_empty()
     }
 
     fn reset(&mut self) {
@@ -177,8 +226,9 @@ impl Grid {
             ..State::NEW
         };
         self.main = self.state;
-        self.cells.fill(BLANK);
-        self.alternate.fill(BLANK);
+        let size = self.cols * self.rows;
+        self.cells[..size].fill(BLANK);
+        self.alternate[..size].fill(BLANK);
         self.visible = true;
         self.autowrap = true;
         for (col, tab) in self.tabs.iter_mut().enumerate() {
@@ -205,24 +255,89 @@ impl Grid {
         self.visible
     }
 
+    /// A row of the live screen.
     pub fn row(&self, row: usize) -> &[Cell] {
-        let start = ((self.state.top + row) % self.rows.max(1)) * MAX_COLS;
-        let cells = if self.alt {
-            &self.alternate
-        } else {
-            &self.cells
-        };
+        let start = ((self.state.top + row) % self.rows.max(1)) * self.cols;
+        let cells: &[Cell] = if self.alt { self.alternate } else { self.cells };
         &cells[start..start + self.cols]
     }
 
     fn row_mut(&mut self, row: usize) -> &mut [Cell] {
-        let start = ((self.state.top + row) % self.rows.max(1)) * MAX_COLS;
-        let cells = if self.alt {
-            &mut self.alternate
+        let start = ((self.state.top + row) % self.rows.max(1)) * self.cols;
+        let cells: &mut [Cell] = if self.alt {
+            self.alternate
         } else {
-            &mut self.cells
+            self.cells
         };
         &mut cells[start..start + self.cols]
+    }
+
+    /// A row as the view shows it: from the scrollback while the view is
+    /// scrolled back, else from the live screen.
+    pub fn view_row(&self, row: usize) -> &[Cell] {
+        let back = self.view();
+        if back == 0 {
+            return self.row(row);
+        }
+        let line = self.history_len - back + row;
+        if line < self.history_len {
+            let start = ((self.history_start + line) % HISTORY_LINES) * self.cols;
+            &self.history[start..start + self.cols]
+        } else {
+            self.row(line - self.history_len)
+        }
+    }
+
+    /// Lines back from the live screen the view shows; the alternate screen
+    /// has no scrollback, so it is shown live.
+    pub fn view(&self) -> usize {
+        if self.alt { 0 } else { self.view }
+    }
+
+    /// Move the view `lines` back (positive) or forward (negative), within
+    /// the scrollback; true when it moved. No effect on the alternate screen.
+    pub fn scroll_view(&mut self, lines: isize) -> bool {
+        if self.alt {
+            return false;
+        }
+        let view = if lines >= 0 {
+            self.view.saturating_add(lines as usize).min(self.history_len)
+        } else {
+            self.view.saturating_sub(lines.unsigned_abs())
+        };
+        if view == self.view {
+            return false;
+        }
+        self.view = view;
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+
+    /// Return the view to the live screen; true when it moved.
+    pub fn view_live(&mut self) -> bool {
+        self.scroll_view(-(self.view as isize))
+    }
+
+    /// Keep rows `first..first + count` of the live screen, which are about
+    /// to scroll off its top, in the scrollback. A scrolled-back view keeps
+    /// showing the same lines.
+    fn keep_history(&mut self, first: usize, count: usize) {
+        if self.history.is_empty() || self.alt {
+            return;
+        }
+        for row in first..first + count {
+            let slot = (self.history_start + self.history_len) % HISTORY_LINES;
+            let (cols, start) = (self.cols, ((self.state.top + row) % self.rows) * self.cols);
+            self.history[slot * cols..(slot + 1) * cols].copy_from_slice(&self.cells[start..start + cols]);
+            if self.history_len == HISTORY_LINES {
+                self.history_start = (self.history_start + 1) % HISTORY_LINES;
+            } else {
+                self.history_len += 1;
+            }
+            if self.view != 0 {
+                self.view = (self.view + 1).min(self.history_len);
+            }
+        }
     }
 
     pub fn begin_line(&mut self) {
@@ -507,6 +622,9 @@ impl Grid {
 
     fn scroll(&mut self, first: usize, last: usize, count: usize, down: bool) {
         let count = count.min(last - first + 1);
+        if first == 0 && !down {
+            self.keep_history(first, count);
+        }
         let blank = self.blank();
         if first == 0 && last + 1 == self.rows {
             self.state.top =
@@ -532,8 +650,8 @@ impl Grid {
 
     fn copy_row(&mut self, from: usize, to: usize) {
         let mut row = [BLANK; MAX_COLS];
-        row[..self.cols].copy_from_slice(self.row(from));
         let cols = self.cols;
+        row[..cols].copy_from_slice(self.row(from));
         self.row_mut(to).copy_from_slice(&row[..cols]);
     }
 
@@ -699,7 +817,8 @@ impl Grid {
                 ..State::NEW
             };
             self.state.cursor.pen = self.main.cursor.pen;
-            self.alternate.fill(BLANK);
+            let size = self.cols * self.rows;
+            self.alternate[..size].fill(BLANK);
         } else {
             self.state = self.main;
             self.state.cursor.pending_wrap &= self.autowrap;

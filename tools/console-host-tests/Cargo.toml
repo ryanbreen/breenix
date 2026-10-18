@@ -6,7 +6,12 @@ edition = "2021"
 [workspace]
 
 [dependencies]
+log = "0.4"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-latin-extended-a", "unicode-specials"] }
 
 [lib]
 doctest = false
+
+# These kernel-only feature names occur in the included discipline source.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("boot_tests", "btrt"))'] }

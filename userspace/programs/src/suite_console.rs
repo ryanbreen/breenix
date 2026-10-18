@@ -18,6 +18,10 @@ use libbreenix::io;
 use libbreenix::suite::{case, category, fail, suite, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 
+#[path = "suite_console_vt.rs"]
+mod vt_cases;
+use vt_cases::*;
+
 static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
     category("screen", "Console on the screen", &[
         case("tty1-on-screen", "Text written to tty1 is drawn on the screen", screen_tty1_on_screen),
@@ -135,7 +139,6 @@ struct Layer {
     probe: Probe,
 }
 
-const VT: Layer = Layer { name: "the six virtual terminals (V4)", probe: Probe::VtGetstate };
 const USER: Layer = Layer { name: "chvt and a getty on each terminal (V4u)", probe: Probe::VtGetstate };
 const KEYS: Layer = Layer { name: "the input core and the console keys (V5)", probe: Probe::VtGetstate };
 
@@ -726,47 +729,6 @@ macro_rules! needs {
 }
 
 needs! {
-    vt_devices_six_terminals => VT;
-    vt_devices_tty1_is_console => VT;
-    vt_devices_tty0_is_foreground => VT;
-    vt_devices_dev_tty_is_ctty => VT;
-    vt_devices_dev_tty_enxio => VT;
-    vt_devices_termios_per_vt => VT;
-    vt_devices_ctty_per_vt => VT;
-    vt_devices_winsize_per_vt => VT;
-    vt_devices_vcs_text => VT;
-    vt_devices_vcsa_attributes => VT;
-    vt_devices_background_output_retained => VT;
-    vt_devices_background_process_runs => VT;
-    vt_devices_background_read_waits => VT;
-    vt_devices_switch_sends_no_signal => VT;
-    vt_switch_activate => VT;
-    vt_switch_activate_enxio => VT;
-    vt_switch_waitactive => VT;
-    vt_switch_waitactive_after_draw => VT;
-    vt_switch_waitactive_eintr => VT;
-    vt_switch_getstate => VT;
-    vt_switch_openqry => VT;
-    vt_switch_kdsetmode_graphics => VT;
-    vt_switch_kd_owner_exit => VT;
-    vt_switch_graphics_vt_refuses_switch => VT;
-    vt_switch_vt_process_release => VT;
-    vt_switch_vt_process_acquire => VT;
-    vt_switch_vt_process_refuse => VT;
-    vt_switch_vt_process_release_timeout => VT;
-    vt_switch_vt_process_owner_exit => VT;
-    vt_switch_vt_process_competing => VT;
-    vt_switch_vt_process_cancel => VT;
-    vt_switch_setmode_busy => VT;
-    vt_switch_reldisp_errors => VT;
-    vt_switch_eperm_unprivileged => VT;
-    vt_switch_switch_readback => VT;
-    vt_switch_switch_log_digest => VT;
-    scrollback_history_kept => VT;
-    scrollback_history_per_vt => VT;
-    scrollback_survives_switch => VT;
-    scrollback_view_holds_on_output => KEYS;
-    scrollback_key_returns_live => KEYS;
     chvt_chvt_switches => USER;
     chvt_chvt_waits => USER;
     chvt_chvt_bad_number => USER;

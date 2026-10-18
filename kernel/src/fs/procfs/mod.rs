@@ -1517,7 +1517,9 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
         pgrp: process.pgid.as_u64(),
         session: sid.as_u64(),
         tty_nr: match ctty {
-            Some(crate::tty::ctty::TtyId::Console) => pid_stat::tty_nr(5, 1),
+            // tty1 is the console, which processes reach as /dev/console.
+            Some(crate::tty::ctty::TtyId::Vt(1)) => pid_stat::tty_nr(5, 1),
+            Some(crate::tty::ctty::TtyId::Vt(n)) => pid_stat::tty_nr(4, u32::from(n)),
             Some(crate::tty::ctty::TtyId::Pty(n)) => pid_stat::tty_nr(136, n),
             None => 0,
         },
