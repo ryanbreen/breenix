@@ -34,18 +34,15 @@
 //! * The drain's retire arm records whether the daemon or another drain
 //!   retired the watched pid; the verdict requires the daemon.
 //!
-//! # The bound
+//! # The timing estimate
 //!
 //! The daemon sleeps `RECLAIM_DAEMON_IDLE_NS` (100 ms) while both reclaim
 //! queues are empty and `RECLAIM_DAEMON_RETRY_NS` (10 ms) while a receipt
-//! waits. A timer wake is enqueued at the head of its CPU's queue, so the
-//! daemon runs within the running spinner's remaining quantum plus a tick. A
-//! receipt queued just after the daemon went to sleep therefore waits at most
-//! the idle interval and a dispatch, then possibly one retry and a dispatch for
-//! the fence: `mechanism_ms` on the marker is that sum. `BOUND_MS` is larger
-//! because the gates run the guest under emulation, where timers can be
-//! delivered late; the extra is a jitter allowance, not part of the mechanism
-//! claim.
+//! waits. `mechanism_ms` adds those sleeps and two dispatch estimates of one
+//! quantum plus a tick. Timer wakes are promoted only when promotion is open;
+//! otherwise runnable peers ahead of the daemon can add dispatch delay. This
+//! estimate is not a worst-case bound. `BOUND_MS` is the measured gate limit,
+//! including dispatch delay and late timer delivery under emulation.
 //!
 //! # Not claimed
 //!
@@ -73,15 +70,15 @@ const ARCH_TAG: &str = if cfg!(target_arch = "x86_64") {
     "aarch64"
 };
 
-/// One dispatch behind a spinner: its remaining quantum plus a tick.
+/// Dispatch estimate behind one spinner; queued peers can add delay.
 const DISPATCH_MS: u64 =
     crate::task::timer_wake_oracle::QUANTUM_MS + crate::time::timer::MS_PER_TICK;
 /// The daemon's sleeps, in milliseconds.
 const DAEMON_IDLE_MS: u64 = process_task::RECLAIM_DAEMON_IDLE_NS / 1_000_000;
 const DAEMON_RETRY_MS: u64 = process_task::RECLAIM_DAEMON_RETRY_NS / 1_000_000;
-/// Mechanism bound: the idle sleep and a dispatch, then a retry and a dispatch.
+/// Timing estimate: the idle sleep and a dispatch, then a retry and a dispatch.
 const MECHANISM_MS: u64 = DAEMON_IDLE_MS + DISPATCH_MS + DAEMON_RETRY_MS + DISPATCH_MS;
-/// Gate bound; the remainder over `MECHANISM_MS` is an emulation allowance.
+/// Measured gate limit, including scheduling delay and emulation jitter.
 const BOUND_MS: u64 = 1_000;
 
 /// Backstops: "the boot is broken" budgets. Each that fires is counted on the
