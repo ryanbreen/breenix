@@ -191,7 +191,8 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)`, each category optionally followed by `.idle_before(N)`, \
+         with no attributes inside it"
     )
 }
 
@@ -290,6 +291,13 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
     let suite = id_and_title(&suite_args, "suite", 3)?;
     let mut categories = Vec::new();
     for category_expr in slice(suite_args[2])? {
+        let mut category_expr = category_expr;
+        if let syn::Expr::MethodCall(method) = category_expr {
+            if method.method != "idle_before" || method.args.len() != 1 || !method.attrs.is_empty() {
+                return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
+            }
+            category_expr = &method.receiver;
+        }
         let args = call(category_expr, "category")?;
         let entry = id_and_title(&args, "category", 3)?;
         let mut cases = Vec::new();
