@@ -55,10 +55,11 @@ def score(directory):
         stages = lists.get(run['mode'], lists.get(definition['gateArch'], []) if milestone.get('kernel') else [])
         if not stages:
             continue
-        cursor, reached = 0, 0
+        cursor, reached, unmeasured = 0, 0, 0
         for stage in stages:
             spec = catalog[stage] if isinstance(stage, str) else stage
             if spec.get('input') and spec['input'] != run.get('input'):
+                unmeasured += 1  # This boot's input cannot produce it; it stays unreached.
                 continue
             if 'host' in spec:
                 reached += host[spec['host']] in events
@@ -71,4 +72,14 @@ def score(directory):
                     cursor = index + 1
                     break
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
+        if unmeasured:
+            results[milestone['id']]['inputUnmeasured'] = unmeasured
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
+
+
+def falls_short(verdict):
+    """A finished boot falls short on a capture gap, or on a milestone missing a stage its input could produce.
+    A SOL console boot cannot produce the keyboard stages: those milestones stay unpassed without failing it."""
+    return not verdict['captureComplete'] or any(
+        not result['passed'] and result['reached'] + result.get('inputUnmeasured', 0) < result['total']
+        for result in verdict['milestones'].values())

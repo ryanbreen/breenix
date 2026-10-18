@@ -1110,8 +1110,7 @@ class Driver:
             try:
                 verdict = metal_score.score(self.dir)
                 m.write_json(self.dir / 'milestone-verdict.json', verdict)
-                if status == m.EXIT_DONE and (not verdict['captureComplete'] or
-                        any(not milestone['passed'] for milestone in verdict['milestones'].values())):
+                if status == m.EXIT_DONE and metal_score.falls_short(verdict):
                     status = m.EXIT_SHORT
             except (OSError, ValueError, KeyError) as error:
                 self.event('milestone-verdict-error', error=error.__class__.__name__)
