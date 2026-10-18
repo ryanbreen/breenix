@@ -119,9 +119,11 @@ then powers off through the normal driver cleanup. At the machine, use the monit
 once their console support has landed. The login credentials are in the operator's private credential store;
 ask an agent to locate them. A session leaves the login prompt and typing to the operator. It never types the
 automated login challenge. SOL and the local keyboard feed the same console TTY.
+claim-lint:ok: `tests/metal_session_test.py` checks that the session driver sends no challenge.
 
 **The power button boots nothing.** An agent or Vigil must stage and start the boot through the machine lease.
 A stray power-on has no image to fetch and the reaper turns it off. Do not use the power button to start a session.
+claim-lint:ok: the unstaged image-server contract in "Delivery" and the stray-power-on cases in `tests/metal_tools_test.py`.
 
 A session ends after **30 minutes without console input**, **four hours from power-on**, or `metal-run stop ID`.
 The kernel timestamps input on TTY 0, including editing and control characters from either source. Output does
@@ -130,6 +132,8 @@ the kernel emits the one-shot line `[console] input idle 30 min`; the driver pow
 the lease. The reaper honours the same four-hour ceiling even if the driver fails; a dead driver is still reaped
 promptly. The boot record has kind `console-session`, is evidence-ineligible, and is never scored because its
 capture holds the operator's typing. Captures remain in the private boot store.
+claim-lint:ok: `tests/metal_session_test.py` checks the deadline, record kind, scoring refusal and reaper;
+`kernel/src/tty/input_activity.rs` checks the input expiry boundary and one-shot state.
 
 Sessions use a fresh RAM-disk root by default; files disappear at power-off. `--disk root` uses a console image
 previously installed by the storage lane, with the existing commit and credential checks. A session cannot install

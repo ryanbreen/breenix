@@ -1,5 +1,6 @@
 //! Console idle expiry follows input arriving at TTY 0, including control bytes.
 //! Output, echo and serial capture activity never advance this clock.
+//! claim-lint:ok: the two input entry points in `kernel/src/tty/driver.rs` call record_input.
 use super::input_activity::InputClock;
 
 static CLOCK: InputClock = InputClock::new();
@@ -24,6 +25,7 @@ fn idle_worker() {
         crate::per_cpu::preempt_enable();
         if CLOCK.expire(crate::time::get_monotonic_time()) {
             // Thread context only: the input path stores a timestamp, never logs.
+            // claim-lint:ok: record_input in kernel/src/tty/input_clock.rs calls only CLOCK.input and the clock read.
             crate::serial_println!("[console] input idle {} min", CLOCK.minutes());
             return;
         }
