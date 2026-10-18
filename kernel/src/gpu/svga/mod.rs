@@ -865,8 +865,8 @@ impl Device {
         // Owned before the device can use them; the program and fence MOBs live as long
         // as the device.
         self.tables.push(program_tree);
-        self.exec_init(c.words())?;
         self.fence = Some((fence_id, fence_tree));
+        self.exec_init(c.words())?;
         PROGRAMS.call_once(|| Programs { mob: program_id, at });
         TOUCH.call_once(|| touch);
         Ok(())
