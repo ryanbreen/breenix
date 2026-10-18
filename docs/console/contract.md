@@ -677,6 +677,14 @@ binding's key have no effect, and the release of a consumed press is consumed to
   no shortcut from an application.
 - The foreground VT owns the keyboard: its line discipline gets the bytes, Ctrl+C signals its foreground
   process group, and Caps Lock state is kept per VT.
+- **Choices this table leaves open (V5).** Alt+Left and Alt+Right act only without Ctrl, and Shift+PageUp and
+  Shift+PageDown only without Ctrl or Alt; with them, those keys send their bytes (section 5.5), Alt first
+  adding `ESC`. A repeat of a key delivered as input sends its bytes again. A key that acts, the splash's
+  ending press included, sends no bytes. Num Lock is one state for the console, off at boot: with it off the
+  keypad's digit keys send the navigation key each is labelled with (keypad 5 sends no bytes), with it on
+  their digits. Scroll Lock toggles only its LED. A key's switch is requested by the render thread, not in the
+  interrupt that reported it; a second switch key before that request is made replaces the first, and Alt+Left
+  and Alt+Right count from the terminal the first named.
 
 ### 9.2 Grabs
 
@@ -685,7 +693,9 @@ consumer, except the reserved chords above. **A grab is effective only while the
 foreground:** when its VT is released, the input core sends the grab holder releases for each key it holds
 and delivers it no further events until its VT is acquired again, when the grab resumes with pressed state reset;
 meanwhile key events go to the console consumer for the foreground VT. V5 builds the routing point in the
-input core's first slice; the grab itself, and the case that measures the reserved chords under it
+input core's first slice (`kernel/src/input/mod.rs`): it marks an event reserved when it is a Ctrl+Alt+F1..F12
+press, or a repeat or release of such a press whatever modifiers are held by then, and the console acts on
+that mark. The grab itself, and the case that measures the reserved chords under it
 (`window-manager/input-core/grab`), belong to the window-manager effort.
 
 ---

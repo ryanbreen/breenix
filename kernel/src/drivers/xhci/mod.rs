@@ -266,7 +266,7 @@ struct Controller {
     protocols: Vec<Protocol>,
     devices: Vec<Device>,
     console: crate::drivers::hid_boot::Console,
-    /// Absolute console lock state, shared across keyboard pipes and reattach.
+    /// The LED state last sent to the keyboards: the console's lock state.
     keyboard_leds: u8,
 }
 

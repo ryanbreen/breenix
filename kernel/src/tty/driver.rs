@@ -1280,9 +1280,10 @@ pub fn write_unprocessed(buf: &[u8]) {
 /// This version is safe for interrupt context.
 /// Returns true if the character was processed, false otherwise.
 ///
-/// Used by the keyboard drivers from their interrupt handlers. Serial input
-/// reaches the console alone (`push_char`, and the ARM64 UART's input ring).
-/// A key returns the foreground terminal's view to the live screen.
+/// Used by the console's key consumer (`console::keys`) and the ARM64 USB HID
+/// driver, in interrupt context or a driver thread. Serial input reaches the
+/// console alone (`push_char`, and the ARM64 UART's input ring). A key returns
+/// the foreground terminal's view to the live screen.
 #[allow(dead_code)]
 pub fn push_char_nonblock(c: u8) -> bool {
     push_char_nonblock_from(c, super::InputSource::Other)
@@ -1296,13 +1297,8 @@ pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
     let foreground = crate::console::vt::foreground();
     crate::console::vt::input_returns_view(foreground);
     if foreground != 1 {
-        // Preserve ordering through contention. The render thread retries
-        // these bytes through this terminal's discipline, even after a switch.
         if let Some(tty) = vt(foreground) {
-            if let Some(mut keys) = tty.pending_keys.try_lock() {
-                keys.push(c);
-                keys.drain(|byte| tty.input_char_nonblock(byte));
-            }
+            tty.queue_key(c, source);
         }
         return true;
     }
@@ -1311,23 +1307,52 @@ pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
         if let Some(ref tty) = *guard {
             let tty = Arc::clone(tty);
             drop(guard);
-            return match source {
-                super::InputSource::Other => tty.input_char_nonblock(c),
-                _ => tty.input_char_from_nonblock(c, source),
-            };
+            tty.queue_key(c, source);
+            return true;
         }
     }
     false
 }
 
-/// Retry deferred keyboard bytes without holding the console grid lock.
-/// tty2 through tty6 are drained, including terminals left by a switch.
-pub fn drain_keyboard_input() {
-    for number in 2..=crate::console::vt::VT_COUNT {
-        if let Some(tty) = vt(number) {
-            if let Some(mut keys) = tty.pending_keys.try_lock() {
-                keys.drain(|byte| tty.input_char_nonblock(byte));
+/// Attempts at a terminal's keyboard queue before a key byte is dropped. Its
+/// holders mask interrupts for a few bytes' processing; this is far longer.
+const KEY_QUEUE_SPINS: usize = 100_000;
+
+impl TtyDevice {
+    /// Queue a keyboard byte behind any the discipline refused, then offer the
+    /// queue to the discipline. A busy discipline keeps the bytes in order; the
+    /// render thread retries them (`drain_keyboard_input`), even after a switch.
+    fn queue_key(&self, byte: u8, source: super::InputSource) {
+        crate::arch_without_interrupts(|| {
+            for _ in 0..KEY_QUEUE_SPINS {
+                if let Some(mut keys) = self.pending_keys.try_lock() {
+                    keys.push(byte, source);
+                    keys.drain(|byte, source| self.admit_key(byte, source));
+                    return;
+                }
+                core::hint::spin_loop();
             }
+        });
+    }
+
+    fn admit_key(&self, byte: u8, source: super::InputSource) -> bool {
+        match source {
+            super::InputSource::Other => self.input_char_nonblock(byte),
+            _ => self.input_char_from_nonblock(byte, source),
+        }
+    }
+}
+
+/// Retry deferred keyboard bytes without holding the console grid lock, on
+/// each terminal, including terminals left by a switch.
+pub fn drain_keyboard_input() {
+    for number in 1..=crate::console::vt::VT_COUNT {
+        if let Some(tty) = vt(number) {
+            crate::arch_without_interrupts(|| {
+                if let Some(mut keys) = tty.pending_keys.try_lock() {
+                    keys.drain(|byte, source| tty.admit_key(byte, source));
+                }
+            });
         }
     }
 }

@@ -1,8 +1,8 @@
 //! Source of each byte admitted to the console line discipline. No byte values
 //! or counts are retained here, including while terminal echo is disabled.
-//! The USB keyboard worker tags its bytes `UsbKeyboard` and the PS/2 keyboard
-//! task tags its bytes `Ps2`; the other entries, including the x86 PS/2
-//! interrupt handler and virtio input, record `Other`.
+//! The input core tags the console's key bytes by keyboard: the USB boot
+//! keyboard's `UsbKeyboard`, the PS/2 keyboard's `Ps2`; virtio input and the
+//! other entries record `Other`.
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// `first_usb` states: the first-USB-byte report is armed once the console
