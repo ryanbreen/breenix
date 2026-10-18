@@ -46,6 +46,17 @@ READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha2
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900}
+SESSION_CEILING_SECONDS = 4 * 3600
+
+
+def session(args):
+    return bool(getattr(args, 'session', False))
+
+
+def ceiling_seconds(args):
+    return SESSION_CEILING_SECONDS if session(args) else CEILING_SECONDS[args.mode]
+
+
 MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300}
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
@@ -111,6 +122,7 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
+        self.input_clock_alive = None
         self.last_stage = None
         self.complete_at = None
         self.first_byte_at = None
@@ -121,6 +133,7 @@ class Driver:
         self.http_offset = 0
         self.bmc_events = []
         self.bmc_lock = threading.Lock()
+        self.power_seen_on = False
         self.post_code = None
         self.post_seen = False
         self.gap = False
@@ -165,13 +178,15 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        kind = {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
+        kind = 'console-session' if session(self.args) else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'suite': getattr(self.args, 'suite', None), 'inject': self.args.inject or None,
                'disk': getattr(self.args, 'disk', None), 'toolsCommit': tools_commit(),
                'input': getattr(self.args, 'input', None),
-               'evidenceEligible': self.args.mode != 'console'}
+               'session': session(self.args),
+               'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
+               'evidenceEligible': not session(self.args) and self.args.mode != 'console'}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -184,7 +199,8 @@ class Driver:
         m.write_json(self.dir / 'claim.json', {'status': status, 'text': text, 't': m.now()})
 
     def claim(self):
-        holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload}
+        holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload,
+                  'kind': 'console-session' if session(self.args) else 'boot'}
         try:
             m.claim_lease(holder, wait=not self.args.no_wait, checkpoint=self.checkpoint,
                           on_wait=lambda lease: (self.claim_status('waiting'),
@@ -310,7 +326,8 @@ class Driver:
             self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
                                                            getattr(self.args, 'suite', None), self.site,
                                                            install=self.id if disk == 'install' else None,
-                                                           hasher=inputs / 'sha512-crypt')
+                                                           hasher=inputs / 'sha512-crypt',
+                                                           idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None)
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -347,7 +364,7 @@ class Driver:
         main = m.read_json(definition / 'docs/boot-path.json', {})
         source = metal or main
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
-        if metal:
+        if metal and not session(self.args):
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
             shape = boot_shape(getattr(self.args, 'disk', None))
             self.final_marker = final_marker(metal, self.args.mode, catalog, shape)
@@ -568,7 +585,7 @@ class Driver:
         subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
 
     def challenge_console(self, text):
-        if self.args.mode != 'console' or self.fatal_at is not None:
+        if self.args.mode != 'console' or session(self.args) or self.fatal_at is not None:
             return
         step = self.console_step
         if step in (0, 3) and 'login: ' in text:
@@ -657,6 +674,13 @@ class Driver:
             self.probe_failed = True
         if '[init] shell ready' in line:
             self.shell_ready = True
+        if session(self.args) and self.kernel_started and self.fatal_at is None:
+            # The login prompt and echoed input need not end with a newline.
+            if line.endswith('[console] input clock alive'):
+                self.input_clock_alive = observed_at
+            idle = getattr(self.args, 'idle_minutes', 30)
+            if line == f'[console] input idle {idle} min':
+                raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
         self.on_disk_line(line, observed_at)
         self.challenge_shell(line)
         self.challenge_console(line)
@@ -669,6 +693,7 @@ class Driver:
         disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
         if (self.final_marker and self.final_seen and not any(self.required_stages)
                 and (disk_evidence is None or disk_evidence in self.seen)
+                and not session(self.args)
                 and (self.args.mode != 'console' or self.console_done)
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
@@ -798,6 +823,12 @@ class Driver:
             if 'error' in reading:
                 self.event('bmc-read-error', observed_at=observed_at, error=reading['error'])
                 continue
+            if reading.get('power') == 'On':
+                self.power_seen_on = True
+            if reading.get('power') == 'Off' and (self.power_seen_on or self.kernel_started is not None):
+                self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
+                raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
+                             'the machine powered off during the boot')
             code = reading.get('postCode')
             progress = reading.get('progress') or {}
             if code is not None and code != self.post_code:
@@ -826,8 +857,10 @@ class Driver:
     # Deadlines.
     def check_deadlines(self):
         elapsed = self.since_power()
-        if self.lease_ceiling and m.now() > self.lease_ceiling:
-            raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
+        if self.lease_ceiling and m.now() >= self.lease_ceiling:
+            raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_HUNG,
+                         'console session ceiling passed' if session(self.args) else 'the attempt ceiling passed',
+                         hung=not session(self.args))
         if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
             raise Finish(m.EXIT_SHORT, 'a fatal line')
         if self.request_at is None:
@@ -855,6 +888,11 @@ class Driver:
             if 'bootloader' in self.seen and quiet > SILENCE_SECONDS:
                 raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after the bootloader started', hung=True)
             return
+        if session(self.args):
+            quiet = m.now() - (self.input_clock_alive or self.kernel_started)
+            if quiet > SILENCE_SECONDS:
+                raise Finish(m.EXIT_HUNG, f'console input clock silent for {SILENCE_SECONDS} s', hung=True)
+            return
         quiet = m.now() - max(self.last_serial or 0, self.kernel_started)
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage}', hung=True)
@@ -878,19 +916,19 @@ class Driver:
         self.event('override-set', target='UefiHttp')
         self.checkpoint()
         self.t0 = m.now()
-        self.lease_ceiling = self.t0 + CEILING_SECONDS[self.args.mode]
+        self.lease_ceiling = self.t0 + ceiling_seconds(self.args)
         m.update_lease(self.id, state='powered', powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
         try:
             reply = m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
             self.t0 = reply['startedAt']
-            self.lease_ceiling = self.t0 + CEILING_SECONDS[self.args.mode]
+            self.lease_ceiling = self.t0 + ceiling_seconds(self.args)
             m.update_lease(self.id, powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
         except m.BmcError as error:
             m.quarantine_lease(self.id, 'power-on outcome uncertain')
             self.event('power-on-error', error=str(error))
             raise Finish(m.EXIT_DELIVERY, 'power-on was refused')
         self.post_budget = m.post_budget()
-        self.event('power-on', observed_at=self.t0, postBudget=self.post_budget, ceiling=CEILING_SECONDS[self.args.mode])
+        self.event('power-on', observed_at=self.t0, postBudget=self.post_budget, ceiling=ceiling_seconds(self.args))
         self.phase('Power on')
         self.phase_name = 'post'
 
@@ -1013,7 +1051,7 @@ class Driver:
             if self.t0 is not None:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
-        if (self.dir / 'definition/docs/metal/boot-path.json').is_file():
+        if not session(self.args) and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
                 m.write_json(self.dir / 'milestone-verdict.json', verdict)
@@ -1146,6 +1184,8 @@ def main():
         p.add_argument('--payload', choices=PAYLOADS, default='image')
         p.add_argument('--mode', choices=MODES, default='default')
         p.add_argument('--input', choices=('sol',))
+        p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
+        p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
@@ -1180,7 +1220,11 @@ def main():
             parser.error('boot modes need an image payload')
         if args.disk and args.mode not in ('probe', 'console'):
             parser.error('--disk needs probe or console mode')
-        if args.mode == 'console' and args.input != 'sol':
+        if args.session and (args.mode != 'console' or args.input or args.disk == 'install'):
+            parser.error('--session needs console mode, operator input and no disk install')
+        if not 1 <= args.idle_minutes <= 240 or (args.idle_minutes != 30 and (not args.session or args.disk == 'root')):
+            parser.error('--idle-minutes needs a RAM-disk session and 1 through 240 minutes')
+        if args.mode == 'console' and not args.session and args.input != 'sol':
             parser.error('console typing waits for the injector; development boots require --input sol')
         if args.input and args.mode != 'console':
             parser.error('--input needs console mode')

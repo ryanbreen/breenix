@@ -412,6 +412,13 @@ stage_boot_ext2_disk() {
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
+        local hostkeys_backend=none
+        if [ "$PARALLELS" = true ]; then
+            hostkeys_backend=prlctl:declaration
+        elif [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
+            hostkeys_backend="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
+        fi
+        BREENIX_HOSTKEYS="$(python3 "$BREENIX_ROOT/scripts/hostkeys.py" declare --backend "$hostkeys_backend")" \
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
             "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
@@ -944,6 +951,11 @@ if [ "$PARALLELS" = true ]; then
         { echo "ERROR: Parallels VM config does not carry system flags $PARALLELS_SYSTEM_FLAGS"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
+    if [ "$BOOT_MODE" = suite ]; then
+        # A suite case that needs a key asks on serial; the watcher presses it (scripts/hostkeys.py).
+        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "prlctl:$PARALLELS_VM" \
+            --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+    fi
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -1273,6 +1285,15 @@ usb_xhci:6.port = "6"
 svga.vramSize = "268435456"
 VMXEOF
 
+    # Host keys for a suite (scripts/hostkeys.py): Fusion's own VNC server takes them as RFB key events.
+    if [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
+        [[ "$BREENIX_VMWARE_VNC_PORT" =~ ^[0-9]{4,5}$ ]] || { echo "BREENIX_VMWARE_VNC_PORT needs a port number"; exit 2; }
+        cat >> "$VMX_FILE" <<VMXEOF
+RemoteDisplay.vnc.enabled = "TRUE"
+RemoteDisplay.vnc.port = "$BREENIX_VMWARE_VNC_PORT"
+VMXEOF
+    fi
+
     # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
     if [ "${RETINA:-false}" != true ]; then
         cat >> "$VMX_FILE" <<VMXEOF
@@ -1337,6 +1358,15 @@ VMXEOF
         }
     fi
 
+    if [ "$BOOT_MODE" = suite ]; then
+        if [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
+            HOSTKEYS_BACKEND="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
+        else
+            HOSTKEYS_BACKEND=none
+        fi
+        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "$HOSTKEYS_BACKEND" \
+            --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+    fi
     echo ""
     echo "========================================="
     echo "Breenix running on VMware Fusion"

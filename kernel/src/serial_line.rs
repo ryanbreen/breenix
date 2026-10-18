@@ -56,13 +56,16 @@ impl Port for Uart {
         ticks
     }
 
+    /// Divides only by a constant: the soft-lockup report reaches this through
+    /// `Ownership::acquire`, and dividing by `ns` links a panic into it
+    /// whenever this is not inlined (`scripts/check-aarch64-lockup-no-alloc.sh`).
     fn ticks(ns: u64) -> u64 {
         let frequency: u64;
         unsafe {
             core::arch::asm!("mrs {}, cntfrq_el0", out(reg) frequency, options(nomem, nostack, preserves_flags));
         }
         // A zero CNTFRQ (misconfigured firmware) still gets a finite wait.
-        frequency.max(1_000_000) / (1_000_000_000 / ns)
+        frequency.max(1_000_000).saturating_mul(ns) / 1_000_000_000
     }
 
     /// Masks IRQs and FIQs.

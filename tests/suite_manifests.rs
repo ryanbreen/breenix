@@ -191,7 +191,7 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)` or `.defer_display()`, with no attributes inside it"
     )
 }
 
@@ -281,7 +281,10 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
     }
     let mut expr = &*table.expr;
     while let syn::Expr::MethodCall(method) = expr {
-        if method.method != "case_limit_ms" || method.args.len() != 1 || !method.attrs.is_empty() {
+        if !((method.method == "case_limit_ms" && method.args.len() == 1)
+            || (method.method == "defer_display" && method.args.is_empty()))
+            || !method.attrs.is_empty()
+        {
             return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
         }
         expr = &method.receiver;
@@ -587,7 +590,7 @@ fn the_table_main_runs_is_read() {
                 ),
             ]),
             category("two", "Second", &[ case("c", "Case c", c) ]),
-        ]).case_limit_ms(500);
+        ]).case_limit_ms(500).defer_display();
         static UNUSED: Suite = suite("other", "Other", &[category("x", "X", &[case("y", "Y", y)])]);
         fn not_a_case() { let _ = case("loose", "Loose", a); }
         fn main() { S.run() }
@@ -609,6 +612,7 @@ fn tables_that_could_differ_from_what_runs_are_refused() {
         r#"static S: Suite = suite("d", "D", CATEGORIES); fn main() { S.run() }"#,
         r#"static S: Suite = suite("d", "D", &[]); fn main() { if true { S.run() } }"#,
         r#"static S: Suite = suite("d", "D", &[]); fn main() {}"#,
+        r#"static S: Suite = suite("d", "D", &[]).defer_display(true); fn main() { S.run() }"#,
     ] {
         assert!(source_suite(source).is_err(), "{source}");
     }

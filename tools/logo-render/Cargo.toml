@@ -1,0 +1,10 @@
+[package]
+name = "logo-render"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+breenix-logo = { path = "../../libs/breenix-logo" }
+png = "=0.17.16"

@@ -56,8 +56,19 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console) => panic!("{text:?} parsed as another mode"),
+        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console { .. }) => panic!("{text:?} parsed as another mode"),
         Err(why) => panic!("{text:?} was refused: {why}"),
+    }
+}
+
+#[test]
+fn hostkeys_declaration_is_preserved_and_refuses_injection() {
+    for selection in ["suite console", "suite console case keys/alt-fn"] {
+        let Target::Suite(suite) = parse(&format!("{selection} hostkeys prlctl;missing=left,right\n")).unwrap() else { panic!("suite expected") };
+        assert_eq!(suite.hostkeys.as_deref(), Some("prlctl;missing=left,right"));
+    }
+    for text in ["suite console hostkeys ", "suite console hostkeys qmp extra", "probe hostkeys qmp", "suite console hostkeys qmp hostkeys vnc"] {
+        assert!(parse(text).is_err(), "{text}");
     }
 }
 
@@ -77,7 +88,7 @@ fn suite_and_probe_lines_parse() {
     assert!(matches!(parse("probe\n"), Ok(Target::Probe)));
     assert!(matches!(parse("default\n"), Ok(Target::Default)));
     assert!(matches!(parse("shell\n"), Ok(Target::Shell)));
-    assert!(matches!(parse("console\n"), Ok(Target::Console)));
+    assert!(matches!(parse("console\n"), Ok(Target::Console { .. })));
 }
 
 #[test]
@@ -133,4 +144,15 @@ fn read_parses_the_file_on_the_root() {
 #[test]
 fn check_elf_refuses_a_non_elf() {
     assert!(target::check_elf(b"not an elf").is_err());
+}
+
+#[test]
+fn console_idle_threshold_is_bounded_and_keeps_the_console_target() {
+    assert!(matches!(parse("console\n"), Ok(Target::Console { idle_minutes: 30 })));
+    assert!(matches!(parse("console idle=2\n"), Ok(Target::Console { idle_minutes: 2 })));
+    assert!(matches!(parse("console idle=240\n"), Ok(Target::Console { idle_minutes: 240 })));
+    for text in ["console idle=0", "console idle=241", "console idle=-1", "console idle=+2",
+                 "console idle=", "console  idle=2", "console idle=2 extra", "shell idle=2"] {
+        assert!(parse(text).is_err(), "{text:?} was accepted");
+    }
 }

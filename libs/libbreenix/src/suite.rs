@@ -228,6 +228,36 @@ fn record(kind: &str, rest: &str) {
     }
 }
 
+static HOSTKEY_METHOD: OnceLock<String> = OnceLock::new();
+static HOSTKEY_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The launcher's declared method and missing keys, if any.
+pub fn hostkey_method() -> Option<&'static str> {
+    HOSTKEY_METHOD.get().map(String::as_str)
+}
+
+/// Ask the launcher to press ordered chords through the case's serial record path.
+/// The case must check the resulting guest state before it reports success.
+pub fn hostkeys(chords: &str) -> Result<u64, String> {
+    let method = hostkey_method().filter(|value| !value.is_empty())
+        .ok_or_else(|| String::from("no host key path"))?;
+    let (path, missing) = method.split_once(";missing=").unwrap_or((method, ""));
+    for chord in chords.split(',') {
+        if chord.is_empty() || !chord.split('-').all(is_word) {
+            return Err(std::format!("invalid host key chord {chord}"));
+        }
+        if chord.split('-').any(|key| missing.split(',').any(|m| key == m)) {
+            return Err(std::format!("no host key path for {chord} on {path}"));
+        }
+    }
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return Err(String::from("host key record unavailable"));
+    }
+    let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
+    record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
+    Ok(seq)
+}
+
 /// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.
 fn is_word(text: &str) -> bool {
     !text.is_empty()
@@ -284,16 +314,22 @@ pub struct Suite {
     pub title: &'static str,
     pub categories: &'static [Category],
     pub case_limit_ms: u64,
+    defer_display: bool,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, defer_display: false }
 }
 
 impl Suite {
     /// The same suite with a different per-case time limit.
     pub const fn case_limit_ms(self, ms: u64) -> Suite {
         Suite { case_limit_ms: ms, ..self }
+    }
+
+    /// Leave the console available to cases; take the display only for the final panel.
+    pub const fn defer_display(self) -> Suite {
+        Suite { defer_display: true, ..self }
     }
 
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
@@ -304,16 +340,24 @@ impl Suite {
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let (only, usable_args) = match args.as_slice() {
-            [] => (None, true),
-            [flag, case] if flag == "--case" => (Some(case.as_str()), true),
-            _ => (None, false),
-        };
+        let mut only = None;
+        let mut method = None;
+        let mut usable_args = true;
+        let mut pairs = args.chunks_exact(2);
+        for pair in &mut pairs {
+            match pair[0].as_str() {
+                "--case" if only.is_none() => only = Some(pair[1].as_str()),
+                "--hostkeys" if method.is_none() => method = Some(pair[1].as_str()),
+                _ => usable_args = false,
+            }
+        }
+        usable_args &= pairs.remainder().is_empty();
+        if let Some(value) = method { let _ = HOSTKEY_METHOD.set(value.to_string()); }
         let names: Vec<String> = self.categories.iter().flat_map(|category| {
             category.cases.iter().map(move |case| std::format!("{}/{}", category.id, case.id))
         }).collect();
         let error = if !usable_args {
-            Some(std::format!("expected no arguments or --case <category>/<case>, found {:?}", args))
+            Some(std::format!("expected [--case <category>/<case>] [--hostkeys <method>], found {:?}", args))
         } else {
             only.filter(|name| !names.iter().any(|valid| valid == name))
                 .map(|name| std::format!("unknown case {}; valid ids: {}", name, names.join(", ")))
@@ -324,7 +368,11 @@ impl Suite {
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
-        let mut screen = Screen::open();
+        let mut screen = if self.defer_display {
+            Screen { fb: None, live: false, area: None }
+        } else {
+            Screen::open()
+        };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
             Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
@@ -338,6 +386,7 @@ impl Suite {
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
+            if self.defer_display { screen = Screen::open(); }
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
@@ -381,6 +430,7 @@ impl Suite {
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
+        if self.defer_display { screen = Screen::open(); }
         screen.draw(self, &title, &subtitle, &states, verdict, &feed, only);
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
@@ -408,7 +458,14 @@ impl Suite {
             if let Some(index) = ids.iter().position(|id| *id == self.id) {
                 if let Some(next) = ids.get(index + 1) {
                     let path = std::format!("/sbin/suite-{}\0", next);
-                    let error = process::exec(path.as_bytes()).unwrap_err();
+                    let mut arguments = vec![std::ffi::CString::new(path.trim_end_matches('\0')).unwrap()];
+                    if let Some(value) = hostkey_method() {
+                        arguments.push(std::ffi::CString::new("--hostkeys").unwrap());
+                        arguments.push(std::ffi::CString::new(value).unwrap());
+                    }
+                    let mut argv: Vec<*const u8> = arguments.iter().map(|s| s.as_ptr().cast()).collect();
+                    argv.push(core::ptr::null());
+                    let error = process::execv(path.as_bytes(), argv.as_ptr()).unwrap_err();
                     emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
                 }
             }
@@ -715,6 +772,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         }
     };
     let start = monotonic_ns();
+    HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
             let _ = io::close(reader);
