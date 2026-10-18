@@ -1240,6 +1240,35 @@ pub unsafe fn copy_to_display(
     true
 }
 
+/// Read one hardware framebuffer pixel as 0x00RRGGBB directly from device memory.
+/// Invalid coordinates and busy/unavailable displays return an empty result.
+#[cfg(not(feature = "interactive"))]
+pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
+    let framebuffer = LOG_FRAMEBUFFER.get()?;
+    crate::arch_without_interrupts(|| {
+        let framebuffer = framebuffer.try_lock()?;
+        if x >= framebuffer.width() || y >= framebuffer.height() {
+            return None;
+        }
+        let offset = (y * framebuffer.info.stride + x) * framebuffer.info.bytes_per_pixel;
+        if offset.checked_add(3)? > framebuffer.buffer_len {
+            return None;
+        }
+        // Drain write-combining stores from Flush before reading the device memory.
+        let (c0, c1, c2) = unsafe {
+            core::arch::asm!("mfence", options(nostack, preserves_flags));
+            let pixel = framebuffer.buffer_ptr.add(offset);
+            (pixel.read_volatile(), pixel.add(1).read_volatile(), pixel.add(2).read_volatile())
+        };
+        let (r, b) = match framebuffer.info.pixel_format {
+            PixelFormat::Rgb => (c0, c2),
+            PixelFormat::Bgr => (c2, c0),
+            _ => return None,
+        };
+        Some(((r as u32) << 16) | ((c1 as u32) << 8) | b as u32)
+    })
+}
+
 /// Write raw text to framebuffer console (for shell output in interactive mode)
 ///
 /// This writes directly to the SHELL_FRAMEBUFFER, bypassing the logging system.
