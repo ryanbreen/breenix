@@ -45,6 +45,7 @@ MODES = ('default', 'shell', 'probe', 'suite', 'console')
 DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
+INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900}
 SESSION_CEILING_SECONDS = 4 * 3600
@@ -164,6 +165,7 @@ class Driver:
         self.console_step = 0
         self.console_done = False
         self.delivery = {}
+        self.console_intent = None
         self.payload_facts = None
         self.last_phase_progress = 0.0
         self.seen = set()
@@ -353,14 +355,17 @@ class Driver:
         self.phase('Assembling the image')
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
-        if self.args.ramdisk and disk != 'root':
+        root_ramdisk = self.args.ramdisk and disk != 'root'
+        if root_ramdisk:
             files['ramdisk'] = inputs / 'ext2.img'
-        if getattr(self.args, 'disk', None) == 'root' and self.args.mode == 'console':
+        if disk == 'root' and self.args.mode == 'console':
             # The installed target cannot describe this boot's session/test
-            # choice. A small intent payload is consumed before root discovery.
+            # choice. A small intent payload rides the RAM-payload slot and is
+            # consumed before root discovery; it is not a RAM-disk root.
+            self.console_intent = 'session' if session(self.args) else 'measure'
+            self.delivery['consoleIntent'] = self.console_intent
             intent = self.stage / 'console-intent'
-            intent.write_bytes(b'BREENIX-CONSOLE 1\n' +
-                               (b'session\n' if session(self.args) else b'measure\n'))
+            intent.write_bytes(b'BREENIX-CONSOLE 1\n' + self.console_intent.encode() + b'\n')
             files['ramdisk'] = intent
         disk = self.stage / 'boot-disk.img'
         facts = metal_image.assemble(disk, files)
@@ -378,7 +383,7 @@ class Driver:
                                   'disk': {'size': facts['size'], 'sha256': facts['sha256'],
                                            'components': facts['components']}}
         self.event('image-assembled', size=wrapped['size'], sha256=wrapped['sha256'], disk=facts['size'],
-                   ramdisk='ramdisk' in files)
+                   ramdisk=root_ramdisk, consoleIntent=self.console_intent)
         self.load_definition()
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -664,9 +669,8 @@ class Driver:
             self.event('console-logout-returned-to-getty')
             # Prompts do not end in a newline. Re-evaluate completion against the
             # measured reacquisition marker after this new prompt has arrived.
-            disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
             if (self.final_seen and not any(self.required_stages) and self.fatal_at is None
-                    and (disk_evidence is None or disk_evidence in self.seen)):
+                    and self.disk_evidence_seen()):
                 self.completion_reported = True
                 raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out; keyboard proof waiting')
 
@@ -735,6 +739,7 @@ class Driver:
             # The idle clock has stopped its pulse; nobody is typing.
             raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
         self.on_disk_line(line, observed_at)
+        self.on_intent_line(line, observed_at)
         self.challenge_shell(line)
         self.challenge_console(line, complete=True)
         for stages in self.required_stages:
@@ -743,9 +748,8 @@ class Driver:
         if (self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
-        disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
         if (self.final_marker and self.final_seen and not any(self.required_stages)
-                and (disk_evidence is None or disk_evidence in self.seen)
+                and self.disk_evidence_seen()
                 and not session(self.args)
                 and (self.args.mode != 'console' or self.console_done)
                 and self.fatal_at is None and not self.completion_reported):
@@ -754,6 +758,25 @@ class Driver:
             if self.probe_failed:
                 raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
+
+    def disk_evidence_seen(self):
+        """The disk's record, and on a disk-root console boot the kernel's account of this boot's intent."""
+        needed = {None: set(), 'install': {'disk-write'}, 'root': {'disk-root'}}[getattr(self.args, 'disk', None)]
+        if self.console_intent:
+            needed.add('console-intent')
+        return needed <= self.seen
+
+    def on_intent_line(self, line, observed_at):
+        """A disk-root console boot's replug choice must come from its staged intent, not the installed target."""
+        if not self.console_intent or 'console-intent' in self.seen or not (found := INTENT_LINE.search(line)):
+            return
+        self.seen.add('console-intent')
+        replug = found.group(1) == 'requested'
+        honored = found.group(2) == 'intent' and replug == (self.console_intent == 'measure')
+        self.event('console-intent', observed_at=observed_at, staged=self.console_intent, replug=replug,
+                   source=found.group(2), honored=honored)
+        if not honored and not session(self.args):
+            raise Finish(m.EXIT_SHORT, "the kernel did not apply this boot's console intent")
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     def on_disk_line(self, line, observed_at):
