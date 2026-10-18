@@ -1129,7 +1129,11 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     );
 
     // Leg B. The oracle reported failure.
-    let failed_verdict = mutate_oracle_line(&green, ":PASS:peer_hold]", ":FAIL:peer_hold]");
+    let failed_verdict = mutate_oracle_line(
+        &green,
+        ":PASS:peer_hold]",
+        ":FAIL:failed=buffered,intr_flushed:peer_hold]",
+    );
     assert_ne!(failed_verdict, green, "leg B's mutation must apply");
     let (passed, output) = score_with_gate(
         STRICT_GATE,
@@ -1138,8 +1142,9 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     );
     assert!(!passed, "{STRICT_GATE} passed a serial whose #822 oracle failed: {output}");
     assert!(
-        output.contains("TTY input IRQ foreground-pgrp oracle"),
-        "{STRICT_GATE} failed the serial, but for some other reason: {output}"
+        output.contains("TTY input IRQ foreground-pgrp oracle reported failure")
+            && output.contains(":FAIL:failed=buffered,intr_flushed:peer_hold]"),
+        "{STRICT_GATE} must report the oracle failure and its named conjuncts: {output}"
     );
 
     // Leg C. The oracle's line is absent from the serial.

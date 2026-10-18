@@ -7042,8 +7042,8 @@ fn test_tty_irq_pm_oracle() -> TestResult {
 /// global stdin ring a userspace reader would see.
 const TTY_IRQ_FG_BYTE: u8 = b's';
 /// The INTR byte. `line_discipline.rs` maps it to SIGINT while ISIG is set,
-/// which is the console's default, and returns before the canonical buffer is
-/// touched -- so it generates the signal without disturbing the byte above.
+/// which is the console's default. With NOFLSH clear it also flushes the
+/// canonical buffer, so the plain byte must be measured before this leg.
 const TTY_IRQ_FG_INTR_BYTE: u8 = 0x03;
 /// The foreground process group the oracle installs. It names no live process
 /// on purpose: see `target_absent` below.
@@ -7235,6 +7235,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     // where the acquisition shows up, and it shows up with no holder to wait on.
     let (processed_a, _entry_a_us, touches_a, blocking_a, reads_a, calls_a) =
         tty_irq_fg_inject(TTY_IRQ_FG_BYTE);
+    // S1 (#1782): INTR must flush this byte, not invalidate its leg-1 witness.
+    let buffered = tty.input_line_pending() as u64;
+    let termios = tty.get_termios();
 
     // Leg 2 -- the INTR byte through the same entry, with foreground_pgrp
     // genuinely held by a thread with interrupts unmasked.
@@ -7369,7 +7372,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         }
     }
 
-    let buffered = tty.input_line_pending() as u64;
+    let buffered_after_intr = tty.input_line_pending();
     let (_, sig_pid, sig_num) = crate::tty::driver::tty_irq_fg_signal_census();
 
     // Leg 3 -- the thread side still owns the field, and the snapshot tracks
@@ -7397,6 +7400,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         && reads >= 2
         && processed == 2
         && buffered >= 1
+        && termios.c_lflag & crate::tty::termios::ISIG != 0
+        && termios.c_lflag & crate::tty::termios::NOFLSH == 0
+        && buffered_after_intr == 0
         && irqs_enabled_before == 1
         && fg_busy_probe == 1
         && sig_calls == 1
@@ -7419,6 +7425,62 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     let passed = common_pass && arm == TTY_IRQ_FG_ARM_LOCAL_HOLD;
 
+    // Failure diagnostics name each conjunct, including the architecture's
+    // arming witnesses; preserve the passing marker consumed by the gates.
+    let common_checks = [
+        ("fg_known", fg_known == TTY_IRQ_FG_PGRP),
+        ("target_absent", target_absent == 1),
+        ("fg_lock_touches", touches == 0),
+        ("fg_blocking_acquires", blocking == 0),
+        ("snapshot_reads", reads >= 2),
+        ("processed", processed == 2),
+        ("buffered", buffered >= 1),
+        ("isig", termios.c_lflag & crate::tty::termios::ISIG != 0),
+        (
+            "noflsh_clear",
+            termios.c_lflag & crate::tty::termios::NOFLSH == 0,
+        ),
+        ("intr_flushed", buffered_after_intr == 0),
+        ("irqs_enabled_before", irqs_enabled_before == 1),
+        ("fg_busy_probe", fg_busy_probe == 1),
+        ("sig_calls", sig_calls == 1),
+        ("sig_pid", sig_pid == TTY_IRQ_FG_PGRP),
+        ("sig_num", sig_num == TTY_IRQ_FG_SIGINT),
+        ("snapshot_agrees", snapshot_agrees == 1),
+        ("restored", restored == 1),
+    ];
+
+    #[cfg(target_arch = "aarch64")]
+    let arch_checks = [
+        ("arm", arm == TTY_IRQ_FG_ARM_PEER_HOLD),
+        ("peer_held_after", peer_held_after),
+        ("peer_irqs_masked", peer_irqs_masked),
+        (
+            "hold_safety",
+            !TTY_IRQ_FG_HOLD_SAFETY.load(AtomicOrdering::Acquire),
+        ),
+        ("holder_cpu", holder_cpu != u64::MAX),
+        ("hold_us", hold_us >= TTY_IRQ_FG_HOLD_US),
+        ("entry_us", entry_us < TTY_IRQ_FG_ENTRY_CEILING_US),
+        ("joined", joined == 1),
+    ];
+
+    #[cfg(not(target_arch = "aarch64"))]
+    let arch_checks = [("arm", arm == TTY_IRQ_FG_ARM_LOCAL_HOLD)];
+
+    let failures: alloc::vec::Vec<_> = common_checks
+        .iter()
+        .chain(arch_checks.iter())
+        .filter_map(|(name, ok)| if *ok { None } else { Some(*name) })
+        .collect();
+    // Keep the passing boot oracle allocation-free, like its original verdict.
+    let failure_verdict = if passed {
+        None
+    } else {
+        Some(alloc::format!("FAIL:failed={}", failures.join(",")))
+    };
+    let verdict = failure_verdict.as_deref().unwrap_or("PASS");
+
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
         "[TTY_IRQ_FG_ORACLE:aarch64:fg_known={}:target_absent={}:fg_lock_touches={}:fg_blocking_acquires={}:snapshot_reads={}:processed={}:buffered={}:irqs_enabled_before={}:holder_cpu={}:fg_busy_probe={}:hold_us={}:entry_us={}:joined={}:sig_calls={}:sig_pid={}:sig_num={}:snapshot_agrees={}:restored={}:{}:{}]",
@@ -7440,7 +7502,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         sig_num,
         snapshot_agrees,
         restored,
-        if passed { "PASS" } else { "FAIL" },
+        verdict,
         arm,
     );
 
@@ -7462,7 +7524,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         sig_num,
         snapshot_agrees,
         restored,
-        if passed { "PASS" } else { "FAIL" },
+        verdict,
         arm,
     );
 
@@ -7488,7 +7550,7 @@ fn test_tty_irq_fg_oracle() -> TestResult {
     if run_tty_irq_fg_oracle() {
         TestResult::Pass
     } else {
-        TestResult::Fail("a TTY interrupt entry touched the console's foreground_pgrp mutex")
+        TestResult::Fail("TTY IRQ foreground-pgrp oracle failed; see named conjuncts")
     }
 }
 
