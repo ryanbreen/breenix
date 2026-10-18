@@ -73,10 +73,20 @@ impl Function {
         Ok((u32::from(high) << 16) | u32::from(low))
     }
 
-    /// Reset the PHY, enable automatic MDI crossover, drop the link through
-    /// loopback so the partner renegotiates, advertise 10, 100 and 1000 Mb/s
-    /// with pause, and restart autonegotiation (Section 10, pp. 207-211).
-    pub(super) fn phy_start_autonegotiation(&self) -> Result<(), &'static str> {
+    /// Keep an operational autonegotiated firmware link. The reset mailbox
+    /// deliberately preserves the PHY (Section 10, "Firmware Mailbox"); HTTP
+    /// boot has already negotiated it. Resetting it again destroys that handoff.
+    /// Otherwise use the guide's PHY setup sequence (Section 10, pp. 207-211).
+    pub(super) fn phy_configure(&self) -> Result<(), &'static str> {
+        let control = self.phy_read(MII_BMCR)?;
+        let inactive = BMCR_RESET | BMCR_LOOPBACK | BMCR_POWER_DOWN | BMCR_ISOLATE
+            | BMCR_RESTART_AUTONEG;
+        if control & (inactive | BMCR_AUTONEG_ENABLE) == BMCR_AUTONEG_ENABLE
+            && self.phy_resolved()?.is_some()
+        {
+            return Ok(());
+        }
+
         self.phy_write(MII_BMCR, BMCR_RESET)?;
         let mut reset_done = false;
         for _ in 0..100 {
@@ -98,11 +108,18 @@ impl Function {
         self.phy_write(MII_PHY_EXTENDED_CONTROL, extended)?;
 
         self.phy_write(MII_BMCR, BMCR_LOOPBACK)?;
+        let mut link_down = false;
         for _ in 0..1500 {
-            if self.phy_read(MII_BMSR)? & BMSR_LINK == 0 {
+            // Reset may have latched a previous link drop. Only the second
+            // status read tells us whether loopback has dropped it *now*.
+            if !self.phy_link()? {
+                link_down = true;
                 break;
             }
             delay_us(10);
+        }
+        if !link_down {
+            return Err("the PHY link did not drop within 15 ms of loopback");
         }
 
         self.phy_write(MII_ADVERTISE, ADVERTISE_ALL)?;
