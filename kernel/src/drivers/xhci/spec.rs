@@ -111,6 +111,103 @@ pub fn get_descriptor(kind: u8, index: u8, length: u16) -> Trb {
     Trb::new(2, setup, 8, (1 << 6) | (3 << 16))
 }
 
+/// PP cleared, keeping only the PIC and wake-enable bits (5.4.8, 4.19.1.1.1).
+pub fn port_power_off(old: u32) -> u32 {
+    old & 0x0e00_c000
+}
+
+/// A standard device request as a Setup Stage parameter (USB 2.0 9.3, 9.4).
+const fn setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
+    request_type as u64
+        | (request as u64) << 8
+        | (value as u64) << 16
+        | (index as u64) << 32
+        | (length as u64) << 48
+}
+/// SET_CONFIGURATION (USB 2.0 9.4.7).
+pub const fn set_configuration(value: u8) -> u64 {
+    setup(0, 9, value as u16, 0, 0)
+}
+/// CLEAR_FEATURE(ENDPOINT_HALT) to an endpoint (USB 2.0 9.4.1, table 9-6).
+pub const fn clear_endpoint_halt(endpoint: u8) -> u64 {
+    setup(2, 1, 0, endpoint as u16, 0)
+}
+
+// Transfer TRBs (6.4.1). IDT bit 6, TRT bits 17:16, DIR bit 16, ISP bit 2, IOC bit 5.
+/// Setup Stage with no Data Stage (TRT 0).
+pub fn setup_no_data(setup: u64) -> Trb {
+    Trb::new(2, setup, 8, 1 << 6)
+}
+/// Setup Stage followed by an OUT Data Stage (TRT 2).
+pub fn setup_data_out(setup: u64) -> Trb {
+    Trb::new(2, setup, 8, (1 << 6) | (2 << 16))
+}
+/// OUT Data Stage of `length` bytes.
+pub fn data_out(buffer: u64, length: u32) -> Trb {
+    Trb::new(3, buffer, length, 0)
+}
+/// IN Status Stage, for requests with no data or OUT data, interrupting on completion.
+pub fn status_in() -> Trb {
+    Trb::new(4, 0, 0, (1 << 16) | (1 << 5))
+}
+/// Normal TRB for an interrupt-IN TD: interrupt on a short packet or on completion.
+pub fn normal_in(buffer: u64, length: u32) -> Trb {
+    Trb::new(1, buffer, length, (1 << 2) | (1 << 5))
+}
+
+// Command TRBs (6.4.3): Slot ID bits 31:24, Endpoint ID bits 20:16.
+pub fn disable_slot(slot: u8) -> Trb {
+    Trb::new(10, 0, 0, (slot as u32) << 24)
+}
+pub fn configure_endpoint(input: u64, slot: u8) -> Trb {
+    Trb::new(12, input, 0, (slot as u32) << 24)
+}
+/// Reset Endpoint with TSP 0: the data toggle is reset (4.6.8).
+pub fn reset_endpoint(slot: u8, dci: u8) -> Trb {
+    Trb::new(14, 0, 0, (slot as u32) << 24 | (dci as u32) << 16)
+}
+pub fn stop_endpoint(slot: u8, dci: u8) -> Trb {
+    Trb::new(15, 0, 0, (slot as u32) << 24 | (dci as u32) << 16)
+}
+/// Set TR Dequeue Pointer with no streams: SCT 0, DCS in bit 0 (6.4.3.9).
+pub fn set_dequeue(slot: u8, dci: u8, pointer: u64, cycle: bool) -> Trb {
+    Trb::new(
+        16,
+        (pointer & !15) | cycle as u64,
+        0,
+        (slot as u32) << 24 | (dci as u32) << 16,
+    )
+}
+
+/// The Interval field for an interrupt endpoint (6.2.3.6, table 6-12): LS/FS
+/// bInterval counts 1 ms frames and is rounded down to a power of two of
+/// 125 us units (3-10); HS and SS bInterval is an exponent, Interval = bInterval-1.
+pub fn interrupt_interval(speed: u64, b_interval: u8) -> Result<u8, &'static str> {
+    match speed {
+        1_500_000 | 12_000_000 if b_interval != 0 => {
+            let units = b_interval as u32 * 8;
+            Ok((31 - units.leading_zeros()).clamp(3, 10) as u8)
+        }
+        s if s >= 480_000_000 && (1..=16).contains(&b_interval) => Ok(b_interval - 1),
+        _ => Err("bInterval out of range for the endpoint's speed"),
+    }
+}
+
+/// The five defined dwords of an Interrupt IN Endpoint Context (6.2.3,
+/// 4.8.2.4): Interval, CErr 3, EP Type 7, Max Burst, Max Packet Size, the TR
+/// Dequeue Pointer with DCS 1, the Average TRB Length (one report) and the
+/// Max ESIT Payload, Max Packet Size * (Max Burst + 1) for USB2 (4.14.2).
+pub fn interrupt_in_context(interval: u8, max_packet: u16, burst: u8, ring: u64) -> [u32; 5] {
+    let esit = max_packet as u32 * (burst as u32 + 1);
+    [
+        (interval as u32) << 16 | (esit >> 16) << 24,
+        (3 << 1) | (7 << 3) | (burst as u32) << 8 | (max_packet as u32) << 16,
+        (ring as u32 & !15) | 1,
+        (ring >> 32) as u32,
+        max_packet as u32 | (esit & 0xffff) << 16,
+    ]
+}
+
 pub fn packet_size(speed: u64, encoded: u8) -> Result<u16, &'static str> {
     match speed {
         1_500_000 if encoded == 8 => Ok(8),
@@ -206,6 +303,37 @@ mod tests {
         assert!(packet_size(12_000_000, 9).is_err());
         assert_eq!(port_write(u32::MAX, 1 << 4), 0x0e00_c210);
         assert_eq!(port_write(u32::MAX, 0) & (PORT_CHANGES | 2), 0);
+    }
+    #[test]
+    fn class_driver_trbs_and_contexts_match_wire_fields() {
+        assert_eq!(interrupt_interval(1_500_000, 10), Ok(6)); // 80 units -> 64 (8 ms)
+        assert_eq!(interrupt_interval(12_000_000, 1), Ok(3));
+        assert_eq!(interrupt_interval(12_000_000, 255), Ok(10));
+        assert_eq!(interrupt_interval(12_000_000, 32), Ok(8));
+        assert_eq!(interrupt_interval(480_000_000, 4), Ok(3));
+        assert!(interrupt_interval(480_000_000, 17).is_err());
+        assert!(interrupt_interval(1_500_000, 0).is_err());
+        assert_eq!(
+            interrupt_in_context(6, 8, 0, 0x1_2345_6000),
+            [0x0006_0000, 0x0008_003e, 0x2345_6001, 1, 0x0008_0008]
+        );
+        // A high-bandwidth endpoint: Max Burst and the ESIT payload follow it.
+        assert_eq!(interrupt_in_context(3, 1024, 2, 0)[1] >> 8 & 0xff, 2);
+        assert_eq!(interrupt_in_context(3, 1024, 2, 0)[4] >> 16, 3072);
+        assert_eq!(set_configuration(1).to_le_bytes(), [0, 9, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(clear_endpoint_halt(0x81).to_le_bytes(), [2, 1, 0, 0, 0x81, 0, 0, 0]);
+        assert_eq!(setup_no_data(7).control, (2 << 10) | (1 << 6));
+        assert_eq!(setup_data_out(7).control, (2 << 10) | (1 << 6) | (2 << 16));
+        assert_eq!((data_out(0x2000, 1).status, data_out(0x2000, 1).control), (1, 3 << 10));
+        assert_eq!(status_in().control, (4 << 10) | (1 << 16) | (1 << 5));
+        assert_eq!(normal_in(0x3000, 8), Trb { parameter: 0x3000, status: 8, control: (1 << 10) | 0x24 });
+        assert_eq!(disable_slot(5).control, (10 << 10) | (5 << 24));
+        assert_eq!(configure_endpoint(0x4000, 5), Trb { parameter: 0x4000, status: 0, control: (12 << 10) | (5 << 24) });
+        assert_eq!(reset_endpoint(5, 3).control, (14 << 10) | (3 << 16) | (5 << 24));
+        assert_eq!(stop_endpoint(5, 3).control, (15 << 10) | (3 << 16) | (5 << 24));
+        assert_eq!(set_dequeue(5, 1, 0x5010, true).parameter, 0x5011);
+        assert_eq!(set_dequeue(5, 1, 0x5010, false).control, (16 << 10) | (1 << 16) | (5 << 24));
+        assert_eq!(port_power_off(u32::MAX), 0x0e00_c000);
     }
     #[test]
     fn work_arriving_at_each_wait_boundary_is_retained() {
