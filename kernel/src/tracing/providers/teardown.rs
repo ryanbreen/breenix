@@ -3460,7 +3460,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     // Residual before kernel-stack frames are released in `KernelStack::drop`:
     // the leader's 16-frame user stack plus one frame for each of the six exec
     // images that build a one-page user stack (three per body: the exec that
-    // waits for its group and the two that commit), none returned (#583). x86
+    // waits for its group and the two that commit), 0 of 22 returned (#583). x86
     // adds 131 frames of its own: the leader thread's 128-frame kernel stack
     // and 3 more.
     #[cfg(target_arch = "aarch64")]

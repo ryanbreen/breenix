@@ -369,6 +369,13 @@ pub struct Process {
     /// plain kill. The first kill sets it.
     pub group_exit_code: Option<i32>,
 
+    /// Another thread of this row's process is exec'ing and killed this row
+    /// so that it can run its new image (`terminate_peers_for_exec`). The
+    /// row's death, whatever ends it, does not end the rest of its thread
+    /// group as a fatal signal's otherwise does
+    /// (`terminate_thread_group_peers`): that thread lives on as the process.
+    pub killed_by_exec: bool,
+
     /// Interval timers for setitimer/getitimer (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
     pub itimers: alloc::sync::Arc<crate::signal::IntervalTimers>,
 
@@ -536,6 +543,7 @@ impl Process {
             inherited_cr3: None,
             clear_child_tid: None,
             exit_started: false,
+            killed_by_exec: false,
             user_stack_bottom: 0,
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),

@@ -1782,6 +1782,11 @@ pub fn signal_death_exit_code(process: &Process, sig: u32) -> i32 {
 pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i32) {
     let current = crate::task::scheduler::current_thread_id();
     let peers = crate::process::with_process_manager(|manager| {
+        // A row an exec killed dies alone: the thread that exec'd goes on as
+        // the process (`Process::killed_by_exec`).
+        if manager.get_process(pid).is_some_and(|row| row.killed_by_exec) {
+            return alloc::vec::Vec::new();
+        }
         // A leader that already ended with its own exit, while the rest of
         // its group ran on, reports the status the process dies with now,
         // not that exit's.
@@ -1793,7 +1798,7 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
                 leader.restate_exit_status(exit_code);
             }
         }
-        mark_thread_group_peers(manager, pid, exit_code, current)
+        mark_thread_group_peers(manager, pid, exit_code, current, false)
     })
     .unwrap_or_default();
     for peer in peers {
@@ -1815,7 +1820,7 @@ pub fn terminate_peers_for_exec(pid: crate::process::ProcessId) -> bool {
         if caller.group_exit_code.is_some() || sigkill_pending(caller) {
             return None;
         }
-        Some(mark_thread_group_peers(manager, pid, 0, current))
+        Some(mark_thread_group_peers(manager, pid, 0, current, true))
     })
     .flatten();
     let Some(peers) = peers else {
@@ -1828,12 +1833,14 @@ pub fn terminate_peers_for_exec(pid: crate::process::ProcessId) -> bool {
 }
 
 /// Mark the other live rows of `pid`'s thread group as dying with
-/// `exit_code`, under PROCESS_MANAGER, and return the ones to kill.
+/// `exit_code`, and as killed by an exec when `by_exec`, under
+/// PROCESS_MANAGER, and return the ones to kill.
 fn mark_thread_group_peers(
     manager: &mut crate::process::ProcessManager,
     pid: crate::process::ProcessId,
     exit_code: i32,
     current: Option<u64>,
+    by_exec: bool,
 ) -> alloc::vec::Vec<crate::process::ProcessId> {
     let mut peers = manager.thread_group_peers(pid);
     peers.retain(|&peer| {
@@ -1844,6 +1851,7 @@ fn mark_thread_group_peers(
         // killed: a peer's clone refuses from here on, so the group gains
         // no thread the kills below would miss.
         row.group_exit_code.get_or_insert(exit_code);
+        row.killed_by_exec |= by_exec;
         let runs_this = current.is_some()
             && row.main_thread.as_ref().map(|thread| thread.id) == current;
         // Only the peer running this is told here. The others are killed

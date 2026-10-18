@@ -527,6 +527,16 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
         // here and claiming only after the release let the target take
         // SIGKILL itself at an interrupt return in between (#1414).
         if sig == SIGKILL {
+            // A thread an exec killed dies alone (`Process::killed_by_exec`):
+            // the process's SIGKILL is for the thread that exec'd, whose death
+            // then ends the rest.
+            let target = match manager.get_process(target) {
+                Some(row) if row.killed_by_exec => manager
+                    .group_rows(group)
+                    .find(|row| !row.killed_by_exec)
+                    .map_or(target, |row| row.id),
+                _ => target,
+            };
             let claimed = claim_kill_locked(manager, target, -(SIGKILL as i32));
             drop(manager_guard);
             crate::signal::delivery::terminate_thread_group_peers(target, -(SIGKILL as i32));
