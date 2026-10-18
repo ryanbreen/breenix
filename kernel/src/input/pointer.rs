@@ -1,6 +1,7 @@
-//! The pointer and keyboard state consumed by the existing graphics syscalls.
-//! Report decoding runs in the USB worker; readers take atomic snapshots.
-use super::pointer::Motion;
+//! The pointer state the graphics syscalls and the cursor read. The USB HID
+//! pointer driver decodes reports in the xHCI worker and reports motion here;
+//! readers take atomic snapshots.
+use crate::drivers::hid_boot::pointer::Motion;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 // 24-bit x, 24-bit y, 8 button bits. One atomic snapshot keeps coordinates and

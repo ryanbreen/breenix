@@ -196,7 +196,7 @@ impl Controller {
                                 .fold(0u32, |held, pipe| held | pipe.buttons as u32),
                         );
                     }
-                    crate::drivers::hid_boot::state::report(self.devices[index].port, motion);
+                    crate::input::pointer::report(self.devices[index].port, motion);
                 }
                 Ok(None) => {}
                 Err(error) => log::warn!("[hid] pointer report refused: {error}"),

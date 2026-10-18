@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"receipt_drop_test\", \"xhci_linux_harness\"))"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"receipt_drop_test\"))"] }
 
 [[bin]]
 name = "kernel"
@@ -159,7 +159,6 @@ capture_selftest_cut_in_record = ["capture_selftest_budget_mutation"]
 capture_selftest_cut_at_terminator = ["capture_selftest_budget_mutation"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
-xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness
 kthread_stress_test = ["testing"]  # Run kthread stress test (100+ kthreads) and exit
 workqueue_test_only = ["testing"]  # Run only workqueue tests and exit
 dns_test_only = ["testing", "external_test_bins"]  # Run only DNS test and exit (fast network debugging)

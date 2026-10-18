@@ -91,7 +91,7 @@ prlctl stop breenix-dev --kill 2>/dev/null || true
 #   sudo pkill -9 -f prl_disp_service   (requires terminal with sudo)
 
 # 2. Build fresh kernel (touch forces recompile)
-touch kernel/src/drivers/usb/xhci.rs
+touch kernel/src/drivers/xhci/mod.rs
 scripts/parallels/build-efi.sh --kernel
 
 # 3. Deploy (writes new EFI image to HDS, truncates serial log, fresh NVRAM)

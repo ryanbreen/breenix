@@ -11,8 +11,6 @@
 pub mod interface;
 pub mod pointer;
 pub mod report;
-#[cfg(target_arch = "aarch64")]
-pub mod state;
 
 /// Nonempty USB boot-keyboard reports observed by the production completion path.
 pub static NONZERO_KBD_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);

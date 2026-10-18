@@ -15,8 +15,6 @@ pub mod pci;
 pub mod xhci;
 #[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
-#[cfg(target_arch = "aarch64")]
-pub mod usb;
 pub mod virtio; // Now available on both x86_64 and aarch64
 #[cfg(target_arch = "aarch64")]
 pub mod vmware;

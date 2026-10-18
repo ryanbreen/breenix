@@ -17,7 +17,6 @@ OUTPUT_DIR="$PROJECT_ROOT/target/parallels"
 EFI_IMG="$OUTPUT_DIR/breenix-efi.img"
 ESP_DIR="$OUTPUT_DIR/esp"
 INCLUDE_KERNEL=false
-KERNEL_FEATURES=()
 
 for arg in "$@"; do
     case "$arg" in
@@ -42,14 +41,10 @@ echo "Loader built: $LOADER_EFI ($(stat -f%z "$LOADER_EFI" 2>/dev/null || stat -
 # Optionally build the kernel
 if [ "$INCLUDE_KERNEL" = true ]; then
     echo "=== Building Breenix ARM64 Kernel ==="
-    KERNEL_FEATURES=()
-    if [ "${BREENIX_XHCI_LINUX_HARNESS:-}" = "1" ]; then
-        KERNEL_FEATURES+=(--features xhci_linux_harness)
-    fi
     cargo build --release --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc \
         -Z build-std-features=compiler-builtins-mem \
-        -p kernel --bin kernel-aarch64 ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"}
+        -p kernel --bin kernel-aarch64
     KERNEL_ELF="$PROJECT_ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "ERROR: Kernel ELF not found at $KERNEL_ELF"

@@ -39,8 +39,8 @@ set -euo pipefail
 # =============================================================================
 # INJECTION METHOD CONFIG — tune the trigger in ONE place.
 #
-# The launcher opens on a double-tap of the SUPER modifier. Breenix's USB-HID
-# layer (kernel/src/drivers/usb/hid.rs) maps the Left-CTRL bit to SUPER, so
+# The launcher opens on a double-tap of the SUPER modifier. Breenix's input
+# core (kernel/src/input/mod.rs) counts a Ctrl press as SUPER, so
 # injecting a plain Left-Ctrl tap registers as Super in the guest — this is
 # literally why the operator calls it the "double control key", and it is the
 # exact key Parallels delivers.
@@ -565,12 +565,14 @@ capture_evidence "pre-trigger"
 # =============================================================================
 # (d.5) Keyboard-delivery HANDSHAKE.
 #
+# claim-lint:ok: userspace/programs/src/heartbeat.rs prints the field each tick;
+# Console::note_report in kernel/src/drivers/hid_boot/mod.rs is its one increment.
 # PROBE SIGNAL: userspace heartbeat (spawned as a boot service) prints a
 # `kbd_nonzero=<N>` field on every ~1s tick, sourced from
-# kernel/src/drivers/usb/hid.rs::NONZERO_KBD_COUNT via /proc/xhci/counters --
+# kernel/src/drivers/hid_boot/mod.rs::NONZERO_KBD_COUNT via /proc/xhci/counters --
 # a monotonic count of non-empty USB-HID keyboard reports the kernel has
 # actually processed. This is a genuine guest-observable signal: it only
-# advances once a real HID report reaches process_keyboard_report(), so an
+# advances once a real HID report reaches the keyboard completion path, so an
 # increase proves the injected key crossed the full host->virtual-xHCI->
 # guest-HID-stack path, not merely that `prlctl send-key-event` returned rc=0
 # (dispatcher-side "success" is exactly what the sticky wedge falsifies).

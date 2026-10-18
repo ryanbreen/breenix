@@ -498,7 +498,7 @@ impl Controller {
     pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
         #[cfg(target_arch = "aarch64")]
-        if !device.pointers.is_empty() { crate::drivers::hid_boot::state::release(device.port); }
+        if !device.pointers.is_empty() { crate::input::pointer::release(device.port); }
         if let Some(pipe) = device.keyboard.as_mut() {
             pipe.state
                 .release_all(&mut |code, value| self.console.event(device.port, code, value));
