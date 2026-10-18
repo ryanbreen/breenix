@@ -4,5 +4,5 @@ use super::{pipe, Program};
 pub const FS: Program = Program {
     kind: pipe::SHADER_FRAGMENT,
     text: include_bytes!("profile.tgsi"),
-    tokens: 20274,
+    tokens: 20350,
 };

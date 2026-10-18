@@ -154,6 +154,7 @@ UADD TEMP[2].y, CONST[1].xxxx, TEMP[59]
 XOR TEMP[59], TEMP[2].xxxx, TEMP[65].xxxx
 UADD TEMP[59], TEMP[59], IMM[0].yyyy
 UADD TEMP[2].x, TEMP[2].yyyy, TEMP[59]
+AND TEMP[2].x, TEMP[2].xxxx, IMM[1].wwww
 USHR TEMP[10].x, TEMP[10].xxxx, TEMP[2].xxxx
 AND TEMP[10].x, TEMP[10].xxxx, IMM[0].yyyy
 UMUL TEMP[10].x, TEMP[10].xxxx, IMM[1].xxxx

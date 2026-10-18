@@ -345,6 +345,9 @@ fn sampled(pipe: u32) -> (String, u32) {
         // 5x7 table's left pixel is bit width-1.
         s.sub("TEMP[2].y", "CONST[1].x", &one);
         s.sub("TEMP[2].x", "TEMP[2].y", "TEMP[2].x");
+        // A variable shift count is masked explicitly, as math.rs's emitters do.
+        let k31 = s.k(31);
+        s.op("AND", "TEMP[2].x", "TEMP[2].x", &k31);
         s.op("USHR", "TEMP[10].x", "TEMP[10].x", "TEMP[2].x");
         s.op("AND", "TEMP[10].x", "TEMP[10].x", &one);
         s.op("UMUL", "TEMP[10].x", "TEMP[10].x", &ff);

@@ -1265,12 +1265,21 @@ fn tgsi(code: &Code, outputs: &[V]) -> (String, u32, usize) {
                     Op::Select => "UCMP",
                     _ => unreachable!(),
                 };
-                write!(body, "{name} {}", refs[i]).unwrap();
-                for &a in &n.args[..n.arity()] {
-                    write!(body, ", {}", refs[a]).unwrap();
+                let count = n.args[1];
+                if matches!(n.op, Op::Shl | Op::Shr) && !matches!(code.nodes[count].op, Op::Lit(_)) {
+                    // A variable count takes its low five bits explicitly (see emit_division);
+                    // the destination is free here, so it holds the masked count.
+                    writeln!(body, "AND {}, {}, {}", refs[i], refs[count], kref(31)).unwrap();
+                    writeln!(body, "{name} {}, {}, {}", refs[i], refs[n.args[0]], refs[i]).unwrap();
+                    tokens += 4 + 4;
+                } else {
+                    write!(body, "{name} {}", refs[i]).unwrap();
+                    for &a in &n.args[..n.arity()] {
+                        write!(body, ", {}", refs[a]).unwrap();
+                    }
+                    body.push('\n');
+                    tokens += 2 + n.arity() as u32;
                 }
-                body.push('\n');
-                tokens += 2 + n.arity() as u32;
                 if matches!(n.op, Op::Lt | Op::Eq) {
                     writeln!(body, "AND {}, {}, {}", refs[i], refs[i], kref(1)).unwrap();
                     tokens += 4;
@@ -1483,10 +1492,10 @@ fn emit_division(
 ) -> ([usize; 6], u32) {
     use std::fmt::Write;
     let result = core::array::from_fn(|_| allocate(free, next));
-    let work: [usize; 12] = core::array::from_fn(|_| allocate(free, next));
+    let work: [usize; 13] = core::array::from_fn(|_| allocate(free, next));
     let q: [String; 3] = core::array::from_fn(|i| format!("TEMP[{}].x", result[i]));
     let r: [String; 3] = core::array::from_fn(|i| format!("TEMP[{}].x", result[i + 3]));
-    let w: [String; 12] = work.map(|i| format!("TEMP[{i}].x"));
+    let w: [String; 13] = work.map(|i| format!("TEMP[{i}].x"));
     let mut tokens = 0;
     let mut emit = |op: &str, d: &str, src: &[&str]| {
         write!(body, "{op} {d}").unwrap();
@@ -1512,14 +1521,18 @@ fn emit_division(
         body.push('\n');
         tokens += 2 + src.len() as u32;
     };
-    // w0 bit, w1 word index, w2 chosen dividend word / incoming bit.
+    // w0 bit, w1 word index, w2 chosen dividend word / incoming bit, w12 the bit within its
+    // word. TGSI defines a shift by the count's low five bits, and Parallels' host renderer
+    // does not apply that rule to a count of 32 or more (provenance B18), so the generator
+    // masks a variable shift count with an explicit AND with 31.
     emit("UADD", &w[0], &[&w[0], &all]);
+    emit("AND", &w[12], &[&w[0], &k31]);
     emit("USHR", &w[1], &[&w[0], &k(5)]);
     emit("USEQ", &w[3], &[&w[1], &one]);
     emit("UCMP", &w[2], &[&w[3], &a[1], &a[0]]);
     emit("USEQ", &w[3], &[&w[1], &two]);
     emit("UCMP", &w[2], &[&w[3], &a[2], &w[2]]);
-    emit("USHR", &w[2], &[&w[2], &w[0]]);
+    emit("USHR", &w[2], &[&w[2], &w[12]]);
     emit("AND", &w[2], &[&w[2], &one]);
     emit("USHR", &w[4], &[&r[2], &k31]);
     for value in &r {
@@ -1553,7 +1566,7 @@ fn emit_division(
         emit("UCMP", &r[i], &[&w[5], &w[9], &r[i]]);
     }
     emit("AND", &w[5], &[&w[5], &one]);
-    emit("SHL", &w[5], &[&w[5], &w[0]]);
+    emit("SHL", &w[5], &[&w[5], &w[12]]);
     for i in 0..3 {
         emit("USEQ", &w[3], &[&w[1], &k(i as u32)]);
         emit("AND", &w[3], &[&w[3], &w[5]]);

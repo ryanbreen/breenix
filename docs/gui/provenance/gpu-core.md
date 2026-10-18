@@ -966,3 +966,33 @@ The facts these establish, for this host and renderer:
   directly.
 - A full 2560x1600 readback measured 79,999 µs before and 73,989 µs after, against the 100 ms bound.
 
+
+## Parallels catch-up values
+
+| Value or design | Source |
+|---|---|
+| A shift whose count is not a literal takes its count's low five bits with an explicit `AND` with 31 first (59 such shifts across the 15 generated programs): the division loop's two shifts by its bit counter (counts 95 to 0) in `tools/gpu-profile/math.rs`, each variable `SHL` and `USHR` the model's emitter writes, and `bitmap_text`'s bit-row shift in `tools/gpu-profile/pipelines.rs` | L: SHL 1283 and USHR 1313 define the shift by the count's low five bits, so the `AND` changes no result where that definition holds; B18 shows a host renderer where it does not |
+| Parallels' virtio-gpu interrupts through MSI-X: vector 0 for the control queue and vector 1 for configuration changes, each an edge-triggered SPI from the GICv2m frame; the driver does not read the ISR byte for the queue vector | VirtIO 1.3 sections 4.1.4.3, 4.1.4.5 and 4.1.5.1.2; the Arm GICv2m frame's MSI_SETSPI_NS register at offset 0x40 |
+
+The programs were regenerated with the commands in "G4 shader derivation" and "G5 parameterized
+catalogue"; the generator's model and emitted-ISA tests passed on the result. The generator at the
+previous commit reproduced the committed programs byte for byte before the change.
+
+## B18: Parallels variable shift counts
+
+A Linux guest on the same Parallels configuration ran `tools/gpu-experiments/parallels-shift-count.c`
+(commit `f856f059`) through its own GLES driver (Mesa 25.2.8's virgl driver, as a library through EGL
+and GLES 3.0): `gcc -O2 -o psc parallels-shift-count.c -lgbm -lEGL -lGLESv2 && ./psc`. The fragment
+program shifts 0x80000001 by eight counts read from a uniform array and also by the count ANDed with 31.
+The Gallium trace of the same run (`GALLIUM_TRACE`, shader cache disabled) shows the driver passed one
+`ushr` and one `ishl` by the uniform count: it folded the `& 31u` variants into them, as its shifts are
+defined on the low five bits, so the host received a bare variable count.
+
+| Count | Right shift read back | Left shift read back | TGSI's definition |
+|---|---|---|---|
+| 0, 1, 31 | `0x80000001`, `0x40000000`, `0x00000001` | `0x80000001`, `0x00000002`, `0x80000000` | equal |
+| 32, 33, 63, 64, 95 | `0x00000000` | `0x00000000` | `value >> (count & 31)` and `value << (count & 31)`, for example `0x40000000` and `0x00000002` at 33 |
+
+The program printed `SHIFT COUNT NOT MASKED TO FIVE BITS`. On this host renderer a shift by a register
+count of 32 or more gives 0, where TGSI defines the shift by the count's low five bits. The ARM64 QEMU
+renderer follows TGSI's definition: the G5 programs, which relied on it, pass there.
