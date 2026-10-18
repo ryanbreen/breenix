@@ -29,8 +29,10 @@ impl Commands {
         self.command(cmd::SET_OTABLE_BASE64, &[kind, ppn as u32, (ppn >> 32) as u32, bytes, 0, tree.depth()]);
     }
     pub fn mob(&mut self, id: u32, tree: &PageTree, bytes: u32) {
-        let ppn = tree.root_ppn();
-        self.command(cmd::DEFINE_MOB64, &[id, tree.depth(), ppn as u32, (ppn >> 32) as u32, bytes]);
+        self.mob_address(id, tree.depth(), tree.root_ppn(), bytes);
+    }
+    pub fn mob_address(&mut self, id: u32, depth: u32, ppn: u64, bytes: u32) {
+        self.command(cmd::DEFINE_MOB64, &[id, depth, ppn as u32, (ppn >> 32) as u32, bytes]);
     }
     pub fn destroy_mob(&mut self, id: u32) { self.command(cmd::DESTROY_MOB, &[id]); }
     pub fn surface(&mut self, id: u32, flags: u32, format: u32, width: u32, height: u32) {

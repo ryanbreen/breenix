@@ -295,6 +295,7 @@ struct SyncReq {
 #[derive(Clone, Copy)]
 struct LastWrite {
     ctx: u32,
+    device_ctx: Option<u32>,
     fence: u64,
     serial: u64,
     answer: u32,
@@ -1189,7 +1190,7 @@ impl Core {
                 completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, whole.contains(id));
                 if ok {
                     r.generation += 1;
-                    r.last = Some(LastWrite { ctx: ctx_id, fence, serial, answer, kind: dev::draw_kind() });
+                    r.last = Some(LastWrite { ctx: ctx_id, device_ctx: dev::context_id(ctx_id), fence, serial, answer, kind: dev::draw_kind() });
                 }
             }
         }
@@ -3077,10 +3078,18 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
     };
     let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
-    // The first pass sizes the command frames and surface bytes; the charge for them is
-    // made before the second pass allocates anything.
+    // Count surface bytes, then size the complete device buffers including the surfaces'
+    // lifecycle packets. Reserve the charge before allocating their backing.
     let (chunk_charge, chunks) = if svga {
-        let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None);
+        let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None, None);
+        let Some((sized, _)) = sized else {
+            release_slot(false);
+            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+        };
+        // Surface sizes are known now. Recount with their definitions, uploads and
+        // destruction present, so chunk boundaries match the allocation pass.
+        let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved,
+            dx_extras(), None, Some(sized.sizes));
         let Some((sized, _)) = sized else {
             release_slot(false);
             return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
@@ -3093,7 +3102,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             }
         };
         let translated = svga::encode::Backing::allocate(&sized.sizes)
-            .and_then(|backing| svga::encode::translate(&mut dx_objects, &stale, &words, &resolved, dx_extras(), Some(backing)));
+            .and_then(|backing| svga::encode::translate(&mut dx_objects, &stale, &words, &resolved, dx_extras(), Some(backing), None));
         let Some((out, _)) = translated else {
             release_slot(false);
             return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
@@ -3526,6 +3535,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     // Test point 30, `skip-upload-visibility`: the transfer is not sent; the upload returns
     // as a completed one.
     let skip = crate::test_control::take(test_point::SKIP_UPLOAD_VISIBILITY, a.resource).is_some();
+    let device_ctx = dev::context_id(ctx);
     let sent = if skip {
         with_core(|c| (c.serial(), 0, dev::success())).ok_or((ENODEV, 0))
     } else {
@@ -3555,7 +3565,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                 if let Some(r) = c.resources.get_mut(&id) {
                     completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, true, whole);
                     r.generation += 1;
-                    r.last = Some(LastWrite { ctx, fence, serial, answer, kind: dev::upload_kind() });
+                    r.last = Some(LastWrite { ctx, device_ctx, fence, serial, answer, kind: dev::upload_kind() });
                 }
                 count(c);
             });
@@ -3741,10 +3751,12 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         let binding = display::binding(c, tgid, id)?;
         let s = c.next_obs;
         c.next_obs += 1;
-        Ok((s, c.caps.renderer, binding))
+        let resource = if dev::is_svga() { svga::sid_of(id).ok_or(EIO)? } else { id };
+        let context = last.map_or(Some(0), |l| l.device_ctx).ok_or(EIO)?;
+        Ok((s, c.caps.renderer, binding, resource, context))
     })
     .ok_or(ENODEV)?;
-    let (serial, renderer, binding) = match made {
+    let (serial, renderer, binding, device_resource, device_context) = match made {
         Ok(m) => m,
         Err(e) => {
             release();
@@ -3777,10 +3789,10 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     put32(&mut rec, record::TARGET_HEIGHT, th);
     put32(&mut rec, record::STRIDE, a.stride);
     put64(&mut rec, record::TARGET, a.target);
-    put64(&mut rec, record::RESOURCE, id as u64);
+    put64(&mut rec, record::RESOURCE, device_resource as u64);
     put64(&mut rec, record::GENERATION, generation);
     if let Some(l) = last {
-        put64(&mut rec, record::CONTEXT, l.ctx as u64);
+        put64(&mut rec, record::CONTEXT, device_context as u64);
         put64(&mut rec, record::RENDER_SERIAL, l.serial);
         put64(&mut rec, record::RENDER_FENCE, l.fence);
         put32(&mut rec, record::RENDER_STATUS, l.answer);

@@ -29,6 +29,11 @@ pub fn select_svga() {
     BACKEND.store(backend::SVGA3D_DX, Ordering::Release);
 }
 
+/// Native context identity, captured with a write's completion before context teardown.
+pub fn context_id(ctx: u32) -> Option<u32> {
+    if is_svga() { svga::cid_of(ctx) } else { Some(ctx) }
+}
+
 /// The device's native success answer.
 pub fn success() -> u32 {
     if is_svga() { svga::wire::status::COMPLETED } else { virgl::wire::resp::OK_NODATA }

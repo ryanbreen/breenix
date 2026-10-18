@@ -156,13 +156,19 @@ pub struct Sizes {
     pub constants: usize,
     pub data: usize,
     pub frames: usize,
+    pub transport_bytes: usize,
 }
 
 impl Sizes {
     /// The bytes of the frames the translation's pages take.
     pub fn bytes(&self) -> u64 {
-        let f = |n: usize| n.div_ceil(PAGE) as u64 * PAGE as u64;
-        f(self.vertices) + f(self.constants) + f(self.data) + (self.frames * PAGE) as u64
+        let surface = |n: usize| {
+            let pages = n.div_ceil(PAGE);
+            let tables = super::memory::PageTree::table_pages(pages);
+            ((pages + tables) * PAGE) as u64
+        };
+        surface(self.vertices) + surface(self.constants) + surface(self.data)
+            + (self.frames * PAGE + self.transport_bytes) as u64
     }
 }
 
@@ -231,6 +237,7 @@ struct Tx<'o> {
     b: Builder,
     chunks: Vec<Chunk>,
     backing: Option<Backing>,
+    layout: Option<Sizes>,
     sizes: Sizes,
     vb: u32,
     cb: u32,
@@ -266,6 +273,10 @@ impl Tx<'_> {
         let b = core::mem::take(&mut self.b);
         if !self.writing() {
             self.sizes.frames += b.len_bytes().div_ceil(PAGE);
+            // buffer_of retains a contiguous payload copy and a separate header. Reserve
+            // a fence tail for each chunk; only the last uses it. Page rounding covers
+            // DmaBox's cache-line alignment without depending on the host cache line.
+            self.sizes.transport_bytes += (b.len_bytes() + 24).div_ceil(PAGE) * PAGE + PAGE;
             return;
         }
         match chunk(b) {
@@ -397,24 +408,42 @@ impl Tx<'_> {
     /// The translation's own surfaces at the front of its first buffer: each defined on a
     /// MOB over its frames and uploaded.
     fn prelude(&mut self) {
-        let Some(backing) = self.backing.as_ref() else { return };
-        let mut surfaces: Vec<(u32, u32, u32, u32, u32, Arc<Pages>)> = Vec::new();
-        if let Some(p) = &backing.vertices {
-            surfaces.push((self.vb, wire::bind::VERTEX, wire::format::BUFFER, p.bytes() as u32, 1, p.clone()));
+        let layout = match (&self.backing, self.layout) {
+            (Some(b), _) => Sizes {
+                vertices: b.vertices.as_ref().map_or(0, |p| p.bytes()),
+                constants: b.constants.as_ref().map_or(0, |p| p.bytes()),
+                data: b.data.as_ref().map_or(0, |p| p.bytes()),
+                ..Sizes::default()
+            },
+            (None, Some(s)) => s,
+            (None, None) => return,
+        };
+        let mut surfaces = Vec::new();
+        if layout.vertices > 0 {
+            surfaces.push((self.vb, wire::bind::VERTEX, wire::format::BUFFER, layout.vertices.div_ceil(PAGE) * PAGE, 1, 0));
         }
-        if let Some(p) = &backing.constants {
-            surfaces.push((self.cb, wire::bind::VERTEX, wire::format::BUFFER, p.bytes() as u32, 1, p.clone()));
+        if layout.constants > 0 {
+            surfaces.push((self.cb, wire::bind::VERTEX, wire::format::BUFFER, layout.constants.div_ceil(PAGE) * PAGE, 1, 1));
         }
-        if let (Some(p), Some((sid, width))) = (&backing.data, self.data) {
-            let rows = (p.bytes() / 4) as u32 / width;
-            surfaces.push((sid, wire::bind::SAMPLE, wire::format::RGBA, width, rows, p.clone()));
+        if let Some((sid, width)) = self.data {
+            let bytes = layout.data.div_ceil(PAGE) * PAGE;
+            surfaces.push((sid, wire::bind::SAMPLE, wire::format::RGBA, width as usize, bytes / 4 / width as usize, 2));
         }
-        for (sid, flags, format, width, height, pages) in surfaces {
-            if super::transient_pages(sid, pages).is_none() {
-                self.failed = true;
-                return;
+        for (sid, flags, format, width, height, slot) in surfaces {
+            if let Some(backing) = &self.backing {
+                let pages = match slot { 0 => &backing.vertices, 1 => &backing.constants, _ => &backing.data };
+                if pages.as_ref().and_then(|p| super::transient_pages(sid, p.clone())).is_none() {
+                    self.failed = true;
+                    return;
+                }
+                super::define_transient(&mut self.b, sid, flags, format, width as u32, height as u32);
+            } else {
+                // Same packets as define_transient, with placeholder addresses and ids:
+                // the sizing pass must not allocate a page tree or device payload.
+                self.b.c.mob_address(0, wire::PT64_1, 0, 0);
+                self.b.c.surface(sid, flags, format, width as u32, height as u32);
+                self.b.c.bind_surface(sid, 0);
             }
-            super::define_transient(&mut self.b, sid, flags, format, width, height);
             self.b.c.update_surface(sid);
             self.defined.push(sid);
         }
@@ -428,7 +457,11 @@ impl Tx<'_> {
             self.o.free_srv.push(v);
         }
         for sid in core::mem::take(&mut self.defined).into_iter().rev() {
+            let mob = !self.writing() && self.layout.is_some()
+                && (sid == self.vb || sid == self.cb || self.data.is_some_and(|(s, _)| s == sid));
+            if mob { self.b.c.bind_surface(sid, wire::INVALID); }
             super::destroy_transient(&mut self.b, sid);
+            if mob { self.b.c.destroy_mob(0); }
         }
         self.close();
         if self.failed {
@@ -504,7 +537,7 @@ pub struct Output {
     pub sizes: Sizes,
 }
 
-fn start<'o>(o: &'o mut Objects, backing: Option<Backing>, data: bool) -> Option<Tx<'o>> {
+fn start<'o>(o: &'o mut Objects, backing: Option<Backing>, layout: Option<Sizes>, data: bool) -> Option<Tx<'o>> {
     let mut transient = Vec::new();
     let mut reserve = || -> Option<u32> {
         let (sid, _) = super::transient(None)?;
@@ -523,6 +556,7 @@ fn start<'o>(o: &'o mut Objects, backing: Option<Backing>, data: bool) -> Option
         b: Builder::new(),
         chunks: Vec::new(),
         backing,
+        layout,
         sizes: Sizes::default(),
         vb,
         cb,
@@ -549,6 +583,7 @@ pub fn translate(
     b: &impl Bindings,
     x: Extras,
     backing: Option<Backing>,
+    layout: Option<Sizes>,
 ) -> Option<(Output, Vec<u32>)> {
     let Extras { scratch, data_width, corrupt, mut suppress, swap } = x;
     // Pack each distinct crossing buffer once, before any draw can sample it.
@@ -575,7 +610,7 @@ pub fn translate(
         data_words += entry.1 / 4;
     }
     let width = data_width.max(1);
-    let mut tx = start(o, backing, data_words > 0)?;
+    let mut tx = start(o, backing, layout, data_words > 0)?;
     if let Some((sid, _)) = tx.data {
         tx.data = Some((sid, width));
         tx.sizes.data = (data_words.div_ceil(width) * width * 4) as usize;
@@ -877,14 +912,14 @@ fn corrupt_pixel(tx: &mut Tx<'_>) {
 }
 
 /// The bytes one warm-up step's surfaces hold: one quad's vertices and one constant record.
-pub const WARM_SIZES: Sizes = Sizes { vertices: 48, constants: RECORD, data: 0, frames: 0 };
+pub const WARM_SIZES: Sizes = Sizes { vertices: 48, constants: RECORD, data: 0, frames: 0, transport_bytes: 0 };
 
 /// One step of the catalogue's asynchronous warm-up: rendering pipeline `p`'s programs,
 /// defined unless a submission already did, and one draw with them into the 1x1 scratch
 /// target `scratch`, sampling slots 0 to 2 reading the 1x1 texture `scratch_texture`.
 pub fn warm_pipeline(o: &mut Objects, scratch: &TargetRes, scratch_texture: &SourceRes, p: u32) -> Option<Vec<Chunk>> {
     let backing = Backing::allocate(&WARM_SIZES)?;
-    let mut tx = start(o, Some(backing), false)?;
+    let mut tx = start(o, Some(backing), None, false)?;
     tx.prelude();
     fixed_state(&mut tx.b);
     if !tx.begin(scratch) {

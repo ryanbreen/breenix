@@ -14,6 +14,11 @@ pub struct PageTree {
 }
 
 impl PageTree {
+    pub fn table_pages(count: usize) -> usize {
+        let leaves = count.div_ceil(PAGE / 8);
+        leaves + usize::from(leaves > 1)
+    }
+
     pub fn new(data: Arc<Pages>) -> Option<Self> {
         let count = data.count();
         let per_page = PAGE / 8;
@@ -22,7 +27,7 @@ impl PageTree {
         }
         let leaves = count.div_ceil(per_page);
         let root = if leaves == 1 { 0 } else { leaves };
-        let tables = Pages::new(leaves + usize::from(leaves > 1))?;
+        let tables = Pages::new(Self::table_pages(count))?;
         for i in 0..count {
             tables.write(i * 8, &(data.page_addr(i) >> 12).to_le_bytes());
         }

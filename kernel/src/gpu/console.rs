@@ -386,6 +386,7 @@ impl Console {
             reqs
         };
         let mut last = None;
+        let device_ctx = dev::context_id(self.context);
         for req in requests {
             let Tag::Sync(serial) = req.tag() else { return Err(EIO) };
             let fence = req.fence();
@@ -401,6 +402,7 @@ impl Console {
             }
             last = Some(LastWrite {
                 ctx: self.context,
+                device_ctx,
                 fence: d.echoed,
                 serial,
                 answer: d.answer,
