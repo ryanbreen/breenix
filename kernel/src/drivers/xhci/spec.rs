@@ -97,7 +97,7 @@ impl Contexts {
     }
 }
 
-// PORTSC RW1C flags and PED (RW1CS) must never be echoed by a read/modify/write.
+// Exclude PORTSC RW1C flags and PED (RW1CS) from read/modify/write values.
 // Only PP, PIC and wake-enable bits are preserved (5.4.8.1).
 pub const PORT_CHANGES: u32 = 0x00fe_0000;
 pub fn port_write(old: u32, action: u32) -> u32 {
@@ -143,6 +143,9 @@ impl Work {
     }
     pub fn publish(&self, tid: u64) {
         self.waiter.store(tid, Ordering::SeqCst);
+    }
+    pub fn waiter(&self) -> u64 {
+        self.waiter.load(Ordering::SeqCst)
     }
     pub fn withdraw(&self) {
         self.waiter.store(0, Ordering::SeqCst);
@@ -215,6 +218,7 @@ mod tests {
                 wake = w.signal();
             }
             w.publish(17);
+            assert_eq!(w.waiter(), 17);
             if boundary == 1 {
                 wake = w.signal();
             }
@@ -230,6 +234,7 @@ mod tests {
             assert!(w.take());
             assert!(!w.take());
             w.withdraw();
+            assert_eq!(w.waiter(), 0);
             assert_eq!(w.signal(), 0);
             assert!(w.take());
         }

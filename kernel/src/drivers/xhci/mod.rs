@@ -82,14 +82,27 @@ fn interrupt() {
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
     let tid = WORK.signal();
     if tid != 0 {
-        scheduler::isr_unblock_for_io(tid);
+        // A persistent per-CPU bit cannot overflow the shared ISR TID queue.
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::IrqPoll);
+    }
+}
+
+/// The IRQ-exit softirq callback runs outside hard IRQ context. Wake through
+/// the scheduler's owner-queue path, which retains a busy-owner wake, rather
+/// than the bounded ISR TID buffer. No hardware polling occurs here.
+fn deferred_wake(_: crate::task::softirqd::SoftirqType) {
+    let tid = WORK.waiter();
+    if tid != 0 && WORK.pending() {
+        scheduler::wake_waitqueue_thread(tid);
     }
 }
 
 /// Permanent controller-owned DMA allocation. Frames are deliberately pinned
 /// for this controller's lifetime, including failed commands: an unresponsive
-/// DMA engine must never be given freed/reassigned memory. C2 never detaches a
-/// controller. Device hot-unplug/reclamation belongs to the class-driver lane.
+/// DMA engine must retain ownership of its pages. C2 keeps the controller
+/// attached. Device hot-unplug/reclamation belongs to the class-driver lane.
+/// claim-lint:ok: Dma has no Drop implementation; its frame allocations remain
+/// reserved for the boot, including when the stop after an error fails.
 struct Dma {
     phys: u64,
     virt: usize,
@@ -212,6 +225,10 @@ pub fn init() {
         return;
     }
     if let Some(device) = pci::find_by_class(pci::DeviceClass::SerialBus, 3, 0x30) {
+        crate::task::softirqd::register_softirq_handler(
+            crate::task::softirqd::SoftirqType::IrqPoll,
+            deferred_wake,
+        );
         if let Err(error) = kthread::kthread_run(
             move || {
                 if let Err(error) = start(device) {
@@ -357,7 +374,7 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
     };
     let result = controller.run(scratchpads);
     if result.is_err() {
-        // Fail closed. Leave all DMA frames reserved even if halt itself fails.
+        // Stop the failed controller; Dma retains its pages if the halt fails.
         wr(
             controller.op,
             USBCMD,
@@ -396,13 +413,16 @@ fn handoff_and_protocols(
                 }
                 legacy = true;
                 let began = now();
-                // Byte access changes only OS-owned, never BIOS-owned (7.1.1).
+                // 7.1.1: update the OS-owned byte, preserving its RsvdP bits.
+                // The adjacent BIOS-owned byte is not written.
                 unsafe {
-                    write_volatile((base + offset + 3) as *mut u8, 1);
+                    let owned = (base + offset + 3) as *mut u8;
+                    write_volatile(owned, read_volatile(owned) | 1);
                 }
                 let released = until(base, offset, 1 << 16, 0, SECOND).is_ok();
-                // Disable every defined SMI enable and acknowledge RW1C status;
-                // reserved fields are preserved (7.1.2).
+                // 7.1.2: 0xe011 selects the five defined SMI enables;
+                // 0xe0000000 acknowledges the three RW1C status flags.
+                // Preserve the reserved fields.
                 let ctl = rd(base, offset + 4);
                 wr(base, offset + 4, (ctl & !0x0000_e011) | 0xe000_0000);
                 let own = rd(base, offset);
@@ -506,7 +526,7 @@ fn handoff_and_protocols(
 
 impl Controller {
     fn run(&mut self, scratchpads: u32) -> Result<(), &'static str> {
-        // 4.2: all resources and both interrupt enables precede Run/Stop.
+        // 4.2: program DMA resources and interrupt enables before Run/Stop.
         wr(self.op, 0x38, self.slots as u32);
         wr64(self.op, 0x30, self.dcbaa.phys);
         wr64(self.op, 0x18, self.command.memory.phys | 1);
@@ -613,7 +633,7 @@ impl Controller {
             self.consumer.advance();
         }
         fence(Ordering::Release);
-        // EHB is RW1C: write ONE on EVERY service, including an empty one.
+        // EHB is RW1C: this service exit writes one, even for an empty ring.
         wr64(
             self.ir,
             ERDP,
@@ -820,7 +840,7 @@ impl Controller {
             packet,
             speed,
         };
-        // Always read the first eight bytes; FS needs Evaluate Context before
+        // Read the first eight bytes; FS needs Evaluate Context before
         // the full descriptor if firmware/device chose a different packet size.
         let first = self.descriptor(&mut device, 1, 0, 8)?;
         if first.len() != 8 || first[0] != 18 || first[1] != 1 {
