@@ -919,7 +919,7 @@ fn deliberately_broken_copies_redden_the_rules() {
     // Leg F -- a setter that writes the field without the publisher.
     let unpublished_setter = replace_once(
         &driver,
-        "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        self.store_foreground_pgrp(Some(pgrp));\n    }",
+        "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        self.store_foreground_pgrp(Some(pgrp), None);\n    }",
         "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        note_foreground_pgrp_acquisition(true);\n        *self.foreground_pgrp.lock() = Some(pgrp);\n    }",
     );
     assert_ne!(unpublished_setter, driver, "leg F's mutation must apply");

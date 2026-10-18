@@ -289,6 +289,17 @@ pub fn disable_rx_interrupt() {
     }
 }
 
+/// Rearm a deferred receive without boot-time diagnostics or a serial lock.
+pub(crate) fn resume_rx_interrupt() {
+    if is_16550() {
+        let ier = read_reg8(reg16550::IER);
+        write_reg8(reg16550::IER, ier | 0x01);
+    } else {
+        let imsc = read_reg(reg::IMSC);
+        write_reg(reg::IMSC, imsc | int::RX | int::RT);
+    }
+}
+
 /// Clear receive interrupt
 pub fn clear_rx_interrupt() {
     if is_16550() {

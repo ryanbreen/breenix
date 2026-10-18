@@ -1161,44 +1161,85 @@ fn validate_peer_hold_rendezvous(registry: &str) -> Result<(), String> {
     for kind in ["pm", "fg"] {
         let upper = kind.to_uppercase();
         let prefix = format!("TTY_IRQ_{upper}");
-        let holder = normalized_code(function_body(registry, &format!("tty_irq_{kind}_holder_body"))
-            .ok_or("missing holder")?);
+        let holder = normalized_code(
+            function_body(registry, &format!("tty_irq_{kind}_holder_body"))
+                .ok_or("missing holder")?,
+        );
         for required in [
             format!("{prefix}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"),
             format!("{prefix}_HOLD_SAFETY.store(true, AtomicOrdering::Release)"),
         ] {
-            if !holder.contains(&required) { return Err(format!("{kind}: holder lacks {required}")); }
+            if !holder.contains(&required) {
+                return Err(format!("{kind}: holder lacks {required}"));
+            }
         }
         let driver = function_body(registry, &format!("run_tty_irq_{kind}_oracle"))
             .ok_or("missing driver")?;
         let mask = code_mask(driver);
-        let at = driver.find("crate::arch_without_interrupts(|| {")
+        let at = driver
+            .find("crate::arch_without_interrupts(|| {")
             .ok_or_else(|| format!("{kind}: missing masked rendezvous"))?;
         let open = at + driver[at..].find('{').unwrap();
         let window = normalized_code(braced_block(driver, &mask, open).ok_or("missing window")?);
-        let probe = if kind == "pm" { "crate::process::try_manager().is_none()" }
-                    else { "tty.foreground_pgrp_busy_for_test()" };
+        let probe = if kind == "pm" {
+            "crate::process::try_manager().is_none()"
+        } else {
+            "tty.foreground_pgrp_busy_for_test()"
+        };
         let inject = format!("tty_irq_{kind}_inject(");
         let release = format!("{prefix}_HOLD_RELEASE.store(true, AtomicOrdering::Release)");
         let first = window.find(probe).ok_or("missing busy probe")?;
         let injection = window.find(&inject).ok_or("missing masked injection")?;
         let last = window.rfind(probe).ok_or("missing post-entry busy probe")?;
-        let released = window.find(&release).ok_or("missing release acknowledgement")?;
+        let released = window
+            .find(&release)
+            .ok_or("missing release acknowledgement")?;
         if !(first < injection && injection < last && last < released) {
             return Err(format!("{kind}: probes/injection/release are not ordered"));
         }
         let driver = normalized_code(driver);
-        for required in [
-            "&& peer_held_after".to_string(),
-            "&& peer_irqs_masked".to_string(),
-            format!("&& !{prefix}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"),
+        let predicates = if kind == "fg" {
+            // #1790 derives both verdict and diagnostics from these lists.
+            // Pin the same hold predicates in the architecture's list and
+            // require that the verdict actually conjoins every list entry.
+            let checks = driver
+                .split("let arch_checks = [")
+                .nth(1)
+                .and_then(|tail| tail.split("];").next())
+                .ok_or("missing fg conjunct list")?;
+            for required in [
+                "(, peer_held_after)".to_string(),
+                "(, peer_irqs_masked)".to_string(),
+                format!(", !{prefix}_HOLD_SAFETY.load(AtomicOrdering::Acquire),"),
+                format!(", entry_us < {prefix}_ENTRY_CEILING_US)"),
+            ] {
+                if !checks.contains(&required) {
+                    return Err(format!("fg: conjunct list lacks {required}"));
+                }
+            }
+            vec![
+                "let passed = common_checks.iter().chain(arch_checks.iter()).all(|(_, ok)| *ok)"
+                    .to_string(),
+            ]
+        } else {
+            vec![
+                "&& peer_held_after".to_string(),
+                "&& peer_irqs_masked".to_string(),
+                format!("&& !{prefix}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"),
+                format!("&& entry_us < {prefix}_ENTRY_CEILING_US"),
+            ]
+        };
+        for required in predicates.into_iter().chain([
             format!("{prefix}_HOLD_RELEASE.store(false, AtomicOrdering::Release)"),
             format!("{prefix}_HOLD_SAFETY.store(false, AtomicOrdering::Release)"),
-            format!("&& entry_us < {prefix}_ENTRY_CEILING_US"),
-        ] {
-            if !driver.contains(&required) { return Err(format!("{kind}: driver lacks {required}")); }
+        ]) {
+            if !driver.contains(&required) {
+                return Err(format!("{kind}: driver lacks {required}"));
+            }
         }
-        if !normalized_code(registry).contains(&format!("const {prefix}_ENTRY_CEILING_US: u64 = 1_000;")) {
+        if !normalized_code(registry)
+            .contains(&format!("const {prefix}_ENTRY_CEILING_US: u64 = 1_000;"))
+        {
             return Err(format!("{kind}: entry ceiling changed"));
         }
     }
@@ -1217,15 +1258,40 @@ fn peer_hold_rendezvous_rejects_time_only_and_unmasked_mutations() {
     validate_peer_hold_rendezvous(&source).expect("control");
     for kind in ["PM", "FG"] {
         for (from, to) in [
-            (format!("TTY_IRQ_{kind}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"), "true".to_string()),
-            (format!("&& !TTY_IRQ_{kind}_HOLD_SAFETY.load(AtomicOrdering::Acquire)"), "".to_string()),
+            (
+                format!("TTY_IRQ_{kind}_HOLD_RELEASE.load(AtomicOrdering::Acquire)"),
+                "true".to_string(),
+            ),
+            (
+                if kind == "PM" {
+                    format!("&& !TTY_IRQ_{kind}_HOLD_SAFETY.load(AtomicOrdering::Acquire)")
+                } else {
+                    format!("!TTY_IRQ_{kind}_HOLD_SAFETY.load(AtomicOrdering::Acquire)")
+                },
+                if kind == "PM" {
+                    "".to_string()
+                } else {
+                    "true".to_string()
+                },
+            ),
         ] {
             assert!(source.contains(&from));
-            assert!(validate_peer_hold_rendezvous(&source.replace(&from, &to)).is_err(), "{from}");
+            assert!(
+                validate_peer_hold_rendezvous(&source.replace(&from, &to)).is_err(),
+                "{from}"
+            );
         }
     }
     let unmasked = source.replace("crate::arch_without_interrupts(|| {", "unmasked(|| {");
     assert!(validate_peer_hold_rendezvous(&unmasked).is_err());
-    let no_after = source.replace("&& peer_held_after", "");
-    assert!(validate_peer_hold_rendezvous(&no_after).is_err());
+    for (from, to) in [
+        ("&& peer_held_after", ""),
+        (
+            "(\"peer_held_after\", peer_held_after)",
+            "(\"peer_held_after\", true)",
+        ),
+    ] {
+        assert!(source.contains(from));
+        assert!(validate_peer_hold_rendezvous(&source.replace(from, to)).is_err());
+    }
 }

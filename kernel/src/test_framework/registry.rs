@@ -7245,6 +7245,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     let mut arm = TTY_IRQ_FG_ARM_UNARMED;
     #[cfg(not(target_arch = "aarch64"))]
     let arm;
+    let mut buffered_after_intr = usize::MAX;
     let mut processed_b = 0u64;
     let mut entry_us = 0u64;
     let mut touches_b = 0u64;
@@ -7311,6 +7312,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
                 {
                     fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
                     let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
+                    buffered_after_intr = tty.input_line_pending();
                     processed_b = injected.0;
                     entry_us = injected.1;
                     touches_b = injected.2;
@@ -7350,6 +7352,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
             tty.hold_foreground_pgrp_for_test(&mut || {
                 fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
                 let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
+                buffered_after_intr = tty.input_line_pending();
                 processed_b = injected.0;
                 entry_us = injected.1;
                 touches_b = injected.2;
@@ -7372,7 +7375,6 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         }
     }
 
-    let buffered_after_intr = tty.input_line_pending();
     let (_, sig_pid, sig_num) = crate::tty::driver::tty_irq_fg_signal_census();
 
     // Leg 3 -- the thread side still owns the field, and the snapshot tracks
@@ -7393,38 +7395,6 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     let sig_calls = calls_a.wrapping_add(calls_b);
     let processed = processed_a.wrapping_add(processed_b);
 
-    let common_pass = fg_known == TTY_IRQ_FG_PGRP
-        && target_absent == 1
-        && touches == 0
-        && blocking == 0
-        && reads >= 2
-        && processed == 2
-        && buffered >= 1
-        && termios.c_lflag & crate::tty::termios::ISIG != 0
-        && termios.c_lflag & crate::tty::termios::NOFLSH == 0
-        && buffered_after_intr == 0
-        && irqs_enabled_before == 1
-        && fg_busy_probe == 1
-        && sig_calls == 1
-        && sig_pid == TTY_IRQ_FG_PGRP
-        && sig_num == TTY_IRQ_FG_SIGINT
-        && snapshot_agrees == 1
-        && restored == 1;
-
-    #[cfg(target_arch = "aarch64")]
-    let passed = common_pass
-        && arm == TTY_IRQ_FG_ARM_PEER_HOLD
-        && peer_held_after
-        && peer_irqs_masked
-        && !TTY_IRQ_FG_HOLD_SAFETY.load(AtomicOrdering::Acquire)
-        && holder_cpu != u64::MAX
-        && hold_us >= TTY_IRQ_FG_HOLD_US
-        && entry_us < TTY_IRQ_FG_ENTRY_CEILING_US
-        && joined == 1;
-
-    #[cfg(not(target_arch = "aarch64"))]
-    let passed = common_pass && arm == TTY_IRQ_FG_ARM_LOCAL_HOLD;
-
     // Failure diagnostics name each conjunct, including the architecture's
     // arming witnesses; preserve the passing marker consumed by the gates.
     let common_checks = [
@@ -7434,7 +7404,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         ("fg_blocking_acquires", blocking == 0),
         ("snapshot_reads", reads >= 2),
         ("processed", processed == 2),
-        ("buffered", buffered >= 1),
+        ("buffered", buffered >= 1), // Pre-INTR witness, before the required flush.
         ("isig", termios.c_lflag & crate::tty::termios::ISIG != 0),
         (
             "noflsh_clear",
@@ -7468,6 +7438,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     let arch_checks = [("arm", arm == TTY_IRQ_FG_ARM_LOCAL_HOLD)];
 
+    let passed = common_checks.iter().chain(arch_checks.iter()).all(|(_, ok)| *ok);
     let failures: alloc::vec::Vec<_> = common_checks
         .iter()
         .chain(arch_checks.iter())
@@ -7480,6 +7451,14 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         Some(alloc::format!("FAIL:failed={}", failures.join(",")))
     };
     let verdict = failure_verdict.as_deref().unwrap_or("PASS");
+
+    crate::serial_println!(
+        "[TTY_IRQ_FG_INPUT:buffered_pre_intr={}:buffered_after_intr={}:isig={}:noflsh={}]",
+        buffered,
+        buffered_after_intr,
+        u64::from(termios.c_lflag & crate::tty::termios::ISIG != 0),
+        u64::from(termios.c_lflag & crate::tty::termios::NOFLSH != 0),
+    );
 
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
@@ -9157,185 +9136,89 @@ fn test_future_basics() -> TestResult {
 
 /// Test that create_user_process() sets the TTY foreground process group.
 ///
-/// This is a RIGOROUS integration test that verifies the actual code path
-/// in kernel/src/process/creation.rs lines 175-183 (ARM64) and 77-87 (x86_64)
-/// is executed during process creation.
-///
-/// The test:
-/// 1. Sets the TTY foreground pgrp to a known sentinel value
-/// 2. Calls create_user_process() to create a real user process
-/// 3. Verifies that the foreground pgrp was changed to the new process's PID
-///
-/// CRITICAL: This test will FAIL if the set_foreground_pgrp() call is removed
-/// from create_user_process(). The sentinel value would remain unchanged,
-/// causing the test to detect the missing integration.
-///
-/// Note: This test requires:
-/// - TTY subsystem initialized (tty::console() returns Some)
-/// - Process manager initialized (process::manager() available)
-/// - Test disk with ELF binaries available (for get_test_binary())
-/// - Scheduler initialized (for spawn())
+/// Creation preserves a live foreground job and replaces a dead group (S21).
 fn test_tty_foreground_pgrp() -> TestResult {
-    use crate::tty;
-
-    // =========================================================================
-    // Step 1: Verify prerequisites
-    // =========================================================================
-
-    // Verify TTY console is available
-    let tty = match tty::console() {
-        Some(t) => t,
-        None => return TestResult::Fail("tty::console() returned None - TTY not initialized"),
+    use alloc::string::String;
+    let Some(tty) = crate::tty::console() else {
+        return TestResult::Fail("console TTY missing");
     };
-
-    // Verify process manager is available
-    {
-        let manager_guard = crate::process::manager();
-        if manager_guard.is_none() {
-            return TestResult::Fail("process manager not initialized");
-        }
-    }
-
-    // =========================================================================
-    // Step 2: Set sentinel value to detect if create_user_process changes it
-    // =========================================================================
-
-    // Use a sentinel value that no real PID would have (PIDs start at 1)
-    // We use 0xDEAD_BEEF as a recognizable sentinel
-    const SENTINEL_PGRP: u64 = 0xDEAD_BEEF;
-    tty.set_foreground_pgrp(SENTINEL_PGRP);
-
-    // Verify sentinel was set
-    if tty.get_foreground_pgrp() != Some(SENTINEL_PGRP) {
-        return TestResult::Fail("failed to set sentinel foreground pgrp");
-    }
-
-    log::info!("[TTY_PGRP_TEST] Sentinel pgrp set to {:#x}", SENTINEL_PGRP);
-
-    // =========================================================================
-    // Step 3: Load test binary and create a user process
-    // =========================================================================
-
-    // Use each architecture's actual test-binary source.
-    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
-    let elf_data = {
-        // Use get_test_binary which loads from the test disk
-        // This will panic with a clear error if the disk isn't available
-        crate::userspace_test::get_test_binary("hello_time")
-    };
-
-    #[cfg(all(feature = "testing", target_arch = "aarch64"))]
-    let elf_data = include_bytes!(concat!(
+    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
+    let elf = crate::userspace_test::get_test_binary("hello_time");
+    #[cfg(all(target_arch = "x86_64", not(feature = "testing")))]
+    let elf = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../userspace/programs/hello_time.elf"
+    ))
+    .to_vec();
+    #[cfg(target_arch = "aarch64")]
+    let elf = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../userspace/programs/aarch64/hello_time.elf"
     ))
     .to_vec();
 
-    #[cfg(not(feature = "testing"))]
+    const DEAD: u64 = 0xDEAD_BEEF;
     {
-        // Without testing feature, we can't load test binaries
-        // Fall back to a simpler test that just verifies the API works
-        log::warn!("[TTY_PGRP_TEST] Testing feature not enabled - falling back to API-only test");
-
-        // Test basic API functionality
-        let test_pgrp = 42u64;
-        tty.set_foreground_pgrp(test_pgrp);
-        if tty.get_foreground_pgrp() != Some(test_pgrp) {
-            return TestResult::Fail("foreground_pgrp API mismatch");
-        }
-
-        log::info!("[TTY_PGRP_TEST] API-only test passed (testing feature not enabled)");
-        return TestResult::Pass;
-    }
-
-    #[cfg(feature = "testing")]
-    {
-        use alloc::string::String;
-
-        log::info!(
-            "[TTY_PGRP_TEST] Loaded test binary ({} bytes), creating process...",
-            elf_data.len()
-        );
-
-        // Call create_user_process - this should set the foreground pgrp
-        let pid = match crate::process::creation::create_user_process(
-            String::from("tty_pgrp_test"),
-            &elf_data,
-        ) {
-            Ok(pid) => {
-                log::info!("[TTY_PGRP_TEST] Process created with PID {}", pid.as_u64());
-                pid
-            }
-            Err(e) => {
-                // Process creation failed - this could be due to various reasons
-                // (e.g., scheduler not ready, memory exhausted, etc.)
-                // Log the error and fail the test clearly
-                log::error!("[TTY_PGRP_TEST] create_user_process failed: {}", e);
-                return TestResult::Fail("create_user_process failed");
-            }
+        let manager = crate::process::manager();
+        let Some(ref manager) = *manager else {
+            return TestResult::Fail("process manager missing");
         };
-
-        // =========================================================================
-        // Step 4: Verify the foreground pgrp was set to the new PID
-        // =========================================================================
-
-        let current_pgrp = tty.get_foreground_pgrp();
-
-        // The foreground pgrp should now be the PID of the created process
-        // If the set_foreground_pgrp() call in create_user_process() was removed,
-        // the sentinel value (0xDEAD_BEEF) would still be present
-        match current_pgrp {
-            Some(pgrp) if pgrp == pid.as_u64() => {
-                // SUCCESS: create_user_process correctly set the foreground pgrp
-                log::info!(
-                    "[TTY_PGRP_TEST] PASS: foreground pgrp correctly set to PID {}",
-                    pid.as_u64()
-                );
-            }
-            Some(pgrp) if pgrp == SENTINEL_PGRP => {
-                // FAILURE: The sentinel is still there - create_user_process didn't
-                // call set_foreground_pgrp()
-                log::error!(
-                    "[TTY_PGRP_TEST] FAIL: foreground pgrp is still sentinel ({:#x}), \
-                     create_user_process() did not set it to PID {}",
-                    SENTINEL_PGRP,
-                    pid.as_u64()
-                );
-                return TestResult::Fail("create_user_process did not set foreground pgrp");
-            }
-            Some(pgrp) => {
-                // FAILURE: Some other value - unexpected state
-                log::error!(
-                    "[TTY_PGRP_TEST] FAIL: foreground pgrp is {:#x}, expected PID {} ({:#x})",
-                    pgrp,
-                    pid.as_u64(),
-                    pid.as_u64()
-                );
-                return TestResult::Fail("foreground pgrp has unexpected value");
-            }
-            None => {
-                // FAILURE: No foreground pgrp set at all
-                log::error!(
-                    "[TTY_PGRP_TEST] FAIL: foreground pgrp is None after create_user_process"
-                );
-                return TestResult::Fail("foreground pgrp is None after process creation");
-            }
+        if manager
+            .iter_processes()
+            .any(|(_, row)| !row.is_terminated() && row.pgid.as_u64() == DEAD)
+        {
+            return TestResult::Fail("dead-group fixture has a live member");
         }
-
-        // =========================================================================
-        // Step 5: Cleanup (optional - let the process be cleaned up normally)
-        // =========================================================================
-
-        // The created process will be scheduled and may run, but for this test
-        // we only care that the TTY foreground pgrp was set correctly.
-        // The process will eventually exit or be cleaned up by normal kernel
-        // operations.
-
-        log::info!(
-            "[TTY_PGRP_TEST] Integration test passed - create_user_process sets foreground pgrp"
-        );
-        TestResult::Pass
     }
+    tty.set_foreground_pgrp(DEAD);
+    if crate::process::creation::create_user_process(String::from("tty_pgrp_test"), &elf).is_err() {
+        return TestResult::Fail("dead-group process creation failed");
+    }
+    // A kernel-created process inherits init's group. It may already have
+    // exited on a peer CPU by the time creation returns, so do not depend on
+    // its process-table row surviving this observation.
+    let expected = Some(crate::process::RESERVED_INIT_PID);
+    if tty.get_foreground_pgrp() != expected {
+        return TestResult::Fail("creation did not replace dead foreground group");
+    }
+
+    // A real, unpublished-to-scheduler process cannot exit during this leg.
+    // Give it a different group so unconditional adoption would be detected.
+    let (live_pid, live_thread) = {
+        let mut manager = crate::process::manager();
+        let Some(ref mut manager) = *manager else {
+            return TestResult::Fail("process manager missing");
+        };
+        let root = crate::process::credentials::ProcessCredentials::root();
+        let live_pid = match manager.create_process_with_argv(
+            String::from("tty_pgrp_live"),
+            &elf,
+            &[b"tty_pgrp_live\0"],
+            &root,
+            None,
+        ) {
+            Ok(pid) => pid,
+            Err(_) => return TestResult::Fail("live-group fixture creation failed"),
+        };
+        let row = manager.get_process_mut(live_pid).unwrap();
+        row.pgid = live_pid;
+        let thread =
+            alloc::boxed::Box::new(row.main_thread.as_mut().unwrap().publish_to_scheduler());
+        (live_pid, thread)
+    };
+    tty.set_foreground_pgrp(live_pid.as_u64());
+    let created =
+        crate::process::creation::create_user_process(String::from("tty_pgrp_preserve"), &elf);
+    let preserved = tty.get_foreground_pgrp() == Some(live_pid.as_u64());
+    // Release the fixture to normal execution and exit even on a failed assertion.
+    crate::task::scheduler::spawn(live_thread);
+    if created.is_err() {
+        return TestResult::Fail("live-group process creation failed");
+    }
+    if !preserved {
+        return TestResult::Fail("creation stole live foreground group");
+    }
+    TestResult::Pass
 }
 
 /// Verify boot sequence completed successfully.
@@ -10830,6 +10713,18 @@ static SCHEDULER_TESTS: &[TestDef] = &[
 /// - kernel_heap: Verify kernel heap functional with various allocation patterns
 /// - tty_foreground_pgrp: Integration test verifying create_user_process() sets TTY foreground pgrp
 static SYSTEM_TESTS: &[TestDef] = &[
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "stdin_serial_contention",
+        func: || if crate::ipc::stdin::test_serial_contention() {
+            TestResult::Pass
+        } else {
+            TestResult::Fail("serial input consumed while stdin held or reordered on retry")
+        },
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::EarlyBoot,
+    },
     TestDef {
         name: "boot_sequence",
         func: test_boot_sequence,

@@ -6,6 +6,8 @@
 
 use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use alloc::collections::VecDeque;
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// Console/Tty readers share the live input ring, but not the legacy stdin registry.
@@ -18,11 +20,166 @@ pub const STDIN_BUF_SIZE: usize = 4096;
 static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
 
 /// The global stdin buffer
+#[cfg(target_arch = "aarch64")]
+static STDIN_BUFFER: StdinBufferLock = StdinBufferLock(Mutex::new(StdinBuffer::new()));
+
+#[cfg(not(target_arch = "aarch64"))]
 static STDIN_BUFFER: Mutex<StdinBuffer> = Mutex::new(StdinBuffer::new());
 
 #[path = "stdin_buffer.rs"]
 mod buffer;
 use buffer::StdinBuffer;
+
+/// An ARM64 UART IRQ that finds stdin busy leaves RX masked and its bytes
+/// unread. Every holder rearms RX after releasing the ring, including readers
+/// and observers: the IRQ can then retry without spinning on this CPU.
+#[cfg(target_arch = "aarch64")]
+struct StdinBufferLock(Mutex<StdinBuffer>);
+
+#[cfg(target_arch = "aarch64")]
+static SERIAL_RX_DEFERRED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_arch = "aarch64")]
+struct StdinGuard<'a> {
+    guard: Option<spin::MutexGuard<'a, StdinBuffer>>,
+    rearm_rx: bool,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl StdinBufferLock {
+    fn lock(&self) -> StdinGuard<'_> {
+        StdinGuard::new(self.0.lock())
+    }
+
+    fn try_lock(&self) -> Option<StdinGuard<'_>> {
+        self.0.try_lock().map(StdinGuard::new)
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl<'a> StdinGuard<'a> {
+    fn new(guard: spin::MutexGuard<'a, StdinBuffer>) -> Self {
+        Self {
+            guard: Some(guard),
+            rearm_rx: true,
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Deref for StdinGuard<'_> {
+    type Target = StdinBuffer;
+    fn deref(&self) -> &StdinBuffer {
+        self.guard.as_ref().unwrap()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::DerefMut for StdinGuard<'_> {
+    fn deref_mut(&mut self) -> &mut StdinBuffer {
+        self.guard.as_mut().unwrap()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for StdinGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        if self.rearm_rx && SERIAL_RX_DEFERRED.swap(false, Ordering::AcqRel) {
+            crate::serial_aarch64::resume_rx_interrupt();
+        }
+    }
+}
+
+/// Acquire room before consuming the UART. Busy/full stdin leaves bytes in
+/// the hardware FIFO, with RX masked until a ring holder releases it.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn receive_serial_from_irq(mut next: impl FnMut() -> Option<u8>) {
+    crate::serial_aarch64::disable_rx_interrupt();
+    // Complete the device mask before another CPU can observe the handoff
+    // and rearm it; the atomic orders normal memory, not a posted MMIO write.
+    // SAFETY: this barrier accesses no memory through Rust pointers.
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+    // Publish after masking: if a holder has already dropped, this attempt
+    // acquires the ring and its own guard performs the rearm instead.
+    SERIAL_RX_DEFERRED.store(true, Ordering::Release);
+    let Some(mut buffer) = STDIN_BUFFER.try_lock() else {
+        return;
+    };
+    let mut received = false;
+    while !buffer.is_full() {
+        let Some(byte) = next() else {
+            crate::serial_aarch64::clear_rx_interrupt();
+            drop(buffer);
+            if received {
+                wake_blocked_readers_try();
+            }
+            return;
+        };
+        assert!(buffer.push_byte(byte));
+        received = true;
+        INPUT_READERS.wake_up_deferred();
+    }
+    // No room: retain the FIFO and its pending RX/timeout indication. The next
+    // reader (or flush) rearms RX after releasing the ring.
+    buffer.rearm_rx = false;
+    drop(buffer);
+    if received {
+        wake_blocked_readers_try();
+    }
+}
+
+/// Deterministic #1803 case: a byte delivered while stdin is held must still
+/// be available when the receiver retries, in its original order.
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
+pub(crate) fn test_serial_contention() -> bool {
+    let input = *b"echo console-v1 tty on screen\n";
+    let mut next_byte = 0;
+    let mut fifo = || {
+        let byte = input.get(next_byte).copied();
+        next_byte += usize::from(byte.is_some());
+        byte
+    };
+    let held = STDIN_BUFFER.lock();
+    receive_serial_from_irq(&mut fifo);
+    drop(held);
+    // The held-lock attempt must not have consumed even one byte.
+    if next_byte != 0 {
+        return false;
+    }
+    receive_serial_from_irq(|| {
+        let byte = input.get(next_byte).copied();
+        next_byte += usize::from(byte.is_some());
+        byte
+    });
+    let mut output = [0; 30];
+    let read = read_bytes(&mut output);
+    let ordered =
+        next_byte == input.len() && read == Ok(input.len()) && output[..input.len()] == input;
+    {
+        let mut ring = STDIN_BUFFER.lock();
+        for _ in 0..STDIN_BUF_SIZE - 1 {
+            assert!(ring.push_byte(b'x'));
+        }
+    }
+    let mut full_consumed = 0;
+    receive_serial_from_irq(|| {
+        let byte = (full_consumed == 0).then_some(b'y');
+        full_consumed += usize::from(byte.is_some());
+        byte
+    });
+    flush_input();
+    let passed = ordered && full_consumed == 0;
+    crate::serial_println!(
+        "[STDIN_SERIAL_CONTENTION:held_consumed=0:retried={}:ordered={}:full_consumed={}]",
+        next_byte,
+        u64::from(ordered),
+        full_consumed
+    );
+    passed
+}
 
 /// Push a byte to the stdin buffer
 /// Called from keyboard task when a character is typed
