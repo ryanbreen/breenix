@@ -13436,38 +13436,51 @@ fn x86_teardown_gates_are_direct_reachable_and_exactly_once() {
 }
 
 #[test]
-fn direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass() {
-    let main = r#"
-        fn kernel_main_on_kernel_stack_checked() {
-            process_task::run_x86_retirement_fence_gate();
-            process_task::run_x86_reclaim_progress_gate();
-            teardown::run_x86_retire_cohort_gate();
-        }
-    "#;
-    let process = r#"
-        fn retirement_fence_gate_test() { serial_println!("[TEST:process:retirement_fence_gate:PASS]"); }
-        fn reclaim_progress_gate_test() {}
-        fn run_x86_retirement_fence_gate() {
-            serial_println!("[TEST:process:retirement_fence_gate:START]");
-            let result = retirement_fence_gate_test();
-            serial_println!("[TEST:process:retirement_fence_gate:PASS]");
-            serial_println!("[TEST:process:retirement_fence_gate:FAIL]");
-            assert!(result.is_pass());
-        }
-        fn run_x86_reclaim_progress_gate() {
-            serial_println!("[TEST:process:reclaim_progress_gate:START]");
-            let result = reclaim_progress_gate_test();
-            serial_println!("[TEST:process:reclaim_progress_gate:PASS]");
-            serial_println!("[TEST:process:reclaim_progress_gate:FAIL]");
-            assert!(result.is_pass());
-        }
-    "#;
-    let teardown = r#"
-        fn fork_exit_defer_reclaim_pairing_test() { serial_println!("[TEST:process:x86_retire_cohort:PASS]"); }
-        fn run_x86_retire_cohort_gate() {}
-    "#;
-    let harness = "TEST:process:retirement_fence_gate:PASS TEST:process:retirement_fence_gate:PASS -eq 1 TEST:process:reclaim_progress_gate:PASS TEST:process:reclaim_progress_gate:PASS -eq 1";
-    assert!(validate_x86_direct_teardown_gates(main, process, teardown, harness).is_err());
+fn x86_naked_entry_continues_into_the_checked_boot_body() {
+    let main = repo_text("kernel/src/main.rs");
+    let entry = function_body(&main, "kernel_main_on_kernel_stack");
+    assert!(entry.contains("\"jmp {continuation}\""));
+    assert!(normalized_code(entry)
+        .contains("continuation = sym kernel_main_on_kernel_stack_checked,"));
+}
+
+#[test]
+fn direct_x86_teardown_gate_validator_rejects_ordering_and_duplicate_pass() {
+    let main = repo_text("kernel/src/main.rs");
+    let process = repo_text("kernel/src/task/process_task.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&main, &process, &teardown, &harness),
+        Ok(())
+    );
+
+    let reordered = main
+        .replacen("process_task::run_x86_retirement_fence_gate();", "SWAP_GATE", 1)
+        .replacen(
+            "process_task::run_x86_reclaim_progress_gate();",
+            "process_task::run_x86_retirement_fence_gate();",
+            1,
+        )
+        .replacen("SWAP_GATE", "process_task::run_x86_reclaim_progress_gate();", 1);
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&reordered, &process, &teardown, &harness),
+        Err("x86 teardown-gate ordering or rationale changed")
+    );
+
+    let body = function_body(&process, "retirement_fence_gate_test");
+    let duplicate_pass = process.replacen(
+        body,
+        &format!(
+            "{} serial_println!(\"[TEST:process:retirement_fence_gate:PASS]\"); }}",
+            body.strip_suffix('}').unwrap(),
+        ),
+        1,
+    );
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&main, &duplicate_pass, &teardown, &harness),
+        Err("direct x86 gate is not fail-loud or has two PASS producers")
+    );
 }
 
 fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'static str> {
