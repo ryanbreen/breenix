@@ -303,7 +303,7 @@ fi
 # Opt in for constrained build hosts; VM execution retains normal priority.
 run_build() {
     if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
-        taskpolicy -b "$@"
+        "$BREENIX_ROOT/scripts/build-background.sh" "$@"
     else
         "$@"
     fi
