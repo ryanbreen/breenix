@@ -1715,6 +1715,7 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
     for (old, new) in replacements {
         body = body.replace(&old, &new);
     }
+    let body = runtime_zero_operands(&declarations, &body);
     let mut initialization = String::new();
     for (i, word) in values.iter().enumerate() {
         let immediate = immediates + i;
@@ -1750,6 +1751,42 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
     declarations.push_str(&body);
     declarations.push('\0');
     (declarations, values.len())
+}
+
+/// An instruction with only immediate sources is a constant expression a host compiler
+/// may fold, and Parallels' folds some wrongly: `XOR` of 0x00800000 and 0 read 0x007ffffd
+/// (provenance B19). Such an instruction's immediate 0 becomes `CONST[4].z`, which the
+/// draws of these programs supply as 0 (`kernel/src/gpu/virgl/encode.rs`), so the
+/// expression is evaluated at run time with the same result.
+fn runtime_zero_operands(declarations: &str, body: &str) -> String {
+    let mut zero = std::collections::HashSet::new();
+    for line in declarations.lines() {
+        let Some(rest) = line.strip_prefix("IMM[") else { continue };
+        let index = &rest[..rest.find(']').unwrap()];
+        let words = &line[line.find('{').unwrap() + 1..line.find('}').unwrap()];
+        for (lane, word) in words.split(", ").enumerate() {
+            if word.trim() == "0" {
+                zero.insert(format!("IMM[{index}].{}", ["xxxx", "yyyy", "zzzz", "wwww"][lane]));
+            }
+        }
+    }
+    let mut out = String::new();
+    for line in body.lines() {
+        let rewritten = line.split_once(' ').and_then(|(op, args)| {
+            let mut sources: Vec<&str> = args.split(", ").skip(1).collect();
+            if sources.is_empty() || !sources.iter().all(|s| s.starts_with("IMM[")) {
+                return None;
+            }
+            let at = sources.iter().rposition(|s| zero.contains(*s))
+                .unwrap_or_else(|| panic!("all-immediate instruction without a zero operand: {line}"));
+            sources[at] = "CONST[4].zzzz";
+            let destination = args.split(", ").next().unwrap();
+            Some(format!("{op} {destination}, {}", sources.join(", ")))
+        });
+        out.push_str(rewritten.as_deref().unwrap_or(line));
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]

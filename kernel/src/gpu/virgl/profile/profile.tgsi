@@ -447,13 +447,13 @@ ENDIF
 USEQ TEMP[42].x, CONST[4].yyyy, IMM[2].wwww
 UIF TEMP[42].xxxx
 F2I TEMP[0].xy, IN[0]
-UADD TEMP[1].x, IMM[51].xxxx, IMM[0].xxxx
-UADD TEMP[2].x, IMM[51].xxxx, IMM[0].xxxx
-UADD TEMP[3].x, IMM[51].xxxx, IMM[0].xxxx
-UADD TEMP[4].x, IMM[51].xxxx, IMM[0].xxxx
-UADD TEMP[5].x, IMM[51].xxxx, IMM[0].xxxx
-UADD TEMP[6].x, IMM[51].xxxx, IMM[0].xxxx
-UADD TEMP[7].x, IMM[59].zzzz, IMM[0].xxxx
+UADD TEMP[1].x, IMM[51].xxxx, CONST[4].zzzz
+UADD TEMP[2].x, IMM[51].xxxx, CONST[4].zzzz
+UADD TEMP[3].x, IMM[51].xxxx, CONST[4].zzzz
+UADD TEMP[4].x, IMM[51].xxxx, CONST[4].zzzz
+UADD TEMP[5].x, IMM[51].xxxx, CONST[4].zzzz
+UADD TEMP[6].x, IMM[51].xxxx, CONST[4].zzzz
+UADD TEMP[7].x, IMM[59].zzzz, CONST[4].zzzz
 BGNLOOP
 UADD TEMP[7].x, TEMP[7].xxxx, TEMP[45].xxxx
 AND TEMP[19].x, TEMP[7].xxxx, IMM[51].zzzz
@@ -498,7 +498,7 @@ AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[12].x, TEMP[44].xxxx, TEMP[13].xxxx
 XOR TEMP[12].x, TEMP[12].xxxx, TEMP[45].xxxx
 OR TEMP[12].x, TEMP[12].xxxx, TEMP[11].xxxx
-UADD TEMP[14].x, IMM[51].xxxx, IMM[0].xxxx
+UADD TEMP[14].x, IMM[51].xxxx, CONST[4].zzzz
 XOR TEMP[15].x, CONST[0].wwww, TEMP[45].xxxx
 UADD TEMP[15].x, TEMP[15].xxxx, IMM[51].yyyy
 UADD TEMP[16].x, TEMP[4].xxxx, TEMP[15].xxxx
@@ -619,7 +619,7 @@ AND TEMP[6].x, TEMP[4].xxxx, IMM[62].xxxx
 USLT TEMP[8].x, IMM[62].yyyy, TEMP[7].xxxx
 AND TEMP[8].x, TEMP[8].xxxx, IMM[62].wwww
 USNE TEMP[43].x, TEMP[8].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[62].zzzz, IMM[62].yyyy
+XOR TEMP[44].x, IMM[62].zzzz, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[9].x, TEMP[44].xxxx, IMM[62].yyyy
 OR TEMP[10].x, TEMP[6].xxxx, TEMP[9].xxxx
@@ -634,7 +634,7 @@ AND TEMP[8].x, TEMP[5].xxxx, IMM[62].xxxx
 USLT TEMP[5].x, IMM[62].yyyy, TEMP[6].xxxx
 AND TEMP[5].x, TEMP[5].xxxx, IMM[62].wwww
 USNE TEMP[43].x, TEMP[5].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[62].zzzz, IMM[62].yyyy
+XOR TEMP[44].x, IMM[62].zzzz, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[11].x, TEMP[44].xxxx, IMM[62].yyyy
 OR TEMP[12].x, TEMP[8].xxxx, TEMP[11].xxxx
@@ -1214,7 +1214,7 @@ AND TEMP[4].x, TEMP[5].xxxx, IMM[69].xxxx
 USLT TEMP[8].x, IMM[69].yyyy, TEMP[7].xxxx
 AND TEMP[8].x, TEMP[8].xxxx, IMM[69].wwww
 USNE TEMP[43].x, TEMP[8].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[69].zzzz, IMM[69].yyyy
+XOR TEMP[44].x, IMM[69].zzzz, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[9].x, TEMP[44].xxxx, IMM[69].yyyy
 OR TEMP[10].x, TEMP[4].xxxx, TEMP[9].xxxx
@@ -1229,7 +1229,7 @@ AND TEMP[8].x, TEMP[6].xxxx, IMM[69].xxxx
 USLT TEMP[6].x, IMM[69].yyyy, TEMP[4].xxxx
 AND TEMP[6].x, TEMP[6].xxxx, IMM[69].wwww
 USNE TEMP[43].x, TEMP[6].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[69].zzzz, IMM[69].yyyy
+XOR TEMP[44].x, IMM[69].zzzz, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[11].x, TEMP[44].xxxx, IMM[69].yyyy
 OR TEMP[12].x, TEMP[8].xxxx, TEMP[11].xxxx
@@ -1796,7 +1796,7 @@ AND TEMP[2].x, CONST[0].xxxx, IMM[75].wwww
 USLT TEMP[4].x, IMM[76].xxxx, TEMP[3].xxxx
 AND TEMP[4].x, TEMP[4].xxxx, IMM[76].zzzz
 USNE TEMP[43].x, TEMP[4].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[76].yyyy, IMM[76].xxxx
+XOR TEMP[44].x, IMM[76].yyyy, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[5].x, TEMP[44].xxxx, IMM[76].xxxx
 OR TEMP[6].x, TEMP[2].xxxx, TEMP[5].xxxx
@@ -1811,7 +1811,7 @@ AND TEMP[4].x, CONST[0].yyyy, IMM[75].wwww
 USLT TEMP[7].x, IMM[76].xxxx, TEMP[2].xxxx
 AND TEMP[7].x, TEMP[7].xxxx, IMM[76].zzzz
 USNE TEMP[43].x, TEMP[7].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[76].yyyy, IMM[76].xxxx
+XOR TEMP[44].x, IMM[76].yyyy, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[8].x, TEMP[44].xxxx, IMM[76].xxxx
 OR TEMP[9].x, TEMP[4].xxxx, TEMP[8].xxxx
@@ -2537,7 +2537,7 @@ AND TEMP[2].x, CONST[0].xxxx, IMM[83].wwww
 USLT TEMP[4].x, IMM[84].xxxx, TEMP[3].xxxx
 AND TEMP[4].x, TEMP[4].xxxx, IMM[84].zzzz
 USNE TEMP[43].x, TEMP[4].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[84].yyyy, IMM[84].xxxx
+XOR TEMP[44].x, IMM[84].yyyy, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[5].x, TEMP[44].xxxx, IMM[84].xxxx
 OR TEMP[6].x, TEMP[2].xxxx, TEMP[5].xxxx
@@ -2620,7 +2620,7 @@ AND TEMP[7].x, TEMP[7].xxxx, IMM[90].yyyy
 USLT TEMP[3].x, IMM[90].zzzz, TEMP[1].xxxx
 AND TEMP[3].x, TEMP[3].xxxx, IMM[90].yyyy
 USNE TEMP[43].x, TEMP[3].xxxx, IMM[0].xxxx
-XOR TEMP[44].x, IMM[91].xxxx, IMM[90].zzzz
+XOR TEMP[44].x, IMM[91].xxxx, CONST[4].zzzz
 AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[4].x, TEMP[44].xxxx, IMM[90].zzzz
 USNE TEMP[43].x, TEMP[2].xxxx, IMM[0].xxxx
@@ -4954,13 +4954,13 @@ AND TEMP[15].x, TEMP[15].xxxx, IMM[127].zzzz
 OR TEMP[11].x, TEMP[6].xxxx, TEMP[15].xxxx
 USLT TEMP[15].x, TEMP[11].xxxx, IMM[127].wwww
 AND TEMP[15].x, TEMP[15].xxxx, IMM[127].zzzz
-UADD TEMP[6].x, IMM[127].wwww, IMM[0].xxxx
-UADD TEMP[5].x, IMM[127].wwww, IMM[0].xxxx
-UADD TEMP[12].x, IMM[127].wwww, IMM[0].xxxx
-UADD TEMP[10].x, IMM[127].wwww, IMM[0].xxxx
-UADD TEMP[13].x, IMM[127].wwww, IMM[0].xxxx
-UADD TEMP[2].x, IMM[127].wwww, IMM[0].xxxx
-UADD TEMP[7].x, IMM[136].xxxx, IMM[0].xxxx
+UADD TEMP[6].x, IMM[127].wwww, CONST[4].zzzz
+UADD TEMP[5].x, IMM[127].wwww, CONST[4].zzzz
+UADD TEMP[12].x, IMM[127].wwww, CONST[4].zzzz
+UADD TEMP[10].x, IMM[127].wwww, CONST[4].zzzz
+UADD TEMP[13].x, IMM[127].wwww, CONST[4].zzzz
+UADD TEMP[2].x, IMM[127].wwww, CONST[4].zzzz
+UADD TEMP[7].x, IMM[136].xxxx, CONST[4].zzzz
 BGNLOOP
 UADD TEMP[7].x, TEMP[7].xxxx, TEMP[45].xxxx
 AND TEMP[29].x, TEMP[7].xxxx, IMM[128].zzzz
@@ -5005,7 +5005,7 @@ AND TEMP[44].x, TEMP[44].xxxx, TEMP[43].xxxx
 XOR TEMP[22].x, TEMP[44].xxxx, TEMP[23].xxxx
 XOR TEMP[22].x, TEMP[22].xxxx, TEMP[45].xxxx
 OR TEMP[22].x, TEMP[22].xxxx, TEMP[21].xxxx
-UADD TEMP[24].x, IMM[127].wwww, IMM[0].xxxx
+UADD TEMP[24].x, IMM[127].wwww, CONST[4].zzzz
 XOR TEMP[25].x, TEMP[14].xxxx, TEMP[45].xxxx
 UADD TEMP[25].x, TEMP[25].xxxx, IMM[127].zzzz
 UADD TEMP[26].x, TEMP[10].xxxx, TEMP[25].xxxx

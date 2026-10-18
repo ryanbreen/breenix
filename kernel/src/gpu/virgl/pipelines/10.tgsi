@@ -172,13 +172,13 @@ AND TEMP[15].x, TEMP[15].xxxx, IMM[0].zzzz
 OR TEMP[11].x, TEMP[6].xxxx, TEMP[15].xxxx
 USLT TEMP[15].x, TEMP[11].xxxx, IMM[0].wwww
 AND TEMP[15].x, TEMP[15].xxxx, IMM[0].zzzz
-UADD TEMP[6].x, IMM[0].wwww, IMM[0].wwww
-UADD TEMP[5].x, IMM[0].wwww, IMM[0].wwww
-UADD TEMP[12].x, IMM[0].wwww, IMM[0].wwww
-UADD TEMP[10].x, IMM[0].wwww, IMM[0].wwww
-UADD TEMP[13].x, IMM[0].wwww, IMM[0].wwww
-UADD TEMP[2].x, IMM[0].wwww, IMM[0].wwww
-UADD TEMP[7].x, IMM[9].xxxx, IMM[0].wwww
+UADD TEMP[6].x, IMM[0].wwww, CONST[4].zzzz
+UADD TEMP[5].x, IMM[0].wwww, CONST[4].zzzz
+UADD TEMP[12].x, IMM[0].wwww, CONST[4].zzzz
+UADD TEMP[10].x, IMM[0].wwww, CONST[4].zzzz
+UADD TEMP[13].x, IMM[0].wwww, CONST[4].zzzz
+UADD TEMP[2].x, IMM[0].wwww, CONST[4].zzzz
+UADD TEMP[7].x, IMM[9].xxxx, CONST[4].zzzz
 BGNLOOP
 UADD TEMP[7].x, TEMP[7].xxxx, TEMP[36].xxxx
 AND TEMP[29].x, TEMP[7].xxxx, IMM[1].zzzz
@@ -223,7 +223,7 @@ AND TEMP[35].x, TEMP[35].xxxx, TEMP[34].xxxx
 XOR TEMP[22].x, TEMP[35].xxxx, TEMP[23].xxxx
 XOR TEMP[22].x, TEMP[22].xxxx, TEMP[36].xxxx
 OR TEMP[22].x, TEMP[22].xxxx, TEMP[21].xxxx
-UADD TEMP[24].x, IMM[0].wwww, IMM[0].wwww
+UADD TEMP[24].x, IMM[0].wwww, CONST[4].zzzz
 XOR TEMP[25].x, TEMP[14].xxxx, TEMP[36].xxxx
 UADD TEMP[25].x, TEMP[25].xxxx, IMM[0].zzzz
 UADD TEMP[26].x, TEMP[10].xxxx, TEMP[25].xxxx

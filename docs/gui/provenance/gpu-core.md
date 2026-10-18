@@ -996,3 +996,36 @@ defined on the low five bits, so the host received a bare variable count.
 The program printed `SHIFT COUNT NOT MASKED TO FIVE BITS`. On this host renderer a shift by a register
 count of 32 or more gives 0, where TGSI defines the shift by the count's low five bits. The ARM64 QEMU
 renderer follows TGSI's definition: the G5 programs, which relied on it, pass there.
+| In the 15 generated programs an instruction with only immediate sources (a word copy `UADD x, k, 0`, or a select between two literals lowered to `XOR`) takes `CONST[4].z` in place of its immediate 0; the draws of these programs supply that word as 0 (`kernel/src/gpu/virgl/encode.rs`: catalogue draws pass `CONST[4]` as `0, 0, 0, 0`, PROBE passes `word, routine, 0, 0`) | B19; the operation and its result are unchanged where `CONST[4].z` is 0 |
+
+## B19: Parallels folding of literal-only instructions
+
+On Parallels, `profile/binary32-emulation` and the three `coverage_spans` cases read wrong pixels while
+the integer routines passed; the probe program's binary32 routines returned, for example, `0x3f7ffffb`
+for 1.0 + 2^-24 (want `0x3f800000`) and 1 for 3 × 0.5 (want 2). Each of these failures was a run of the
+gpu suite at `9d8cebd1` with the kernel's diagnostic changes not committed: `probe_int` warmed with the
+catalogue and an 8 s watchdog so that the first PROBE's 3.1 s compilation (section "Parallels catch-up
+values") did not end the case.
+
+A run with a twelve-instruction diagnostic program in place of `probe_int` (XOR of a constant with
+`0x80000000` and `0x7f800000`, moves of `0x80000000`, `0xffffffff` and `0x7fc00001`, UADD and USLT
+with `0x80000000`, AND with `0xffffffff`) returned 12 of 12 words exactly, so the host keeps those bit
+patterns through registers and constant operands.
+
+`tools/gpu-experiments/probe-checkpoints.py "$PROFILE" 600 1194 12 "$OUT"`, with PROFILE the probe program
+at `9d8cebd1`, gave a diagnostic program of 64 checkpoints in routine 12 (binary32 add). A 64-pixel PROBE
+row of routine 12 with operands `0x3f800000, 0x33800000` was read back on Parallels and compared with
+the generator's interpreter on the same text:
+
+| Checkpoint | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| Interpreter | `3f800000` | `c000000` | `ffffffff` | `0` | `800000` | `ffffff99` | `1000000` | `1` | `fffffffc` |
+| Parallels | `3f800000` | `c000000` | `ffffffff` | `0` | `7ffffd` | `ffffff99` | `1000000` | `1` | `fffffffd` |
+
+Between checkpoints 3 and 4 the program selects between two literals: `XOR TEMP[44].x, IMM[62].zzzz,
+IMM[62].yyyy` (`0x00800000` and 0), `AND` with the condition mask, then `XOR` with 0. Checkpoint 4 read
+`0x007ffffd`. Of the 11 generated programs with literal-only instructions, the 2 that failed on Parallels (program 8
+and `probe_int`) had a normal binary32 bit pattern among those literals (`0x00800000`, `0x3f800000`); the
+other 9 used only 0 and small integers there and passed. The generator now gives no instruction only immediate sources. Attributing
+the deviation to the host compiler's constant folding is an inference from these observations, as B12's
+was for ARM64 QEMU's renderer.
