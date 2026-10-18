@@ -87,10 +87,10 @@ pub mod cmd {
     pub const UPDATE_SCREEN: u32 = 1127;
     pub const GB_SCREEN_DMA: u32 = 1131;
     pub const NOP_ERROR: u32 = 1137;
-    pub const DEFINE_CONTEXT: u32 = 1143;
-    pub const DESTROY_CONTEXT: u32 = 1144;
-    pub const BIND_CONTEXT: u32 = 1145;
-    pub const DRAW: u32 = 1152;
+    pub const DX_DEFINE_CONTEXT: u32 = 1143;
+    pub const DX_DESTROY_CONTEXT: u32 = 1144;
+    pub const DX_BIND_CONTEXT: u32 = 1145;
+    pub const DX_DRAW: u32 = 1152;
     pub const SET_COTABLE: u32 = 1207;
     pub const MOB_FENCE64: u32 = 1216;
 }

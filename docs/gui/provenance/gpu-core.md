@@ -987,15 +987,16 @@ same directory at `v5.15` and `v4.19` for register and command-buffer comments. 
 SVGA downloads have been deleted from the lane's temporary header cache. Other lanes'
 files were not removed.
 
-The `D3D10_SB_*` enums came from Microsoft's published
+For future shader work, the lane inspected Microsoft's published
 [`include/directx/D3D12TokenizedProgramFormat.hpp`](https://github.com/microsoft/DirectX-Headers/blob/461ef5138bd30922b44fbad77c4e47662812d2d5/include/directx/D3D12TokenizedProgramFormat.hpp)
 in **microsoft/DirectX-Headers**, commit
 `461ef5138bd30922b44fbad77c4e47662812d2d5`. The file's SHA-256 is
 `5862ef7c8b819f0d02ba73563a9df4dc0e89f11fe59d8f598def39122273c626`;
 the cached file was compared byte for byte with that pinned Microsoft URL and matched.
 The filename says D3D12, but the file defines the D3D10/SM4 token enums. The pushed
-`kernel/src/gpu/svga/` files contain no shader-token encoder or catalogue using those
-enums yet. This Microsoft publication remains an allowed source for that work.
+`kernel/src/gpu/svga/` files contain no D3D10_SB enum, shader-token encoder or catalogue;
+this source is not an input to the device-layer implementation. This Microsoft
+publication remains an allowed source for that work.
 
 The affected SVGA files are `wire.rs` (interface values), `commands.rs` (packet
 layouts), `objects.rs` (MOB, table, surface and DX-context structures), and `mod.rs`
@@ -1065,3 +1066,20 @@ SVGA core tables. The experimental path has no firmware hand-back on failed
 initialization; it retains ambiguous DMA allocations and must not be used as
 a desktop replacement (#1817). Ruling 47's backend-specific checks arrived with the integration merge; the source audit
 above and the unfinished DX catalogue still block hardware acceptance.
+
+The register BAR length check is derived from the highest register declared by this layer,
+`IRQ_STATUS` (the S register enum), plus one 32-bit register; it is not a separate wire constant.
+
+To build and package the experimental kernel into a VMware image, use the runner's
+explicit profile flag from the checkout root (Mac builds run at background priority;
+the VM runs at normal priority and opens its window):
+
+```sh
+export CARGO_BUILD_JOBS=4
+BREENIX_BUILD_BACKGROUND=1 BREENIX_CATCHUP=1 "$PWD/run.sh" --vmware --gpu-svga-experimental --suite gpu
+```
+
+This is the CU-V catch-up invocation, not a supported desktop profile or an acceptance
+claim. Source approval (#1913), the DX backend and its full-suite/3D-off acceptance
+remain outstanding. The root Cargo feature forwards `gpu_svga_experimental` to the
+kernel for direct Cargo builds; the runner flag selects it while packaging the image.

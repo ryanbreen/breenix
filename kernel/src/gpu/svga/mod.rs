@@ -1,7 +1,7 @@
-//! Clean-room SVGA3 command buffers and guest-backed objects for ARM64 Fusion.
+//! Experimental SVGA3 command buffers and guest-backed objects for ARM64 Fusion.
 //!
-//! Only VMware's interface definitions are used for the wire; allocation and lifetime
-//! policy belongs to Breenix. No legacy graphics driver participates in this module.
+//! Wire definitions and their unresolved source disposition are recorded in
+//! docs/gui/provenance/gpu-core.md (#1913). Allocation and lifetime policy is Breenix's.
 
 pub mod wire;
 pub mod commands;
@@ -100,7 +100,7 @@ impl Profile {
         else if self.rgba & (SUPPORTED | RENDER) != SUPPORTED | RENDER { Some(abi::RGBA_RENDER) }
         else if self.rgba & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some(abi::RGBA_SAMPLE) }
         else if self.r8 & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some(abi::R8_SAMPLE) }
-        else if self.width < 2560 || self.height < 2560 || self.screen_width < 2560 || self.screen_height < 1600 { Some(abi::TARGET_SIZE) }
+        else if self.width < 2560 || self.height < 1600 || self.screen_width < 2560 || self.screen_height < 1600 { Some(abi::TARGET_SIZE) }
         else { None }
     }
 }
@@ -121,7 +121,7 @@ impl Device {
         if !crate::platform_config::is_vmware() { return Err(Error::NoDevice); }
         let pci = pci::find_device(wire::VENDOR, wire::DEVICE).ok_or(Error::NoDevice)?;
         let bar = pci.bars[0];
-        if bar.is_io || bar.address == 0 || bar.size < 4 * 85 { return Err(Error::DeviceFault); }
+        if bar.is_io || bar.address == 0 || bar.size < 4 * (wire::reg::IRQ_STATUS as u64 + 1) { return Err(Error::DeviceFault); }
         pci.enable_memory_space();
         pci.enable_bus_master();
         let registers = crate::memory::physical_memory_offset().as_u64() + bar.address;

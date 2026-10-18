@@ -1,4 +1,4 @@
-//! Byte-sized SVGA3D packets from VMware's published interface structures.
+//! Byte-sized SVGA3D packets; source pins and disposition are recorded in gpu-core.md (#1913).
 
 use alloc::vec::Vec;
 use super::{memory::PageTree, wire::{self, cmd}};
@@ -36,15 +36,15 @@ impl Commands {
     pub fn update_surface(&mut self, id: u32) { self.command(cmd::UPDATE_SURFACE, &[id]); }
     pub fn readback_surface(&mut self, id: u32) { self.command(cmd::READBACK_SURFACE, &[id]); }
     pub fn context(&mut self, id: u32, mob: u32) {
-        self.command(cmd::DEFINE_CONTEXT, &[id]);
-        self.command(cmd::BIND_CONTEXT, &[id, mob, 0]);
+        self.command(cmd::DX_DEFINE_CONTEXT, &[id]);
+        self.command(cmd::DX_BIND_CONTEXT, &[id, mob, 0]);
     }
     pub fn cotable(&mut self, ctx: u32, mob: u32, kind: u32) {
         self.command(cmd::SET_COTABLE, &[ctx, mob, kind, 0]);
     }
     pub fn destroy_context(&mut self, id: u32) {
-        self.command(cmd::BIND_CONTEXT, &[id, wire::INVALID, 0]);
-        self.command(cmd::DESTROY_CONTEXT, &[id]);
+        self.command(cmd::DX_BIND_CONTEXT, &[id, wire::INVALID, 0]);
+        self.command(cmd::DX_DESTROY_CONTEXT, &[id]);
     }
     pub fn screen(&mut self, width: u32, height: u32) {
         self.command(cmd::DEFINE_SCREEN, &[0, width, height, 0, 0, 1, 96]);

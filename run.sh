@@ -66,6 +66,7 @@ PARALLELS_VM="breenix-dev"
 PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
+GPU_SVGA_EXPERIMENTAL=false
 SUITE=""
 ONLY=""
 PROBE=false
@@ -117,6 +118,10 @@ while [[ $# -gt 0 ]]; do
         --vmware)
             VMWARE=true
             ARCH="arm64"
+            shift
+            ;;
+        --gpu-svga-experimental)
+            GPU_SVGA_EXPERIMENTAL=true
             shift
             ;;
         --test)
@@ -206,6 +211,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --parallels                Build and boot on Parallels Desktop VM"
             echo "  --parallels --test [N]     Build, boot, wait N sec (default 35), screenshot, exit"
             echo "  --vmware                   Build and boot on VMware Fusion VM"
+            echo "  --gpu-svga-experimental    VMware: build the unfinished SVGA core profile"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --accel hvf|tcg            ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)"
@@ -366,6 +372,14 @@ if [ "$TESTS" = true ]; then
     fi
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
+fi
+
+if [ "$GPU_SVGA_EXPERIMENTAL" = true ]; then
+    if [ "$VMWARE" != true ] || [ "$PARALLELS" = true ] || [ "$NO_BUILD" = true ]; then
+        echo "--gpu-svga-experimental requires --vmware and a fresh kernel build"
+        exit 2
+    fi
+    KERNEL_FEATURE_ARGS+=(--features gpu_svga_experimental)
 fi
 
 # Keep host launch policy beside this run's serial, including successful catch-up overrides.
