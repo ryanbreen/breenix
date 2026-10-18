@@ -31,8 +31,8 @@ publish() {
     published && return 0
     local tmp
     tmp="$(mktemp -d "$CACHE/qemu-ui-build.XXXXXX")" || return 1
-    if taskpolicy -b cc -O2 -Wall -Werror -dynamiclib -o "$tmp/qemu-ui-threads.dylib" "$HERE/qemu-ui-threads.c" &&
-        taskpolicy -b cc -O2 -Wall -Werror -o "$tmp/qemu-ui-launch" "$HERE/qemu-ui-launch.c" &&
+    if "$HERE/build-background.sh" cc -O2 -Wall -Werror -dynamiclib -o "$tmp/qemu-ui-threads.dylib" "$HERE/qemu-ui-threads.c" &&
+        "$HERE/build-background.sh" cc -O2 -Wall -Werror -o "$tmp/qemu-ui-launch" "$HERE/qemu-ui-launch.c" &&
         mkdir -p "$DIR" &&
         cp "$HERE/qemu-unclamp.py" "$DIR/qemu-unclamp.py" &&
         mv -f "$tmp/qemu-ui-threads.dylib" "$DIR/qemu-ui-threads.dylib" &&
