@@ -1536,10 +1536,19 @@ pub fn collect_strand_census(
                 }
             }
 
+            // A queued thread that another CPU is still switching away from
+            // cannot run until that CPU clears its mark (#1785), so a mark
+            // that stays set leaves it stranded on its queue.
+            #[cfg(target_arch = "aarch64")]
+            let saving = crate::arch_impl::aarch64::switch_save::is_saving(tid);
+            #[cfg(not(target_arch = "aarch64"))]
+            let saving = false;
+
             let reachability_dimensions = [current, queued, previous, pending_next, deferred];
-            if reachability_dimensions
-                .into_iter()
-                .any(|reachable| reachable)
+            if !saving
+                && reachability_dimensions
+                    .into_iter()
+                    .any(|reachable| reachable)
             {
                 continue;
             }
@@ -2668,7 +2677,7 @@ fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
     .unwrap_or_else(|error| panic!("failed to create EC0 fault injector: {}", error));
     let thread_id = thread.id();
     EC0_FAULT_INJECT_TID.store(thread_id, Ordering::Release);
-    scheduler.threads.push(Box::new(thread));
+    scheduler.admit_thread(Box::new(thread));
     scheduler.per_cpu_queues[0].push_back(thread_id);
 }
 
@@ -3017,8 +3026,8 @@ impl Scheduler {
             unsafe { core::mem::transmute::<_, [VecDeque<u64>; MAX_CPUS]>(arr) }
         };
 
-        let scheduler = Self {
-            threads: alloc::vec![idle_thread],
+        let mut scheduler = Self {
+            threads: alloc::vec::Vec::new(),
             per_cpu_queues,
             cpu_state,
             timer_heap: TimerHeaps::new(),
@@ -3031,6 +3040,7 @@ impl Scheduler {
             #[cfg(target_arch = "x86_64")]
             unpinned_free: alloc::vec::Vec::new(),
         };
+        scheduler.admit_thread(idle_thread);
 
         scheduler
     }
@@ -3163,7 +3173,7 @@ impl Scheduler {
             return;
         }
         let idle_id = idle_thread.id();
-        self.threads.push(idle_thread);
+        self.admit_thread(idle_thread);
         #[cfg(target_arch = "x86_64")]
         if rq::is_live(self) {
             if let Some(thread) = self.threads.last_mut() {
@@ -3210,6 +3220,30 @@ impl Scheduler {
         state.last_dispatch_promoted = promoted;
     }
 
+    /// Add `thread` to the thread list, first growing each of the MAX_CPUS
+    /// per-CPU ready queues to hold one entry per thread in the list (#1785,
+    /// ruling S12). A queue holds distinct listed threads, and reaping takes a
+    /// thread off the queues with its row, so a queue does not outgrow this
+    /// reservation and the switch-time requeue
+    /// (`requeue_thread_after_save_onto`, which asserts it) does not allocate.
+    /// No queue is shrunk.
+    /// claim-lint:ok: 11 of 11 adds to `threads` call this function; the one
+    /// remaining `threads.push` in kernel/src is its own, counted by grep
+    /// x86_64 does not reserve: its spawns reach a queue before this list
+    /// (`rq::splice_spawned`), and the asserting requeue is ARM64-only.
+    fn admit_thread(&mut self, thread: Box<Thread>) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let admitted = self.threads.len() + 1;
+            for queue in self.per_cpu_queues.iter_mut() {
+                if queue.capacity() < admitted {
+                    queue.reserve(admitted - queue.len());
+                }
+            }
+        }
+        self.threads.push(thread);
+    }
+
     /// Queue a new thread and return the CPU whose queue it went to.
     pub fn add_thread(&mut self, thread: Box<Thread>) -> usize {
         self.add_thread_inner(thread, false)
@@ -3226,7 +3260,7 @@ impl Scheduler {
     fn add_thread_on_cpu_for_test(&mut self, thread: Box<Thread>, cpu: usize) {
         debug_assert!(cpu < MAX_CPUS);
         let thread_id = thread.id();
-        self.threads.push(thread);
+        self.admit_thread(thread);
         self.per_cpu_queues[cpu].push_back(thread_id);
     }
 
@@ -3235,7 +3269,7 @@ impl Scheduler {
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         let cpu_affinity = thread.cpu_affinity;
-        self.threads.push(thread);
+        self.admit_thread(thread);
         // Indexed before it is queued; the queue's CPU owns it, which the
         // release of this lock records.
         #[cfg(target_arch = "x86_64")]
@@ -3409,7 +3443,7 @@ impl Scheduler {
         // Mark thread as running
         thread.state = ThreadState::Running;
         thread.has_started = true;
-        self.threads.push(thread);
+        self.admit_thread(thread);
         let cpu = Self::current_cpu_id();
         #[cfg(target_arch = "x86_64")]
         if rq::is_live(self) {
@@ -3473,14 +3507,22 @@ impl Scheduler {
     ///
     /// Another CPU names a thread in `pending_next` from its selection to the
     /// commit of the switch to it, and in `current_thread` from that commit
-    /// until the commit of its switch away. On ARM64 it then names the thread
-    /// in `previous_thread` until its next exception entry drains the deferred
-    /// requeue: until then it is still on the thread's kernel stack, in the
-    /// exception frame it returns through. The wake paths decline to queue a
-    /// thread in that interval. A second CPU that ran the thread in any of the
-    /// three would run it on the same kernel stack, from a context its first
-    /// CPU has not finished with. Idle threads are named only by their own CPU.
+    /// until the commit of its switch away. On ARM64 an exception-return switch
+    /// that cannot stage its frame then names the thread in `previous_thread`
+    /// until its next exception entry drains the deferred requeue: until then
+    /// it is still on the thread's kernel stack, in the exception frame it
+    /// returns through. The wake paths decline to queue a thread in that
+    /// interval. A switch that stages its frame queues the thread at once and
+    /// marks it in `switch_save` instead, until the return path has left the
+    /// stack; selection skips a marked thread. A second CPU that ran the thread
+    /// in any of the four would run it on the same kernel stack, from a context
+    /// its first CPU has not finished with. Idle threads are named only by
+    /// their own CPU.
     fn foreign_owner(&self, thread_id: u64, cpu: usize) -> Option<(usize, &'static str)> {
+        #[cfg(target_arch = "aarch64")]
+        let saving_on = crate::arch_impl::aarch64::switch_save::saving_cpu(thread_id);
+        #[cfg(not(target_arch = "aarch64"))]
+        let saving_on: Option<usize> = None;
         let owner = (0..MAX_CPUS).filter(|&other| other != cpu).find_map(|other| {
             let state = &self.cpu_state[other];
             if state.current_thread == Some(thread_id) {
@@ -3489,6 +3531,8 @@ impl Scheduler {
                 Some((other, "is being switched in"))
             } else if state.previous_thread == Some(thread_id) {
                 Some((other, "is being switched out"))
+            } else if saving_on == Some(other) {
+                Some((other, "is still being saved"))
             } else {
                 None
             }
@@ -3667,6 +3711,11 @@ impl Scheduler {
         if let Some(owner) = x86_stack_owner_elsewhere(n, current_cpu) {
             self.per_cpu_queues[steal_cpu].insert(index, n);
             *stack_waits |= 1 << owner;
+            return None;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if crate::arch_impl::aarch64::switch_save::skip_selection(n) {
+            self.per_cpu_queues[steal_cpu].insert(index, n);
             return None;
         }
         #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -4469,6 +4518,12 @@ impl Scheduler {
                 let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
                     break;
                 };
+                // Another CPU is still leaving this thread's kernel stack
+                // (#1785): leave it queued for a later selection (ruling S8).
+                if crate::arch_impl::aarch64::switch_save::skip_selection(n) {
+                    self.per_cpu_queues[current_cpu].push_back(n);
+                    continue;
+                }
                 let (terminated, owner_pid) = self
                     .get_thread(n)
                     .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -4499,6 +4554,10 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() else {
                         break;
                     };
+                    if crate::arch_impl::aarch64::switch_save::skip_selection(n) {
+                        self.per_cpu_queues[steal_cpu].push_back(n);
+                        continue;
+                    }
                     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                     if retain_cpu_affine_test_thread(
                         &mut self.per_cpu_queues[steal_cpu],
@@ -4625,6 +4684,10 @@ impl Scheduler {
                     let Some(n) = self.per_cpu_queues[current_cpu].pop_front() else {
                         break;
                     };
+                    if crate::arch_impl::aarch64::switch_save::skip_selection(n) {
+                        self.per_cpu_queues[current_cpu].push_back(n);
+                        continue;
+                    }
                     let (terminated, owner_pid) = self
                         .get_thread(n)
                         .map(|thread| (thread.state == ThreadState::Terminated, thread.owner_pid))
@@ -4646,6 +4709,10 @@ impl Scheduler {
                         let queued = self.per_cpu_queues[steal_cpu].len();
                         self.promote_best_of(steal_cpu, queued);
                         if let Some(n) = self.per_cpu_queues[steal_cpu].pop_front() {
+                            if crate::arch_impl::aarch64::switch_save::skip_selection(n) {
+                                self.per_cpu_queues[steal_cpu].push_back(n);
+                                continue;
+                            }
                             #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
                             if retain_cpu_affine_test_thread(
                                 &mut self.per_cpu_queues[steal_cpu],
@@ -4829,7 +4896,7 @@ impl Scheduler {
     /// to prevent other CPUs from dispatching it with stale state.
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
-        self.requeue_thread_after_save_onto(thread_id, Self::current_cpu_id());
+        self.requeue_thread_after_save_onto(thread_id, true, Self::current_cpu_id());
     }
 
     /// The CPU that owns the per-CPU stack slot a ready thread's saved kernel
@@ -4898,11 +4965,41 @@ impl Scheduler {
         if cpu >= MAX_CPUS {
             return;
         }
-        self.requeue_thread_after_save_onto(thread_id, cpu);
+        self.requeue_thread_after_save_onto(thread_id, true, cpu);
     }
 
+    /// Whether `requeue_switched_out` can queue `thread_id` here without a
+    /// reschedule IPI. Not for a per-CPU worker pinned to another CPU: the pin
+    /// guard places it on its home CPU's queue and sends that CPU an IPI, so
+    /// its switch keeps the deferred requeue instead.
     #[cfg(target_arch = "aarch64")]
-    fn requeue_thread_after_save_onto(&mut self, thread_id: u64, target_cpu: usize) {
+    pub fn requeues_without_ipi(&self, thread_id: u64) -> bool {
+        let cpu = Self::current_cpu_id();
+        !self
+            .get_thread(thread_id)
+            .and_then(|thread| thread.cpu_affinity)
+            .is_some_and(|pin| pin.per_cpu_worker && pin.cpu != cpu)
+    }
+
+    /// Queue the thread an exception-return switch on this CPU is leaving, on
+    /// this CPU's queue, with no reschedule IPI (#1785, ruling S7): the
+    /// exception-return path touches no device. Another CPU finds the thread
+    /// at its next tick or scheduling point, once the thread's save mark is
+    /// clear. The caller has checked `requeues_without_ipi`.
+    #[cfg(target_arch = "aarch64")]
+    pub fn requeue_switched_out(&mut self, thread_id: u64) {
+        self.requeue_thread_after_save_onto(thread_id, false, Self::current_cpu_id());
+    }
+
+    /// The requeue after context save. With `wake_idle`, a thread it puts on
+    /// a queue is announced to the idle CPUs by a reschedule IPI.
+    #[cfg(target_arch = "aarch64")]
+    fn requeue_thread_after_save_onto(
+        &mut self,
+        thread_id: u64,
+        wake_idle: bool,
+        target_cpu: usize,
+    ) {
         // Don't requeue idle threads (they are never in the ready queue)
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
             return;
@@ -4971,6 +5068,14 @@ impl Scheduler {
                     .get_thread_mut(thread_id)
                     .is_some_and(|thread| core::mem::take(&mut thread.sched.head_on_requeue));
             if !self.retain_cpu_affine_thread(thread_id, target_cpu) {
+                // The context switch may not allocate (ruling S12): the
+                // queue's storage was reserved when the thread was admitted
+                // (`admit_thread`), and this fails if the push would grow it.
+                let queue = &self.per_cpu_queues[target_cpu];
+                assert!(
+                    queue.len() < queue.capacity(),
+                    "requeue would grow a ready queue past its admission reservation"
+                );
                 if holds_head {
                     self.per_cpu_queues[target_cpu].push_front(thread_id);
                 } else {
@@ -4978,8 +5083,10 @@ impl Scheduler {
                 }
             }
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
-            // Send IPI to wake an idle CPU to pick up the requeued thread
-            self.send_resched_ipi();
+            if wake_idle {
+                // Send IPI to wake an idle CPU to pick up the requeued thread
+                self.send_resched_ipi();
+            }
         } else {
             ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
         }
@@ -7183,7 +7290,7 @@ impl Scheduler {
         // so the refusal site can attribute the 3 refusals below to the probe.
         PIN_GUARD_ORACLE_PROBE_TID.store(tid, Ordering::Relaxed);
         thread.set_ready();
-        self.threads.push(thread);
+        self.admit_thread(thread);
 
         let census_before = (
             PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
@@ -7204,7 +7311,7 @@ impl Scheduler {
 
         // Leg 2 -- census site 7: a requeue after context save, named onto this
         // CPU by its caller.
-        self.requeue_thread_after_save_onto(tid, here);
+        self.requeue_thread_after_save_onto(tid, true, here);
         let requeue = self.pin_guard_oracle_where(tid);
         self.remove_from_ready_queue(tid);
 
@@ -8334,10 +8441,10 @@ pub fn preempt_schedule_irq() {
 /// restores the caller's prior DAIF/IF state on the way out, so a caller that
 /// had already masked is unaffected.
 ///
-/// Callers: 0 in this tree today, so `--gc-sections` drops this from the
-/// shipped kernel. Its live caller is `task::idle_sleep`'s idle-block refusal,
-/// which arrives in slice 3; landing the repair first means that caller arrives
-/// onto a masked function instead of re-deriving R153.
+/// Callers: the GPU PCI lock's sleep check, which refuses to put an idle thread
+/// to sleep (#1785). `task::idle_sleep`'s idle-block refusal is to call it
+/// too, in slice 3. The GPU PCI driver is built for AArch64 only, so x86_64
+/// has no caller until then, and the dead-code allowance is scoped to it.
 ///
 /// Review round 3. The mask delivers a SECOND repair beyond the self-deadlock
 /// R153 named. The comparison below reads the CPU index twice --
@@ -8348,13 +8455,7 @@ pub fn preempt_schedule_irq() {
 /// pair that did not coexist. Masked, that window does not exist. No such
 /// mis-answer has been observed; this is a window closed by construction, not
 /// a bug reproduced and fixed.
-///
-/// Review round 2, finding m5. `try_schedule` was deleted outright for having
-/// no caller on `origin/main` and no named future one. This function differs
-/// in the one fact that matters: it has a named future caller already,
-/// `task::idle_sleep` per the paragraph above, so `#[allow(dead_code)]` here is a
-/// placeholder for slice 3, not a hiding place for incomplete work.
-#[allow(dead_code)]
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 pub fn is_current_idle_thread() -> Option<bool> {
     without_interrupts(|| {
         if let Some(scheduler_lock) = try_lock_scheduler() {
@@ -8530,6 +8631,22 @@ where
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
     })
+}
+
+/// An exec by a thread other than its process's first one moved the thread's
+/// row to the process's ID, `pid` (`ProcessManager::exec_take_over_group`):
+/// the thread's scheduler copy, its kernel stack and its index entry name
+/// that row from here on. Called by the thread itself, in that exec, once
+/// PROCESS_MANAGER is released.
+pub fn adopt_exec_owner(thread_id: u64, pid: u64) {
+    with_thread_mut(thread_id, |thread| {
+        thread.owner_pid = Some(pid);
+        if let Some(stack) = thread.kernel_stack_allocation.as_mut() {
+            stack.set_owner_pid(Some(pid));
+        }
+        #[cfg(target_arch = "x86_64")]
+        rq::publish_owner(thread);
+    });
 }
 
 static CREATION_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
@@ -10394,7 +10511,7 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
     dying.set_terminated();
     dying.owner_pid = Some(DYING_PID);
     let dying_id = dying.id();
-    sched.threads.push(dying);
+    sched.admit_thread(dying);
     sched.cpu_state[other].current_thread = Some(dying_id);
 
     let mut running_id = None;
@@ -10402,7 +10519,7 @@ fn teardown_token_pick(cpu: usize, running_requeued: bool) -> Result<(), &'stati
         let mut running = boot_test_thread(ThreadPrivilege::Kernel)?;
         running.set_running();
         let id = running.id();
-        sched.threads.push(running);
+        sched.admit_thread(running);
         sched.cpu_state[cpu].current_thread = Some(id);
         sched.per_cpu_queues[cpu].push_back(id);
         running_id = Some(id);
@@ -10467,7 +10584,7 @@ fn switched_out_owner() -> Result<(), &'static str> {
     let mut sched = Scheduler::new(idle);
     let thread = boot_test_thread(ThreadPrivilege::User)?;
     let tid = thread.id();
-    sched.threads.push(thread);
+    sched.admit_thread(thread);
 
     if sched.foreign_owner(tid, SELECTING).is_some() {
         return Err("a thread no CPU names was reported owned by another CPU");

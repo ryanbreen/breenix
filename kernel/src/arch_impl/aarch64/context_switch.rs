@@ -1545,6 +1545,13 @@ aarch64_ret_to_kernel_context:
     ldp x29, x30, [x0, #232]
     ldr x2, [x0, #248]
     mov sp, x2
+    // SP has left the outgoing thread's kernel stack, so clear the mark an
+    // exception-return switch set on that thread (#1785); after an inline
+    // switch it is already clear. x19-x29 survive the call; the resume PC
+    // and x30 wait below the incoming SP, which is dead stack.
+    stp x1, x30, [sp, #-16]!
+    bl aarch64_complete_exception_switch
+    ldp x1, x30, [sp], #16
     msr daifclr, #3
     isb
     RESUME_PC_EL1_OK x1, x2, x3, x16, 1f
@@ -1848,7 +1855,10 @@ impl<T> Deref for CacheLineAligned<T> {
 /// Solution: store the thread ID to requeue in per-CPU data. Process it
 /// at the START of the next check_need_resched_and_switch_arm64 call,
 /// which runs on a different stack (the new thread's kernel stack or
-/// the boot stack after ERET).
+/// the boot stack after ERET). A switch that stages its frame off the old
+/// stack queues the thread at once instead, marked in `switch_save` until
+/// the return path has left that stack (#1785); this slot remains for a
+/// switch that cannot stage its frame.
 ///
 /// Value 0 = no pending requeue. Non-zero = thread ID to requeue.
 static DEFERRED_REQUEUE: CacheLineAligned<[AtomicU64; 8]> = CacheLineAligned([
@@ -5256,11 +5266,17 @@ pub extern "C" fn aarch64_resume_user_time(frame: &Aarch64ExceptionFrame) {
 /// This is called from the exception return path. The ENTIRE scheduling decision,
 /// context save, and context restore happen under a SINGLE scheduler lock hold,
 /// eliminating TOCTOU races from the previous 15-22 separate lock acquisitions.
+///
+/// Returns 0 when the frame returns to the thread it came from. After a switch
+/// it returns the address of the dispatched frame staged on this CPU's
+/// scheduler stack: the caller moves SP there, off the outgoing thread's kernel
+/// stack, and calls `aarch64_complete_exception_switch` to clear the mark on
+/// that thread, which the switch has already requeued (#1785).
 #[no_mangle]
 pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
-) {
+) -> u64 {
     // The syscall return masks just before this call; the IRQ return is
     // already counted from its entry.
     super::irq_mask_account::opened();
@@ -5292,7 +5308,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // This entry proves an earlier handoff completed, but the current handoff
@@ -5372,7 +5388,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // Check if reschedule is needed (atomic, clears the flag)
@@ -5445,7 +5461,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 )
             ))]
             crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-            return;
+            return 0;
         }
     }
 
@@ -5469,7 +5485,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 )
             ))]
             crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-            return;
+            return 0;
         }
     };
 
@@ -5558,7 +5574,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // 3. Fix stale cpu_state if needed (atomically with the scheduling decision)
@@ -5594,7 +5610,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     let (old_id, new_id, should_requeue_old) = schedule_result.unwrap();
@@ -5626,7 +5642,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // 5. Trace context switch + queue state + increment watchdog counter
@@ -5726,20 +5742,34 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // 7. Commit cpu_state to reflect the new thread as "current" on this CPU
     sched.commit_cpu_state_after_save(new_id);
 
-    // Mark the old thread as "switching out" — its kernel stack is still in use
-    // by this CPU until ERET completes. This prevents wakeup paths (unblock,
-    // wake_expired_timers, etc.) from adding the old thread to the ready_queue,
-    // which would allow another CPU to dispatch it while this CPU still has
-    // stack frames on the same kernel stack, causing register/stack corruption.
-    // Cleared at the start of the NEXT context switch on this CPU (step 1).
-    if !sched.is_idle_thread_inner(old_id) {
+    // The old thread's kernel stack stays in use by this CPU until the return
+    // path leaves it: the exception frame the return path reads lives there.
+    // When the dispatched frame can be staged off that stack (step 10), the
+    // old thread is marked as still being saved and requeued now, with no
+    // reschedule IPI. Another CPU finds it at its next tick or scheduling
+    // point and skips it while the mark is set; the return path clears the
+    // mark without a lock as soon as SP has left the stack (#1785). A thread
+    // that cannot be queued without an IPI keeps the deferred requeue.
+    let staged_frame =
+        staged_frame_slot().filter(|_| is_old_idle || sched.requeues_without_ipi(old_id));
+    if staged_frame.is_some() {
+        if !is_old_idle {
+            super::switch_save::mark(cpu_id, old_id);
+            sched.requeue_switched_out(old_id);
+        }
+    } else if !is_old_idle {
+        // Mark the old thread as "switching out". This prevents wakeup paths
+        // (unblock, wake_expired_timers, etc.) from adding it to the
+        // ready_queue, which would allow another CPU to dispatch it while
+        // this CPU still has stack frames on the same kernel stack, causing
+        // register/stack corruption. Cleared by the next exception on this
+        // CPU (step 1).
         sched.cpu_state[cpu_id].previous_thread = Some(old_id);
     }
 
-    // 8. Store deferred requeue for NEXT switch
-    //    The exception frame lives on the old thread's kernel stack and must
-    //    not be overwritten until after ERET.
-    if cpu_id < DEFERRED_REQUEUE.len() {
+    // 8. A switch that cannot stage its frame stores the deferred requeue for
+    //    this CPU's next exception, which runs on another stack.
+    if staged_frame.is_none() && cpu_id < DEFERRED_REQUEUE.len() {
         let previous = DEFERRED_REQUEUE[cpu_id].swap(old_id, Ordering::AcqRel);
         let old_thread = sched.get_thread(old_id);
         trace_defer_requeue(TRACE_DEFER_REQUEUE_STORE, old_id, previous, old_thread);
@@ -6018,6 +6048,75 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         )
     ))]
     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
+
+    // 10. Stage the finished frame off the outgoing thread's kernel stack. The
+    //     return path restores from the copy, and clears the outgoing thread's
+    //     mark as soon as SP stands on it.
+    match staged_frame {
+        Some(staged) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    frame as *const Aarch64ExceptionFrame,
+                    staged as *mut Aarch64ExceptionFrame,
+                    1,
+                );
+            }
+            staged
+        }
+        None => 0,
+    }
+}
+
+/// Where an exception-return switch stages the dispatched frame: the top of
+/// this CPU's scheduler stack. A CPU already on that stack gets no address,
+/// and its switch leaves the outgoing thread deferred.
+///
+/// Until this CPU stops reading the frame, the frame lives on the outgoing
+/// thread's kernel stack, so another CPU must not run the thread: it would
+/// overwrite the frame. The thread used to stay in `DEFERRED_REQUEUE` until
+/// this CPU's next exception, which a CPU spinning with interrupts masked does
+/// not take until the spin ends, stranding the thread for as long as the spin
+/// lasts (#1785). The return path restores from the staged copy instead, and
+/// `aarch64_complete_exception_switch` clears the thread's mark once SP stands
+/// on it.
+///
+/// Interrupts stay masked from the switch to the ERET, and the inline scheduler
+/// path uses this stack only inside its own masked transaction, so the stack
+/// is free. A CPU somehow already standing on it keeps the deferred
+/// requeue rather than overwrite the frames it is running on.
+///
+/// The pivot onto the copy is the return path's `mov sp` in `boot.S` and
+/// `syscall_entry.S`, so the destination goes through the custody predicate
+/// directly rather than through this file's `pivot_destination` census.
+#[track_caller]
+fn staged_frame_slot() -> Option<u64> {
+    const STAGED_FRAME_BYTES: u64 =
+        (core::mem::size_of::<Aarch64ExceptionFrame>() as u64 + 15) & !15;
+    let cpu = CpuId::current();
+    let current_sp = read_current_sp();
+    let top = crate::arch_impl::aarch64::percpu::percpu_pivot_top_for(
+        cpu,
+        scheduler_stack_top(cpu),
+        PivotHalf::Scheduler,
+        core::panic::Location::caller(),
+    );
+    let bottom = top.saturating_sub(super::constants::PERCPU_SCHED_STACK_SIZE);
+    if current_sp >= bottom && current_sp <= top {
+        return None;
+    }
+    Some(top - STAGED_FRAME_BYTES)
+}
+
+/// Clear this CPU's mark on the thread it just switched away from, once SP no
+/// longer stands on that thread's kernel stack (#1785). One release store: no
+/// lock and no device access, as the exception return tails require.
+///
+/// Called by the exception return paths after they move SP to the staged
+/// frame, and by `aarch64_ret_to_kernel_context` once SP stands on the
+/// incoming context. Interrupts are masked.
+#[no_mangle]
+pub extern "C" fn aarch64_complete_exception_switch() {
+    super::switch_save::clear(Aarch64PerCpu::cpu_id() as usize);
 }
 
 /// Final scheduler handoff for an exiting AArch64 thread.

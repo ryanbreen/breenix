@@ -167,6 +167,10 @@ static PRESENTATION_SUSPENDED: AtomicBool = AtomicBool::new(false);
 static PRESENTING: AtomicU32 = AtomicU32::new(0);
 /// A switch is pending: the render thread passes at its short interval.
 static SWITCHING: AtomicBool = AtomicBool::new(false);
+/// A switch a key asked for, for the render thread to request: the terminal
+/// (1-based) in the low byte and the chord's index in `keymap::CHORDS` above
+/// it; 0 while no key has asked. A later key replaces one not yet taken.
+static KEY_SWITCH: AtomicU32 = AtomicU32::new(0);
 /// Threads blocked in `VT_WAITACTIVE`.
 static WAITACTIVE: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
 
@@ -645,6 +649,33 @@ pub fn activate(vt: u64, source: Source) -> Result<(), i32> {
         return Err(ENXIO);
     }
     with_terminals(|terminals, effects| terminals.request(vt as usize - 1, source, effects))
+}
+
+/// A key asks for a switch to terminal `vt` (1-based). Interrupt-safe: the
+/// render thread makes the request (`take_key_switch`), so the switch, its log
+/// line and any signal happen in thread context.
+pub(super) fn key_switch(vt: usize, chord: u8) {
+    KEY_SWITCH.store(vt as u32 | (chord as u32) << 8, Ordering::Release);
+}
+
+/// The terminal (1-based) a key asked for that the render thread has not taken yet.
+pub(super) fn key_switch_pending() -> Option<usize> {
+    match KEY_SWITCH.load(Ordering::Acquire) & 0xff {
+        0 => None,
+        vt => Some(vt as usize),
+    }
+}
+
+/// Make the switch request a key left, from the render thread. A refusal is
+/// logged by the request (section 4.4); the key is consumed either way.
+pub(super) fn take_key_switch() {
+    let switch = KEY_SWITCH.swap(0, Ordering::AcqRel);
+    if switch == 0 {
+        return;
+    }
+    let (vt, chord) = ((switch & 0xff) as usize, (switch >> 8) as usize);
+    let source = Source::Key(super::keymap::CHORDS[chord]);
+    let _ = with_terminals(|terminals, effects| terminals.request(vt - 1, source, effects));
 }
 
 /// `VT_WAITACTIVE`: block until terminal `vt` (1-based) is the foreground and

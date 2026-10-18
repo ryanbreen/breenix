@@ -788,17 +788,22 @@ include!("vt_support.rs");
 
 #[path = "../../../kernel/src/tty/keyboard_input.rs"]
 mod keyboard_input;
+#[path = "../../../kernel/src/console/keymap.rs"]
+pub mod keymap;
+#[path = "../../../kernel/src/tty/input_source.rs"]
+pub mod input_source;
+use input_source::InputSource;
 
 #[test]
 fn deferred_keys_stay_ordered_through_discipline_contention() {
     let mut keys = keyboard_input::PendingInput::new();
     let bytes = b"ab\x7f";
     for &byte in bytes {
-        keys.push(byte);
+        assert!(keys.push(byte, InputSource::Other));
     }
-    keys.drain(|_| false);
+    keys.drain(|_, _| false);
     let mut received = Vec::new();
-    keys.drain(|byte| {
+    keys.drain(|byte, _| {
         received.push(byte);
         true
     });
@@ -820,9 +825,9 @@ fn deferred_keys_stay_ordered_through_discipline_contention() {
     assert_eq!(discipline.read(&mut edited), Ok(2));
     assert_eq!(&edited[..2], b"a\n");
     for &byte in b"x\x03cd" {
-        keys.push(byte);
+        assert!(keys.push(byte, InputSource::Other));
     }
-    keys.drain(|byte| {
+    keys.drain(|byte, _| {
         if let Some(signal) = discipline.input_char(byte, &mut |_| {}) {
             signals.push(signal);
         }
@@ -834,7 +839,7 @@ fn deferred_keys_stay_ordered_through_discipline_contention() {
     let mut line = [0; 8];
     assert_eq!(discipline.read(&mut line), Ok(3));
     assert_eq!(&line[..3], b"cd\n");
-    keys.drain(|_| panic!("processed twice"));
+    keys.drain(|_, _| panic!("processed twice"));
 }
 
 #[test]

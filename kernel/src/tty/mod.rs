@@ -11,6 +11,7 @@ pub mod driver;
 pub mod ioctl;
 mod input_activity;
 pub mod input_clock;
+pub mod input_source;
 pub mod jobctl;
 pub mod line_discipline;
 pub mod pty;
@@ -25,10 +26,12 @@ pub use line_discipline::LineDiscipline;
 #[allow(unused_imports)]
 pub use termios::Termios;
 
+pub use input_source::InputSource;
+
 // Re-export driver functions for external use
 // Allow unused - these are public API re-exports for keyboard interrupt integration
 #[allow(unused_imports)]
-pub use driver::{console, push_char, push_char_nonblock, write_output, TtyDevice};
+pub use driver::{console, push_char, push_char_nonblock, push_char_from, push_char_nonblock_from, write_output, TtyDevice};
 
 /// Linux's read(2) moves terminal input to the caller this many bytes at a
 /// time (tty_io.c, iterate_tty_read).

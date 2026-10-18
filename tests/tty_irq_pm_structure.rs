@@ -16,9 +16,10 @@
 //!   file as the functions whose names end in `_nonblock` -- its own naming
 //!   convention for the interrupt-context twins, 6 of them today -- so a
 //!   seventh one added later is swept in without an edit here;
-//! * the IRQ handlers are read out of `kernel/src` as the functions that call
-//!   `tty::push_char_nonblock`, 4 of them today, so a fifth input driver is
-//!   swept in too.
+//! * the input entries are read out of `kernel/src` as the functions that call
+//!   `tty::push_char_nonblock` or `push_char_nonblock_from`, or report a key to
+//!   the input core (`input::report_key`), whose console consumer pushes the
+//!   bytes: at least 4 of them today, so another input driver is swept in too.
 //!
 //! The call graph inside `driver.rs` is walked only through `self.` and `Self::`
 //! receivers and unqualified calls. That restriction is deliberate and is the
@@ -606,8 +607,17 @@ fn validate_blocking_accessors_are_counted(process: &str) -> Result<(), String> 
     }
 }
 
-/// #821 rule 6. The 4 IRQ handlers that push a byte into the TTY take 0
-/// blocking process-manager acquisitions between them.
+/// The identifiers that make a function an input entry: it pushes a keyboard
+/// byte into the TTY, or reports a key to the input core, which pushes the bytes.
+const INPUT_ENTRY_CALLS: [&str; 3] = ["push_char_nonblock", "push_char_nonblock_from", "report_key"];
+
+fn is_input_entry(body: &str) -> bool {
+    INPUT_ENTRY_CALLS.iter().any(|call| has_identifier(body, call))
+}
+
+/// #821 rule 6. The input entries -- interrupt handlers, and the console's key
+/// consumer they reach through the input core -- take 0 blocking
+/// process-manager acquisitions between them.
 ///
 /// `kernel/src/test_framework/` is excluded by name and on purpose: the #821
 /// oracle drives the same entry while deliberately holding that lock, which is
@@ -621,7 +631,7 @@ fn validate_tty_irq_handlers(sources: &[(String, String)]) -> Result<(), String>
         }
         for span in function_spans(text) {
             let body = &text[span.open..=span.close];
-            if !has_identifier(body, "push_char_nonblock") {
+            if !is_input_entry(body) {
                 continue;
             }
             callers += 1;
@@ -636,9 +646,8 @@ fn validate_tty_irq_handlers(sources: &[(String, String)]) -> Result<(), String>
     }
     if callers < 4 {
         return Err(format!(
-            "found {callers} interrupt-side callers of tty::push_char_nonblock; this rule was \
-             written against 4, and a census that fell below that is a rule that stopped \
-             looking"
+            "found {callers} input entries; this rule was written against at least 4, and a \
+             census that fell below that is a rule that stopped looking"
         ));
     }
     if failures.is_empty() {
@@ -898,17 +907,12 @@ fn deliberately_broken_copies_redden_the_rules() {
                 && !path.starts_with("kernel/src/test_framework/")
                 && function_spans(text)
                     .into_iter()
-                    .any(|span| has_identifier(&text[span.open..=span.close], "push_char_nonblock"))
+                    .any(|span| is_input_entry(&text[span.open..=span.close]))
         })
-        .expect("at least one interrupt-side caller of push_char_nonblock");
+        .expect("at least one input entry");
     let handler_name = function_spans(&handler_file.1)
         .into_iter()
-        .find(|span| {
-            has_identifier(
-                &handler_file.1[span.open..=span.close],
-                "push_char_nonblock",
-            )
-        })
+        .find(|span| is_input_entry(&handler_file.1[span.open..=span.close]))
         .expect("the caller's enclosing function")
         .name;
     let mut mutated_sources = sources.clone();

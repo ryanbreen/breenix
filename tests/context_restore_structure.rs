@@ -2466,7 +2466,7 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     }
 
     let manager = repo_text("kernel/src/process/manager.rs");
-    validate_exec_sibling_guard_census(&manager)?;
+    validate_exec_group_guard_census(&manager)?;
     Ok(())
 }
 
@@ -2475,25 +2475,26 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
 /// disk content (`validate_clone_publication_lifecycle` always re-reads the
 /// real file internally, which would make in-memory mutation invisible to it).
 ///
-/// #721 B1: both architectures now guard exec against a live CLONE_VM sibling
-/// still holding the old CR3/TTBR0 (x86 gained this in the same round that
-/// reddened this census — #721 K5/B2), so every one of the four `exec_process`
-/// / `exec_process_with_argv` bodies must carry the same guard shape. This is
-/// a per-arch census only in that it labels which arch failed; the
-/// requirement itself is arch-uniform.
-fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
+/// Ruling S2 (#1781, #1718): an exec does not retire an address space another
+/// thread runs on. Each of the four `exec_process` /
+/// `exec_process_with_argv` bodies refuses to commit while another thread of
+/// its process runs (`exec_blocked_by_group`, an `if` guard returning `Err`)
+/// and hands the old address space to the rows that share it without sharing
+/// the thread group (`transfer_address_space`), both before it takes the old
+/// root. The argv bodies guard before they consume the prepared image, so an
+/// exec that has to wait keeps it. This is a per-arch census only in that it
+/// labels which arch failed; the requirement itself is arch-uniform.
+fn validate_exec_group_guard_census(manager: &str) -> Result<(), String> {
     let manager_bodies = module_function_bodies(manager);
-    let sibling_guard_definitions = manager_bodies
-        .get("find_live_clone_vm_sibling_holding_cr3")
+    let guard_definitions = manager_bodies
+        .get("exec_blocked_by_group")
         .map_or(0, Vec::len);
-    if sibling_guard_definitions != 1 {
+    if guard_definitions != 1 {
         return Err(format!(
-            "find_live_clone_vm_sibling_holding_cr3 must be defined exactly once, found {sibling_guard_definitions}"
+            "exec_blocked_by_group must be defined exactly once, found {guard_definitions}"
         ));
     }
 
-    // Issue #468 is open and this phase does not close it. Census this guard
-    // because it sits immediately adjacent to the exec-commit code this phase edits.
     let mut exec_bodies = Vec::new();
     for name in ["exec_process", "exec_process_with_argv"] {
         for body in manager_bodies.get(name).into_iter().flatten() {
@@ -2520,29 +2521,36 @@ fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
             "x86"
         };
         let body_mask = code_mask(body);
-        let sibling_guard_calls =
-            call_offsets(body, &body_mask, "find_live_clone_vm_sibling_holding_cr3");
-        if sibling_guard_calls.len() != 1 {
+        let guard_calls = call_offsets(body, &body_mask, "exec_blocked_by_group");
+        if guard_calls.len() != 1 {
             return Err(format!(
-                "{arch} {name} must call find_live_clone_vm_sibling_holding_cr3 exactly once, found {}",
-                sibling_guard_calls.len()
+                "{arch} {name} must call exec_blocked_by_group exactly once, found {}",
+                guard_calls.len()
             ));
         }
-        // argv images are prepared before taking PM; the sibling guard must
-        // precede consuming that image and retiring the old root on both arches.
-        let boundary = if name == "exec_process_with_argv" {
-            code_offsets(body, &body_mask, "prepared.take()")
-        } else {
-            code_offsets(body, &body_mask, "UnpublishedPageTable::new(")
-        };
+        let handoffs = call_offsets(body, &body_mask, "transfer_address_space");
+        if handoffs.len() != 1 {
+            return Err(format!(
+                "{arch} {name} must call transfer_address_space exactly once, found {}",
+                handoffs.len()
+            ));
+        }
         let retire = code_offsets(body, &body_mask, "process.page_table.take()");
-        if boundary.len() != 1 || retire.len() != 1 {
-            return Err(format!("{arch} {name} lacks its unique image/retirement boundaries"));
+        if retire.len() != 1 {
+            return Err(format!("{arch} {name} lacks its unique retirement boundary"));
         }
-        if sibling_guard_calls[0] >= boundary[0] || boundary[0] >= retire[0] {
+        if guard_calls[0] >= handoffs[0] || handoffs[0] >= retire[0] {
             return Err(format!(
-                "{arch} {name} must guard live CLONE_VM siblings before consuming an image and retiring its root"
+                "{arch} {name} must wait for its group and hand the old address space on before retiring its root"
             ));
+        }
+        if name == "exec_process_with_argv" {
+            let consume = code_offsets(body, &body_mask, "prepared.take()");
+            if consume.len() != 1 || guard_calls[0] >= consume[0] {
+                return Err(format!(
+                    "{arch} {name} must wait for its group before consuming the prepared image"
+                ));
+            }
         }
         let guard_arm = identifier_offsets(body, &body_mask, "if")
             .into_iter()
@@ -2552,15 +2560,15 @@ fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
                 (call_offsets(
                     &block[..open],
                     &code_mask(&block[..open]),
-                    "find_live_clone_vm_sibling_holding_cr3",
+                    "exec_blocked_by_group",
                 )
                 .len()
                     == 1)
                     .then_some(block)
             })
-            .ok_or_else(|| format!("{arch} {name} sibling check is not an if guard"))?;
+            .ok_or_else(|| format!("{arch} {name} group check is not an if guard"))?;
         if !normalized_code(guard_arm).contains("return Err(") {
-            return Err(format!("{arch} {name} live-sibling guard does not return Err"));
+            return Err(format!("{arch} {name} group guard does not return Err"));
         }
     }
     Ok(())
@@ -3721,41 +3729,42 @@ fn clone_publication_lifecycle_is_closed() {
 
 #[test]
 fn clone_publication_lifecycle_guard_census_reddens_when_either_arch_guard_removed() {
-    // #721 B1: the guard census must fail closed in both directions on both
-    // architectures — deleting x86's guard call must redden it exactly as
-    // deleting aarch64's does. Prove all four exec bodies singly.
+    // The guard census must fail closed on both architectures: deleting any
+    // one exec body's group guard, or its hand-off, must redden it. Prove the
+    // four exec bodies singly (4 of 4), for each call.
     let manager = repo_text("kernel/src/process/manager.rs");
-    assert_eq!(validate_exec_sibling_guard_census(&manager), Ok(()));
+    assert_eq!(validate_exec_group_guard_census(&manager), Ok(()));
 
     let bodies = module_function_bodies(&manager);
-    let call = "self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)";
     let mut mutated = 0;
-    for name in ["exec_process", "exec_process_with_argv"] {
-        for &body in bodies.get(name).into_iter().flatten() {
-            let arch = if body.contains("[ARM64]") {
-                "aarch64"
-            } else {
-                "x86"
-            };
-            let offset = manager
-                .find(body)
-                .unwrap_or_else(|| panic!("{name} ({arch}) body offset"));
-            let call_offset = body.find(call).unwrap_or_else(|| {
-                panic!("{name} ({arch}) must call the sibling guard before mutation")
-            });
-            let mut mutant = manager.clone();
-            mutant.replace_range(
-                offset + call_offset..offset + call_offset + call.len(),
-                "false",
-            );
-            assert!(
-                validate_exec_sibling_guard_census(&mutant).is_err(),
-                "deleting the {arch} sibling-guard call from {name} must redden the census"
-            );
-            mutated += 1;
+    for call in ["self.exec_blocked_by_group(pid)", "self.transfer_address_space(pid);"] {
+        for name in ["exec_process", "exec_process_with_argv"] {
+            for &body in bodies.get(name).into_iter().flatten() {
+                let arch = if body.contains("[ARM64]") {
+                    "aarch64"
+                } else {
+                    "x86"
+                };
+                let offset = manager
+                    .find(body)
+                    .unwrap_or_else(|| panic!("{name} ({arch}) body offset"));
+                let call_offset = body.find(call).unwrap_or_else(|| {
+                    panic!("{name} ({arch}) must make the call {call} before mutation")
+                });
+                let mut mutant = manager.clone();
+                mutant.replace_range(
+                    offset + call_offset..offset + call_offset + call.len(),
+                    if call.ends_with(';') { "" } else { "false" },
+                );
+                assert!(
+                    validate_exec_group_guard_census(&mutant).is_err(),
+                    "deleting {call} from the {arch} {name} must redden the census"
+                );
+                mutated += 1;
+            }
         }
     }
-    assert_eq!(mutated, 4, "expected to mutate all four exec bodies' guard calls");
+    assert_eq!(mutated, 8, "expected to mutate all four exec bodies' two calls");
 }
 
 #[test]

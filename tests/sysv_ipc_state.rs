@@ -435,6 +435,21 @@ fn clone_sysvsem_shares_a_list_until_its_last_task_leaves() {
 }
 
 #[test]
+fn exec_takeover_moves_a_tasks_list_to_its_new_id() {
+    let mut u = UndoLists::new();
+    u.share(30, 31).unwrap();
+    let list = u.join(31).unwrap();
+    u.adjustments(list, 7, 1).unwrap()[0] = -3;
+    // The leader leaves as it dies; its thread execs and takes the leader's ID.
+    assert_eq!(u.leave(30), None);
+    u.rename(31, 30);
+    assert_eq!(u.join(30), Ok(list), "the task keeps its list under its new ID");
+    assert_eq!(u.leave(31), None, "nothing is left under the old ID");
+    assert_eq!(u.leave(30), Some(list));
+    assert_eq!(u.take(list), Some((7, vec![-3])));
+}
+
+#[test]
 fn identifier_tables_count_and_find_by_index() {
     let mut ids: IpcIds<u32> = IpcIds::new(8);
     assert_eq!((ids.in_use(), ids.highest_index()), (0, 0));

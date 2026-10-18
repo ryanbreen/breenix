@@ -49,6 +49,8 @@
 pub mod boxdraw;
 pub mod display;
 pub mod grid;
+pub mod keymap;
+pub mod keys;
 pub mod raster;
 pub mod splash;
 pub mod vcs;
@@ -825,7 +827,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         });
         crate::tty::driver::drain_keyboard_input();
-        // Switch deadlines, whichever owner draws.
+        // A switch a key asked for, then switch deadlines, whichever owner draws.
+        vt::take_key_switch();
         vt::tick();
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);

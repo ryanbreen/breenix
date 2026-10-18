@@ -87,6 +87,14 @@ fn gpu_lock_can_sleep() -> bool {
     if crate::task::scheduler::current_thread_id().is_none() {
         return false;
     }
+    // An idle thread spins instead: a switch away from it at an exception
+    // return does not save its context, so it must not leave the CPU. On
+    // ARM64 the boot thread is CPU 0's idle thread until init runs, and the
+    // sleep's `schedule_current_wait` releases the boot preempt pin that keeps
+    // the exception return from switching it away (#1785).
+    if crate::task::scheduler::is_current_idle_thread() != Some(false) {
+        return false;
+    }
 
     #[cfg(target_arch = "aarch64")]
     {

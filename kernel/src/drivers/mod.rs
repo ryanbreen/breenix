@@ -9,6 +9,8 @@ pub mod bcm5720;
 pub mod e1000;
 pub mod fw_cfg;
 #[cfg(target_arch = "x86_64")]
+pub mod hid_boot;
+#[cfg(target_arch = "x86_64")]
 pub mod nvme;
 pub mod pci;
 #[cfg(target_arch = "x86_64")]

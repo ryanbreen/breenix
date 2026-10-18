@@ -171,7 +171,7 @@ PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:rec
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
 # KernelStack::drop now unmaps the x86 stack VA range and releases its 128 frames; exactly one stack is allocated and dropped in this window, so 149 - 128 * 1 = 21.
 # kstack_frames_released proves that arithmetic in-kernel: the oracle asserts 149 - stack_residual == kstack_frames_released, preventing silent drift.
-EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
+EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'
 CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'
 # Every field is a delta the oracle drives itself in the same run except
 # reserved_collisions, which is the absolute boot-wide count of ordinary
@@ -650,6 +650,7 @@ while [ "$i" -le "$COUNT" ]; do
     HOST_MS_START="$(gbf_host_ms_now)"
     QEMU_AT_START="$(qemu_host_lock_count qemu-system-x86_64)"
     LOAD_AT_START="$(gbf_load_1m)"
+    # Filesystem mutation tests need writes; discard them after each boot.
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -657,7 +658,7 @@ while [ "$i" -le "$COUNT" ]; do
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
         -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" \
         -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-        -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
+        -drive "if=none,id=ext2disk,format=raw,snapshot=on,file=$BREENIX_ROOT/target/ext2.img" \
         -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
         -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
         -display none -no-reboot -no-shutdown \

@@ -346,6 +346,9 @@ pub struct ThreadSignals {
     /// timers'. Each has its sender in `sent_info` (si_pid, si_uid), and a
     /// bit in `sent_to_thread` when tgkill named this thread.
     pub sent: AtomicU64,
+    /// Exec removed this thread from process-signal selection. Writers check
+    /// before and after posting, paired with exec's fence before its drain.
+    pub exec_victim: AtomicBool,
     /// Signals a sender is filling in (`post_sent`).
     sent_claim: AtomicU64,
     sent_to_thread: AtomicU64,
@@ -1170,6 +1173,16 @@ impl SignalState {
         let info = self.pending_info(sig);
         self.clear_pending(sig);
         Some((info, 0, None))
+    }
+
+    /// Upper bound for moving this row's process signals during exec,
+    /// including standard signals a concurrent lockless sender can post.
+    pub(crate) fn exec_pending_capacity(&self) -> usize {
+        self.queued.len().saturating_add(NSIG as usize)
+    }
+
+    pub(crate) fn reserve_exec_pending(&mut self, count: usize) -> bool {
+        self.queued.try_reserve(count.saturating_mul(2)).is_ok()
     }
 
     /// Make room for what `accept_moved` will queue: an instance, and an

@@ -4,18 +4,13 @@
 //! One category per measure of an effort milestone (contract section 12): `screen`, `emulation`,
 //! `vt-devices`, `vt-switch` and `scrollback`, `chvt` and `getty`, and `keys`.
 //!
-//! The suite is written before the layers it measures. Each case names the layer it needs and the
-//! lane that builds it, and until that layer exists the case fails saying so:
-//! `missing <layer> (<lane>): <what the kernel answered>`. It asks the kernel each time, so the
-//! reason is measured rather than assumed: the screen layers by opening `/proc/console/check`, the
-//! terminal layers by `VT_GETSTATE` on `/dev/console`. When the kernel answers, a case whose check
-//! has not been written yet still fails, and says that. No case skips. A lane writes a case's check
-//! in its own commit, from the contract, before the implementation it measures.
+//! Each case checks its contract section against what the kernel does; a case whose layer is
+//! absent fails, saying what the kernel answered, rather than skipping.
 
 use libbreenix::error::Error;
 use libbreenix::fs;
 use libbreenix::io;
-use libbreenix::suite::{case, category, fail, suite, CaseResult, Suite};
+use libbreenix::suite::{case, category, suite, CaseResult, Suite};
 use libbreenix::syscall::{nr, raw};
 
 #[path = "suite_console_vt.rs"]
@@ -126,50 +121,10 @@ static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
     ]),
 ]).defer_display();
 
-/// How the suite asks the kernel whether a layer is there.
-#[derive(Clone, Copy)]
-enum Probe {
-    /// `VT_GETSTATE` on `/dev/console` (contract section 4.1).
-    VtGetstate,
-}
-
-/// A layer a case needs: its name with the lane that builds it, and how to ask for it.
-struct Layer {
-    name: &'static str,
-    probe: Probe,
-}
-
-const KEYS: Layer = Layer { name: "the input core and the console keys (V5)", probe: Probe::VtGetstate };
-
 /// `VT_GETSTATE`, from the published `linux/vt.h`: writes a 6-byte `struct vt_stat`.
 const VT_GETSTATE: u64 = 0x5603;
-/// `O_NOCTTY`, the same on x86-64 and ARM64, so opening the console for the probe does not make it the case's controlling terminal.
+/// `O_NOCTTY`, the same on x86-64 and ARM64, so opening a terminal does not make it the case's controlling terminal.
 const O_NOCTTY: u32 = 0o400;
-
-/// Ask the kernel for a layer: Ok when it answers, else what it answered.
-fn probe(probe: Probe) -> Result<(), String> {
-    match probe {
-        Probe::VtGetstate => {
-            let fd = fs::open("/dev/console", fs::O_RDONLY | O_NOCTTY)
-                .map_err(|error| format!("opening /dev/console failed with {error}"))?;
-            let mut state = [0u16; 3];
-            // SAFETY: VT_GETSTATE writes one struct vt_stat, three u16s, which `state` holds.
-            let ret = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), VT_GETSTATE, state.as_mut_ptr() as u64) };
-            let _ = io::close(fd);
-            Error::from_syscall(ret as i64)
-                .map(|_| ())
-                .map_err(|error| format!("VT_GETSTATE on /dev/console failed with {error}"))
-        }
-    }
-}
-
-/// Fail a case whose layer is not there yet, naming the layer and what the kernel answered.
-fn missing(layer: &Layer) -> CaseResult {
-    match probe(layer.probe) {
-        Ok(()) => fail(format!("missing {}: this case's check is not written yet", layer.name)),
-        Err(answer) => fail(format!("missing {}: {answer}", layer.name)),
-    }
-}
 
 // Screen cases use the public root read-back and display/session APIs. No
 // test-only record injector: setsid emits INFO and invalid mmap emits WARN.
@@ -1103,26 +1058,6 @@ fn login_shell() -> Verdict {
     require(count == 0 && line.is_empty(), "login shell expected terminal EOF")?;
     println!("VTLOGOUT tty{number} sid={sid}");
     Ok(())
-}
-
-/// One function per case that has no check yet, each failing with the layer it needs.
-macro_rules! needs {
-    ($($name:ident => $layer:ident;)*) => {
-        $(fn $name() -> CaseResult { missing(&$layer) })*
-    };
-}
-
-needs! {
-    keys_alt_fn => KEYS;
-    keys_ctrl_alt_fn => KEYS;
-    keys_ctrl_alt_fn_graphics => KEYS;
-    keys_alt_fn_graphics => KEYS;
-    keys_alt_left_right_wrap => KEYS;
-    keys_alt_f7_ignored => KEYS;
-    keys_foreground_owns_input => KEYS;
-    keys_ctrl_c_foreground_only => KEYS;
-    keys_caps_per_vt => KEYS;
-    keys_shift_pageup => KEYS;
 }
 
 fn main() {

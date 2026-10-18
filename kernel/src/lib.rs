@@ -65,6 +65,7 @@ pub mod time;
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
 pub mod console;
+pub mod input;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;

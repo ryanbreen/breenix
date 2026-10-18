@@ -19,7 +19,7 @@
 //!
 //! * the interrupt-side roots inside `kernel/src/tty/driver.rs` are read out
 //!   of that file as the functions whose names end in `_nonblock` -- its own
-//!   naming convention for the interrupt-context twins -- so a seventh one
+//!   naming convention for the interrupt-context twins -- so a new one
 //!   added later is swept in without an edit here;
 //! * the acquisition sites are read out of `driver.rs` as the `.lock()` and
 //!   `.try_lock()` calls on the `foreground_pgrp` field itself, so a sixth one
@@ -388,13 +388,15 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
         .copied()
         .filter(|name| name.ends_with("_nonblock"))
         .collect();
-    if roots.len() < 6 {
-        return Err(format!(
-            "driver.rs declares {} interrupt-context entries (names ending in _nonblock); this \
-             rule was written against 6 and a census that shrank below 6 is a rule that stopped \
-             looking",
-            roots.len()
-        ));
+    const REQUIRED: [&str; 8] = [
+        "input_char_nonblock", "input_char_from_nonblock", "input_char_source_nonblock",
+        "output_char_nonblock", "send_signal_to_foreground_nonblock",
+        "send_signal_to_process_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
+    ];
+    for name in REQUIRED {
+        if !roots.contains(&name) {
+            return Err(format!("driver.rs no longer declares {name}, a required interrupt-context entry"));
+        }
     }
     if !roots.contains(&"input_char_nonblock") {
         return Err(
@@ -975,8 +977,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     );
 
     // Leg J -- the entry both architectures' input interrupts reach is renamed
-    // out from under the rule, while the census's own COUNT is left at 6. Leg L
-    // measures the count; this leg measures the named entry.
+    // out from under the rule, while the census's own COUNT is left above its
+    // floor. Leg L measures the count; this leg measures the named entry.
     let census_gone = replace_once(
         &driver,
         "    pub fn input_char_nonblock(&self, c: u8) -> bool {",
@@ -1009,9 +1011,7 @@ fn deliberately_broken_copies_redden_the_rules() {
         "leg K reddened for the wrong reason: {error}"
     );
 
-    // Leg L -- the census's own count shrinks, by a root renamed out of the
-    // `_nonblock` convention. One unit of slack here is one interrupt entry
-    // that stopped being swept.
+    // Leg L -- losing any named IRQ root must fail the validator itself.
     let census_shrank = replace_once(
         &driver,
         "    fn wake_blocked_readers_nonblock() {",
@@ -1019,11 +1019,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     );
     assert_ne!(census_shrank, driver, "leg L's mutation must apply");
     let error = validate_irq_entry_takes_no_foreground_pgrp_lock(&census_shrank)
-        .expect_err("leg L: rule 1 has to redden when its census shrinks");
-    assert!(
-        error.contains("shrank below 6"),
-        "leg L reddened for the wrong reason: {error}"
-    );
+        .expect_err("leg L: renaming a required IRQ root must fail validation");
+    assert!(error.contains("no longer declares wake_blocked_readers_nonblock"), "{error}");
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
     // path. This is the call the round's review found still live at that hop,
@@ -1129,7 +1126,11 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     );
 
     // Leg B. The oracle reported failure.
-    let failed_verdict = mutate_oracle_line(&green, ":PASS:peer_hold]", ":FAIL:peer_hold]");
+    let failed_verdict = mutate_oracle_line(
+        &green,
+        ":PASS:peer_hold]",
+        ":FAIL:failed=buffered,intr_flushed:peer_hold]",
+    );
     assert_ne!(failed_verdict, green, "leg B's mutation must apply");
     let (passed, output) = score_with_gate(
         STRICT_GATE,
@@ -1138,8 +1139,9 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     );
     assert!(!passed, "{STRICT_GATE} passed a serial whose #822 oracle failed: {output}");
     assert!(
-        output.contains("TTY input IRQ foreground-pgrp oracle"),
-        "{STRICT_GATE} failed the serial, but for some other reason: {output}"
+        output.contains("TTY input IRQ foreground-pgrp oracle reported failure")
+            && output.contains(":FAIL:failed=buffered,intr_flushed:peer_hold]"),
+        "{STRICT_GATE} must report the oracle failure and its named conjuncts: {output}"
     );
 
     // Leg C. The oracle's line is absent from the serial.

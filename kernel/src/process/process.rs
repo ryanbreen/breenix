@@ -216,6 +216,13 @@ pub(crate) struct AddressSpaceLifetime {
     pub(crate) id: u64,
 }
 
+impl AddressSpaceLifetime {
+    pub(crate) fn new() -> Self {
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        Self { id: NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed) }
+    }
+}
+
 /// A process represents a running program and an address-space owner.
 pub struct Process {
     pub limits: alloc::sync::Arc<super::limits::Limits>,
@@ -369,6 +376,16 @@ pub struct Process {
     /// plain kill. The first kill sets it.
     pub group_exit_code: Option<i32>,
 
+    /// Another thread of this row's process is exec'ing and killed this row
+    /// so that it can run its new image (`terminate_peers_for_exec`). The
+    /// row's death, whatever ends it, does not end the rest of its thread
+    /// group as a fatal signal's otherwise does
+    /// (`terminate_thread_group_peers`): that thread lives on as the process.
+    pub killed_by_exec: bool,
+    /// The row has its exec PID, but scheduler ownership has not caught up.
+    /// PM serializes this flag with kill claiming; such kills stay pending.
+    pub(crate) exec_owner_pending: bool,
+
     /// Interval timers for setitimer/getitimer (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
     pub itimers: alloc::sync::Arc<crate::signal::IntervalTimers>,
 
@@ -394,9 +411,8 @@ pub struct Process {
     pub clear_child_tid: Option<u64>,
 
     /// Set by exit, under PROCESS_MANAGER, before the thread's
-    /// clear_child_tid word is cleared: a thread that has joined this one may
-    /// exec at once, and the exec then waits for this row to finish leaving
-    /// the address space instead of refusing (`exec_waits_for_exiting_sibling`).
+    /// clear_child_tid word is cleared: the row is leaving, so its children
+    /// go to another thread of its process (`reparent_children_to_init`).
     pub exit_started: bool,
 
     /// Bottom of the user stack (lowest mapped address, grows downward via demand paging)
@@ -521,7 +537,7 @@ impl Process {
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
-            address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime { id: id.as_u64() })),
+            address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime::new())),
             heap_start: 0,
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),
@@ -537,6 +553,8 @@ impl Process {
             inherited_cr3: None,
             clear_child_tid: None,
             exit_started: false,
+            killed_by_exec: false,
+            exec_owner_pending: false,
             user_stack_bottom: 0,
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),
@@ -761,46 +779,6 @@ impl Process {
             crate::fs::locks::release_thread(thread.id);
         }
         self.lock_owner.leave();
-    }
-
-    /// An exec detached this row from its thread group, making it a process
-    /// of its own with its own lock owner. Record locks survive exec, so if
-    /// this was the group's last live row the group's locks move to the new
-    /// owner; otherwise they stay with the group's other rows.
-    pub fn detach_lock_owner(&mut self) {
-        let id = self.id.as_u64();
-        if self.lock_owner.id() == id {
-            return;
-        }
-        let own = crate::fs::locks::LockOwner::new(id);
-        core::mem::replace(&mut self.lock_owner, own).hand_over(id);
-    }
-
-    /// An exec is detaching this row from its thread group. A row that was
-    /// not the group's leader stops sharing the group's CPU account: the time
-    /// it ran as a thread stays the group's, and from here on its time is its
-    /// own, so the group and the new process are never both charged for it.
-    /// Call before `thread_group_id` is cleared.
-    pub fn detach_cpu_account(&mut self) {
-        let id = self.id.as_u64();
-        if self.thread_group_id.map_or(true, |group| group == id) {
-            return;
-        }
-        use core::sync::atomic::Ordering;
-        let wall = crate::signal::monotonic_micros();
-        let user = self.cpu.user_ns.load(Ordering::Relaxed) / 1000;
-        let total = user.saturating_add(self.cpu.system_ns.load(Ordering::Relaxed) / 1000);
-        let timers = alloc::sync::Arc::new(crate::signal::IntervalTimers::default());
-        timers.real.set_value(&self.itimers.real.get_value(wall), wall);
-        timers.virtual_timer.set_value(&self.itimers.virtual_timer.get_value(user), 0);
-        timers.prof.set_value(&self.itimers.prof.get_value(total), 0);
-        self.itimers = timers;
-        self.cpu = alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id));
-        if let Some(thread) = self.main_thread.as_mut() {
-            thread.cpu_account = Some(self.cpu.clone());
-            thread.signals = self.signals.thread.clone();
-            thread.signal_timers = Some(self.itimers.clone());
-        }
     }
 
     /// Extract all file descriptor entries for deferred cleanup outside PM lock.
