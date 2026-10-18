@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%s: cannot verify boot priority\n", argv[0]);
         return 126;
     }
-    if (needs_fresh_task || info.pth_priority != 46) {
+    if (needs_fresh_task || info.pth_priority < 46) {
         // A spawn QoS clamp survives fork and exec and cannot be revoked by
         // the task itself. launchd supplies a fresh task; the helper supervises
         // it and passes the original console descriptors without a relay.

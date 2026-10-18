@@ -4,8 +4,8 @@
 #
 # Under load, a QEMU started from a shell runs its vCPU threads at the default priority, 31, below
 # what the operator's other work runs at, and the guest's timers fire late when the host does not
-# run those threads. On a Mac this builds scripts/qemu-ui-launch.c and scripts/qemu-ui-threads.c
-# once into the cache directory (again whenever either changes). Elsewhere, with
+# run those threads. On a Mac this caches the launcher, thread library and unclamping helper
+# (again whenever any of their three source files changes). Elsewhere, with
 # BREENIX_QEMU_UI=0 (an explicit policy bypass for diagnostics), the launcher is `env`.
 # Launcher build failures stop the boot rather than inheriting an unknown policy.
 #
@@ -13,8 +13,9 @@
 #     qemu-ui-launch.sh                           prepares the launcher and prints its path
 #
 # Shell launchers use qemu-arm64.py; the host-lock library exports this script as
-# BREENIX_QEMU_UI_LAUNCHER, so preparation waits until QEMU launches. Each exec keeps the
-# process ID, so QEMU keeps the one a watcher or `timeout` started.
+# BREENIX_QEMU_UI_LAUNCHER, so preparation waits until QEMU launches. Ordinary launches keep
+# the process ID; clamped launches use a supervisor and a fresh launchd task. If the supervisor
+# is killed, its child terminates QEMU, allowing up to five seconds before killing it.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE="${BREENIX_QEMU_APP_DIR:-$HOME/Library/Caches/breenix}"
