@@ -111,3 +111,38 @@ fn page_tree_switches_depth_after_512_pages_and_rejects_empty_backing() {
         assert_eq!(tree.data.count(), count);
     }
 }
+
+#[allow(dead_code)]
+#[path = "../kernel/src/gpu/svga/sm4.rs"]
+mod sm4;
+
+/// The catalogue program texts the kernel ships translate, and each translation is a
+/// well-formed token stream: the length token covers exactly the instructions, and each
+/// instruction's length field lands on the next instruction.
+#[test]
+fn every_catalogue_program_translates_to_whole_sm4_instructions() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/kernel/src/gpu/virgl");
+    let mut texts = Vec::new();
+    for dir in ["pipelines", "profile"] {
+        for entry in std::fs::read_dir(format!("{root}/{dir}")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "tgsi") {
+                texts.push((path.display().to_string(), std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    assert!(texts.len() >= 15, "found {} catalogue programs", texts.len());
+    for (name, text) in texts {
+        let p = sm4::translate(&text).unwrap_or_else(|e| panic!("{name}: line {}: {}", e.line, e.what));
+        assert_eq!(p.words[1] as usize, p.code_words, "{name}: length token");
+        let mut at = 2;
+        while at < p.code_words {
+            let len = (p.words[at] >> 24 & 0x7f) as usize;
+            assert!(len >= 1, "{name}: zero-length instruction at {at}");
+            at += len;
+        }
+        assert_eq!(at, p.code_words, "{name}: instructions overrun the length token");
+        assert_eq!(p.words.len(), p.code_words + 4 + 5 * (sm4::CONSTANTS as usize + 2), "{name}: signature trailer");
+        assert_eq!(p.words[p.code_words - 1], 62 | 1 << 24, "{name}: ends with ret");
+    }
+}
