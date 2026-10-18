@@ -516,8 +516,7 @@
     {
       "id": "console-login",
       "title": "Login at the machine's own console",
-      "summary": "Not yet measured: the producing lane has not landed.",
-      "stub": true,
+      "summary": "SOL development proves authentication and console reacquisition. Keyboard-typed login waits for the injector; SOL boots are not evidence-eligible.",
       "bootShapes": [
         "ramdisk",
         "install",
@@ -543,15 +542,28 @@
             "match": "line"
           },
           {
-            "name": "The session is on the screen",
-            "marker": "fbcon check: shadow and screen identical"
-          },
-          {
-            "name": "The answer is on the screen",
-            "marker": "fbcon row: metal-login-ok 42"
+            "name": "Getty reacquired the console after logout",
+            "marker": "[getty] console acquired",
+            "match": "line"
           }
         ]
-      }
+      },
+      "waitingFor": "Keyboard typing through the injector (ruling M2) and screen readback from the framebuffer lane.",
+      "pendingStages": [
+        {
+          "name": "The session is on the screen",
+          "marker": "fbcon check: shadow and screen identical"
+        },
+        {
+          "name": "The answer is on the screen",
+          "marker": "fbcon row: metal-login-ok 42"
+        },
+        {
+          "name": "Keyboard-typed login answered",
+          "marker": "[hid] typed into the console tty: ",
+          "status": "waiting for injector"
+        }
+      ]
     }
   ],
   "firsts": [
@@ -599,7 +611,7 @@
     {
       "id": "first-local-login",
       "title": "First login at the machine's own console",
-      "stage": "Logged-in computation answered"
+      "stage": "Keyboard-typed login answered"
     }
   ]
 }

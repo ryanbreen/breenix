@@ -56,7 +56,7 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe | Target::Default | Target::Shell) => panic!("{text:?} parsed as another mode"),
+        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console) => panic!("{text:?} parsed as another mode"),
         Err(why) => panic!("{text:?} was refused: {why}"),
     }
 }
@@ -77,6 +77,7 @@ fn suite_and_probe_lines_parse() {
     assert!(matches!(parse("probe\n"), Ok(Target::Probe)));
     assert!(matches!(parse("default\n"), Ok(Target::Default)));
     assert!(matches!(parse("shell\n"), Ok(Target::Shell)));
+    assert!(matches!(parse("console\n"), Ok(Target::Console)));
 }
 
 #[test]

@@ -102,6 +102,7 @@ fn main() {
     // full boot below.
     match std::env::args().nth(1).as_deref() {
         Some("shell") => run_shell_mode(),
+        Some("console") => run_console_mode(),
         Some("desktop") => run_desktop_mode(),
         _ => {}
     }
@@ -223,6 +224,32 @@ fn run_shell_mode() -> ! {
             }
         }
         // A shell that dies at once must not turn this loop into a spin.
+        sleep_one_second();
+    }
+}
+
+/// Release init's terminal before starting an independent login session.
+fn run_console_mode() -> ! {
+    use libbreenix::signal::{self, Sigaction};
+    extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
+    let ignored = Sigaction { handler: signal::SIG_IGN, ..Sigaction::default() };
+    if let Err(e) = signal::sigaction(signal::SIGHUP, Some(&ignored), None) {
+        print!("[init] console detach failed: {}\n", e);
+        reap_forever();
+    }
+    if unsafe { ioctl(0, 0x5422, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() != Some(25) {
+        print!("[init] console detach failed\n");
+        reap_forever();
+    }
+    loop {
+        match spawn(b"/bin/getty\0") {
+            Ok(child) => {
+                print!("[init] getty on the console\n");
+                while reap_one() != Some(child.raw() as i32) {}
+                print!("[init] console session ended; restarting getty\n");
+            }
+            Err(e) => print!("[init] Failed to start getty: {}\n", e),
+        }
         sleep_one_second();
     }
 }

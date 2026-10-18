@@ -408,6 +408,8 @@ STD_BINARIES=(
 
     # Services
     "init"
+    "getty"
+    "login"
     "probe"
 
     # Effort suites, installed as /sbin/suite-<id>

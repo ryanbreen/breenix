@@ -148,6 +148,16 @@ def inner(args):
                 keep_logs(logs, out)
                 return 1
             timings['userspace'] = round(time.time() - started)
+            helper = clone / 'scripts/metal/sha512-crypt.rs'
+            if helper.is_file():
+                log = logs / 'console-hash-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call(['rustc', '--edition=2021', '-O', str(helper),
+                                              '-o', str(out / 'sha512-crypt')], cwd=clone,
+                                             stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'console hash helper', logs, out):
+                    return 1
+
             started = time.time()
             log = logs / 'kernel-build.log'
             with log.open('w') as output:
