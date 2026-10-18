@@ -1204,6 +1204,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::softirqd::init_softirq();
     kernel::net::init_loopback_pump();
     kernel::net::init_rx_poll();
+    // Deferred reclamation drains on a timer too, not only when a CPU idles
+    // or a process starts or ends (ruling S26).
+    kernel::task::process_task::start_reclaim_daemon();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
@@ -1830,6 +1833,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "boot_tests")]
     {
         serial_println!("[boot] Running parallel boot tests...");
+        // The boot is not complete until they finish: say why it is waiting.
+        boot_screen::set_status(format_args!("Running kernel boot tests"));
         #[cfg(feature = "btrt")]
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = kernel::test_framework::run_all_tests();
@@ -1884,6 +1889,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // move what that census reports.
     #[cfg(feature = "boot_tests")]
     kernel::task::timer_wake_oracle::run();
+
+    // Ruling S26: deferred reclamation retires a CLONE_VM-only child's receipt
+    // while each CPU runs a spinning thread or this boot thread. After the censuses above, so its two rows do
+    // not move what they report.
+    #[cfg(feature = "boot_tests")]
+    kernel::task::reclaim_busy_oracle::run();
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all

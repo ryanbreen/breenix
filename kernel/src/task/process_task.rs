@@ -1461,6 +1461,220 @@ fn fault_exit_daemon() {
     }
 }
 
+/// The kernel thread that drains deferred reclamation on a timer (ruling S26).
+///
+/// The other drains run when a CPU goes idle or a process is created, execs or
+/// exits. On a machine whose CPUs stayed busy without such an event, receipts
+/// stayed queued for as long as that lasted: #1923's one-vCPU SIGKILL
+/// teardown wait did not end, because the only other runnable thread was a
+/// spinning CLONE_VM sibling. The timer interrupt only wakes this thread, as it
+/// wakes any sleeper; the drain itself runs here, in thread context, where it
+/// may take its locks and free frames.
+static RECLAIM_DAEMON: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
+
+/// The daemon's sleep between passes while a receipt waits: a pass that finds
+/// a receipt's two-epoch fence still open tries again after this.
+pub(crate) const RECLAIM_DAEMON_RETRY_NS: u64 = 10_000_000;
+/// The daemon's sleep while both queues are empty, which bounds how long a
+/// receipt queued on a busy machine waits for its first pass.
+pub(crate) const RECLAIM_DAEMON_IDLE_NS: u64 = 100_000_000;
+
+/// Start the deferred-reclaim kernel thread. Called once during boot, before
+/// any user process exists.
+pub fn start_reclaim_daemon() {
+    let daemon = RECLAIM_DAEMON.call_once(|| {
+        crate::task::kthread::kthread_run(reclaim_daemon, "kreclaimd")
+            .expect("could not spawn the deferred-reclaim kernel thread")
+    });
+    // Real-time threads spinning on each CPU must not hold reclamation off
+    // either. Each pass is bounded (one selection, a frame budget), and the
+    // thread sleeps between passes.
+    crate::task::scheduler::set_sched_policy(
+        daemon.tid(),
+        crate::task::thread::SchedPolicy::KERNEL_EXIT,
+    );
+}
+
+fn reclaim_daemon() {
+    // A kernel thread may start with interrupts masked; this one sleeps on the
+    // timer and must be preemptible between passes.
+    unsafe { crate::arch_enable_interrupts() };
+    loop {
+        #[cfg(feature = "boot_tests")]
+        BOOT_RECLAIM_DAEMON_PASSES.fetch_add(1, Ordering::Relaxed);
+        reclaim_deferred_process_resources();
+        reclaim_daemon_sleep(if reclaim_work_queued() {
+            RECLAIM_DAEMON_RETRY_NS
+        } else {
+            RECLAIM_DAEMON_IDLE_NS
+        });
+    }
+}
+
+/// Whether a receipt is queued or parked. Each queue is held on its own, as
+/// their lock order requires.
+fn reclaim_work_queued() -> bool {
+    crate::arch_without_interrupts(|| !PENDING_PROCESS_RECLAIMS.lock().is_empty())
+        || crate::arch_without_interrupts(|| !PARKED_PROCESS_RECLAIMS.lock().is_empty())
+}
+
+/// Block on the scheduler's timer heap for `interval_ns`: the block, yield and
+/// halt sequence of `sys_nanosleep` and `net::rx_poll`'s `sleep_one_tick`.
+fn reclaim_daemon_sleep(interval_ns: u64) {
+    use crate::task::thread::ThreadState;
+
+    let Some(tid) = scheduler::current_thread_id() else {
+        crate::arch_halt_with_interrupts();
+        return;
+    };
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let wake_at = seconds
+        .saturating_mul(1_000_000_000)
+        .saturating_add(nanos)
+        .saturating_add(interval_ns);
+    scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
+    scheduler::yield_current();
+    loop {
+        crate::arch_halt_with_interrupts();
+        if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
+            break;
+        }
+    }
+}
+
+/// Whether the running thread is the reclaim daemon, read from this CPU's own
+/// current-thread pointer without a lock. Only meaningful where the caller
+/// cannot migrate, as inside a drain's non-preemptible pass.
+#[cfg(feature = "boot_tests")]
+fn current_thread_is_reclaim_daemon() -> bool {
+    let Some(daemon) = RECLAIM_DAEMON.get() else {
+        return false;
+    };
+    #[cfg(target_arch = "x86_64")]
+    let current = crate::per_cpu::current_thread_id_lock_free();
+    #[cfg(target_arch = "aarch64")]
+    let current = {
+        let thread =
+            crate::per_cpu_aarch64::current_thread_ptr() as *const crate::task::thread::Thread;
+        // SAFETY: a non-null per-CPU current-thread pointer names the thread
+        // this CPU is running, which outlives its own execution here.
+        (!thread.is_null()).then(|| unsafe { (*thread).id })
+    };
+    current == Some(daemon.tid())
+}
+
+/// boot_tests: while set, production drains other than the reclaim daemon's
+/// refuse their passes, so `reclaim_busy_oracle` sees a machine where only the
+/// daemon drains, deterministically rather than by placement luck.
+#[cfg(feature = "boot_tests")]
+static BOOT_RECLAIM_DAEMON_ONLY: AtomicBool = AtomicBool::new(false);
+/// boot_tests: passes the reclaim daemon has started.
+#[cfg(feature = "boot_tests")]
+static BOOT_RECLAIM_DAEMON_PASSES: AtomicU64 = AtomicU64::new(0);
+/// boot_tests: daemon passes that got past the drain's refusals into the
+/// selection loop, so a failing oracle can tell a refused daemon from a blocked receipt.
+#[cfg(feature = "boot_tests")]
+static BOOT_RECLAIM_DAEMON_ADMITTED: AtomicU64 = AtomicU64::new(0);
+/// boot_tests: the pid whose retirement `reclaim_busy_oracle` watches.
+#[cfg(feature = "boot_tests")]
+static BOOT_RECLAIM_WATCH_PID: AtomicU64 = AtomicU64::new(0);
+/// boot_tests: how the watched pid was retired.
+#[cfg(feature = "boot_tests")]
+static BOOT_RECLAIM_WATCH_STATE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(BootReclaimWatch::Pending as u8);
+
+/// How the pid `reclaim_busy_oracle` watches was retired.
+#[cfg(feature = "boot_tests")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub(crate) enum BootReclaimWatch {
+    Pending = 0,
+    ByDaemon = 1,
+    ByOtherDrain = 2,
+}
+
+/// boot_tests: let only the reclaim daemon's passes run (`true`), or the
+/// other drains again (`false`).
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_set_reclaim_daemon_only(only: bool) {
+    BOOT_RECLAIM_DAEMON_ONLY.store(only, Ordering::Release);
+}
+
+/// boot_tests: whether the reclaim daemon was started.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_reclaim_daemon_started() -> bool {
+    RECLAIM_DAEMON.get().is_some()
+}
+
+/// boot_tests: passes the reclaim daemon has started.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_reclaim_daemon_passes() -> u64 {
+    BOOT_RECLAIM_DAEMON_PASSES.load(Ordering::Relaxed)
+}
+
+/// boot_tests: daemon passes admitted into the selection loop.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_reclaim_daemon_admitted() -> u64 {
+    BOOT_RECLAIM_DAEMON_ADMITTED.load(Ordering::Relaxed)
+}
+
+/// Count a daemon pass that reached the selection loop. Runs inside the
+/// drain's non-preemptible pass.
+fn boot_note_daemon_admitted() {
+    #[cfg(feature = "boot_tests")]
+    if current_thread_is_reclaim_daemon() {
+        BOOT_RECLAIM_DAEMON_ADMITTED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// boot_tests: watch `pid`'s retirement (0 stops watching).
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_reclaim_watch(pid: u64) {
+    BOOT_RECLAIM_WATCH_STATE.store(BootReclaimWatch::Pending as u8, Ordering::Release);
+    BOOT_RECLAIM_WATCH_PID.store(pid, Ordering::Release);
+}
+
+/// boot_tests: how the watched pid was retired, if it was.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_reclaim_watch_state() -> BootReclaimWatch {
+    match BOOT_RECLAIM_WATCH_STATE.load(Ordering::Acquire) {
+        1 => BootReclaimWatch::ByDaemon,
+        2 => BootReclaimWatch::ByOtherDrain,
+        _ => BootReclaimWatch::Pending,
+    }
+}
+
+/// A production pass refused while `BOOT_RECLAIM_DAEMON_ONLY` is set and the
+/// running thread is not the daemon. False outside boot_tests.
+fn boot_daemon_only_refuses(boot_test_owned: bool) -> bool {
+    #[cfg(feature = "boot_tests")]
+    {
+        !boot_test_owned
+            && BOOT_RECLAIM_DAEMON_ONLY.load(Ordering::Acquire)
+            && !current_thread_is_reclaim_daemon()
+    }
+    #[cfg(not(feature = "boot_tests"))]
+    {
+        let _ = boot_test_owned;
+        false
+    }
+}
+
+/// Record who retired the watched pid. Runs in the drain's retire arm.
+fn boot_note_watched_reclaim(pid: u64) {
+    #[cfg(feature = "boot_tests")]
+    if pid != 0 && BOOT_RECLAIM_WATCH_PID.load(Ordering::Acquire) == pid {
+        let state = if current_thread_is_reclaim_daemon() {
+            BootReclaimWatch::ByDaemon
+        } else {
+            BootReclaimWatch::ByOtherDrain
+        };
+        BOOT_RECLAIM_WATCH_STATE.store(state as u8, Ordering::Release);
+    }
+    #[cfg(not(feature = "boot_tests"))]
+    let _ = pid;
+}
+
 fn record_root_blocker(blocker: RootBlocker) {
     match blocker {
         RootBlocker::Epoch => {
@@ -1716,6 +1930,10 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     if !boot_test_owned && BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;
     }
+    if boot_daemon_only_refuses(boot_test_owned) {
+        return;
+    }
+    boot_note_daemon_admitted();
     unpark_sweep();
     boot_begin_reclaim_pass(boot_test_owned);
 
@@ -1793,6 +2011,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
                     == crate::memory::process_memory::RetireProgress::Complete
                 {
                     crate::tracing::providers::teardown::record_reclaim(reclaim.pid);
+                    boot_note_watched_reclaim(reclaim.pid);
                     // P6a retire arm: settle this row's receipt and, if the reap
                     // already landed, complete the join here.
                     //
