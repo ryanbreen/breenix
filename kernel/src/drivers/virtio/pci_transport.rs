@@ -700,6 +700,12 @@ impl VirtioPciDevice {
         }
     }
 
+    /// The kernel virtual address of the ISR status byte, for an interrupt handler that
+    /// reads it without the device object (VirtIO 1.3, section 4.1.4.5).
+    pub fn isr_address(&self) -> Option<u64> {
+        self.isr.is_valid().then_some(self.isr.virt_base)
+    }
+
     /// Acknowledge interrupts.
     pub fn ack_interrupt(&self, _flags: u32) {
         // For modern PCI transport, reading ISR auto-acknowledges.
