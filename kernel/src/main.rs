@@ -1978,6 +1978,7 @@ fn kernel_main_continue() -> ! {
         loop {
             match image {
                 Ok((name, exe_path, elf_data, only, mode)) => {
+                    kernel::console::splash::set_status(format_args!("Starting {}", name));
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
                         launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), mode)
                     });
