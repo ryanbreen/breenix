@@ -593,17 +593,20 @@ fn console_text_mode() {
 fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64 Parallels boots from AHCI. Mirror the boot script's service
-        // sequence directly from init so the standard desktop services are
-        // always started even before bsh runs init.js.
-        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/bin/bwm\0", b"/sbin/telnetd\0"];
+        // Start background services before handing the splash to the console.
+        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
             }
         }
         console_text_mode();
+        // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
+        // A graphical child may take the display after init's text-mode request.
+        if let Err(e) = spawn(b"/bin/bwm\0") {
+            print!("[init] Warning: failed to spawn service: {}\n", e);
+        }
         return;
     }
 
