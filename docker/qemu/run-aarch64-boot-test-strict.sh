@@ -11,6 +11,7 @@ BREENIX_HOST_ARGS=("$@")
 #
 # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
 #        Default: 20 iterations
+# BREENIX_QEMU_DISPLAY=cocoa opens the window for a local acceptance run.
 #
 # Before booting anything, this gate runs each tests/*_structure.rs suite
 # (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
@@ -1004,7 +1005,7 @@ run_single_test() {
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -qmp unix:"$QMP_SOCK",server=on,wait=off \
-        -display none -no-reboot \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
