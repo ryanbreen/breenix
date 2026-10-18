@@ -145,6 +145,17 @@ pub fn wait(context: u64, fence: u64, timeout_ns: u64) -> (i64, abi::Wait) {
 
 /// `READBACK` of a rectangle into `pixels` at `stride`, with the record.
 pub fn readback(target: u64, rect: [u32; 4], pixels: &mut [u8], stride: u32, record: &mut [u8; abi::record::SIZE]) -> i64 {
+    readback_why(target, rect, pixels, stride, record).0
+}
+
+/// `READBACK`, with the argument as the kernel left it (an EIO's reason and failed submission).
+pub fn readback_why(
+    target: u64,
+    rect: [u32; 4],
+    pixels: &mut [u8],
+    stride: u32,
+    record: &mut [u8; abi::record::SIZE],
+) -> (i64, abi::Readback) {
     let mut a = abi::Readback {
         target,
         x: rect[0],
@@ -158,7 +169,8 @@ pub fn readback(target: u64, rect: [u32; 4], pixels: &mut [u8], stride: u32, rec
         record: record.as_mut_ptr() as u64,
         failed_submission: 0,
     };
-    call_with(op::READBACK, &mut a)
+    let r = call_with(op::READBACK, &mut a);
+    (r, a)
 }
 
 /// `PRESENT` of `target` in `context`: bind it to scanout 0 and flush it. The returned

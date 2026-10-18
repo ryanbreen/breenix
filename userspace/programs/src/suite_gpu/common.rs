@@ -170,8 +170,16 @@ pub fn frame(ctx: u64, s: &[u32]) -> Result<u64, CaseError> {
 pub fn read(t: u64, w: u32, h: u32) -> Result<(Vec<u8>, [u8; record::SIZE]), CaseError> {
     let mut px = vec![0u8; (w * h * 4) as usize];
     let mut rec = [0u8; record::SIZE];
-    let r = gpu::readback(t, [0, 0, w, h], &mut px, w * 4, &mut rec);
-    ensure(r == 0, || format!("READBACK returned {} (unwritten {})", errno(r), u32_at(&rec, record::UNWRITTEN)))?;
+    let (r, a) = gpu::readback_why(t, [0, 0, w, h], &mut px, w * 4, &mut rec);
+    ensure(r == 0, || {
+        format!(
+            "READBACK returned {} (reason {}, failed submission {}, unwritten {})",
+            errno(r),
+            a.reason,
+            a.failed_submission,
+            u32_at(&rec, record::UNWRITTEN)
+        )
+    })?;
     Ok((px, rec))
 }
 
