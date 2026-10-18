@@ -1226,6 +1226,14 @@ fn launch_x86_production_init(
     if console_mode.is_some() {
         serial::command::use_tty_input();
     }
+    let hostkeys = if name.starts_with("suite-") {
+        kernel::drivers::fw_cfg::read_string("opt/breenix/hostkeys").or_else(|| {
+            match kernel::boot::target::read() {
+                Ok(Some(kernel::boot::target::Target::Suite(suite))) => suite.hostkeys,
+                _ => None,
+            }
+        })
+    } else { None };
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1239,6 +1247,9 @@ fn launch_x86_production_init(
         }
         if let Some(case) = only {
             argv.extend_from_slice(&[b"--case", case.as_bytes()]);
+        }
+        if let Some(value) = &hostkeys {
+            argv.extend_from_slice(&[b"--hostkeys", value.as_bytes()]);
         }
         let ticket = manager.create_init_process_with_argv(
             String::from(name), exe_path, elf_data, &argv,

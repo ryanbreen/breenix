@@ -305,7 +305,7 @@ if [ "$PHASE" != boot ]; then
     if ! cp testdata/ext2.img target/ext2-boot-target.img; then
       echo "GATE: FAIL (could not copy testdata/ext2.img for the boot target)"; exit 1
     fi
-    if ! "$REPO_DIR/scripts/write-boot-target.sh" "$REPO_DIR/target/ext2-boot-target.img" "${SUITES[0]}" "$REPO_DIR/userspace/programs/suite-${SUITES[0]}.elf" "$SUITE"; then
+    if ! BREENIX_HOSTKEYS=qmp "$REPO_DIR/scripts/write-boot-target.sh" "$REPO_DIR/target/ext2-boot-target.img" "${SUITES[0]}" "$REPO_DIR/userspace/programs/suite-${SUITES[0]}.elf" "$SUITE"; then
       echo "GATE: FAIL (could not write the boot target onto the ext2 disk)"; exit 1
     fi
     phase_end
