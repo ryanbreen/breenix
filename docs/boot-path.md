@@ -41,10 +41,23 @@ fails instead of falling back to TCG. The Linux Docker launchers select TCG:
 Apple's Hypervisor framework is available only to native macOS processes.
 
 The shared accelerator wrapper runs `scripts/qemu-ui-launch.sh`'s launcher
-immediately before QEMU, so its vCPU threads retain the user-interactive QoS
-class. `BREENIX_QEMU_UI=0` selects the default host priority for diagnostics;
-it does not change the accelerator. The Mac boot slot still covers the full
-VM lifetime, and boots do not wait for host load to fall.
+immediately before QEMU. It clears inherited Darwin background mode, nice
+priority and latency/throughput tiers before requesting the existing
+user-interactive QoS class (thread priority 46). A lane's `taskpolicy -b`
+therefore applies to its builds, not its boot. The canonical gate also runs
+its Mac build subprocesses under `taskpolicy -b` by default.
+
+A spawn QoS clamp survives fork and exec. When the launcher cannot attain
+the boot priority, `qemu-unclamp.py` uses a temporary Interactive launchd job
+and application spawn policy to start an unclamped task. It transfers the
+original console descriptors and environment over a private Unix socket,
+returns the payload's exit status, and stops QEMU and removes the job when
+the caller exits or dies. Ordinary backgrounded launches still exec in place.
+Launcher build or priority-restoration failures stop the boot.
+`BREENIX_QEMU_UI=0` explicitly bypasses this policy for diagnostics; it does
+not change the accelerator. The Mac boot slot covers the full VM lifetime,
+and boots do not wait for host load to fall. Keep the VM window open on a Mac
+(`--display`); background only builds, never an entire landing-gate command.
 
 Parallels VMs get the same class: `run.sh` creates each one with the system flag
 `vm.vcpuprio=6`, so `prl_vm_app` starts its vCPU threads at user-interactive QoS

@@ -6,8 +6,8 @@
 # what the operator's other work runs at, and the guest's timers fire late when the host does not
 # run those threads. On a Mac this builds scripts/qemu-ui-launch.c and scripts/qemu-ui-threads.c
 # once into the cache directory (again whenever either changes). Elsewhere, with
-# BREENIX_QEMU_UI=0 (a launch at today's default priority, for comparison), or when the build
-# fails, the launcher is `env`, which runs QEMU unchanged.
+# BREENIX_QEMU_UI=0 (an explicit policy bypass for diagnostics), the launcher is `env`.
+# Launcher build failures stop the boot rather than inheriting an unknown policy.
 #
 #     qemu-ui-launch.sh qemu-system-aarch64 ...   prepares the launcher and execs it with the command
 #     qemu-ui-launch.sh                           prepares the launcher and prints its path
@@ -18,10 +18,10 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE="${BREENIX_QEMU_APP_DIR:-$HOME/Library/Caches/breenix}"
-HASH="$(cat "$HERE/qemu-ui-launch.c" "$HERE/qemu-ui-threads.c" 2>/dev/null | shasum -a 256 | cut -c1-16)"
+HASH="$(cat "$HERE/qemu-ui-launch.c" "$HERE/qemu-ui-threads.c" "$HERE/qemu-unclamp.py" 2>/dev/null | shasum -a 256 | cut -c1-16)"
 DIR="$CACHE/qemu-ui-$HASH"
 
-published() { [ -x "$DIR/qemu-ui-launch" ] && [ -f "$DIR/qemu-ui-threads.dylib" ]; }
+published() { [ -x "$DIR/qemu-ui-launch" ] && [ -f "$DIR/qemu-ui-threads.dylib" ] && [ -f "$DIR/qemu-unclamp.py" ]; }
 
 # Runs under the cache lock. An entry another caller finished while this one waited is kept.
 # Otherwise both are built in a private directory and renamed into the entry one file at a time,
@@ -30,9 +30,10 @@ publish() {
     published && return 0
     local tmp
     tmp="$(mktemp -d "$CACHE/qemu-ui-build.XXXXXX")" || return 1
-    if cc -O2 -Wall -Werror -dynamiclib -o "$tmp/qemu-ui-threads.dylib" "$HERE/qemu-ui-threads.c" &&
-        cc -O2 -Wall -Werror -o "$tmp/qemu-ui-launch" "$HERE/qemu-ui-launch.c" &&
+    if taskpolicy -b cc -O2 -Wall -Werror -dynamiclib -o "$tmp/qemu-ui-threads.dylib" "$HERE/qemu-ui-threads.c" &&
+        taskpolicy -b cc -O2 -Wall -Werror -o "$tmp/qemu-ui-launch" "$HERE/qemu-ui-launch.c" &&
         mkdir -p "$DIR" &&
+        cp "$HERE/qemu-unclamp.py" "$DIR/qemu-unclamp.py" &&
         mv -f "$tmp/qemu-ui-threads.dylib" "$DIR/qemu-ui-threads.dylib" &&
         mv -f "$tmp/qemu-ui-launch" "$DIR/qemu-ui-launch"; then
         rm -rf "$tmp"
@@ -53,7 +54,8 @@ if [ "$(uname -s)" = Darwin ] && [ "${BREENIX_QEMU_UI:-1}" != 0 ]; then
         _BREENIX_QEMU_UI_PUBLISH=1 /usr/bin/lockf -k -t 300 "$CACHE/qemu-ui.lock" "$BASH" "${BASH_SOURCE[0]}"; }; then
         LAUNCHER="$DIR/qemu-ui-launch"
     else
-        echo "qemu-ui-launch.sh: cannot build the launcher from $HERE; QEMU runs at the default priority" >&2
+        echo "qemu-ui-launch.sh: cannot build the boot priority launcher" >&2
+        exit 126
     fi
 fi
 if [ "$#" -eq 0 ]; then
