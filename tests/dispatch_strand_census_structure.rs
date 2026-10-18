@@ -217,8 +217,9 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
     // scripts/x86-strand-census.sh read keep their names, their order and
     // their position, which is what lets the committed #775 round-4 captures
     // still be replayed by tests/x86_gate_verdict_test.rs. The ten appended
-    // fields are pinned by tests/dispatch_fact_census_structure.rs.
-    assert!(census.contains(":tid_overflow={}:ledger_overflow={}{}]"));
+    // fields are pinned by tests/dispatch_fact_census_structure.rs. #1885
+    // appends `waiting` after them.
+    assert!(census.contains(":tid_overflow={}:ledger_overflow={}{}:waiting={}]"));
     assert!(census.contains("FactFields(fact_counts()),"));
     assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
     assert!(census.contains("if !crate::arch_interrupts_enabled()"));

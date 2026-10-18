@@ -213,7 +213,13 @@ impl fmt::Display for TidList<'_> {
 /// increasing), `tick` (the raw PIT tick counter), `ms` (milliseconds on the
 /// monotonic clock the rate limiter reads), `saved`, `stranded`, `tids`,
 /// `tid_overflow`, `ledger_overflow`, then the five `DispatchLogFact` totals in
-/// discriminant order (`FACT_FIELD_NAMES`).
+/// discriminant order (`FACT_FIELD_NAMES`), then `waiting`.
+///
+/// `stranded` and `waiting` split the threads whose saved kernel context was
+/// not restored and that did not exit: `waiting` holds the ones still parked in
+/// a wait (`parked_in_wait`), `stranded` and `tids` the rest. Before #1885 they
+/// were one count, and a production boot listed its blocked init and getty as
+/// stranded for the whole session.
 ///
 /// The fact fields are APPENDED, so every consumer that reads the first
 /// eight by name keeps working on a capture recorded before them;
@@ -227,18 +233,49 @@ pub(crate) fn report_snapshot() {
     snapshot(false);
 }
 
+/// Whether a thread whose saved kernel context has not been restored is
+/// waiting on purpose rather than stranded: blocked with no deadline, or with a
+/// deadline less than one census interval behind `now_ns`.
+///
+/// A thread parked in a blocking syscall stays saved and unrestored for as long
+/// as it waits, so the ledger alone lists init in waitpid and getty reading the
+/// console for a whole production session (#1885). Everything else the ledger
+/// lists stays a strand: a Ready or Running thread whose context was not put
+/// back, a terminated thread or one without a scheduler row that left no exit
+/// record, and a timed wait whose deadline passed a census interval ago, which
+/// the per-tick timer sweep would have ended (a lost timer wake).
+fn parked_in_wait(tid: u64, now_ns: u64) -> bool {
+    match super::scheduler::thread_wait(tid) {
+        Some((state, deadline)) if state.is_blocked() => {
+            deadline.is_none_or(|wake_ns| now_ns.saturating_sub(wake_ns) < HEARTBEAT_INTERVAL_NS)
+        }
+        _ => false,
+    }
+}
+
 fn snapshot(deferred: bool) {
     let mut threads_saved_blocked = 0u64;
     let mut stranded = 0u64;
+    let mut waiting = 0u64;
     let mut stranded_tids = [0u64; STRANDED_TID_CAPACITY];
     let mut stranded_tid_count = 0usize;
-    for (tid, state) in LEDGER.iter().enumerate() {
-        let state = state.load(Ordering::Acquire);
+    let now_ns = monotonic_now_ns();
+    for (tid, slot) in LEDGER.iter().enumerate() {
+        let state = slot.load(Ordering::Acquire);
         if state & EVER_SAVED == 0 {
             continue;
         }
         threads_saved_blocked += 1;
         if state & (EXITED | LAST_EVENT_RESTORED) == 0 {
+            if parked_in_wait(tid as u64, now_ns) {
+                waiting += 1;
+                continue;
+            }
+            // Restored or exited after the first read: the thread ran, and the
+            // state just read (Running, or no row) is the run, not a strand.
+            if slot.load(Ordering::Acquire) & (EXITED | LAST_EVENT_RESTORED) != 0 {
+                continue;
+            }
             stranded += 1;
             if stranded_tid_count < stranded_tids.len() {
                 stranded_tids[stranded_tid_count] = tid as u64;
@@ -257,16 +294,17 @@ fn snapshot(deferred: bool) {
         }
     };
     emit(format_args!(
-        concat!("[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}]", "\n"),
+        concat!("[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}:waiting={}]", "\n"),
         seq,
         crate::time::get_ticks(),
-        monotonic_now_ns() / 1_000_000,
+        now_ns / 1_000_000,
         threads_saved_blocked,
         stranded,
         TidList(&stranded_tids[..stranded_tid_count]),
         tid_overflow,
         OVERFLOW_EVENTS.load(Ordering::Acquire),
         FactFields(fact_counts()),
+        waiting,
     ));
 }
 

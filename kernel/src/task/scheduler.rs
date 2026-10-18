@@ -9466,6 +9466,22 @@ pub fn thread_state(tid: u64) -> Option<ThreadState> {
     with_scheduler(|sched| sched.get_thread(tid).map(|thread| thread.state)).flatten()
 }
 
+/// Thread `tid`'s state and timed-wait deadline (`wake_time_ns`), read in one
+/// lock hold so the two agree. For the dispatch strand census, which tells a
+/// thread parked in a wait apart from one that should be running.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
+    if rq_live() {
+        return without_interrupts(|| rq::with_thread(tid, |_, thread| (thread.state, thread.wake_time_ns)));
+    }
+    with_scheduler(|sched| {
+        sched
+            .get_thread(tid)
+            .map(|thread| (thread.state, thread.wake_time_ns))
+    })
+    .flatten()
+}
+
 /// Whether a user thread has not terminated. x86_64: read from the thread
 /// index without a lock.
 pub fn has_live_user_threads() -> bool {
