@@ -4328,14 +4328,20 @@ impl Scheduler {
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
-        // While a strand injection leg is armed its victim is selected only
-        // by an idle CPU's inline schedule, the handoff the leg injects into.
+        // Consume the default profile's idle-inline selection marker. The live
+        // profile instead reserves the victim for its dedicated driver.
         #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
         let idle_inline = IDLE_INLINE_SELECT[cpu].swap(false, Ordering::Relaxed);
         #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
         if idle_inline {
             super::strand_oracle::note_idle_inline_select();
         }
+        #[cfg(all(feature = "boot_tests", not(feature = "strand_inject_live_outgoing")))]
+        let injection_handoff = idle_inline;
+        #[cfg(feature = "strand_inject_live_outgoing")]
+        let injection_handoff = self.cpu_state[cpu]
+            .current_thread
+            .is_some_and(super::ret_zero_pc_oracle::is_strand_live_driver);
         #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
         let mut victim_withheld = false;
         self.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
@@ -4490,7 +4496,7 @@ impl Scheduler {
                     continue;
                 }
                 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-                if super::strand_oracle::withhold_victim(n, idle_inline) {
+                if super::strand_oracle::withhold_victim(n, injection_handoff) {
                     self.per_cpu_queues[current_cpu].push_back(n);
                     victim_withheld = true;
                     continue;
@@ -4562,7 +4568,7 @@ impl Scheduler {
                         continue;
                     }
                     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
-                    if super::strand_oracle::withhold_victim(n, idle_inline) {
+                    if super::strand_oracle::withhold_victim(n, injection_handoff) {
                         self.per_cpu_queues[steal_cpu].push_back(n);
                         victim_withheld = true;
                         continue;

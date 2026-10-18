@@ -102,15 +102,13 @@ fn armed_leg() -> Option<usize> {
     }
 }
 
-/// Whether a selection must pass over `tid`: an armed leg fires only on an
-/// idle CPU's inline handoff to the victim, so while one is armed no other
-/// selection takes the victim. The scheduler has an idle CPU that passed it
-/// over schedule inline next, so the leg fires at the victim's first idle
-/// dispatch rather than when one happens to come that way.
+/// Withhold an armed victim from selections outside the profile's injection
+/// handoff: idle inline selection by default, the dedicated live driver for
+/// `strand_inject_live_outgoing`. The victim remains queued until selected.
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn withhold_victim(tid: u64, idle_inline: bool) -> bool {
+pub(crate) fn withhold_victim(tid: u64, injection_handoff: bool) -> bool {
     let victim = VICTIM_TID.load(Ordering::Relaxed);
-    if victim == 0 || tid != victim || idle_inline {
+    if victim == 0 || tid != victim || injection_handoff {
         return false;
     }
     let Some(leg) = armed_leg() else {
@@ -613,6 +611,8 @@ fn report_injection() {
         let idle_inline = IDLE_INLINE_SELECTS[leg].load(Ordering::Relaxed);
         let reason = if withheld == 0 {
             "victim_never_ready"
+        } else if cfg!(feature = "strand_inject_live_outgoing") {
+            "live_driver_did_not_inject"
         } else if idle_inline == 0 {
             "no_idle_inline_schedule"
         } else {
