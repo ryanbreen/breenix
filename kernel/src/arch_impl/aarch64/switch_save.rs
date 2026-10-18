@@ -8,11 +8,11 @@
 //! left the stack. The return path takes no lock and touches no device to do
 //! it (strict-gate ruling S6).
 //!
-//! A CPU that selects a marked thread waits for the mark to clear before it
-//! runs the thread on that stack (`wait_until_saved`). The wait is bounded.
-//! If the mark outlasts the bound, the selecting CPU puts the thread back on a
-//! queue for a later selection, and the strand census reports a thread whose
-//! mark stays set (`is_saving`).
+//! Selection skips a marked thread and leaves it queued (ruling S8): the
+//! selecting CPU picks another thread or idles, and a later selection, at the
+//! latest the next tick, finds the thread with its mark clear. No CPU waits
+//! for a mark. The strand census reports a thread whose mark stays set
+//! (`is_saving`).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -21,10 +21,8 @@ use super::constants::MAX_CPUS;
 /// Per CPU, the thread whose kernel stack that CPU is still leaving, or 0.
 static SAVING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
-/// How long a selecting CPU waits for a mark to clear. The marked CPU has a
-/// few hundred instructions left to run with interrupts masked, so only a
-/// vCPU the host has stopped running takes longer.
-const WAIT_BOUND_MS: u64 = 1;
+/// Selections that skipped a thread because its mark was set.
+static SKIPPED: AtomicU64 = AtomicU64::new(0);
 
 /// Mark `tid` as still standing on `cpu`'s stack. Called by `cpu` itself,
 /// under the scheduler lock, before it queues the thread.
@@ -42,24 +40,32 @@ pub(crate) fn clear(cpu: usize) {
     }
 }
 
-/// Whether some CPU is still leaving `tid`'s kernel stack.
-pub(crate) fn is_saving(tid: u64) -> bool {
-    tid != 0 && SAVING.iter().any(|slot| slot.load(Ordering::Acquire) == tid)
+/// The CPU that is still leaving `tid`'s kernel stack, if any.
+pub(crate) fn saving_cpu(tid: u64) -> Option<usize> {
+    if tid == 0 {
+        return None;
+    }
+    SAVING
+        .iter()
+        .position(|slot| slot.load(Ordering::Acquire) == tid)
 }
 
-/// Wait until no CPU is leaving `tid`'s kernel stack. Returns false if a CPU
-/// still was when the bound ran out; the caller must not run the thread then.
-pub(crate) fn wait_until_saved(tid: u64) -> bool {
-    if !is_saving(tid) {
-        return true;
+/// Whether some CPU is still leaving `tid`'s kernel stack.
+pub(crate) fn is_saving(tid: u64) -> bool {
+    saving_cpu(tid).is_some()
+}
+
+/// Whether selection must skip `tid` for now, counting the skip.
+pub(crate) fn skip_selection(tid: u64) -> bool {
+    let saving = is_saving(tid);
+    if saving {
+        SKIPPED.fetch_add(1, Ordering::Relaxed);
     }
-    let bound = super::timer::frequency_hz() / 1000 * WAIT_BOUND_MS;
-    let start = super::timer::rdtsc();
-    while is_saving(tid) {
-        if super::timer::rdtsc().wrapping_sub(start) >= bound {
-            return false;
-        }
-        core::hint::spin_loop();
-    }
-    true
+    saving
+}
+
+/// Selections that skipped a marked thread so far.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn skipped() -> u64 {
+    SKIPPED.load(Ordering::Relaxed)
 }

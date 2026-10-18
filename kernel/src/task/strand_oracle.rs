@@ -456,6 +456,13 @@ fn report_strand(
         worst_cpu_scheduler_silence_ms,
         worst_silence_cpu,
     );
+    // #1785: selections that skipped a thread another CPU was still switching
+    // away from, which shows whether a boot reached the skip.
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!(
+        "[SWITCH_SAVE_SKIPS:total={}]",
+        crate::arch_impl::aarch64::switch_save::skipped()
+    );
     // P6a gate extras (b) and (f). This oracle thread is the only reporter that
     // repeats on a period in *both* profiles once userspace is running, so it is
     // where a real workload's tombstone census becomes visible: nonzero while
