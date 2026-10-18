@@ -76,6 +76,14 @@ def check(args):
                 if not any(line.startswith("console frame: ") and line.endswith(" complete") for line in lines):
                     raise RuntimeError("read-back did not name a completed frame")
                 print(f"serial chvt: tty{number} read back identical", flush=True)
+            process.stdin.write(b"\x01x")
+            process.stdin.flush()
+            try:
+                status = process.wait(timeout=30)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError("shell VM did not stop after Ctrl-A X") from error
+            if status != 0:
+                raise RuntimeError(f"shell boot stopped with exit {status}")
             print("SERIAL CHVT DONE passed=2 failed=0", flush=True)
         finally:
             if process.poll() is None:

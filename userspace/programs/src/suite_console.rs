@@ -860,38 +860,47 @@ fn chvt_chvt_waits() -> CaseResult {
 
 // C4 accepts the staged root account. Give it fresh random credentials and a
 // session-checking shell for this case, restoring both files on the private disk.
+struct LoginCredentials { password: String, hash: String }
+static LOGIN_CREDENTIALS: std::sync::OnceLock<Verdict<LoginCredentials>> = std::sync::OnceLock::new();
+
+fn login_credentials() -> Verdict<LoginCredentials> {
+    let mut random = [0; 16];
+    let mut at = 0;
+    while at < random.len() {
+        let n = libbreenix::crypto::rand::getrandom_bytes(&mut random[at..]).map_err(|e| format!("getrandom: {e}"))?;
+        require(n > 0, "getrandom made no progress")?;
+        at += n;
+    }
+    // Encode the same 64 random bits in 11 keyboard chords. Two logins
+    // plus logout and respawn must fit the suite's ten-second case limit.
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
+    let mut password = String::new();
+    for _ in 0..11 {
+        password.push(ALPHABET[(bits % 62) as usize] as char);
+        bits /= 62;
+    }
+    let salt: String = random[8..].iter().map(|b| format!("{b:02x}")).collect();
+    let mut hash = [0; libbreenix::crypto::sha512_crypt::MAX_OUTPUT];
+    let n = libbreenix::crypto::sha512_crypt::sha512_crypt(password.as_bytes(), &format!("$6${salt}"), &mut hash)
+        .map_err(String::from)?;
+    Ok(LoginCredentials { password, hash: std::str::from_utf8(&hash[..n]).map_err(|e| e.to_string())?.into() })
+}
+
 struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, password: String }
 impl LoginAccount {
     fn create() -> Verdict<Self> {
+        let credentials = LOGIN_CREDENTIALS.get().ok_or("run credentials were not prepared")?
+            .as_ref().map_err(Clone::clone)?;
         let passwd = std::fs::read("/etc/passwd").map_err(|e| e.to_string())?;
         let shadow = match std::fs::read("/etc/shadow") {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(format!("read shadow: {error}")),
         };
-        let mut random = [0; 16];
-        let mut at = 0;
-        while at < random.len() {
-            let n = libbreenix::crypto::rand::getrandom_bytes(&mut random[at..]).map_err(|e| format!("getrandom: {e}"))?;
-            require(n > 0, "getrandom made no progress")?;
-            at += n;
-        }
-        // Encode the same 64 random bits in 11 keyboard chords. Two logins
-        // plus logout and respawn must fit the suite's ten-second case limit.
-        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
-        let mut password = String::new();
-        for _ in 0..11 {
-            password.push(ALPHABET[(bits % 62) as usize] as char);
-            bits /= 62;
-        }
-        let salt: String = random[8..].iter().map(|b| format!("{b:02x}")).collect();
-        let mut hash = [0; libbreenix::crypto::sha512_crypt::MAX_OUTPUT];
-        let n = libbreenix::crypto::sha512_crypt::sha512_crypt(password.as_bytes(), &format!("$6${salt}"), &mut hash)
-            .map_err(String::from)?;
-        let account = Self { passwd, shadow, password };
+        let account = Self { passwd, shadow, password: credentials.password.clone() };
         std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/sbin/suite-console\n").map_err(|e| e.to_string())?;
-        std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", std::str::from_utf8(&hash[..n]).map_err(|e| e.to_string())?))
+        std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", credentials.hash))
             .map_err(|e| e.to_string())?;
         Ok(account)
     }
@@ -966,12 +975,15 @@ fn type_line(text: &str) -> Verdict {
 }
 
 fn login_vt(number: usize, password: &str) -> Verdict<String> {
+    let began = libbreenix::suite::case_ms_left();
     wait_vt(number, "Breenix login: ")?;
     activate(number)?;
     type_line("root")?;
     wait_vt(number, "Password: ")?;
+    let password_at = libbreenix::suite::case_ms_left();
     type_line(password)?;
-    let text = wait_vt(number, &format!("VTLOGIN tty{number} "))?;
+    let text = wait_vt(number, &format!("VTLOGIN tty{number} "))
+        .map_err(|e| format!("{e}; login began with {began}ms, password with {password_at}ms left"))?;
     require(!text.contains(password), "password appeared on the screen")?;
     Ok(text.lines().find(|line| line.starts_with("VTLOGIN ")).ok_or("missing login proof")?.trim().into())
 }
@@ -1104,6 +1116,11 @@ fn main() {
     if std::env::args().next().as_deref() == Some("-suite-console") {
         if let Err(error) = login_shell() { eprintln!("login shell: {error}"); std::process::exit(1); }
         return;
+    }
+    let args: Vec<_> = std::env::args().collect();
+    let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));
+    if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {
+        LOGIN_CREDENTIALS.get_or_init(login_credentials);
     }
     SUITE.run()
 }
