@@ -51,6 +51,11 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         arg
     );
 
+    #[cfg(feature = "testing")]
+    if request == super::handlers::PIPE_WAKE_HOLD {
+        return super::handlers::arm_pipe_wake_hold(arg);
+    }
+
     #[cfg(feature = "boot_tests")]
     if request == super::blocking_io_oracle::QUERY
         || request == super::blocking_io_oracle::FIFO_FIXTURE
