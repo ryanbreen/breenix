@@ -86,7 +86,11 @@ unsafe fn read_file(root: *mut File, name: &[u16], buffer: &mut [u8]) -> Result<
 
 /// Install before loading the kernel, or return the disk after a cold power cycle without loading a kernel.
 /// An ordinary delivery has no request file and takes the existing boot path.
-pub(super) unsafe fn run(boot: &BootServices, volume: *const u8) -> Result<(), Status> {
+pub(super) unsafe fn run(
+    boot: &BootServices,
+    volume: *const u8,
+    image: Handle,
+) -> Result<(), Status> {
     let mut path = volume;
     let mut handle = null_mut();
     ok((boot.locate_device_path)(
@@ -108,12 +112,17 @@ pub(super) unsafe fn run(boot: &BootServices, volume: *const u8) -> Result<(), S
         ((*root).close)(root);
         return Ok(());
     }
-    let result = operate(boot, root, &config[..result?]);
+    let result = operate(boot, root, &config[..result?], image);
     ((*root).close)(root);
     result
 }
 
-unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8]) -> Result<(), Status> {
+unsafe fn operate(
+    boot: &BootServices,
+    root: *mut File,
+    config: &[u8],
+    image: Handle,
+) -> Result<(), Status> {
     if config.len() < HEADER || &config[..16] != MAGIC {
         return Err(INVALID_PARAMETER);
     }
@@ -156,7 +165,7 @@ unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8]) -> Result
             return Err(INVALID_PARAMETER);
         }
         say!("reading the suite disk after power-off: {} bytes", size);
-        upload(boot, disk, size, &bytes, url)?;
+        upload(boot, disk, size, &bytes, url, image)?;
         say!("disk readback complete: {} bytes", size);
         halt()
     }
@@ -405,16 +414,49 @@ unsafe fn exchange(
     ok(token.status)
 }
 
+// UEFI 2.10 §9.1: the source device of this image, not an enumeration-order NIC.
+#[repr(C)]
+struct LoadedImage {
+    _revision: u32,
+    _parent: Handle,
+    _system: *const SystemTable,
+    device: Handle,
+}
+
+unsafe fn boot_http_binding(boot: &BootServices, image: Handle) -> Result<*mut Binding, Status> {
+    const LOADED_IMAGE: Guid = Guid(
+        0x5b1b_31a1,
+        0x9562,
+        0x11d2,
+        [0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+    );
+    let mut loaded = null_mut();
+    ok((boot.handle_protocol)(image, &LOADED_IMAGE, &mut loaded))?;
+    let device = (*loaded.cast::<LoadedImage>()).device;
+    let mut path = null_mut();
+    ok((boot.handle_protocol)(device, &DEVICE_PATH, &mut path))?;
+    let mut remaining = path as *const u8;
+    let mut nic = null_mut();
+    ok((boot.locate_device_path)(
+        &HTTP_BINDING,
+        &mut remaining,
+        &mut nic,
+    ))?;
+    let mut binding = null_mut();
+    ok((boot.handle_protocol)(nic, &HTTP_BINDING, &mut binding))?;
+    Ok(binding.cast())
+}
+
 unsafe fn upload(
     boot: &BootServices,
     disk: *mut BlockIo,
     size: usize,
     buffer: &Buffer<'_>,
     url: &[u8],
+    image: Handle,
 ) -> Result<(), Status> {
-    let mut binding = null_mut();
-    ok((boot.locate_protocol)(&HTTP_BINDING, null(), &mut binding))?;
-    let binding = binding.cast::<Binding>();
+    let binding = boot_http_binding(boot, image)?;
+    say!("disk readback uses the HTTP boot interface");
     let mut child = null_mut();
     ok(((*binding).create)(binding, &mut child))?;
     let mut protocol = null_mut();
@@ -433,7 +475,11 @@ unsafe fn upload(
             ipv6: 0,
             access: &mut access,
         };
-        ok(((*http).configure)(http, &config))?;
+        let status = ((*http).configure)(http, &config);
+        if status != SUCCESS {
+            say!("disk readback HTTP configure failed: {:#x}", status);
+        }
+        ok(status)?;
         let mut wide = [0u16; 2048];
         for (out, &byte) in wide.iter_mut().zip(url) {
             *out = byte as u16;
@@ -483,7 +529,11 @@ unsafe fn upload(
             len: 0,
             body: null_mut(),
         };
-        exchange(boot, http, &mut message, false)?;
+        let result = exchange(boot, http, &mut message, false);
+        if let Err(status) = result {
+            say!("disk readback HTTP request failed: {:#x}", status);
+        }
+        result?;
         let mut offset = 0;
         while offset < size {
             let len = CHUNK.min(size - offset);

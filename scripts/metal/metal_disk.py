@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-import shutil
 import struct
 from urllib.parse import urlsplit, urlunsplit
 
@@ -57,11 +56,10 @@ def stage(directory, inputs, boot_id, commit, site, build):
         facts.update(commit=commit, buildDigest=key)
         files = {'suite-disk.cfg': request, 'suite-root.img': image}
     m.write_json(directory / 'suite-disk.json', facts)
-    shutil.copyfile(inputs / 'stub.efi', directory / 'readback-stub.efi')
     return facts, files
 
 
-def prepare_readback(directory, stage, source_id, commit, boot_id, site):
+def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     source = m.boot_dir(source_id)
     run = m.read_json(source / 'run.json', {})
     facts = m.read_json(source / 'suite-disk.json')
@@ -85,7 +83,7 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site):
     image = stage / 'readback-disk.img'
     metal_image.assemble(image, {'suite-disk.cfg': request})
     output = stage / 'boot.efi'
-    payload = metal_image.stub_efi(source / 'readback-stub.efi', image, output)
+    payload = metal_image.stub_efi(stub, image, output)
     image.unlink()
     m.write_json(directory / 'readback.json', dict(source=source_id, bytes=facts['bytes'], rootRecord=record(facts).hex(),
                                                  suitePoweredOffAt=off[-1]['t']))

@@ -475,7 +475,8 @@ build lease, so the delivered root carries the SDK's records (`suite` in `build.
 build staged for another suite). A manifest's `diskChecks` (files-io's raw writeback checks) require a cold firmware
 read of the physical disk, before any filesystem mount. After the suite boot
 powers off, start `metal-run boot --payload disk-readback --source-boot ID --branch BRANCH`.
-The readback boot acquires the same machine lease, identifies the disk by its
+The readback boot builds the deployed firmware stub under a metal-build slot,
+without a kernel or userspace rebuild. It acquires the same machine lease, identifies the disk by its
 exact storage record, and uploads its raw sectors to a one-use, lease-bound HTTP
 route. No kernel or filesystem is loaded on that boot. An intervening disk-root
 boot invalidates the association, including when it reuses the same build.

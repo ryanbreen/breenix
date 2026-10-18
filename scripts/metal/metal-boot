@@ -13,10 +13,10 @@
 Run options: --payload image|hang|none, --mode default|shell|probe|suite|console, --commit SHA, --target main|branch:NAME,
 --task NAME, --no-wait, --inject forceoff-fail|xhci-reset-device|xhci-short-read, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
 for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
-its stage folder, and serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as
-`ramdisk` by default). `--disk install` (probe mode) stages the install request on the RAM disk, so the kernel copies
-it onto the machine's disk; `--disk root` (probe mode) delivers no RAM disk, so the kernel boots from the disk the
-last install wrote (README, "The disks").
+its stage folder, and serves boot.efi: the stub with its delivery disk appended. Main-path modes default to
+physical disk root, installing a changed userspace digest before the kernel starts. A small per-boot target
+payload selects the mode. `--disk install` is an explicit recovery install from a RAM disk; xHCI fault boots
+retain a RAM-disk root (README, "The disks").
 """
 import argparse
 import contextlib
@@ -270,13 +270,6 @@ class Driver:
     # Inputs and the image.
     def prepare_payload(self):
         self.stage.mkdir(parents=True, exist_ok=True)
-        if self.args.payload == 'disk-readback':
-            facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
-                                                       self.args.commit, self.id, self.site)
-            self.payload_facts = dict(path=image, size=facts['size'], sha256=facts['sha256'],
-                                      contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
-            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
-            return
         if self.args.payload == 'none':
             self.event('nothing-staged')
             return
@@ -312,6 +305,19 @@ class Driver:
             if m.now() > deadline:
                 raise Finish(m.EXIT_CANCELLED, 'the image build did not deliver its inputs in time')
             time.sleep(2)
+        if self.args.payload == 'disk-readback':
+            build = m.read_json(inputs / 'build.json', {})
+            stub = inputs / 'stub.efi'
+            if (build.get('commit') != self.args.commit or build.get('profile') != 'disk-readback'
+                    or build.get('stub', {}).get('sha256') != metal_image.sha256(stub)):
+                raise Finish(m.EXIT_CANCELLED, 'the readback firmware differs from its build record')
+            self.delivery['build'] = build
+            facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
+                                                       self.args.commit, self.id, self.site, stub)
+            self.payload_facts = dict(path=image, size=facts['size'], sha256=facts['sha256'],
+                                      contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            return
         if self.args.payload == 'linux':
             manifest = m.read_json(inputs / 'build.json', {})
             image = inputs / 'metal-linux.efi'
@@ -1360,9 +1366,9 @@ def main():
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read'))
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
-        p.add_argument('--ramdisk', action='store_true', default=True, help='put the ext2 root on the boot disk as `ramdisk`')
+        p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
         p.add_argument('--disk', choices=DISK_ACTIONS,
-                       help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
+                       help='physical disk root (default), or an explicit recovery install')
         p.add_argument('--content-type', choices=('application/octet-stream',),
                        help='a test payload served with this type instead of its form\'s own')
         p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),

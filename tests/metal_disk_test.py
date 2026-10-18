@@ -72,7 +72,7 @@ class DiskTest(existing.StateTest):
         (source / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
         existing.m.write_json(existing.m.STATE / 'disk.json', dict(facts, lastBoot='another-boot'))
         with self.assertRaisesRegex(ValueError, 'replaced between'):
-            disk.prepare_readback(self.directory, self.inputs, source_id, 'b' * 40, 'readback', self.site)
+            disk.prepare_readback(self.directory, self.inputs, source_id, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
 
 
 if __name__ == '__main__':

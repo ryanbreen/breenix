@@ -278,7 +278,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         Ok(path) => path,
         Err(status) => return status,
     };
-    if let Err(status) = suite_disk::run(boot, volume) {
+    if let Err(status) = suite_disk::run(boot, volume, image) {
         return status;
     }
     let file = match file_path(boot, volume, BOOTLOADER) {

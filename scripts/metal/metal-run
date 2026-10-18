@@ -159,7 +159,7 @@ def boot(args):
         except Exception:
             in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
             raise
-    if payload == 'image':
+    if payload in ('image', 'disk-readback'):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
@@ -167,13 +167,14 @@ def boot(args):
             features = ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else []
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
-            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite,
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite +
+                             (['--readback'] if payload == 'disk-readback' else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     return 0
 
 
-def build(boot_id, sha, features=None, suite=None):
+def build(boot_id, sha, features=None, suite=None, readback=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -205,7 +206,8 @@ def build(boot_id, sha, features=None, suite=None):
                       '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
                       '--stub', f'{tools}/efi-stub', *(['--features', features] if features else []),
-                      *(['--suite', suite] if suite else [])).returncode
+                      *(['--suite', suite] if suite else []),
+                      *(['--stub-only'] if readback else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
@@ -259,7 +261,7 @@ def main():
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
-    p.add_argument('--ramdisk', action='store_true', default=True, help='a Breenix image also carries the ext2 root as `ramdisk`')
+    p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')
@@ -268,11 +270,12 @@ def main():
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE,))
     p.add_argument('--suite')
+    p.add_argument('--readback', action='store_true')
     args = parser.parse_args()
     if args.command == 'boot':
         return boot(args)
     if args.command == '_build':
-        return build(args.id, args.sha, args.features, args.suite)
+        return build(args.id, args.sha, args.features, args.suite, args.readback)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)
