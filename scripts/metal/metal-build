@@ -2,14 +2,14 @@
 """Builds one x86-metal boot's inputs in the metal build container (docs/metal/README.md, "Build").
 
   metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject]
-              [--suite ID]
+              [--suite ID[,ID...]]
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
 (gate-artifacts.py --metal, exact artifacts over leased incremental targets in the container's cache), then the production kernel and its UEFI
 image (a fault-test kernel with --features), and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
 commit's kernel is delivered the same way), all under one lease of the container's metal-build slots. A suite boot
-names its suite; for the Developer SDK suite the same lease also runs the commit's scripts/sdk-suite.py, which builds
+names its suite, or the suites it runs in turn; when they include the Developer SDK suite the same lease also runs the commit's scripts/sdk-suite.py, which builds
 the SDK and its test apps and stages their records onto a copy of the ext2 root, as the other launchers do before
 an SDK suite boot (docs/suites/README.md), and that copy is the root delivered. The slot and
 artifact helpers are the deployed tools' copies beside this file, not the commit's, so every commit builds the same
@@ -144,7 +144,7 @@ def inner(args):
     os.environ['CARGO_HOME'] = home
     timings = {}
     # The SDK suite's root is a staged copy; every other boot's is the built root as it is.
-    root = tmp / 'ext2-sdk.img' if args.suite == 'sdk' else clone / 'testdata/ext2.img'
+    root = tmp / 'ext2-sdk.img' if 'sdk' in args.suite.split(',') else clone / 'testdata/ext2.img'
     try:
         started = time.time()
         subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
@@ -186,7 +186,7 @@ def inner(args):
             timings['stub'] = round(time.time() - started)
             if not clean_build(status, log, 'stub', logs, out):
                 return 1
-            if args.suite == 'sdk':
+            if 'sdk' in args.suite.split(','):
                 started = time.time()
                 shutil.copyfile(clone / 'testdata/ext2.img', root)
                 log = logs / 'sdk-suite.log'
@@ -217,7 +217,7 @@ def inner(args):
         shutil.copyfile(images[-1], out / 'uefi.img')
         shutil.copyfile(root, out / 'ext2.img')
         copied = []
-        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py']
+        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py']
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
         for name in definition_files:
             source = clone / name
@@ -251,14 +251,15 @@ def main():
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
     parser.add_argument('--features', choices=('', 'xhci_fault_inject'), default='',
                         help='build a fault-test kernel; never set for a production boot')
-    parser.add_argument('--suite', default='', help="a suite boot's suite id; sdk stages the SDK suite's host results")
+    parser.add_argument('--suite', default='',
+                        help="a suite boot's suite id, or ids joined by commas; sdk stages the SDK suite's host results")
     for name in ('--id', '--sha', '--repo', '--rust-fork', '--cache', '--root', '--stub'):
         parser.add_argument(name, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.id) or not re.fullmatch(r'[0-9a-f]{40}', args.sha):
         parser.error('--id must be a metal boot id and --sha a full commit id')
-    if args.suite and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', args.suite):
-        parser.error('--suite must be a suite id')
+    if args.suite and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', args.suite):
+        parser.error('--suite must be a suite id or ids joined by commas')
     return inner(args) if args.inner else outer(args)
 
 

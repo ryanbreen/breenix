@@ -1276,6 +1276,18 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=1420):
             self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
 
+    def test_each_suite_of_a_multi_suite_boot_gets_its_own_deadline(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'directories,processes,time'
+        self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
+        d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 900
+        d.on_line('SUITE processes START cases=154', observed_at=500)
+        with patch.object(m, 'now', return_value=920):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=921):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+
     def test_404_and_fatal_capture_graces(self):
         d = self.driver
         d.request_at = d.not_found_at = 110

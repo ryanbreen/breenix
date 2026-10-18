@@ -4,6 +4,7 @@
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
   metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
+                 [--suite ID | --suite ID,ID,... | --suite all]
   metal-run stop ID
   metal-run status
   metal-run follow ID
@@ -13,12 +14,15 @@
 the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the metal
 build container, detached, and streams the image inputs into the service container. Instance names and paths come from
 the host file named by BREENIX_METAL_HOST_ENV (default ~/.config/breenix-metal/host.env), never from the repository.
+A suite boot may run several suites in turn: a list, or `all` (every main-path effort suite but those that need a 3D GPU),
+resolved against the commit's own docs/efforts/path.json and manifests (docs/suites/README.md, "Several suites in one boot").
 """
 import argparse
 import json
 import os
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 import time
@@ -81,6 +85,25 @@ def verify_target(env, sha, branch):
         raise SystemExit('the requested commit is not contained in the target branch')
 
 
+def resolve_suites(env, sha, spec):
+    """The suites a suite boot runs, in order, from the commit's own path and manifests (scripts/suite-sequence.py)."""
+    in_build(env, 'git', '-C', env['BUILD_REPO'], 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', sha,
+             check=True, capture_output=True)
+
+    def read(relative):
+        result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'show', f'{sha}:{relative}', capture_output=True, text=True)
+        return result.stdout if result.returncode == 0 else None
+    # Deployed, the resolver sits beside metal-run; in a checkout it is in scripts/.
+    source = HERE / 'suite-sequence.py' if (HERE / 'suite-sequence.py').exists() else HERE.parent / 'suite-sequence.py'
+    try:
+        ids, skipped = runpy.run_path(str(source))['resolve'](spec, 'x86-metal', False, read)
+    except ValueError as error:
+        raise SystemExit(f'--suite: {error}') from None
+    for suite, why in skipped:
+        print(f'[metal-run] leaving out {suite}: {why}', file=sys.stderr, flush=True)
+    return ','.join(ids)
+
+
 def boot(args):
     is_session = bool(getattr(args, 'session', False))
     attended = bool(getattr(args, 'attended', False))
@@ -111,6 +134,9 @@ def boot(args):
             branch = args.branch or 'main'
             sha = resolve(env, branch)
             target = 'main' if branch == 'main' else 'branch:' + branch
+    if args.suite and payload == 'image':
+        args.suite = resolve_suites(env, sha, args.suite)
+        print(f'[metal-run] suites: {args.suite}', file=sys.stderr, flush=True)
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode]

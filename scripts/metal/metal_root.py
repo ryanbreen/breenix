@@ -107,8 +107,10 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         raise ValueError('invalid xHCI fault-test target')
     if mode not in ('default', 'shell', 'probe', 'suite', 'console'):
         raise ValueError('unsupported RAM-disk boot mode')
-    if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
+    # A list runs each suite in turn (docs/suites/README.md, "Several suites in one boot").
+    if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
+    first = suite.split(',')[0] if suite else None
     if mode != 'suite' and suite:
         raise ValueError('a suite needs suite mode')
     if idle_minutes is not None and (mode != 'console' or not 1 <= idle_minutes <= 240):
@@ -138,9 +140,9 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     writer = Path(writer) if writer else (packaged if packaged.is_file() else
                                          Path(__file__).resolve().parents[1] / 'write-boot-target.sh')
     writer_hash = hashlib.sha256(writer.read_bytes()).hexdigest()
-    target = suite if mode == 'suite' else '--' + mode
+    target = [first, '', suite] if mode == 'suite' and ',' in suite else [first if mode == 'suite' else '--' + mode]
     try:
-        subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
+        subprocess.run(['bash', str(writer), str(image), *target], check=True, capture_output=True,
                        env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
                                 BREENIX_CONSOLE_IDLE_MINUTES='' if idle_minutes is None else str(idle_minutes),
                                 BREENIX_CONSOLE_REPLUG='1' if replug else '0'))
@@ -169,7 +171,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)
-        expected_target = ('suite ' + suite if mode == 'suite' else mode)
+        expected_target = ('suite ' + first if mode == 'suite' else mode)
         if replug:
             expected_target += ' replug'
         if idle_minutes is not None:
@@ -202,7 +204,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                                   check=True, capture_output=True).stdout
         if b'Type: symlink' not in resolver or b'"/proc/net/pnp"' not in resolver:
             raise ValueError('RAM-disk resolver does not name the live DHCP configuration')
-        binary = {'suite': f'/sbin/suite-{suite}', 'probe': '/sbin/probe'}.get(mode, '/sbin/init')
+        binary = {'suite': f'/sbin/suite-{first}', 'probe': '/sbin/probe'}.get(mode, '/sbin/init')
         installed = scratch / 'pid1'
         subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
                        check=True, capture_output=True)
