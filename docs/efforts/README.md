@@ -10,26 +10,22 @@ file from main and shows each milestone's state from live evidence; nothing in i
       "suite":      the effort's suite id (docs/suites/<id>.json), when it has one,
       "area":       the POSIX area its system interfaces belong to, as Vigil's syscall coverage names it,
       "subsystems": issue/merge taxonomy ids whose open issues and recent merges belong to this effort,
-      "targets":    the targets the effort is measured on, when not all four (see below),
-      "targetsNote": one line on why a target is missing and when it joins, only beside "targets",
+      "targets":    the targets the effort is measured on, explicitly listed (see below),
+      "targetsNote": one line on the target policy, only beside "targets",
       "milestones": [ { "id", "title", "measure" } ] }
 
 ## Targets
 
-<!-- claim-lint:ok: tests/suite_manifests.rs checks the target sets and the guard table is in tests/effort_target_guard_test.py. -->
-The main-path targets are `arm64-qemu` (ARM64 QEMU), `parallels`, `vmware` and `x86` (x86-64), the ids
-`scripts/effort-target-guard.py` uses for `path.json`. An effort without `targets` is measured on those four. With it, a
-non-empty list in that order without repeats, the effort is measured only on the targets listed: wherever a
-measure below says "every target", it means those. A target left out neither counts toward the effort nor holds
-it back. An effort without `x86` measures `interfaces` on ARM64 only, and has no `profiles` milestones.
+As of 2026-10-18 (S23), the main-path targets are `arm64-qemu` (ARM64 QEMU),
+`parallels` and `vmware`. Each effort lists its targets explicitly; an already
+narrower effort retains its narrower list without x86. A target left out does not
+count toward or block the effort. `interfaces` is measured on ARM64 on this path.
+x86 hardware-profile milestones remain defined but are outside measurement on the main path.
 
-`gpu`, `breengel`, `window-manager`, `ui-testing` and `gui-apps` list `arm64-qemu`, `parallels` and `vmware`:
-the x86-64 gate host is VGA only, so x86-64 is measured up to the shell, and it joins the GPU-era efforts when
-the dedicated Breenix hardware box replaces that host.
-
-`x86-metal` is a physical x86-64 server reached by UEFI HTTP boot, measured only by the efforts in
-`metal.json`. Vigil's platform is `metal` ("x86-64 metal"). An omitted target list still means the four
-main targets above; it does not include metal. The main and metal paths advance independently.
+x86-64 requires evidence from x86-metal using the [metal boot loop](../metal/README.md),
+measured by `metal.json`. Vigil's platform is `metal` ("x86-64 metal").
+The main and metal paths advance independently. [S23's execution policy](../x86-execution-policy.md)
+supersedes earlier x86 QEMU gate and landing requirements.
 
 `metal.json` uses the same effort schema with exactly `["x86-metal"]` on its efforts. Its `bootPath`
 measures resolve against `docs/metal/boot-path.json`; suite measures use the existing manifests.
@@ -76,14 +72,16 @@ must list merge parents and files outside metal paths for review of that boundar
 
 A milestone has exactly one measure:
 
-- `{"bootPath": "<milestone id>"}`: the docs/boot-path.json milestone passes in the newest boot on every target
-  (ARM64 QEMU, Parallels, VMware, x86-64). On x86-64 only the full tests gate on the default PC counts.
-- `{"profiles": "<milestone id>"}`: that boot-path milestone passes in the newest full x86-64 gate on every
-  hardware profile in docs/x86-profiles.json.
-- `{"suite": "<id>", "categories": ["<category id>", ...]}`: every case in those categories of that suite
-  passes. It is done when it passes on every target (ARM64 QEMU, Parallels, VMware, x86-64); until the suite
+- `{"bootPath": "<milestone id>"}`: the docs/boot-path.json milestone passes in the newest boot on the targets
+  listed by the effort (ARM64 QEMU, Parallels and VMware).
+- `{"profiles": "<milestone id>"}`: a retained x86 hardware-profile definition from docs/x86-profiles.json,
+  outside measurement on the main path under S23.
+- `{"suite": "<id>", "categories": ["<category id>", ...]}`: the cases in those categories of that suite
+  must pass. It is done when it passes on the targets listed by the effort (ARM64 QEMU, Parallels and VMware); until the suite
   has those categories the milestone is shown as not measured yet, which is the work of writing its cases.
 - `{"interfaces": "<area>"}` or `{"interfaces": ["name", ...]}`: those POSIX system interfaces are backed by a
-  dispatched syscall on both architectures.
+  dispatched syscall on the architectures in the effort's target list.
 
 Ids are lowercase words joined by `-`. Add an effort or milestone by editing this file; Vigil picks it up.
+
+Profile milestones on efforts without x86 are retained as out of scope: Vigil's existing `BreenixPath.swift` defines `outOfScope` as excluded from progress and non-blocking, and excludes those milestones from the effort count. See `BreenixPath.swift:56-59,168-170,232-234`.

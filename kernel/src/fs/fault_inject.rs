@@ -171,6 +171,8 @@ impl FaultBlockDevice {
 }
 
 impl BlockDevice for FaultBlockDevice {
+    fn is_read_only(&self) -> bool { self.inner.is_read_only() }
+
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         match self.armed_for(block_num) {
             SHAPE_NONE => self.inner.read_block(block_num, buf),

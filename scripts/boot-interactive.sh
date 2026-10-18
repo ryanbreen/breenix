@@ -200,7 +200,7 @@ esac
 # QEMU launcher restores boot policy independently, immediately before exec.
 run_build() {
     if [ "$(uname)" = Darwin ]; then
-        taskpolicy -b "$@"
+        "$ROOT/scripts/build-background.sh" "$@"
     else
         "$@"
     fi

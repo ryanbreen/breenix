@@ -1228,7 +1228,7 @@ fn launch_x86_production_init(
     exe_path: &[u8],
     elf_data: &[u8],
     only: Option<&str>,
-    console_mode: Option<&str>,
+    console_mode: Option<X86ConsoleMode>,
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
@@ -1244,7 +1244,7 @@ fn launch_x86_production_init(
         let path = alloc::format!("/sbin/{}", name);
         let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
         if let Some(mode) = console_mode {
-            argv.push(mode.as_bytes());
+            argv.push(mode.arg().as_bytes());
         }
         if let Some(case) = only {
             argv.extend_from_slice(&[b"--case", case.as_bytes()]);
@@ -1269,26 +1269,20 @@ fn launch_x86_production_init(
         reserved_collisions
     );
 
-    if console_mode == Some("console") {
-        // Boot holds a scheduling brake here. Wait on an ordinary thread so
-        // the xHCI worker can finish before init can start getty.
-        // Keep ownership outside the closure until its creation succeeds: a
-        // failed kthread_run drops the closure, but init still needs to run.
-        let pending = alloc::sync::Arc::new(spin::Mutex::new(Some(thread)));
-        let startup = pending.clone();
-        if task::kthread::kthread_run(move || {
-            let thread = startup.lock().take().expect("console init thread missing");
-            if kernel::drivers::xhci::wait_console_ready() {
-                task::scheduler::spawn(thread);
-            } else {
-                log::error!("[console] keyboard preparation failed; starting init for serial login");
-                task::scheduler::spawn(thread);
-            }
-        }, "console-start").is_err() {
-            let thread = pending.lock().take().expect("console init thread missing");
-            log::error!("[console] cannot create startup thread; starting init for serial login");
-            task::scheduler::spawn(thread);
+    if let Some(X86ConsoleMode::Console { idle_minutes, replug, from }) = console_mode {
+        // Input preparation begins here, once init has been read and
+        // published, so an init read or launch failure returns above
+        // without a keyboard request (#1893).
+        log::info!(
+            "[console] input preparation: replug {} by {}",
+            if replug { "requested" } else { "not requested" },
+            from
+        );
+        if let Some(minutes) = idle_minutes {
+            kernel::tty::input_clock::start(minutes);
         }
+        kernel::drivers::xhci::console_session_starting(replug);
+        kernel::boot::console_start::schedule(thread);
     } else {
         task::scheduler::spawn(thread);
     }
@@ -1373,23 +1367,43 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     }
 }
 
+/// Init's interactive argument and, for the console, what input preparation
+/// it needs. Selection only reads fw_cfg and the boot target;
+/// `launch_x86_production_init` starts the input clock and the xHCI request
+/// once init is published (#1893).
+#[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
+#[derive(Clone, Copy)]
+enum X86ConsoleMode {
+    Shell,
+    /// `from` names where `replug` came from: "fw_cfg", "intent" (the
+    /// per-boot payload) or "target" (the boot-target file).
+    Console { idle_minutes: Option<u16>, replug: bool, from: &'static str },
+}
+
+#[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
+impl X86ConsoleMode {
+    fn arg(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Console { .. } => "console",
+        }
+    }
+}
+
 /// Select init's interactive argument through the same fw_cfg-before-file rule.
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
-fn x86_console_mode() -> Option<&'static str> {
+fn x86_console_mode() -> Option<X86ConsoleMode> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
-        Some("shell") => Some("shell"),
-        Some("console") => {
-            kernel::drivers::xhci::console_session_starting(false);
-            Some("console")
-        },
+        Some("shell") => Some(X86ConsoleMode::Shell),
+        Some("console") => Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "fw_cfg" }),
         None | Some("") => match kernel::boot::target::read() {
-            Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
+            Ok(Some(kernel::boot::target::Target::Shell)) => Some(X86ConsoleMode::Shell),
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
-                kernel::tty::input_clock::start(idle_minutes);
-                kernel::drivers::xhci::console_session_starting(
-                    kernel::boot::console_intent::replug_or(replug),
-                );
-                Some("console")
+                Some(X86ConsoleMode::Console {
+                    idle_minutes: Some(idle_minutes),
+                    replug: kernel::boot::console_intent::replug_or(replug),
+                    from: if kernel::boot::console_intent::explicit().is_some() { "intent" } else { "target" },
+                })
             },
             _ => None,
         },
@@ -1411,7 +1425,7 @@ fn x86_console_mode() -> Option<&'static str> {
     ))
 ))]
 fn read_x86_production_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
     let suite = match x86_boot_target() {
@@ -1464,9 +1478,9 @@ fn read_x86_production_init(
     ))
 ))]
 fn read_default_x86_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
     let mode = x86_console_mode();
-    log::info!("[boot] Boot mode: {}", mode.unwrap_or("default"));
+    log::info!("[boot] Boot mode: {}", mode.map_or("default", X86ConsoleMode::arg));
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
         .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, mode))
 }

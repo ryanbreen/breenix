@@ -13,8 +13,24 @@ import shutil
 import subprocess
 import tempfile
 import secrets
+import sys
 from urllib.parse import urlsplit, urlunsplit
 from metal_probe import PROBE_PATH, PROBE_SHA256
+
+
+def require_e2fsprogs(*commands):
+    """Resolve PATH, Linux sbin and Homebrew's keg before doing any staging."""
+    found = []
+    for command in commands:
+        candidates = (command, '/usr/sbin/' + command, '/sbin/' + command,
+                      '/opt/homebrew/opt/e2fsprogs/sbin/' + command,
+                      '/usr/local/opt/e2fsprogs/sbin/' + command)
+        executable = next((path for candidate in candidates if (path := shutil.which(candidate))), None)
+        if executable is None:
+            install = 'brew install e2fsprogs' if sys.platform == 'darwin' else 'sudo apt-get install e2fsprogs'
+            raise ValueError(f'missing prerequisite: {command} (e2fsprogs); install with: {install}')
+        found.append(executable)
+    return found
 
 
 RECORD_MAGIC = b'BREENIX-STORAGE 1\n'
@@ -85,7 +101,10 @@ def console_shadow(site, hasher):
     return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
 
 
-def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False):
+def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None):
+    if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
+                                   or mode != 'console' or install or idle_minutes is not None or replug):
+        raise ValueError('invalid xHCI fault-test target')
     if mode not in ('default', 'shell', 'probe', 'suite', 'console'):
         raise ValueError('unsupported RAM-disk boot mode')
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
@@ -113,9 +132,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         lines += ['METAL_FETCH_URL=' + urlunsplit((url.scheme, url.netloc, PROBE_PATH, '', '')) + '\n',
                   'METAL_FETCH_SHA256=' + PROBE_SHA256 + '\n']
     shadow = console_shadow(site, hasher) if mode == 'console' else None
-    debugfs = shutil.which('debugfs')
-    if not debugfs:
-        raise ValueError('staging needs debugfs')
+    debugfs, = require_e2fsprogs('debugfs')
     image = Path(image).resolve()
     packaged = Path(__file__).resolve().with_name('write-boot-target.sh')
     writer = Path(writer) if writer else (packaged if packaged.is_file() else
@@ -132,6 +149,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
         scratch = Path(scratch)
         files = {'site.env': ''.join(lines)}
+        # Replace this file so ordinary staging disarms a prior fault.
+        files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
         commands = []
         for name, text in files.items():
             source = scratch / name

@@ -19,13 +19,18 @@ pub fn capture(bytes: &[u8]) -> bool {
     true
 }
 
+/// The per-boot replug choice, when a payload carried one.
+pub fn explicit() -> Option<bool> {
+    match INTENT.load(Ordering::Acquire) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
 /// An explicit per-boot intent overrides an installed target's measurement flag.
 pub fn replug_or(target: bool) -> bool {
-    match INTENT.load(Ordering::Acquire) {
-        1 => false,
-        2 => true,
-        _ => target,
-    }
+    explicit().unwrap_or(target)
 }
 
 #[cfg(test)]
@@ -34,9 +39,11 @@ mod tests {
 
     #[test]
     fn per_boot_intent_overrides_both_kinds_of_installed_target() {
+        assert_eq!(explicit(), None);
         assert!(!replug_or(false));
         assert!(replug_or(true));
         assert!(capture(b"BREENIX-CONSOLE 1\nsession\n"));
+        assert_eq!(explicit(), Some(false));
         assert!(!replug_or(true));
         assert!(!replug_or(false));
         assert!(capture(b"BREENIX-CONSOLE 1\nmeasure\n"));

@@ -6,7 +6,11 @@
 //! DMA is coherent on x86. One worker owns the rings and device contexts;
 //! the MSI handler accesses only published MMIO addresses and atomic work.
 //! `keyboard` adds HID boot keyboards, hot-plug and slot reclamation.
+//! `fault` is the recovery exercise, built only into fault-test kernels.
 mod keyboard;
+mod recovery;
+#[cfg(feature = "xhci_fault_inject")]
+mod fault;
 mod spec;
 
 use crate::{
@@ -286,6 +290,8 @@ struct Controller {
     console: crate::drivers::hid_boot::Console,
     /// Absolute console lock state, shared across keyboard pipes and reattach.
     keyboard_leds: u8,
+    #[cfg(feature = "xhci_fault_inject")]
+    fault: fault::Injection,
 }
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
@@ -450,6 +456,8 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         devices: Vec::new(),
         console: crate::drivers::hid_boot::Console::new(),
         keyboard_leds: 0,
+        #[cfg(feature = "xhci_fault_inject")]
+        fault: fault::Injection::new(),
     };
     let result = controller.run(scratchpads);
     if result.is_err() {
@@ -1021,10 +1029,16 @@ impl Controller {
         index: u8,
         len: u16,
     ) -> Result<Vec<u8>, &'static str> {
+        // Fault-test only: the device descriptor is 18 bytes. Requesting 19
+        // produces a real Short Packet; the resend asks for 18 again.
+        #[cfg(feature = "xhci_fault_inject")]
+        let short = core::cell::Cell::new(self.fault.short_descriptor(device.port, kind, len));
         let request = spec::get_descriptor(kind, index, len).parameter;
         let event = self.ep0_transfer(device, request, &|device: &mut Device| {
             // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
             // The DMA allocation need not itself be 64 KiB aligned, so split there.
+            #[cfg(feature = "xhci_fault_inject")]
+            let len = if short.replace(false) { len + 1 } else { len };
             let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
             let mut offset = 0usize;
             while offset < len as usize {
@@ -1073,45 +1087,7 @@ impl Controller {
         request: u64,
         queue: &dyn Fn(&mut Device) -> Vec<u64>,
     ) -> Result<Trb, &'static str> {
-        let mut attempt = 1;
-        loop {
-            let pointers = queue(device);
-            self.ring_doorbell(device.slot, 1);
-            let event = self.event_any(&pointers, 32)?;
-            if event.slot() != device.slot || (event.control >> 16) & 31 != 1 {
-                return Err("EP0 transfer identity mismatch");
-            }
-            let after_ns = match spec::ep0_next(event.code(), attempt) {
-                spec::Ep0Next::Done | spec::Ep0Next::Fail => return Ok(event),
-                spec::Ep0Next::RecoverAndFail => {
-                    self.recover_ep0(device)?;
-                    return Ok(event);
-                }
-                spec::Ep0Next::Retry { after_ns } => {
-                    self.recover_ep0(device)?;
-                    after_ns
-                }
-                spec::Ep0Next::Resend { after_ns } => {
-                    // The Status TD still runs (4.10.1.1); take its completion.
-                    let status = pointers[pointers.len() - 1];
-                    if event.parameter & !15 != status {
-                        let done = self.event_any(&[status], 32)?;
-                        if spec::halts_endpoint(done.code()) {
-                            self.recover_ep0(device)?;
-                        }
-                    }
-                    after_ns
-                }
-            };
-            device.ep0_retries += 1;
-            log::warn!(
-                "[usb] slot {}: EP0 request {request:#018x} completed with code={} on attempt {attempt}; sending it again",
-                device.slot,
-                event.code()
-            );
-            delay(after_ns);
-            attempt += 1;
-        }
+        recovery::transfer(&mut Ep0 { controller: self, device, request, queue })
     }
     /// 4.6.8: Reset Endpoint, then a Set TR Dequeue Pointer onto the next
     /// Setup TD, past the halted TD's remaining stages.
@@ -1153,5 +1129,35 @@ impl Controller {
             offset += len;
         }
         Ok(())
+    }
+}
+
+/// Hardware operations used by the host-tested EP0 orchestration.
+struct Ep0<'a> {
+    controller: &'a mut Controller,
+    device: &'a mut Device,
+    request: u64,
+    queue: &'a dyn Fn(&mut Device) -> Vec<u64>,
+}
+impl recovery::Control for Ep0<'_> {
+    fn slot(&self) -> u8 { self.device.slot }
+    fn submit(&mut self) -> Vec<u64> {
+        let pointers = (self.queue)(self.device);
+        self.controller.ring_doorbell(self.device.slot, 1);
+        pointers
+    }
+    fn wait(&mut self, pointers: &[u64]) -> Result<Trb, &'static str> {
+        self.controller.event_any(pointers, 32)
+    }
+    fn recover(&mut self) -> Result<(), &'static str> {
+        self.controller.recover_ep0(self.device)
+    }
+    fn retry(&mut self, event: Trb, attempt: u32, after_ns: u64) {
+        self.device.ep0_retries += 1;
+        log::warn!(
+            "[usb] slot {}: EP0 request {:#018x} completed with code={} on attempt {attempt}; sending it again",
+            self.device.slot, self.request, event.code()
+        );
+        delay(after_ns);
     }
 }

@@ -50,8 +50,6 @@ RUN_ARGS=("$@")
 # QEMU process, and exit before reaching here. #834 extended this lock's
 # coverage from docker/qemu/*.sh (its original #826/R181 scope) to run.sh
 # as well; #865 closed the x86_64-leg gap this comment used to disclose.
-# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
-source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # Defaults: ARM64 with graphics
 ARCH="arm64"
@@ -253,6 +251,9 @@ if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
 if [ "$PARALLELS" = true ]; then TARGET=parallels
 elif [ "$VMWARE" = true ]; then TARGET=vmware
 fi
+if [ "$TARGET" = x86 ] && [ "$DRY_RUN" != true ]; then
+    source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
+fi
 if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
     case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
         ''|0|false|no) BREENIX_CATCHUP=0 ;;
@@ -274,6 +275,9 @@ if [ "$DRY_RUN" = true ]; then
     echo "Target policy accepted; no build or boot requested."
     exit 0
 fi
+# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
@@ -303,7 +307,7 @@ fi
 # Opt in for constrained build hosts; VM execution retains normal priority.
 run_build() {
     if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
-        taskpolicy -b "$@"
+        "$BREENIX_ROOT/scripts/build-background.sh" "$@"
     else
         "$@"
     fi
@@ -896,6 +900,10 @@ if [ "$PARALLELS" = true ]; then
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
     prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
+    # Disable app sharing; this is expected to reduce host app indexing activity.
+    if ! prlctl set "$PARALLELS_VM" --sh-app-guest-to-host off --sh-app-host-to-guest off; then
+        echo "WARNING: could not disable Parallels application sharing" >&2
+    fi
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true

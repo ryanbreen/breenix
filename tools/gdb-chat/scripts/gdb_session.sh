@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Parse --arch flag from arguments after the subcommand
 parse_arch() {
-    local arch="x86_64"
+    local arch="aarch64"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --arch)
@@ -58,6 +58,10 @@ start_session() {
     if [ "$arch" != "x86_64" ] && [ "$arch" != "aarch64" ]; then
         echo "ERROR: Invalid architecture '$arch'. Use 'x86_64' or 'aarch64'."
         exit 1
+    fi
+
+    if [ "$arch" = x86_64 ]; then
+        source "$SCRIPT_DIR/../../../scripts/x86-qemu-policy.sh"
     fi
 
     # Clean up any existing session
@@ -231,14 +235,14 @@ case "${1:-}" in
         echo ""
         echo "Commands:"
         echo "  start [--arch ARCH]  Start a new GDB debugging session"
-        echo "                       ARCH: x86_64 (default) or aarch64"
+        echo "                       ARCH: aarch64 (default) or x86_64"
         echo "  cmd \"command\"        Send a GDB command (e.g., cmd \"break main\")"
         echo "  serial               Get all kernel serial output"
         echo "  stop                 Stop the current session"
         echo "  status               Check session status"
         echo ""
         echo "Examples:"
-        echo "  $0 start                          # x86_64 session"
+        echo "  $0 start                          # aarch64 session"
         echo "  $0 start --arch aarch64           # ARM64 session"
         echo "  $0 cmd \"break kernel_main\""
         echo "  $0 cmd \"continue\""

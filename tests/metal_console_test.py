@@ -25,6 +25,8 @@ class ConsoleTest(unittest.TestCase):
         driver.console_done = False
         driver.final_seen = True
         driver.required_stages = []
+        driver.console_intent = None
+        driver.seen = set()
         driver.event = Mock()
         driver.console_send = Mock()
         return driver
@@ -65,6 +67,39 @@ class ConsoleTest(unittest.TestCase):
         with self.assertRaises(boot.Finish) as result:
             driver.challenge_console('Breenix login: ')
         self.assertEqual(result.exception.status, 0)
+        # A disk-root console boot also needs the kernel's account of its intent.
+        driver.console_intent = 'measure'
+        driver.console_step = 11
+        driver.challenge_console('Breenix login: ')
+        driver.console_step = 11
+        driver.seen.add('console-intent')
+        with self.assertRaises(boot.Finish) as result:
+            driver.challenge_console('Breenix login: ')
+        self.assertEqual(result.exception.status, 0)
+
+    def test_disk_root_console_intent_must_come_from_the_staged_payload(self):
+        line = '[ INFO] [console] input preparation: replug {} by {}'
+        for staged, is_session, replug, source, honored in [
+                ('measure', False, 'requested', 'intent', True),
+                ('session', True, 'not requested', 'intent', True),
+                ('measure', False, 'requested', 'target', False),
+                ('measure', False, 'not requested', 'intent', False),
+                ('session', True, 'requested', 'target', False)]:
+            driver = self.driver()
+            driver.args.session, driver.console_intent, driver.seen = is_session, staged, set()
+            if honored or is_session:
+                driver.on_intent_line(line.format(replug, source), 1.0)
+            else:
+                with self.assertRaises(boot.Finish) as result:
+                    driver.on_intent_line(line.format(replug, source), 1.0)
+                self.assertEqual(result.exception.status, existing.m.EXIT_SHORT)
+            self.assertIn('console-intent', driver.seen)
+            self.assertEqual(driver.event.call_args.kwargs['honored'], honored)
+        # A RAM-disk console boot stages no intent and does not check the line.
+        driver = self.driver()
+        driver.seen = set()
+        driver.on_intent_line(line.format('requested', 'target'), 1.0)
+        self.assertEqual(driver.seen, set())
 
     def test_console_prompt_cannot_override_a_failing_serial_chunk(self):
         fixture = existing.DriverTest()
@@ -172,6 +207,16 @@ class ConsoleTest(unittest.TestCase):
                 stage.assert_not_called()
                 files = assemble.call_args.args[1]
                 self.assertEqual(files['ramdisk'].read_bytes(), expected)
+                self.assertEqual(d.delivery['consoleIntent'], expected.split(b'\n')[1].decode())
+            # The assembled image records the intent, not a RAM-disk root.
+            with patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+                 patch.object(boot.metal_image, 'assemble', side_effect=lambda path, files: (
+                     path.write_bytes(b''), {'size': 1, 'sha256': '0' * 64, 'components': []})[1]), \
+                 patch.object(boot.metal_image, 'stub_efi', return_value={'size': 1, 'sha256': '0' * 64, 'stub': {}}), \
+                 patch.object(boot.Driver, 'load_definition'):
+                d.prepare_payload()
+            assembled = [c for c in d.event.call_args_list if c.args[0] == 'image-assembled'][-1].kwargs
+            self.assertEqual((assembled['ramdisk'], assembled['consoleIntent']), (False, 'measure'))
         finally:
             fixture.tearDown()
 
@@ -223,6 +268,14 @@ class ConsoleTest(unittest.TestCase):
             self.assertEqual(read('cat /etc/breenix/boot-target'), b'console idle=2\n')
             with self.assertRaisesRegex(ValueError, 'measured console'):
                 metal_root.stage_root(image, 'console', None, site, hasher=hasher, idle_minutes=2, replug=True)
+
+            for fault in ('reset-device', 'short-read', None):
+                metal_root.stage_root(image, 'console', None, site, hasher=hasher, xhci_fault=fault)
+                self.assertEqual(read('cat /etc/breenix/xhci-fault'),
+                                 b'' if fault is None else (fault + '\n').encode())
+            with self.assertRaisesRegex(ValueError, 'fault-test'):
+                metal_root.stage_root(image, 'console', None, site, hasher=hasher,
+                                      xhci_fault='short-read', replug=True)
 
             shadow = read('cat /etc/shadow')
             self.assertRegex(shadow, rb'^root:\$6\$[./A-Za-z0-9]{16}\$[./A-Za-z0-9]{86}:')

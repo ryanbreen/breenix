@@ -287,6 +287,12 @@ END {
     }
     if (tid_overflow > 0)
         printf "strand census: %d additional stranded thread(s) omitted by the kernel TID-list bound\n", tid_overflow
+    # waiting= (issue 1885): saved and not restored, but parked in a wait with
+    # no deadline or one still ahead, so not a strand. Captures recorded before
+    # the field existed counted these threads in stranded and skip this line.
+    waiting = field(best, "waiting")
+    if (waiting != "")
+        printf "strand census: %d thread(s) saved blocked and still parked in a wait as of the latest snapshot, not counted as stranded\n", waiting + 0
 
     printf "strand census: latest snapshot seq=%d tick=%s at %s ms; %d valid snapshot(s)", best_seq, tick, at_ms, valid
     if (last_gap >= 0) printf ", previous %d ms earlier, largest gap %d ms", last_gap, max_gap

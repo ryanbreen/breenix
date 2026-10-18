@@ -5,6 +5,12 @@ comes back over the management controller's serial-over-LAN (SOL), and the boot 
 attempt. This file is the target's contract: how a kernel is delivered, how the console is captured, the deadlines
 and exit statuses, the machine service and its reaper, the boot record, the disk rule and the clean-room rule. The
 tools are in `scripts/metal/`; their host tests are `tests/metal_tools_test.py`.
+The staging tests require `mke2fs` and `debugfs` from e2fsprogs: install with
+`brew install e2fsprogs` on macOS or `sudo apt-get install e2fsprogs` on Debian/Ubuntu.
+Run `python3 tests/metal_tools_test.py` in the checkout, including in the metal build
+container. The tests resolve distribution sbin directories and Homebrew's keg even
+when those directories are absent from `PATH`; a missing tool stops the runner with
+its prerequisite and install command before any tests run.
 
 Private values stay out of this repository. The management controller's address and account, the boot URL and the
 site's identifiers live in the **site file** (`BREENIX_METAL_SITE`, default `/etc/breenix-metal/site.env`, mode
@@ -158,7 +164,11 @@ the kernel completes keyboard attachment and the exercise before starting init a
 Disk-root console boots carry a small per-boot intent payload through the bootloader's RAM-payload slot; the
 kernel consumes it as metadata, without registering a RAM block device or changing the installed root. A
 session intent suppresses an installed measurement flag; a test intent requests the exercise even on a plain
-installed console target.
+installed console target. Input preparation starts only after `/sbin/init` is read and published, so an init
+that cannot be read or launched leaves the keyboard alone. The kernel then prints
+`[console] input preparation: replug requested|not requested by intent|target|fw_cfg`. On a disk-root console
+boot the driver requires `by intent` with the staged choice (event `console-intent`; a test boot that disagrees
+ends short), and `image-assembled` records `consoleIntent` with `ramdisk` false, since no RAM-disk root is delivered.
 
 Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
 the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
@@ -330,10 +340,21 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
-   production kernel (no features) and its UEFI image, and the delivery stub from the deployed tools, each refused on
-   any warning. The metal mode builds userspace once: the clone is fresh, so that build is already a clean one. It is
+   production kernel (no features; an xHCI fault boot's kernel adds only `xhci_fault_inject`) and its UEFI image,
+   and the delivery stub from the deployed tools, each refused on
+   any warning. The metal mode builds userspace once on an exact artifact miss, using persistent Cargo targets. It is
    content-keyed, including the deployed artifact builder's contents, in the container's own cache under
-   `metal-artifacts/` with `built-once.json`; the x86 gate reads
+   `metal-artifacts/` with `built-once.json`. On a miss, `metal-targets/<toolchain-key>/` holds separate
+   programs and libc targets, mounted into the build's private namespace at the usual workspace paths.
+   Compiler identities, the Rust library pin and target specifications select the pool. A directory lease
+   covers timestamp reconciliation and the build, so concurrent builds sharing a pool serialize there.
+   Byte-identical source inputs retain their recorded timestamps across clones; changed inputs receive
+   the current time after the lease is acquired. Cargo decides which binaries need rebuilding. Archive
+   cleaning records libc.a's cleaned digest and preserves its timestamp only when those bytes are unchanged,
+   including when Cargo republishes the original staticlib. Targets and artifacts share
+   the cache's LRU eviction budget (`BREENIX_GATE_CACHE_GB`, default 12 GiB) and free-space floor
+   (`BREENIX_GATE_FREE_GB`, default 15 GiB). Active leases can temporarily exceed the budget; pruning
+   before and after builds, including failures, removes idle entries. The x86 gate reads
    only its own `artifacts/<key>/verified.json`, which it publishes after its second, comparing build, so it does not
    take a metal build as verified. The slot and artifact helpers are the deployed tools' copies, so a
    commit builds the same way whatever its own copies say. `build.json` records the phase timings (`slot_wait`,
@@ -507,7 +528,7 @@ padding to the end of the sector.
   compares that line with `disk-write.json` (event `disk-write-verified`) and, when they agree, records the disk's
   contents in the service's `disk.json`. Root then mounts from the RAM disk, the hardware disks are read-only
   again, and the `ramdisk-root` milestone's stages print as on any RAM-disk boot.
-- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload); the driver
+- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload, checked as event `console-intent`); the driver
   refuses to start one when `disk.json` records no verified install. The kernel reads the first sector of each
   attached hardware disk, needs exactly one root record, reports it, says whether the image after the record still has the
   recorded SHA-256 (true on the first boot after an install; later boots write the root, so this is a report, not a
@@ -975,3 +996,92 @@ claim-lint:ok: 2 of 2 retained host build logs report acquired metal-build waite
 For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PATH`, compile
 `scripts/metal/sha512-crypt.rs` with `rustc --edition=2021 -O` to a temporary helper, then set
 `CONSOLE_HASH_HELPER` to that helper and run `python3 tests/metal_console_test.py`.
+
+
+## xHCI recovery fault boots
+
+A recovery exercise uses `--mode console --input sol --inject xhci-reset-device`
+or `--inject xhci-short-read` through `metal-run boot`, with the target branch.
+It requires a RAM-disk image and cannot be combined with a session, attended
+input or a disk action. The boot record is `fault-test`, evidence-ineligible;
+the milestone scorer refuses it and no milestone verdict is written.
+The boot still uses the machine lease, normal capture and power-off cleanup.
+
+The exercise is compiled only into fault-test kernels. For an xHCI fault boot
+`metal-run` asks `metal-build` for `--features xhci_fault_inject`, and
+`build.json` records profile `fault-test` with that feature; any other boot
+gets the production kernel (profile `production`, no features). The driver
+refuses an xHCI fault boot whose build is not the fault-test kernel, and any
+other boot whose build is. A production kernel therefore has no code that reads
+`/etc/breenix/xhci-fault`, so no file on a root disk can start the exercise.
+`scripts/check-xhci-fault-production-clean.sh` (run by
+`tests/xhci_fault_production_clean.rs`) builds the metal kernel as `metal-build`
+does and fails on any symbol from the exercise's module or any `xhci-fault`
+bytes in the UEFI image. Its anti-vacuity mode requires a fault-test build to
+redden both checks.
+
+A fault-test kernel reads the staged `xhci-fault` intent when console startup
+asks it to run. An ordinary boot replaces that file with an empty, disarmed
+intent. An unreadable or malformed intent is reported as
+`[xhci-fault] request unusable` and the console starts without an exercise.
+Reset-device injects a configuration failure after the real configuration
+requests complete on two attach attempts. Each refusal takes the ordinary
+slot reclamation and device reset/re-enumeration path; the attach after the
+second reset succeeds. The reset budget stays two and the EP0 attempt budget
+stays three. `recovery::reset_while_refused` holds the reset loop, and the host
+tests in `tests/xhci_recovery.rs` run it to show a third reset is refused.
+The driver injects the refusal itself because a keyboard can accept an invalid
+configuration value, making that on-wire stimulus unsuitable as a deterministic fault.
+Short-read requests 19 bytes of the 18-byte device descriptor once, waits for
+the real Short Packet and Status completions, then resends for 18 bytes.
+A Status stage that fails after a short read is that attempt's outcome: a
+halting code (including a transaction error) is recovered and the request sent
+again within the three attempts, and the Status completion, not the short read,
+is reported once the attempts are used up (xHCI 1.2 4.10.1, 4.10.2, 4.8.3 and 4.6.8).
+
+HID Set_Idle requests periodic reports during the exercise. The exercise reads
+the event ring only after the MSI handler has published work, as the rest of the
+driver does, so a PASS also shows interrupt delivery; the PASS line counts the
+interrupts taken during the exercise. The short-read check requires the
+interrupt-IN completion to have been queued during the EP0 waits, before any
+further event-ring read: a periodic report completes within the 50 ms resend
+delay. Both exercises require a valid report decoded and the next input TD
+queued, then restore change-only reports. These unchanged reports exercise
+delivery without manufacturing key presses or claiming a human login. A distinct
+`[xhci-fault] <path> PASS:` line ends the boot only after those checks succeed.
+
+Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specification)
+9.4.3, 9.4.7 and 9.6.1, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
+7.2.4, and [xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
+4.6.8, 4.8.3, 4.10.1 and 4.10.2. No other implementation is a reference.
+
+### Recovery validation
+
+The sanitized serial excerpts below show the two fault PASS results reported
+for commit `057cafee`: reset-device reports two refusals and 46 interrupts;
+short-read reports code 13, a resend and 5 interrupts. Both PASS lines report
+an input report decoded and requeued.
+
+These excerpts do not independently establish build profiles, process exit
+statuses, capture completeness, power-off state or ordinary-console milestone
+totals. No sanitized manifests or verdict artifacts are supplied here, so those
+claims are not part of this public evidence. Raw captures remain private.
+
+Sanitized serial excerpts from the fault captures:
+
+```text
+20261018T173538Z-metal:
+[usb] port 2: resetting the device (2 of 2)
+[usb] boot keyboard attached: ... ep0-retries=0 device-resets=2
+[xhci-fault] reset-device PASS: refusals=2 shorts=0 interrupts=46 input-report-decoded-and-requeued
+20261018T174648Z-metal:
+[usb] slot 1: EP0 request 0x0012000001000680 completed with code=13 on attempt 1; sending it again
+[xhci-fault] short-read PASS: refusals=0 shorts=1 interrupts=5 input-report-decoded-and-requeued
+```
+
+The logged request is the exercise's 18-byte setup packet; the injected
+attempt sends the same request with a 19-byte length.
+
+A Status stage failing after a short read did not occur on these boots;
+that path is covered by the host tests in `tests/xhci_recovery.rs`, which also
+drive the reset loop to its refused third reset.
