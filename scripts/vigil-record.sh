@@ -26,20 +26,25 @@ done
 [ -n "$CLI" ] || exit 0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VIGIL_WORKTREE=""
+# A detached main commit is still main; a feature commit in the main checkout is not.
+if ! git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    VIGIL_WORKTREE="$(basename "$ROOT")"
+fi
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
+        # vigil-cli accepts desktop, and stores it as default for VM platforms.
+        [ "$mode" != default ] || mode=desktop
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
         dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
         args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
+        [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
         elif [ -n "$mode" ]; then
-            # The CLI defaults an omitted mode to tests. Native production
-            # boots are the program profile, not a testing-kernel boot.
-            if [ "$mode" = default ]; then args+=(--mode program);
-            else args+=(--mode "$mode"); fi
+            args+=(--mode "$mode")
         fi
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$profile" ] || [ "$profile" = default ] || args+=(--profile "$profile")
@@ -48,16 +53,16 @@ case "${1:-}" in
         # machine; Vigil keeps it out of main's evidence.
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
-        "$CLI" "${args[@]}" || exit 0
+        "$CLI" "${args[@]}" || { echo "WARNING: Vigil boot registration failed" >&2; exit 0; }
         exit 0
         ;;
     record)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
         started=${10:-}; ended=${11:-}; status=${12:-1}
+        [ "$mode" != default ] || mode=desktop
         args=(breenix record --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --serial-user "$user" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
-        if [ -n "$suite" ]; then args+=(--suite "$suite");
-        elif [ "$mode" = default ]; then args+=(--mode program);
-        else args+=(--mode "$mode"); fi
+        [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
+        if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it
         # instead of creating a second record or letting the importer assign zero. vigil-cli keeps boots under the

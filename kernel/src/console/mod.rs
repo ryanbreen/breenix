@@ -815,10 +815,10 @@ impl Snapshot {
     }
 
     /// Copy the foreground terminal's view if it, or which terminal is in
-    /// the foreground, changed since the last copy. False when neither did or
-    /// the lock stayed held. A different terminal sets `REDRAW`, so each of
-    /// its rows is drawn.
-    fn refresh(&mut self) -> bool {
+    /// the foreground, changed since the last copy. Some(false) when neither
+    /// did; None when no current snapshot could be obtained. A different
+    /// terminal sets `REDRAW`, so each of its rows is drawn.
+    fn refresh(&mut self) -> Option<bool> {
         let (generation, fg, epoch) = (self.generation, self.fg, self.epoch);
         let cells = &mut self.cells;
         let copied = with_grid(|console| {
@@ -837,7 +837,7 @@ impl Snapshot {
             let visible = grid.cursor_visible() && grid.view() == 0;
             Some((grid.generation(), grid.cursor(), visible, frame))
         });
-        match copied.flatten() {
+        match copied? {
             Some((generation, cursor, visible, frame)) => {
                 if frame.fg != self.fg || frame.epoch != self.epoch {
                     REDRAW.store(true, Ordering::Release);
@@ -847,9 +847,9 @@ impl Snapshot {
                 self.cursor_visible = visible;
                 self.fg = frame.fg;
                 self.epoch = frame.epoch;
-                true
+                Some(true)
             }
-            None => false,
+            None => Some(false),
         }
     }
 }
@@ -884,6 +884,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut last_session = false;
     let mut pending_replies = [0; vt::VT_COUNT];
     while !crate::task::kthread::kthread_should_stop() {
+        // A read-back requested during this pass waits for the next snapshot.
+        let proc_token = PROC_CHECK.load(Ordering::Acquire);
         deliver_replies(&mut pending_replies);
         crate::tty::driver::drain_keyboard_input();
         // A switch a key asked for, then switch deadlines, whichever owner draws.
@@ -892,13 +894,13 @@ fn render_thread(display: &'static Display, attached: Attached) {
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
             splash_run.pass(display, &mut screen.shadow);
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, proc_token);
             end_pass();
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
         if !SCREEN.load(Ordering::Acquire) {
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, proc_token);
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
@@ -913,7 +915,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 vt::checked(shown);
             }
             end_pass();
-            answer_checks(Err(Absent::Taken), true);
+            answer_checks(Err(Absent::Taken), true, proc_token);
             // A switch waits on these passes: look again soon while one does.
             sleep_ms(if vt::switching() { PASS_INTERVAL_MS } else { PASS_INTERVAL_MS * 10 });
             continue;
@@ -925,7 +927,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
             sleep_ms(1);
             continue;
         }
-        let changed = snapshot.refresh();
+        let Some(changed) = snapshot.refresh() else {
+            // Keep a requested read-back pending until a pass observes the grid.
+            end_pass();
+            sleep_ms(PASS_INTERVAL_MS);
+            continue;
+        };
         if REDRAW.swap(false, Ordering::AcqRel) {
             screen.cleared = false;
             screen.complete = false;
@@ -972,7 +979,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         }
         if announced {
-            answer_checks(Ok((&screen, snapshot.fg)), true);
+            answer_checks(Ok((&screen, snapshot.fg)), true, proc_token);
         }
         end_pass();
         sleep_ms(PASS_INTERVAL_MS);
@@ -1347,9 +1354,9 @@ impl fmt::Display for Hex<'_> {
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
 /// may answer it (`idle_allowed`): it reads the console's text, not the splash.
-fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
+fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, proc_token: u32) {
     let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
-    let token = PROC_CHECK.swap(0, Ordering::AcqRel);
+    let token = PROC_CHECK.compare_exchange(proc_token, 0, Ordering::AcqRel, Ordering::Acquire).unwrap_or(0);
     if !idle && token == 0 {
         return;
     }
