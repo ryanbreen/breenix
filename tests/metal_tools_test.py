@@ -714,12 +714,28 @@ class DefinitionTest(unittest.TestCase):
                          ('OEM', 'No bootable devices.', None))
 
 
+class StagingPrerequisiteTest(unittest.TestCase):
+    def test_missing_tool_reports_install_command_before_staging(self):
+        import metal_root
+        with patch.object(metal_root.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(SystemExit, 'missing prerequisite: debugfs .*install with: .*e2fsprogs'):
+                metal_root.require_e2fsprogs('debugfs')
+
+    def test_distribution_sbin_is_searched_when_it_is_not_on_path(self):
+        import metal_root
+        with patch.object(metal_root.shutil, 'which', side_effect=lambda p: p if p == '/usr/sbin/debugfs' else None):
+            self.assertEqual(metal_root.require_e2fsprogs('debugfs'), ['/usr/sbin/debugfs'])
+
+
 class RootStagingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import metal_root
+        cls.mke2fs, cls.debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+
     def test_modes_and_guest_site_are_read_back_from_the_staged_image(self):
         import metal_root
-        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
-        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
-        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        mke2fs, debugfs = self.mke2fs, self.debugfs
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             tree = root / 'tree'
@@ -767,9 +783,7 @@ class RootStagingTest(unittest.TestCase):
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root
-        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
-        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
-        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        mke2fs, debugfs = self.mke2fs, self.debugfs
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             tree = root / 'tree'
@@ -1568,4 +1582,6 @@ class PublicRepositoryTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    import metal_root
+    metal_root.require_e2fsprogs('mke2fs', 'debugfs')
     unittest.main()
