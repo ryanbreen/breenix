@@ -688,8 +688,8 @@ fn timing_classification_ignores_comments_and_literals() {
 const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
 
 /// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
-/// `TARGETS` order without repeats; a note is one line of text and only sits beside a list; an effort
-/// without x86-64 has no `profiles` milestone, which is measured only there.
+/// `TARGETS` order without repeats; a note is one line of text and only sits beside a list.
+/// S23 retains profile definitions even when x86 is absent and they are not measured.
 fn effort_target_errors(path: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     for effort in path["efforts"].as_array().into_iter().flatten() {
@@ -723,16 +723,7 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
             Some(Value::String(text)) if !text.trim().is_empty() && !text.contains('\n') => {}
             Some(_) => errors.push(format!("{id}: \"targetsNote\" must be non-empty text on one line")),
         }
-        if !names.contains(&"x86") {
-            for milestone in effort["milestones"].as_array().into_iter().flatten() {
-                if milestone["measure"].get("profiles").is_some() {
-                    errors.push(format!(
-                        "{id}: milestone {} measures x86-64 profiles, but x86 is not a target",
-                        milestone["id"]
-                    ));
-                }
-            }
-        }
+
     }
     errors
 }
@@ -764,7 +755,7 @@ fn effort_target_lists_are_checked() {
     assert!(check(serde_json::json!({ "id": "a" })).is_empty());
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
         .is_empty());
-    assert!(check(serde_json::json!({ "id": "a", "targets": TARGETS, "milestones": profiles })).is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware"], "milestones": profiles })).is_empty());
     for bad in [
         serde_json::json!({ "id": "a", "targetsNote": "no list" }),
         serde_json::json!({ "id": "a", "targets": [] }),
@@ -776,7 +767,6 @@ fn effort_target_lists_are_checked() {
         serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "two\nlines" }),
-        serde_json::json!({ "id": "a", "targets": ["vmware"], "milestones": profiles }),
     ] {
         assert_eq!(check(bad.clone()).len(), 1, "{bad}");
     }

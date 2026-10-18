@@ -220,7 +220,8 @@ public struct BeastLauncher {
             slotHelperBase64: slotHelperBase64,
             progressBundleBase64: progressBundleBase64,
             treeHelperBase64: treeHelperBase64,
-            quietOverride: quietOverride
+            quietOverride: quietOverride,
+            allowX86Qemu: ProcessInfo.processInfo.environment["BREENIX_ALLOW_X86_QEMU"] == "1"
         )
     }
 
@@ -240,6 +241,7 @@ public struct BeastLauncher {
     }
 
     public func runX86(options: BeastLaunchOptions) throws -> BeastLaunchResult {
+        try X86QemuPolicy.requireOperatorOverride()
         let startedAt = Date()
         let id = options.runID ?? RunManifest.makeID(startedAt: startedAt, arch: .x86_64, profile: "gate")
         var plannedOptions = options

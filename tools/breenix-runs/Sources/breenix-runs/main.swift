@@ -65,7 +65,8 @@ func usage() -> String {
     Default store: ~/Library/Application Support/BreenixRuns
     Override for CLI and app: BREENIX_RUNS_STORE=/absolute/store/path
     show defaults to subsystems; combine flags to select panes.
-    run arm launches local QEMU; run x86 supports the remote gate profile only.
+    run arm launches local QEMU; run x86 is refused by the S23 bare-metal-only policy.
+    Prove x86-64 on the R240 metal boot loop; operator override: BREENIX_ALLOW_X86_QEMU=1.
     x86 --hardware selects hardware from docs/x86-profiles.json (unset: default).
     --gate-timeout sets the scoring deadline (default: 900); full mode collects completion.
     Full boots stop on USERSPACE TEST REPORT DONE. BREENIX_FULL_BACKSTOP sets the hang
@@ -451,6 +452,7 @@ func main() -> Int32 {
                 }
             case "x86":
                 var runArgs = try parseRunX86(args.dropFirst(2))
+                try X86QemuPolicy.requireOperatorOverride()
                 switch (ProcessInfo.processInfo.environment["BREENIX_CATCHUP"] ?? "").lowercased() {
                 case "", "0", "false", "no": break
                 case "1", "true", "yes": runArgs.catchup = true

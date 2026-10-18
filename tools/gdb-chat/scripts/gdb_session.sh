@@ -60,6 +60,10 @@ start_session() {
         exit 1
     fi
 
+    if [ "$arch" = x86_64 ]; then
+        source "$SCRIPT_DIR/../../../scripts/x86-qemu-policy.sh"
+    fi
+
     # Clean up any existing session
     stop_session 2>/dev/null
 

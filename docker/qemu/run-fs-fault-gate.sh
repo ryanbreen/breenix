@@ -64,7 +64,6 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # a no-op on a leg that skipped its own acquire, so no ARCH-conditional
 # release was needed to add the x86 leg's own acquire.
 # shellcheck source=lib/qemu-host-lock.sh
-source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # #797: concurrent lanes sharing one host (e.g. the beast build environment,
 # reached here via --x86) each invoking this script hardcode the identical
@@ -131,6 +130,12 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; redden 2 ;;
     esac
 done
+
+if [ "$ARCH" = x86 ]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
+fi
+
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 DISARM_FEATURE=""
 case "$DISARM" in

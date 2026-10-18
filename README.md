@@ -1,13 +1,19 @@
 # Breenix
 
+<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
+As of 2026-10-18 (S23), x86-64 is proved on the R240 through the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](docs/x86-execution-policy.md);
+legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+
 Breenix is a POSIX operating system kernel written from scratch in Rust for ARM64 and x86-64.
 On top of the kernel sit its own clean-room C library, a port of the Rust standard library, a
 shell with POSIX utilities (BusyBox built against Breenix's C library), and a Developer SDK for
 building C and Rust programs outside this tree. It boots on QEMU, Parallels Desktop and VMware
-Fusion on ARM64, and on QEMU on x86-64.
+Fusion on ARM64, and through the R240 metal boot loop on x86-64.
 
-The bar is a production kernel, not a teaching one. Every POSIX area is measured by a suite of
-real programs that has to pass on all four targets: ARM64 QEMU, Parallels, VMware and x86-64.
+POSIX suites gate the main path on ARM64 QEMU, Parallels and VMware. x86-64 evidence
+belongs to the independent metal path.
 
 | | |
 |---|---|
@@ -25,7 +31,7 @@ never by a rating someone sets. The table shows the effort path on `main` at `79
 
 | # | Effort | Suite | Passing on all four targets | Status |
 |---|---|---|---|---|
-| 0 | Kernel bring-up | [boot path](docs/boot-path.md) | 6 boot-path milestones, 8 of 8 x86-64 hardware profiles | done |
+| 0 | Kernel bring-up | [boot path](docs/boot-path.md) | 6 boot-path milestones; x86 hardware profiles retained, unmeasured on this path | done |
 | 1 | Files & I/O | [`files-io`](docs/suites/files-io.json) | 219 of 219 | done |
 | 2 | Directories & links | [`directories`](docs/suites/directories.json) | 117 of 117 | done |
 | 3 | Processes | [`processes`](docs/suites/processes.json) | 153 of 153 | done |
@@ -53,7 +59,7 @@ with a short version in [`docs/gui/summary.md`](docs/gui/summary.md).
 ## Build and boot
 
 Breenix is developed on Apple Silicon Macs, where ARM64 boots natively under QEMU with HVF,
-Parallels Desktop and VMware Fusion. x86-64 boots under QEMU, and its gates run on a Linux host.
+Parallels Desktop and VMware Fusion. x86-64 boots on the R240 through the metal boot loop.
 
 You need:
 
@@ -62,7 +68,7 @@ You need:
   BusyBox and C userspace programs build with it. On macOS install Homebrew's `llvm`
   (`brew install llvm`); the build finds it without a `PATH` change, and Apple's
   `/usr/bin/clang` does not ship those tools.
-- QEMU (`qemu-system-aarch64`, and `qemu-system-x86_64` for x86-64).
+- QEMU (`qemu-system-aarch64`) for ARM64 boots.
 - Docker, which builds the ext2 disk image on macOS.
 - Python 3.11 or newer (`scripts/rust-fork.sh` uses `tomllib`; macOS's system Python 3.9 is too old).
 - The forked Rust standard library, described below.
@@ -149,11 +155,9 @@ rustup target add aarch64-unknown-uefi
 
 ### Boot x86-64
 
-```bash
-./run.sh --x86                                         # VNC display on localhost:5900
-./run.sh --x86 --headless
-BREENIX_BOOT_SUITE=files-io docker/qemu/run-x86-gate.sh # the x86-64 suite gate
-```
+Use `scripts/metal/metal-run` and the [metal boot loop guide](docs/metal/README.md)
+for the R240. x86 QEMU launchers refuse by default under S23; an exceptional
+invocation requires the operator's `BREENIX_ALLOW_X86_QEMU=1`.
 
 ### Host tests
 
