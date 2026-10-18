@@ -329,6 +329,13 @@ pub(super) fn publish_group(thread: &Thread) {
     }
 }
 
+/// Publish the process row `thread` now belongs to (`Thread::owner_pid`).
+pub(super) fn publish_owner(thread: &Thread) {
+    if let Some(slot) = own_slot(thread) {
+        slot.pid.store(thread.owner_pid.unwrap_or(0), Ordering::Release);
+    }
+}
+
 /// `tid`'s scheduling policy, without its run-time fields, read without a
 /// lock.
 pub(super) fn policy(tid: u64) -> Option<SchedPolicy> {

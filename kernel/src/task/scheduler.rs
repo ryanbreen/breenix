@@ -8532,6 +8532,22 @@ where
     })
 }
 
+/// An exec by a thread other than its process's first one moved the thread's
+/// row to the process's ID, `pid` (`ProcessManager::exec_take_over_group`):
+/// the thread's scheduler copy, its kernel stack and its index entry name
+/// that row from here on. Called by the thread itself, in that exec, once
+/// PROCESS_MANAGER is released.
+pub fn adopt_exec_owner(thread_id: u64, pid: u64) {
+    with_thread_mut(thread_id, |thread| {
+        thread.owner_pid = Some(pid);
+        if let Some(stack) = thread.kernel_stack_allocation.as_mut() {
+            stack.set_owner_pid(Some(pid));
+        }
+        #[cfg(target_arch = "x86_64")]
+        rq::publish_owner(thread);
+    });
+}
+
 static CREATION_PUBLICATIONS: AtomicU64 = AtomicU64::new(0);
 static CREATION_PUBLICATIONS_PM_HELD: AtomicU64 = AtomicU64::new(0);
 static CREATION_PUBLICATIONS_PM_HELD_INJECTED: AtomicU64 = AtomicU64::new(0);

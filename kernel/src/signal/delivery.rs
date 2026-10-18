@@ -1793,31 +1793,68 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
                 leader.restate_exit_status(exit_code);
             }
         }
-        let mut peers = manager.thread_group_peers(pid);
-        peers.retain(|&peer| {
-            let Some(row) = manager.get_process_mut(peer) else {
-                return false;
-            };
-            // Every peer is marked in this one acquisition, before any is
-            // killed: a peer's clone refuses from here on, so the group gains
-            // no thread the kills below would miss.
-            row.group_exit_code.get_or_insert(exit_code);
-            let runs_this = current.is_some()
-                && row.main_thread.as_ref().map(|thread| thread.id) == current;
-            // Only the peer running this is told here. The others are killed
-            // below, and `kill_process_now` leaves SIGKILL pending on a peer
-            // only when it cannot claim it (#1413).
-            if runs_this {
-                row.signals.set_pending(SIGKILL);
-            }
-            !runs_this
-        });
-        peers
+        mark_thread_group_peers(manager, pid, exit_code, current)
     })
     .unwrap_or_default();
     for peer in peers {
         crate::syscall::signal::kill_process_now(peer, exit_code, None);
     }
+}
+
+/// POSIX exec by a thread of `pid`'s process ends the process's other
+/// threads: they are marked in one acquisition and killed, as
+/// `terminate_thread_group_peers` does. The process does not exit, so no
+/// status is restated. Returns false, and kills no thread, when `pid` was
+/// itself marked first, by another thread's exec or by an exit or fatal
+/// signal of the process: that is ending this thread too, and of two threads
+/// that exec at once exactly one goes on.
+pub fn terminate_peers_for_exec(pid: crate::process::ProcessId) -> bool {
+    let current = crate::task::scheduler::current_thread_id();
+    let peers = crate::process::with_process_manager(|manager| {
+        let caller = manager.get_process(pid)?;
+        if caller.group_exit_code.is_some() || sigkill_pending(caller) {
+            return None;
+        }
+        Some(mark_thread_group_peers(manager, pid, 0, current))
+    })
+    .flatten();
+    let Some(peers) = peers else {
+        return false;
+    };
+    for peer in peers {
+        crate::syscall::signal::kill_process_now(peer, 0, None);
+    }
+    true
+}
+
+/// Mark the other live rows of `pid`'s thread group as dying with
+/// `exit_code`, under PROCESS_MANAGER, and return the ones to kill.
+fn mark_thread_group_peers(
+    manager: &mut crate::process::ProcessManager,
+    pid: crate::process::ProcessId,
+    exit_code: i32,
+    current: Option<u64>,
+) -> alloc::vec::Vec<crate::process::ProcessId> {
+    let mut peers = manager.thread_group_peers(pid);
+    peers.retain(|&peer| {
+        let Some(row) = manager.get_process_mut(peer) else {
+            return false;
+        };
+        // The peers are marked in this one acquisition, before any is
+        // killed: a peer's clone refuses from here on, so the group gains
+        // no thread the kills below would miss.
+        row.group_exit_code.get_or_insert(exit_code);
+        let runs_this = current.is_some()
+            && row.main_thread.as_ref().map(|thread| thread.id) == current;
+        // Only the peer running this is told here. The others are killed
+        // below, and `kill_process_now` leaves SIGKILL pending on a peer
+        // only when it cannot claim it (#1413).
+        if runs_this {
+            row.signals.set_pending(SIGKILL);
+        }
+        !runs_this
+    });
+    peers
 }
 
 /// Take the calling process's next deliverable signal off its pending set

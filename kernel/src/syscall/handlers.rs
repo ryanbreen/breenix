@@ -2184,28 +2184,25 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
-        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
-            return SyscallResult::Err(errno);
-        }
-
+        // `attempt` gives back no result while another thread of the process
+        // still runs (`ProcessManager::exec_blocked_by_group`); the loop below
+        // waits for that thread again.
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together, same shape as the production arm below (#721 K3/K10).
-        crate::arch_without_interrupts(|| {
+        let mut attempt = |current_pid: crate::process::ProcessId| crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_execv: Process manager not available");
-                return SyscallResult::Err(12); // ENOMEM
+                return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
             let (new_entry_point, new_rsp, commit) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
-                    Err("exec blocked while CLONE_VM sibling shares old address space") => {
-                        return SyscallResult::Err(11); // EAGAIN
-                    }
+                    Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
                     Err(e) => {
                         log::error!("sys_execv: Failed to exec process: {}", e);
-                        return SyscallResult::Err(super::exec::manager_errno(e));
+                        return Some(SyscallResult::Err(super::exec::manager_errno(e)));
                     }
                 };
 
@@ -2267,8 +2264,18 @@ pub fn sys_execv_with_frame(
                 frame.rsp
             );
 
-            SyscallResult::Ok(0)
-        })
+            Some(SyscallResult::Ok(0))
+        });
+        let mut current_pid = current_pid;
+        loop {
+            current_pid = match super::exec::end_other_threads(current_pid) {
+                Ok(pid) => pid,
+                Err(errno) => return SyscallResult::Err(errno),
+            };
+            if let Some(result) = attempt(current_pid) {
+                break result;
+            }
+        }
     }
 
     #[cfg(not(feature = "testing"))]
@@ -2356,28 +2363,25 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
-        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
-            return SyscallResult::Err(errno);
-        }
-
+        // `attempt` gives back no result while another thread of the process
+        // still runs (`ProcessManager::exec_blocked_by_group`); the loop below
+        // waits for that thread again.
         // Mask only publication, scheduler commit, CR3 install and frame patch.
         // The replacement image and arguments were built above without PM held.
-        crate::arch_without_interrupts(|| {
+        let mut attempt = |current_pid: crate::process::ProcessId| crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_execv: Process manager not available");
-                return SyscallResult::Err(12); // ENOMEM
+                return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
             let (new_entry_point, new_rsp, commit) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
-                    Err("exec blocked while CLONE_VM sibling shares old address space") => {
-                        return SyscallResult::Err(11); // EAGAIN
-                    }
+                    Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
                     Err(e) => {
                         log::error!("sys_execv: Failed to exec process: {}", e);
-                        return SyscallResult::Err(super::exec::manager_errno(e));
+                        return Some(SyscallResult::Err(super::exec::manager_errno(e)));
                     }
                 };
 
@@ -2442,8 +2446,18 @@ pub fn sys_execv_with_frame(
                 frame.rsp
             );
 
-            SyscallResult::Ok(0)
-        })
+            Some(SyscallResult::Ok(0))
+        });
+        let mut current_pid = current_pid;
+        loop {
+            current_pid = match super::exec::end_other_threads(current_pid) {
+                Ok(pid) => pid,
+                Err(errno) => return SyscallResult::Err(errno),
+            };
+            if let Some(result) = attempt(current_pid) {
+                break result;
+            }
+        }
     }
 }
 
