@@ -864,7 +864,8 @@ fn generate_meminfo() -> String {
          Committed_AS:   {:>8} kB\n\
          VmallocTotal:   {:>8} kB\n\
          VmallocUsed:    {:>8} kB\n\
-         KernelHeapFree: {:>8} kB\n",
+         KernelHeapFree: {:>8} kB\n\
+         KernelHeapPeak: {:>8} kB\n",
         total_kb,
         free_kb,
         free_kb, // Available ~= free (no page cache pressure)
@@ -883,6 +884,7 @@ fn generate_meminfo() -> String {
         0u64,     // No vmalloc tracking
         0u64,     // No vmalloc tracking
         crate::memory::heap::free_bytes() / 1024,
+        crate::memory::heap::high_water_bytes() / 1024,
     )
 }
 

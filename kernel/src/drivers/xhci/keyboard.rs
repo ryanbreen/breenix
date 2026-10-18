@@ -9,7 +9,7 @@
 //! and Appendices B and F. A refused configuration is retried on a reset
 //! device (4.10.2.1.2). Devices behind hubs are not driven: the machine's
 //! port census found its keyboard on a root port.
-use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, PORT_CHANGES, CONSOLE_START, CONSOLE_READY, REPLUG, SECOND};
+use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, CONSOLE_START, CONSOLE_READY, LEDS, PORT_CHANGES, REPLUG, SECOND};
 use crate::drivers::hid_boot::{interface, report};
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, Ordering};
@@ -64,6 +64,23 @@ impl Controller {
                 }
                 self.console.arm();
                 CONSOLE_READY.complete(1);
+            }
+            if LEDS.swap(false, Ordering::SeqCst) {
+                self.sync_leds();
+            }
+        }
+    }
+
+    /// Send attached keyboards the console's absolute lock state when it
+    /// differs from what they were last sent.
+    fn sync_leds(&mut self) {
+        let leds = self.console.leds();
+        if leds != self.keyboard_leds {
+            self.keyboard_leds = leds;
+            for keyboard in 0..self.devices.len() {
+                if self.devices[keyboard].keyboard.is_some() {
+                    self.send_leds(keyboard);
+                }
             }
         }
     }
@@ -344,16 +361,7 @@ impl Controller {
                         }
                     }
                 }
-                let leds = self.console.leds();
-                if leds != self.keyboard_leds {
-                    // Send the console's absolute lock state to attached keyboards.
-                    self.keyboard_leds = leds;
-                    for keyboard in 0..self.devices.len() {
-                        if self.devices[keyboard].keyboard.is_some() {
-                            self.send_leds(keyboard);
-                        }
-                    }
-                }
+                self.sync_leds();
                 if let Err(error) = self.queue_report(index) {
                     log::error!("[usb] port {port}: cannot post the next report: {error}");
                 }

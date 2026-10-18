@@ -1484,6 +1484,8 @@ fn init_dimmer_texture() -> Result<(), &'static str> {
 const VIRTIO_GPU_FLAG_FENCE: u32 = 1;
 const GPU_MSIX_CONFIG_VECTOR: u16 = 0;
 const GPU_MSIX_QUEUE_VECTOR: u16 = 1;
+/// The vector value that routes a virtqueue or config change to no MSI-X vector.
+const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 
 #[derive(Clone, Copy)]
 struct GpuMsiConfig {
@@ -1519,9 +1521,12 @@ struct GpuPciDeviceState {
 static mut GPU_PCI_STATE: Option<GpuPciDeviceState> = None;
 static GPU_PCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector.
+/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector, or
+/// the device's INTx line on QEMU.
 static GPU_IRQ: AtomicU32 = AtomicU32::new(0);
 static GPU_CONFIG_IRQ: AtomicU32 = AtomicU32::new(0);
+/// With INTx, the ISR status byte the handler reads to lower the line; 0 with MSI-X.
+static GPU_INTX_ISR: AtomicU64 = AtomicU64::new(0);
 
 const GPU_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
 
@@ -1657,6 +1662,19 @@ pub fn disable_virgl() {
 // =============================================================================
 // MSI Interrupt Support
 // =============================================================================
+
+/// The GIC INTID of the device's INTx line on QEMU's virt machine, whose
+/// device tree maps slot `s` pin `p` (1-4) to SPI `3 + (s + p - 1) % 4`; 0
+/// when the device has no INTx pin.
+#[cfg(target_arch = "aarch64")]
+fn qemu_virt_intx(pci_dev: &crate::drivers::pci::Device) -> u32 {
+    let pin = pci_dev.interrupt_pin as u32;
+    if pin == 0 || pin > 4 {
+        return 0;
+    }
+    pci_dev.enable_intx();
+    32 + 3 + (pci_dev.device as u32 + pin - 1) % 4
+}
 
 /// Set up PCI MSI-X for the VirtIO GPU through GICv2m.
 ///
@@ -1794,12 +1812,19 @@ fn trace_gpu_msix_programming(
     }
 }
 
-/// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.
+/// Handle a GPU virtqueue interrupt (MSI-X, or INTx on QEMU) — called from exception.rs IRQ dispatch.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
     let irq = GPU_IRQ.load(Ordering::Relaxed);
     if irq == 0 {
         return;
+    }
+
+    // An INTx line stays raised until the ISR status byte is read.
+    let isr = GPU_INTX_ISR.load(Ordering::Acquire);
+    if isr != 0 {
+        // SAFETY: the device's ISR byte, mapped for the kernel's lifetime.
+        unsafe { core::ptr::read_volatile(isr as *const u8) };
     }
 
     // MSI-X delivery is edge-like. Do not mask or clear the SPI here: a new
@@ -1912,17 +1937,27 @@ pub fn init() -> Result<(), &'static str> {
     // enables MSI-X first, then sets up queues with MSI-X vectors. The VirtIO
     // spec requires MSI-X to be enabled at the PCI level before writing
     // queue_msix_vector in the common config.
+    // QEMU's virt machine with GICv3 has no GICv2m: there the device signals
+    // completions on its INTx line instead.
     #[cfg(target_arch = "aarch64")]
-    let msi_config = setup_gpu_msi(virtio.pci_device());
+    let intx = if crate::platform_config::is_qemu() { qemu_virt_intx(virtio.pci_device()) } else { 0 };
+    #[cfg(not(target_arch = "aarch64"))]
+    let intx = 0;
+    #[cfg(target_arch = "aarch64")]
+    let msi_config = if intx == 0 { setup_gpu_msi(virtio.pci_device()) } else { GpuMsiConfig::NONE };
     #[cfg(not(target_arch = "aarch64"))]
     let msi_config = GpuMsiConfig::NONE;
 
-    if !msi_config.is_enabled() {
-        return Err("VirtIO GPU requires MSI-X interrupt completion");
+    if intx == 0 && !msi_config.is_enabled() {
+        return Err("VirtIO GPU requires MSI-X (INTx on QEMU) interrupt completion");
     }
 
-    let queue_vector = GPU_MSIX_QUEUE_VECTOR;
-    let config_vector = GPU_MSIX_CONFIG_VECTOR;
+    // Without MSI-X the device raises INTx for vectors left at NO_VECTOR.
+    let (queue_vector, config_vector) = if intx != 0 {
+        (VIRTIO_MSI_NO_VECTOR, VIRTIO_MSI_NO_VECTOR)
+    } else {
+        (GPU_MSIX_QUEUE_VECTOR, GPU_MSIX_CONFIG_VECTOR)
+    };
 
     // Write config_msix_vector (Linux does this in vp_find_vqs_msix)
     let readback = virtio.set_config_msix_vector(config_vector);
@@ -2077,7 +2112,20 @@ pub fn init() -> Result<(), &'static str> {
     // Queue completion interrupts are enabled now so init commands use the same
     // interrupt-driven completion path as runtime commands.
     #[cfg(target_arch = "aarch64")]
-    {
+    if intx != 0 {
+        use crate::arch_impl::aarch64::gic;
+
+        let isr = unsafe { (*(&raw const GPU_PCI_STATE)).as_ref().and_then(|state| state.device.isr_address()) };
+        GPU_INTX_ISR.store(isr.ok_or("VirtIO GPU PCI: no ISR capability for INTx")?, Ordering::Release);
+        GPU_IRQ.store(intx, Ordering::Release);
+        GPU_COMPLETED_USED_IDX.store(0, Ordering::Release);
+        GPU_COMPLETION.reset();
+
+        gic::configure_spi_level_triggered(intx);
+        gic::clear_spi_pending(intx);
+        gic::enable_spi(intx);
+        crate::serial_println!("[virtio-gpu-pci] INTx active: spi={}", intx);
+    } else {
         use crate::arch_impl::aarch64::gic;
 
         GPU_CONFIG_IRQ.store(msi_config.config_spi, Ordering::Release);

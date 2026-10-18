@@ -200,6 +200,7 @@ fn set_display(display: Display) {
 /// reach them. tty1 already retains boot output in static storage.
 fn size_terminals(layout: &Layout) {
     let size = layout.cols() * layout.rows();
+    let free_before = crate::memory::heap::free_bytes();
     for index in 1..vt::VT_COUNT {
         let mut cells = Vec::new();
         let mut alternate = Vec::new();
@@ -218,6 +219,18 @@ fn size_terminals(layout: &Layout) {
         // Reserve before this terminal can receive interrupt-generated echo.
         vt::ensure_history(index);
     }
+    // Plan Q10: what the heap gave, measured, beside what the sizes add up to.
+    let cell = core::mem::size_of::<grid::Cell>();
+    let calculated = (vt::VT_COUNT - 1) * (2 * size + grid::HISTORY_LINES * layout.cols()) * cell;
+    say!(
+        info,
+        "[console] terminals: tty2 to tty6 took {} KiB of the kernel heap, measured (calculated: {} KiB for two screens and {} scrollback lines each; tty1's are static); heap high-water {} KiB of {} KiB",
+        free_before.saturating_sub(crate::memory::heap::free_bytes()) / 1024,
+        calculated / 1024,
+        grid::HISTORY_LINES,
+        crate::memory::heap::high_water_bytes() / 1024,
+        crate::memory::heap::HEAP_SIZE / 1024
+    );
 }
 
 /// Allocate the shadow, say what the console draws on, and draw the splash.
@@ -375,26 +388,78 @@ pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
     });
 }
 
-/// Put console TTY output (tty1's) on the console.
-pub fn write_tty(bytes: &[u8]) {
-    write_vt(1, bytes);
+/// Put console TTY output (tty1's) into its grid, and hand `serial` the
+/// bytes tty1's serial copy carries (contract section 5.4). While the render
+/// thread runs to deliver them, the screen answers tty1's report requests and
+/// the serial copy leaves out each one it answered, so a terminal on serial
+/// does not answer it too; before that the screen does not answer and serial
+/// gets the bytes as written.
+pub fn write_tty(bytes: &[u8], mut serial: impl FnMut(&[u8])) {
+    const CHUNK: usize = 256;
+    vt::ensure_history(0);
+    let answering = RUNNING.load(Ordering::Acquire);
+    for chunk in bytes.chunks(CHUNK) {
+        let mut out = [0u8; CHUNK + grid::HELD];
+        let forwarded = with_grid(|console| {
+            if console.kernel_line_open {
+                console.vts[0].grid.begin_line();
+                console.kernel_line_open = false;
+            }
+            let vt::Vt { grid, replies, .. } = &mut console.vts[0];
+            if answering {
+                grid.write_forwarding(chunk, |reply| replies.push(reply), &mut out)
+            } else {
+                grid.write(chunk);
+                out[..chunk.len()].copy_from_slice(chunk);
+                chunk.len()
+            }
+        });
+        match forwarded {
+            Some(n) => serial(&out[..n]),
+            None => serial(chunk),
+        }
+    }
 }
 
-/// Put terminal `number`'s (1-based) output into its grid. A terminal that
-/// is not in the foreground keeps it there, shown when it returns.
+/// Put the output of terminal `number` (2 to 6; tty1's is `write_tty`) into
+/// its grid. A terminal that is not in the foreground keeps it there, shown
+/// when it returns.
 pub fn write_vt(number: usize, bytes: &[u8]) {
     let index = number - 1;
     vt::ensure_history(index);
     with_grid(|console| {
-        if index == 0 && console.kernel_line_open {
-            console.vts[0].grid.begin_line();
-            console.kernel_line_open = false;
-        }
         let vt::Vt { grid, replies, .. } = &mut console.vts[index];
         // Keep whole replies until the input ring accepts them. The writer
         // may be echoing in IRQ context, so it only queues fixed storage.
-        grid.write_with_reply(bytes, |reply| replies.push(reply));
+        grid.write_with_reply(bytes, |reply| {
+            replies.push(reply);
+        });
     });
+}
+
+/// Hand each terminal's replies to its input, outside the grid's lock: the
+/// line discipline echoes into the grid. Replies are input, independent of
+/// which owner currently draws. A byte the input cannot take yet stays queued,
+/// with those behind it, for the next pass, so contention loses no CPR byte.
+fn deliver_replies(pending: &mut [usize; vt::VT_COUNT]) {
+    for (index, unacknowledged) in pending.iter_mut().enumerate() {
+        // Only this render thread consumes replies. A failed lock attempt
+        // must not make bytes already accepted by the input eligible again.
+        if *unacknowledged != 0 {
+            if with_grid(|console| console.vts[index].replies.consume(*unacknowledged)).is_none() {
+                continue;
+            }
+            *unacknowledged = 0;
+        }
+        let mut bytes = [0u8; 64];
+        let Some(n) = with_grid(|console| console.vts[index].replies.peek(&mut bytes)) else {
+            continue;
+        };
+        let taken = bytes[..n].iter().take_while(|&&byte| crate::tty::driver::push_reply(index + 1, byte)).count();
+        if taken != 0 && with_grid(|console| console.vts[index].replies.consume(taken)).is_none() {
+            *unacknowledged = taken;
+        }
+    }
 }
 
 /// A session other than init's took the console as its controlling terminal
@@ -750,10 +815,10 @@ impl Snapshot {
     }
 
     /// Copy the foreground terminal's view if it, or which terminal is in
-    /// the foreground, changed since the last copy. False when neither did or
-    /// the lock stayed held. A different terminal sets `REDRAW`, so each of
-    /// its rows is drawn.
-    fn refresh(&mut self) -> bool {
+    /// the foreground, changed since the last copy. Some(false) when neither
+    /// did; None when no current snapshot could be obtained. A different
+    /// terminal sets `REDRAW`, so each of its rows is drawn.
+    fn refresh(&mut self) -> Option<bool> {
         let (generation, fg, epoch) = (self.generation, self.fg, self.epoch);
         let cells = &mut self.cells;
         let copied = with_grid(|console| {
@@ -772,7 +837,7 @@ impl Snapshot {
             let visible = grid.cursor_visible() && grid.view() == 0;
             Some((grid.generation(), grid.cursor(), visible, frame))
         });
-        match copied.flatten() {
+        match copied? {
             Some((generation, cursor, visible, frame)) => {
                 if frame.fg != self.fg || frame.epoch != self.epoch {
                     REDRAW.store(true, Ordering::Release);
@@ -782,9 +847,9 @@ impl Snapshot {
                 self.cursor_visible = visible;
                 self.fg = frame.fg;
                 self.epoch = frame.epoch;
-                true
+                Some(true)
             }
-            None => false,
+            None => Some(false),
         }
     }
 }
@@ -817,15 +882,11 @@ fn render_thread(display: &'static Display, attached: Attached) {
 
     let mut announced = false;
     let mut last_session = false;
+    let mut pending_replies = [0; vt::VT_COUNT];
     while !crate::task::kthread::kthread_should_stop() {
-        // Replies are input, independent of which owner currently draws. Retry
-        // on a busy/full input ring instead of losing a CPR byte to contention.
-        // Each terminal's replies go to its own input queue.
-        with_grid(|console| {
-            for (index, terminal) in console.vts.iter_mut().enumerate() {
-                terminal.replies.drain(|byte| crate::tty::driver::push_reply(index + 1, byte));
-            }
-        });
+        // A read-back requested during this pass waits for the next snapshot.
+        let proc_token = PROC_CHECK.load(Ordering::Acquire);
+        deliver_replies(&mut pending_replies);
         crate::tty::driver::drain_keyboard_input();
         // A switch a key asked for, then switch deadlines, whichever owner draws.
         vt::take_key_switch();
@@ -833,18 +894,18 @@ fn render_thread(display: &'static Display, attached: Attached) {
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
             splash_run.pass(display, &mut screen.shadow);
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, proc_token);
             end_pass();
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
         if !SCREEN.load(Ordering::Acquire) {
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, proc_token);
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
         // Publish before checking ownership. A taker either observes this
-        // pass and waits, or this pass observes the take and submits nothing.
+        // pass and waits, or this pass observes the take and submits no frame.
         PRESENTING.store(true, Ordering::SeqCst);
         if !may_draw() {
             // A completed text acquisition can change KD mode before this pass.
@@ -854,7 +915,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 vt::checked(shown);
             }
             end_pass();
-            answer_checks(Err(Absent::Taken), true);
+            answer_checks(Err(Absent::Taken), true, proc_token);
             // A switch waits on these passes: look again soon while one does.
             sleep_ms(if vt::switching() { PASS_INTERVAL_MS } else { PASS_INTERVAL_MS * 10 });
             continue;
@@ -866,7 +927,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
             sleep_ms(1);
             continue;
         }
-        let changed = snapshot.refresh();
+        let Some(changed) = snapshot.refresh() else {
+            // Keep a requested read-back pending until a pass observes the grid.
+            end_pass();
+            sleep_ms(PASS_INTERVAL_MS);
+            continue;
+        };
         if REDRAW.swap(false, Ordering::AcqRel) {
             screen.cleared = false;
             screen.complete = false;
@@ -913,7 +979,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         }
         if announced {
-            answer_checks(Ok((&screen, snapshot.fg)), true);
+            answer_checks(Ok((&screen, snapshot.fg)), true, proc_token);
         }
         end_pass();
         sleep_ms(PASS_INTERVAL_MS);
@@ -1288,9 +1354,9 @@ impl fmt::Display for Hex<'_> {
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
 /// may answer it (`idle_allowed`): it reads the console's text, not the splash.
-fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
+fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, proc_token: u32) {
     let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
-    let token = PROC_CHECK.swap(0, Ordering::AcqRel);
+    let token = PROC_CHECK.compare_exchange(proc_token, 0, Ordering::AcqRel, Ordering::Acquire).unwrap_or(0);
     if !idle && token == 0 {
         return;
     }
@@ -1343,19 +1409,31 @@ fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
 /// the terminal number and a digest of the shadow, not the screen's text
 /// (contract section 8).
 fn report_switch(number: usize, check: &Check) {
+    // Plan Q25: from the moment the terminal became the foreground to this verdict.
+    let after = Ms(elapsed_us(vt::switched_at()));
     if check.identical() {
-        log::info!("[console] tty{} shown: read back identical; digest {}", number, Hex(&check.sha256[..8]));
+        log::info!("[console] tty{} shown: read back identical; digest {}; {} after the switch", number, Hex(&check.sha256[..8]), after);
         return;
     }
     match (&check.source, check.first_difference) {
-        (Err(reason), _) => log::warn!("[console] tty{} shown: read back differs: not read from the scanout: {}", number, reason),
-        (Ok(_), Some((x, y))) => log::warn!("[console] tty{} shown: read back differs: x={} y={}", number, x, y),
-        (Ok(_), None) if !check.complete => log::warn!("[console] tty{} shown: read back differs: frame incomplete", number),
+        (Err(reason), _) => log::warn!("[console] tty{} shown: read back differs: not read from the scanout: {}; {} after the switch", number, reason, after),
+        (Ok(_), Some((x, y))) => log::warn!("[console] tty{} shown: read back differs: x={} y={}; {} after the switch", number, x, y, after),
+        (Ok(_), None) if !check.complete => log::warn!("[console] tty{} shown: read back differs: frame incomplete; {} after the switch", number, after),
         (Ok(_), None) => log::warn!(
-            "[console] tty{} shown: read back differs: {} pixels from the font",
+            "[console] tty{} shown: read back differs: {} pixels from the font; {} after the switch",
             number,
-            check.font_mismatches
+            check.font_mismatches,
+            after
         ),
+    }
+}
+
+/// Microseconds shown as milliseconds with three decimals: `12.345 ms`.
+struct Ms(u64);
+
+impl fmt::Display for Ms {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{:03} ms", self.0 / 1000, self.0 % 1000)
     }
 }
 

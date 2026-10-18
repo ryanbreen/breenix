@@ -775,10 +775,17 @@ impl TtyDevice {
             if let Some(mut pending) = self.pending_echo.try_lock() { pending.write(unit); }
             return;
         }
+        self.to_sinks(unit);
+    }
+
+    /// Output to this terminal's sinks: its screen grid and, for the console,
+    /// serial, which carries what the console's grid forwards to it.
+    fn to_sinks(&self, unit: &[u8]) {
         if self.is_console() {
-            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
+            crate::console::write_tty(unit, |bytes| crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, bytes));
+        } else {
+            crate::console::write_vt(self.vt(), unit);
         }
-        crate::console::write_vt(self.vt(), unit);
     }
 
     fn drain_echo(&self) {
@@ -789,10 +796,7 @@ impl TtyDevice {
         loop {
             let n = pending.read(&mut scratch);
             if n == 0 { break; }
-            if self.is_console() {
-                crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
-            }
-            crate::console::write_vt(self.vt(), &scratch[..n]);
+            self.to_sinks(&scratch[..n]);
         }
     }
 
@@ -808,10 +812,7 @@ impl TtyDevice {
         } else {
             &crlf[1..]
         };
-        if self.is_console() {
-            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-        }
-        crate::console::write_vt(self.vt(), unit);
+        self.to_sinks(unit);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -830,9 +831,6 @@ impl TtyDevice {
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
-        // Only the console has serial; tty2 to tty6 write their screens.
-        let serial = self.is_console();
-
         // Each lock acquisition covers at most one line and one bounded UART
         // chunk, never the whole userspace buffer. Build ONLCR expansion before
         // entering the serial primitive so CR-LF stays in the same atomic write.
@@ -847,13 +845,7 @@ impl TtyDevice {
                     let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
                     if expanded_len + output_len > expanded.len() {
                         while self.transmission_stopped() { crate::arch_halt(); }
-                        if serial {
-                            crate::serial::write_bytes_atomic(
-                                crate::serial::Writer::Tty,
-                                &expanded[..expanded_len],
-                            );
-                        }
-                        crate::console::write_vt(self.vt(), &expanded[..expanded_len]);
+                        self.to_sinks(&expanded[..expanded_len]);
                         expanded_len = 0;
                     }
                     if output_len == 2 {
@@ -866,13 +858,7 @@ impl TtyDevice {
 
                 if expanded_len != 0 {
                     while self.transmission_stopped() { crate::arch_halt(); }
-                    if serial {
-                        crate::serial::write_bytes_atomic(
-                            crate::serial::Writer::Tty,
-                            &expanded[..expanded_len],
-                        );
-                    }
-                    crate::console::write_vt(self.vt(), &expanded[..expanded_len]);
+                    self.to_sinks(&expanded[..expanded_len]);
                 }
             });
         });
@@ -908,12 +894,8 @@ impl TtyDevice {
         // UART ownership on ARM64, locked on x86_64
         let crlf = [b'\r', c];
         let unit = if do_crlf { &crlf[..] } else { &crlf[1..] };
-        if self.is_console() {
-            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-        }
-
         // The console's grid takes writes from interrupt context.
-        crate::console::write_vt(self.vt(), unit);
+        self.to_sinks(unit);
     }
 
     /// Send a signal to the foreground process group
@@ -1213,13 +1195,22 @@ pub fn vt(number: usize) -> Option<Arc<TtyDevice>> {
     }
 }
 
-/// A terminal-input reply (a DSR answer) for virtual terminal `number`'s
-/// readers; false while its queue cannot take it.
+/// A terminal-input reply (a DSR answer) for virtual terminal `number`: it
+/// joins the terminal's keyboard queue behind the keys already there and goes
+/// through its line discipline as they do, so in canonical mode it is part of
+/// the line being typed. False while the queue cannot take it.
 pub fn push_reply(number: usize, byte: u8) -> bool {
-    match crate::ipc::stdin::vt_input(number - 1) {
-        Some(input) => input.push_byte_from_irq(byte),
-        None => crate::ipc::stdin::push_byte_from_irq(byte),
-    }
+    let Some(tty) = vt(number) else {
+        return false;
+    };
+    crate::arch_without_interrupts(|| {
+        let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() else {
+            return false;
+        };
+        let accepted = keys.push(byte, super::InputSource::Other);
+        keys.drain(|byte, source| tty.admit_key(byte, source));
+        accepted
+    })
 }
 
 /// Push a character to the console TTY, through its line discipline.

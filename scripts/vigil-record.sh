@@ -45,18 +45,26 @@ provenance() {
         git -C "$ROOT" update-ref "refs/vigil/boots/$id" "$snapshot" || return 1
     fi
 }
+VIGIL_WORKTREE=""
+# A detached main commit is still main; a feature commit in the main checkout is not.
+if ! git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    VIGIL_WORKTREE="$(basename "$ROOT")"
+fi
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
+        # vigil-cli accepts desktop, and stores it as default for VM platforms.
+        [ "$mode" != default ] || mode=desktop
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
         [ -n "$id" ] || id=$(date -u +%Y%m%dT%H%M%SZ)-$platform
         provenance || exit 0
         args=(breenix start --arch "$arch" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
         [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
+        [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
-        elif [ -n "$mode" ] && [ "$mode" != default ]; then
+        elif [ -n "$mode" ]; then
             args+=(--mode "$mode")
         fi
         [ -z "$user" ] || args+=(--serial-user "$user")
@@ -66,7 +74,7 @@ case "${1:-}" in
         # machine; Vigil keeps it out of main's evidence.
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
-        "$CLI" "${args[@]}" || exit 0
+        "$CLI" "${args[@]}" || { echo "WARNING: Vigil boot registration failed" >&2; exit 0; }
         exit 0
         ;;
     record)
@@ -74,10 +82,12 @@ case "${1:-}" in
         started=${10:-}; ended=${11:-}; status=${12:-1}
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 1
         provenance || exit 1
+        [ "$mode" != default ] || mode=desktop
         args=(breenix record --arch "$arch" --dirty "$dirty" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
+        [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
         if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it

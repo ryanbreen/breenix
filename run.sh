@@ -428,14 +428,22 @@ stage_boot_ext2_disk() {
     fi
 }
 
+ext2_source_identity() {
+    (set -o pipefail; shasum -a 256 "$EXT2_DISK" | awk '{print $1}')
+}
+
 # Whether the VM's wrapped data disk (whose boot-target marker file is $1) must
 # be made again: when the built disk changed, this run selects a boot target,
 # an earlier run's boot target must be cleared, or the disk names another
 # nameserver. Otherwise the wrapped disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
-    local rebuilt="$1" marker="$2"
-    [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
-        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]
+    local rebuilt="$1" marker="$2" identity
+    if [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
+        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]; then
+        return 0
+    fi
+    identity=$(ext2_source_identity) || return 0
+    [ "$(cat "$marker.source.sha256" 2>/dev/null)" != "$identity" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
@@ -444,6 +452,7 @@ mark_wrapped_ext2() {
     if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
     # Staging verifies the nameserver before the wrapped disk is published.
     target_nameserver > "$marker.dns"
+    ext2_source_identity > "$marker.source.sha256"
 }
 
 # Cargo can restore a cached profile with an older mtime. Compare the exact
@@ -617,7 +626,18 @@ finish_vm_boot() {
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
-    if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
+    if [ "$PARALLELS" = true ] && [ "$stopped" = true ]; then
+        # eb298971 removed the global stopped-VM sweep because those VMs belong to
+        # other runs. Delete only this run's VM, after its verdict, retaining the
+        # reusable disks outside its bundle by detaching them first.
+        if prlctl set "$PARALLELS_VM" --device-del hdd0 \
+            && { [ ! -d "$EXT2_HDD_DIR" ] || prlctl set "$PARALLELS_VM" --device-del hdd1; }; then
+            prlctl delete "$PARALLELS_VM" || echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
+        else
+            echo "WARNING: keeping owned VM $PARALLELS_VM because disk detach failed" >&2
+        fi
+        host_slot_release mac-boot
+    elif [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
         # Delete and prune while the slot is still ours. The supervisor keeps
         # the lease through its final VM stop, so it cannot stop the next boot.
         cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
@@ -873,15 +893,6 @@ if [ "$PARALLELS" = true ]; then
     # sudo service restarts. Using unique names sidesteps this entirely.
     PARALLELS_VM="breenix-$(date +%s)"
     echo "VM name: $PARALLELS_VM"
-    # Delete earlier boots' VMs, which nothing else removed: only stopped ones named breenix-<epoch>, never a running,
-    # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*).
-    # Finish this sweep before launching so none of its children outlive the runner.
-    (
-        bounded_vm_command prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
-            while read -r old_vm; do
-                [ "$old_vm" = "$PARALLELS_VM" ] || bounded_vm_command prlctl delete "$old_vm" >/dev/null 2>&1 || true
-            done
-    )
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
@@ -1099,9 +1110,11 @@ if [ "$VMWARE" = true ]; then
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
-        if [ ! -f "$VMWARE_DIR/boot.vmdk" ]; then
-            echo "ERROR: No boot VMDK found at $VMWARE_DIR/boot.vmdk"
-            echo "Run without --no-build first to create it."
+        if [ ! -f "$LOADER_EFI" ] || [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: No prebuilt loader/kernel found:"
+            echo "  loader: $LOADER_EFI"
+            echo "  kernel: $KERNEL_ELF"
+            echo "Run without --no-build first to build them."
             exit 1
         fi
     else
