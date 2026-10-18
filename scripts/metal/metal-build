@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 STUB_TARGET = 'x86_64-unknown-uefi'
@@ -189,9 +190,17 @@ def inner(args):
                 started = time.time()
                 shutil.copyfile(clone / 'testdata/ext2.img', root)
                 log = logs / 'sdk-suite.log'
-                with log.open('w') as output:
-                    status = subprocess.call([sys.executable, str(clone / 'scripts/sdk-suite.py'), '--arch', 'x86_64',
-                                              '--image', str(root)], cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                # The harness fails a build output that holds the checkout's path or the builder's home, so its work
+                # folder is under /tmp: this boot's temporary folder starts with the clone's path and is in the home.
+                work = Path(tempfile.mkdtemp(prefix='breenix-metal-sdk-', dir='/tmp'))
+                try:
+                    with log.open('w') as output:
+                        status = subprocess.call([sys.executable, str(clone / 'scripts/sdk-suite.py'), '--arch',
+                                                  'x86_64', '--image', str(root)], cwd=clone,
+                                                 env=dict(os.environ, TMPDIR=str(work)),
+                                                 stdout=output, stderr=subprocess.STDOUT)
+                finally:
+                    shutil.rmtree(work, ignore_errors=True)
                 timings['sdk_suite'] = round(time.time() - started)
                 if status != 0:
                     keep_logs(logs, out)

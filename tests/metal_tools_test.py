@@ -1591,6 +1591,8 @@ class BuildSlotTest(unittest.TestCase):
                 order.append(command)
                 if command[1:2] == [str(clone / 'scripts/sdk-suite.py')]:
                     Path(command[-1]).write_bytes(b'staged')
+                    work = options['env']['TMPDIR']
+                    order.append(('sdk-work', work, Path(work).is_dir()))
                 return 0
             with patch.dict(build.os.environ, CARGO_BUILD_JOBS='4'), \
                  patch.object(build.subprocess, 'run', side_effect=run), \
@@ -1598,11 +1600,12 @@ class BuildSlotTest(unittest.TestCase):
                 self.assertEqual(build.inner(args), 0)
             built = json.loads((out / 'build.json').read_text())
             built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
+            built['clone'] = str(clone)
             return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built
 
     def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
         build, clone, tmp, order, root, built = self.build_inner('')
-        helper = [call for call in order if call[:1] != [sys.executable] and call[:1] != ['cargo']]
+        helper = [call for call in order if isinstance(call, list) and call[:1] not in ([sys.executable], ['cargo'])]
         calls = [call for call in order if call not in helper]
         self.assertEqual(helper, [['cargo-home', str(Path.home() / '.cargo'), str(clone / 'target')],
                                   ['acquire', 'metal-build'], ['release', 'metal-build']])
@@ -1621,6 +1624,12 @@ class BuildSlotTest(unittest.TestCase):
         self.assertLess(staging, order.index(['release', 'metal-build']))
         # The staged copy is the root delivered; the built root is left as it is.
         self.assertEqual((root, built['builtRoot'], built['suite']), (b'staged', b'bytes', 'sdk'))
+        # The harness's work folder holds neither the checkout's path nor the builder's home, which it scans for.
+        _, work, existed = order[staging + 1]
+        self.assertTrue(existed)
+        self.assertFalse(Path(work).exists())
+        self.assertNotIn(built['clone'], work)
+        self.assertNotIn(str(Path.home()), work)
 
 
 class PublicRepositoryTest(unittest.TestCase):
