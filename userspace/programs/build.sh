@@ -409,6 +409,7 @@ STD_BINARIES=(
     # Services
     "init"
     "getty"
+    "chvt"
     "login"
     "probe"
 
