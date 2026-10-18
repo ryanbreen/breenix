@@ -21,9 +21,9 @@ use super::{apic, smp};
 ///
 /// In order: this CPU's GDT and TSS (its own RSP0 and IST stacks), the shared
 /// IDT, GS base and kernel GS base on its own `PerCpuData`, the syscall MSRs,
-/// FPU/SSE/XSAVE state, its scheduler quantum, and the local APIC with its
-/// scheduler tick. Runs with interrupts masked and restores the caller's
-/// interrupt state.
+/// FPU/SSE/XSAVE state, the page attribute table, its scheduler quantum, and
+/// the local APIC with its scheduler tick. Runs with interrupts masked and
+/// restores the caller's interrupt state.
 pub fn init_cpu(cpu: usize) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         crate::gdt::load(cpu);
@@ -35,6 +35,9 @@ pub fn init_cpu(cpu: usize) {
         crate::syscall::init();
 
         let xsave = init_fpu();
+
+        // The same memory-type layout on each CPU before it is online.
+        super::pat::program(cpu);
 
         // A full quantum, charged from now: the first tick on this CPU must
         // not bill it for the time before its timer started.
