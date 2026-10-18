@@ -66,7 +66,7 @@ const RESOURCE_QUOTA: usize = 256;
 /// The largest buffer.
 const BUFFER_MAX: u64 = 128 << 20;
 /// Rows per readback transfer are chosen so a band is at most this many bytes.
-const READBACK_BAND: usize = 1 << 20;
+const READBACK_BAND: usize = 8 << 20;
 /// The first observation's poison; the second's is its complement (section 1.8).
 const POISON: u32 = 0x3C5A_A5C3;
 /// VirGL's renderer keeps a target's row 0 as the transfer's row 0, so the viewport keeps
@@ -3612,17 +3612,12 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let output = (|| {
         if unwritten == 0 {
             let row = row as usize;
-            let mut chunk = [0u8; STAGING_CHUNK];
             for ry in 0..h as usize {
-                let mut done = 0;
-                while done < row {
-                    let n = (row - done).min(STAGING_CHUNK);
-                    staging.pages.read(ry * row + done, &mut chunk[..n]);
-                    let dst = a.pixels + ry as u64 * a.stride as u64 + done as u64;
-                    crate::syscall::userptr::write_user_bytes(dst, chunk.as_ptr(), n)
-                        .map_err(|_| EFAULT)?;
-                    done += n;
-                }
+                let dst = a.pixels + ry as u64 * a.stride as u64;
+                staging.pages.try_spans(ry * row, row, |done, ptr, n| {
+                    crate::syscall::userptr::write_user_bytes(dst + done as u64, ptr, n)
+                        .map_err(|_| EFAULT)
+                })?;
             }
         }
         crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE)
@@ -3677,6 +3672,20 @@ fn probe_writable(addr: u64, len: usize) -> Result<(), i64> {
 /// Bytes moved through the stack at a time between staging, device backing and the caller.
 const STAGING_CHUNK: usize = 512;
 
+
+/// The bytes that differ between two observations of the same span.
+fn differing(a: &[u8], b: &[u8]) -> u32 {
+    let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let tail = wa.remainder().iter().zip(wb.remainder()).filter(|(p, q)| p != q).count() as u32;
+    wa.zip(wb)
+        .map(|(x, y)| {
+            let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
+                ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
+            d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32
+        })
+        .sum::<u32>()
+        + tail
+}
 
 struct Observation {
     unwritten: u32,
@@ -3748,8 +3757,8 @@ fn observe(
     let band_rows = (READBACK_BAND / pitch as usize)
         .max(1)
         .min(a.height as usize);
+    let mut seen = [0u8; PAGE];
     let mut chunk = [0u8; STAGING_CHUNK];
-    let mut kept = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
     let mut first: Option<(u64, u32)> = None;
     let mut by = 0usize;
@@ -3823,33 +3832,22 @@ fn observe(
                 }
                 first.get_or_insert((fence, d.answer));
             }
+            // The first observation lands straight in the staging; the second is compared
+            // with it a frame at a time.
             for r in 0..rows {
-                let mut done = 0;
-                while done < row {
-                    let n = (row - done).min(STAGING_CHUNK);
-                    let at = (by + r) * row + done;
+                let src = offset + r * pitch as usize;
+                let _ = staging.try_spans((by + r) * row, row, |done, ptr, n| {
+                    // SAFETY: the span lies inside one of the staging's frames, which only
+                    // this call uses.
+                    let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
                     if pass == 0 {
-                        observation::read(
-                            backing.as_ref(),
-                            offset + r * pitch as usize + done,
-                            &mut chunk[..n],
-                        );
-                        staging.write(at, &chunk[..n]);
+                        observation::read(backing.as_ref(), src + done, kept);
                     } else {
-                        observation::read(
-                            backing.as_ref(),
-                            offset + r * pitch as usize + done,
-                            &mut chunk[..n],
-                        );
-                        staging.read(at, &mut kept[..n]);
-                        unwritten += chunk[..n]
-                            .iter()
-                            .zip(kept[..n].iter())
-                            .filter(|(p, q)| p != q)
-                            .count() as u32;
+                        observation::read(backing.as_ref(), src + done, &mut seen[..n]);
+                        unwritten += differing(&seen[..n], kept);
                     }
-                    done += n;
-                }
+                    Ok::<(), ()>(())
+                });
             }
         }
         if fmt == format::R8G8B8A8 {

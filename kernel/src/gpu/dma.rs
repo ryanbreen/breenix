@@ -273,20 +273,26 @@ impl Pages {
     /// Fill `[offset, offset + len)` with the repeating 32-bit `pattern`, aligned so byte
     /// `i` of the buffer is byte `i % 4` of the pattern.
     pub fn fill(&self, offset: usize, len: usize, pattern: u32) {
-        let bytes = pattern.to_le_bytes();
+        let _ = self.try_spans(offset, len, |done, ptr, n| {
+            // SAFETY: the span lies inside one of these frames.
+            fill_pattern(unsafe { core::slice::from_raw_parts_mut(ptr, n) }, offset + done, pattern);
+            Ok::<(), ()>(())
+        });
+    }
+
+    /// Call `f` with each part of `[offset, offset + len)` that lies inside one frame: the
+    /// part's position from `offset`, its kernel address and its length, in order. An error
+    /// from `f` ends the walk.
+    pub fn try_spans<E>(&self, offset: usize, len: usize, mut f: impl FnMut(usize, *mut u8, usize) -> Result<(), E>) -> Result<(), E> {
         let mut done = 0;
         while done < len {
             let at = offset + done;
-            let page = at / PAGE;
             let within = at % PAGE;
             let n = (PAGE - within).min(len - done);
-            let base = self.page_va(page) + within as u64;
-            for k in 0..n {
-                // SAFETY: inside the owned page.
-                unsafe { *((base + k as u64) as *mut u8) = bytes[(at + k) % 4] };
-            }
+            f(done, (self.page_va(at / PAGE) + within as u64) as *mut u8, n)?;
             done += n;
         }
+        Ok(())
     }
 
     pub fn u32_at(&self, offset: usize) -> u32 {
@@ -311,6 +317,25 @@ impl Pages {
             }
             done += n;
         }
+    }
+}
+
+/// Write `pattern`'s bytes cyclically into `span`, which begins at byte `at` of a run filled
+/// with the pattern from its byte 0: eight bytes per store once the run is at a pattern
+/// boundary.
+fn fill_pattern(span: &mut [u8], at: usize, pattern: u32) {
+    let p = pattern.to_le_bytes();
+    let (head, rest) = span.split_at_mut(((4 - at % 4) % 4).min(span.len()));
+    for (k, b) in head.iter_mut().enumerate() {
+        *b = p[(at + k) % 4];
+    }
+    let wide = [p[0], p[1], p[2], p[3], p[0], p[1], p[2], p[3]];
+    let mut words = rest.chunks_exact_mut(8);
+    for w in &mut words {
+        w.copy_from_slice(&wide);
+    }
+    for (k, b) in words.into_remainder().iter_mut().enumerate() {
+        *b = p[k % 4];
     }
 }
 
