@@ -3,8 +3,28 @@
 //! Tests the pipe() and close() syscalls for IPC.
 //! Uses libbreenix for pipe/read/write/close.
 
-use libbreenix::io;
+use libbreenix::syscall::{nr, raw::syscall3};
+use libbreenix::{io, time};
 use std::process;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// `ioctl` request that holds the caller for some milliseconds the next time
+/// a pipe read wakes it, between the wake and the read's retry, with
+/// preemption disabled (testing kernels, kernel/src/syscall/handlers.rs).
+const PIPE_WAKE_HOLD: u64 = 0xB813_0005;
+const SCHED_FIFO: u64 = 1;
+#[cfg(target_arch = "aarch64")]
+const SCHED_SETAFFINITY: u64 = 122;
+#[cfg(target_arch = "x86_64")]
+const SCHED_SETAFFINITY: u64 = 203;
+const EINVAL: i64 = 22;
+/// The reader's processor, and the writer's.
+const READER_CPU: u32 = 1;
+const WRITER_CPU: u32 = 0;
+
+static BOOSTED: AtomicBool = AtomicBool::new(false);
+static BOOSTED_TID: AtomicU64 = AtomicU64::new(0);
+static BOOSTED_RAN_AT: AtomicU64 = AtomicU64::new(0);
 
 fn fail(msg: &str) -> ! {
     println!("USERSPACE PIPE: FAIL - {}", msg);
@@ -99,8 +119,109 @@ fn main() {
     }
     println!("  Closed write fd");
 
+    // Phase 6: a reschedule requested as a pipe wait ends
+    println!("Phase 6: Rescheduling after a pipe wait...");
+    match reschedule_after_pipe_wait() {
+        Ok(true) => println!("  The SCHED_FIFO thread ran before the read returned"),
+        Ok(false) => println!("  Skipped: one processor"),
+        Err(message) => {
+            println!("  {}", message);
+            fail("a reschedule requested as a pipe wait ended was dropped");
+        }
+    }
+
     // All tests passed - emit boot stage markers
     println!("USERSPACE PIPE: ALL TESTS PASSED");
     println!("PIPE_TEST_PASSED");
     process::exit(0);
+}
+
+fn now_ns() -> u64 {
+    let ts = time::now_monotonic().unwrap_or_else(|_| fail("clock_gettime failed"));
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+/// Pin the calling thread to `cpu`; the negative errno on failure.
+fn pin(cpu: u32) -> Result<(), i64> {
+    let mask = 1u64 << cpu;
+    let r = unsafe { syscall3(SCHED_SETAFFINITY, 0, 8, &mask as *const u64 as u64) } as i64;
+    if r == 0 { Ok(()) } else { Err(r) }
+}
+
+/// A reschedule requested while a pipe reader finishes its wait must run
+/// before the reader is back in user mode. The kernel holds the reader after
+/// its wake (`PIPE_WAKE_HOLD`). Meanwhile a thread on the reader's processor
+/// is made runnable and raised to SCHED_FIFO, which asks that processor to
+/// reschedule; it must run before the read returns. Ok(false) when there is
+/// no second processor to write from.
+fn reschedule_after_pipe_wait() -> Result<bool, String> {
+    match pin(READER_CPU) {
+        Ok(()) => {}
+        Err(e) if e == -EINVAL => return Ok(false),
+        Err(e) => return Err(format!("sched_setaffinity to processor {READER_CPU} returned {e}")),
+    }
+    let (read_fd, write_fd) = io::pipe().map_err(|e| format!("pipe() failed: {e:?}"))?;
+    let (wake_read, wake_write) = io::pipe().map_err(|e| format!("pipe() failed: {e:?}"))?;
+
+    let boosted = std::thread::spawn(move || {
+        let tid = libbreenix::process::gettid().map_or(0, |tid| tid.raw());
+        if pin(READER_CPU).is_ok() {
+            BOOSTED_TID.store(tid, Ordering::Release);
+        }
+        let mut byte = [0u8; 1];
+        let _ = io::read(wake_read, &mut byte);
+        while !BOOSTED.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+        BOOSTED_RAN_AT.store(now_ns(), Ordering::Release);
+    });
+    // The writer writes both bytes and raises the other thread even after a
+    // failed step, so neither the reader nor that thread is left waiting; it
+    // reports the first failure.
+    let writer = std::thread::spawn(move || -> Result<(), String> {
+        let mut result = pin(WRITER_CPU)
+            .map_err(|e| format!("sched_setaffinity to processor {WRITER_CPU} returned {e}"));
+        // The reader blocks in read(), is woken by this write and is then held.
+        let _ = time::sleep_ms(50);
+        if let Err(e) = io::write(write_fd, b"R") {
+            result = result.and(Err(format!("write() failed: {e:?}")));
+        }
+        // While it is held, the other thread becomes runnable on its processor
+        // and then outranks it.
+        let _ = time::sleep_ms(30);
+        if let Err(e) = io::write(wake_write, b"W") {
+            result = result.and(Err(format!("write() failed: {e:?}")));
+        }
+        let _ = time::sleep_ms(30);
+        let tid = BOOSTED_TID.load(Ordering::Acquire);
+        BOOSTED.store(true, Ordering::Release);
+        let priority: i32 = 10;
+        let r = unsafe {
+            syscall3(nr::SCHED_SETSCHEDULER, tid, SCHED_FIFO, &priority as *const i32 as u64)
+        } as i64;
+        if tid == 0 || r != 0 {
+            result = result.and(Err(format!("sched_setscheduler(SCHED_FIFO) for tid {tid} returned {r}")));
+        }
+        result
+    });
+
+    let held = unsafe { syscall3(nr::IOCTL, read_fd.raw(), PIPE_WAKE_HOLD, 300) } as i64;
+    if held != 0 {
+        return Err(format!("ioctl(PIPE_WAKE_HOLD) returned {held}"));
+    }
+    let mut byte = [0u8; 1];
+    io::read(read_fd, &mut byte).map_err(|e| format!("read() failed: {e:?}"))?;
+    let returned_at = now_ns();
+    let ran_at = BOOSTED_RAN_AT.load(Ordering::Acquire);
+    writer.join().map_err(|_| String::from("the writer thread panicked"))??;
+    boosted.join().map_err(|_| String::from("the boosted thread panicked"))?;
+    for fd in [read_fd, write_fd, wake_read, wake_write] {
+        let _ = io::close(fd);
+    }
+    if ran_at == 0 || ran_at > returned_at {
+        return Err(format!(
+            "the SCHED_FIFO thread on the reader's processor ran at {ran_at} ns, after the read returned at {returned_at} ns"
+        ));
+    }
+    Ok(true)
 }
