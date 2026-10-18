@@ -1,16 +1,24 @@
-//! A single console getty. Policy follows POSIX terminal/session semantics.
+//! A login session on the console or a numbered virtual terminal.
 use libbreenix::{io, process, signal, termios, types::Fd};
 use std::io::Write;
+
+const O_NOCTTY: u32 = 0o400;
 
 fn check<T, E: std::fmt::Display>(result: Result<T, E>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
 }
 
 fn run() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let path = match args.as_slice() {
+        [] => "/dev/console".to_string(),
+        [tty] if matches!(tty.as_str(), "tty1" | "tty2" | "tty3" | "tty4" | "tty5" | "tty6") => format!("/dev/{tty}"),
+        _ => return Err("usage: getty [tty1..tty6]".into()),
+    };
     // Init detached its session before spawning us. Repeating this on a
     // respawn also acquires the terminal after the previous session leader exits.
     let sid = check(process::setsid())?;
-    let fd = check(libbreenix::fs::open("/dev/console", 2))?;
+    let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | O_NOCTTY))?;
     check(termios::set_controlling_terminal(fd))?;
     for target in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] { check(io::dup2(fd, target))?; }
     if fd.raw() > 2 { check(io::close(fd))?; }

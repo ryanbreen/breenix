@@ -762,8 +762,16 @@ it outside an isolated test environment.
 - **`init console`** starts a getty on each VT, tty1 through `/dev/console`, each respawned independently with
   C4's rate limit. **`init shell`** keeps bsh on tty1 and starts no process on tty2 to tty6, so `VT_OPENQRY`
   answers 2. **`init` (default mode)** issues `KDSETMODE(KD_TEXT)` on tty1 as section 7 says.
-- The `getty` cases log in with a per-run account the suite writes into `/etc/shadow` on its own disposable
-  disk copy (random password, C4's SHA-512-crypt), and remove it afterwards. No image ships a known password.
+- The `getty` cases replace `/etc/passwd` and root's `/etc/shadow` entry on their disposable
+  disk copy with per-run random SHA-512-crypt credentials and `/sbin/suite-console` as root's
+  session-witness shell. They restore the original files (or absence) on normal completion.
+  A deadline kill prevents `Drop` restoration: the retained writable image can still contain
+  these credentials. HOSTKEY records disclose the password in the retained serial log; treat
+  that image and log together as disposable test artifacts; do not use the image as an installed system.
+  No distributed image ships a known password.
+- `getty/logout-reacquires` and `getty/independent-sessions` each have a named 30-second
+  allowance: two logins require about 39 host keys and two SHA-512-crypt verifications;
+  logout also waits for init's one-second respawn delay. Other cases keep the default limit.
 
 ---
 

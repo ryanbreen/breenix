@@ -241,16 +241,45 @@ fn run_console_mode() -> ! {
         print!("[init] console detach failed\n");
         reap_forever();
     }
+    let mut children = [None; 6];
+    let mut retry_at = [0i128; 6];
     loop {
-        print!("[init] getty on the console\n");
-        match spawn(b"/bin/getty\0") {
-            Ok(child) => {
-                while reap_one() != Some(child.raw() as i32) {}
-                print!("[init] console session ended; restarting getty\n");
+        let now = libbreenix::time::now_monotonic().expect("console clock").as_nanos();
+        // Start tty1 last so launch messages precede its login prompt.
+        for index in (1..6).chain(0..1) {
+            if children[index].is_some() || now < retry_at[index] { continue; }
+            let tty = format!("tty{}\0", index + 1);
+            let argv = [b"getty\0".as_ptr(), tty.as_ptr(), core::ptr::null()];
+            // tty1 retains getty's default /dev/console path.
+            if index == 0 { print!("[init] getty on the console\n"); }
+            else { print!("[init] getty on tty{}\n", index + 1); }
+            let result = if index == 0 { spawn(b"/bin/getty\0") }
+                else { spawnv(b"/bin/getty\0", argv.as_ptr()) };
+            match result {
+                Ok(child) => {
+                    children[index] = Some(child.raw() as i32);
+                }
+                Err(error) => print!("[init] getty tty{}: {}\n", index + 1, error),
             }
-            Err(e) => print!("[init] Failed to start getty: {}\n", e),
+            retry_at[index] = now + 1_000_000_000;
         }
-        sleep_one_second();
+        // Reap without waiting on one particular VT: another session may exit
+        // while a fast-failing getty is rate limited.
+        loop {
+            let mut status = 0;
+            match waitpid(-1, &mut status, libbreenix::process::WNOHANG) {
+                Ok(pid) if pid.raw() != 0 => {
+                    if let Some(index) = children.iter().position(|p| *p == Some(pid.raw() as i32)) {
+                        children[index] = None;
+                        retry_at[index] = libbreenix::time::now_monotonic().expect("console clock").as_nanos() + 1_000_000_000;
+                        if index == 0 { print!("[init] console session ended; restarting getty\n"); }
+                        else { print!("[init] tty{} session ended\n", index + 1); }
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = libbreenix::time::sleep_ms(50);
     }
 }
 

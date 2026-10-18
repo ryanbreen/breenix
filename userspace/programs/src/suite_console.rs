@@ -139,7 +139,6 @@ struct Layer {
     probe: Probe,
 }
 
-const USER: Layer = Layer { name: "chvt and a getty on each terminal (V4u)", probe: Probe::VtGetstate };
 const KEYS: Layer = Layer { name: "the input core and the console keys (V5)", probe: Probe::VtGetstate };
 
 /// `VT_GETSTATE`, from the published `linux/vt.h`: writes a 6-byte `struct vt_stat`.
@@ -721,6 +720,391 @@ fn emulation_cursor_report() -> CaseResult {
     })
 }
 
+// Userspace VT cases use the contracted ioctls and screen devices. Login input
+// comes through the host keyboard, including when serial remains attached to tty1.
+fn vt_ioctl(fd: libbreenix::types::Fd, request: u64, arg: u64) -> Verdict<u64> {
+    let ret = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), request, arg) };
+    Error::from_syscall(ret as i64).map_err(|e| format!("ioctl {request:x}: {e}"))
+}
+
+struct VtFd(libbreenix::types::Fd);
+impl VtFd {
+    fn open(number: usize) -> Verdict<Self> {
+        fs::open(&format!("/dev/tty{number}"), fs::O_RDWR | O_NOCTTY)
+            .map(Self).map_err(|e| format!("tty{number}: {e}"))
+    }
+}
+impl Drop for VtFd { fn drop(&mut self) { let _ = io::close(self.0); } }
+
+fn activate(number: usize) -> Verdict {
+    let fd = VtFd::open(0)?;
+    vt_ioctl(fd.0, 0x5606, number as u64)?;
+    vt_ioctl(fd.0, 0x5607, number as u64)?;
+    Ok(())
+}
+
+fn foreground() -> Verdict<usize> {
+    let fd = VtFd::open(0)?;
+    let mut state = [0u16; 3];
+    vt_ioctl(fd.0, VT_GETSTATE, state.as_mut_ptr() as u64)?;
+    Ok(state[0] as usize)
+}
+
+struct VtChild(i32, bool);
+impl VtChild {
+    fn spawn(path: &str, args: &[&str]) -> Verdict<Self> {
+        let path = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
+        let args: Vec<_> = args.iter().map(|arg| std::ffi::CString::new(*arg).unwrap()).collect();
+        let mut argv: Vec<_> = args.iter().map(|arg| arg.as_ptr().cast::<u8>()).collect();
+        argv.push(core::ptr::null());
+        libbreenix::process::spawnv(path.as_bytes_with_nul(), argv.as_ptr())
+            .map(|pid| Self(pid.raw() as i32, false)).map_err(|e| format!("spawn: {e}"))
+    }
+    fn poll(&mut self) -> Verdict<Option<i32>> {
+        let mut status = 0;
+        let pid = libbreenix::process::waitpid(self.0, &mut status, libbreenix::process::WNOHANG)
+            .map_err(|e| format!("waitpid: {e}"))?;
+        if pid.raw() == 0 { return Ok(None); }
+        self.1 = true;
+        Ok(Some(status))
+    }
+    fn wait(&mut self) -> Verdict<i32> {
+        while libbreenix::suite::case_ms_left() > 300 {
+            if let Some(status) = self.poll()? { return Ok(status); }
+            libbreenix::time::sleep_ms(20).map_err(|e| e.to_string())?;
+        }
+        Err("child did not finish before the case deadline".into())
+    }
+}
+impl Drop for VtChild {
+    fn drop(&mut self) {
+        if !self.1 {
+            let _ = libbreenix::signal::kill(self.0, libbreenix::signal::SIGKILL);
+            let mut status = 0;
+            let _ = libbreenix::process::waitpid(self.0, &mut status, 0);
+        }
+    }
+}
+
+fn chvt_chvt_switches() -> CaseResult {
+    measured(|| {
+        let tty3 = VtFd::open(3)?;
+        io::write(tty3.0, b"\x1bcchvt-switch-witness\r\n").map_err(|e| e.to_string())?;
+        let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+        require(child.wait()? == 0, "chvt 3 failed")?;
+        require(foreground()? == 3, "chvt did not select tty3")?;
+        let check = screen_check()?;
+        require(check.lines().any(|l| l == "console foreground: tty3"), "read-back is not tty3")?;
+        require(check.lines().any(|l| l == "console row: chvt-switch-witness"), "tty3 witness missing")?;
+        identical(&check)?;
+        activate(1)
+    })
+}
+
+fn chvt_chvt_bad_number() -> CaseResult {
+    measured(|| {
+        let before = foreground()?;
+        for number in ["0", "7", "18446744073709551615", "abc"] {
+            let mut child = VtChild::spawn("/bin/chvt", &["chvt", number])?;
+            require(child.wait()? == 256, "invalid chvt did not exit 1")?;
+            require(foreground()? == before, "invalid chvt changed the foreground")?;
+        }
+        Ok(())
+    })
+}
+
+fn chvt_chvt_waits() -> CaseResult {
+    measured(|| {
+        activate(2)?;
+        let (ready_r, ready_w) = io::pipe().map_err(|e| e.to_string())?;
+        let (release_r, release_w) = io::pipe().map_err(|e| e.to_string())?;
+        let owner = match libbreenix::process::fork().map_err(|e| e.to_string())? {
+            libbreenix::process::ForkResult::Child => {
+                let result = (|| -> Verdict {
+                    let fd = VtFd::open(2)?;
+                    let ignored = libbreenix::signal::Sigaction {
+                        handler: libbreenix::signal::SIG_IGN, ..Default::default()
+                    };
+                    for sig in [10, 12] {
+                        libbreenix::signal::sigaction(sig, Some(&ignored), None).map_err(|e| e.to_string())?;
+                    }
+                    // vt_mode: mode, waitv, relsig, acqsig, frsig (8 bytes).
+                    let mode: [u16; 4] = [1, 10, 12, 0];
+                    vt_ioctl(fd.0, 0x5602, mode.as_ptr() as u64)?;
+                    io::write(ready_w, b"R").map_err(|e| e.to_string())?;
+                    let mut byte = [0];
+                    io::read(release_r, &mut byte).map_err(|e| e.to_string())?;
+                    vt_ioctl(fd.0, 0x5605, 1)?;
+                    Ok(())
+                })();
+                libbreenix::process::exit(if result.is_ok() { 0 } else { 1 });
+            }
+            libbreenix::process::ForkResult::Parent(pid) => VtChild(pid.raw() as i32, false),
+        };
+        let mut owner = owner;
+        io::close(ready_w).map_err(|e| e.to_string())?;
+        io::close(release_r).map_err(|e| e.to_string())?;
+        let mut byte = [0];
+        require(io::read(ready_r, &mut byte).map_err(|e| e.to_string())? == 1 && byte == *b"R", "VT owner failed")?;
+        let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+        pause()?;
+        require(child.poll()?.is_none(), "chvt returned before VT_PROCESS released")?;
+        require(foreground()? == 2, "VT_PROCESS did not hold tty2")?;
+        io::write(release_w, b"R").map_err(|e| e.to_string())?;
+        io::close(release_w).map_err(|e| e.to_string())?;
+        io::close(ready_r).map_err(|e| e.to_string())?;
+        require(child.wait()? == 0, "chvt failed after release")?;
+        require(owner.wait()? == 0, "VT owner release failed")?;
+        require(foreground()? == 3, "chvt returned before tty3 was active")?;
+        let check = screen_check()?;
+        require(check.lines().any(|l| l == "console foreground: tty3"), "read-back is not tty3")?;
+        identical(&check)?;
+        activate(1)
+    })
+}
+
+// C4 accepts the staged root account. Give it fresh random credentials and a
+// session-checking shell for this case, restoring both files on the private disk.
+struct LoginCredentials { password: String, hash: String }
+static LOGIN_CREDENTIALS: std::sync::OnceLock<Verdict<LoginCredentials>> = std::sync::OnceLock::new();
+
+fn login_credentials() -> Verdict<LoginCredentials> {
+    let mut random = [0; 16];
+    let mut at = 0;
+    while at < random.len() {
+        let n = libbreenix::crypto::rand::getrandom_bytes(&mut random[at..]).map_err(|e| format!("getrandom: {e}"))?;
+        require(n > 0, "getrandom made no progress")?;
+        at += n;
+    }
+    // Encode the 64 random bits in 13 unmodified keyboard chords. The two-login
+    // cases have named allowances for host injection, verification and respawn.
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
+    let mut password = String::new();
+    for _ in 0..13 {
+        password.push(ALPHABET[(bits % 36) as usize] as char);
+        bits /= 36;
+    }
+    let salt: String = random[8..].iter().map(|b| format!("{b:02x}")).collect();
+    let mut hash = [0; libbreenix::crypto::sha512_crypt::MAX_OUTPUT];
+    let n = libbreenix::crypto::sha512_crypt::sha512_crypt(password.as_bytes(), &format!("$6${salt}"), &mut hash)
+        .map_err(String::from)?;
+    Ok(LoginCredentials { password, hash: std::str::from_utf8(&hash[..n]).map_err(|e| e.to_string())?.into() })
+}
+
+struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, password: String }
+impl LoginAccount {
+    fn create() -> Verdict<Self> {
+        let credentials = LOGIN_CREDENTIALS.get().ok_or("run credentials were not prepared")?
+            .as_ref().map_err(Clone::clone)?;
+        let passwd = std::fs::read("/etc/passwd").map_err(|e| e.to_string())?;
+        let shadow = match std::fs::read("/etc/shadow") {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("read shadow: {error}")),
+        };
+        let account = Self { passwd, shadow, password: credentials.password.clone() };
+        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/sbin/suite-console\n").map_err(|e| e.to_string())?;
+        std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", credentials.hash))
+            .map_err(|e| e.to_string())?;
+        Ok(account)
+    }
+    fn restore(&self) -> Verdict {
+        match &self.shadow {
+            Some(bytes) => std::fs::write("/etc/shadow", bytes).map_err(|e| e.to_string())?,
+            None => match std::fs::remove_file("/etc/shadow") {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(format!("remove test shadow: {error}")),
+            },
+        }
+        std::fs::write("/etc/passwd", &self.passwd).map_err(|e| e.to_string())?;
+        let shadow_restored = match (std::fs::read("/etc/shadow"), &self.shadow) {
+            (Ok(actual), Some(expected)) => actual == *expected,
+            (Err(error), None) => error.kind() == std::io::ErrorKind::NotFound,
+            _ => false,
+        };
+        require(shadow_restored && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd,
+            "account files were not restored")
+    }
+}
+impl Drop for LoginAccount { fn drop(&mut self) { let _ = self.restore(); } }
+
+fn start_gettys() -> Verdict<VtChild> {
+    // The suite itself boots on tty1. Release that inherited ownership before
+    // starting init's console target, as a real PID 1 does before its gettys.
+    libbreenix::process::setsid().map_err(|e| e.to_string())?;
+    let ignored = libbreenix::signal::Sigaction {
+        handler: libbreenix::signal::SIG_IGN, ..Default::default()
+    };
+    libbreenix::signal::sigaction(libbreenix::signal::SIGHUP, Some(&ignored), None).map_err(|e| e.to_string())?;
+    let console = VtFd::open(1)?;
+    vt_ioctl(console.0, 0x540e, 1)?;
+    vt_ioctl(console.0, 0x5422, 0)?;
+    drop(console);
+    for number in 1..=6 {
+        let fd = VtFd::open(number)?;
+        io::write(fd.0, b"\x1bc").map_err(|e| e.to_string())?;
+    }
+    VtChild::spawn("/sbin/init", &["init", "console"])
+}
+
+fn vt_text(number: usize) -> Verdict<String> {
+    let bytes = std::fs::read(format!("/dev/vcsa{number}")).map_err(|e| e.to_string())?;
+    require(bytes.len() >= 4 && bytes[0] != 0 && bytes[1] != 0, "invalid vcsa header")?;
+    require(bytes.len() == 4 + 2 * bytes[0] as usize * bytes[1] as usize, "short vcsa screen")?;
+    let mut text = String::new();
+    for row in bytes[4..].chunks(2 * bytes[1] as usize) {
+        for cell in row.chunks_exact(2) { text.push(cell[0] as char); }
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+fn wait_vt(number: usize, needle: &str) -> Verdict<String> {
+    while libbreenix::suite::case_ms_left() > 500 {
+        let text = vt_text(number)?;
+        if text.contains(needle) { return Ok(text); }
+        libbreenix::time::sleep_ms(20).map_err(|e| e.to_string())?;
+    }
+    Err(format!("tty{number} did not show {needle}"))
+}
+
+fn type_line(text: &str) -> Verdict {
+    require(text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "unsupported keyboard text")?;
+    let mut keys: Vec<_> = text.chars().map(|c| c.to_string()).collect();
+    keys.push("enter".into());
+    libbreenix::suite::hostkeys(&keys.join(",")).map(|_| ())
+}
+
+fn login_vt(number: usize, password: &str) -> Verdict<String> {
+    let began = libbreenix::suite::case_ms_left();
+    wait_vt(number, "Breenix login: ")?;
+    activate(number)?;
+    type_line("root")?;
+    wait_vt(number, "Password: ")?;
+    let password_at = libbreenix::suite::case_ms_left();
+    type_line(password)?;
+    let text = wait_vt(number, &format!("VTLOGIN tty{number} "))
+        .map_err(|e| format!("{e}; login began with {began}ms, password with {password_at}ms left"))?;
+    require(!text.contains(password), "password appeared on the screen")?;
+    Ok(text.lines().find(|line| line.starts_with("VTLOGIN ")).ok_or("missing login proof")?.trim().into())
+}
+
+fn getty_prompt_each_vt() -> CaseResult {
+    measured(|| {
+        let _init = start_gettys()?;
+        for number in 1..=6 {
+            wait_vt(number, "Breenix login: ")?;
+            activate(number)?;
+            let check = screen_check()?;
+            identical(&check)?;
+            require(check.lines().any(|l| l == format!("console foreground: tty{number}")), "wrong foreground")?;
+            require(check.lines().any(|l| l == "console row: Breenix login:"), "displayed prompt missing")?;
+        }
+        activate(1)
+    })
+}
+
+fn getty_wrong_password_refused() -> CaseResult {
+    measured(|| {
+        let account = LoginAccount::create()?;
+        let _init = start_gettys()?;
+        wait_vt(2, "Breenix login: ")?;
+        activate(2)?;
+        type_line("root")?;
+        wait_vt(2, "Password: ")?;
+        type_line("wrong")?;
+        let text = wait_vt(2, "Login incorrect")?;
+        require(!text.contains("VTLOGIN "), "wrong password started a session")?;
+        account.restore()?;
+        activate(1)
+    })
+}
+
+fn getty_login_on_vt() -> CaseResult {
+    measured(|| {
+        let account = LoginAccount::create()?;
+        let _init = start_gettys()?;
+        login_vt(3, &account.password)?;
+        account.restore()?;
+        activate(1)
+    })
+}
+
+fn getty_logout_reacquires() -> CaseResult {
+    measured(|| {
+        let account = LoginAccount::create()?;
+        let _init = start_gettys()?;
+        let before = login_vt(4, &account.password)?;
+        // Remove the old prompt so it cannot be mistaken for a respawn.
+        let fd = VtFd::open(4)?;
+        io::write(fd.0, b"\x1bc").map_err(|e| e.to_string())?;
+        let sid = before.split_whitespace().find(|word| word.starts_with("sid=")).ok_or("missing session")?;
+        libbreenix::suite::hostkeys("ctrl-d")?;
+        wait_vt(4, &format!("VTLOGOUT tty4 {sid}"))?;
+        wait_vt(4, "Breenix login: ")?;
+        let proof = login_vt(4, &account.password)?;
+        require(proof != before, "logout did not create a new tty4 session")?;
+        account.restore()?;
+        activate(1)
+    })
+}
+
+fn getty_independent_sessions() -> CaseResult {
+    measured(|| {
+        let account = LoginAccount::create()?;
+        let _init = start_gettys()?;
+        let first = login_vt(2, &account.password)?;
+        let second = login_vt(5, &account.password)?;
+        let session = |line: &str| line.split_whitespace().find(|part| part.starts_with("sid=")).unwrap_or("").to_string();
+        require(session(&first) != session(&second), "two VTs shared a session")?;
+        for proof in [&first, &second] {
+            let sid: i32 = session(proof).strip_prefix("sid=").ok_or("missing session")?
+                .parse().map_err(|e| format!("invalid session: {e}"))?;
+            let actual = libbreenix::process::getsid(sid).map_err(|e| format!("login session exited: {e}"))?;
+            require(actual.raw() as i32 == sid, "login process changed session")?;
+        }
+        // TIOCGSID is queried by the login shell on its own controlling
+        // terminal; an outside session correctly receives ENOTTY for that query.
+        require(vt_text(2)?.contains(&first) && vt_text(5)?.contains(&second),
+            "a VT lost its independent login session")?;
+        account.restore()?;
+        activate(1)
+    })
+}
+
+// Login invokes this entry point as the staged account's shell.
+fn login_shell() -> Verdict {
+    use libbreenix::{process, termios, types::Fd};
+    let pid = process::getpid().map_err(|e| e.to_string())?.raw();
+    let sid = process::getsid(0).map_err(|e| e.to_string())?.raw();
+    let pgid = process::getpgrp().map_err(|e| e.to_string())?.raw() as i32;
+    let mut tty_sid = 0i32;
+    vt_ioctl(Fd::STDIN, 0x5429, &mut tty_sid as *mut i32 as u64)?;
+    require(pid == sid && sid as i32 == pgid && tty_sid == pgid
+        && termios::tcgetpgrp(Fd::STDIN).map_err(|e| e.to_string())? == pgid, "login session or foreground group differs")?;
+    let ctty = fs::open("/dev/tty", fs::O_RDWR | O_NOCTTY).map_err(|e| e.to_string())?;
+    let device = fs::fstat(Fd::STDIN).map_err(|e| e.to_string())?.st_rdev;
+    require(fs::fstat(ctty).map_err(|e| e.to_string())?.st_rdev == device, "/dev/tty differs from stdin")?;
+    let _ = io::close(ctty);
+    for fd in [Fd::STDOUT, Fd::STDERR] {
+        require(fs::fstat(fd).map_err(|e| e.to_string())?.st_rdev == device, "login standard descriptors differ")?;
+    }
+    let number = (1..=6).find(|n| {
+        let Ok(fd) = VtFd::open(*n) else { return false; };
+        fs::fstat(fd.0).is_ok_and(|s| s.st_rdev == device)
+    }).ok_or("login terminal is not a numbered VT")?;
+    require(std::env::var("TERM").as_deref() == Ok("breenix")
+        && std::env::var("USER").as_deref() == Ok("root"), "login environment differs")?;
+    println!("VTLOGIN tty{number} sid={sid} pgid={pgid}");
+    let mut line = String::new();
+    let count = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    require(count == 0 && line.is_empty(), "login shell expected terminal EOF")?;
+    println!("VTLOGOUT tty{number} sid={sid}");
+    Ok(())
+}
+
 /// One function per case that has no check yet, each failing with the layer it needs.
 macro_rules! needs {
     ($($name:ident => $layer:ident;)*) => {
@@ -729,14 +1113,6 @@ macro_rules! needs {
 }
 
 needs! {
-    chvt_chvt_switches => USER;
-    chvt_chvt_waits => USER;
-    chvt_chvt_bad_number => USER;
-    getty_prompt_each_vt => USER;
-    getty_wrong_password_refused => USER;
-    getty_login_on_vt => USER;
-    getty_logout_reacquires => USER;
-    getty_independent_sessions => USER;
     keys_alt_fn => KEYS;
     keys_ctrl_alt_fn => KEYS;
     keys_ctrl_alt_fn_graphics => KEYS;
@@ -750,5 +1126,14 @@ needs! {
 }
 
 fn main() {
+    if std::env::args().next().as_deref() == Some("-suite-console") {
+        if let Err(error) = login_shell() { eprintln!("login shell: {error}"); std::process::exit(1); }
+        return;
+    }
+    let args: Vec<_> = std::env::args().collect();
+    let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));
+    if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {
+        LOGIN_CREDENTIALS.get_or_init(login_credentials);
+    }
     SUITE.run()
 }
