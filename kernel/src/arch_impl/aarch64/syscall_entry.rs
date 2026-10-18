@@ -1439,17 +1439,16 @@ fn sys_exec_aarch64(
         Ok(image) => Some(image),
         Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
     };
-    if let Err(errno) = crate::syscall::exec::await_exiting_siblings(current_pid) {
-        return (-(errno as i64)) as u64;
-    }
-
-    let result = without_interrupts(|| {
+    // `attempt` gives back no result while another thread of the process still
+    // runs (`ProcessManager::exec_blocked_by_group`); the loop below waits for
+    // that thread again.
+    let mut attempt = |current_pid: crate::process::ProcessId| without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
         let previous_ttbr0;
         let exec_result = {
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_exec_aarch64: Process manager not available");
-                return (-12_i64) as u64; // -ENOMEM
+                return Some((-12_i64) as u64); // -ENOMEM
             };
 
             // Trace: calling exec_process_with_argv (process manager)
@@ -1474,10 +1473,13 @@ fn sys_exec_aarch64(
             }
             Err(e) => {
                 restore_ttbr0_after_failed_exec(previous_ttbr0);
+                if e == crate::process::manager::EXEC_GROUP_RUNNING {
+                    return None;
+                }
                 log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
                 // No receipt was produced, so there is nothing to commit; the guard drops on
                 // return from this closure.
-                return (-(crate::syscall::exec::manager_errno(e) as i64)) as u64;
+                return Some((-(crate::syscall::exec::manager_errno(e) as i64)) as u64);
             }
         };
 
@@ -1566,8 +1568,18 @@ fn sys_exec_aarch64(
         // Trace: about to return 0 from exec syscall
         super::trace::trace_exec(b'R');
 
-        0
+        Some(0)
     });
+    let mut current_pid = current_pid;
+    let result = loop {
+        current_pid = match crate::syscall::exec::end_other_threads(current_pid) {
+            Ok(pid) => pid,
+            Err(errno) => return (-(errno as i64)) as u64,
+        };
+        if let Some(result) = attempt(current_pid) {
+            break result;
+        }
+    };
 
     // The exec lock-order counters are only live after an exec has actually run. This is the only
     // site on the aarch64 boot path where a gate can observe `commits >= 1`; it sits OUTSIDE the
