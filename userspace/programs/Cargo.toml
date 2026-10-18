@@ -755,6 +755,10 @@ name = "suite-gpu"
 path = "src/suite_gpu.rs"
 
 [[bin]]
+name = "suite-console"
+path = "src/suite_console.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
 
