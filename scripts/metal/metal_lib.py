@@ -162,6 +162,16 @@ def claim_lease(holder, wait, poll=5.0, on_wait=None, checkpoint=None):
         time.sleep(poll)
 
 
+def handoff_lease(holder_id, successor):
+    """Transfer an owned, non-quarantined lease without exposing a free-machine interval."""
+    with locked('lease'):
+        lease = read_lease()
+        if not lease or lease.get('id') != holder_id or lease.get('state') == 'quarantined':
+            return False
+        write_json(STATE / LEASE, dict(successor, state='claimed', claimed=now(), heartbeat=now()))
+        return True
+
+
 def update_lease(holder_id, **fields):
     """Refreshes the heartbeat (and any fields) of a lease `holder_id` still holds; False when it no longer does."""
     with locked('lease'):

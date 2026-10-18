@@ -1017,15 +1017,18 @@ class DriverTest(StateTest):
         d.on_line('[storage] read back identical: truncated')
         self.assertFalse(d.completion_reported)
 
-    def test_disk_root_refuses_a_different_commit_before_assembling_the_payload(self):
+    def test_disk_root_stages_the_requested_build_before_assembling_the_payload(self):
         d = self.driver
         d.args.disk, d.args.commit = 'root', 'b' * 40
         inputs = d.stage / 'inputs'
         inputs.mkdir(parents=True)
         (inputs / 'ready').touch()
         m.write_json(inputs / 'build.json', {'commit': d.args.commit, 'profile': 'production', 'features': []})
-        m.write_json(m.STATE / 'disk.json', {'commit': 'a' * 40})
-        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        with patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+             patch.object(boot.metal_disk, 'stage', side_effect=ValueError('changed build')) as stage:
+            with self.assertRaisesRegex(ValueError, 'changed build'):
+                d.prepare_payload()
+        self.assertEqual(stage.call_args.args[3], d.args.commit)
         self.assertNotIn('diskRoot', d.delivery)
 
     def test_disk_mismatch_rejects_the_boot_before_prefix_completion(self):
@@ -1548,7 +1551,8 @@ class StagingTest(unittest.TestCase):
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
                          ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'efi-stub/Cargo.toml',
-                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs',
+                          'efi-stub/src/suite_disk.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'
