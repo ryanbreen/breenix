@@ -608,7 +608,7 @@ These probe routines do not supply G5's promised closed-form proofs or drawing p
 
 The generated text is a reviewable file without a NUL; the shader encoder supplies its wire terminator.
 Its header declares the five constant vectors (sixteen operands, result-word selector, the routine number, which
-the per-routine programs do not read, and the runtime zero of B19),
+the per-routine programs do not read, and B19's runtime constant 0),
 window position, colour output and temporaries. Sources selecting one component use a four-component
 replicated swizzle, as B10 establishes. The file is generated with
 `taskpolicy -b rustc --edition=2021 -O "$CHECKOUT/tools/gpu-profile/math.rs" -o "$GENERATOR"`, then
@@ -625,8 +625,8 @@ uses the continuation framing above rather than requiring one large command. Con
 Ruling 48 splits `probe_int` into one program per routine, `profile/r00.tgsi` to `r24.tgsi`, so that each
 compiles within the 2 s watchdog: the combined program's first PROBE compiled for 3,146 ms on Parallels. Each
 program is the routine's own emitted text through the same integer rewrites, with no routine dispatch; the
-generator prints each program's size and token count, and the emitted-ISA tests run every routine's own
-program. A context creates a routine's vertex and fragment pair on that routine's first PROBE, so `warmed`
+generator prints each program's size and token count, and the emitted-ISA tests run each of the 25 routines'
+own programs. A context creates a routine's vertex and fragment pair on that routine's first PROBE, so `warmed`
 grows by two per routine probed.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original

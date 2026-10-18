@@ -190,7 +190,7 @@ pub fn is_gop_active() -> bool {
 }
 
 /// Get the GOP framebuffer as a mutable byte slice, for a caller that writes it (counted
-/// by `firmware_writes`). Returns None if GOP is not initialized.
+/// by `firmware_writes`); absent until GOP is initialized.
 pub fn gop_framebuffer() -> Option<&'static mut [u8]> {
     let fb = gop_framebuffer_mut()?;
     super::firmware_writes::note();

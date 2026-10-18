@@ -1363,7 +1363,8 @@ fn tgsi(code: &Code, outputs: &[V]) -> (String, u32, usize) {
 const ROUTINES: u32 = 25;
 
 /// `probe_int` as one program per routine (ruling 48), so that each compiles within the
-/// 2 s watchdog on every target; a context compiles a routine's program on its first PROBE.
+/// 2 s watchdog on each of the three targets; a context compiles a routine's program on its
+/// first PROBE.
 fn generated() -> Vec<(String, u32)> {
     (0..ROUTINES)
         .map(|r| {
