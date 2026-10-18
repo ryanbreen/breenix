@@ -16,14 +16,16 @@
 //!            driver's uninterruptible wait is the only thing standing between
 //!            the test and a corrupted published request.
 //!
-//! Stage 2 attempts overlap by having its child observe the reader's scheduler
-//! state from `/proc/<pid>/stat` as blocked during the read loop, then exit.
-//! The handler records the sender's si_pid and must run before the reads end.
-//! This does not establish overlap with a published block request: `S` also
-//! describes lock and request-gate waits, and a completion can precede the
-//! child's exit. More passes increase the opportunity but do not establish
-//! the missing request-scoped witness. The PASS marker's `parked=1` records
-//! only this scheduler-state observation; issue #598 remains unresolved.
+//! Stage 2 observes the overlap in the reader's scheduler state. Its child
+//! samples `/proc/<pid>/stat` during the read loop and exits only after it
+//! reads `D`: procfs reports `D` only for a thread sleeping in a completion
+//! wait that signals cannot end, and the one such wait a file read reaches is
+//! the block driver's, entered after the request is published to the device.
+//! The sample is taken before the child exits, so before SIGCHLD is sent, and
+//! it counts only if the reads had not ended when it was taken.
+//! The handler records the sender's si_pid, which must be the child's, and
+//! must run before the reads end. An attempt that misses either repeats with
+//! a longer hold, up to the last, and a race the last hold misses is a FAIL.
 //!
 //! Both outcomes are printed as a single pinned marker line. The line is
 //! emitted twice because console output interleaves at byte granularity, so a
@@ -53,8 +55,9 @@ const CHILD_SLEEP_MS: u64 = 120;
 /// Stage 2's passes over the file per attempt: each attempt that does not
 /// exercise the race holds the read open for longer, up to the last.
 const HOLDS: [u32; 4] = [1, 2, 4, 8];
-/// Stage 2 child exit codes: it saw the reader parked and exited at once; the
-/// reads ended before it saw that; it could not observe the reader.
+/// Stage 2 child exit codes: it saw the reader parked on a block request and
+/// exited at once; the reads ended before it saw that; it could not observe
+/// the reader.
 const CHILD_SAW_PARKED: i32 = 0;
 const CHILD_NOT_PARKED: i32 = 3;
 const CHILD_NO_OBSERVATION: i32 = 4;
@@ -229,7 +232,8 @@ fn wait_child(child: Pid, stage: &'static str) -> Result<i32, Failure> {
     }
 }
 
-/// The reader's scheduler state letter from `/proc/<pid>/stat`.
+/// The reader's scheduler state letter from `/proc/<pid>/stat`. `D` is a
+/// thread parked in a completion wait that signals cannot end.
 fn stat_state(path: &str, buf: &mut [u8]) -> Option<u8> {
     let fd = fs::open(path, fs::O_RDONLY).ok()?;
     let n = fs::read(fd, buf);
@@ -242,8 +246,7 @@ fn stat_state(path: &str, buf: &mut [u8]) -> Option<u8> {
 }
 
 /// Stage 2's child: wait for the reader's go byte, then exit after observing
-/// a blocked scheduler state during the read loop. This snapshot does not
-/// identify the wait's cause or establish that it persists until the child's exit.
+/// the reader parked on a published block request (`D`) during the read loop.
 fn watch_reader(reader: Pid, ctl: Fd) -> i32 {
     let mut byte = [0u8; 1];
     loop {
@@ -264,14 +267,14 @@ fn watch_reader(reader: Pid, ctl: Fd) -> i32 {
             Some(state) => state,
             None => return CHILD_NO_OBSERVATION,
         };
-        // Read the control pipe after the state: a blocked state counts only
+        // Read the control pipe after the state: a parked state counts only
         // if the reader had not yet ended its reads when it was sampled.
         match io::read(ctl, &mut byte) {
             Err(Error::Os(Errno::EAGAIN)) | Err(Error::Os(Errno::EINTR)) => {}
             Ok(_) => return CHILD_NOT_PARKED,
             Err(_) => return CHILD_NO_OBSERVATION,
         }
-        if state == b'S' {
+        if state == b'D' {
             return CHILD_SAW_PARKED;
         }
     }
