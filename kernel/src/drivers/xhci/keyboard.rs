@@ -277,7 +277,9 @@ impl Controller {
     fn reset_pipe(&mut self, index: usize, dci: u8, endpoint: u8) -> Result<(), &'static str> {
         let slot = self.devices[index].slot;
         self.reset_endpoint(slot, dci)?;
-        self.control(index, spec::clear_endpoint_halt(endpoint), None)?;
+        if self.control(index, spec::clear_endpoint_halt(endpoint), None)? != 1 {
+            return Err("CLEAR_FEATURE(ENDPOINT_HALT) refused");
+        }
         let next = self.devices[index]
             .keyboard
             .as_ref()
