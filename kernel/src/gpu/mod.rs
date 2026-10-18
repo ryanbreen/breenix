@@ -77,10 +77,19 @@ const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
-/// Counts interrupts and state changes; a waiter sleeps only while it is unchanged.
+/// Counts the state changes waiters wait for; a waiter sleeps only while it is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
+/// Counts the device's interrupts. Only `kgpu` waits for them: it takes the device's
+/// answers and tells waiters of the changes they wait for (`notify`).
+static IRQS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
 static ISR: AtomicU64 = AtomicU64::new(0);
+/// The control queue's notification address, and whether requests were queued since it
+/// was last written: see [`ring_doorbell`].
+static DOORBELL: AtomicU64 = AtomicU64::new(0);
+static KICK: AtomicBool = AtomicBool::new(false);
+/// The ISR's configuration-change bit was seen: the device may have set DEVICE_NEEDS_RESET.
+static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 static INTID: AtomicU32 = AtomicU32::new(0);
 static REAPER: AtomicU64 = AtomicU64::new(0);
 static REAPER_STARTING: AtomicBool = AtomicBool::new(false);
@@ -92,8 +101,23 @@ fn now_ns() -> u64 {
 fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     crate::per_cpu::preempt_disable();
     let r = CORE.lock().as_mut().map(f);
+    ring_doorbell();
     crate::per_cpu::preempt_enable();
     r
+}
+
+/// Notify the device of the requests [`Core::flush`] made available, after the core's lock
+/// is released. The notification is an MMIO write, and a hypervisor may hold the writing
+/// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
+/// requests' descriptors and ring index were published before `KICK` was set.
+fn ring_doorbell() {
+    if KICK.swap(false, Ordering::AcqRel) {
+        let at = DOORBELL.load(Ordering::Acquire);
+        if at != 0 {
+            // SAFETY: the control queue's mapped notification address; queue 0.
+            unsafe { core::ptr::write_volatile(at as *mut u16, 0) };
+        }
+    }
 }
 
 /// Tell the waiters and `kgpu` that something changed.
@@ -103,7 +127,13 @@ fn notify() {
     wake_reaper();
 }
 
-/// Wake `kgpu` for work only it does: a reset, or the catalogue's next warm-up step.
+/// What `kgpu` sleeps on: state changes and interrupts.
+fn kgpu_events() -> u64 {
+    EVENTS.load(Ordering::Acquire).wrapping_add(IRQS.load(Ordering::Acquire))
+}
+
+/// Wake `kgpu` for work only it does: a reset, the catalogue's next warm-up step, or
+/// sending the requests the device's answers made room for.
 fn wake_reaper() {
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
@@ -363,6 +393,7 @@ pub fn init_qemu() {
                 );
             }
             ISR.store(dev.isr, Ordering::Release);
+            DOORBELL.store(dev.doorbell(), Ordering::Release);
             INTID.store(dev.intid, Ordering::Release);
             crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
             crate::arch_impl::aarch64::gic::enable_spi(dev.intid);
@@ -672,6 +703,7 @@ impl Core {
             sent = true;
         }
         if sent {
+            KICK.store(true, Ordering::Release);
             wake_reaper();
         }
     }
@@ -779,11 +811,23 @@ impl Core {
     // -----------------------------------------------------------------------------------
     // The device's answers.
 
-    /// Take every completion the device has returned and the watchdog's decisions.
+    /// `kgpu`'s turn: take every completion the device has returned and the watchdog's
+    /// decisions, and send the queued requests that now fit.
     fn pump(&mut self) {
         self.reap_all();
         self.watchdog(now_ns());
         self.flush();
+    }
+
+    /// A waiter's turn: take the device's completions and the watchdog's decisions. Queued
+    /// requests are left to `kgpu`, which sends them (`pump`), so a waiter never notifies
+    /// the device; before `kgpu` starts, the waiter sends them.
+    fn poll(&mut self) {
+        self.reap_all();
+        self.watchdog(now_ns());
+        if REAPER.load(Ordering::Acquire) == 0 {
+            self.flush();
+        }
     }
 
     fn reap_all(&mut self) {
@@ -812,11 +856,20 @@ impl Core {
                 }
             }
         }
-        if !self.reset_wanted && self.dev.as_ref().is_some_and(|d| d.needs_reset()) {
+        // The device signals DEVICE_NEEDS_RESET with a configuration change notification
+        // (VirtIO 1.3 section 2.1.2), so the status register, an MMIO read, is read only
+        // after one. A device that stops answering without it meets the watchdog.
+        if !self.reset_wanted
+            && CONFIG_CHANGED.swap(false, Ordering::AcqRel)
+            && self.dev.as_ref().is_some_and(|d| d.needs_reset())
+        {
             self.fault();
         }
+        // The answers' handlers notify waiters of what they wait for: a fence published, a
+        // synchronous answer, a retired submission's holds, a fault. `kgpu` sends what the
+        // answers made room for.
         if any {
-            notify();
+            wake_reaper();
         }
     }
 
@@ -1045,6 +1098,7 @@ impl Core {
         for id in held {
             self.unhold(id);
         }
+        notify();
     }
 
     /// Test point 31's fence-depth mode ends: a fifth SUBMIT waits at the four-in-flight
@@ -1253,7 +1307,10 @@ impl Core {
         self.display_reset();
         self.resetting = false;
         match up {
-            Ok(()) => self.dev = Some(dev),
+            Ok(()) => {
+                DOORBELL.store(dev.doorbell(), Ordering::Release);
+                self.dev = Some(dev);
+            }
             Err(e) => {
                 drop(dev);
                 self.status = abi::status::DEVICE_FAILED;
@@ -1327,7 +1384,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
         if let Some(v) = with_core(|c| {
-            c.pump();
+            c.poll();
             f(c)
         })
         .flatten()
@@ -1416,12 +1473,20 @@ pub fn handle_interrupt() {
     // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
     let start = crate::tracing::providers::gpu::interrupt_begin();
     let isr = ISR.load(Ordering::Acquire);
-    if isr != 0 && virgl::read_isr(isr) != 0 {
-        EVENTS.fetch_add(1, Ordering::AcqRel);
-        WAITERS.wake_up();
+    let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
+    if status != 0 {
+        // Bit 1 is a configuration change (VirtIO 1.3 section 4.1.4.5).
+        if status & 2 != 0 {
+            CONFIG_CHANGED.store(true, Ordering::Release);
+        }
+        IRQS.fetch_add(1, Ordering::AcqRel);
         let tid = REAPER.load(Ordering::Acquire);
         if tid != 0 {
             crate::task::scheduler::wake_thread_any_context(tid);
+        } else {
+            // Before `kgpu` starts, waiters take the device's answers themselves.
+            EVENTS.fetch_add(1, Ordering::AcqRel);
+            WAITERS.wake_up();
         }
     }
     crate::tracing::providers::gpu::interrupt_end(start);
@@ -1458,7 +1523,7 @@ fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
         crate::task::scheduler::with_scheduler(|sched| {
             sched.block_current_for_io_with_timeout(wake);
         });
-        if EVENTS.load(Ordering::Acquire) != seen {
+        if kgpu_events() != seen {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
@@ -1478,7 +1543,7 @@ fn reaper() {
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
     loop {
-        let seen = EVENTS.load(Ordering::Acquire);
+        let seen = kgpu_events();
         let now = now_ns();
         let (deadline, busy, reset) = with_core(|c| {
             c.pump();
@@ -1513,7 +1578,7 @@ fn reset_device(tid: u64) {
     dev.begin_reset();
     let start = now_ns();
     while !dev.reset_done() && now_ns().saturating_sub(start) < RESET_BUDGET_NS {
-        reaper_block(tid, EVENTS.load(Ordering::Acquire), Some(now_ns() + 1_000_000));
+        reaper_block(tid, kgpu_events(), Some(now_ns() + 1_000_000));
     }
     if dev.reset_done() {
         let (held, up) = dev.restart();

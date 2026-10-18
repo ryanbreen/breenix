@@ -322,6 +322,7 @@ impl Device {
     /// Send one request and spin until the device returns it (initialisation only).
     fn exec_polled(&mut self, req: Request) -> Result<Done, &'static str> {
         self.send(req).map_err(|_| "control queue full")?;
+        self.pci.notify_queue_fast(0);
         for _ in 0..50_000_000u64 {
             match self.reap() {
                 Reap::Done(d) => return Ok(d),
@@ -332,7 +333,8 @@ impl Device {
         Err("virtio-gpu did not answer")
     }
 
-    /// Hand `req` to the device, or give it back when the queue has no room.
+    /// Make `req` available to the device, or give it back when the queue has no room.
+    /// The caller notifies the device (section 4.1.4.4), through [`Device::doorbell`].
     pub fn send(&mut self, req: Request) -> Result<(), Request> {
         let segs = req.segments();
         if segs.len() > self.queue.free_count() {
@@ -341,8 +343,13 @@ impl Device {
         req.publish();
         let Some(head) = self.queue.add(&segs) else { return Err(req) };
         self.inflight[head as usize] = Some(req);
-        self.pci.notify_queue_fast(0);
         Ok(())
+    }
+
+    /// The control queue's notification address: a 16-bit write of the queue index there
+    /// tells the device buffers are available (VirtIO 1.3 section 4.1.4.4).
+    pub fn doorbell(&self) -> u64 {
+        self.pci.cached_notify_address(0).unwrap_or(0)
     }
 
     /// The control queue's size in descriptors.
