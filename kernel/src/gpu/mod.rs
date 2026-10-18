@@ -219,10 +219,10 @@ struct Ctx {
 }
 
 impl Ctx {
-    /// Programs whose warm-up completed: two per warmed rendering pipeline, and
-    /// `probe_int`'s pair from its first PROBE.
+    /// Programs whose warm-up completed: two per warmed rendering pipeline, and each
+    /// `probe_int` routine's pair from its first PROBE.
     fn warmed(&self) -> u32 {
-        2 * self.warm.count_ones() + if self.objects.has_probe() { encode::PROBE_PROGRAMS } else { 0 }
+        2 * self.warm.count_ones() + self.objects.probe_programs()
     }
 }
 
@@ -2078,7 +2078,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
 
 /// Create device context `id` with its internal resources and the process's resources
 /// attached, then send its fixed state and wait for its fence. The catalogue's programs
-/// are warmed afterwards on `kgpu` (`warm_next`), and `probe_int` by the first PROBE. Each
+/// are warmed afterwards on `kgpu` (`warm_next`), and each `probe_int` routine by its first PROBE. Each
 /// wait here is a synchronous device request under the watchdog, ended by a kill (section
 /// 1.4.1, program warm-up).
 fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {

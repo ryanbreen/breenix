@@ -604,8 +604,8 @@ pub struct Counters {
     /// Guest backing bytes the process's resources hold.
     pub resource_bytes: u64,
     /// For a context: how many programs whose warm-up has completed: the fixed rendering
-    /// catalogue's as its asynchronous warm-up proceeds, and `probe_int`'s pair from its
-    /// first PROBE.
+    /// catalogue's as its asynchronous warm-up proceeds, and each `probe_int` routine's pair
+    /// from that routine's first PROBE.
     pub warmed: u64,
     /// `SUBMIT`'s private copies and device vertex storage charged to the process while they
     /// are held; the GPU memory quota limits `resource_bytes` and this together.

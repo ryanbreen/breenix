@@ -604,10 +604,11 @@ These probe routines do not supply G5's promised closed-form proofs or drawing p
 | Program or operation | Published definition | Token layout |
 |---|---|---|
 | Probe vertex program | L: MOV (line 71), POSITION declaration; the pass-through is derived as solid's is | T:37–56, 137–158, 174–175, 226–234, 649–661, 752–764, 796–803; 11 tokens |
-| `kernel/src/gpu/virgl/profile/profile.tgsi` | L: MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; USLT 1384; USEQ 1453; USNE 1481; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
+| `kernel/src/gpu/virgl/profile/rNN.tgsi` (one program per routine, ruling 48) | L: MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; USLT 1384; USEQ 1453; USNE 1481; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
 
 The generated text is a reviewable file without a NUL; the shader encoder supplies its wire terminator.
-Its header declares the five constant vectors (sixteen operands, result-word selector and routine selector),
+Its header declares the five constant vectors (sixteen operands, result-word selector, the routine number, which
+the per-routine programs do not read, and the runtime zero of B19),
 window position, colour output and temporaries. Sources selecting one component use a four-component
 replicated swizzle, as B10 establishes. The file is generated with
 `taskpolicy -b rustc --edition=2021 -O "$CHECKOUT/tools/gpu-profile/math.rs" -o "$GENERATOR"`, then
@@ -621,6 +622,12 @@ The review revision eliminates repeated expressions and constant operations, and
 terms discarded above bit 95. The generator prints the revised size and token budget when run; the
 emitted-ISA host tests execute that generated text, including loops and integer rewrites. Shader text now
 uses the continuation framing above rather than requiring one large command. Context creation queues only the fixed rendering catalogue's warm-up (section 1.4.1); the probe program's compilation is charged to its context's first PROBE, under the same watchdog and case deadlines.
+Ruling 48 splits `probe_int` into one program per routine, `profile/r00.tgsi` to `r24.tgsi`, so that each
+compiles within the 2 s watchdog: the combined program's first PROBE compiled for 3,146 ms on Parallels. Each
+program is the routine's own emitted text through the same integer rewrites, with no routine dispatch; the
+generator prints each program's size and token count, and the emitted-ISA tests run every routine's own
+program. A context creates a routine's vertex and fragment pair on that routine's first PROBE, so `warmed`
+grows by two per routine probed.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
 inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived

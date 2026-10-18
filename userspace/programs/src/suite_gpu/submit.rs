@@ -25,8 +25,8 @@ pub fn context_create() -> CaseResult {
     ensure(ctx != 0, || "CONTEXT_CREATE returned handle 0".to_string())?;
     let c = caps()?;
     // Creation queues the fixed rendering catalogue's warm-up on the GPU worker and returns;
-    // the profile-only `probe_int` pair waits for the context's first PROBE (gpu-abi.md,
-    // CONTEXT_CREATE and COUNTERS; ruling 33, #1725).
+    // each profile-only `probe_int` routine's pair waits for that routine's first PROBE
+    // (gpu-abi.md, CONTEXT_CREATE and COUNTERS; ruling 33, #1725; ruling 48).
     let probe = c.pipelines & 1 << pipeline::PROBE_INT != 0;
     let programs = 2 * (c.pipelines & !(1 << pipeline::PROBE_INT)).count_ones() as u64;
     // Use a late catalogue pipeline so this draw creates programs before its warm-up step.
@@ -46,7 +46,7 @@ pub fn context_create() -> CaseResult {
     let k = counters(ctx)?;
     ensure(k.warmed == programs, || format!("the completed warm-up warmed {} programs; the fixed rendering catalogue built so far has {programs}", k.warmed))?;
     if probe {
-        // The first PROBE compiles and warms `probe_int`: integer addition into one pixel.
+        // The first PROBE of routine 0 compiles and warms its program: integer addition into one pixel.
         let mut s = scene(t, GREEN, &[]);
         s.extend_from_slice(&[stream::cmd::PROBE, 24, 0, 0, 1, 1, 2, 2, 0x1234_0000, 0x5678]);
         s.resize(s.len() + 14, 0);

@@ -222,10 +222,10 @@ impl Shader {
 
 #[test]
 fn final_integer_shader_matches_every_model_routine_and_word() {
-    let (text, _) = generated();
-    let shader = Shader::parse(&text);
+    let programs = generated();
     let mut seed = 0x9127a3d5u32;
-    for routine in 0..25 {
+    for routine in 0..ROUTINES {
+        let shader = Shader::parse(&programs[routine as usize].0);
         let (p, out) = program(routine);
         for _ in 0..24 {
             let args = core::array::from_fn(|i| {
@@ -250,8 +250,7 @@ fn final_integer_shader_matches_every_model_routine_and_word() {
 
 #[test]
 fn emitted_division_loop_matches_native_quotient_and_remainder() {
-    let (text, _) = generated();
-    let shader = Shader::parse(&text);
+    let shader = Shader::parse(&generated()[11].0);
     let mask = (1u128 << 96) - 1;
     let pairs = [
         (0, 1),
@@ -324,8 +323,7 @@ fn integer_rewrites_preserve_nan_shaped_words_and_aliasing() {
     }
     // These fixed expectations specifically consume reconstructed NaN-shaped
     // constants, rather than only transporting dynamic words through a select.
-    let (text, _) = generated();
-    let shader = Shader::parse(&text);
+    let programs = generated();
     for (routine, inputs, expected) in [
         (12, [0x7fc00000, 0], 0x7fc00000),
         (12, [0x7f800000, 0xff800000], 0x7fc00000),
@@ -334,15 +332,14 @@ fn integer_rewrites_preserve_nan_shaped_words_and_aliasing() {
     ] {
         let mut args = [0; 18];
         args[..2].copy_from_slice(&inputs);
-        assert_eq!(shader.run(routine, 0, &args), expected);
+        assert_eq!(Shader::parse(&programs[routine as usize].0).run(routine, 0, &args), expected);
     }
 }
 
 #[test]
 fn rounded_rect_matches_independent_pixel_centre_reference() {
     let (p, out) = program(22);
-    let (text, _) = generated();
-    let shader = Shader::parse(&text);
+    let shader = Shader::parse(&generated()[22].0);
     for (x0, y0, w, h, r) in [
         (0i32, 0i32, 8i32, 6i32, 2i32),
         (-3, -4, 7, 9, 0),
@@ -396,8 +393,7 @@ fn rounded_rect_matches_independent_pixel_centre_reference() {
 #[test]
 fn triangle_matches_independent_edge_reference_including_ties_and_winding() {
     let (p, out) = program(23);
-    let (text, _) = generated();
-    let shader = Shader::parse(&text);
+    let shader = Shader::parse(&generated()[23].0);
     let triangles = [
         [(0, 0), (4, 0), (0, 4)],
         [(0, 0), (0, 4), (4, 0)],
@@ -468,10 +464,21 @@ fn triangle_matches_independent_edge_reference_including_ties_and_winding() {
 }
 
 #[test]
-fn committed_shader_is_the_tested_generator_output() {
-    let (text, _) = generated();
-    assert_eq!(
-        text.trim_end_matches('\0'),
-        include_str!("../../kernel/src/gpu/virgl/profile/profile.tgsi")
-    );
+fn committed_programs_are_the_tested_generator_output() {
+    let directory = std::path::Path::new(file!())
+        .parent()
+        .unwrap()
+        .join("../../kernel/src/gpu/virgl/profile");
+    let programs = generated();
+    let module = std::fs::read_to_string(directory.join("mod.rs")).unwrap();
+    for (r, (text, tokens)) in programs.iter().enumerate() {
+        let name = format!("r{r:02}.tgsi");
+        let committed = std::fs::read_to_string(directory.join(&name)).unwrap();
+        assert_eq!(text.trim_end_matches('\0'), committed, "{name}");
+        assert!(
+            module.contains(&format!("include_bytes!(\"{name}\"), tokens: {tokens} }}")),
+            "{name}'s token count in mod.rs"
+        );
+    }
+    assert!(!directory.join(format!("r{:02}.tgsi", programs.len())).exists());
 }
