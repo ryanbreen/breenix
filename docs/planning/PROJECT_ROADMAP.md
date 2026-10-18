@@ -11,6 +11,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The x86 boot continuation and synthetic kernel Rust entries preserve SysV stack
+alignment in PR #1841; [the entry evidence](green-program/process/1841-x86-entry-alignment.md)
+records the conditional idle probe and the separate completion-accounting failure (#1854).
+
 The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
 It advances from delivery to a RAM-disk shell, then networking and SATA/AHCI storage in parallel,

@@ -17,6 +17,10 @@ use alloc::sync::Arc;
 // ioctl Request Codes (matching Linux/libbreenix values)
 // =============================================================================
 
+/// Breenix console source window: begin (0), authentication refused (1), accepted (2).
+/// Root only.
+pub const CONSOLE_INPUT_PROOF: u64 = 0x425201;
+
 /// Get termios structure
 pub const TCGETS: u64 = 0x5401;
 /// Drain output or transmit a break.
@@ -74,6 +78,8 @@ pub const TIOCGPTLCK: u64 = 0x80045439;
 // Error Codes
 // =============================================================================
 
+/// Operation not permitted
+const EPERM: i32 = 1;
 
 /// Invalid argument
 const EINVAL: i32 = 22;
@@ -384,6 +390,13 @@ fn pty_termios_ioctl(
 /// * `Err(errno)` on failure
 pub fn tty_ioctl(tty: &Arc<TtyDevice>, request: u64, arg: u64) -> Result<i32, i32> {
     match request {
+        CONSOLE_INPUT_PROOF => {
+            // It flushes input and reports authentication: getty and login only.
+            if crate::fs::permissions::Credentials::current(false).euid != 0 {
+                return Err(EPERM);
+            }
+            tty.input_proof(arg)
+        }
         TCGETS => {
             handle_tcgets(tty, arg)?;
             Ok(0)

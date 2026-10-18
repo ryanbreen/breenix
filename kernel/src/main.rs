@@ -493,13 +493,22 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 /// This function runs on the properly allocated kernel stack, not the bootstrap stack
 /// arg: the idle kernel stack top address (passed from kernel_main)
 #[cfg(target_arch = "x86_64")]
-extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
-    // Verify stack alignment per SysV ABI (RSP % 16 == 8 at function entry after call)
-    let current_rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
-    }
-    debug_assert_eq!(
+#[unsafe(naked)]
+extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
+    core::arch::naked_asm!(
+        "mov rsi, rsp",
+        "jmp {continuation}",
+        continuation = sym kernel_main_on_kernel_stack_checked,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+extern "C" fn kernel_main_on_kernel_stack_checked(
+    arg: *mut core::ffi::c_void,
+    current_rsp: u64,
+) -> ! {
+    // The naked entry captures RSP before a compiler prologue changes it.
+    assert_eq!(
         current_rsp & 0xF,
         8,
         "SysV stack misaligned at callee entry"
@@ -1160,6 +1169,9 @@ fn launch_x86_production_init(
             }
         })
     } else { None };
+    if console_mode == Some("console") {
+        kernel::drivers::xhci::console_session_starting();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard

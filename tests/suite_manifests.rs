@@ -831,6 +831,13 @@ fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Valu
             && shapes.iter().collect::<HashSet<_>>().len() == shapes.len()) {
             errors.push(format!("{id}: bootShapes must name unique supported boot shapes"));
         }
+        if let Some(boot_modes) = milestone.get("bootModes") {
+            if !boot_modes.as_array().is_some_and(|names| !names.is_empty()
+                && names.iter().all(|name| name.as_str().is_some_and(|name| modes.contains_key(name)))
+                && names.iter().collect::<HashSet<_>>().len() == names.len()) {
+                errors.push(format!("{id}: bootModes must name unique supported boot modes"));
+            }
+        }
         let lists = milestone["stages"].as_object().unwrap();
         if lists.is_empty() {
             errors.push(format!("{id}: stages must not be empty, including stubs"));
@@ -999,6 +1006,18 @@ fn metal_definition_contract_rejects_invalid_inputs() {
         let mut bad = metal.clone();
         *bad.pointer_mut(pointer).unwrap() = value;
         assert!(!metal_definition_errors(&root, &main, &bad, &boot).is_empty(), "{pointer}");
+    }
+    for value in [
+        serde_json::json!([]),
+        serde_json::json!(["sutie"]),
+        serde_json::json!(["shell", "shell"]),
+        serde_json::json!("shell"),
+        serde_json::json!([null]),
+    ] {
+        let mut bad = boot.clone();
+        bad["milestones"][0]["bootModes"] = value;
+        assert!(metal_definition_errors(&root, &main, &metal, &bad)
+            .iter().any(|error| error.contains("bootModes")));
     }
     let mut finalized = boot.clone();
     for milestone in finalized["milestones"].as_array_mut().unwrap() {

@@ -329,6 +329,13 @@ pub(super) fn publish_group(thread: &Thread) {
     }
 }
 
+/// Publish the process row `thread` now belongs to (`Thread::owner_pid`).
+pub(super) fn publish_owner(thread: &Thread) {
+    if let Some(slot) = own_slot(thread) {
+        slot.pid.store(thread.owner_pid.unwrap_or(0), Ordering::Release);
+    }
+}
+
 /// `tid`'s scheduling policy, without its run-time fields, read without a
 /// lock.
 pub(super) fn policy(tid: u64) -> Option<SchedPolicy> {
@@ -2262,7 +2269,7 @@ pub(super) fn splice_spawned(scheduler: &mut Scheduler) {
         // once, here, by the swap above.
         let spawned = unsafe { Box::from_raw(node) };
         node = spawned.next;
-        scheduler.threads.push(spawned.thread);
+        scheduler.admit_thread(spawned.thread);
     }
     scheduler.threads[start..].reverse();
 }

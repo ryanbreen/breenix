@@ -36,7 +36,12 @@ class ConsoleTest(unittest.TestCase):
             driver.challenge_console(text)
         self.assertEqual(driver.console_step, 2)
         for text in ['Login incorrect', 'Breenix login: ', 'Password: ', 'bsh /root>',
-                     'print("metal-login-ok", 6*7)', 'metal-login-ok 42',
+                     'print("metal-login-ok", 6*7)', 'metal-login-ok 42', 'bsh /root> ']:
+            driver.challenge_console(text)
+        self.assertEqual(driver.console_send.call_args.args[0], 'cat /proc/fbcon/check')
+        # Logout waits for the check's line and then the prompt after its rows.
+        driver.challenge_console('fbcon check: shadow and screen identical, 7 glyph cells match the font', complete=True)
+        for text in ['fbcon row: metal-login-ok 42', 'bsh /root> ',
                      '[init] console session ended; restarting getty', '[getty] console acquired']:
             driver.challenge_console(text)
         self.assertFalse(driver.console_done)
@@ -46,16 +51,16 @@ class ConsoleTest(unittest.TestCase):
         self.assertTrue(driver.console_done)
         self.assertEqual([call.args[0] for call in driver.console_send.call_args_list],
                          ['root', 'deliberately-wrong-password', 'root', driver.site['CONSOLE_PASSWORD'],
-                          'print("metal-login-ok", 6*7)', 'exit'])
+                          'print("metal-login-ok", 6*7)', 'cat /proc/fbcon/check', 'exit'])
 
     def test_console_completion_requires_disk_evidence(self):
         driver = self.driver()
         driver.args.disk = 'root'
         driver.seen = set()
-        driver.console_step = 9
+        driver.console_step = 11
         driver.challenge_console('Breenix login: ')
         self.assertTrue(driver.console_done)
-        driver.console_step = 9
+        driver.console_step = 11
         driver.seen.add('disk-root')
         with self.assertRaises(boot.Finish) as result:
             driver.challenge_console('Breenix login: ')
@@ -67,7 +72,7 @@ class ConsoleTest(unittest.TestCase):
         try:
             driver = fixture.driver
             driver.args.mode = 'console'
-            driver.console_step = 9
+            driver.console_step = 11
             driver.final_seen = True
             driver.required_stages = []
             driver.on_line = Mock(side_effect=boot.Finish(existing.m.EXIT_SHORT, 'disk mismatch'))
@@ -92,8 +97,17 @@ class ConsoleTest(unittest.TestCase):
         self.assertTrue(boot.marker_matches(stage, 'metal-login-ok 42', 'keyboard'))
         definition = existing.json.loads((existing.TOOLS.parents[1] / 'docs/metal/boot-path.json').read_text())
         login = next(m for m in definition['milestones'] if m['id'] == 'console-login')
-        self.assertTrue(login['stub'])
         self.assertIn('The answer is on the screen', [s['name'] for s in login['stages']['console']])
+        # A SOL boot waits for no keyboard-tagged stage, so it can finish; it still waits for the screen check.
+        catalog = existing.json.loads((existing.TOOLS.parents[1] /
+                                       'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
+        groups = boot.measured_stages(definition, 'console', catalog, 'ramdisk', 'sol')
+        self.assertFalse([stage for group in groups for stage in group if len(stage) == 3])
+        self.assertIn(('fbcon row: metal-login-ok 42', 'contains'), [stage for group in groups for stage in group])
+        self.assertEqual(len(boot.final_marker(definition, 'console', catalog, 'ramdisk', 'sol')), 2)
+        keyboard = boot.measured_stages(definition, 'console', catalog, 'ramdisk', 'keyboard')
+        self.assertIn(('[console] first input byte input=keyboard', 'line', 'keyboard'),
+                      [stage for group in keyboard for stage in group])
 
     def test_console_input_options_are_validated_before_host_access(self):
         runner = existing.load_script('metal-run')
