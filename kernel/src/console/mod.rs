@@ -14,7 +14,7 @@
 //! Drawing does not read the screen; the read-back check (`/proc/console/check`,
 //! and once when the console first fills the screen) reads it and compares it
 //! with the shadow and with pixels worked out from the font and the text alone
-//! (`raster::expected_intensity`). The check ties what it read to the scanout:
+//! (`raster::expected_colour`). The check ties what it read to the scanout:
 //! scanout memory, or the backing of the resource the device last accepted for
 //! scanout 0 after a completed flush of the whole screen
 //! (`display::Display::settle`).
@@ -33,6 +33,7 @@
 //! census lines. Serial keeps each record. Once a process takes the display
 //! (`take_display`) the console stops drawing.
 
+pub mod boxdraw;
 pub mod display;
 pub mod grid;
 pub mod raster;
@@ -77,9 +78,18 @@ struct Console {
     grid: Grid,
     /// The last write was kernel log output that did not end its line.
     kernel_line_open: bool,
+    replies: [u8; 4096],
+    reply_head: usize,
+    reply_len: usize,
 }
 
-static CONSOLE: Mutex<Console> = Mutex::new(Console { grid: Grid::new(), kernel_line_open: false });
+static CONSOLE: Mutex<Console> = Mutex::new(Console {
+    grid: Grid::new(),
+    kernel_line_open: false,
+    replies: [0; 4096],
+    reply_head: 0,
+    reply_len: 0,
+});
 
 /// Grid writes given up because its lock stayed held (a holder that faulted).
 static DROPPED: AtomicU64 = AtomicU64::new(0);
@@ -207,9 +217,8 @@ pub fn log_record(level: log::Level, args: &fmt::Arguments) {
     let mut line = Line { bytes: [0; 256], len: 0 };
     let _ = write!(line, "{:>5}: {}", level, args);
     with_grid(|console| {
-        console.grid.begin_line();
-        console.grid.write(&line.bytes[..line.len]);
-        console.grid.write(b"\r\n");
+        console.grid.write_kernel(&line.bytes[..line.len], true);
+        console.grid.write_kernel(b"\n", false);
         console.kernel_line_open = false;
     });
 }
@@ -232,18 +241,7 @@ pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
         return;
     }
     with_grid(|console| {
-        if !console.kernel_line_open {
-            console.grid.begin_line();
-        }
-        for piece in bytes.split_inclusive(|&byte| byte == b'\n') {
-            match piece.strip_suffix(b"\n") {
-                Some(line) => {
-                    console.grid.write(line);
-                    console.grid.write(b"\r\n");
-                }
-                None => console.grid.write(piece),
-            }
-        }
+        console.grid.write_kernel(bytes, !console.kernel_line_open);
         console.kernel_line_open = !bytes.ends_with(b"\n");
     });
 }
@@ -255,7 +253,18 @@ pub fn write_tty(bytes: &[u8]) {
             console.grid.begin_line();
             console.kernel_line_open = false;
         }
-        console.grid.write(bytes);
+        let Console { grid, replies, reply_head, reply_len, .. } = console;
+        grid.write_with_reply(bytes, |reply| {
+            // Keep whole replies until the input ring accepts them. The writer
+            // may be echoing in IRQ context, so it only queues fixed storage.
+            let capacity = replies.len();
+            if reply.len() <= capacity - *reply_len {
+                for &byte in reply {
+                    replies[(*reply_head + *reply_len) % capacity] = byte;
+                    *reply_len += 1;
+                }
+            }
+        });
     });
 }
 
@@ -326,6 +335,7 @@ pub fn init_early(buffer: &'static mut [u8], info: bootloader_api::info::FrameBu
         bytes_per_pixel: info.bytes_per_pixel,
         stride_bytes: info.stride * info.bytes_per_pixel,
         reserved: 0,
+        bgr: matches!(info.pixel_format, PixelFormat::Bgr),
         font: raster::Font::for_display(info.width, info.height),
     };
     // SAFETY: the bootloader's framebuffer mapping lives for the kernel's lifetime.
@@ -469,6 +479,7 @@ fn gop_display() -> Option<Display> {
         bytes_per_pixel: info.bytes_per_pixel,
         stride_bytes: info.stride * info.bytes_per_pixel,
         reserved: 0xff,
+        bgr: info.is_bgr,
         font: raster::Font::for_display(info.width, info.height),
     };
     if !matches!(layout.bytes_per_pixel, 3 | 4) {
@@ -516,7 +527,7 @@ pub fn start() {
 /// A text row as last drawn.
 #[derive(Clone, PartialEq, Eq)]
 struct Shown {
-    text: Vec<u8>,
+    text: Vec<grid::Cell>,
     cursor: Option<usize>,
 }
 
@@ -537,13 +548,14 @@ struct Screen {
 struct Snapshot {
     cols: usize,
     rows: usize,
-    cells: Vec<u8>,
+    cells: Vec<grid::Cell>,
+    cursor_visible: bool,
     cursor: (usize, usize),
     generation: u64,
 }
 
 impl Snapshot {
-    fn row(&self, row: usize) -> &[u8] {
+    fn row(&self, row: usize) -> &[grid::Cell] {
         &self.cells[row * self.cols..(row + 1) * self.cols]
     }
 
@@ -560,12 +572,13 @@ impl Snapshot {
             for row in 0..grid.rows() {
                 cells[row * grid.cols()..(row + 1) * grid.cols()].copy_from_slice(grid.row(row));
             }
-            Some((grid.generation(), grid.cursor()))
+            Some((grid.generation(), grid.cursor(), grid.cursor_visible()))
         });
         match copied.flatten() {
-            Some((generation, cursor)) => {
+            Some((generation, cursor, visible)) => {
                 self.generation = generation;
                 self.cursor = cursor;
+                self.cursor_visible = visible;
                 true
             }
             None => false,
@@ -583,6 +596,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         rows,
         cells: alloc::vec![grid::BLANK; cols * rows],
         cursor: (0, 0),
+        cursor_visible: true,
         generation: u64::MAX,
     };
     let mut screen = Screen {
@@ -598,6 +612,18 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut announced = false;
     let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
+        // Replies are input, independent of which owner currently draws. Retry
+        // on a busy/full input ring instead of losing a CPR byte to contention.
+        // V4 routes this sink to the numbered terminal's input queue.
+        with_grid(|console| {
+            while console.reply_len != 0 {
+                if !crate::ipc::stdin::push_byte_from_irq(console.replies[console.reply_head]) {
+                    break;
+                }
+                console.reply_head = (console.reply_head + 1) % console.replies.len();
+                console.reply_len -= 1;
+            }
+        });
         if !SCREEN.load(Ordering::Acquire) {
             answer_checks(Err(Absent::NotYet));
             sleep_ms(PASS_INTERVAL_MS);
@@ -716,7 +742,7 @@ impl Screen {
             let (cursor_row, cursor_col) = snapshot.cursor;
             let wanted = Shown {
                 text: snapshot.row(row).to_vec(),
-                cursor: (cursor_row == row).then_some(cursor_col),
+                cursor: (snapshot.cursor_visible && cursor_row == row).then_some(cursor_col),
             };
             if self.shown[row].as_ref() == Some(&wanted) {
                 continue;
@@ -780,9 +806,9 @@ impl Screen {
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
                     let expected = match shown {
                         Some(shown) => {
-                            raster::expected_intensity(font, &shown.text, shown.cursor, x, y % font.line_height())
+                            raster::expected_colour(font, &shown.text, shown.cursor, x, y % font.line_height())
                         }
-                        None => 0,
+                        None => raster::PALETTE[0],
                     };
                     if !layout.pixel_is(pixel, expected) {
                         font_mismatches += 1;
@@ -793,12 +819,12 @@ impl Screen {
         let shown: Vec<&Shown> = self.shown.iter().flatten().collect();
         let glyph_cells = shown
             .iter()
-            .map(|row| row.text.iter().filter(|&&cell| cell != grid::BLANK).count())
+            .map(|row| row.text.iter().filter(|&&cell| cell.glyph != b' ' as u16).count())
             .sum();
         let rows = shown
             .iter()
             .map(|row| {
-                let end = row.text.iter().rposition(|&cell| cell != grid::BLANK).map_or(0, |last| last + 1);
+                let end = row.text.iter().rposition(|&cell| cell.glyph != b' ' as u16).map_or(0, |last| last + 1);
                 row.text[..end].to_vec()
             })
             .filter(|text| !text.is_empty())
@@ -844,7 +870,7 @@ struct Check {
     glyph_cells: usize,
     sha256: [u8; 32],
     /// The text rows drawn, without trailing blanks, blank rows left out.
-    rows: Vec<Vec<u8>>,
+    rows: Vec<Vec<grid::Cell>>,
 }
 
 impl Check {
@@ -967,10 +993,10 @@ fn proc_answer() -> Result<Option<Answer>, i32> {
     }
 }
 
-fn push_rows(text: &mut String, prefix: &str, rows: &[Vec<u8>]) {
+fn push_rows(text: &mut String, prefix: &str, rows: &[Vec<grid::Cell>]) {
     for row in rows {
         text.push_str(prefix);
-        text.extend(row.iter().map(|&byte| char::from(byte)));
+        text.extend(row.iter().map(|cell| cell.character()));
         text.push('\n');
     }
 }

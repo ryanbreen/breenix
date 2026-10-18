@@ -35,6 +35,7 @@ impl Virtio2d {
             stride_bytes: width * 4,
             // B8G8R8A8: opaque.
             reserved: 0xff,
+            bgr: true,
             font: Font::for_display(width, height),
         };
         (layout.bytes() <= backing.len()).then(|| Self { backing: backing.as_mut_ptr(), layout })

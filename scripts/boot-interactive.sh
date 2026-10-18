@@ -3,7 +3,7 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY/CASE]] [--serial-log FILE]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--no-build] [--cpus N] [--gpu-gl]
 #
@@ -13,7 +13,7 @@
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
 #                        desktop's window manager needs VirGL, which this QEMU GPU lacks, so it exits here
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
-#   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
+#   --case CATEGORY       for --mode suite: run only this category (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
@@ -67,7 +67,7 @@ while [ "$#" -gt 0 ]; do
         --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
-        --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --case) [ -n "$2" ] || { echo "--case needs a category id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
@@ -105,7 +105,7 @@ elif [ -n "$SUITE" ]; then
 fi
 if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
-        echo "--case needs --mode suite and a category/case id" >&2; exit 2;
+        echo "--case needs --mode suite and a category id" >&2; exit 2;
     }
 fi
 if [ -z "$DISPLAY_MODE" ]; then
