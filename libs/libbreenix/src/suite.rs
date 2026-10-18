@@ -699,7 +699,9 @@ fn keep_record_output(suite: &str, name: &str) {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
-    if screen.gpu.is_some() { let _ = graphics::give_back_display(); }
+    // G1-G6 retain the runner owner they were checked against. G7's console
+    // cases explicitly start above the kernel console, with no runner owner.
+    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()

@@ -175,6 +175,7 @@ pub fn present_owner_only() -> CaseResult {
     let _case = begin()?;
     let c = context()?;
     let t = scanout_target(format::B8G8R8A8, 13, 7)?;
+    let want = scene_canvas(13, 7, A, &[]);
     frame(c, &scene(t, A, &[]))?;
     ensure(gpu::present(c, t).0 == -abi::errno::EPERM, || {
         "non-owner present accepted".to_string()
@@ -183,10 +184,23 @@ pub fn present_owner_only() -> CaseResult {
     ensure(r == -abi::errno::EPERM, || {
         "non-owner SET_MODE decoded arguments".to_string()
     })?;
+    take()?;
+    let f = present(c, t)?;
+    shown(t, &want, f)?;
     Ok(())
 }
 pub fn readback_presented() -> CaseResult {
-    scanout_bind()
+    let _case = begin()?;
+    let (c, a, wa) = setup(73, 17, A)?;
+    let f = present(c, a)?;
+    let b = scanout_target(format::B8G8R8A8, 73, 17)?;
+    frame(c, &scene(b, B, &[]))?;
+    let rec = expect(b, &scene_canvas(73, 17, B, &[]), "unpresented frame")?;
+    ensure(u32_at(&rec, record::FLAGS) & 1 == 0, || {
+        "drawing another target changed the completed scanout".to_string()
+    })?;
+    shown(a, &wa, f)?;
+    Ok(())
 }
 fn child_error(e: CaseError) -> String {
     format!("{e:?}")
