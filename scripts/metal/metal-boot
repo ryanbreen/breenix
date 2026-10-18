@@ -376,6 +376,8 @@ class Driver:
             facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build)
             self.delivery['diskRoot'] = facts
             files.update(suite_files)
+            if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):
+                shutil.copyfile(inputs / 'stub.efi', self.dir / 'readback-stub.efi')
         root_ramdisk = self.args.ramdisk and disk != 'root'
         if root_ramdisk:
             files['ramdisk'] = inputs / 'ext2.img'
@@ -654,9 +656,37 @@ class Driver:
         passed = passed and bool(milestone) and not metal_score.falls_short(milestone)
         m.write_json(source / 'suite-readback.json', dict(id=self.id, bytes=image.stat().st_size,
                                                          sha256=upload['sha256'], passed=passed))
-        m.write_text(source / 'exit-status', str(m.EXIT_DONE if passed else m.EXIT_SHORT) + '\n')
         scorer.event('cold-disk-verdict', readback=self.id, passed=passed)
+        with m.locked('finished'):
+            m.write_text(source / 'exit-status', str(m.EXIT_DONE if passed else m.EXIT_SHORT) + '\n')
+            finished = m.STATE / 'finished.jsonl'
+            entries = [json.loads(line) for line in finished.read_text().splitlines()]
+            m.append_jsonl(finished, dict(id=source.name, seq=max((e['seq'] for e in entries), default=0) + 1))
         return passed
+
+    def continue_disk_readback(self):
+        """Cold readback is the next boot under this lease, before another disk user can run."""
+        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        while m.boot_dir(boot_id).exists():
+            time.sleep(1)
+            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
+            payload='disk-readback', disk=None, source_boot=self.id, session=False, attended=False, input=None)))
+        child = Driver(args)
+        # The same live transient unit owns both boots; the reaper follows the active record's id.
+        child.unit = self.unit
+        inputs = child.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        shutil.copyfile(self.dir / 'readback-stub.efi', inputs / 'stub.efi')
+        stub = self.delivery['build']['stub']
+        if metal_image.sha256(inputs / 'stub.efi') != stub['sha256']:
+            raise ValueError('the retained readback firmware differs from the suite build')
+        m.write_json(inputs / 'build.json', dict(commit=self.args.commit, profile='disk-readback', stub=stub))
+        (inputs / 'ready').touch()
+        self.event('cold-readback-next', readback=boot_id)
+        child.run(inherited=self.id)
+        return int((self.dir / 'exit-status').read_text().strip())
+
 
     def challenge_shell(self, text):
         if (self.args.mode == 'shell' and self.shell_ready and not self.shell_sent
@@ -1136,7 +1166,7 @@ class Driver:
             m.quarantine_lease(self.id, 'driver power-off failed')
         return off
 
-    def cleanup(self, status, ended_by='driver'):
+    def cleanup(self, status, ended_by='driver', keep_lease=False):
         self.stopping.set()
         with contextlib.suppress(Finish):
             self.pump_serial()
@@ -1153,16 +1183,26 @@ class Driver:
             m.write_json(self.dir / 'delivery.json', self.delivery)
         m.close_record(self.dir, status, ended_by)
         shutil.rmtree(self.stage, ignore_errors=True)
-        if self.claimed:
+        if self.claimed and not keep_lease:
             m.release_lease(self.id)
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-    def run(self):
+    def run(self, inherited=None):
         self.create_record()
         self.lease_ceiling = None
         status = m.EXIT_SHORT
+        pending_readback = False
         try:
-            self.claim()
+            if inherited is None:
+                self.claim()
+            else:
+                holder = dict(id=self.id, unit=self.unit, mode=self.args.mode, payload=self.args.payload, kind='boot')
+                if not m.handoff_lease(inherited, holder):
+                    raise Finish(m.EXIT_INCOMPLETE, 'the suite lease could not transfer to cold readback')
+                self.claimed = True
+                self.claim_status('claimed')
+                self.event('lease-inherited', source=inherited)
+                threading.Thread(target=self.heartbeat, daemon=True).start()
             self.prepare_payload()
             self.preflight()
             self.do_stage()
@@ -1188,6 +1228,7 @@ class Driver:
                             if manifest.get('diskChecks'):
                                 m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: awaiting cold raw disk readback after power-off\n')
                                 self.event('suite-awaiting-disk-readback')
+                                pending_readback = True
                                 status = m.EXIT_SHORT
                             elif not self.score_suite():
                                 status = m.EXIT_SHORT
@@ -1222,12 +1263,23 @@ class Driver:
             try:
                 verdict = metal_score.score(self.dir)
                 m.write_json(self.dir / 'milestone-verdict.json', verdict)
+                if pending_readback and metal_score.falls_short(verdict):
+                    pending_readback = False
                 if status == m.EXIT_DONE and metal_score.falls_short(verdict):
                     status = m.EXIT_SHORT
             except (OSError, ValueError, KeyError) as error:
                 self.event('milestone-verdict-error', error=error.__class__.__name__)
+                pending_readback = False
                 if status == m.EXIT_DONE:
                     status = m.EXIT_SHORT
+        if pending_readback and not self.gap:
+            self.cleanup(status, keep_lease=True)
+            try:
+                return self.continue_disk_readback()
+            except Exception as error:
+                self.event('cold-readback-error', error=error.__class__.__name__)
+                m.release_lease(self.id)
+                return m.EXIT_SHORT
         self.cleanup(status)
         return status
 

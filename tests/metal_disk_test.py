@@ -58,6 +58,21 @@ class DiskTest(existing.StateTest):
         self.assertNotEqual(changed['buildDigest'], facts['buildDigest'])
         self.assertIn('suite-root.img', files)
 
+    def test_lease_handoff_keeps_competitors_out_and_preserves_the_live_unit(self):
+        m = existing.m
+        self.ready()
+        m.claim_lease(dict(id='suite', unit='suite-unit'), wait=False)
+        self.assertFalse(m.handoff_lease('wrong-owner', dict(id='readback', unit='suite-unit')))
+        with self.assertRaises(m.Busy):
+            m.claim_lease(dict(id='competitor'), wait=False)
+        self.assertTrue(m.handoff_lease('suite', dict(id='readback', unit='suite-unit')))
+        self.assertEqual(m.read_lease()['unit'], 'suite-unit')
+        self.assertFalse(m.release_lease('suite'))
+        with self.assertRaises(m.Busy):
+            m.claim_lease(dict(id='competitor'), wait=False)
+        m.quarantine_lease('readback', 'power state uncertain')
+        self.assertFalse(m.handoff_lease('readback', dict(id='third', unit='suite-unit')))
+
     def test_cold_readback_refuses_an_intervening_boot_even_with_the_same_root(self):
         source_id = '20261018T000000Z-metal'
         source = existing.m.boot_dir(source_id)

@@ -474,9 +474,11 @@ build, and `metal-build` runs the commit's SDK suite host harness for x86-64 on 
 build lease, so the delivered root carries the SDK's records (`suite` in `build.json`; the driver refuses a
 build staged for another suite). A manifest's `diskChecks` (files-io's raw writeback checks) require a cold firmware
 read of the physical disk, before any filesystem mount. After the suite boot
-powers off, start `metal-run boot --payload disk-readback --source-boot ID --branch BRANCH`.
-The readback boot builds the deployed firmware stub under a metal-build slot,
-without a kernel or userspace rebuild. It acquires the same machine lease, identifies the disk by its
+powers off, the driver retains its lease and starts a separate cold-readback boot
+record with the same built firmware. The lease transfers directly to that record,
+so a queued disk user cannot intervene. A manual retry can use
+`metal-run boot --payload disk-readback --source-boot ID --branch BRANCH`; it builds
+only the deployed firmware stub under a metal-build slot. The readback identifies the disk by its
 exact storage record, and uploads its raw sectors to a one-use, lease-bound HTTP
 route. No kernel or filesystem is loaded on that boot. An intervening disk-root
 boot invalidates the association, including when it reuses the same build.
