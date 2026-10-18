@@ -103,7 +103,7 @@ dropped by the ring (`log_ring`). claim-lint:ok: 0 of 683 kernel-side lines spli
 
 The driver clears any stale SOL session, opens one in a tmux pane it owns, and powers on only after the session's
 banner has arrived in its capture files. The pane is held silent until its output is piped to the capture, so
-`serial.raw` holds the bytes the session printed, banner first. `serial.txt` is that text with VT100/ANSI sequences
+`serial.raw` receives SOL stdout and stderr through a blocking pipe and `tee`, before the terminal or tmux processes them, banner first. SOL stdin remains on the pane for input; reconnects append to the same capture. `serial.txt` is that text with VT100/ANSI sequences
 and NULs removed, CRLF and lone CR made LF, and cursor positioning made a line break; `serial.ts` gives each line's
 arrival time and byte offset. A dropped session is reopened within two seconds and recorded as a `console-gap`; a
 boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_console` and `heal_console` in

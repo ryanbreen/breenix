@@ -497,9 +497,13 @@ class Driver:
         raise Finish(m.EXIT_DELIVERY, 'no console: the serial-over-LAN session did not start')
 
     def spawn_console(self, fresh):
-        """ipmitool's SOL session in a tmux pane the driver owns. The pane waits, silent, until its output is piped
-        to serial.raw, so the capture holds exactly the bytes the session printed, banner included."""
-        hold = f"sh -c 'stty -echo; read go; exec {m.TOOLS / 'metal-sol'} activate'"
+        """Archive SOL stdout before the terminal line discipline or tmux processes it.
+
+        Keep stdin on the pane for interactive SOL input; stdout and stderr go
+        through a blocking pipe to tee, whose other output keeps the pane live.
+        """
+        hold = (f"sh -c 'stty -echo; read go; {m.TOOLS / 'metal-sol'} activate 2>&1 "
+                f"| tee -a {self.dir / 'serial.raw'}'")
         environment = dict(os.environ, TERM='xterm-256color')
         if fresh:
             subprocess.run(self.tmux + ['kill-server'], capture_output=True)
@@ -508,9 +512,6 @@ class Driver:
             subprocess.run(self.tmux + ['set-option', '-t', 'sol', 'remain-on-exit', 'on'], capture_output=True)
         else:
             subprocess.run(self.tmux + ['respawn-pane', '-k', '-t', 'sol', hold], check=True, env=environment)
-        subprocess.run(self.tmux + ['pipe-pane', '-t', 'sol'], capture_output=True)
-        subprocess.run(self.tmux + ['pipe-pane', '-O', '-t', 'sol', f"exec cat >> {self.dir / 'serial.raw'}"],
-                       check=True)
         time.sleep(0.5)
         subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'go', 'Enter'], check=True)
 
