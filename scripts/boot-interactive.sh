@@ -175,6 +175,8 @@ if [ "$MODE" = program ]; then
 fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
+    # Declares the host key path before the suite starts (docs/console/contract.md, "Host-injected keys").
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/hostkeys,string=qmp")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
 if [ -n "$FBCONSOLE" ]; then

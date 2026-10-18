@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Host key injection for suites that need a key the guest cannot press itself.
 
-A suite case asks for a key on its serial line, at the start of the line:
+A suite case asks for keys on its serial line (docs/console/contract.md, "Host-injected keys"):
 
-    SUITE <suite> HOSTKEY <token> <chord>
+    SUITE <suite> HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...]
 
-<token> is 1-32 characters of [A-Za-z0-9_.-] and names the request; each token is
-injected once. <chord> is zero or more modifiers then one key, joined by '-':
+`seq` increases across the run and each seq is injected once, so a replayed line is
+harmless. A chord is modifiers then one key, joined by '-':
 
-    modifiers  ctrl alt shift
-    keys       a-z 0-9 f1-f12 left right up down pgup pgdn home end
-               ret esc tab spc caps
-    examples   alt-f3  ctrl-alt-f2  alt-left  alt-right  alt-f7  shift-pgup
+    modifiers  ctrl alt shift super rctrl ralt
+    keys       a-z 0-9 f1-f12 left right up down pageup pagedown home end insert
+               delete enter tab backspace esc space capslock
+    examples   alt-f3  ctrl-alt-f2  alt-left  alt-right  alt-f7  shift-pageup
 
+Chords go out in order, each pressed modifiers first and released in reverse.
 The runner watching the serial log presses the chord on the target's own virtual
 keyboard and the case reads the screen back. The runner never reports success: the
 evidence is in the guest. A line that is not at the start of a serial line (the
@@ -47,6 +48,7 @@ all interfaces for the length of the boot, so use the variable only on a trusted
 Usage:
     hostkeys.py watch --serial FILE --backend SPEC [--log FILE] [--suite ID] [--parent PID]
     hostkeys.py send --backend SPEC CHORD
+    hostkeys.py declare --backend SPEC      (the contract's hostkeys declaration string)
     hostkeys.py selftest-parse
 """
 import argparse
@@ -59,11 +61,15 @@ import subprocess
 import sys
 import time
 
-REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([A-Za-z0-9_.-]{1,32}) ([a-z0-9-]{1,40})\r?$')
+REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)'
+                     r' seq=(\d+) keys=([a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*)\r?$')
 
-MODIFIERS = ('ctrl', 'alt', 'shift')
-NAMED = ('left', 'right', 'up', 'down', 'pgup', 'pgdn', 'home', 'end', 'ret', 'esc', 'tab', 'spc', 'caps')
-EXTENDED = ('left', 'right', 'up', 'down', 'pgup', 'pgdn', 'home', 'end')
+MODIFIERS = ('ctrl', 'alt', 'shift', 'super', 'rctrl', 'ralt')
+NAMED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete', 'enter', 'tab',
+         'backspace', 'esc', 'space', 'capslock')
+# Keys the PS/2 set-1 table sends behind an 0xE0 prefix, which Parallels will not take.
+EXTENDED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete',
+            'super', 'rctrl', 'ralt')
 
 
 def parse_chord(spec):
@@ -84,9 +90,11 @@ class NoPath(Exception):
 
 
 class QMPKeys:
-    QCODES = {'ctrl': 'ctrl', 'alt': 'alt', 'shift': 'shift', 'ret': 'ret', 'esc': 'esc', 'tab': 'tab',
-              'spc': 'spc', 'caps': 'caps_lock', 'left': 'left', 'right': 'right', 'up': 'up', 'down': 'down',
-              'pgup': 'pgup', 'pgdn': 'pgdn', 'home': 'home', 'end': 'end'}
+    QCODES = {'ctrl': 'ctrl', 'alt': 'alt', 'shift': 'shift', 'super': 'meta_l', 'rctrl': 'ctrl_r', 'ralt': 'alt_r',
+              'enter': 'ret', 'esc': 'esc', 'tab': 'tab', 'backspace': 'backspace', 'space': 'spc',
+              'capslock': 'caps_lock', 'left': 'left', 'right': 'right', 'up': 'up', 'down': 'down',
+              'pageup': 'pgup', 'pagedown': 'pgdn', 'home': 'home', 'end': 'end', 'insert': 'insert',
+              'delete': 'delete'}
 
     def __init__(self, path, hold_ms=100):
         self.path, self.hold_ms = path, hold_ms
@@ -122,7 +130,8 @@ class QMPKeys:
 
 class PrlctlKeys:
     # PS/2 set 1 make codes; Parallels turns them into USB HID usages.
-    CODES = {'ctrl': 29, 'alt': 56, 'shift': 42, 'esc': 1, 'tab': 15, 'ret': 28, 'spc': 57, 'caps': 58}
+    CODES = {'ctrl': 29, 'alt': 56, 'shift': 42, 'esc': 1, 'tab': 15, 'enter': 28, 'space': 57, 'capslock': 58,
+             'backspace': 14}
 
     def __init__(self, vm, hold_ms=60):
         self.vm, self.hold_ms = vm, hold_ms
@@ -145,6 +154,9 @@ class PrlctlKeys:
         return rows[key]
 
     def send(self, mods, key):
+        for name in (*mods, key):
+            if name in EXTENDED:
+                raise NoPath(name + ' is an extended scancode, which Parallels rejects')
         codes = [self.CODES[m] for m in mods] + [self.scancode(key)]
         events = [{'scancode': c, 'event': 'press'} for c in codes]
         events.append({'delay': self.hold_ms})
@@ -156,9 +168,10 @@ class PrlctlKeys:
 
 
 class VNCKeys:
-    SYMS = {'ctrl': 0xFFE3, 'alt': 0xFFE9, 'shift': 0xFFE1, 'caps': 0xFFE5, 'ret': 0xFF0D, 'esc': 0xFF1B,
-            'tab': 0xFF09, 'spc': 0x20, 'left': 0xFF51, 'up': 0xFF52, 'right': 0xFF53, 'down': 0xFF54,
-            'pgup': 0xFF55, 'pgdn': 0xFF56, 'home': 0xFF50, 'end': 0xFF57}
+    SYMS = {'ctrl': 0xFFE3, 'alt': 0xFFE9, 'shift': 0xFFE1, 'super': 0xFFEB, 'rctrl': 0xFFE4, 'ralt': 0xFFEA,
+            'capslock': 0xFFE5, 'enter': 0xFF0D, 'esc': 0xFF1B, 'tab': 0xFF09, 'backspace': 0xFF08, 'space': 0x20,
+            'left': 0xFF51, 'up': 0xFF52, 'right': 0xFF53, 'down': 0xFF54, 'pageup': 0xFF55, 'pagedown': 0xFF56,
+            'home': 0xFF50, 'end': 0xFF57, 'insert': 0xFF63, 'delete': 0xFFFF}
 
     def __init__(self, host, port, hold_ms=100):
         self.host, self.port, self.hold_ms = host, int(port), hold_ms
@@ -248,7 +261,7 @@ def backend(spec):
 
 
 class Watcher:
-    """Feeds on serial text, injects each requested chord once."""
+    """Feeds on serial text, injects each requested seq once."""
 
     def __init__(self, keys, name, log=print, suite=None):
         self.keys, self.name, self.log, self.suite = keys, name, log, suite
@@ -264,18 +277,31 @@ class Watcher:
         match = REQUEST.match(line)
         if not match or (self.suite and match.group(1) != self.suite):
             return
-        _, token, chord = match.groups()
-        if token in self.seen:
+        _, case, seq, chords = match.groups()
+        if seq in self.seen:
             return
-        self.seen.add(token)
+        self.seen.add(seq)
+        done = []
         try:
-            mods, key = parse_chord(chord)
-            self.keys.send(mods, key)
-            self.log('[hostkeys] token=%s chord=%s sent via %s' % (token, chord, self.name))
+            for chord in chords.split(','):
+                mods, key = parse_chord(chord)
+                self.keys.send(mods, key)
+                done.append(chord)
+            self.log('[hostkeys] case=%s seq=%s keys=%s sent via %s' % (case, seq, chords, self.name))
         except NoPath as why:
-            self.log('[hostkeys] token=%s chord=%s no host key path on %s: %s' % (token, chord, self.name, why))
+            self.log('[hostkeys] case=%s seq=%s keys=%s no host key path for %s on %s: %s'
+                     % (case, seq, chords, chord, self.name, why))
         except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
-            self.log('[hostkeys] token=%s chord=%s failed on %s: %s' % (token, chord, self.name, error))
+            self.log('[hostkeys] case=%s seq=%s keys=%s failed on %s after %d chord(s): %s'
+                     % (case, seq, chords, self.name, len(done), error))
+
+
+def declaration(spec):
+    """The contract's `<method>[;missing=<key>,...]` string for a backend; empty when there is no path."""
+    kind = spec.partition(':')[0]
+    if kind == 'prlctl':
+        return 'prlctl;missing=' + ','.join(EXTENDED)
+    return kind if kind in ('qmp', 'vnc') else ''
 
 
 def watch(args):
@@ -313,7 +339,7 @@ def selftest_parse():
     assert parse_chord('alt-f3') == (('alt',), 'f3')
     assert parse_chord('ctrl-alt-f12') == (('ctrl', 'alt'), 'f12')
     assert parse_chord('alt-left') == (('alt',), 'left')
-    for bad in ('f13', 'alt-alt-f1', 'meta-f1', 'alt-'):
+    for bad in ('f13', 'alt-alt-f1', 'meta-f1', 'alt-', 'pgup'):
         try:
             parse_chord(bad)
         except ValueError:
@@ -325,9 +351,17 @@ def selftest_parse():
         def send(self, mods, key):
             sent.append((mods, key))
     w = Watcher(Recorder(), 'test', lambda m: None)
-    w.feed('kernel::test_exec:   SUITE console HOSTKEY t0 alt-f1\r\nSUITE console HOSTKEY t1 alt-f2\r\nSUITE console HOSTKEY t1 alt-f2\nSUITE console HOS')
-    w.feed('TKEY t2 alt-left\n')
-    assert sent == [(('alt',), 'f2'), (('alt',), 'left')], sent
+    w.feed('kernel::test_exec:   SUITE console HOSTKEY vt/a seq=0 keys=alt-f1\r\n'
+           'SUITE console HOSTKEY vt/a seq=1 keys=alt-f2,alt-left\r\nSUITE console HOSTKEY vt/a seq=1 keys=alt-f2\n'
+           'SUITE console HOSTKEY vt/b seq')
+    w.feed('=2 keys=ctrl-alt-f3\n')
+    assert sent == [(('alt',), 'f2'), (('alt',), 'left'), (('ctrl', 'alt'), 'f3')], sent
+    sent.clear()
+    log = []
+    p = Watcher(PrlctlKeys('none'), 'prlctl', log.append)
+    p.feed('SUITE console HOSTKEY vt/c seq=7 keys=alt-left\n')
+    assert 'no host key path for alt-left on prlctl' in log[0], log
+    assert declaration('prlctl:x').startswith('prlctl;missing=left,right') and declaration('qmp:x') == 'qmp'
     print('hostkeys parse ok')
 
 
@@ -343,6 +377,8 @@ def main():
     s = sub.add_parser('send')
     s.add_argument('--backend', required=True)
     s.add_argument('chord')
+    d = sub.add_parser('declare')
+    d.add_argument('--backend', required=True)
     sub.add_parser('selftest-parse')
     args = parser.parse_args()
     if args.command == 'watch':
@@ -357,6 +393,8 @@ def main():
         except NoPath as why:
             print('no host key path: %s' % why, file=sys.stderr)
             return 3
+    elif args.command == 'declare':
+        print(declaration(args.backend))
     else:
         selftest_parse()
     return 0
