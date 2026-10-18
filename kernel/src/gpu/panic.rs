@@ -5,11 +5,20 @@ use super::console::{HEIGHT, WIDTH};
 use super::*;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
+#[cfg(feature = "capture_panic_oracle")]
+use core::sync::atomic::AtomicU8;
+#[cfg(feature = "capture_panic_oracle")]
+use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
 use virgl::emergency::{Command, Queue};
 
 const COLS: usize = 80;
 const ROWS: usize = 32;
 const CELLS: usize = COLS * ROWS;
+const BG: u32 = 0xff6e1216;
+const FG: u32 = 0xffffebeb;
+/// The glyph each cell was given, kept apart from the draw requests that carry it.
+#[cfg(feature = "capture_panic_oracle")]
+static SHOWN: [AtomicU8; CELLS] = [const { AtomicU8::new(b' ') }; CELLS];
 #[cfg(feature = "capture_panic_oracle")]
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "capture_panic_oracle")]
@@ -132,7 +141,7 @@ pub(super) fn prepare() -> Result<(), i64> {
     .ok_or(EIO)?;
     let mut stream = Vec::new();
     stream::encode::begin(&mut stream, c.target as u64);
-    stream::encode::clear(&mut stream, 0xff6e1216);
+    stream::encode::clear(&mut stream, BG);
     let mut instances = Vec::with_capacity(CELLS);
     for row in 0..ROWS {
         for col in 0..COLS {
@@ -154,7 +163,7 @@ pub(super) fn prepare() -> Result<(), i64> {
     abi::draw::encode(
         &mut stream,
         abi::pipeline::BITMAP_TEXT,
-        0xffffebeb,
+        FG,
         c.atlas as u64,
         0,
         0,
@@ -299,6 +308,8 @@ impl Screen {
             };
             let (request, word) = self.glyphs[row * COLS + column];
             self.draws[request].patch(word, (glyph - 32) as u32 * self.console.glyph_width);
+            #[cfg(feature = "capture_panic_oracle")]
+            SHOWN[row * COLS + column].store(glyph, Ordering::Relaxed);
         }
     }
     fn show(
@@ -345,8 +356,35 @@ impl Screen {
             && self.queue.exec(&self.bind, deadline)
             && self.queue.exec(&self.flush, deadline)
     }
+    /// The pixel the layout above puts at (x, y): each cell's glyph at scale 2,
+    /// coverage-blended (gpu.md section 2) like the suite's console check.
     #[cfg(feature = "capture_panic_oracle")]
-    fn observe(&self, deadline: u64) -> bool {
+    fn expected(&self, x: usize, y: usize) -> u32 {
+        let gw = self.console.glyph_width as usize;
+        if x < 40 || y < 32 {
+            return BG;
+        }
+        let (column, row) = ((x - 40) / (gw * 2), (y - 32) / 46);
+        let (dx, dy) = ((x - 40) % (gw * 2) / 2, (y - 32) % 46 / 2);
+        if column >= COLS || row >= ROWS || dy >= 16 {
+            return BG;
+        }
+        let glyph = SHOWN[row * COLS + column].load(Ordering::Relaxed);
+        let a = get_raster(glyph as char, FontWeight::Regular, RasterHeight::Size16)
+            .and_then(|r| r.raster().get(dy).and_then(|l| l.get(dx)).copied())
+            .unwrap_or(0) as u32;
+        let (f, b) = (FG.to_le_bytes(), BG.to_le_bytes());
+        let mut out = [0u8; 4];
+        for i in 0..4 {
+            out[i] = ((f[i] as u32 * a + b[i] as u32 * (255 - a) + 127) / 255) as u8;
+        }
+        u32::from_le_bytes(out)
+    }
+    /// Device readback of the bound panic target (gpu-abi.md, READBACK's two-poison
+    /// observation), then every pixel against `expected`. None when the device did
+    /// not write the whole target; otherwise the mismatch count and the first one.
+    #[cfg(feature = "capture_panic_oracle")]
+    fn observe(&self, deadline: u64) -> Option<(u64, Option<(usize, usize, u32, u32)>)> {
         let bytes = self.pitch * HEIGHT as usize;
         let mut a = [0u8; PAGE];
         let mut b = [0u8; PAGE];
@@ -355,7 +393,7 @@ impl Screen {
                 .fill(0, bytes, if pass == 0 { POISON } else { !POISON });
             self.backing.maintain(0, bytes, false);
             if !self.queue.exec(&self.reads[pass], deadline) {
-                return false;
+                return None;
             }
             self.backing.maintain(0, bytes, true);
             for offset in (0..bytes).step_by(PAGE) {
@@ -366,12 +404,31 @@ impl Screen {
                 } else {
                     self.first.read(offset, &mut b[..n]);
                     if a[..n] != b[..n] {
-                        return false;
+                        return None;
                     }
                 }
             }
         }
-        true
+        let mut mismatches = 0;
+        let mut first = None;
+        for offset in (0..bytes).step_by(PAGE) {
+            let n = (bytes - offset).min(PAGE);
+            self.first.read(offset, &mut a[..n]);
+            for (i, px) in a[..n].chunks_exact(4).enumerate() {
+                let at = offset + i * 4;
+                let (x, y) = (at % self.pitch / 4, at / self.pitch);
+                if x >= WIDTH as usize {
+                    continue;
+                }
+                let got = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
+                let want = self.expected(x, y);
+                if got != want {
+                    mismatches += 1;
+                    first.get_or_insert((x, y, got, want));
+                }
+            }
+        }
+        Some((mismatches, first))
     }
 }
 struct Line {
@@ -429,10 +486,45 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     // This CPU owns the published state and retains it for post-mortem inspection.
     let s = unsafe { &*screen };
     let deadline = crate::arch_impl::aarch64::timer::rdtsc() + frequency * 2;
-    if s.queue.drain(deadline) && s.show(title, headline, details, stage, log, deadline) {
+    if !(s.queue.drain(deadline) && s.show(title, headline, details, stage, log, deadline)) {
         #[cfg(feature = "capture_panic_oracle")]
-        s.observed.store(s.observe(deadline), Ordering::Release);
+        report(s, false);
+        return;
     }
+    #[cfg(feature = "capture_panic_oracle")]
+    report(s, true);
+}
+
+/// The capture build's screen proof, on serial after the panic record.
+#[cfg(feature = "capture_panic_oracle")]
+fn report(s: &Screen, shown: bool) {
+    let deadline = crate::arch_impl::aarch64::timer::rdtsc()
+        + crate::arch_impl::aarch64::timer::frequency_hz() * 2;
+    let result = if shown { s.observe(deadline) } else { None };
+    s.observed.store(result.is_some(), Ordering::Release);
+    let mut line = crate::serial_line::Line::unattributed();
+    line.text("[GPU_PANIC_SCREEN shown=");
+    line.dec(shown as u64);
+    line.text(" observed=");
+    line.dec(result.is_some() as u64);
+    if let Some((mismatches, first)) = result {
+        line.text(" pixels=");
+        line.dec(WIDTH as u64 * HEIGHT as u64);
+        line.text(" mismatches=");
+        line.dec(mismatches);
+        if let Some((x, y, got, want)) = first {
+            line.text(" first=");
+            line.dec(x as u64);
+            line.text(",");
+            line.dec(y as u64);
+            line.text(" got=");
+            line.hex32(got);
+            line.text(" want=");
+            line.hex32(want);
+        }
+    }
+    line.text("]");
+    line.newline();
 }
 
 #[cfg(feature = "capture_panic_oracle")]
