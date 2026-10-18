@@ -5,6 +5,10 @@ root=pathlib.Path(__file__).resolve().parents[1]
 arch,leg=sys.argv[1:3]
 if arch not in ('x86', 'arm') or leg not in ('accept', 'readonly'):
     raise SystemExit('usage: ext2-acceptance.sh x86|arm accept|readonly OUTPUT')
+if arch == "x86":
+    policy = subprocess.run(["bash", str(root / "scripts/x86-qemu-policy.sh")])
+    if policy.returncode:
+        raise SystemExit(policy.returncode)
 out=pathlib.Path(sys.argv[3]).resolve()
 if (out/'qemu.pid').exists(): raise RuntimeError('retain the previous boot folder')
 out.mkdir(parents=True, exist_ok=True)

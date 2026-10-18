@@ -306,8 +306,23 @@ fn marker_alternative_present(line: &str, alternative: &str, catalog: &[boot_sta
     masked.contains(alternative)
 }
 
+#[path = "../../src/x86_qemu_policy.rs"]
+mod x86_qemu_policy;
+
 fn main() -> Result<()> {
-    match Cmd::from_args() {
+    let cmd = Cmd::from_args();
+    match &cmd {
+        Cmd::Ring3Smoke | Cmd::Ring3Enosys | Cmd::BootStages | Cmd::Interactive
+        | Cmd::InteractiveTest | Cmd::KthreadStress | Cmd::DnsTest => {
+            x86_qemu_policy::require_operator_override();
+        }
+        Cmd::BootTestBtrt { arch } | Cmd::KthreadTest { arch }
+            if !qemu_config::Arch::from_str(arch)?.is_arm64() => {
+                x86_qemu_policy::require_operator_override();
+            }
+        _ => {}
+    }
+    match cmd {
         Cmd::Ring3Smoke => ring3_smoke(),
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => run_boot_stages(&qemu_config::Arch::X86_64),
