@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CARGO_BUILD_JOBS=4 BREENIX_QUIET=0
+if [ "${1:-}" = x86 ]; then source "$ROOT/scripts/x86-qemu-policy.sh"; fi
 source "$ROOT/scripts/host-slots.sh"
 host_slots_start "$0" "$@"
 host_slot_acquire mac-boot

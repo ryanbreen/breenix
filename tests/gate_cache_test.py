@@ -34,7 +34,7 @@ class CacheTests(unittest.TestCase):
         platform = patch.object(artifacts.sys, 'platform', 'linux')
         platform.start()
         self.addCleanup(platform.stop)
-        self.env = patch.dict(os.environ, BREENIX_GATE_CACHE_DIR=str(self.cache),
+        self.env = patch.dict(os.environ, BREENIX_ALLOW_X86_QEMU='1', BREENIX_GATE_CACHE_DIR=str(self.cache),
                              BREENIX_GATE_FREE_GB='0', BREENIX_GATE_CACHE_GB='12',
                              CARGO_HOME=str(self.root / 'cargo'), BREENIX_GATE_FRESH='0')
         self.env.start()
