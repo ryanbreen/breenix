@@ -67,7 +67,7 @@ pub fn poll_modifier_state() -> u8 {
     modifiers.shift() as u8
         | (modifiers.ctrl() as u8) << 1
         | (modifiers.alt() as u8) << 2
-        | (modifiers.meta() as u8) << 3
+        | ((modifiers.meta() || modifiers.ctrl()) as u8) << 3
 }
 pub fn has_pending_super_tap() -> bool {
     SUPER_TAPS.load(Ordering::Acquire) != 0
@@ -83,7 +83,10 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
     let previous = slot.load(Ordering::Relaxed);
     let next = event::update_modifiers(previous, code, value);
     slot.store(next, Ordering::Relaxed);
-    if !Modifiers(previous).meta() && Modifiers(next).meta() {
+    // Preserve the graphics ABI's Ctrl-as-Super launcher gesture.
+    let was_super = Modifiers(previous).meta() || Modifiers(previous).ctrl();
+    let is_super = Modifiers(next).meta() || Modifiers(next).ctrl();
+    if !was_super && is_super {
         SUPER_TAPS.fetch_add(1, Ordering::Release);
     }
     let modifiers = Modifiers(
