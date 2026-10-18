@@ -1057,22 +1057,15 @@ Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specific
 
 ### Recovery validation
 
-The following boots ran commit `057cafee` with the tools deployed from that
-commit. Each ended with exit 0, a complete capture and confirmed power Off.
-Raw captures and machine facts remain in the private boot store.
+The sanitized serial excerpts below show the two fault PASS results reported
+for commit `057cafee`: reset-device reports two refusals and 46 interrupts;
+short-read reports code 13, a resend and 5 interrupts. Both PASS lines report
+an input report decoded and requeued.
 
-| Boot | Kind and build | Result |
-|---|---|---|
-| `20261018T173538Z-metal` | Reset-device fault test, profile `fault-test` with `xhci_fault_inject` | Two injected configuration refusals, both failed slots reclaimed, resets 1 and 2 of 2, re-enumeration with `device-resets=2`, then a real HID report decoded and requeued; 46 interrupts during the exercise |
-| `20261018T174648Z-metal` | Short-read fault test, profile `fault-test` with `xhci_fault_inject` | Real completion code 13 on attempt 1, Status retired, full descriptor resent, the HID completion already queued from the EP0 waits, decoded and requeued; 5 interrupts during the exercise |
-| `20261018T175611Z-metal` | Ordinary SOL console, profile `production`, no features | Replug 10 of 10 rounds; refusal, login, computation and logout completed; no `xhci-fault` bytes in the serial capture |
-
-Both fault records are evidence-ineligible and have no milestone verdict.
-The ordinary SOL record's verdict has delivery 7/7, first-light 11/11,
-interrupts-time 4/4, smp 3/3, ramdisk-root 3/3, nic 6/6, dhcp-gateway 4/4,
-fb-console 4/4 and xhci 5/5. USB-keyboard is 3/5 with two input-unmeasured
-stages and console-login is 6/7 with one: a SOL boot cannot type on the
-physical keyboard. That record is evidence-ineligible for physical-keyboard firsts.
+These excerpts do not independently establish build profiles, process exit
+statuses, capture completeness, power-off state or ordinary-console milestone
+totals. No sanitized manifests or verdict artifacts are supplied here, so those
+claims are not part of this public evidence. Raw captures remain private.
 
 Sanitized serial excerpts from the fault captures:
 
