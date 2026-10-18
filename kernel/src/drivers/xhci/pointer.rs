@@ -11,6 +11,7 @@ pub(super) struct Pipe {
     request: u32,
     outstanding: Option<u64>,
     layout: Option<Layout>,
+    buttons: u8,
     errors: u8,
 }
 
@@ -87,6 +88,7 @@ impl Controller {
             request: hid.max_packet as u32,
             outstanding: None,
             layout: None,
+            buttons: 0,
             errors: 0,
         });
         if self.devices[index].keyboard.is_none()
@@ -149,7 +151,16 @@ impl Controller {
                 .ok_or("pointer has no report layout")
                 .and_then(|layout| layout.decode(&data));
             match decoded {
-                Ok(Some(motion)) => {
+                Ok(Some(mut motion)) => {
+                    if let Some(buttons) = motion.buttons {
+                        self.devices[index].pointers[pipe_index].buttons = buttons as u8;
+                        motion.buttons = Some(
+                            self.devices[index]
+                                .pointers
+                                .iter()
+                                .fold(0u32, |held, pipe| held | pipe.buttons as u32),
+                        );
+                    }
                     #[cfg(target_arch = "aarch64")]
                     crate::drivers::hid_boot::state::report(self.devices[index].port, motion);
                     #[cfg(target_arch = "x86_64")]
