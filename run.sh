@@ -173,7 +173,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --case)
-            [ -n "${2:-}" ] || { echo "--case needs a case id"; exit 2; }
+            [ -n "${2:-}" ] || { echo "--case needs a category id"; exit 2; }
             ONLY="${2:-}"
             shift 2
             ;;
@@ -218,7 +218,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
-            echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
+            echo "  --case CATEGORY            Run just this suite category (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
@@ -330,7 +330,7 @@ fi
 
 if [ -n "$ONLY" ]; then
     [ -n "$SUITE" ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
-        echo "--case needs --suite ID and a category/case id"; exit 2;
+        echo "--case needs --suite ID and a category id"; exit 2;
     }
 fi
 

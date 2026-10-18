@@ -36,12 +36,13 @@ Boot tooling records host load at start and verdict without waiting for it to fa
 on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
 `timingSensitive` flag classifies the workload; it does not request a default wait.
 
-## Watching one case
+## Watching a category or one case
 
 Use `scripts/boot-interactive.sh --mode suite --suite ID --case CATEGORY/CASE`
 on ARM64 QEMU, or `./run.sh --parallels|--vmware --suite ID --case CATEGORY/CASE`.
+Use `--case CATEGORY` to run that category, including its complete manifest case list.
 The selection lives in the shared suite runner, so each suite takes it the same way.
-It runs only the named case, with the same isolation, limits, measurements and display
+It runs only the selected cases, with the same isolation, limits, measurements and display
 as a full run; any setup belongs to that case. The panel shows only that case and
 identifies the run as one case. The three launchers hold its final panel for
 `BREENIX_SUITE_HOLD` seconds (default 5) after a two-second render delay.

@@ -31,6 +31,7 @@ impl VirglBacking {
             bytes_per_pixel: 4,
             stride_bytes: width * 4,
             reserved: 0xff,
+            bgr: true,
             font: Font::for_display(width, height),
         };
         Some(Self { layout, presents: AtomicU64::new(0) })

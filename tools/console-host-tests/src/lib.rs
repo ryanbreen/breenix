@@ -2,6 +2,8 @@
 //! against the read-back oracle, and the x86 write-combining page-table walk.
 #![cfg(test)]
 
+#[path = "../../../kernel/src/console/boxdraw.rs"]
+mod boxdraw;
 #[path = "../../../kernel/src/console/grid.rs"]
 mod grid;
 #[path = "../../../kernel/src/arch_impl/x86_64/pagewalk.rs"]
@@ -19,7 +21,129 @@ mod grid_tests {
     }
 
     fn text(grid: &Grid, row: usize) -> String {
-        String::from_utf8(grid.row(row).to_vec()).unwrap().trim_end().to_string()
+        grid.row(row)
+            .iter()
+            .map(|cell| cell.character())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn kernel_records_escape_application_modes_and_control_injection() {
+        let mut g = grid(64, 6);
+        g.write(b"main\x1b[?1049h\x1b[8mhidden\x1b[2;3r\x1b[?7l\x1b[");
+        g.write_kernel(b"WARN: \x1bc\x1b[?1049h\x1b[8mvisible\x08\x7f\n", true);
+        assert_eq!(text(&g, 0), "main");
+        assert_eq!(text(&g, 1), "WARN: c[?1049h[8mvisible");
+        assert!(g.row(1).iter().all(|cell| *cell
+            == super::grid::Cell {
+                glyph: cell.glyph,
+                ..super::grid::BLANK
+            }));
+        // The interrupted TTY CSI is still pending; the record did not parse it.
+        g.write(b"31mR");
+        assert_eq!(text(&g, 2), "R");
+        assert_eq!(g.row(2)[0].colours, 1);
+        // Returning from the alternate screen cannot discard the warning.
+        g.write(b"\x1b[?1049l");
+        assert_eq!(text(&g, 1), "WARN: c[?1049h[8mvisible");
+        g.write(b"\x1b[8m");
+        g.write_kernel(b"WARN: still visible\n", true);
+        assert_eq!(text(&g, 3), "WARN: still visible");
+        assert_eq!(g.row(3)[0].flags, 0);
+        g.write(b"X");
+        assert_eq!(g.row(4)[0].flags, super::grid::INVISIBLE);
+    }
+
+    #[test]
+    fn kernel_fragments_use_default_pen_and_full_screen_scrolling() {
+        let mut g = grid(8, 4);
+        g.write(b"\x1b[2;3r\x1b[4;1H\x1b[8m\x1b[?7l");
+        g.write_kernel(b"WARN:", true);
+        g.write_kernel(b" abcdef\n", false);
+        assert_eq!(
+            [text(&g, 0), text(&g, 1), text(&g, 2), text(&g, 3)],
+            ["", "WARN: ab", "cdef", ""]
+        );
+        assert_eq!(g.row(1)[0].flags, 0);
+        assert_eq!(g.row(2)[0].flags, 0);
+        // The process's scrolling region and autowrap setting are restored.
+        g.write(b"\x1b[3;1HA\x1b[K\nB");
+        assert_eq!(text(&g, 1), "A");
+        g.write(b"\x1b[1;8Hxy");
+        assert_eq!(text(&g, 0), "       y");
+    }
+
+    #[test]
+    fn erased_inserted_and_scrolled_cells_keep_colours_without_attributes() {
+        let mut g = grid(8, 3);
+        g.write(b"\x1b[31;44;4;7;8m\x1b[2J");
+        let blank = super::grid::Cell {
+            colours: 0x41,
+            ..super::grid::BLANK
+        };
+        assert!((0..3).all(|row| g.row(row).iter().all(|&cell| cell == blank)));
+        g.write(b"x\x1b[H\x1b[@");
+        assert_eq!(g.row(0)[0], blank);
+        g.write(b"\x1b[3;1H\n");
+        assert!(g.row(2).iter().all(|&cell| cell == blank));
+    }
+
+    #[test]
+    fn split_utf8_and_control_sequences_keep_their_state() {
+        let bytes = "\x1b[31;4mĀé\x1b[2;3H┌\x1b[?25l".as_bytes();
+        for split in 0..=bytes.len() {
+            let mut g = grid(10, 3);
+            g.write(&bytes[..split]);
+            g.write(&bytes[split..]);
+            assert_eq!(text(&g, 0), "Āé", "split {split}");
+            assert_eq!(text(&g, 1), "  ┌", "split {split}");
+            assert_eq!(g.row(0)[0].colours, 1);
+            assert_eq!(g.row(0)[1].flags, super::grid::UNDERLINE);
+            assert!(!g.cursor_visible());
+        }
+        let mut g = grid(20, 3);
+        g.write(b"\xe2\x82");
+        assert_eq!(text(&g, 0), "");
+        g.write(b"X\xed\xa0\x80\xf4\x90\x80\x80");
+        g.write(b"\x1b[31\x18m\x1b]ignored\x1b\\Y\x1b[3;4H\x1b[6");
+        let mut reply = Vec::new();
+        g.write_with_reply(b"n", |bytes| reply.extend_from_slice(bytes));
+        assert_eq!(text(&g, 0), "?X??mY");
+        assert_eq!(reply, b"\x1b[3;4R");
+    }
+
+    #[test]
+    fn parameter_overflow_saturates_and_ignores_excess_parameters() {
+        let mut g = grid(10, 3);
+        g.write(b"\x1b[999999999999999999999999;999999999999999H!");
+        assert_eq!(g.cursor(), (2, 9));
+        assert_eq!(text(&g, 2), "         !");
+        g.write(b"\x1b[H\x1b[0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;31;999;32mR");
+        assert_eq!(g.row(0)[0].colours, 1);
+        // No overflow digits or trailing unknown sequence bytes reach the grid.
+        g.write(b"\x1b[999999999999999999999999zX");
+        assert_eq!(text(&g, 0), "RX");
+    }
+
+    #[test]
+    fn pending_wrap_scrolls_only_the_region_and_survives_sgr() {
+        let mut g = grid(4, 5);
+        g.write(b"AAAA\x1b[2;1HBBBB\x1b[3;1HCCCC\x1b[4;1HDDDD\x1b[5;1HEEEE");
+        g.write(b"\x1b[2;4r\x1b[4;1Hwxyz\x1b[31m");
+        assert_eq!(text(&g, 3), "wxyz");
+        g.write(b"Q");
+        assert_eq!(
+            (0..5).map(|r| text(&g, r)).collect::<Vec<_>>(),
+            ["AAAA", "CCCC", "wxyz", "Q", "EEEE"]
+        );
+        assert_eq!(g.cursor(), (3, 1));
+        assert_eq!(g.row(3)[0].colours, 1);
+        g.write(b"\x1b[4GZ\x1b[4G!");
+        assert_eq!(text(&g, 3), "Q  !");
+        g.write(b"\x1b[?7lxy");
+        assert_eq!(text(&g, 3), "Q  y");
     }
 
     #[test]
@@ -74,21 +198,30 @@ mod grid_tests {
         g.write(b"WARN: x\r\n");
         g.begin_line();
         g.write(b"root");
-        assert_eq!([text(&g, 0), text(&g, 1), text(&g, 2)], ["login:", "WARN: x", "root"]);
+        assert_eq!(
+            [text(&g, 0), text(&g, 1), text(&g, 2)],
+            ["login:", "WARN: x", "root"]
+        );
     }
 
     #[test]
     fn a_utf8_character_takes_one_cell() {
         let mut g = grid(10, 2);
         g.write("é!".as_bytes());
-        assert_eq!((text(&g, 0), g.cursor()), ("?!".into(), (0, 2)));
+        assert_eq!((text(&g, 0), g.cursor()), ("é!".into(), (0, 2)));
     }
 
     #[test]
     fn a_grid_larger_than_its_storage_is_cut_to_it() {
         let mut g = grid(10_000, 10_000);
-        assert_eq!((g.cols(), g.rows()), (super::grid::MAX_COLS, super::grid::MAX_ROWS));
-        g.write(&vec![b'x'; super::grid::MAX_COLS * super::grid::MAX_ROWS + 1]);
+        assert_eq!(
+            (g.cols(), g.rows()),
+            (super::grid::MAX_COLS, super::grid::MAX_ROWS)
+        );
+        g.write(&vec![
+            b'x';
+            super::grid::MAX_COLS * super::grid::MAX_ROWS + 1
+        ]);
         assert_eq!(text(&g, super::grid::MAX_ROWS - 1), "x");
     }
 
@@ -102,14 +235,33 @@ mod grid_tests {
 }
 
 mod raster_tests {
-    use super::raster::{clear, draw_row, expected_intensity, Font, Layout, CURSOR};
+    use super::grid::{Cell, BLANK};
+    use super::raster::{clear, draw_row, expected_colour, Font, Layout, PALETTE};
+
+    fn cells(bytes: &[u8]) -> Vec<Cell> {
+        bytes
+            .iter()
+            .map(|&byte| Cell {
+                glyph: u16::from(byte),
+                ..BLANK
+            })
+            .collect()
+    }
     use noto_sans_mono_bitmap::RasterHeight;
 
     const SIZE_16: Font = Font::new(RasterHeight::Size16);
 
     /// A framebuffer `cols` cells and `extra` pixels wide, `rows` text rows and
     /// `extra_lines` pixel rows tall, with `pad` bytes after each pixel row.
-    fn layout(font: Font, bpp: usize, cols: usize, extra: usize, rows: usize, extra_lines: usize, pad: usize) -> Layout {
+    fn layout(
+        font: Font,
+        bpp: usize,
+        cols: usize,
+        extra: usize,
+        rows: usize,
+        extra_lines: usize,
+        pad: usize,
+    ) -> Layout {
         let width = cols * font.glyph_width() + extra;
         Layout {
             width,
@@ -117,12 +269,13 @@ mod raster_tests {
             bytes_per_pixel: bpp,
             stride_bytes: width * bpp + pad,
             reserved: if bpp == 4 { 0xff } else { 0 },
+            bgr: bpp == 4,
             font,
         }
     }
 
-    fn printable() -> Vec<u8> {
-        (0x20..0x7f).collect()
+    fn printable() -> Vec<Cell> {
+        cells(&(0x20..0x7f).collect::<Vec<u8>>())
     }
 
     /// Each pixel of each band, against the oracle; padding is left alone.
@@ -130,24 +283,228 @@ mod raster_tests {
         let ascii = printable();
         let layout = layout(font, bpp, ascii.len(), 5, 3, 7, 12);
         let mut frame = vec![0xaa; layout.bytes()];
-        let rows: [(&[u8], Option<usize>); 3] =
-            [(&ascii, Some(10)), (b"metal-login-ok 42", None), (b"#\x7f\x01", Some(2))];
+        let rows: [(Vec<Cell>, Option<usize>); 3] = [
+            (ascii, Some(10)),
+            (cells(b"metal-login-ok 42"), None),
+            (cells(b"#\x7f\x01"), Some(2)),
+        ];
         for (row, (text, cursor)) in rows.iter().enumerate() {
             let mut cells = text.to_vec();
-            cells.resize(layout.cols(), b' ');
+            cells.resize(layout.cols(), BLANK);
             draw_row(&mut frame, &layout, row, &cells, *cursor);
         }
         for (row, (text, cursor)) in rows.iter().enumerate() {
             let mut cells = text.to_vec();
-            cells.resize(layout.cols(), b' ');
+            cells.resize(layout.cols(), BLANK);
             for y in layout.band(row) {
                 let line = &frame[layout.line(y)];
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
-                    let expected = expected_intensity(font, &cells, *cursor, x, y - layout.band(row).start);
-                    assert!(layout.pixel_is(pixel, expected), "size {} row {row} x {x} y {y}: {pixel:?} vs {expected}", font.size());
+                    let expected =
+                        expected_colour(font, &cells, *cursor, x, y - layout.band(row).start);
+                    assert!(
+                        layout.pixel_is(pixel, expected),
+                        "size {} row {row} x {x} y {y}: {pixel:?} vs {expected:?}",
+                        font.size()
+                    );
                 }
                 let padding = layout.line(y).end..(y + 1) * layout.stride_bytes;
                 assert!(frame[padding].iter().all(|&byte| byte == 0xaa));
+            }
+        }
+    }
+
+    #[test]
+    fn latin1_space_and_soft_hyphen_have_their_own_shapes() {
+        for size in Font::SIZES {
+            let font = Font::new(size);
+            for flags in [0, super::grid::BOLD] {
+                for (glyph, reference) in [(0x00a0, b' '), (0x00ad, b'-')] {
+                    let layout = layout(font, 4, 1, 0, 1, 0, 0);
+                    let mut actual = vec![0; layout.bytes()];
+                    let mut expected = vec![0; layout.bytes()];
+                    draw_row(
+                        &mut actual,
+                        &layout,
+                        0,
+                        &[Cell {
+                            glyph,
+                            flags,
+                            ..BLANK
+                        }],
+                        None,
+                    );
+                    draw_row(
+                        &mut expected,
+                        &layout,
+                        0,
+                        &[Cell {
+                            glyph: u16::from(reference),
+                            flags,
+                            ..BLANK
+                        }],
+                        None,
+                    );
+                    assert_eq!(actual, expected, "size {} glyph {glyph:x}", font.size());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn double_junction_pixels_match_independent_lane_rectangles() {
+        // Explicit stroke rectangles, independent of the production arm table
+        // and junction endpoint calculation. Check ink AND the open lane gaps.
+        for size in Font::SIZES {
+            let font = Font::new(size);
+            let layout = layout(font, 4, 1, 0, 1, 0, 0);
+            let (w, h) = (font.glyph_width(), font.line_height());
+            let (cx, cy) = (w / 2, h / 2);
+            let thickness = h / 16;
+            let (xl, xr, yt, yb) = (
+                cx - thickness - 1,
+                cx + thickness + 1,
+                cy - thickness - 1,
+                cy + thickness + 1,
+            );
+            // Rectangles are inclusive, with thickness growing right/down.
+            let t = thickness - 1;
+            let vleft = (xl, 0, xl + t, h - 1);
+            let vright = (xr, 0, xr + t, h - 1);
+            let htop = (0, yt, w - 1, yt + t);
+            let hbottom = (0, yb, w - 1, yb + t);
+            let hright = vec![(xr, yt, w - 1, yt + t), (xr, yb, w - 1, yb + t)];
+            let hleft = vec![(0, yt, xl + t, yt + t), (0, yb, xl + t, yb + t)];
+            let vup = vec![(xl, 0, xl + t, yt + t), (xr, 0, xr + t, yt + t)];
+            let vdown = vec![(xl, yb, xl + t, h - 1), (xr, yb, xr + t, h - 1)];
+            let cases = [
+                (
+                    0x2552,
+                    vec![
+                        (cx, yt, w - 1, yt + t),
+                        (cx, yb, w - 1, yb + t),
+                        (cx, yt, cx + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2553,
+                    vec![
+                        (xl, cy, w - 1, cy + t),
+                        (xl, cy, xl + t, h - 1),
+                        (xr, cy, xr + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2555,
+                    vec![
+                        (0, yt, cx + t, yt + t),
+                        (0, yb, cx + t, yb + t),
+                        (cx, yt, cx + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2556,
+                    vec![
+                        (0, cy, xr + t, cy + t),
+                        (xl, cy, xl + t, h - 1),
+                        (xr, cy, xr + t, h - 1),
+                    ],
+                ),
+                (
+                    0x2558,
+                    vec![
+                        (cx, yt, w - 1, yt + t),
+                        (cx, yb, w - 1, yb + t),
+                        (cx, 0, cx + t, yb + t),
+                    ],
+                ),
+                (
+                    0x2559,
+                    vec![
+                        (xl, cy, w - 1, cy + t),
+                        (xl, 0, xl + t, cy + t),
+                        (xr, 0, xr + t, cy + t),
+                    ],
+                ),
+                (
+                    0x255b,
+                    vec![
+                        (0, yt, cx + t, yt + t),
+                        (0, yb, cx + t, yb + t),
+                        (cx, 0, cx + t, yb + t),
+                    ],
+                ),
+                (
+                    0x255c,
+                    vec![
+                        (0, cy, xr + t, cy + t),
+                        (xl, 0, xl + t, cy + t),
+                        (xr, 0, xr + t, cy + t),
+                    ],
+                ),
+                (0x256a, vec![htop, hbottom, (cx, 0, cx + t, h - 1)]),
+                (0x256b, vec![vleft, vright, (0, cy, w - 1, cy + t)]),
+                (0x255f, vec![vleft, vright, (xr, cy, w - 1, cy + t)]),
+                (0x2562, vec![vleft, vright, (0, cy, xl + t, cy + t)]),
+                (
+                    0x2560,
+                    [
+                        vec![vleft],
+                        vup[1..].to_vec(),
+                        vdown[1..].to_vec(),
+                        hright.clone(),
+                    ]
+                    .concat(),
+                ),
+                (
+                    0x2563,
+                    [
+                        vec![vright],
+                        vup[..1].to_vec(),
+                        vdown[..1].to_vec(),
+                        hleft.clone(),
+                    ]
+                    .concat(),
+                ),
+                (0x2564, vec![htop, hbottom, (cx, yb, cx + t, h - 1)]),
+                (0x2567, vec![htop, hbottom, (cx, 0, cx + t, yt + t)]),
+                (
+                    0x2566,
+                    [
+                        vec![htop],
+                        hleft[1..].to_vec(),
+                        hright[1..].to_vec(),
+                        vdown.clone(),
+                    ]
+                    .concat(),
+                ),
+                (
+                    0x2569,
+                    [
+                        vec![hbottom],
+                        hleft[..1].to_vec(),
+                        hright[..1].to_vec(),
+                        vup.clone(),
+                    ]
+                    .concat(),
+                ),
+                (0x256c, [hleft, hright, vup, vdown].concat()),
+            ];
+            for (glyph, rectangles) in cases {
+                let mut frame = vec![0; layout.bytes()];
+                draw_row(&mut frame, &layout, 0, &[Cell { glyph, ..BLANK }], None);
+                for y in 0..h {
+                    for x in 0..w {
+                        let ink = rectangles
+                            .iter()
+                            .any(|&(x0, y0, x1, y1)| x >= x0 && x <= x1 && y >= y0 && y <= y1);
+                        let pixel = &frame[y * layout.stride_bytes + x * 4..][..4];
+                        assert!(
+                            layout.pixel_is(pixel, PALETTE[if ink { 7 } else { 0 }]),
+                            "size {} glyph {glyph:x} ({x},{y}) ink={ink}",
+                            font.size()
+                        );
+                    }
+                }
             }
         }
     }
@@ -173,10 +530,13 @@ mod raster_tests {
     fn the_fourth_byte_is_the_displays() {
         let layout = layout(SIZE_16, 4, 2, 0, 1, 0, 0);
         let mut frame = vec![0; layout.bytes()];
-        draw_row(&mut frame, &layout, 0, b"W ", Some(1));
+        draw_row(&mut frame, &layout, 0, &cells(b"W "), Some(1));
         assert!(frame.chunks_exact(4).all(|pixel| pixel[3] == 0xff));
         let pixel = &frame[..4];
-        assert!(!layout.pixel_is(&[pixel[0], pixel[1], pixel[2], 0], expected_intensity(SIZE_16, b"W ", Some(1), 0, 0)));
+        assert!(!layout.pixel_is(
+            &[pixel[0], pixel[1], pixel[2], 0],
+            expected_colour(SIZE_16, &cells(b"W "), Some(1), 0, 0)
+        ));
     }
 
     #[test]
@@ -185,27 +545,46 @@ mod raster_tests {
         let mut frame = vec![0xaa; layout.bytes()];
         clear(&mut frame, &layout);
         for y in 0..layout.height {
-            assert!(frame[layout.line(y)].chunks_exact(4).all(|pixel| layout.pixel_is(pixel, 0)), "y {y}");
-            assert!(frame[layout.line(y).end..(y + 1) * layout.stride_bytes].iter().all(|&byte| byte == 0xaa));
+            assert!(
+                frame[layout.line(y)]
+                    .chunks_exact(4)
+                    .all(|pixel| layout.pixel_is(pixel, PALETTE[0])),
+                "y {y}"
+            );
+            assert!(frame[layout.line(y).end..(y + 1) * layout.stride_bytes]
+                .iter()
+                .all(|&byte| byte == 0xaa));
         }
     }
 
     #[test]
     fn the_oracle_tells_glyphs_apart() {
         let font = SIZE_16;
-        let lit = |byte: u8| -> Vec<u8> {
+        let lit = |byte: u8| -> Vec<[u8; 3]> {
             (0..font.glyph_height())
-                .flat_map(|y| (0..font.glyph_width()).map(move |x| expected_intensity(font, &[byte], None, x, y)))
+                .flat_map(|y| {
+                    (0..font.glyph_width())
+                        .map(move |x| expected_colour(font, &cells(&[byte]), None, x, y))
+                })
                 .collect()
         };
-        assert!(lit(b' ').iter().all(|&i| i == 0));
-        assert!(lit(b'A').iter().filter(|&&i| i > 0x80).count() > 10);
+        assert!(lit(b' ').iter().all(|&i| i == PALETTE[0]));
+        assert!(lit(b'A').iter().filter(|&&i| i[0] > 110).count() > 10);
         assert_ne!(lit(b'4'), lit(b'2'));
         // The cursor is in the two rows under the glyph, in its column only.
         let (width, height) = (font.glyph_width(), font.glyph_height());
-        assert_eq!(expected_intensity(font, b"ab", Some(1), width, height), CURSOR);
-        assert_eq!(expected_intensity(font, b"ab", Some(1), 0, height + 1), 0);
-        assert_eq!(expected_intensity(font, b"ab", Some(1), width * 2, 0), 0);
+        assert_eq!(
+            expected_colour(font, &cells(b"ab"), Some(1), width, height),
+            PALETTE[7]
+        );
+        assert_eq!(
+            expected_colour(font, &cells(b"ab"), Some(1), 0, height + 1),
+            PALETTE[0]
+        );
+        assert_eq!(
+            expected_colour(font, &cells(b"ab"), Some(1), width * 2, 0),
+            PALETTE[0]
+        );
     }
 
     #[test]
@@ -213,7 +592,7 @@ mod raster_tests {
         let line_height = SIZE_16.line_height();
         let layout = layout(SIZE_16, 4, 4, 0, 1, line_height / 2, 0);
         let mut frame = vec![0; layout.bytes()];
-        draw_row(&mut frame, &layout, 1, b"WWWW", Some(0));
+        draw_row(&mut frame, &layout, 1, &cells(b"WWWW"), Some(0));
         assert_eq!((layout.rows(), layout.band(1).len()), (1, line_height / 2));
         assert!(frame.iter().any(|&byte| byte != 0));
     }
@@ -231,9 +610,21 @@ mod raster_tests {
         ];
         for ((width, height), size, cell, grid) in cases {
             let font = Font::for_display(width, height);
-            let layout = Layout { width, height, bytes_per_pixel: 4, stride_bytes: width * 4, reserved: 0, font };
+            let layout = Layout {
+                width,
+                height,
+                bytes_per_pixel: 4,
+                stride_bytes: width * 4,
+                reserved: 0,
+                bgr: false,
+                font,
+            };
             assert_eq!(
-                (font.size(), (font.glyph_width(), font.line_height()), (layout.cols(), layout.rows())),
+                (
+                    font.size(),
+                    (font.glyph_width(), font.line_height()),
+                    (layout.cols(), layout.rows())
+                ),
                 (size, cell, grid),
                 "{width}x{height}"
             );
@@ -245,7 +636,15 @@ mod raster_tests {
         let small = Font::for_display(800, 600);
         assert_eq!(small.size(), 16);
         let font = Font::for_display(7680, 4320);
-        let layout = Layout { width: 7680, height: 4320, bytes_per_pixel: 4, stride_bytes: 7680 * 4, reserved: 0, font };
+        let layout = Layout {
+            width: 7680,
+            height: 4320,
+            bytes_per_pixel: 4,
+            stride_bytes: 7680 * 4,
+            reserved: 0,
+            bgr: false,
+            font,
+        };
         assert_eq!((font.size(), layout.cols(), layout.rows()), (32, 255, 127));
     }
 }

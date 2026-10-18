@@ -358,7 +358,7 @@ impl Suite {
 
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
 
-    /// Run the cases in manifest order, or only argv's `--case category/case`,
+    /// Run the cases in manifest order, or argv's `--case category[/case]`,
     /// then leave the final panel up and idle. One-case START/DONE carry `only=`;
     /// a one-case run stops before any suite sequence and is not full-suite
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
@@ -381,13 +381,15 @@ impl Suite {
             category.cases.iter().map(move |case| std::format!("{}/{}", category.id, case.id))
         }).collect();
         let error = if !usable_args {
-            Some(std::format!("expected [--case <category>/<case>] [--hostkeys <method>], found {:?}", args))
+            Some(std::format!("expected [--case <category>[/<case>]] [--hostkeys <method>], found {:?}", args))
         } else {
-            only.filter(|name| !names.iter().any(|valid| valid == name))
+            only.filter(|name| !names.iter().any(|valid| valid == name) && !self.categories.iter().any(|c| c.id == *name))
                 .map(|name| std::format!("unknown case {}; valid ids: {}", name, names.join(", ")))
         };
-        // A selection, or an argv that could not be read, counts as one case.
-        let total = if only.is_some() || error.is_some() { 1 } else { self.total() };
+        // An invalid selection is one failure; a category counts its cases.
+        let total = if error.is_some() { 1 } else {
+            names.iter().filter(|name| only.is_none_or(|selected| name.as_str() == selected || name.starts_with(&std::format!("{selected}/")))).count()
+        };
         let suffix = only.map_or(String::new(), |name| std::format!(" only={name}"));
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
@@ -400,7 +402,7 @@ impl Suite {
         };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
-            Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
+            Some(name) => std::format!("suite {}: selection {name} (not full-suite evidence)", self.id),
             None => std::format!("suite {}: {} cases in {} categories", self.id, self.total(), self.categories.len()),
         };
         let mut counts = Counts::default();
@@ -419,7 +421,7 @@ impl Suite {
         for (c, category) in self.categories.iter().enumerate() {
             for (k, case) in category.cases.iter().enumerate() {
                 let name = std::format!("{}/{}", category.id, case.id);
-                if only.is_some_and(|selected| selected != name) { continue; }
+                if only.is_some_and(|selected| selected != name && selected != category.id) { continue; }
                 states[c][k] = State::Running;
                 let progress = std::format!("Running {}/{} ({} of {})", category.id, case.id, done + 1, total);
                 feed.start(&name);
@@ -1108,7 +1110,7 @@ impl Screen {
             .collect();
         let checks: Vec<Vec<Check<'_>>> = suite.categories.iter().zip(states).zip(&details)
             .map(|((category, cases), details)| category.cases.iter().zip(cases).zip(details)
-                .filter(|((case, _), _)| only.is_none_or(|name| name == std::format!("{}/{}", category.id, case.id)))
+                .filter(|((case, _), _)| only.is_none_or(|name| name == category.id || name == std::format!("{}/{}", category.id, case.id)))
                 .map(|((case, state), detail)| Check {
                     name: case.id,
                     state: match state {
