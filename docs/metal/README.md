@@ -105,16 +105,18 @@ boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_co
 
 ## The screen console
 
-The x86 kernel without `interactive` (`kernel/src/fbcon`) draws a text console on the firmware's framebuffer, the
-display on the server's VGA port. It runs on x86 kernels built without `interactive`, QEMU's included.
+The screen console (`kernel/src/console`) draws a text console on the firmware's framebuffer, the display on the
+server's VGA port. x86 kernels run it, QEMU's included, and ARM64 kernels run the same code on their displays.
+On x86 its lines keep the `[fbcon]` tag and `/proc/fbcon/check` the text below, which this boot path measures.
 
 - **One grid, any writer.** Kernel log records (INFO and above) and the console TTY's output, echo included, are
-  written as text into a retained character grid: one byte per cell, rows in a ring so scrolling moves no text, the
+  written as text into a retained character grid, sized by the font size rule (`docs/console/contract.md` section
+  2; size 16 and 146 by 42 cells at 1024x768): one byte per cell, rows in a ring so scrolling moves no text, the
   cursor, and a generation. Writers take its lock with interrupts masked for one record or one write, so log records
   from interrupt context reach the screen too; a write is dropped, and counted, only if the lock stays held for
   milliseconds. A log line starts its own row, as it does on the UART. TTY output is interpreted as a terminal
   does: CR, LF, BS, HT, autowrap, and the CSI cursor and erase sequences.
-- **One screen writer.** The `fbcon` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
+- **One screen writer.** The `console` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
   changed into a RAM shadow of the framebuffer, and copies only those rows' pixels to video memory, one text row with
   interrupts masked at a time. Drawing does not read video memory. A display owner's `fbdraw` flush and pixel
   read take the same row token, so they do not interleave with the console's rows. When a process takes the display

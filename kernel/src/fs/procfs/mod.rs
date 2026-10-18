@@ -107,12 +107,18 @@ pub enum ProcEntryType {
     NetDir,
     /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
     NetPnp,
-    /// /proc/fbcon - screen console directory
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    /// /proc/console - screen console directory
+    ConsoleDir,
+    /// /proc/console/check - the screen read back against the console's shadow
+    /// and font, where it was read, and the text rows it shows
+    ConsoleCheck,
+    /// /proc/fbcon - the x86-64 screen console's directory under the name the
+    /// x86-metal boot path reads
+    #[cfg(target_arch = "x86_64")]
     FbconDir,
     /// /proc/fbcon/check - the screen read back against the console's shadow
     /// and font, and the text rows it shows
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    #[cfg(target_arch = "x86_64")]
     FbconCheck,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
@@ -161,9 +167,11 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => "counters",
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::ConsoleDir => "console",
+            ProcEntryType::ConsoleCheck => "check",
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "fbcon",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => "check",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
@@ -206,9 +214,11 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::ConsoleDir => "/proc/console",
+            ProcEntryType::ConsoleCheck => "/proc/console/check",
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "/proc/fbcon",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => "/proc/fbcon/check",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
@@ -252,10 +262,12 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => 302,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => 500,
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => 501,
+            ProcEntryType::ConsoleDir => 502,
+            ProcEntryType::ConsoleCheck => 503,
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
             ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
             ProcEntryType::PidExe(pid) => pid_inode(*pid, 2),
@@ -272,7 +284,10 @@ impl ProcEntryType {
 
     /// Check if this is a directory
     pub fn is_directory(&self) -> bool {
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        if matches!(self, ProcEntryType::ConsoleDir) {
+            return true;
+        }
+        #[cfg(target_arch = "x86_64")]
         if matches!(self, ProcEntryType::FbconDir) {
             return true;
         }
@@ -374,8 +389,10 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
 
-    // Register /proc/fbcon directory and entries
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    // Register the screen console's directories and entries
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleCheck));
+    #[cfg(target_arch = "x86_64")]
     {
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
@@ -493,7 +510,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::NetPnp
-            ) && !is_fbcon_file(&e.entry_type)
+            ) && !is_console_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
             let mut text = String::new();
@@ -591,14 +608,14 @@ pub fn list_xhci_entries() -> Vec<String> {
         .collect()
 }
 
-/// Whether `entry` lives inside /proc/fbcon rather than in /proc itself.
-fn is_fbcon_file(entry: &ProcEntryType) -> bool {
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+/// Whether `entry` lives inside a screen console directory rather than in
+/// /proc itself.
+fn is_console_file(entry: &ProcEntryType) -> bool {
+    #[cfg(target_arch = "x86_64")]
     if matches!(entry, ProcEntryType::FbconCheck) {
         return true;
     }
-    let _ = entry;
-    false
+    matches!(entry, ProcEntryType::ConsoleCheck)
 }
 
 /// List entries in the /proc/net directory
@@ -673,10 +690,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             Ok(listing)
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        ProcEntryType::ConsoleDir => text(String::from("check\n")),
+        ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
+        #[cfg(target_arch = "x86_64")]
         ProcEntryType::FbconDir => text(String::from("check\n")),
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        ProcEntryType::FbconCheck => crate::fbcon::proc_check().map(String::into_bytes),
+        #[cfg(target_arch = "x86_64")]
+        ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
             text(String::from("testing\next2\n"))

@@ -293,10 +293,10 @@ fn validate_virtqueue_source(source: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The kernel log's screen sink (`kernel/src/fbcon`) takes records from
+/// The kernel log's screen sink (`kernel/src/console`) takes records from
 /// interrupt handlers as well as threads, so it must not block or be
 /// strandable: its grid lock is only tried, with interrupts masked, and the
-/// record path writes text into the grid and does not touch the framebuffer,
+/// record paths write text into the grid and do not touch the framebuffer,
 /// which the render thread draws.
 fn validate_logger_source(logger: &str, fbcon: &str) -> Result<(), &'static str> {
     let logger_mask = code_mask(logger);
@@ -333,7 +333,7 @@ fn validate_logger_source(logger: &str, fbcon: &str) -> Result<(), &'static str>
     if has_whole_framebuffer_clear(log_body) {
         return Err("logger hot path clears the whole framebuffer");
     }
-    for writer in ["with_grid", "log_record", "write_tty"] {
+    for writer in ["with_grid", "log_record", "log_bytes", "write_tty"] {
         let body = function_body(fbcon, writer).ok_or("missing console writer")?;
         if has_whole_framebuffer_clear(body) {
             return Err("logger hot path clears the whole framebuffer");
@@ -377,7 +377,7 @@ fn virtqueue_validator_rejects_log_and_continue_shape() {
 #[test]
 fn framebuffer_log_sink_is_nonblocking_and_bounded() {
     let logger = repo_text("kernel/src/logger.rs");
-    let fbcon = repo_text("kernel/src/fbcon/mod.rs");
+    let fbcon = repo_text("kernel/src/console/mod.rs");
     assert_eq!(validate_logger_source(&logger, &fbcon), Ok(()));
 }
 
@@ -387,7 +387,7 @@ fn logger_validator_rejects_blocking_framebuffer_lock() {
         struct CombinedLogger;
         impl Log for CombinedLogger {
             fn log(&self, record: &Record) {
-                crate::fbcon::log_record(record.level(), record.args());
+                crate::console::log_record(record.level(), record.args());
             }
         }
     "#;
@@ -397,6 +397,9 @@ fn logger_validator_rejects_blocking_framebuffer_lock() {
         }
         pub fn log_record(level: Level, args: &Arguments) {
             with_grid(|grid| grid.write(b"x"));
+        }
+        pub fn log_bytes(bytes: &[u8]) {
+            with_grid(|grid| grid.write(bytes));
         }
         pub fn write_tty(bytes: &[u8]) {
             with_grid(|grid| grid.write(bytes));
@@ -411,6 +414,9 @@ fn logger_validator_rejects_blocking_framebuffer_lock() {
             with_grid(|grid| grid.write(b"x"));
             let display = DISPLAY.get();
         }
+        pub fn log_bytes(bytes: &[u8]) {
+            with_grid(|grid| grid.write(bytes));
+        }
         pub fn write_tty(bytes: &[u8]) {
             with_grid(|grid| grid.write(bytes));
         }
@@ -421,8 +427,8 @@ fn logger_validator_rejects_blocking_framebuffer_lock() {
 #[test]
 fn logger_validator_rejects_framebuffer_clear_in_shared_grid_writer() {
     let logger = repo_text("kernel/src/logger.rs");
-    let fbcon = repo_text("kernel/src/fbcon/mod.rs");
-    let anchor = "fn with_grid<R>(f: impl FnOnce(&mut Grid) -> R) -> Option<R> {";
+    let fbcon = repo_text("kernel/src/console/mod.rs");
+    let anchor = "fn with_grid<R>(f: impl FnOnce(&mut Console) -> R) -> Option<R> {";
     for clear in ["framebuffer.fill(0);", "core::ptr::write_bytes(buffer, 0, buffer_len);"] {
         let mutated = fbcon.replacen(anchor, &format!("{anchor}\n    {clear}"), 1);
         assert_ne!(mutated, fbcon, "mutation must reach with_grid");

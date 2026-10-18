@@ -2336,8 +2336,36 @@ fn virtgpu_note_resource2_submit(cmd_type: u32, resource_id: u32) {
     }
 }
 
+/// The resource the device last accepted for scanout 0 (SET_SCANOUT answered
+/// OK), or 0.
+static SCANOUT_RESOURCE: AtomicU32 = AtomicU32::new(0);
+
+#[inline(always)]
+fn note_scanout(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    if cmd_type == cmd::SET_SCANOUT && resp_type == cmd::RESP_OK_NODATA {
+        SCANOUT_RESOURCE.store(resource_id, Ordering::Release);
+    }
+}
+
+/// The resource the device last accepted for scanout 0, and its guest backing:
+/// what the display shows, for a read-back of the kernel's screen.
+pub fn scanout_binding() -> Option<(u32, *const u8, usize)> {
+    let resource = SCANOUT_RESOURCE.load(Ordering::Acquire);
+    // SAFETY: the backings are set once, at init, before any SET_SCANOUT names
+    // their resource.
+    let (pixels, len) = unsafe {
+        match resource {
+            RESOURCE_3D_ID => (PCI_3D_FB_PTR, PCI_3D_FB_LEN),
+            RESOURCE_ID => (PCI_FB_PTR, PCI_FB_LEN),
+            _ => return None,
+        }
+    };
+    (!pixels.is_null()).then_some((resource, pixels as *const u8, len))
+}
+
 #[inline(always)]
 fn virtgpu_note_resource2_response(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    note_scanout(cmd_type, resource_id, resp_type);
     if cmd_type == cmd::RESOURCE_FLUSH && resource_id == RESOURCE_3D_ID {
         if resp_type == cmd::RESP_OK_NODATA {
             virtgpu::VIRTGPU_R2_FLUSH_OK.increment();
@@ -4558,11 +4586,14 @@ fn submit_polled<T>(
         }
         core::hint::spin_loop();
     }
-    unsafe {
+    let resp_type = unsafe {
         core::arch::asm!("dc civac, {}", in(reg) resp as usize, options(nostack));
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        core::ptr::read_volatile(resp as *const u32) == cmd::RESP_OK_NODATA
-    }
+        core::ptr::read_volatile(resp as *const u32)
+    };
+    let (cmd_type, resource_id) = virtgpu_decode_command(page);
+    note_scanout(cmd_type, resource_id, resp_type);
+    resp_type == cmd::RESP_OK_NODATA
 }
 
 // =============================================================================

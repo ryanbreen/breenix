@@ -317,24 +317,23 @@ final panel as before. Run cache helper tests with `python3 tests/gate_cache_tes
 
 ## Watching a boot
 
-The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel
-draws a boot screen: "Breenix", the boot mode, a progress bar, and the kernel stages of
-milestones 1-5 ticking in, ending in "Starting PID 1" with the program it starts. A
-testing kernel shows "Loading test programs N of M: NAME" while its loader runs, so a hang
-names the program it stopped on. When PID 1 draws for the first time the screen is
-handed over to it: `/sbin/probe` draws its checklist, `probe --run` its program panel
-(output, elapsed time, verdict). If PID 1 never draws, the boot screen stays up. A kernel
-panic or fatal EL1 fault replaces whatever is on screen with a red diagnostics screen: the
-message or fault, the boot stage, and the last 20 log lines. Serial output is unchanged;
-every log line still goes there.
+As soon as the framebuffer exists the kernel draws a boot screen: "Breenix", the boot
+mode, a progress bar, and the kernel stages of milestones 1-5 ticking in, ending in
+"Starting PID 1" with the program it starts. A testing kernel shows "Loading test programs
+N of M: NAME" while its loader runs, so a hang names the program it stopped on. When PID 1
+(or a testing kernel's first test program) starts, the screen console takes the screen: the
+kernel log since boot and the console TTY, as text sized for the display (`kernel/src/console`;
+the shell typed over serial shows there too). When PID 1 draws for the first time the screen
+is handed over to it: `/sbin/probe` draws its checklist, `probe --run` its program panel
+(output, elapsed time, verdict). A kernel panic or fatal EL1 fault replaces whatever is on
+screen with a red diagnostics screen: the message or fault, the boot stage, and the last 20
+log lines. Serial output is unchanged: the log still goes there line for line.
 
 - `--display` opens the screen in a window. On a Mac the window belongs to a QEMU app bundle
   (`scripts/qemu-1x-app.sh`), which turns App Nap off for itself: a napped QEMU fires the
   guest's timer ticks tens of milliseconds late, and the time suite's limits fail (#1292).
 - `--qmp SOCKET` opens a QMP socket; `scripts/qmp-screendump.py SOCKET out.png` saves the
   screen at that moment, with or without `--display`.
-- `--fbconsole log` draws the kernel log on screen instead of the boot screen (kernel lines
-  only, not userspace output).
 
 Wait for a serial line rather than a fixed time, since the build before the boot takes a
 minute or two. Remove the old log first: the script truncates it only once the build is done.

@@ -1383,8 +1383,9 @@ else
     HOME_DISK="$BREENIX_ROOT/target/ext2-home.img"
     VNC_PORT=5900
 
-    # Build command for x86_64
-    BUILD_CMD="cargo build --release --features testing,external_test_bins,interactive --bin qemu-uefi"
+    # Build command for x86_64: the production kernel, with the screen console
+    # the other x86 profiles draw too; it boots into the shell (fw_cfg below).
+    BUILD_CMD="cargo build --release --bin qemu-uefi"
 fi
 
 # Resolve display resolution
@@ -1744,6 +1745,7 @@ else
         -monitor tcp:127.0.0.1:4444,server,nowait \
         $QMP_OPTS \
         $GDB_OPTS \
+        -fw_cfg name=opt/breenix/mode,string=shell \
         -serial mon:stdio \
         &
 fi

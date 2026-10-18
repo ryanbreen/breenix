@@ -360,20 +360,18 @@ const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 #[cfg(target_arch = "x86_64")]
 const KERNEL_STACK_END: u64 = 0xffffc900_0800_0000;
 
-/// Size of each kernel stack (512 KiB)
-/// Increased to 512KB to handle interactive mode's deep call stacks.
-/// The keyboard interrupt handler path triggers framebuffer echo rendering:
-/// keyboard_interrupt → push_char_nonblock → input_char_nonblock → output_char_nonblock
-/// → write_char_to_framebuffer → split_screen → font rendering
-/// This path can use 300KB+ of stack when combined with interrupt frame overhead
-/// and nested help command processing with terminal output formatting.
+/// Size of each kernel stack (512 KiB) in diagnostic builds.
+/// Raised to 512KB for the deep call stacks of the interactive kernel's
+/// split-screen echo (300KB+ from the keyboard interrupt through font
+/// rendering), which the screen console has since replaced: the console's
+/// writers put text into its grid, and its render thread draws it.
 #[cfg(all(target_arch = "x86_64", any(feature = "interactive", feature = "testing", feature = "boot_tests")))]
 const KERNEL_STACK_SIZE: u64 = 512 * 1024;
 
-// Production does not compile the deep interactive echo/rendering path above.
-// Allocating its 128 pages under the clone transaction charges that work to
-// the parent and delays scheduler callers on every other CPU. Keep a 128 KiB
-// guarded stack here; the larger stacks remain available to diagnostic builds.
+// Production keeps the smaller stack: allocating 128 pages under the clone
+// transaction charges that work to the parent and delays scheduler callers on
+// the other CPUs. Keep a 128 KiB guarded stack here; the larger stacks remain
+// available to diagnostic builds.
 #[cfg(all(target_arch = "x86_64", not(any(feature = "interactive", feature = "testing", feature = "boot_tests"))))]
 const KERNEL_STACK_SIZE: u64 = 128 * 1024;
 

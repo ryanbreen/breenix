@@ -5,7 +5,7 @@
 #
 #   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY/CASE]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
-#                               [--qmp SOCKET] [--fbconsole log] [--no-build] [--cpus N] [--gpu-gl]
+#                               [--qmp SOCKET] [--no-build] [--cpus N] [--gpu-gl]
 #
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
@@ -17,7 +17,6 @@
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
-#   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
@@ -56,12 +55,11 @@ SUITE=
 ONLY=
 QMP_SOCKET=
 QMP_REQUESTED=0
-FBCONSOLE=
 GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
+        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -71,7 +69,6 @@ while [ "$#" -gt 0 ]; do
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
-        --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
         --gate-timeout) GATE_TIMEOUT="$2"; shift 2 ;;
@@ -111,10 +108,6 @@ if [ -n "$ONLY" ]; then
         echo "--case needs --mode suite and a category/case id" >&2; exit 2;
     }
 fi
-case "$FBCONSOLE" in
-    ""|log) ;;
-    *) echo "unknown --fbconsole value: $FBCONSOLE (expected log)" >&2; exit 2 ;;
-esac
 if [ -z "$DISPLAY_MODE" ]; then
     # On the operator's Mac every boot opens QEMU's window, as Parallels and VMware boots do, so a boot can be watched.
     # BREENIX_QEMU_NOGUI=1 (unattended automation), an ssh session or a host without a window server stays serial-only.
@@ -176,9 +169,6 @@ fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
-fi
-if [ -n "$FBCONSOLE" ]; then
-    MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
 fi
 if [ -n "$QMP_SOCKET" ]; then
     case "$QMP_SOCKET" in /*) ;; *) QMP_SOCKET="$PWD/$QMP_SOCKET" ;; esac

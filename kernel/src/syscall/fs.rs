@@ -3499,7 +3499,7 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
-    } else if cfg!(all(target_arch = "x86_64", not(feature = "interactive"))) && dir_path == "/proc/fbcon" {
+    } else if dir_path == "/proc/console" || (cfg!(target_arch = "x86_64") && dir_path == "/proc/fbcon") {
         alloc::vec![String::from("check")]
     } else {
         Vec::new()

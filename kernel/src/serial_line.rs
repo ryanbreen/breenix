@@ -92,7 +92,6 @@ impl Port for Uart {
     }
 
     fn capture(byte: u8) {
-        crate::graphics::log_capture::capture_byte(byte);
         crate::log_buffer::capture_byte(byte);
     }
 
@@ -128,6 +127,10 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
         write_notices_from_thread();
     }
     uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
+    // The kernel log, as the log rings keep it, also goes to the screen console.
+    if TEE && writer == Writer::Kernel {
+        crate::console::log_bytes(bytes);
+    }
 }
 
 /// Write out the lines posted on paths that may not log (`log_notice`), oldest
@@ -139,6 +142,7 @@ pub fn write_notices() {
         let mut ownership = Ownership::acquire();
         crate::log_notice::take(|line| {
             uart_owner::write::<Uart, true>(Writer::Kernel, line, Kind::Line, &mut ownership);
+            crate::console::log_bytes(line);
         });
     }
 }
