@@ -1226,6 +1226,9 @@ fn launch_x86_production_init(
     if console_mode.is_some() {
         serial::command::use_tty_input();
     }
+    if console_mode == Some("console") {
+        kernel::drivers::xhci::console_session_starting();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
