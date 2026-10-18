@@ -1,5 +1,6 @@
 //! The boot-target file (`kernel/src/boot/target.rs`): the `suite <id>`,
-//! `suite <id> case <category>/<case>` and `probe` lines the runners write, and
+//! `suite <id> case <category>/<case>`, `probe` and `program <path> [<word>]` lines
+//! the runners write, and
 //! the lines a boot refuses.
 
 extern crate alloc;
@@ -56,7 +57,9 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console { .. }) => panic!("{text:?} parsed as another mode"),
+        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console { .. } | Target::Program { .. }) => {
+            panic!("{text:?} parsed as another mode")
+        }
         Err(why) => panic!("{text:?} was refused: {why}"),
     }
 }
@@ -89,6 +92,25 @@ fn suite_and_probe_lines_parse() {
     assert!(matches!(parse("default\n"), Ok(Target::Default)));
     assert!(matches!(parse("shell\n"), Ok(Target::Shell)));
     assert!(matches!(parse("console\n"), Ok(Target::Console { .. })));
+}
+
+#[test]
+fn program_lines_carry_an_absolute_path_and_one_word() {
+    let Ok(Target::Program { path, arg }) = parse("program /bin/usb_pointer_check\n") else { panic!("program expected") };
+    assert_eq!((path.as_str(), arg), ("/bin/usb_pointer_check", None));
+    let Ok(Target::Program { path, arg }) = parse("program /bin/usb_pointer_check replay\n") else { panic!("program expected") };
+    assert_eq!((path.as_str(), arg.as_deref()), ("/bin/usb_pointer_check", Some("replay")));
+    for text in [
+        "program\n",
+        "program bin/usb_pointer_check\n",
+        "program /\n",
+        "program /bin/a;b\n",
+        "program /bin/a Replay\n",
+        "program /bin/a host extra\n",
+        "program  /bin/a\n",
+    ] {
+        assert!(parse(text).is_err(), "{text:?} was accepted");
+    }
 }
 
 #[test]
