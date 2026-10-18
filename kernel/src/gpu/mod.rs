@@ -34,6 +34,7 @@ mod completion;
 mod present_answers;
 mod display;
 pub mod console;
+pub mod panic;
 mod observation;
 mod quota;
 mod staging;
@@ -99,7 +100,7 @@ fn now_ns() -> u64 {
 fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     crate::per_cpu::preempt_disable();
     let (r, kick) = {
-        let mut core = CORE.lock();
+        let mut core = panic::lock(&CORE);
         let r = core.as_mut().map(f);
         // Claim this operation's notification before another CPU can enter the core.
         (r, KICK.swap(false, Ordering::AcqRel))
@@ -117,6 +118,7 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
 /// requests' descriptors and ring index were published before `KICK` was set, and the
 /// caller claimed that kick while still holding the core's lock.
 fn ring_doorbell() {
+    let _access = panic::Access::enter();
     let at = DOORBELL.load(Ordering::Acquire);
     if at != 0 {
         // SAFETY: the control queue's mapped notification address; queue 0.
@@ -410,6 +412,8 @@ pub fn init_qemu() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    #[cfg(feature = "capture_panic_oracle")]
+    panic::initialized();
 }
 
 impl Core {
@@ -1262,6 +1266,7 @@ impl Core {
         self.quarantined_at = None;
         self.stalled = false;
         self.resetting = true;
+        panic::invalidate();
         self.epoch += 1;
         for c in self.contexts.values_mut() {
             c.state = CtxState::Reset;

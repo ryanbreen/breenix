@@ -16,6 +16,8 @@ const DESC_SIZE: usize = 16;
 
 /// The most descriptors one queue uses: one page of descriptor table.
 pub const MAX_SIZE: u16 = 256;
+/// One full SUBMIT_3D chain, kept out of the normal free list for terminal output.
+pub(super) const PANIC_DESCRIPTORS: u16 = 18;
 
 /// One buffer of a chain: device-readable unless `write`.
 #[derive(Clone, Copy)]
@@ -41,7 +43,7 @@ impl Queue {
     /// A queue of `size` entries (a power of two, at most [`MAX_SIZE`]).
     pub fn new(size: u16) -> Option<Queue> {
         let size = size.min(MAX_SIZE);
-        if size == 0 || !size.is_power_of_two() {
+        if size <= PANIC_DESCRIPTORS || !size.is_power_of_two() {
             return None;
         }
         let mut q = Queue {
@@ -60,6 +62,7 @@ impl Queue {
 
     /// Forget every chain: after a device reset, or before first use.
     pub fn reset(&mut self) {
+        let _access = crate::gpu::panic::Access::enter();
         self.desc.fill(0, crate::gpu::dma::PAGE, 0);
         self.avail.fill(0, crate::gpu::dma::PAGE, 0);
         self.used.fill(0, crate::gpu::dma::PAGE, 0);
@@ -67,7 +70,7 @@ impl Queue {
         self.avail.maintain(0, crate::gpu::dma::PAGE, false);
         self.used.maintain(0, crate::gpu::dma::PAGE, false);
         self.free.clear();
-        self.free.extend((0..self.size).rev());
+        self.free.extend((0..self.size - PANIC_DESCRIPTORS).rev());
         self.chain.iter_mut().for_each(|c| *c = 0);
         self.next_avail = 0;
         self.last_used = 0;
@@ -93,6 +96,13 @@ impl Queue {
         self.used.page_addr(0)
     }
 
+    pub(super) fn terminal(&self, doorbell: u64) -> super::emergency::Queue {
+        super::emergency::Queue::new(
+            self.size, self.desc.page_va(0), self.avail.page_va(0),
+            self.used.page_va(0), doorbell,
+        )
+    }
+
     /// Chain `segs` and make it available; returns its head, or `None` without side
     /// effects when there are not enough free descriptors. The caller notifies.
     pub fn add(&mut self, segs: &[Segment]) -> Option<u16> {
@@ -100,6 +110,7 @@ impl Queue {
             return None;
         }
         let ids: Vec<u16> = (0..segs.len()).map(|_| self.free.pop().unwrap_or(0)).collect();
+        let _access = crate::gpu::panic::Access::enter();
         let base = self.desc.page_va(0);
         for (i, seg) in segs.iter().enumerate() {
             let id = ids[i] as usize;
@@ -140,6 +151,7 @@ impl Queue {
     /// descriptors go back to the free list. `Err` when the entry names no chain the
     /// driver made available: a device fault (`docs/gui/gpu.md` section 1.4.1).
     pub fn pop_used(&mut self) -> Result<Option<(u16, u32)>, ()> {
+        let _access = crate::gpu::panic::Access::enter();
         let used = self.used.page_va(0);
         self.used.maintain(0, 4 + 8 * self.size as usize, true);
         // SAFETY: the used ring page is owned.

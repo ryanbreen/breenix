@@ -14,11 +14,11 @@
 //! If userspace does not draw, the boot screen stays up.
 //!
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
-//! screen with the failure, the boot stage and the last log lines. They do not
-//! block on a lock: if the framebuffer lock is held the screen is skipped and the
-//! report is on serial alone; if the GPU lock stays held for about 100 ms
-//! (possibly by the failing CPU) the screen is left marked dirty for the render
-//! thread, or on VirGL the presenter thread (`spawn_presenter`), to present.
+//! screen with the failure, the boot stage and the last log lines. Before GPU-core
+//! handoff, a held framebuffer lock skips drawing and a delayed legacy flush leaves
+//! the screen dirty for its presenter. After handoff, ruling 40 (#1749) uses the
+//! core's prepared terminal screen and reserved descriptors, outside those locks.
+//! Device waits are bounded and serial remains the panic record.
 
 #![cfg(target_arch = "aarch64")]
 
@@ -819,14 +819,18 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     if DIAG_CLAIMED.swap(true, Ordering::AcqRel) {
         return;
     }
+    if crate::gpu::console::active() {
+        let mut tail = [0u8; DIAG_LOG_BYTES];
+        let n = recent.copy(&mut tail);
+        crate::gpu::panic::show(title, headline, details, current_stage_name(), &tail[..n]);
+        return;
+    }
     let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() else {
         return;
     };
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
-    // The GPU console owns kernel output after handoff; the firmware canvas stops here.
-    if crate::gpu::console::active() { return; }
     ACTIVE.store(false, Ordering::Release);
     HANDED_OVER.store(true, Ordering::Release);
     super::log_console::stop();

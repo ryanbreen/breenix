@@ -966,3 +966,11 @@ The facts these establish, for this host and renderer:
   directly.
 - A full 2560x1600 readback measured 79,999 µs before and 73,989 µs after, against the 100 ms bound.
 
+## CU-1749 terminal display design
+
+| Value or design | Source |
+|---|---|
+| Reserve 18 descriptors at the end of the control queue; retain interrupted normal chains and use the published available index after stopping normal producers | V sections 2.7.5, 2.7.13 and 2.7.14; O: `encode::CHUNK_WORDS` is 16,384 words, hence 16 payload pages plus a header and response descriptor. The reservation is excluded in `queue::Queue::reset`. |
+| Private context, target, glyph atlas and preallocated bitmap_text commands; patch only each cell's atlas x coordinate before submission | O: ruling 40 (#1749), the G7 console and the catalogue encoder in `kernel/src/gpu/virgl/encode.rs`. The layout is 80 columns by 32 rows, scale 2, with 40/32 pixel margins and 46-pixel line spacing. Its 2,560 glyph quads occupy 122,880 bytes of the console's 128 KiB vertex buffer. Background 0xFF6E1216 and foreground 0xFFFFEBEB follow the diagnostics screen's colours. |
+| Terminal latch, per-CPU producer counts, a 100 ms producer-drain deadline and a shared 2 s device deadline covering pending normal commands, terminal draws and observation; invalidate preparation at reset and retain DMA storage after timeout | O: ruling 40; the drain bound and screen layout are terminal-path policy. The device bound uses the contract's 2 s watchdog interval. A producer abandoned on the panicking CPU is excluded from the drain; its descriptors are disjoint from the reservation. |
+| Confirm scanout binding and flush, then fenced TRANSFER_FROM_HOST_3D twice under complementary poisons; retain the first observation in frames for post-mortem inspection | V section 5.7.6; O: `docs/gui/gpu.md` section 1.8 and the existing 3D transfer layout recorded above. This adds no wire command, shader grammar or device-behaviour assumption. |

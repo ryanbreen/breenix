@@ -21,15 +21,15 @@ static RESOURCE: AtomicU64 = AtomicU64::new(0);
 static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
-struct Console {
-    epoch: u64,
-    context: u32,
+pub(super) struct Console {
+    pub(super) epoch: u64,
+    pub(super) context: u32,
     handle: u64,
-    target: u32,
-    atlas: u32,
-    scratch: u32,
-    vertices: u32,
-    glyph_width: u32,
+    pub(super) target: u32,
+    pub(super) atlas: u32,
+    pub(super) scratch: u32,
+    pub(super) vertices: u32,
+    pub(super) glyph_width: u32,
     lines: [[u8; COLUMNS]; LINES],
     row: usize,
     column: usize,
@@ -211,7 +211,7 @@ impl Drop for Console {
 }
 
 impl Console {
-    fn new() -> Result<Self, i64> {
+    pub(super) fn new() -> Result<Self, i64> {
         let (handle, _) = create_context(0)?;
         let mut build = Building {
             ids: Vec::new(),
@@ -289,7 +289,6 @@ impl Console {
             return Err(EIO);
         }
         FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
-        RESOURCE.store(target as u64, Ordering::Release);
         build.armed = false;
         Ok(Self {
             epoch,
@@ -352,7 +351,7 @@ impl Console {
         );
         1
     }
-    fn draw(&mut self, bind: bool) -> Result<(), i64> {
+    pub(super) fn draw(&mut self, bind: bool) -> Result<(), i64> {
         let mut s = Vec::new();
         stream::encode::begin(&mut s, self.target as u64);
         stream::encode::clear(&mut s, BG);
@@ -520,7 +519,7 @@ impl encode::Bindings for Console {
 struct ConsoleLease(Option<Console>);
 impl ConsoleLease {
     fn take() -> Self {
-        Self(CONSOLE.lock().take())
+        Self(super::panic::lock(&CONSOLE).take())
     }
     fn ensure(&mut self) -> Result<&mut Console, i64> {
         if self.0.as_ref().is_none_or(|c| !c.live()) {
@@ -528,6 +527,8 @@ impl ConsoleLease {
             let mut console = Console::new()?;
             // Preparing a replacement must not change a live owner's scanout.
             console.draw(false)?;
+            super::panic::prepare()?;
+            RESOURCE.store(console.target as u64, Ordering::Release);
             self.0 = Some(console);
         }
         self.0.as_mut().ok_or(EIO)
@@ -535,7 +536,7 @@ impl ConsoleLease {
 }
 impl Drop for ConsoleLease {
     fn drop(&mut self) {
-        *CONSOLE.lock() = self.0.take();
+        *super::panic::lock(&CONSOLE) = self.0.take();
     }
 }
 pub(super) fn redraw() -> Result<(), i64> {
@@ -579,4 +580,11 @@ pub fn pump() {
         c.bytes(&bytes[..n]);
         let _ = c.draw(true);
     }
+}
+
+#[cfg(feature = "capture_panic_oracle")]
+pub(super) fn panic_with_lock(f: impl FnOnce()) {
+    if !HANDOFF.load(Ordering::Acquire) { return; }
+    let Some(_console) = CONSOLE.try_lock() else { return; };
+    f();
 }
