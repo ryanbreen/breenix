@@ -1533,11 +1533,10 @@ fn kernel_main_continue() -> ! {
 
         let mut failures = test_framework::run_all_tests();
 
-        // ProcessContext is the last stage with registered x86 tests, and this
-        // is the only x86 context that can dispatch it: the stage's tests need
-        // preemption (they run in a joined kthread like every other stage), and
-        // the boot thread has none left after the `preempt_disable()` below.
-        // Its precondition holds here - `kernel_main_on_kernel_stack` has
+        // Dispatch ProcessContext while the boot thread is preemptible: the
+        // staged executor joins its kthreads, which requires preemption. The
+        // `preempt_disable()` below prevents those joins later in boot.
+        // Its precondition holds here - `kernel_main_on_kernel_stack_checked` has
         // already created and retired user processes by this point, so the
         // process manager is populated and the boot thread is a live scheduler
         // thread. The Userspace stage stays marker-only on both architectures:
