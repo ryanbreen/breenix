@@ -154,6 +154,8 @@ pub struct Grid {
     /// the second terminal until it ends.
     held: [u8; HELD],
     held_len: usize,
+    /// Suppressing this sequence must still cancel one already sent to serial.
+    held_cancels: bool,
     utf_value: u32,
     utf_min: u32,
     utf_left: u8,
@@ -185,6 +187,7 @@ impl Grid {
             ignored: false,
             held: [0; HELD],
             held_len: 0,
+            held_cancels: false,
             utf_value: 0,
             utf_min: 0,
             utf_left: 0,
@@ -442,12 +445,14 @@ impl Grid {
         for &byte in bytes {
             // Answer only a request held whole, from its ESC.
             let holding = self.held_len != 0 && self.held_len < HELD;
+            let interrupted = matches!(self.escape, Escape::Esc | Escape::EscIgnore | Escape::Csi);
             let mut answered = false;
             self.byte(byte, &mut |answer| answered = holding && reply(answer));
             let in_sequence = matches!(self.escape, Escape::Esc | Escape::EscIgnore | Escape::Csi);
             if byte == 0x1b && self.escape == Escape::Esc {
                 // A new sequence; one it interrupted was not answered.
                 emit(&self.held[..self.held_len]);
+                self.held_cancels = interrupted;
                 self.held[0] = byte;
                 self.held_len = 1;
             } else if self.held_len != 0 {
@@ -462,6 +467,9 @@ impl Grid {
                 }
                 if !in_sequence && self.held_len != 0 {
                     if answered {
+                        if self.held_cancels {
+                            emit(&[0x18]); // CAN replaces the suppressed ESC cancellation.
+                        }
                         for index in 0..self.held_len {
                             if self.held[index] < 0x20 && self.held[index] != 0x1b {
                                 emit(&[self.held[index]]);

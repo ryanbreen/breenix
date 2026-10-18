@@ -289,10 +289,19 @@ mod grid_tests {
 
     #[test]
     fn an_interrupted_sequence_is_forwarded_and_controls_inside_a_request_still_go() {
-        let mut g = grid(20, 3);
-        let (forwarded, replies) = forward(&mut g, &[b"\x1b[6\x1b[5\rn"], true);
-        assert_eq!(forwarded, b"\x1b[6\r");
-        assert_eq!(replies, b"\x1b[0n");
+        for bytes in [b"\x1b[6\x1b[5nX".as_slice(), b"\x1b[6\x1b[5\rnX".as_slice()] {
+            for split in 0..=bytes.len() {
+                let mut g = grid(20, 3);
+                let (forwarded, replies) = forward(&mut g, &[&bytes[..split], &bytes[split..]], true);
+                let expected = if bytes.contains(&b'\r') { b"\x1b[6\x18\rX".as_slice() } else { b"\x1b[6\x18X".as_slice() };
+                assert_eq!(forwarded, expected, "split {split}");
+                assert_eq!(replies, b"\x1b[0n");
+                let mut serial = grid(20, 3);
+                serial.write(&forwarded);
+                assert_eq!(text(&serial, 0), "X", "split {split}");
+                assert_eq!(text(&g, 0), "X", "split {split}");
+            }
+        }
     }
 }
 
