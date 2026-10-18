@@ -969,10 +969,48 @@ The facts these establish, for this host and renderer:
 
 ## SVGA3 command path (VMware catch-up)
 
-The new `kernel/src/gpu/svga/` device layer uses VMware-authored interface headers for
-numbers and packed field layouts, with Breenix allocation and ownership policy. It does
-not read or reuse the legacy graphics drivers. Header revisions below are source pins,
-not references to surrounding driver implementations.
+### Source audit and disposition
+
+The CU-V download commands fetched `svga3d_devcaps.h` and the other SVGA interface
+headers from Linux's vmwgfx directory, not from a separate VMware publication. Their
+VMware authorship does not change the download source. The catch-up continuation brief
+for PR #1815 forbids Linux, Mesa and vmwgfx as sources, including these headers; it is
+stricter than the interface-header exception in `gpu.md` section 1.9. That brief governs
+this lane. The following pins are the historical sources of the pushed device layer,
+not approved sources for further implementation or acceptance.
+
+The earlier run downloaded these files from
+`https://raw.githubusercontent.com/torvalds/linux/v6.12/drivers/gpu/drm/vmwgfx/device_include/`:
+`svga_reg.h`, `svga3d_cmd.h`, `svga3d_dx.h`, `svga3d_devcaps.h`, `svga3d_types.h`,
+`svga3d_limits.h` and `svga3d_surfacedefs.h`. It also downloaded `svga_reg.h` from the
+same directory at `v5.15` and `v4.19` for register and command-buffer comments. These
+SVGA downloads have been deleted from the lane's temporary header cache. Other lanes'
+files were not removed.
+
+The `D3D10_SB_*` enums came from Microsoft's published
+[`include/directx/D3D12TokenizedProgramFormat.hpp`](https://github.com/microsoft/DirectX-Headers/blob/461ef5138bd30922b44fbad77c4e47662812d2d5/include/directx/D3D12TokenizedProgramFormat.hpp)
+in **microsoft/DirectX-Headers**, commit
+`461ef5138bd30922b44fbad77c4e47662812d2d5`. The file's SHA-256 is
+`5862ef7c8b819f0d02ba73563a9df4dc0e89f11fe59d8f598def39122273c626`;
+the cached file was compared byte for byte with that pinned Microsoft URL and matched.
+The filename says D3D12, but the file defines the D3D10/SM4 token enums. The pushed
+`kernel/src/gpu/svga/` files contain no shader-token encoder or catalogue using those
+enums yet. This Microsoft publication remains an allowed source for that work.
+
+The affected SVGA files are `wire.rs` (interface values), `commands.rs` (packet
+layouts), `objects.rs` (MOB, table, surface and DX-context structures), and `mod.rs`
+(register submission, capability admission and command-buffer status). `memory.rs`
+encodes the page-number tree used by those structures. Replacing source labels would
+not repair their provenance: they require reconstruction from an allowed VMware
+publication before reuse. That reconstruction and the DX backend are blocked pending
+an allowed modern SVGA3/DX publication or an operator clarification of the section 1.9
+exception. The independent
+[VMware SVGA Device Developer Kit](https://sourceforge.net/projects/vmware-svga/)
+was located, but its available documentation has not established the modern DX layouts
+needed here. No VMware build, boot, native-backend observation or suite acceptance is
+claimed by this audit.
+
+### Historical interface inputs (not approved by the continuation brief)
 
 | Source | Pin and published header |
 |---|---|
@@ -1025,4 +1063,5 @@ The device layer is selected only by the explicit `gpu_svga_experimental` kernel
 feature. Default boots retain the existing VMware compositor and allocate no
 SVGA core tables. The experimental path has no firmware hand-back on failed
 initialization; it retains ambiguous DMA allocations and must not be used as
-a desktop replacement (#1817). Hardware acceptance remains blocked by #1814.
+a desktop replacement (#1817). Ruling 47's backend-specific checks arrived with the integration merge; the source audit
+above and the unfinished DX catalogue still block hardware acceptance.
