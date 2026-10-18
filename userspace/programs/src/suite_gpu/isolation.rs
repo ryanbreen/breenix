@@ -371,7 +371,11 @@ pub fn handle_guess() -> CaseResult {
     let before = counters(0)?;
     let mut tried = 0u64;
     for g in guesses.into_iter().filter(|g| !own.contains(g)) {
-        all_einval(g, ctx, "a guessed handle")?;
+        for (op, r) in refusals_for(g, ctx) {
+            // Target 0 names the display; this process is not its owner (ruling 42).
+            let expected = if g == 0 && op == "READBACK of it" { -abi::errno::EPERM } else { -EINVAL };
+            ensure(r == expected, || format!("{op} with a guessed handle ({g:#018x}) returned {}, expected {}", errno(r), errno(expected)))?;
+        }
         tried += 1;
     }
     value("guesses", tried as i64, "", None);
