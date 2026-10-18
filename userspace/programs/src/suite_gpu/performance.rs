@@ -1,9 +1,9 @@
 //! G8 checks: the performance bounds of `docs/gui/gpu.md` section 1.10, at 2560x1600.
 //!
 //! The bounds are measured on contexts whose fixed rendering catalogue has warmed
-//! (`common::context`). A device's answer does not show the GPU did the work, so each timed
-//! interval ends with a dependent observation: a readback of what the measured work wrote,
-//! compared with the suite's own expectation. The throughput draws cannot be culled: the
+//! (`common::context`). Rendering intervals end with a dependent readback compared with
+//! the suite's expectation. Empty-submit latency measures SUBMIT through WAIT only;
+//! wait-no-spin measures WAIT's CPU and wall time, then validates its output. The throughput draws cannot be culled: the
 //! rectangles do not overlap and the coverage draw blends. Whole-target comparisons run
 //! after the timed interval, outside it.
 use super::common::*;
@@ -191,6 +191,47 @@ fn instance(rect: [i32; 4], params: &[i32]) -> Instance {
     Instance { rect, params: a }
 }
 
+/// Exact image for the fixed 16x16 first-draw inputs below (section 1.5's pixel rules).
+fn first_draw_image(p: u32) -> Canvas {
+    let mut want = Canvas::new(16, 16);
+    for y in 0..16i32 {
+        for x in 0..16i32 {
+            let hit = match p {
+                pipeline::BITMAP_TEXT => x < 10 && y < 14,
+                pipeline::LINE => x == y,
+                pipeline::CIRCLE_FILL => (x - 8).pow(2) + (y - 8).pow(2) <= 36,
+                pipeline::CIRCLE_OUTLINE => {
+                    let (dx, dy) = ((x - 8).abs(), (y - 8).abs());
+                    let (major, minor) = (dx.max(dy), dx.min(dy));
+                    // Radius six's literal midpoint-circle octant: [6, 6, 6, 5, 5].
+                    minor <= 4 && major == [6, 6, 6, 5, 5][minor as usize]
+                }
+                pipeline::ROUNDED_RECT => {
+                    let dx = 2 * x + 1 - 2 * if x < 4 { 4 } else { 12 };
+                    let dy = 2 * y + 1 - 2 * if y < 4 { 4 } else { 12 };
+                    (4..12).contains(&x) || (4..12).contains(&y) || dx * dx + dy * dy <= 64
+                }
+                pipeline::TRIANGLE => x + y < 14,
+                _ => true,
+            };
+            let c = if !hit {
+                BG
+            } else if p == pipeline::GRADIENT_V {
+                let (a, b) = (FG.to_le_bytes(), 0xff102030u32.to_le_bytes());
+                let mut c = 0;
+                for k in 0..4 {
+                    c |= ((a[k] as u32 * (15 - y as u32) + b[k] as u32 * y as u32 + 7) / 15) << (k * 8);
+                }
+                c
+            } else {
+                FG
+            };
+            want.rect([x, y, x + 1, y + 1], c);
+        }
+    }
+    want
+}
+
 pub fn first_draw_latency() -> CaseResult {
     const S: i32 = 16;
     let _case = begin()?;
@@ -245,7 +286,7 @@ pub fn first_draw_latency() -> CaseResult {
         wait_ok(ctx, f, 2_000)?;
         let px = read_rect(t, [0, 0, S as u32, S as u32])?;
         let us = us_since(start);
-        ensure(px.chunks_exact(4).any(|q| u32_at(q, 0) != BG), || format!("pipeline {p}'s first draw changed no pixel"))?;
+        first_draw_image(p).matches(&px, &format!("pipeline {p}'s first draw"))?;
         ensure(us <= FIRST_DRAW_US, || format!("pipeline {p}'s first draw in a warmed context took {us} us"))?;
         slowest = slowest.max(us);
     }
@@ -419,11 +460,13 @@ pub fn present_rate_2560() -> CaseResult {
     let start = now_ns();
     for n in 0..FRAMES as usize {
         present(ctx, targets[n % 2])?;
+        all(&read_rect(0, [W - 16, H - 16, 16, 16])?, colours[n % 2], "the alternating scanout")?;
     }
     all(&read_rect(0, [W - 16, H - 16, 16, 16])?, colours[(FRAMES as usize - 1) % 2], "the scanout after the last present")?;
     let us = us_since(start);
     value("presents-per-second", (FRAMES * 1_000_000 / us.max(1)) as i64, "", Some((PRESENTS_PER_S as i64, i64::MAX)));
     ensure(rate_met(FRAMES, us, PRESENTS_PER_S), || {
         format!("{FRAMES} presents alternating two 2560x1600 targets took {us} us, under {PRESENTS_PER_S} a second")
-    })
+    })?;
+    all(&read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout")
 }
