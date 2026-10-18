@@ -347,6 +347,15 @@ until grep -q ' DONE ' "$log" 2>/dev/null; do sleep 2; done
 scripts/qmp-screendump.py "$TMPDIR/breenix.qmp" "$TMPDIR/screen.png"
 ```
 
+## Stub milestones
+
+A milestone with `"stub": true` is a definition under construction, not a completion claim: its stage
+lists are proposals that no kernel prints yet, so no boot passes it. The lane that produces its markers
+lands the exact strings with its code and the stage catalog, and removes the flag. `boot-logo` is one: the
+console effort's splash (`docs/console/contract.md`, section 7), finalized by its splash lane. Because a
+mode list replaces the architecture list, its `shell` and `default` lists repeat its four kernel stages
+before the hand-over stage, and each names the one hand-over reason that mode must reach.
+
 ## Focus and backtracking
 
 The focus is the earliest milestone whose gate does not pass. Because a boot runs every

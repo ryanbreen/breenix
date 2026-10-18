@@ -1334,6 +1334,79 @@
       ]
     },
     {
+      "id": "console",
+      "title": "Screen console & virtual terminals",
+      "outcome": "Every target boots behind an original Breenix logo with live boot progress on its firmware or boot framebuffer, then hands the screen to a text console sized for the display: six virtual terminals with their own screens and scrollback, the kernel log on the first and a login prompt on each in console mode, switched with Alt+F1..F6, Alt+Left/Right, VT_ACTIVATE and chvt, the foreground terminal owning the keyboard, and every screen checked by reading its displayed pixels back against independently expected ones.",
+      "suite": "console",
+      "subsystems": [
+        11,
+        17,
+        18
+      ],
+      "milestones": [
+        {
+          "id": "boot-logo",
+          "title": "Boot logo & progress",
+          "measure": {
+            "bootPath": "boot-logo"
+          }
+        },
+        {
+          "id": "screen",
+          "title": "Console on the screen everywhere",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "screen"
+            ]
+          }
+        },
+        {
+          "id": "emulation",
+          "title": "Console terminal emulation",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "emulation"
+            ]
+          }
+        },
+        {
+          "id": "virtual-terminals",
+          "title": "Six virtual terminals",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "vt-devices",
+              "vt-switch",
+              "scrollback"
+            ]
+          }
+        },
+        {
+          "id": "chvt-getty",
+          "title": "chvt and a login on every terminal",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "chvt",
+              "getty"
+            ]
+          }
+        },
+        {
+          "id": "keyboard",
+          "title": "Switching from the keyboard",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "keys"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "id": "breengel",
       "title": "BreenGL graphics library",
       "outcome": "Programs draw with BreenGL entirely on the GPU (clipped and alpha-blended shapes and blits, bitmap and TrueType text, PNG and BMP images, widgets and animated icons) exactly to its written contract, every installed graphical program draws through it, and the windows they commit through an authority-checked kernel interface are composed by the GPU and observed by device readback, pixel-exact on every target.",
