@@ -2220,7 +2220,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             drop(fatal_uart_guard);
-            crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            // This is EL0 recovery; terminal display takeover would stop later
+            // GPU users after an unprivileged fault. EL1 faults return above.
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
