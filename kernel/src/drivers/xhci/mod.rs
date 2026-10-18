@@ -58,9 +58,9 @@ pub fn console_session_starting(replug: bool) {
     }
 }
 
-/// The startup thread may sleep; the boot thread must keep its scheduling brake.
-/// Failure or timeout leaves init unpublished to the scheduler, never a prompt
-/// whose keyboard is still being detached by the exercise.
+/// Wait from the startup kthread with preemption disabled so Completion uses
+/// its sleeping path. Report failure or timeout so the caller can retain
+/// serial login when USB input is unavailable.
 pub fn wait_console_ready() -> bool {
     crate::per_cpu::preempt_disable();
     let completed = CONSOLE_READY.wait_timeout_uninterruptible(1, 60 * SECOND);

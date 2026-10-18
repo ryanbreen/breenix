@@ -152,7 +152,8 @@ or rewrite that disk. To exercise input expiry quickly on a RAM-disk session:
 metal-run boot --mode console --session --idle-minutes 2
 ```
 
-Sessions never run the keyboard replug exercise. Measured attended and SOL test boots stage `console replug`;
+Driver-launched sessions suppress the keyboard replug exercise through per-boot intent. A manual boot
+without that intent uses the installed target, which may request replug. Measured attended and SOL test boots stage `console replug`;
 the kernel completes keyboard attachment and the exercise before starting init and getty.
 Disk-root console boots carry a small per-boot intent payload through the bootloader's RAM-payload slot; the
 kernel consumes it as metadata, without registering a RAM block device or changing the installed root. A
@@ -506,7 +507,7 @@ padding to the end of the sector.
   compares that line with `disk-write.json` (event `disk-write-verified`) and, when they agree, records the disk's
   contents in the service's `disk.json`. Root then mounts from the RAM disk, the hardware disks are read-only
   again, and the `ramdisk-root` milestone's stages print as on any RAM-disk boot.
-- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM disk; the driver
+- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload); the driver
   refuses to start one when `disk.json` records no verified install. The kernel reads the first sector of each
   attached hardware disk, needs exactly one root record, reports it, says whether the image after the record still has the
   recorded SHA-256 (true on the first boot after an install; later boots write the root, so this is a report, not a
@@ -515,7 +516,7 @@ padding to the end of the sector.
   (event `disk-root-record`).
 
 Each boot shape lacks a milestone the other produces: an install's root is the RAM disk, and a disk-root boot has no
-RAM disk. The driver therefore does not wait for `disk-filesystem` on an install boot, for `disk-io` or
+RAM-disk root. The driver therefore does not wait for `disk-filesystem` on an install boot, for `disk-io` or
 `ramdisk-root` on a disk-root boot, or for either storage milestone on a probe boot without `--disk`
 (`bootShapes` in `docs/metal/boot-path.json`, used by the driver and retained scorer).
 

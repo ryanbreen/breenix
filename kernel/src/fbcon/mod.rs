@@ -57,7 +57,7 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// A session other than init's has the console as its controlling terminal.
 static SESSION: AtomicBool = AtomicBool::new(false);
-/// Last session state announced by the render thread. Filtering reads
+/// Last session state recorded by the render thread. Notices go to serial; filtering reads
 /// `SESSION` directly so it takes effect before getty can print its prompt.
 static QUIET: AtomicBool = AtomicBool::new(false);
 
