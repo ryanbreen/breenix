@@ -391,6 +391,10 @@
         {
           "id": "shift-pageup",
           "title": "Shift+PageUp and Shift+PageDown move the view by half a screen"
+        },
+        {
+          "id": "report-joins-typed-line",
+          "title": "A cursor report joins the partly typed canonical line, after its keys"
         }
       ]
     }

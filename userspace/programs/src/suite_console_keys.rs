@@ -297,3 +297,42 @@ pub fn keys_shift_pageup() -> CaseResult {
         raw.quiet(2)
     })
 }
+
+/// Contract section 5.4: a report is the terminal's input, through its line
+/// discipline behind the keys already typed. In canonical mode it joins the
+/// line being typed and is read with it, not ahead of it.
+pub fn keys_report_joins_typed_line() -> CaseResult {
+    measured(|| {
+        let _back = BackToTty1;
+        let term = Term::vt(2)?;
+        let saved = term.termios()?;
+        let _restore = Restore(&term, saved);
+        let mut canonical = saved;
+        canonical.lflag |= ICANON | ECHO;
+        term.set_termios(&canonical)?;
+        term.ok("TCFLSH", TCFLSH, 0)?;
+        term.write(b"\x1bc")?;
+        switch_to(2)?;
+        let seq = keys("a,b")?;
+        crate::wait_vt(2, "ab").map_err(|e| format!("{e}: {}", late(seq)))?;
+        term.write(b"\x1b[6n")?;
+        sleep(200);
+        let early = term.available();
+        require(early == 0, &format!("the report overtook the typed line: {early} bytes readable before Enter"))?;
+        let seq = keys("enter")?;
+        require(within(KEY_MS, || term.available() > 0), &late(seq))?;
+        let mut got = [0u8; 64];
+        let count = io::read(term.fd, &mut got).map_err(|e| format!("read tty2: {e}"))?;
+        require(&got[..count] == b"ab\x1b[1;3R\n", &format!("tty2 read {:?}", &got[..count]))
+    })
+}
+
+/// Restores a terminal's settings and drops its input when the case ends.
+struct Restore<'a>(&'a Term, Termios);
+
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.ok("TCFLSH", TCFLSH, 0);
+        let _ = self.0.set_termios(&self.1);
+    }
+}
