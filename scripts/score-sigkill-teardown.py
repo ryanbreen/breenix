@@ -231,7 +231,8 @@ def score(text, host_record=None):
         if int(window["limit"]) * 1_000_000 != STARVED_NS_PER_TICK:
             return 1, "sigkill teardown: FAIL: unexpected starvation threshold"
         if window["kick_cpu"] == window["sender_cpu"] or int(window["rate"]) == 0 \
-                or int(window["tick_period"]) == 0:
+                or int(window["tick_period"]) == 0 \
+                or int(window["held_cpu"]) >= int(window["online_cpus"]):
             return 1, f"sigkill teardown: FAIL: invalid window: {line.strip()}"
         expected, starved_by = verdict(int(window["interval"]), int(window["tick_period"]), int(window["rate"]),
                                        int(window["observer_ticks"]), int(window["all_ticks"]),

@@ -333,7 +333,8 @@ assert scorer.score(windows[0].replace("sender_cpu=0", "sender_cpu=1"))[0] == 1,
 assert scorer.score(windows[0].replace("starved_ms_per_tick=60", "starved_ms_per_tick=10"))[0] == 1
 assert scorer.score("")[0] == 0
 assert scorer.score(held_window + "\n" + run_starved)[0] == 2, "a guest-held window is starved without a host record"
-for forged in (held_window.replace(" held=12642 ", " held=12641 "),
+for forged in (re.sub(r" held_cpu=\d+ ", " held_cpu=999999 ", held_window),
+               held_window.replace(" held=12642 ", " held=12641 "),
                held_window.replace(" starved_by=held ", " starved_by=ticks "),
                held_window.replace(" held_needed=12642 ", " held_needed=12000 "),
                held_window.replace(" starvation_check=guest ", " starvation_check=host ")):
