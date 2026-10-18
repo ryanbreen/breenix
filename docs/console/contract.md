@@ -235,7 +235,7 @@ boots once the GPU effort's console draws the VTs, the top of the GPU display ow
 ### 4.4 Process-controlled switching (`VT_PROCESS`)
 
 **Per VT:** a VT mode (`VT_AUTO` or `VT_PROCESS`), its owner, `relsig` and `acqsig`. **For the console:** the
-foreground VT `fg`, and at most one pending switch `{from, to, phase, source, deadline}`, where phase is
+foreground VT `fg`, whether its acquisition is complete, and at most one pending switch `{from, to, phase, source, deadline}`, where phase is
 `releasing` or `acquiring`. The console lock protects both. Deadlines: `VT_RELEASE_TIMEOUT_MS = 3000` and
 `VT_ACQUIRE_TIMEOUT_MS = 3000`.
 
@@ -276,24 +276,32 @@ foreground VT `fg`, and at most one pending switch `{from, to, phase, source, de
 - `VT_RELDISP(0)` or `VT_RELDISP(1)` with no release pending (after a cancellation or a timeout) fails with
   EINVAL.
 
-**The acquiring step**, under the console lock: `fg := to`; the pending `from` loses presentation authority
-if it has a display owner (section 4.2); the render thread is woken at normal priority.
+**The acquiring step**, under the console lock: mark acquisition incomplete and record phase `acquiring`
+before setting `fg := to`; the pending `from` loses presentation authority if it has a display owner
+(section 4.2); the render thread is woken at normal priority.
 - `to` in `KD_TEXT`: the render thread redraws each row of `to` from its grid into the shadow, copies it to the
-  screen, and the acquisition is complete.
-- `to` in `KD_GRAPHICS` with a `VT_PROCESS` owner: the kernel sends `acqsig` and records phase `acquiring`
-  with a deadline. The owner answers `VT_RELDISP(VT_ACKACQ)`; the acquisition is complete at the answer, at the
-  deadline, or when the owner exits. `VT_ACKACQ` with no acquisition pending fails with EINVAL.
+  screen (and, on virtio-gpu, transfers and flushes it). This redraw must finish before acquisition completes.
+- A `VT_PROCESS` destination, in either KD mode, receives `acqsig` and an acquisition deadline. Its owner
+  answers `VT_RELDISP(VT_ACKACQ)`; the answer, deadline or owner's exit satisfies the owner part of acquisition.
+  For `KD_TEXT`, both the redraw and the owner part must finish; either may finish first. For `KD_GRAPHICS`,
+  only the owner part is required: the kernel does not draw. `VT_ACKACQ` with no acquisition pending, or after
+  the owner part has already finished, fails with EINVAL.
 - `to` in `KD_GRAPHICS` with a `VT_AUTO` graphics owner: the acquisition is complete at once; the kernel does
-  not draw.
+  not draw. A `KD_TEXT` destination in `VT_AUTO` needs only the redraw.
+- Once the required redraw and owner acknowledgement finish, under the console lock mark acquisition complete,
+  clear the pending switch
+  and wake `VT_WAITACTIVE` waiters. An owner's exit resets its mode as in section 4.3; if this makes the
+  destination `KD_TEXT`, the resulting redraw must finish too.
 - A held next switch then starts as a new request.
 
 ### 4.5 `VT_WAITACTIVE`
 
-- `VT_WAITACTIVE(n)` returns 0 at once when `n == fg` (including while a switch away from `n` is pending in
-  `releasing`).
+- `VT_WAITACTIVE(n)` returns 0 at once only when `n == fg` and its acquisition is complete (including while
+  a switch away from `n` is pending in `releasing`). Testing this condition and registering a waiter use the
+  console lock, so completion cannot race with going to sleep.
 - Otherwise it blocks until a switch to `n` completes its acquisition (section 4.4): for a text VT, after the
-  new screen has been copied to the display (and, on virtio-gpu, transferred and flushed); for a `VT_PROCESS`
-  graphics VT, after `VT_ACKACQ`, the acquisition deadline or the owner's exit. Waiters are woken in that
+  new screen has been copied to the display (and, on virtio-gpu, transferred and flushed); for any `VT_PROCESS`
+  VT, also after `VT_ACKACQ`, the acquisition deadline or the owner's exit. Waiters are woken in that
   order, before the switch's read-back check runs (section 8).
 - A refused or cancelled switch does not wake a waiter; it keeps waiting.
 - A signal ends the wait with EINTR, or restarts it when the handler has `SA_RESTART`.
@@ -415,7 +423,8 @@ that has no console action sends `ESC` followed by the key's bytes.
 
 The logo is defined in **design units**; at scale `k` a unit is `k` pixels. Shapes are filled with one colour,
 except the badge's gradient. The geometry table in `libs/breenix-logo` (V2a) is this section as data, and the
-operator approves the rendered look before V2b draws it in the kernel. A change of art changes this section
+operator reviews the rendered look; V2b may implement and draw the proposed design in the kernel while
+that review is pending (F2). Approval does not block implementation. A change of art changes this section
 and that table together.
 
 **Colours.** Field (the screen's background) 15, 20, 35. Badge gradient from 52, 92, 190 (top) to 34, 150, 160
@@ -688,5 +697,7 @@ milestone's measure, built by the lane named here:
   fails saying so. No case skips. A lane writes a case's check from this contract in its own commit, before
   the implementation it measures.
 - **The suite takes the display only after its last case** (Q17), so its cases run on the console itself. That
-  is a runner option the console suite alone uses; V1 adds it with the first cases that read the screen.
+  is the `Suite::defer_display()` runner option, supplied by D0 and enabled by the console skeleton. The runner
+  neither takes nor maps the display and draws no panel during cases; it opens the display for the final panel
+  after the last case. Other suites keep their live panels.
 - The suite is `timingSensitive`: its cases wait on switches and on host keys.
