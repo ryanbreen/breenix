@@ -550,7 +550,9 @@ pub struct Modes {
     pub scanout_resource: u64, pub console_resource: u64,
     pub console_draws: u64, pub console_fixture_bytes: u64, pub handoff: u64,
     pub firmware_hash_at_handoff: u64, pub firmware_hash_now: u64,
-    pub reserved: [u64; 17],
+    /// Kernel write operations to the firmware framebuffer since handoff (ruling 50).
+    pub firmware_writes_after_handoff: u64,
+    pub reserved: [u64; 16],
 }
 /// SET_MODE input.
 #[repr(C)]
@@ -792,5 +794,6 @@ const _: () = {
     assert!(core::mem::offset_of!(Modes, modes) == 32);
     assert!(core::mem::offset_of!(Modes, scanout_resource) == 64);
     assert!(core::mem::offset_of!(Modes, firmware_hash_now) == 112);
+    assert!(core::mem::offset_of!(Modes, firmware_writes_after_handoff) == 120);
     assert!(core::mem::size_of::<SetMode>() == 16);
 };

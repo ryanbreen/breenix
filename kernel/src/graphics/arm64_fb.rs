@@ -189,9 +189,16 @@ pub fn is_gop_active() -> bool {
     GOP_ACTIVE.load(Ordering::Relaxed)
 }
 
-/// Get the GOP framebuffer as a mutable byte slice.
-/// Returns None if GOP is not initialized.
+/// Get the GOP framebuffer as a mutable byte slice, for a caller that writes it (counted
+/// by `firmware_writes`). Returns None if GOP is not initialized.
 pub fn gop_framebuffer() -> Option<&'static mut [u8]> {
+    let fb = gop_framebuffer_mut()?;
+    super::firmware_writes::note();
+    Some(fb)
+}
+
+/// The GOP framebuffer as a mutable byte slice; the caller counts its own stores.
+fn gop_framebuffer_mut() -> Option<&'static mut [u8]> {
     let ptr = GOP_FB_PTR.load(Ordering::Relaxed);
     let len = GOP_FB_LEN.load(Ordering::Relaxed);
     if ptr == 0 || len == 0 {
@@ -462,7 +469,7 @@ impl Canvas for Arm64FrameBuffer {
         }
 
         let buffer = if self.is_gop {
-            match gop_framebuffer() {
+            match gop_framebuffer_mut() {
                 Some(b) => b,
                 None => return,
             }
@@ -483,6 +490,7 @@ impl Canvas for Arm64FrameBuffer {
         if offset + self.bytes_per_pixel <= buffer.len() {
             buffer[offset..offset + self.bytes_per_pixel]
                 .copy_from_slice(&pixel_bytes[..self.bytes_per_pixel]);
+            super::firmware_writes::note();
         }
     }
 
@@ -515,9 +523,11 @@ impl Canvas for Arm64FrameBuffer {
         ))
     }
 
+    /// The display memory for a bulk fill or copy, counted as one write.
     fn buffer_mut(&mut self) -> &mut [u8] {
+        super::firmware_writes::note();
         if self.is_gop {
-            gop_framebuffer().unwrap_or(&mut [])
+            gop_framebuffer_mut().unwrap_or(&mut [])
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::framebuffer().unwrap_or(&mut [])
         } else {

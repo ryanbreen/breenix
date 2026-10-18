@@ -59,6 +59,7 @@ pub(super) fn describe(a: &mut abi::Modes) {
     } else {
         0
     };
+    a.firmware_writes_after_handoff = crate::graphics::firmware_writes::count();
 }
 
 /// Inspect the actual framebuffer memory while its writer lock is held.
@@ -87,6 +88,7 @@ fn quiesce() {
 }
 
 fn handoff() {
+    crate::graphics::firmware_writes::handoff();
     HANDOFF.store(true, Ordering::Release);
     crate::graphics::log_capture::init();
 }
