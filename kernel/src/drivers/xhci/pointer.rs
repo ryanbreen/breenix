@@ -161,10 +161,7 @@ impl Controller {
                                 .fold(0u32, |held, pipe| held | pipe.buttons as u32),
                         );
                     }
-                    #[cfg(target_arch = "aarch64")]
                     crate::drivers::hid_boot::state::report(self.devices[index].port, motion);
-                    #[cfg(target_arch = "x86_64")]
-                    let _ = motion;
                 }
                 Ok(None) => {}
                 Err(error) => log::warn!("[hid] pointer report refused: {error}"),

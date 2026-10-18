@@ -51,6 +51,7 @@ impl Controller {
         for port in ports {
             if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                 self.attach_keyboard(index, 0);
+                #[cfg(target_arch = "aarch64")]
                 if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                     if let Err(error) = self.attach_pointers(index) {
                         log::error!("[usb] port {port}: pointer attach FAILED: {error}");
@@ -94,6 +95,7 @@ impl Controller {
             if event.kind() != 32 {
                 continue;
             }
+            #[cfg(target_arch = "aarch64")]
             if self.dispatch_pointer(event) {
                 continue;
             }
@@ -470,6 +472,7 @@ impl Controller {
             Ok(()) => {
                 let index = self.devices.len() - 1;
                 self.attach_keyboard(index, resets);
+                #[cfg(target_arch = "aarch64")]
                 if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                     if let Err(error) = self.attach_pointers(index) {
                         log::error!("[usb] port {port}: pointer attach FAILED: {error}");
@@ -516,6 +519,7 @@ impl Controller {
         let slot = device.slot;
         let mut dcis = alloc::vec![1u8];
         dcis.extend(device.keyboard.as_ref().map(|p| p.dci));
+        #[cfg(target_arch = "aarch64")]
         dcis.extend(device.pointers.iter().map(|p| p.dci));
         for dci in dcis {
             match self.command_code(spec::stop_endpoint(slot, dci)) {
@@ -550,6 +554,7 @@ impl Controller {
         if let Some(pipe) = device.keyboard {
             pages += pipe.ring.memory.release() + pipe.buffer.release();
         }
+        #[cfg(target_arch = "aarch64")]
         for pipe in device.pointers {
             pages += pipe.release();
         }
