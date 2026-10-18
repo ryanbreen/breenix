@@ -3211,15 +3211,30 @@ fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
     let live = dir.join("live-kernel");
     fs::write(&live, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
     let missing = dir.join("no-kernel");
+    // Inject a read error at the scanner boundary. File mode 000 is still
+    // readable with DAC override, so it cannot exercise this contract as root.
+    let unreadable = dir.join("read-error-kernel");
+    fs::write(&unreadable, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let grep = bin.join("grep");
+    fs::write(&grep, r#"#!/bin/sh
+for arg do
+    if [ "$arg" = "$READ_ERROR_KERNEL" ]; then
+        echo scanned > "$READ_ERROR_SEEN"
+        exit 2
+    fi
+done
+exec "$REAL_GREP" "$@"
+"#).unwrap();
     #[cfg(unix)]
-    let unreadable = {
+    {
         use std::os::unix::fs::PermissionsExt;
-        let path = dir.join("unreadable-kernel");
-        fs::write(&path, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(fs::read(&path).is_err(), "fixture must actually be unreadable");
-        path
-    };
+        fs::set_permissions(&grep, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let real_grep = Command::new("sh").args(["-c", "command -v grep"]).output().unwrap();
+    assert!(real_grep.status.success());
+    let real_grep = String::from_utf8(real_grep.stdout).unwrap();
     for (name, kernel, body, want) in [
         ("no-kernel-given", None, fixture.clone(), true),
         ("plain", Some(&plain), fixture.clone(), true),
@@ -3227,9 +3242,7 @@ fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
         ("live-with-pass", Some(&live), format!("{fixture}\n{pass}\n"), true),
         ("live-with-fail", Some(&live), format!("{fixture}\n{pass}\n{fail}\n"), false),
         ("missing-kernel", Some(&missing), format!("{fixture}\n{pass}\n"), false),
-        #[cfg(unix)]
         ("unreadable-live-without-pass", Some(&unreadable), fixture.clone(), false),
-        #[cfg(unix)]
         ("unreadable-live-with-pass", Some(&unreadable), format!("{fixture}\n{pass}\n"), false),
     ] {
         let serial = dir.join(name);
@@ -3242,6 +3255,11 @@ fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
         if let Some(kernel) = kernel {
             command.env("BREENIX_STRICT_SCORE_KERNEL", kernel);
         }
+        let seen = dir.join(format!("{name}-read-error-seen"));
+        command.env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+            .env("READ_ERROR_KERNEL", &unreadable)
+            .env("READ_ERROR_SEEN", &seen)
+            .env("REAL_GREP", real_grep.trim());
         let result = command.output().unwrap();
         assert_eq!(
             result.status.success(),
@@ -3249,6 +3267,10 @@ fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
             "{name}: {}",
             String::from_utf8_lossy(&result.stdout)
         );
+        if kernel == Some(&unreadable) {
+            assert!(seen.exists(), "{name}: kernel scan must reach injected read error");
+            assert!(String::from_utf8_lossy(&result.stdout).contains("cannot read kernel for live-outgoing profile"));
+        }
     }
     fs::remove_dir_all(dir).unwrap();
 }
