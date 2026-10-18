@@ -886,3 +886,47 @@ G5 box bounded submit=0 transfer=0 pixel=ff312719
 | A request nobody waits for that names objects of an earlier reset epoch is queued in that epoch, so the confirmed reset retires it | O: `docs/gui/gpu.md` section 1.4.1, the device reset |
 | Coverage tables: per data buffer, the bytes of each distinct table, `4*(8*height+1) + 8*entries`, are summed and compared with the largest `data_bytes` named for that buffer | O: `docs/gui/gpu-abi.md`, G5 parameterized draws, as G6 amends it |
 | Snapshot ranges, sorted by buffer and offset and disjoint, and a submission's view of the process's resources, in handle order, are searched by bisection | O: `docs/gui/gpu.md` section 1.16, bounded validation |
+
+## G7 display values
+
+| Value or design | Source |
+|---|---|
+| MODES 256-byte record, two 16-byte modes, SET_MODE 16-byte input; 1280x800 scale 1 and 2560x1600 scale 2; default index 1 | O: `docs/gui/gpu.md` section 1.7 and contract PR #1738, `gpu-abi.md` G7 display interface |
+| Display stack of four userspace owners, root direct take-over, EBUSY 16 for overflow or a cycle, EPERM 1 for a foreign give-back; saved mode and last binding; idempotent current-owner take | O: `docs/gui/gpu.md` section 1.7, its reference to BreenGL section 18, and contract PR #1738 |
+| Current-scanout READBACK target 0 for the owner; handle 0 outside ownership and explicit foreign handles remain EINVAL; observation uses that resource’s completed rendering context | O: contract PR #1738; the transfer, attachment and complementary-poison layouts retain the V/U/B sources above |
+| Points 25 and 26: omitted flush leaves binding unknown; wrong-target bind chooses the first-created other live scanout target, and completion records that command's actual resource | O: `docs/gui/gpu.md` section 1.8 and contract PR #1738; SET_SCANOUT and RESOURCE_FLUSH retain V section 5.7.6.8's fields |
+| GPU console target 2560x1600 BGRA; font atlas of printable ASCII 32 through 126, 16 rows, R8 coverage, 256-byte transfer pitch; source bytes counted as fixture bytes | O: `gpu.md` section 1.7, built-in font tables; Breenix's existing Noto Sans Mono bitmap dependency, `get_raster` at Regular/Size16; atlas arrangement is core bookkeeping |
+| Header `Breenix GPU console` at physical (16,16), background 0xFF181512 and foreground 0xFFE8EDF2; sixteen log rows of 96 columns below y=48, row spacing 18; 128 KiB console vertex buffer | O: contract PR #1738 for the observed header; log layout and buffer size are kernel-console sizing choices |
+| Glyphs use the existing bitmap_text coverage-table variant, with destination copies and integer shader blending; the full target is cleared by the existing solid pipeline | O: `gpu.md` sections 1.3 and 1.5; the existing G5 program derivations and wire values above, with no new shader text or grammar |
+| FNV-1a offset basis 14695981039346656037 and multiplier 1099511628211 over retained legacy framebuffer memory; boot-screen and render-thread console writers retire under the framebuffer lock before the console's first scanout bind | U: [RFC 9923 sections 2 and 5](https://www.rfc-editor.org/rfc/rfc9923.html) for FNV-1a and its 64-bit constants; O: contract PR #1738 for the observation definition; the framebuffer retains its memory address at initialization, and the observation uses volatile reads of that memory |
+| Display transition serialization covers takeover, give-back, restore and console redraw; owner sequence detects an exit that changes the destination during a restore | O: core concurrency bookkeeping for `gpu.md` section 1.7 |
+
+## B16: G7 scanout and console device observations
+
+Commit `db251d0bbbe64274e34c17c30d635e329c327dd6`, Vigil run `20261017T232302Z-qemu`,
+used the section 1.6.1 GL QEMU and its pinned renderer. Build ARM64 userspace, the production kernel
+and disk first, with `CARGO_BUILD_JOBS=4` and builds under `taskpolicy -b`; the actual boot invocation was
+`BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --gpu-gl --display --no-build --serial-log "$RUN/serial.log" < /dev/null`.
+CHECKOUT and RUN denote absolute checkout and private run directories. The runner retained
+`host-renderer.json` beside serial and accepted the ANGLE Metal hardware renderer. The full producer
+reported `SUITE gpu DONE passed=158 failed=12 skipped=0 total=170`: present 16/16, three earlier-category
+failures, and nine unwritten G8 performance checks. The earlier failures and the handle-0 correction are
+tracked in #1739; this run does not establish the earlier categories as green.
+
+| Committed input/check | Producer output excerpt and established fact |
+|---|---|
+| `mode_1280x800`, `mode_2560x1600`: BGRA full-screen targets, clear 0xFFD15321, one-pixel left/right/bottom edges and a 2x2 centre in 0xFF25B3E7; normal and target-0 observations compare the full canvas and resource identity | `SUITE gpu CASE present/mode-1280x800 PASS`; `SUITE gpu CASE present/mode-2560x1600 PASS`. The device accepts both full-resource scanout/flush sequences and the observed bytes equal those scenes. |
+| `flip`: two 1280x800 targets, the patterned scene and a 0xFF25B3E7 clear, presented A/B/A; `mode_change_content` changes 1280/2560/1280 with full observations | `SUITE gpu CASE present/flip PASS`; `SUITE gpu CASE present/mode-change-content PASS`. Each completed binding names the selected resource, with increasing context fences, and the readback canvases match. |
+| `takeover_giveback` and `ownership_stack`: 73x17 and 31x9 patterned targets; distinct forked owners; saved mode 0 restored after mode 1; four owners, fifth EBUSY | `SUITE gpu CASE present/takeover-giveback PASS`; `SUITE gpu CASE present/ownership-stack PASS`. Give-back restores the previous binding's bytes and mode, and nested owners restore in order. |
+| `console_restored`: user frame, give-back, retake before presenting; current-scanout transfer of the 19-character header compared channel-by-channel with the independent built-in font coverage formula | `SUITE gpu CASE present/console-restored PASS`. The observed resource is the private console target and its glyph pixels match; completed bitmap draws and fixture transfers are reported. |
+| `firmware_handoff`: compare retained firmware memory's hash at handoff and after GPU console restore, and observe the console header again | `SUITE gpu VALUE present/firmware-handoff handoff=1 expect=1..1`; `SUITE gpu CASE present/firmware-handoff PASS`. The legacy memory is unchanged during these console transitions. This measures those transitions, not programs using the legacy framebuffer API. |
+| Point 25 omits a flush; point 26 binds the other live 47x13 scanout target, whose colour differs | `SUITE gpu CASE present/fault-skip-flush PASS`; `SUITE gpu CASE present/fault-wrong-scanout PASS`. An omitted flush returns EIO and binding-unknown without a completion; the wrong bind is distinguished by its actual resource, pixels and the requested target's offscreen flag. Both recover on the next ordinary present. |
+
+The handle-0 correction was checked at `85891e63711db85e6fa639b7d63f4df199df9b76`
+with the same ARM64 disk and this boot invocation:
+`BREENIX_QUIET=0 "$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --case isolation/handle-guess --gpu-gl --display --no-build --serial-log "$RUN/serial.log" < /dev/null`.
+It produced `SUITE gpu VALUE isolation/handle-guess guesses=615`,
+`SUITE gpu CASE isolation/handle-guess PASS ms=2108` and
+`SUITE gpu DONE passed=1 failed=0 skipped=0 total=1 only=isolation/handle-guess`.
+The host renderer attestation was accepted. This was a focused check of the changed errno;
+the two inherited pre-G7 expectations above remain unchanged and need a ruling.

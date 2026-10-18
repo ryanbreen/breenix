@@ -3340,6 +3340,8 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() { return crate::gpu::take_display(); }
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3379,6 +3381,8 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() { return crate::gpu::give_display(); }
     SyscallResult::Ok(0)
 }
 

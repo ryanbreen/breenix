@@ -64,6 +64,12 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 fn render_thread_main_kthread() {
     // Main rendering loop - runs until kthread_stop() is called
     while !kthread_should_stop() {
+        #[cfg(target_arch = "aarch64")]
+        if crate::gpu::display_active() {
+            crate::gpu::console::pump();
+            wait_for_next_tick();
+            continue;
+        }
         // Always update the mouse cursor, even when BWM owns the display.
         // The cursor is drawn directly into the framebuffer VRAM; SVGA3 VRAM
         // traces detect the pixel writes and update the display automatically.

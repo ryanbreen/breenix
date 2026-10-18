@@ -33,6 +33,7 @@
 mod completion;
 mod present_answers;
 mod display;
+pub mod console;
 mod observation;
 mod quota;
 mod staging;
@@ -1295,6 +1296,7 @@ impl Core {
     /// Release everything process `tgid` holds: contexts are destroyed once their work
     /// has completed, resources are freed once nothing holds them.
     fn reclaim(&mut self, tgid: u64) {
+        display::ended(self, tgid);
         let Some(p) = self.procs.remove(&tgid) else { return };
         for (_, id) in p.contexts {
             if let Some(c) = self.contexts.get_mut(&id) {
@@ -1539,7 +1541,7 @@ fn warm_next() {
             && c.quarantined_at.is_none()
             && !c.procs.values().any(|p| p.creating)
     };
-    let warming = |x: &Ctx| x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
+    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
     if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
         return;
     }
@@ -1611,7 +1613,7 @@ fn sweep() {
         return;
     }
     let dead: Vec<u64> = crate::process::with_process_manager(|m| {
-        tgids.into_iter().filter(|&tgid| !group_live(m, tgid, None)).collect()
+        tgids.into_iter().filter(|&tgid| tgid != 0 && !group_live(m, tgid, None)).collect()
     })
     .unwrap_or_default();
     if !dead.is_empty() {
@@ -1724,14 +1726,8 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::READBACK => op_readback(arg, len),
                 abi::op::PRESENT => display::present(arg, len),
                 abi::op::COUNTERS => op_counters(arg, len),
-                // SET_MODE (G7) is not built yet; before its argument it refuses a caller
-                // that is not the display owner (section 1.16).
-                abi::op::SET_MODE => match caller() {
-                    Ok(tgid) if display::owner(tgid) => Err(ENOSYS),
-                    Ok(_) => Err(abi::errno::EPERM),
-                    Err(e) => Err(e),
-                },
-                // MODES (G7) is not built yet.
+                abi::op::SET_MODE => display::set_mode(arg, len),
+                abi::op::MODES => display::modes(arg, len),
                 _ => Err(ENOSYS),
             },
         },
@@ -1808,6 +1804,17 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    let (handle, warmed) = create_context(tgid)?;
+    a.handle = handle;
+    a.warmed = warmed;
+    if let Err(e) = write_arg(arg, &a) {
+        destroy_context(tgid, handle);
+        return Err(e);
+    }
+    Ok(0)
+}
+
+fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -1830,41 +1837,94 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
         let scratch_texture = c.next_res + 2;
         c.next_res += 3;
         let epoch = c.epoch;
-        c.insert_res(vb, new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, encode::VERTEX_BUFFER_BYTES as u64, 256, vb_pages.clone(), epoch));
-        c.insert_res(scratch, new_res(0, kind::TARGET, format::B8G8R8A8, 1, 1, 0, 256, scratch_pages.clone(), epoch));
-        // Device-only: no transfer names it, so it has no guest backing.
-        c.insert_res(scratch_texture, new_res(0, kind::TEXTURE, format::B8G8R8A8, 1, 1, 0, 256, Arc::new(Pages::none()), epoch));
-        c.insert_ctx(id, Ctx {
-            id,
-            owner: tgid,
-            ns,
-            state: CtxState::Creating,
-            dropped: false,
-            busy: false,
-            device_alive: false,
-            issued: 0,
-            done_upto: 0,
-            early: BTreeSet::new(),
-            outcomes: BTreeMap::new(),
-            inflight: VecDeque::new(),
-            totals: Totals::default(),
-            objects: encode::Objects::new(),
+        c.insert_res(
             vb,
+            new_res(
+                0,
+                kind::BUFFER,
+                format::B8G8R8A8,
+                0,
+                0,
+                encode::VERTEX_BUFFER_BYTES as u64,
+                256,
+                vb_pages.clone(),
+                epoch,
+            ),
+        );
+        c.insert_res(
             scratch,
+            new_res(
+                0,
+                kind::TARGET,
+                format::B8G8R8A8,
+                1,
+                1,
+                0,
+                256,
+                scratch_pages.clone(),
+                epoch,
+            ),
+        );
+        // Device-only: no transfer names it, so it has no guest backing.
+        c.insert_res(
             scratch_texture,
-            warm: 0,
-            warm_failures: 0,
-            errors_in_row: 0,
-            depth: None,
-            flushes: present_answers::Answers::new(),
-        });
+            new_res(
+                0,
+                kind::TEXTURE,
+                format::B8G8R8A8,
+                1,
+                1,
+                0,
+                256,
+                Arc::new(Pages::none()),
+                epoch,
+            ),
+        );
+        c.insert_ctx(
+            id,
+            Ctx {
+                id,
+                owner: tgid,
+                ns,
+                state: CtxState::Creating,
+                dropped: false,
+                busy: false,
+                device_alive: false,
+                issued: 0,
+                done_upto: 0,
+                early: BTreeSet::new(),
+                outcomes: BTreeMap::new(),
+                inflight: VecDeque::new(),
+                totals: Totals::default(),
+                objects: encode::Objects::new(),
+                vb,
+                scratch,
+                scratch_texture,
+                warm: 0,
+                warm_failures: 0,
+                errors_in_row: 0,
+                depth: None,
+                flushes: present_answers::Answers::new(),
+            },
+        );
         Ok((id, vb, scratch, scratch_texture))
     })
     .ok_or(ENODEV)??;
-    let created = create_device_context(tgid, id, [vb, scratch, scratch_texture], &vb_pages, &scratch_pages).and_then(|()| {
+    let created = create_device_context(
+        tgid,
+        id,
+        [vb, scratch, scratch_texture],
+        &vb_pages,
+        &scratch_pages,
+    )
+    .and_then(|()| {
         with_core(|c| {
             // The watchdog or a reset may have ended the context while it was created.
-            if !c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Creating && x.device_alive) {
+            if !c
+                .contexts
+                .get(&id)
+                .is_some_and(|x| x.state == CtxState::Creating && x.device_alive)
+            {
                 return Err(EIO);
             }
             let h = c.handle(tgid);
@@ -1890,13 +1950,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
             return Err(e);
         }
     };
-    a.handle = handle;
-    a.warmed = warmed;
-    if let Err(e) = write_arg(arg, &a) {
-        destroy_context(tgid, handle);
-        return Err(e);
-    }
-    Ok(0)
+    Ok((handle, warmed))
 }
 
 /// Create device context `id` with its internal resources and the process's resources
@@ -3278,8 +3332,34 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
+    let _scanout = if a.target == 0 {
+        if !display::owner(tgid) {
+            return Err(abi::errno::EPERM);
+        }
+        wait_for(None, true, |c| {
+            (!console::restoring()).then_some(c.display.known)
+        })
+        .map_err(|_| EINTR)?;
+        Some(display::Transition::for_observation(tgid)?)
+    } else {
+        None
+    };
+    if a.target == 0
+        && !with_core(|c| c.display.known && c.display.binding.is_some()).unwrap_or(false)
+    {
+        a.reason = readback_reason::BINDING_UNKNOWN;
+        write_arg(arg, &a)?;
+        return Err(EIO);
+    }
     let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
-        let id = c.res_of(tgid, a.target).ok_or(EINVAL)?;
+        let id = if a.target == 0 {
+            if !display::owner(tgid) {
+                return Err(abi::errno::EPERM);
+            }
+            c.display.binding.ok_or(EIO)?.id
+        } else {
+            c.res_of(tgid, a.target).ok_or(EINVAL)?
+        };
         let r = c.resources.get(&id).ok_or(EINVAL)?;
         if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
             return Err(EINVAL);
@@ -3302,14 +3382,21 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     probe_writable(a.record, record::SIZE)?;
     // The rows' span is a user range, so the row arithmetic below cannot overflow; only the
     // rows' own pages are probed, excluding the gaps a wider stride leaves between them.
-    if !crate::memory::layout::is_valid_user_range(a.pixels, ((h - 1) * a.stride as u64 + row) as usize) {
+    if !crate::memory::layout::is_valid_user_range(
+        a.pixels,
+        ((h - 1) * a.stride as u64 + row) as usize,
+    ) {
         return Err(EFAULT);
     }
     let mut probed = u64::MAX;
     for ry in 0..h {
         let start = a.pixels + ry * a.stride as u64;
         let first = start / PAGE as u64;
-        let from = if first == probed { (first + 1) * PAGE as u64 } else { start };
+        let from = if first == probed {
+            (first + 1) * PAGE as u64
+        } else {
+            start
+        };
         if from < start + row {
             probe_writable(from, (start + row - from) as usize)?;
         }
@@ -3330,14 +3417,21 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
     let taken = wait_for(None, true, |c| {
-        if c.res_of(tgid, a.target) != Some(id) {
+        if a.target == 0 {
+            if !display::owner(tgid)
+                || !c.display.known
+                || c.display.binding.is_none_or(|b| b.id != id)
+            {
+                return Some(Err(readback_reason::BINDING_UNKNOWN));
+            }
+        } else if c.res_of(tgid, a.target) != Some(id) {
             return Some(Err(readback_reason::TARGET_DROPPED));
         }
         let r = c.resources.get_mut(&id)?;
         if r.lost {
             return Some(Err(readback_reason::TARGET_LOST));
         }
-        if r.dropped {
+        if r.dropped && a.target != 0 {
             return Some(Err(readback_reason::TARGET_DROPPED));
         }
         if r.writers > 0 || r.reading {
@@ -3372,13 +3466,22 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
-            return if errno == EIO { refuse(&mut a, reason, 0) } else { Err(errno) };
+            return if errno == EIO {
+                refuse(&mut a, reason, 0)
+            } else {
+                Err(errno)
+            };
         }
     };
-    let (unwritten, transfer_fence, transfer_answer) = (observation.unwritten, observation.fence, observation.answer);
+    let (unwritten, transfer_fence, transfer_answer) =
+        (observation.unwritten, observation.fence, observation.answer);
     let mut rec = [0u8; record::SIZE];
-    let put32 = |rec: &mut [u8; record::SIZE], at: usize, v: u32| rec[at..at + 4].copy_from_slice(&v.to_le_bytes());
-    let put64 = |rec: &mut [u8; record::SIZE], at: usize, v: u64| rec[at..at + 8].copy_from_slice(&v.to_le_bytes());
+    let put32 = |rec: &mut [u8; record::SIZE], at: usize, v: u32| {
+        rec[at..at + 4].copy_from_slice(&v.to_le_bytes())
+    };
+    let put64 = |rec: &mut [u8; record::SIZE], at: usize, v: u64| {
+        rec[at..at + 8].copy_from_slice(&v.to_le_bytes())
+    };
     let made = with_core(|c| {
         // The binding is read with the serial: a PRESENT sent during the observation
         // leaves the scanout unknown, and the observation is refused naming that.
@@ -3392,7 +3495,11 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(m) => m,
         Err(e) => {
             release();
-            return if e == EIO { refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0) } else { Err(e) };
+            return if e == EIO {
+                refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0)
+            } else {
+                Err(e)
+            };
         }
     };
     put32(&mut rec, record::VERSION_OFF, record::VERSION);
@@ -3428,7 +3535,11 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     }
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
-    put32(&mut rec, record::READBACK_KIND, wire::cmd::TRANSFER_FROM_HOST_3D);
+    put32(
+        &mut rec,
+        record::READBACK_KIND,
+        wire::cmd::TRANSFER_FROM_HOST_3D,
+    );
     put32(&mut rec, record::POISON, POISON);
     put32(&mut rec, record::UNWRITTEN, unwritten);
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
@@ -3443,12 +3554,14 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
                     let n = (row - done).min(STAGING_CHUNK);
                     staging.pages.read(ry * row + done, &mut chunk[..n]);
                     let dst = a.pixels + ry as u64 * a.stride as u64 + done as u64;
-                    crate::syscall::userptr::write_user_bytes(dst, chunk.as_ptr(), n).map_err(|_| EFAULT)?;
+                    crate::syscall::userptr::write_user_bytes(dst, chunk.as_ptr(), n)
+                        .map_err(|_| EFAULT)?;
                     done += n;
                 }
             }
         }
-        crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE).map_err(|_| EFAULT)
+        crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE)
+            .map_err(|_| EFAULT)
     })();
     release();
     output?;
@@ -3533,18 +3646,43 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
 /// until the device returns it. Returns that count and the first transfer's fence and
 /// answer. The reason of an EIO comes only from what the kernel observes.
 #[allow(clippy::too_many_arguments)]
-fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pitch: u32, fmt: u32, a: abi::Readback, staging: &Pages) -> Result<Observation, (i64, u32)> {
+fn observe(
+    tgid: u64,
+    id: u32,
+    last: Option<LastWrite>,
+    backing: &Arc<Pages>,
+    pitch: u32,
+    fmt: u32,
+    a: abi::Readback,
+    staging: &Pages,
+) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
-        let mine = |cid: &u32| c.contexts.get(cid).is_some_and(|x| x.owner == tgid && x.state == CtxState::Live && x.device_alive);
-        last.map(|l| l.ctx)
-            .filter(mine)
-            .or_else(|| c.procs.get(&tgid).and_then(|p| p.contexts.values().copied().find(mine)))
+        let live = |cid: &u32| {
+            c.contexts.get(cid).is_some_and(|x| {
+                (a.target == 0 || x.owner == tgid) && x.state == CtxState::Live && x.device_alive
+            })
+        };
+        last.map(|l| l.ctx).filter(live).or_else(|| {
+            if a.target == 0 {
+                None
+            } else {
+                c.procs
+                    .get(&tgid)
+                    .and_then(|p| p.contexts.values().copied().find(live))
+            }
+        })
     })
     .flatten()
-    .ok_or((EINVAL, readback_reason::NONE))?;
+    .ok_or(if a.target == 0 {
+        (EIO, readback_reason::TARGET_LOST)
+    } else {
+        (EINVAL, readback_reason::NONE)
+    })?;
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
-    let band_rows = (READBACK_BAND / pitch as usize).max(1).min(a.height as usize);
+    let band_rows = (READBACK_BAND / pitch as usize)
+        .max(1)
+        .min(a.height as usize);
     let mut chunk = [0u8; STAGING_CHUNK];
     let mut kept = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
@@ -3561,10 +3699,32 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
             backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
             let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
             if !skip {
-                let other = wrong_resource(tgid, id, pitch, a.x, ty as u32, a.width, rows as u32, a.target);
+                let other = wrong_resource(
+                    tgid,
+                    id,
+                    pitch,
+                    a.x,
+                    ty as u32,
+                    a.width,
+                    rows as u32,
+                    a.target,
+                );
                 let (named, written) = other.clone().unwrap_or((id, backing.clone()));
-                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or((ENODEV, readback_reason::NONE))?;
-                let req = virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, named, written, a.x, ty as u32, a.width, rows as u32, offset as u64, pitch);
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence()))
+                    .ok_or((ENODEV, readback_reason::NONE))?;
+                let req = virgl::transfer_from_host(
+                    Tag::Sync(serial),
+                    ctx,
+                    fence,
+                    named,
+                    written,
+                    a.x,
+                    ty as u32,
+                    a.width,
+                    rows as u32,
+                    offset as u64,
+                    pitch,
+                );
                 // The target, and the other resource when the transfer names one.
                 let both = [id, named];
                 let marks = if named == id { &both[..1] } else { &both[..] };
@@ -3584,7 +3744,7 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
                 let mut d = done.map_err(|(e, status)| match status {
                     fence_status::DEVICE_HUNG => (e, readback_reason::DEVICE_HUNG),
                     fence_status::DEVICE_RESET => (e, readback_reason::DEVICE_RESET),
-                    _ => (e, readback_reason::NONE),
+                    _ => (e, readback_reason::DEVICE_ERROR),
                 })?;
                 // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
                 if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
@@ -3604,12 +3764,24 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
                     let n = (row - done).min(STAGING_CHUNK);
                     let at = (by + r) * row + done;
                     if pass == 0 {
-                        observation::read(backing.as_ref(), offset + r * pitch as usize + done, &mut chunk[..n]);
+                        observation::read(
+                            backing.as_ref(),
+                            offset + r * pitch as usize + done,
+                            &mut chunk[..n],
+                        );
                         staging.write(at, &chunk[..n]);
                     } else {
-                        observation::read(backing.as_ref(), offset + r * pitch as usize + done, &mut chunk[..n]);
+                        observation::read(
+                            backing.as_ref(),
+                            offset + r * pitch as usize + done,
+                            &mut chunk[..n],
+                        );
                         staging.read(at, &mut kept[..n]);
-                        unwritten += chunk[..n].iter().zip(kept[..n].iter()).filter(|(p, q)| p != q).count() as u32;
+                        unwritten += chunk[..n]
+                            .iter()
+                            .zip(kept[..n].iter())
+                            .filter(|(p, q)| p != q)
+                            .count() as u32;
                     }
                     done += n;
                 }
@@ -3633,7 +3805,11 @@ fn observe(tgid: u64, id: u32, last: Option<LastWrite>, backing: &Arc<Pages>, pi
         by += rows;
     }
     let (fence, answer) = first.unwrap_or((0, 0));
-    Ok(Observation { unwritten, fence, answer })
+    Ok(Observation {
+        unwritten,
+        fence,
+        answer,
+    })
 }
 
 fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
@@ -3700,4 +3876,45 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
         }
         None => Err(EINVAL),
     }
+}
+
+/// Whether the clean-room device owns this ARM64 display path.
+pub fn display_active() -> bool {
+    display::active()
+}
+pub fn take_display() -> SyscallResult {
+    let _path = GpuPath::enter();
+    let tid = match crate::task::scheduler::current_thread_id() {
+        Some(t) => t,
+        None => return result(Err(EINVAL)),
+    };
+    let identity = crate::process::with_process_manager(|m| {
+        m.find_process_by_thread(tid).map(|(pid, p)| {
+            (
+                pid.as_u64(),
+                p.thread_group_id.unwrap_or(pid.as_u64()),
+                p.cred.euid,
+            )
+        })
+    })
+    .flatten();
+    let Some((pid, group, uid)) = identity else {
+        return result(Err(EINVAL));
+    };
+    if uid != 0 {
+        return result(Err(abi::errno::EPERM));
+    }
+    let outcome = display::take(group, pid);
+    if outcome.is_ok() {
+        crate::process::with_process_manager(|m| {
+            if let Some(p) = m.get_process_mut(crate::process::ProcessId::new(pid)) {
+                p.has_display_ownership = true;
+            }
+        });
+    }
+    result(outcome.map(|()| 0))
+}
+pub fn give_display() -> SyscallResult {
+    let _path = GpuPath::enter();
+    result(caller().and_then(display::back).map(|()| 0))
 }

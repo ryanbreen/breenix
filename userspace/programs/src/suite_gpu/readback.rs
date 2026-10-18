@@ -1,7 +1,7 @@
 //! G2 checks, derived from gpu.md sections 1.4.1, 1.8 and 1.10.
 use libbreenix::gpu::{self, abi, abi::Plain};
 use libbreenix::suite::{CaseResult, value};
-use libbreenix::{graphics, memory, process::{self, ForkResult}};
+use libbreenix::{graphics, io, memory, process::{self, ForkResult}};
 use super::common::*;
 use abi::readback_reason as reason;
 
@@ -305,8 +305,12 @@ pub fn owner_only() -> CaseResult {
     let _case = begin()?;
     let (ctx, t) = setup(format::B8G8R8A8, 13, 7)?;
     draw(ctx, t, A)?;
+    let (ready_r, ready_w) = io::pipe().map_err(|e| fail_msg(format!("pipe: {e:?}")))?;
+    let (release_r, release_w) = io::pipe().map_err(|e| fail_msg(format!("pipe: {e:?}")))?;
     match process::fork().map_err(|e| fail_msg(format!("fork: {e:?}")))? {
         ForkResult::Child => {
+            let _ = io::close(ready_r);
+            let _ = io::close(release_w);
             let ok = (|| -> CaseResult {
                 let (c, own) = setup(format::B8G8R8A8, 13, 7)?;
                 frame(c, &scene(own, B, &[]))?;
@@ -318,19 +322,30 @@ pub fn owner_only() -> CaseResult {
                 let mut private = vec![0; 364];
                 ensure(gpu::readback(own, [0, 0, 13, 7], &mut private, 52, &mut rec) == 0, || "private non-owner read refused".to_string())?;
                 scene_canvas(13, 7, B, &[]).matches(&private, "private non-owner read")?;
-                graphics::take_over_display().map_err(|e| fail_msg(format!("take: {e:?}")))
+                graphics::take_over_display().map_err(|e| fail_msg(format!("take: {e:?}")))?;
+                ensure(io::write(ready_w, &[1]).ok() == Some(1), || "owner ready signal failed".to_string())?;
+                let mut release = [0];
+                ensure(io::read(release_r, &mut release).ok() == Some(1), || "owner release signal failed".to_string())
             })();
             process::exit(if ok.is_ok() { 0 } else { 1 });
         }
         ForkResult::Parent(pid) => {
+            let _ = io::close(ready_w);
+            let _ = io::close(release_r);
+            let mut ready = [0];
+            let live = io::read(ready_r, &mut ready).ok() == Some(1);
+            let mut px = vec![0; 364]; let mut rec = [0; record::SIZE];
+            let refused = live && gpu::readback(0, [0, 0, 13, 7], &mut px, 52, &mut rec) == -abi::errno::EPERM;
+            let _ = io::write(release_w, &[1]);
+            let _ = io::close(ready_r);
+            let _ = io::close(release_w);
             let mut status = 0; process::waitpid(pid.raw() as i32, &mut status, 0).map_err(|e| fail_msg(format!("wait: {e:?}")))?;
             ensure(status == 0, || format!("non-owner child status {status}"))?;
+            ensure(refused, || "live non-owner read the current scanout".to_string())?;
         }
     }
-    // The binding is still ours, but ownership moved: readback must be refused.
-    let mut px = vec![0; 364]; let mut rec = [0; record::SIZE];
-    ensure(gpu::readback(t, [0, 0, 13, 7], &mut px, 52, &mut rec) == -abi::errno::EPERM,
-        || "previous owner read the scanout after ownership moved".to_string())?;
+    // Child exit restores the live parent and its completed scanout binding.
+    expect(0, &want(13, 7, A), "restored parent scanout read")?;
     present(ctx, t)?;
     expect(t, &want(13, 7, A), "owner scanout read")?;
     pass()

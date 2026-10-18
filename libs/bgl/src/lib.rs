@@ -154,6 +154,12 @@ impl Context {
             handle: a.fence,
         })
     }
+    /// Present a scanout target in this context's fence sequence.
+    pub fn present(&self, target: u64) -> Result<Fence, i64> {
+        let (r, a) = gpu::present(self.handle, target);
+        if r != 0 { return Err(r); }
+        Ok(Fence { context: self.handle, handle: a.fence })
+    }
     pub fn encoded(&self) -> &[u32] {
         &self.words
     }
@@ -162,6 +168,15 @@ impl Drop for Context {
     fn drop(&mut self) {
         let _ = gpu::context_destroy(self.handle);
     }
+}
+/// Display modes and their physical pixel scale.
+pub fn modes() -> Result<gpu::abi::Modes, i64> {
+    let (r, modes) = gpu::modes();
+    if r == 0 { Ok(modes) } else { Err(r) }
+}
+/// Select the current display owner's mode.
+pub fn set_mode(index: u32) -> Result<(), i64> {
+    match gpu::set_mode(index) { 0 => Ok(()), e => Err(e) }
 }
 fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
     let x = a[0].max(b[0]);
