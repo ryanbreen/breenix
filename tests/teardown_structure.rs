@@ -4434,6 +4434,7 @@ const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "fn reclaim_deferred_process_resources_for_pass", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
 ];
 #[rustfmt::skip]
 const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
@@ -7564,6 +7565,17 @@ fn validate_process_page_table_retire_site(
             structural,
         );
     }
+    let probe = function_body(process_task, "reclaim_progress_gate_test");
+    record_unit(
+        &mut failures,
+        "boot-test reclaim caller lost its proof gates",
+        (probe.contains("let proof = production.lock_free_root_proof(&snapshot, true);")
+            && probe.contains("let peers_clear = production.release_root_on_peers();")
+            && probe.contains("let clear = proof.blocker().is_none() && peers_clear\n            && !production.cached_root_is_live() && !production.live_row_names_root();")
+            && probe.contains("let progress = if clear {\n            Some(production.reclaim_bounded(PRODUCTION_RECLAIM_FRAME_BUDGET))"))
+        .then_some(())
+        .ok_or(()),
+    );
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
@@ -11769,6 +11781,22 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         ),
     );
     assert!(validate_process_page_table_retire_site(&extra_reclaim).is_err());
+    for gate in [
+        "proof.blocker().is_none() && peers_clear",
+        "!production.cached_root_is_live()",
+        "!production.live_row_names_root()",
+        "let progress = if clear {",
+        "let peers_clear = production.release_root_on_peers();",
+    ] {
+        let removed_gate = process_task.replacen(gate, "true", 1);
+        assert_ne!(removed_gate, process_task, "proof-gate mutation must apply");
+        let removed_gate = with_replaced_source(
+            &sources,
+            "kernel/src/task/process_task.rs",
+            removed_gate,
+        );
+        assert!(validate_process_page_table_retire_site(&removed_gate).is_err());
+    }
     let process_manager = source(&sources, "kernel/src/process/manager.rs");
     let cross_file_retire = with_replaced_source(
         &sources,
