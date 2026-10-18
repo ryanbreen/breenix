@@ -357,6 +357,26 @@ SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
 # Scoring-only mode has no kernel whose feature profile can be inspected.
 KERNEL_HAS_CAPTURE_SELFTEST=0
 
+# #1862: a focused boot_tests profile keeps init running, so its completion is
+# this scorer with the profile's own producers added, not the testing
+# kernel's userspace report. strand_inject_live_outgoing adds its oracle. Live
+# boots read the profile from $KERNEL below; scoring-only mode reads it from
+# BREENIX_STRICT_SCORE_KERNEL, the kernel that produced the serial, when given.
+STRAND_LIVE_OUTGOING_ORACLE_PATTERN='\[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=[1-9][0-9]*:live_outgoing=[1-9][0-9]*:outgoing_tid=[0-9]+:stranded=0:PASS\]'
+kernel_has_live_outgoing() {
+    grep -aqF '[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=' "$1" 2>/dev/null
+}
+KERNEL_HAS_LIVE_OUTGOING=0
+if [ -n "${BREENIX_STRICT_SCORE_KERNEL:-}" ]; then
+    if [ ! -f "$BREENIX_STRICT_SCORE_KERNEL" ]; then
+        echo "SCORE: FAIL - BREENIX_STRICT_SCORE_KERNEL names no readable kernel ($BREENIX_STRICT_SCORE_KERNEL)"
+        exit 1
+    fi
+    if kernel_has_live_outgoing "$BREENIX_STRICT_SCORE_KERNEL"; then
+        KERNEL_HAS_LIVE_OUTGOING=1
+    fi
+fi
+
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
 # R191/PR-1: structure-suite + critical-path-census preflight, before any
@@ -447,6 +467,9 @@ require_boot_tests_kernel "$KERNEL"
 KERNEL_HAS_CAPTURE_SELFTEST=0
 if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
     KERNEL_HAS_CAPTURE_SELFTEST=1
+fi
+if kernel_has_live_outgoing "$KERNEL"; then
+    KERNEL_HAS_LIVE_OUTGOING=1
 fi
 
 # Find ext2 disk (required for userspace)
@@ -629,6 +652,16 @@ score_serial() {
     if ! grep -qE "$STRAND_INJECT_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Scheduler strand injection oracle marker missing or failed"
         return 1
+    fi
+    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ]; then
+        if grep -qE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
+            echo "Live-outgoing strand oracle reported failure ($(grep -aoE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+            return 1
+        fi
+        if ! grep -qE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+            echo "Live-outgoing strand oracle marker missing or failed"
+            return 1
+        fi
     fi
     if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Census widening mutation oracle marker missing or failed"
