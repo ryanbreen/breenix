@@ -364,7 +364,14 @@ KERNEL_HAS_CAPTURE_SELFTEST=0
 # BREENIX_STRICT_SCORE_KERNEL, the kernel that produced the serial, when given.
 STRAND_LIVE_OUTGOING_ORACLE_PATTERN='\[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=[1-9][0-9]*:live_outgoing=[1-9][0-9]*:outgoing_tid=[0-9]+:stranded=0:PASS\]'
 kernel_has_live_outgoing() {
-    grep -aqF '[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=' "$1" 2>/dev/null
+    # Read through EOF: grep -q can hide a later read error after a match.
+    local status=0
+    grep -aF '[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=' "$1" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "SCORE: FAIL - cannot read kernel for live-outgoing profile ($1)"; exit 1 ;;
+    esac
 }
 KERNEL_HAS_LIVE_OUTGOING=0
 if [ -n "${BREENIX_STRICT_SCORE_KERNEL:-}" ]; then

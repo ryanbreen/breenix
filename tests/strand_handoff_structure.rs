@@ -3211,20 +3211,34 @@ fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
     let live = dir.join("live-kernel");
     fs::write(&live, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
     let missing = dir.join("no-kernel");
+    #[cfg(unix)]
+    let unreadable = {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("unreadable-kernel");
+        fs::write(&path, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(fs::read(&path).is_err(), "fixture must actually be unreadable");
+        path
+    };
     for (name, kernel, body, want) in [
         ("no-kernel-given", None, fixture.clone(), true),
         ("plain", Some(&plain), fixture.clone(), true),
         ("live-without-pass", Some(&live), fixture.clone(), false),
         ("live-with-pass", Some(&live), format!("{fixture}\n{pass}\n"), true),
         ("live-with-fail", Some(&live), format!("{fixture}\n{pass}\n{fail}\n"), false),
-        ("unreadable-kernel", Some(&missing), format!("{fixture}\n{pass}\n"), false),
+        ("missing-kernel", Some(&missing), format!("{fixture}\n{pass}\n"), false),
+        #[cfg(unix)]
+        ("unreadable-live-without-pass", Some(&unreadable), fixture.clone(), false),
+        #[cfg(unix)]
+        ("unreadable-live-with-pass", Some(&unreadable), format!("{fixture}\n{pass}\n"), false),
     ] {
         let serial = dir.join(name);
         fs::write(&serial, body).unwrap();
         let mut command = Command::new("bash");
         command
             .arg(root.join("docker/qemu/run-aarch64-boot-test-strict.sh"))
-            .env("BREENIX_STRICT_SCORE_ONLY", &serial);
+            .env("BREENIX_STRICT_SCORE_ONLY", &serial)
+            .env_remove("BREENIX_STRICT_SCORE_KERNEL");
         if let Some(kernel) = kernel {
             command.env("BREENIX_STRICT_SCORE_KERNEL", kernel);
         }
