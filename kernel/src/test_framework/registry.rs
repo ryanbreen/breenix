@@ -7806,25 +7806,24 @@ fn test_current_thread_exists() -> TestResult {
             return TestResult::Fail("current thread is not registered with the scheduler");
         }
 
-        // 2. The user process whose creation advanced this stage — the newest
-        //    PID, since PIDs are allocated monotonically and no ProcessContext
-        //    test creates a process — owns an address space and a dispatchable
-        //    main thread. That main thread is exactly what `launch_init_from_elf`
-        //    installs as CPU 0's current thread once this stage returns (in a
-        //    testing kernel, what the loader hands to the scheduler); without
-        //    it, no current thread could ever exist.
+        // 2. The user process whose creation advanced this stage, named by
+        //    the id its creator's own create call returned (S24): init at the
+        //    reserved PID 1 when launch_init_from_elf created it, otherwise the
+        //    loader's first test process. It owns an address space and a
+        //    dispatchable main thread, exactly what becomes CPU 0's current
+        //    thread once this stage returns; without it, no current thread
+        //    could ever exist.
+        let Some(created) = crate::test_framework::process_context_created() else {
+            return TestResult::Fail("ProcessContext advanced without naming its created process");
+        };
         let manager_guard = crate::process::manager();
         let manager = match *manager_guard {
             Some(ref manager) => manager,
             None => return TestResult::Fail("process manager not initialized in ProcessContext"),
         };
-        let newest = manager
-            .iter_processes()
-            .max_by_key(|(pid, _)| pid.as_u64())
-            .map(|(_, process)| process);
-        let process = match newest {
+        let process = match manager.get_process(created) {
             Some(process) => process,
-            None => return TestResult::Fail("no process registered in ProcessContext"),
+            None => return TestResult::Fail("created process is not registered in ProcessContext"),
         };
         if process.page_table.is_none() {
             return TestResult::Fail("created process has no address space in ProcessContext");
