@@ -325,6 +325,10 @@ of `?`. Characters are one cell wide.
   pixel row in the foreground colour.
 - **The cursor** fills the two cursor-band pixel rows of the cursor cell in the cell's displayed foreground
   colour. It does not blink, so a read-back sees one state.
+- **Antialiasing:** a font sample `a` (0-255) blends the displayed foreground `fg` and background `bg`
+  per channel as `(fg * a + bg * (255 - a) + 127) / 255`, integer division. Box-drawing strokes use
+  binary coverage over the whole cell, including the cursor band, to join adjacent rows. Their arm weights,
+  dash counts, rounded corners and diagonals are the geometry table in `kernel/src/console/boxdraw.rs` (V3).
 
 ### 5.2 Palette
 

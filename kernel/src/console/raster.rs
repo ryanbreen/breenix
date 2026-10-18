@@ -1,27 +1,55 @@
-//! Drawing the console's text rows as pixels, and the pixels they should show.
-//!
-//! The font size follows the display (`Font::for_display`, the size rule of
-//! `docs/console/contract.md` section 2): the largest of 16, 20, 24 and 32
-//! whose grid is at least 128 columns by 36 rows. A cell is the glyph's width
-//! by its height plus two pixel rows where the cursor is drawn; the grid starts
-//! at the framebuffer's top-left pixel and the margin is right and below.
-//!
-//! Text is grey on black, the same byte in each colour channel, so RGB and BGR
-//! framebuffers show the same thing; a fourth byte per pixel is written as the
-//! display wants it (`Layout::reserved`).
-//!
-//! `draw_row` is the drawing path. `expected_intensity` is the read-back
-//! check's oracle: it works out one pixel from the font and the row's text
-//! alone, sharing only the font with `draw_row`.
+//! Attributed console cells as RGB pixels, sized by the console contract.
 
-use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar};
+use noto_sans_mono_bitmap::{
+    get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
+};
+
+use super::boxdraw;
+use super::grid::{Cell, BOLD, UNDERLINE};
 
 const WEIGHT: FontWeight = FontWeight::Regular;
 
-pub const CURSOR_HEIGHT: usize = 2;
+/// The contract's palette in SGR order.
+pub const PALETTE: [[u8; 3]; 16] = [
+    [15, 20, 35],
+    [205, 70, 70],
+    [70, 200, 120],
+    [215, 180, 70],
+    [70, 120, 215],
+    [175, 95, 200],
+    [60, 175, 185],
+    [205, 215, 235],
+    [90, 100, 125],
+    [245, 110, 110],
+    [120, 230, 160],
+    [245, 215, 110],
+    [120, 165, 245],
+    [215, 140, 240],
+    [110, 215, 225],
+    [245, 248, 255],
+];
 
-/// The intensity of the cursor's pixels.
-pub const CURSOR: u8 = 0xff;
+pub fn nearest_colour(rgb: [u8; 3]) -> u8 {
+    let mut nearest = 0;
+    let mut distance = u32::MAX;
+    for (index, colour) in PALETTE.iter().enumerate() {
+        let squared: u32 = rgb
+            .iter()
+            .zip(colour)
+            .map(|(&a, &b)| {
+                let delta = i32::from(a) - i32::from(b);
+                (delta * delta) as u32
+            })
+            .sum();
+        if squared < distance {
+            nearest = index as u8;
+            distance = squared;
+        }
+    }
+    nearest
+}
+
+pub const CURSOR_HEIGHT: usize = 2;
 
 /// The grid the size rule asks for, and the cap on each dimension.
 const MIN_COLS: usize = 128;
@@ -43,8 +71,12 @@ impl PartialEq for Font {
 impl Eq for Font {}
 
 impl Font {
-    pub const SIZES: [RasterHeight; 4] =
-        [RasterHeight::Size16, RasterHeight::Size20, RasterHeight::Size24, RasterHeight::Size32];
+    pub const SIZES: [RasterHeight; 4] = [
+        RasterHeight::Size16,
+        RasterHeight::Size20,
+        RasterHeight::Size24,
+        RasterHeight::Size32,
+    ];
 
     pub const fn new(size: RasterHeight) -> Self {
         Self { size }
@@ -57,7 +89,9 @@ impl Font {
             .iter()
             .rev()
             .map(|&size| Self::new(size))
-            .find(|font| width / font.glyph_width() >= MIN_COLS && height / font.line_height() >= MIN_ROWS)
+            .find(|font| {
+                width / font.glyph_width() >= MIN_COLS && height / font.line_height() >= MIN_ROWS
+            })
             .unwrap_or(Self::new(RasterHeight::Size16))
     }
 
@@ -79,10 +113,15 @@ impl Font {
         self.glyph_height() + CURSOR_HEIGHT
     }
 
-    /// The glyph for a cell's byte; `?` for a byte the font has no glyph for.
-    fn glyph(&self, byte: u8) -> RasterizedChar {
-        get_raster(char::from(byte), WEIGHT, self.size)
-            .or_else(|| get_raster('?', WEIGHT, self.size))
+    /// Font data is shared with the read-back check, including its bold weight.
+    fn glyph(&self, cell: Cell) -> RasterizedChar {
+        let weight = if cell.flags & BOLD != 0 {
+            FontWeight::Bold
+        } else {
+            WEIGHT
+        };
+        get_raster(cell.character(), weight, self.size)
+            .or_else(|| get_raster('?', weight, self.size))
             .expect("the console font has '?'")
     }
 }
@@ -97,6 +136,7 @@ pub struct Layout {
     pub bytes_per_pixel: usize,
     pub stride_bytes: usize,
     pub reserved: u8,
+    pub bgr: bool,
     pub font: Font,
 }
 
@@ -127,75 +167,118 @@ impl Layout {
         start..start + self.width * self.bytes_per_pixel
     }
 
-    /// Write `intensity` into each pixel of `pixels`.
-    fn fill(&self, pixels: &mut [u8], intensity: u8) {
+    fn put_pixel(&self, pixel: &mut [u8], rgb: [u8; 3]) {
+        let [r, g, b] = rgb;
+        pixel[..3].copy_from_slice(&if self.bgr { [b, g, r] } else { rgb });
+        pixel[3..].fill(self.reserved);
+    }
+
+    fn fill(&self, pixels: &mut [u8], colour: [u8; 3]) {
         for pixel in pixels.chunks_exact_mut(self.bytes_per_pixel) {
-            pixel[..3].fill(intensity);
-            pixel[3..].fill(self.reserved);
+            self.put_pixel(pixel, colour);
         }
     }
 
-    /// Whether `pixel`, `bytes_per_pixel` bytes, shows `intensity` as
-    /// `draw_row` writes it.
-    pub fn pixel_is(&self, pixel: &[u8], intensity: u8) -> bool {
-        pixel[..3].iter().all(|&byte| byte == intensity) && pixel[3..].iter().all(|&byte| byte == self.reserved)
+    pub fn pixel_is(&self, pixel: &[u8], rgb: [u8; 3]) -> bool {
+        let [r, g, b] = rgb;
+        pixel[..3] == if self.bgr { [b, g, r] } else { rgb }
+            && pixel[3..].iter().all(|&byte| byte == self.reserved)
     }
 }
 
-/// Fill each pixel row of `frame`, a whole framebuffer laid out as `layout`,
-/// with background.
 pub fn clear(frame: &mut [u8], layout: &Layout) {
     for y in 0..layout.height {
-        layout.fill(&mut frame[layout.line(y)], 0);
+        layout.fill(&mut frame[layout.line(y)], PALETTE[0]);
     }
 }
 
-/// Draw text row `row` into `frame`, a whole framebuffer laid out as `layout`:
-/// each cell's glyph, the cursor when `cursor` is a column of this row, and
-/// background in the rest of the band, the right margin included.
-pub fn draw_row(frame: &mut [u8], layout: &Layout, row: usize, text: &[u8], cursor: Option<usize>) {
+fn blend(fg: [u8; 3], bg: [u8; 3], coverage: u8) -> [u8; 3] {
+    let a = u32::from(coverage);
+    core::array::from_fn(|i| {
+        ((u32::from(fg[i]) * a + u32::from(bg[i]) * (255 - a) + 127) / 255) as u8
+    })
+}
+
+/// Rasterize cells into the shadow. Box glyphs span the cell's whole height,
+/// so a vertical stroke joins the next text row through the cursor band.
+pub fn draw_row(
+    frame: &mut [u8],
+    layout: &Layout,
+    row: usize,
+    text: &[Cell],
+    cursor: Option<usize>,
+) {
     let font = layout.font;
     let band = layout.band(row);
     let bpp = layout.bytes_per_pixel;
-    let cell = font.glyph_width() * bpp;
-    let cells = text.len().min(layout.cols());
+    let width = font.glyph_width();
     for y in band.clone() {
-        layout.fill(&mut frame[layout.line(y)], 0);
+        layout.fill(&mut frame[layout.line(y)], PALETTE[0]);
     }
-    for (col, &byte) in text[..cells].iter().enumerate() {
-        let raster = font.glyph(byte);
-        for (dy, glyph_row) in raster.raster().iter().enumerate() {
-            let y = band.start + dy;
-            if y >= band.end {
-                break;
+    for (col, &cell) in text.iter().take(layout.cols()).enumerate() {
+        let (fg, bg) = cell.displayed_colours();
+        let raster = font.glyph(cell);
+        for y in band.clone() {
+            let dy = y - band.start;
+            let start = layout.line(y).start + col * width * bpp;
+            for (dx, pixel) in frame[start..start + width * bpp]
+                .chunks_exact_mut(bpp)
+                .enumerate()
+            {
+                let coverage = if (cursor == Some(col) && dy >= font.glyph_height())
+                    || (cell.flags & UNDERLINE != 0 && dy == font.glyph_height())
+                {
+                    255
+                } else if (0x2500..=0x257f).contains(&cell.glyph) {
+                    boxdraw::coverage(cell.glyph, width, font.line_height(), dx, dy)
+                } else if dy < font.glyph_height() {
+                    raster.raster()[dy][dx]
+                } else {
+                    0
+                };
+                layout.put_pixel(pixel, blend(PALETTE[fg], PALETTE[bg], coverage));
             }
-            let start = layout.line(y).start + col * cell;
-            for (pixel, &intensity) in frame[start..start + cell].chunks_exact_mut(bpp).zip(glyph_row.iter()) {
-                pixel[..3].fill(intensity);
-            }
-        }
-    }
-    if let Some(col) = cursor.filter(|&col| col < cells) {
-        for y in band.start + font.glyph_height()..band.end {
-            let start = layout.line(y).start + col * cell;
-            layout.fill(&mut frame[start..start + cell], CURSOR);
         }
     }
 }
 
-/// The oracle: the intensity pixel `x` of pixel row `y` within a text row's
-/// band should show, in `font`, for a row holding `text` with the cursor at
-/// `cursor`.
-pub fn expected_intensity(font: Font, text: &[u8], cursor: Option<usize>, x: usize, y: usize) -> u8 {
+/// Read-back oracle: derive an RGB pixel from the retained cell and the font
+/// or box geometry, independently of the scanline writer and pixel encoding.
+pub fn expected_colour(
+    font: Font,
+    text: &[Cell],
+    cursor: Option<usize>,
+    x: usize,
+    y: usize,
+) -> [u8; 3] {
     let col = x / font.glyph_width();
-    let Some(&byte) = text.get(col) else {
-        return 0;
+    let Some(&cell) = text.get(col) else {
+        return PALETTE[0];
     };
-    if y < font.glyph_height() {
-        font.glyph(byte).raster()[y][x % font.glyph_width()]
-    } else if cursor == Some(col) {
-        CURSOR
+    let (fg, bg) = cell.displayed_colours();
+    let coverage = if y >= font.glyph_height()
+        && (cursor == Some(col) || (cell.flags & UNDERLINE != 0 && y == font.glyph_height()))
+    {
+        255
+    } else if (0x2500..=0x257f).contains(&cell.glyph) {
+        boxdraw::coverage(
+            cell.glyph,
+            font.glyph_width(),
+            font.line_height(),
+            x % font.glyph_width(),
+            y,
+        )
+    } else if y < font.glyph_height() {
+        font.glyph(cell).raster()[y][x % font.glyph_width()]
     } else {
         0
+    };
+    let mut colour = [0; 3];
+    for i in 0..3 {
+        colour[i] = ((u32::from(PALETTE[fg][i]) * u32::from(coverage)
+            + u32::from(PALETTE[bg][i]) * (255 - u32::from(coverage))
+            + 127)
+            / 255) as u8;
     }
+    colour
 }
