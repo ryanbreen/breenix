@@ -941,8 +941,14 @@ fn login_vt(number: usize, password: &str) -> Verdict<String> {
     wait_vt(number, "Password: ")?;
     let password_at = libbreenix::suite::case_ms_left();
     type_line(password)?;
-    let text = wait_vt(number, &format!("VTLOGIN tty{number} "))
-        .map_err(|e| format!("{e}; login began with {began}ms, password with {password_at}ms left"))?;
+    // Login reports its own failure on the terminal; carry its last rows into the verdict.
+    let text = wait_vt(number, &format!("VTLOGIN tty{number} ")).map_err(|e| {
+        let rows = vt_text(number).map(|text| {
+            let rows: Vec<_> = text.lines().map(str::trim_end).filter(|row| !row.is_empty()).collect();
+            rows[rows.len().saturating_sub(3)..].join(" | ")
+        }).unwrap_or_else(|error| format!("unreadable: {error}"));
+        format!("{e}; login began with {began}ms, password with {password_at}ms left; screen ends: {rows}")
+    })?;
     require(!text.contains(password), "password appeared on the screen")?;
     Ok(text.lines().find(|line| line.starts_with("VTLOGIN ")).ok_or("missing login proof")?.trim().into())
 }
