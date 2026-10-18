@@ -980,8 +980,9 @@ fn read_pipe(
                         thread.blocked_in_syscall = false;
                     }
                 });
+                // A reschedule requested since the wake stays pending for the
+                // syscall return (#1753).
                 reset_quantum();
-                crate::task::scheduler::check_and_clear_need_resched();
 
                 // Continue loop to retry read
                 continue;
@@ -1410,8 +1411,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.blocked_in_syscall = false;
                             }
                         });
+                        // A reschedule requested since the wake stays pending
+                        // for the syscall return (#1753).
                         reset_quantum();
-                        crate::task::scheduler::check_and_clear_need_resched();
 
                         // Continue loop to retry read
                         continue;
