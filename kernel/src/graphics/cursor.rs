@@ -3,7 +3,15 @@
 //! Provides a simple arrow cursor sprite that can be drawn on top of any
 //! Canvas. The background pixels under the cursor are saved before drawing
 //! and restored when the cursor moves, avoiding corruption of the underlying
-//! framebuffer content.
+//! framebuffer content. Both the restored and the newly drawn rectangle are
+//! marked dirty, so the display shows the restore as well as the new sprite.
+//!
+//! The kernel's drawers that paint while the cursor is up (the boot screen,
+//! the boot-test runner panel and the log console) call `hide` before drawing
+//! and `show` after, so the saved pixels are the ones under the sprite.
+//!
+//! The cursor state is guarded by the framebuffer lock: call these functions
+//! with the canvas's lock held, from thread context (not interrupt context).
 
 use super::primitives::{Canvas, Color};
 
@@ -49,10 +57,12 @@ static mut CURSOR_DRAWN: bool = false;
 static mut LAST_X: usize = 0;
 static mut LAST_Y: usize = 0;
 
+/// The cursor was taken down by `hide` and is put back by `show`.
+static mut CURSOR_HIDDEN: bool = false;
+
 /// Erase the cursor by restoring saved background pixels.
 ///
-/// # Safety
-/// Must be called from the render thread only (not interrupt context).
+/// Call with the framebuffer lock held.
 pub fn erase_cursor(canvas: &mut impl Canvas) {
     unsafe {
         if !CURSOR_DRAWN {
@@ -84,13 +94,13 @@ pub fn erase_cursor(canvas: &mut impl Canvas) {
         }
 
         CURSOR_DRAWN = false;
+        canvas.mark_dirty_region(cx, cy, CURSOR_W, CURSOR_H);
     }
 }
 
 /// Draw the cursor at the given position, saving the background first.
 ///
-/// # Safety
-/// Must be called from the render thread only (not interrupt context).
+/// Call with the framebuffer lock held.
 pub fn draw_cursor(canvas: &mut impl Canvas, x: usize, y: usize) {
     let w = canvas.width();
     let h = canvas.height();
@@ -141,23 +151,45 @@ pub fn draw_cursor(canvas: &mut impl Canvas, x: usize, y: usize) {
         LAST_X = x;
         LAST_Y = y;
         CURSOR_DRAWN = true;
+        CURSOR_HIDDEN = false;
+    }
+    canvas.mark_dirty_region(x, y, CURSOR_W, CURSOR_H);
+}
+
+/// Take the cursor down before drawing into the framebuffer, restoring the
+/// pixels under it. `show` puts it back once the drawing is done.
+///
+/// Call with the framebuffer lock held.
+pub fn hide(canvas: &mut impl Canvas) {
+    unsafe {
+        if CURSOR_DRAWN {
+            erase_cursor(canvas);
+            CURSOR_HIDDEN = true;
+        }
+    }
+}
+
+/// Put the cursor back where `hide` took it down, saving what is now under it.
+///
+/// Call with the framebuffer lock held.
+pub fn show(canvas: &mut impl Canvas) {
+    unsafe {
+        if CURSOR_HIDDEN {
+            draw_cursor(canvas, LAST_X, LAST_Y);
+        }
     }
 }
 
 /// Update the cursor position. Erases the old cursor and draws at the new position.
 ///
-/// Returns true if the cursor was actually moved (position changed).
-///
-/// # Safety
-/// Must be called from the render thread only (not interrupt context).
-pub fn update_cursor(canvas: &mut impl Canvas, new_x: usize, new_y: usize) -> bool {
+/// Call with the framebuffer lock held.
+pub fn update_cursor(canvas: &mut impl Canvas, new_x: usize, new_y: usize) {
     unsafe {
         if CURSOR_DRAWN && LAST_X == new_x && LAST_Y == new_y {
-            return false; // No movement
+            return; // No movement
         }
     }
 
     erase_cursor(canvas);
     draw_cursor(canvas, new_x, new_y);
-    true
 }

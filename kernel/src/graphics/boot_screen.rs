@@ -23,6 +23,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::arm64_fb;
+use super::cursor;
 use super::primitives::{draw_char, draw_rect, fill_rect, Canvas, Color, Rect, TextStyle};
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
@@ -305,6 +306,7 @@ pub fn show() {
     };
     let canvas = &mut *guard;
     let layout = Layout::of(canvas);
+    cursor::hide(canvas);
     fill_rect(
         canvas,
         Rect {
@@ -331,6 +333,7 @@ pub fn show() {
     screen.mode_dirty = true;
     screen.status_dirty = true;
     draw_changes(canvas, &layout, &mut screen, true);
+    cursor::show(canvas);
     present(guard);
     ACTIVE.store(true, Ordering::Release);
 }
@@ -352,7 +355,9 @@ fn refresh() {
         return;
     }
     let layout = Layout::of(&*guard);
+    cursor::hide(&mut *guard);
     draw_changes(&mut *guard, &layout, &mut screen, false);
+    cursor::show(&mut *guard);
     present(guard);
 }
 
@@ -503,6 +508,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
     let log_console_up = LOG_CONSOLE_UP.swap(false, Ordering::AcqRel);
     if boot_screen_up || log_console_up {
         let (width, height) = (fb.width(), fb.height());
+        cursor::hide(fb);
         fill_rect(
             fb,
             Rect {
@@ -513,6 +519,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
             },
             BG,
         );
+        cursor::show(fb);
         if let Some(db) = fb.double_buffer_mut() {
             db.flush_if_dirty();
         }
@@ -826,6 +833,7 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     super::log_console::stop();
     let canvas = &mut *guard;
     let (width, height) = (canvas.width() as i32, canvas.height() as i32);
+    cursor::hide(canvas);
     fill_rect(
         canvas,
         Rect {
@@ -915,6 +923,7 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
         draw_str(canvas, left, y, shown, &text);
         y += LINE;
     }
+    cursor::show(canvas);
 
     if let Some(db) = guard.double_buffer_mut() {
         db.flush_if_dirty();
