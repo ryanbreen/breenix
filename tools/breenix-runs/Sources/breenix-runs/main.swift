@@ -66,7 +66,7 @@ func usage() -> String {
     Override for CLI and app: BREENIX_RUNS_STORE=/absolute/store/path
     show defaults to subsystems; combine flags to select panes.
     run arm launches local QEMU; run x86 is refused by the S23 bare-metal-only policy.
-    Prove x86-64 on the R240 metal boot loop; operator override: BREENIX_ALLOW_X86_QEMU=1.
+    Prove x86-64 on the x86-metal boot loop; operator override: BREENIX_ALLOW_X86_QEMU=1.
     x86 --hardware selects hardware from docs/x86-profiles.json (unset: default).
     --gate-timeout sets the scoring deadline (default: 900); full mode collects completion.
     Full boots stop on USERSPACE TEST REPORT DONE. BREENIX_FULL_BACKSTOP sets the hang
