@@ -1,0 +1,34 @@
+== compiling dma_and_log_sink_structure ==
+== running dma_and_log_sink_structure  ==
+
+running 6 tests
+test virtqueue_validator_rejects_log_and_continue_shape ... ok
+test code_mask_raw_string_close_preserves_next_byte ... ok
+test logger_validator_rejects_blocking_framebuffer_lock ... ok
+test virtqueue_dma_ring_allocation_fails_closed ... ok
+test framebuffer_log_sink_is_nonblocking_and_bounded ... FAILED
+test logger_validator_rejects_framebuffer_clear_in_shared_grid_writer ... FAILED
+
+failures:
+
+---- framebuffer_log_sink_is_nonblocking_and_bounded stdout ----
+
+thread 'framebuffer_log_sink_is_nonblocking_and_bounded' panicked at <checkout>/tests/dma_and_log_sink_structure.rs:381:5:
+assertion `left == right` failed
+  left: Err("missing log_record")
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- logger_validator_rejects_framebuffer_clear_in_shared_grid_writer stdout ----
+
+thread 'logger_validator_rejects_framebuffer_clear_in_shared_grid_writer' panicked at <checkout>/tests/dma_and_log_sink_structure.rs:429:9:
+assertion `left == right` failed
+  left: Err("missing log_record")
+ right: Err("logger hot path clears the whole framebuffer")
+
+
+failures:
+    framebuffer_log_sink_is_nonblocking_and_bounded
+    logger_validator_rejects_framebuffer_clear_in_shared_grid_writer
+
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

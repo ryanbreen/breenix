@@ -4136,6 +4136,9 @@ const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
 /// construction, and an added one is a `+` row here.
 #[rustfmt::skip]
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     // Class 2 — creation-failure retire. Never reaped, never retired.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
     // Class 2 — sys_spawn's Window-3 teardown arm: the child's main thread was
@@ -4148,7 +4151,10 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
-    // Class 3 — the nineteen in-kernel oracle callers, eight enclosing items.
+    // Ruling S26: the busy-CPU reclaim oracle's CLONE_VM member and leader
+    // (boot_tests; the module is gated in kernel/src/task/mod.rs).
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
+    // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
     // Ruling S2: the exec detach oracle's sibling, a thread's row, now leaves
     // through its own exit and the join, so its unowned-row helper is gone.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
@@ -4183,10 +4189,17 @@ const JOIN_RETIRE_ARM_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
+    // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
+    // kernel/src/task/mod.rs) retires its two fixture rows through the exit
+    // path's calls.
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
@@ -4492,6 +4505,9 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_prove_nested_drain_refusal", 1),
+    // Ruling S26: the reclaim daemon drains on a timer, so a machine whose CPUs
+    // stay busy still retires dead processes' page tables and address spaces.
+    ("kernel/src/task/process_task.rs", "fn reclaim_daemon", 1),
 ];
 /// Whole-tree writes include the boot-test alias arm. The separate production
 /// subset check in the page-table validator remains fixed to clone.rs +
@@ -4566,6 +4582,8 @@ const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "block_ready", "prepa
 /// someone must look at it.
 #[rustfmt::skip]
 const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
+    // #1958 / S24: remove only the unscheduled PTY fixture creation returned.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 2),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn exit_schedule_trampoline", 1),
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn terminate_current_scheduler_thread", 1),
@@ -4602,6 +4620,9 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
     ("kernel/src/task/scheduler/rq.rs", "fn reclaim", 1),
     ("kernel/src/task/scheduler/rq.rs", "fn repin", 1),
+    // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
+    // kernel/src/task/mod.rs).
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),
