@@ -1535,7 +1535,7 @@ fn ensure_reaper() -> bool {
                 Ok(handle) => {
                     REAPER.store(handle.tid(), Ordering::Release);
                     if let Some(id) = irq() {
-                        crate::arch_impl::aarch64::gic::enable_spi(id);
+                        crate::arch_impl::aarch64::gic::enable_spi_on_cpu(id, 0);
                     }
                     true
                 }

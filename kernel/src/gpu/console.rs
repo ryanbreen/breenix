@@ -18,6 +18,7 @@ static HASH: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: AtomicU64 = AtomicU64::new(0);
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
+static PANIC_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
 static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
@@ -34,7 +35,6 @@ pub(super) struct Console {
     row: usize,
     column: usize,
     counted: bool,
-    panic_attempted: bool,
 }
 
 pub fn active() -> bool {
@@ -307,7 +307,6 @@ impl Console {
             row: 0,
             column: 0,
             counted,
-            panic_attempted: false,
         })
     }
     fn live(&self) -> bool {
@@ -564,6 +563,19 @@ pub fn pump() {
     }
     // Includes restore failures and construction failures, not just successful draws.
     NEXT_DRAW.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
+    // The private target is drawn offscreen during preparation. Prepare outside
+    // display transitions, including while a process owns the display after reset.
+    if HANDOFF.load(Ordering::Acquire) {
+        if let Some(epoch) = with_core(|c| {
+            (!c.stalled && !c.resetting && !c.reset_wanted).then_some(c.epoch)
+        }).flatten() {
+            if PANIC_EPOCH.swap(epoch, Ordering::AcqRel) != epoch {
+                let _ = super::panic::prepare();
+                #[cfg(feature = "capture_panic_oracle")]
+                super::panic::preparation_finished();
+            }
+        }
+    }
     if RESTORE.load(Ordering::Acquire) {
         if display::restore_pending().is_err() {
             return;
@@ -586,14 +598,6 @@ pub fn pump() {
     if n > 0 || !visible {
         c.bytes(&bytes[..n]);
         let _ = c.draw(true);
-    }
-    // Diagnostic preparation is best-effort after the ordinary console's handoff.
-    // Try once per console epoch, after that console is already visible.
-    if HANDOFF.load(Ordering::Acquire) && !c.panic_attempted {
-        c.panic_attempted = true;
-        let _ = super::panic::prepare();
-        #[cfg(feature = "capture_panic_oracle")]
-        super::panic::preparation_finished();
     }
 }
 
