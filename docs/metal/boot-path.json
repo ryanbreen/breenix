@@ -487,7 +487,7 @@
     {
       "id": "usb-keyboard",
       "title": "USB keyboard into the console",
-      "summary": "Not yet measured: the producing lane has not landed.",
+      "summary": "Clean-room HID boot keyboard: configured, polled, detached and reattached on console boots; typed keys unmeasured.",
       "stub": true,
       "bootShapes": [
         "ramdisk",
@@ -501,15 +501,26 @@
             "marker": "[usb] boot keyboard attached: "
           },
           {
+            "name": "Boot keyboard detached and reclaimed",
+            "marker": "[usb] boot keyboard detached: "
+          },
+          {
+            "name": "Boot keyboard attached again",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
             "name": "First key report",
-            "marker": "[hid] first key report"
+            "marker": "[hid] first key report",
+            "input": "keyboard"
           },
           {
             "name": "Keys reached the console TTY",
-            "marker": "[hid] typed into the console tty: "
+            "marker": "[hid] typed into the console tty: ",
+            "input": "keyboard"
           }
         ]
-      }
+      },
+      "waitingFor": "Keystrokes through the USB keystroke injector (ruling M2)."
     },
     {
       "id": "console-login",

@@ -5,6 +5,8 @@
 //! The existing ARM USB stack is neither used nor a reference.
 //! DMA is coherent on x86. One worker owns the rings and device contexts;
 //! the MSI handler accesses only published MMIO addresses and atomic work.
+//! `keyboard` adds HID boot keyboards, hot-plug and slot reclamation.
+mod keyboard;
 mod spec;
 
 use crate::{
@@ -14,7 +16,7 @@ use crate::{
 use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::{
     ptr::{read_volatile, write_volatile},
-    sync::atomic::{fence, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{fence, AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use spec::{Consumer, Contexts, Producer, Trb, Work, EVENT_TRBS, PORT_CHANGES, TRBS};
 
@@ -33,6 +35,20 @@ static OP: AtomicUsize = AtomicUsize::new(0);
 static IR: AtomicUsize = AtomicUsize::new(0);
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 static WORK: Work = Work::new();
+/// A thread-context request for the worker (the console session's replug
+/// exercise). It wakes the worker without claiming hardware work.
+static REPLUG: AtomicBool = AtomicBool::new(false);
+
+/// Init is starting the console target: exercise detach and reattach of each
+/// boot keyboard once, before anyone types (`keyboard::replug_exercise`).
+pub fn console_session_starting() {
+    // Store, then read the waiter: the worker publishes, then checks the flag.
+    REPLUG.store(true, Ordering::SeqCst);
+    let tid = WORK.waiter();
+    if tid != 0 {
+        scheduler::wake_waitqueue_thread(tid);
+    }
+}
 
 fn rd(base: usize, offset: usize) -> u32 {
     unsafe { read_volatile((base + offset) as *const u32) }
@@ -147,6 +163,22 @@ impl Dma {
             .map(|i| unsafe { read_volatile((self.virt + i) as *const u8) })
             .collect()
     }
+    fn put8(&self, offset: usize, value: u8) {
+        assert!(offset < self.bytes);
+        unsafe { write_volatile((self.virt + offset) as *mut u8, value) }
+    }
+    /// Return the frames. Only for memory the controller no longer owns: a
+    /// device's, after its Disable Slot command completed (4.6.4).
+    fn release(self) -> usize {
+        let pages = self.bytes / 4096;
+        for page in 0..pages {
+            let address = x86_64::PhysAddr::new(self.phys + (page * 4096) as u64);
+            crate::memory::frame_allocator::deallocate_frame(
+                x86_64::structures::paging::PhysFrame::containing_address(address),
+            );
+        }
+        pages
+    }
 }
 struct Ring {
     memory: Dma,
@@ -179,6 +211,10 @@ impl Ring {
         }
         addr
     }
+    /// Where the next TRB goes and its cycle bit, for Set TR Dequeue Pointer.
+    fn enqueue(&self) -> (u64, bool) {
+        self.producer.next(self.memory.phys)
+    }
     fn store(&self, index: usize, trb: Trb) {
         let at = index * 16;
         self.memory.put64(at, trb.parameter);
@@ -196,12 +232,18 @@ struct Protocol {
 }
 struct Device {
     slot: u8,
+    port: u8,
     output: Dma,
     input: Dma,
     ep0: Ring,
     data: Dma,
     packet: u16,
     speed: u64,
+    /// The first configuration's full descriptor, for class drivers.
+    config: Vec<u8>,
+    keyboard: Option<keyboard::Pipe>,
+    /// EP0 requests sent again since Address Device.
+    ep0_retries: u32,
 }
 struct Controller {
     pci: pci::Device,
@@ -210,6 +252,7 @@ struct Controller {
     doorbells: usize,
     ports: u8,
     slots: u8,
+    hcc: u32,
     address64: bool,
     contexts: Contexts,
     dcbaa: Dma,
@@ -218,8 +261,13 @@ struct Controller {
     erst: Dma,
     consumer: Consumer,
     completions: VecDeque<Trb>,
+    /// Port IDs from Port Status Change Events, handled by the worker loop.
+    port_events: VecDeque<u8>,
     protocols: Vec<Protocol>,
     devices: Vec<Device>,
+    console: crate::drivers::hid_boot::Console,
+    /// Absolute console lock state, shared across keyboard pipes and reattach.
+    keyboard_leds: u8,
 }
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
@@ -365,6 +413,7 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         doorbells: base + db_offset,
         ports,
         slots,
+        hcc,
         address64,
         contexts: Contexts::new(hcc & 4 != 0),
         dcbaa,
@@ -373,8 +422,11 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         erst,
         consumer: Consumer::new(),
         completions: VecDeque::new(),
+        port_events: VecDeque::new(),
         protocols,
         devices: Vec::new(),
+        console: crate::drivers::hid_boot::Console::new(),
+        keyboard_leds: 0,
     };
     let result = controller.run(scratchpads);
     if result.is_err() {
@@ -591,13 +643,8 @@ impl Controller {
             }
         }
         log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
-        // Keep owning and servicing the event ring. C3 extends port-change
-        // processing with class configuration and slot reclamation.
-        loop {
-            self.wait_work(None)?;
-            self.service()?;
-            self.completions.clear();
-        }
+        // Keep owning the event ring: class drivers, port changes, reclamation.
+        self.serve()
     }
     fn ring_doorbell(&self, slot: u8, target: u32) {
         fence(Ordering::Release);
@@ -623,8 +670,8 @@ impl Controller {
             };
             match event.kind() {
                 32 | 33 => self.completions.push_back(event),
-                34 => { /* PORTSC changes stay latched until the port state machine acknowledges them. */
-                }
+                // PORTSC changes stay latched until `port_changed` acknowledges them.
+                34 => self.port_events.push_back((event.parameter >> 24) as u8),
                 37 => {
                     log::error!("[xhci] host controller event code={}", event.code());
                     failed = true;
@@ -650,16 +697,23 @@ impl Controller {
             Ok(())
         }
     }
-    fn wait_work(&self, deadline: Option<u64>) -> Result<(), &'static str> {
+    /// Wait for MSI-published work (true), or until `deadline` passes or, when
+    /// `requests` is set, a thread-context request arrives (false).
+    fn wait_work(&self, deadline: Option<u64>, requests: bool) -> Result<bool, &'static str> {
         let tid = scheduler::current_thread_id().ok_or("worker has no thread identity")?;
+        let requested = || requests && REPLUG.load(Ordering::SeqCst);
         loop {
             WORK.publish(tid);
             if WORK.take() {
                 WORK.withdraw();
-                return Ok(());
+                return Ok(true);
+            }
+            if requested() || deadline.is_some_and(|end| now() >= end) {
+                WORK.withdraw();
+                return Ok(false);
             }
             let published = scheduler::with_current(|sched| {
-                if WORK.pending() {
+                if WORK.pending() || requested() {
                     return false;
                 }
                 sched.block_current_for_io_with_timeout(deadline)
@@ -667,7 +721,7 @@ impl Controller {
             .unwrap_or(false);
             // A wake can race the blocked-state publication. Normalizing the
             // state is necessary even when pending lets us skip the sleep.
-            if published && !WORK.pending() {
+            if published && !WORK.pending() && !requested() {
                 while scheduler::with_current(|s| {
                     s.current_thread_mut()
                         .map(|t| t.state == ThreadState::BlockedOnIO)
@@ -689,14 +743,15 @@ impl Controller {
             });
             WORK.withdraw();
             if WORK.take() {
-                return Ok(());
+                return Ok(true);
             }
-            if deadline.is_some_and(|end| now() >= end) {
-                return Err("MSI completion timed out");
+            if requested() || deadline.is_some_and(|end| now() >= end) {
+                return Ok(false);
             }
         }
     }
-    fn event(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
+    /// The completion for one of `pointers`, whatever its completion code.
+    fn event_any(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
         let deadline = now().saturating_add(3 * SECOND);
         loop {
             if let Some(i) = self
@@ -704,28 +759,37 @@ impl Controller {
                 .iter()
                 .position(|e| e.kind() == kind && pointers.contains(&(e.parameter & !15)))
             {
-                let event = self
-                    .completions
-                    .remove(i)
-                    .ok_or("completion queue changed")?;
-                if event.code() != 1 {
-                    log::error!(
-                        "[xhci] completion type={kind} code={} slot={}",
-                        event.code(),
-                        event.slot()
-                    );
-                    return Err("command/transfer completion failed");
-                }
-                return Ok(event);
+                return self.completions.remove(i).ok_or("completion queue changed");
             }
-            self.wait_work(Some(deadline))?;
+            if !self.wait_work(Some(deadline), false)? {
+                return Err("MSI completion timed out");
+            }
             self.service()?;
         }
+    }
+    fn event(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
+        let event = self.event_any(pointers, kind)?;
+        if event.code() != 1 {
+            log::error!(
+                "[xhci] completion type={kind} code={} slot={}",
+                event.code(),
+                event.slot()
+            );
+            return Err("command/transfer completion failed");
+        }
+        Ok(event)
     }
     fn command(&mut self, trb: Trb) -> Result<Trb, &'static str> {
         let pointer = self.command.push(trb);
         self.ring_doorbell(0, 0);
         self.event(&[pointer], 33)
+    }
+    /// A command's completion code, for commands whose failure codes the
+    /// caller handles (Stop Endpoint's Context State Error, for one).
+    fn command_code(&mut self, trb: Trb) -> Result<u8, &'static str> {
+        let pointer = self.command.push(trb);
+        self.ring_doorbell(0, 0);
+        Ok(self.event_any(&[pointer], 33)?.code())
     }
     fn portsc(&self, port: u8) -> u32 {
         rd(self.op, 0x400 + (port as usize - 1) * 16)
@@ -804,6 +868,8 @@ impl Controller {
         self.port_action(port, PORT_CHANGES);
         Ok((speed_id, speed))
     }
+    /// Reset the port, give the device a slot and an address, and read its
+    /// descriptors. A device that fails after Enable Slot is reclaimed.
     fn enumerate(&mut self, port: u8) -> Result<(), &'static str> {
         let (speed_id, speed) = self.reset_port(port)?;
         let protocol = self.protocols[port as usize];
@@ -813,40 +879,71 @@ impl Controller {
         if slot == 0 || slot > self.slots {
             return Err("Enable Slot returned invalid slot");
         }
-        let output = Dma::new(32 * self.contexts.stride, self.address64)?;
-        let input = Dma::new(33 * self.contexts.stride, self.address64)?;
-        let ep0 = Ring::new(self.address64)?;
-        let data = Dma::new(65536, self.address64)?;
-        let packet = if speed >= 5_000_000_000 {
-            512
-        } else if speed == 480_000_000 {
-            64
-        } else {
-            8
+        let allocated = (|| {
+            Ok::<_, &'static str>(Device {
+                slot,
+                port,
+                output: Dma::new(32 * self.contexts.stride, self.address64)?,
+                input: Dma::new(33 * self.contexts.stride, self.address64)?,
+                ep0: Ring::new(self.address64)?,
+                data: Dma::new(65536, self.address64)?,
+                packet: if speed >= 5_000_000_000 {
+                    512
+                } else if speed == 480_000_000 {
+                    64
+                } else {
+                    8
+                },
+                speed,
+                config: Vec::new(),
+                keyboard: None,
+                ep0_retries: 0,
+            })
+        })();
+        let mut device = match allocated {
+            Ok(device) => device,
+            Err(error) => {
+                // The controller has no contexts for this slot yet; free the slot.
+                let _ = self.command_code(spec::disable_slot(slot));
+                return Err(error);
+            }
         };
+        match self.address_and_describe(&mut device, port, speed_id, protocol) {
+            Ok(()) => {
+                self.devices.push(device);
+                Ok(())
+            }
+            Err(error) => {
+                self.reclaim(device);
+                Err(error)
+            }
+        }
+    }
+    fn address_and_describe(
+        &mut self,
+        device: &mut Device,
+        port: u8,
+        speed_id: u8,
+        protocol: Protocol,
+    ) -> Result<(), &'static str> {
+        let (slot, speed) = (device.slot, device.speed);
+        let input = &device.input;
         input.put32(4, 3); // Add Slot + EP0 contexts (6.2.5).
         let slot_at = self.contexts.input(0);
         input.put32(slot_at, (1 << 27) | ((speed_id as u32) << 20));
         input.put32(slot_at + 4, (port as u32) << 16);
         let ep_at = self.contexts.input(1);
-        input.put32(ep_at + 4, (3 << 1) | (4 << 3) | ((packet as u32) << 16));
-        input.put64(ep_at + 8, ep0.memory.phys | 1);
+        input.put32(ep_at + 4, (3 << 1) | (4 << 3) | ((device.packet as u32) << 16));
+        input.put64(ep_at + 8, device.ep0.memory.phys | 1);
         input.put32(ep_at + 16, 8); // Average TRB length for control, 6.2.3.
-        self.dcbaa.put64(slot as usize * 8, output.phys);
+        self.dcbaa.put64(slot as usize * 8, device.output.phys);
         fence(Ordering::Release);
-        self.command(Trb::new(11, input.phys, 0, (slot as u32) << 24))?;
-        let mut device = Device {
-            slot,
-            output,
-            input,
-            ep0,
-            data,
-            packet,
-            speed,
-        };
+        self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
+        // The SetAddress() recovery interval is software's to time (4.6.5).
+        delay(spec::SET_ADDRESS_RECOVERY_NS);
         // Read the first eight bytes; FS needs Evaluate Context before
         // the full descriptor if firmware/device chose a different packet size.
-        let first = self.descriptor(&mut device, 1, 0, 8)?;
+        let first = self.descriptor(device, 1, 0, 8)?;
         if first.len() != 8 || first[0] != 18 || first[1] != 1 {
             return Err("invalid initial device descriptor");
         }
@@ -867,7 +964,7 @@ impl Controller {
             self.command(Trb::new(13, device.input.phys, 0, (slot as u32) << 24))?;
             device.packet = actual;
         }
-        let desc = self.descriptor(&mut device, 1, 0, 18)?;
+        let desc = self.descriptor(device, 1, 0, 18)?;
         if desc.len() != 18 || desc[0] != 18 || desc[1] != 1 || desc[17] == 0 {
             return Err("invalid device descriptor");
         }
@@ -875,7 +972,7 @@ impl Controller {
             protocol.major, protocol.minor, speed, speed_id, slot, device.output.get32(self.contexts.output(0) + 12) & 255,
             desc[4], desc[5], desc[6], device.packet, desc[17]);
         for index in 0..desc[17] {
-            let header = self.descriptor(&mut device, 2, index, 9)?;
+            let header = self.descriptor(device, 2, index, 9)?;
             if header.len() != 9 || header[0] != 9 || header[1] != 2 {
                 return Err("invalid configuration header");
             }
@@ -883,13 +980,15 @@ impl Controller {
             if total < 9 {
                 return Err("configuration shorter than its header");
             }
-            let config = self.descriptor(&mut device, 2, index, total)?;
+            let config = self.descriptor(device, 2, index, total)?;
             if config.len() != total as usize || config[..9] != header {
                 return Err("configuration length/header changed");
             }
             self.report_configuration(port, &config)?;
+            if crate::drivers::hid_boot::interface::prefer_configuration(&device.config, &config) {
+                device.config = config;
+            }
         }
-        self.devices.push(device);
         Ok(())
     }
     fn descriptor(
@@ -899,41 +998,117 @@ impl Controller {
         index: u8,
         len: u16,
     ) -> Result<Vec<u8>, &'static str> {
-        // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
-        // The DMA allocation need not itself be 64 KiB aligned, so split there.
-        let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
-        let mut offset = 0usize;
-        while offset < len as usize {
-            let phys = device.data.phys + offset as u64;
-            let count = (len as usize - offset).min(65536 - (phys as usize & 65535));
-            let remaining = len as usize - offset - count;
-            let packets = remaining.div_ceil(device.packet as usize).min(31) as u32;
-            // First is Data Stage; following fragments are Normal TRBs (4.11.2.2).
-            let kind = if offset == 0 { 3 } else { 1 };
-            // ISP reports a short packet at its Data/Normal TRB. Reject it
-            // rather than parsing unwritten bytes from an earlier descriptor.
-            let flags = (1 << 2)
-                | (if remaining != 0 { 1 << 4 } else { 0 })
-                | if offset == 0 { 1 << 16 } else { 0 };
-            pointers.push(device.ep0.push(Trb::new(
-                kind,
-                phys,
-                count as u32 | (packets << 17),
-                flags,
-            )));
-            offset += count;
+        let request = spec::get_descriptor(kind, index, len).parameter;
+        let event = self.ep0_transfer(device, request, &|device: &mut Device| {
+            // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
+            // The DMA allocation need not itself be 64 KiB aligned, so split there.
+            let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
+            let mut offset = 0usize;
+            while offset < len as usize {
+                let phys = device.data.phys + offset as u64;
+                let count = (len as usize - offset).min(65536 - (phys as usize & 65535));
+                let remaining = len as usize - offset - count;
+                let packets = remaining.div_ceil(device.packet as usize).min(31) as u32;
+                // First is Data Stage; following fragments are Normal TRBs (4.11.2.2).
+                let kind = if offset == 0 { 3 } else { 1 };
+                // ISP reports a short packet at its Data/Normal TRB. Reject it
+                // rather than parsing unwritten bytes from an earlier descriptor.
+                let flags = (1 << 2)
+                    | (if remaining != 0 { 1 << 4 } else { 0 })
+                    | if offset == 0 { 1 << 16 } else { 0 };
+                pointers.push(device.ep0.push(Trb::new(
+                    kind,
+                    phys,
+                    count as u32 | (packets << 17),
+                    flags,
+                )));
+                offset += count;
+            }
+            pointers.push(device.ep0.push(Trb::new(4, 0, 0, 1 << 5))); // OUT status + IOC
+            pointers
+        })?;
+        if event.code() != 1 {
+            log::error!(
+                "[xhci] slot {}: GET_DESCRIPTOR type={kind} completion code={}",
+                device.slot,
+                event.code()
+            );
+            return Err("command/transfer completion failed");
         }
-        let status = device.ep0.push(Trb::new(4, 0, 0, 1 << 5)); // OUT status + IOC
-        pointers.push(status);
-        self.ring_doorbell(device.slot, 1);
-        let event = self.event(&pointers, 32)?;
-        if event.slot() != device.slot
-            || (event.control >> 16) & 31 != 1
-            || event.status & 0x00ff_ffff != 0
-        {
+        if event.status & 0x00ff_ffff != 0 {
             return Err("EP0 transfer identity or length mismatch");
         }
         Ok(device.data.copy(0, len as usize))
+    }
+    /// One control transfer on EP0, its TDs queued by `queue` (which returns
+    /// their TRB addresses), for the setup packet `request`. A transfer that
+    /// halts EP0 or reads short is sent again (`spec::ep0_next`); the
+    /// completion returned is the last attempt's.
+    fn ep0_transfer(
+        &mut self,
+        device: &mut Device,
+        request: u64,
+        queue: &dyn Fn(&mut Device) -> Vec<u64>,
+    ) -> Result<Trb, &'static str> {
+        let mut attempt = 1;
+        loop {
+            let pointers = queue(device);
+            self.ring_doorbell(device.slot, 1);
+            let event = self.event_any(&pointers, 32)?;
+            if event.slot() != device.slot || (event.control >> 16) & 31 != 1 {
+                return Err("EP0 transfer identity mismatch");
+            }
+            let after_ns = match spec::ep0_next(event.code(), attempt) {
+                spec::Ep0Next::Done | spec::Ep0Next::Fail => return Ok(event),
+                spec::Ep0Next::RecoverAndFail => {
+                    self.recover_ep0(device)?;
+                    return Ok(event);
+                }
+                spec::Ep0Next::Retry { after_ns } => {
+                    self.recover_ep0(device)?;
+                    after_ns
+                }
+                spec::Ep0Next::Resend { after_ns } => {
+                    // The Status TD still runs (4.10.1.1); take its completion.
+                    let status = pointers[pointers.len() - 1];
+                    if event.parameter & !15 != status {
+                        let done = self.event_any(&[status], 32)?;
+                        if spec::halts_endpoint(done.code()) {
+                            self.recover_ep0(device)?;
+                        }
+                    }
+                    after_ns
+                }
+            };
+            device.ep0_retries += 1;
+            log::warn!(
+                "[usb] slot {}: EP0 request {request:#018x} completed with code={} on attempt {attempt}; sending it again",
+                device.slot,
+                event.code()
+            );
+            delay(after_ns);
+            attempt += 1;
+        }
+    }
+    /// 4.6.8: Reset Endpoint, then a Set TR Dequeue Pointer onto the next
+    /// Setup TD, past the halted TD's remaining stages.
+    fn recover_ep0(&mut self, device: &Device) -> Result<(), &'static str> {
+        self.reset_endpoint(device.slot, 1)?;
+        self.set_dequeue(device.slot, 1, device.ep0.enqueue())
+    }
+    /// Reset Endpoint with TSP 0, for a halted endpoint (4.6.8).
+    fn reset_endpoint(&mut self, slot: u8, dci: u8) -> Result<(), &'static str> {
+        let code = self.command_code(spec::reset_endpoint(slot, dci))?;
+        if code != 1 {
+            log::error!("[usb] slot {slot}: Reset Endpoint {dci} code={code}");
+            return Err("Reset Endpoint failed");
+        }
+        Ok(())
+    }
+    /// Point a stopped endpoint's dequeue at `next`, a ring's next free TRB (4.6.10).
+    fn set_dequeue(&mut self, slot: u8, dci: u8, next: (u64, bool)) -> Result<(), &'static str> {
+        self.command(spec::set_dequeue(slot, dci, next.0, next.1))?;
+        Ok(())
     }
     fn report_configuration(&self, port: u8, config: &[u8]) -> Result<(), &'static str> {
         let mut offset = 0;
