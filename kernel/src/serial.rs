@@ -790,10 +790,10 @@ pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
     let lead = crate::serial_writer::lead(writer, bytes);
     for &byte in lead.iter().chain(bytes) {
         queue_byte(queue, byte);
-        // Terminal text belongs to its reader, not the persistent kernel log.
-        if writer == Writer::Kernel {
-            crate::log_buffer::capture_byte(byte);
-        }
+    }
+    // Terminal text belongs to its reader, not the persistent kernel log.
+    if writer == Writer::Kernel {
+        crate::log_buffer::capture_bytes(lead.iter().chain(bytes));
     }
     if let Some(&last) = bytes.last() {
         crate::serial_writer::wrote(writer, last);
@@ -1155,8 +1155,16 @@ pub fn _log_print(args: fmt::Arguments) {
 /// reserve makes that a last resort.
 pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
     loop {
-        let appended =
-            crate::arch_without_interrupts(|| LOG_RING.lock().append(args, crate::STAGE_MARKERS));
+        let appended = crate::arch_without_interrupts(|| {
+            let mut ring = LOG_RING.lock();
+            let appended = ring.append(args, crate::STAGE_MARKERS);
+            // `/proc/kmsg` keeps every record, including one the ring has
+            // no room to send to the UART.
+            if appended.is_ok() {
+                crate::log_buffer::capture_fmt(args);
+            }
+            appended
+        });
         match appended {
             Ok(end) => return end,
             Err(needed) => make_room(needed),
