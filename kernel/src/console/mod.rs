@@ -405,19 +405,52 @@ pub fn take_display() {
     wait_until_not_presenting();
 }
 
+/// Woken at the end of each render pass, for the processes waiting in
+/// `wait_until_not_presenting`.
+static PASS_ENDED: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
+
+/// The render thread's pass is over: it has no row on its way to the screen.
+fn end_pass() {
+    PRESENTING.store(false, Ordering::SeqCst);
+    if PASS_ENDED.has_waiters() {
+        PASS_ENDED.wake_up();
+    }
+}
+
 /// Wait until the render thread has no row of the console's on its way to
-/// the screen (and no fenced GPU command of its own outstanding).
+/// the screen and no fenced GPU command of its own outstanding: a timed-out
+/// fenced command still belongs to the device, and a new owner may not draw
+/// until that DMA has stopped. The caller is a process in a system call. It
+/// blocks as an interruptible I/O wait, woken at the end of each pass and
+/// after at most a millisecond to look at the GPU again; a signal ends the
+/// wait. (The render thread's own `sleep_ms` blocks a kernel thread on the
+/// timer, which a process's system call must not do.)
 fn wait_until_not_presenting() {
-    while PRESENTING.load(Ordering::SeqCst) {
-        sleep_ms(1);
+    use crate::task::waitqueue::PrepareOutcome;
+    let busy = || {
+        #[cfg(target_arch = "aarch64")]
+        if crate::drivers::virtio::gpu_pci::presentation_pending() {
+            return true;
+        }
+        PRESENTING.load(Ordering::SeqCst)
+    };
+    while busy() {
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        let recheck = seconds * 1_000_000_000 + nanos + 1_000_000;
+        let outcome = PASS_ENDED.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(recheck),
+            busy,
+        );
+        if outcome == PrepareOutcome::Mismatch {
+            PASS_ENDED.finish_wait();
+            continue;
+        }
+        if crate::syscall::blocking_io::wait_prepared(&PASS_ENDED, outcome).is_err() {
+            return;
+        }
     }
     display::wait_until_idle();
-    // A timed-out fenced command still belongs to the device. Do not give a
-    // new owner authority to draw until that DMA has actually stopped.
-    #[cfg(target_arch = "aarch64")]
-    while crate::drivers::virtio::gpu_pci::presentation_pending() {
-        sleep_ms(1);
-    }
 }
 
 /// Return the display to the retained terminal, repainting even unchanged rows.
@@ -790,7 +823,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             PRESENTING.store(true, Ordering::SeqCst);
             splash_run.pass(display, &mut screen.shadow);
             answer_checks(Err(Absent::NotYet), false);
-            PRESENTING.store(false, Ordering::SeqCst);
+            end_pass();
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
@@ -803,7 +836,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         // pass and waits, or this pass observes the take and submits nothing.
         PRESENTING.store(true, Ordering::SeqCst);
         if !may_draw() {
-            PRESENTING.store(false, Ordering::SeqCst);
+            end_pass();
             answer_checks(Err(Absent::Taken), true);
             // A switch waits on these passes: look again soon while one does.
             sleep_ms(if vt::switching() { PASS_INTERVAL_MS } else { PASS_INTERVAL_MS * 10 });
@@ -812,7 +845,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         // A display owner whose terminal just left the foreground may still be
         // finishing a presentation: draw over the screen once it has.
         if vt::wait_for_presentations() {
-            PRESENTING.store(false, Ordering::SeqCst);
+            end_pass();
             sleep_ms(1);
             continue;
         }
@@ -863,7 +896,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
         if announced {
             answer_checks(Ok((&screen, snapshot.fg)), true);
         }
-        PRESENTING.store(false, Ordering::SeqCst);
+        end_pass();
         sleep_ms(PASS_INTERVAL_MS);
     }
 }
