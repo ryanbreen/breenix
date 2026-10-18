@@ -3520,11 +3520,18 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     /// The root `pid`'s row owns and the lifetime of that address space.
     fn address_space_of(
         pid: crate::process::ProcessId,
-    ) -> Option<(u64, alloc::sync::Arc<crate::process::process::AddressSpaceLifetime>)> {
+    ) -> Option<(
+        u64,
+        alloc::sync::Arc<crate::process::process::AddressSpaceLifetime>,
+    )> {
         let manager_guard = crate::process::manager();
         let row = manager_guard.as_ref()?.get_process(pid)?;
         Some((
-            row.page_table.as_ref()?.level_4_frame().start_address().as_u64(),
+            row.page_table
+                .as_ref()?
+                .level_4_frame()
+                .start_address()
+                .as_u64(),
             row.address_space_lifetime.clone()?,
         ))
     }
@@ -3763,9 +3770,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         let sibling_pid = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
-                return TestResult::Fail(
-                    "process manager unavailable for exec detach sibling PID",
-                );
+                return TestResult::Fail("process manager unavailable for exec detach sibling PID");
             };
             manager.allocate_pid()
         };
@@ -3783,15 +3788,12 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         let waited_exec = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
-                return TestResult::Fail(
-                    "process manager unavailable for exec detach group arm",
-                );
+                return TestResult::Fail("process manager unavailable for exec detach group arm");
             };
             invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
         };
         let (waited_inherited_cr3, waited_thread_group_id) = member_fields(member_pid);
-        let wait_error_exact =
-            matches!(waited_exec, Err(error) if error == crate::process::manager::EXEC_GROUP_RUNNING);
+        let wait_error_exact = matches!(waited_exec, Err(error) if error == crate::process::manager::EXEC_GROUP_RUNNING);
         if wait_error_exact {
             roots_created = roots_created.saturating_add(1);
         }
@@ -3826,8 +3828,10 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         reclaim_pids[reclaim_pid_count] = leader_pid.as_u64();
         reclaim_pid_count += 1;
         let retire_deadline = retirement_oracle_quiesce_deadline();
-        while crate::process::with_process_manager(|manager| manager.exec_waits_for_group(member_pid))
-            .unwrap_or(false)
+        while crate::process::with_process_manager(|manager| {
+            manager.exec_waits_for_group(member_pid)
+        })
+        .unwrap_or(false)
         {
             crate::task::scheduler::nudge_retirement_grace_for_test();
             let boundary_deadline =
@@ -3887,7 +3891,9 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         if successful_exec.is_err() && first_failure.is_none() {
             first_failure = Some("valid exec fixture did not commit once its group ended");
         }
-        if !(process_pid == leader_pid && row_is_member && member_row_gone) && first_failure.is_none() {
+        if !(process_pid == leader_pid && row_is_member && member_row_gone)
+            && first_failure.is_none()
+        {
             first_failure = Some("the exec'd thread did not take over its process's row");
         }
         if !sibling_gone && first_failure.is_none() {
@@ -3916,12 +3922,15 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         if group_post_count == 1 && process_reached_post {
             group_reached_post += 1;
         } else if first_failure.is_none() {
-            first_failure = Some("a kill aimed at the process failed to reach the exec'd row alone");
+            first_failure =
+                Some("a kill aimed at the process failed to reach the exec'd row alone");
         }
-        if signal_thread_group_for_test(member_pid.as_u64(), crate::signal::constants::SIGUSR1) == 0 {
+        if signal_thread_group_for_test(member_pid.as_u64(), crate::signal::constants::SIGUSR1) == 0
+        {
             member_id_unused_post += 1;
         } else if first_failure.is_none() {
-            first_failure = Some("a kill aimed at the exec'd thread's old row ID still reached a row");
+            first_failure =
+                Some("a kill aimed at the exec'd thread's old row ID still reached a row");
         }
 
         // A process sharing the address space without sharing the thread
@@ -3943,7 +3952,9 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
-                return TestResult::Fail("process manager unavailable for exec detach sharer insert");
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach sharer insert",
+                );
             };
             manager.insert_process(sharer_pid, sharer);
         }
@@ -3957,15 +3968,16 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         if shared_exec.is_ok() {
             roots_created = roots_created.saturating_add(1);
         }
-        let process_root_fresh = address_space_of(leader_pid)
-            .is_some_and(|(root, _)| root != shared_root);
+        let process_root_fresh =
+            address_space_of(leader_pid).is_some_and(|(root, _)| root != shared_root);
         let sharer_owns_old_root =
             address_space_of(sharer_pid).is_some_and(|(root, _)| root == shared_root);
         if shared_exec.is_err() && first_failure.is_none() {
             first_failure = Some("a CLONE_VM sharer outside the thread group made exec refuse");
         }
         if !(process_root_fresh && sharer_owns_old_root) && first_failure.is_none() {
-            first_failure = Some("exec beside a CLONE_VM sharer did not leave it the old address space");
+            first_failure =
+                Some("exec beside a CLONE_VM sharer did not leave it the old address space");
         }
         if shared_exec.is_ok() && process_root_fresh && sharer_owns_old_root {
             sharer_kept += 1;
