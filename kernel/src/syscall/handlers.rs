@@ -274,11 +274,12 @@ pub(crate) fn report_userspace_completion() {
 
         report_line!(
             info,
-            "TEST_TALLY: exited={} nonzero={} failed=[{}] started={}",
+            "TEST_TALLY: exited={} nonzero={} failed=[{}] started={} withdrawn={}",
             exited,
             nonzero,
             crate::task::exit_tally::FailureList::new(failures, nonzero),
-            crate::task::exit_tally::started()
+            crate::task::exit_tally::started(),
+            crate::task::exit_tally::withdrawn()
         );
         report_line!(
             info,
