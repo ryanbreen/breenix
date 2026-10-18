@@ -58,7 +58,7 @@ impl VirglBacking {
     /// Present pixel rows `lines`; the driver returns once the device completed
     /// the present. Returns its number among the console's completed presents.
     fn present(&self, lines: Range<usize>) -> Result<u64, &'static str> {
-        gpu_pci::flush_rect(0, lines.start as u32, self.layout.width as u32, lines.len() as u32)?;
+        gpu_pci::flush_rect_sync(0, lines.start as u32, self.layout.width as u32, lines.len() as u32)?;
         Ok(self.presents.fetch_add(1, Ordering::AcqRel) + 1)
     }
 

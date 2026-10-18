@@ -4271,6 +4271,12 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     })
 }
 
+/// Present backing pixels and wait for fenced transfer, scanout and flush
+/// responses. The console uses this before releasing its presentation token.
+pub fn flush_rect_sync(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+    present_3d(x, y, width, height)
+}
+
 /// Send only a RESOURCE_FLUSH command without TRANSFER_TO_HOST_2D.
 ///
 /// Used in GOP hybrid mode where pixels are already in BAR0 (the display
@@ -4435,10 +4441,16 @@ fn present_polled(
     h: u32,
     deadline: u64,
 ) -> bool {
+    let first_fence = state.next_fence_id;
+    state.next_fence_id += 3;
     let hdr = |type_: u32, ctx_id: u32| VirtioGpuCtrlHdr {
         type_,
-        flags: 0,
-        fence_id: 0,
+        flags: VIRTIO_GPU_FLAG_FENCE,
+        fence_id: first_fence + match type_ {
+            cmd::SET_SCANOUT => 1,
+            cmd::RESOURCE_FLUSH => 2,
+            _ => 0,
+        },
         ctx_id,
         padding: 0,
     };
@@ -4508,6 +4520,12 @@ const NO_POLLED_TIMEOUT: u32 = u32::MAX;
 fn ctrlq_in_flight() -> u16 {
     let avail_idx = unsafe { read_volatile(&raw const PCI_CTRL_QUEUE.avail.idx) };
     avail_idx.wrapping_sub(virtgpu_trace_used_idx())
+}
+
+/// Whether a published presentation can still touch its backing. Used after
+/// stopping the console producer, before transferring display ownership.
+pub fn presentation_pending() -> bool {
+    ctrlq_in_flight() != 0
 }
 
 /// Whether a polled command that timed out is still owned by the device. The
@@ -4592,8 +4610,14 @@ fn submit_polled<T>(
         core::ptr::read_volatile(resp as *const u32)
     };
     let (cmd_type, resource_id) = virtgpu_decode_command(page);
-    note_scanout(cmd_type, resource_id, resp_type);
-    resp_type == cmd::RESP_OK_NODATA
+    let request = unsafe { &*(page as *const VirtioGpuCtrlHdr) };
+    let response = unsafe { core::ptr::read_volatile(resp as *const VirtioGpuCtrlHdr) };
+    let fenced = request.flags & VIRTIO_GPU_FLAG_FENCE == 0
+        || (response.flags & VIRTIO_GPU_FLAG_FENCE != 0 && response.fence_id == request.fence_id);
+    if fenced {
+        note_scanout(cmd_type, resource_id, resp_type);
+    }
+    resp_type == cmd::RESP_OK_NODATA && fenced
 }
 
 // =============================================================================
