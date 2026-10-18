@@ -8,7 +8,7 @@ LAUNCHER = Path(__file__).resolve().parents[1] / 'scripts/build-background.sh'
 
 
 class BuildBackgroundTest(unittest.TestCase):
-    def test_command_executes_with_background_cpu_and_utility_disk_policy(self):
+    def test_command_io_and_exit_status_with_policy_readback_on_mac(self):
         probe = '''import ctypes, os, sys
 if sys.platform == 'darwin':
     libc = ctypes.CDLL(None, use_errno=True)
