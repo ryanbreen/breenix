@@ -48,10 +48,14 @@ struct Pointer {
 fn pointers() -> Result<Vec<Pointer>, String> {
     let deadline = Instant::now() + Duration::from_secs(30);
     let text = loop {
-        let text = std::fs::read_to_string("/proc/xhci/pointers")
-            .map_err(|error| format!("reading /proc/xhci/pointers: {error}"))?;
-        if !text.is_empty() || Instant::now() >= deadline {
-            break text;
+        let trace = std::fs::read_to_string("/proc/xhci/trace")
+            .map_err(|error| format!("reading /proc/xhci/trace: {error}"))?;
+        if trace.contains("state=ready ") {
+            break std::fs::read_to_string("/proc/xhci/pointers")
+                .map_err(|error| format!("reading /proc/xhci/pointers: {error}"))?;
+        }
+        if !trace.contains("state=enumerating ") || Instant::now() >= deadline {
+            return Err(format!("pointer census did not complete: {trace}"));
         }
         std::thread::sleep(Duration::from_millis(100));
     };
@@ -325,6 +329,7 @@ fn host(width: u32, height: u32, tally: &mut Tally) {
     // The host's previous pointer position is unknown before the first request;
     // a relative device moves by the difference between requested positions.
     let mut previous: Option<((u32, u32), (u32, u32))> = None;
+    let (mut absolute_seen, mut relative_seen) = (false, false);
     for (seq, (name, (x, y), buttons, wheel)) in cases.iter().enumerate() {
         let before = observe();
         println!("USB POINTER HOST seq={seq} x={x} y={y} buttons={buttons} wheel={wheel}");
@@ -354,6 +359,14 @@ fn host(width: u32, height: u32, tally: &mut Tally) {
         } else {
             " motion=relative"
         };
+        if moved && passed {
+            let absolute = state.0.abs_diff(*x) <= 1 && state.1.abs_diff(*y) <= 1;
+            let relative = relative_target
+                .is_some_and(|(rx, ry)| state.0.abs_diff(rx) <= 1 && state.1.abs_diff(ry) <= 1);
+            // A position compatible with both models cannot distinguish them.
+            absolute_seen |= absolute && !relative;
+            relative_seen |= relative && !absolute;
+        }
         tally.case(
             name,
             passed,
@@ -364,6 +377,8 @@ fn host(width: u32, height: u32, tally: &mut Tally) {
         );
         previous = Some(((*x, *y), (state.0, state.1)));
     }
+    tally.case("host/absolute-coverage", absolute_seen, "requires distinguishable absolute host motion");
+    tally.case("host/relative-coverage", relative_seen, "requires distinguishable relative host motion");
 }
 
 fn replay_one(pointer: &Pointer, report: &[u8]) -> Result<u64, i64> {
@@ -399,13 +414,17 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) {
         }
     };
     let Some(id) = layout.primary_id() else {
-        println!("USB POINTER NOTE {prefix} has no X axis; motion is not measured on it");
+        tally.case(&prefix, false, "missing X axis");
         return;
     };
     let (Some(x), Some(y)) = (layout.x, layout.y) else {
         tally.case(&prefix, false, "X without Y");
         return;
     };
+    if y.id != id || x.relative != y.relative {
+        tally.case(&prefix, false, "X/Y must share a report ID and axis kind");
+        return;
+    }
     let buttons: Vec<(u8, Field)> = layout
         .buttons
         .iter()
@@ -489,7 +508,7 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) {
     };
     for (button, name) in [(1u8, "left"), (2, "right"), (3, "middle")] {
         if !buttons.iter().any(|(n, _)| *n == button) {
-            println!("USB POINTER NOTE {prefix} declares no button {button}");
+            tally.case(&format!("{prefix}/{name}"), false, "required button missing from motion report");
             continue;
         }
         let mask = 1u32 << (button - 1);
@@ -500,7 +519,7 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) {
         send(tally, "wheel-up", report(b, (0, 0), 0, 1), &|s| s.3 == 1);
         send(tally, "wheel-down", report(b, (0, 0), 0, -1), &|s| s.3 == -1);
     } else {
-        println!("USB POINTER NOTE {prefix} declares no relative wheel in its pointer report");
+        tally.case(&format!("{prefix}/wheel"), false, "required relative wheel missing from motion report");
     }
 }
 
@@ -534,6 +553,19 @@ fn main() {
         host(width, height, &mut tally);
     }
     if mode != "host" {
+        let (mut relative, mut absolute) = (false, false);
+        for pointer in &attached {
+            if let Ok(layout) = Layout::parse(&pointer.descriptor) {
+                if let (Some(x), Some(y)) = (layout.x, layout.y) {
+                    if x.id == y.id && x.relative == y.relative {
+                        relative |= x.relative;
+                        absolute |= !x.relative;
+                    }
+                }
+            }
+        }
+        tally.case("replay/relative-interface", relative, "requires relative X/Y coverage");
+        tally.case("replay/absolute-interface", absolute, "requires absolute X/Y coverage");
         for pointer in &attached {
             replay(pointer, width, height, &mut tally);
         }
@@ -542,5 +574,5 @@ fn main() {
         "USB POINTER DONE mode={mode} passed={} failed={}",
         tally.passed, tally.failed
     );
-    std::process::exit(if tally.failed == 0 { 0 } else { 1 });
+    std::process::exit(if tally.failed == 0 && tally.passed > 0 { 0 } else { 1 });
 }
