@@ -13,10 +13,12 @@ mod pagewalk;
 mod raster;
 
 mod grid_tests {
-    use super::grid::Grid;
+    use super::grid::{Grid, BLANK, MAX_COLS, MAX_ROWS};
 
     fn grid(cols: usize, rows: usize) -> Box<Grid> {
         let mut grid = Box::new(Grid::new());
+        let size = cols.min(MAX_COLS) * rows.min(MAX_ROWS);
+        grid.set_storage(vec![BLANK; size].leak(), vec![BLANK; size].leak());
         grid.set_size(cols, rows);
         grid
     }
@@ -232,6 +234,74 @@ mod grid_tests {
         let before = g.generation();
         g.write(b"x");
         assert_ne!(g.generation(), before);
+    }
+
+    /// Forward `writes` in turn; the bytes forwarded and the replies kept.
+    fn forward(g: &mut Grid, writes: &[&[u8]], keep: bool) -> (Vec<u8>, Vec<u8>) {
+        let (mut forwarded, mut replies) = (Vec::new(), Vec::new());
+        for bytes in writes {
+            let mut out = vec![0; bytes.len() + super::grid::HELD];
+            let n = g.write_forwarding(bytes, |reply| {
+                if keep {
+                    replies.extend_from_slice(reply);
+                }
+                keep
+            }, &mut out);
+            forwarded.extend_from_slice(&out[..n]);
+        }
+        (forwarded, replies)
+    }
+
+    #[test]
+    fn an_answered_request_is_not_forwarded_even_when_split() {
+        let mut g = grid(20, 3);
+        let (forwarded, replies) = forward(&mut g, &[b"ab\x1b[", b"6ncd\x1b[5n"], true);
+        assert_eq!(forwarded, b"abcd");
+        assert_eq!(replies, b"\x1b[1;3R\x1b[0n");
+    }
+
+    #[test]
+    fn other_sequences_are_forwarded_whole_and_in_order() {
+        let mut g = grid(20, 3);
+        let (forwarded, replies) = forward(&mut g, &[b"a\x1b[3", b"1mb\x1b]0;t\x07c\x1b(Bd\x1b[?6n"], true);
+        // The grid does not answer a private-marker DSR, so it is forwarded.
+        assert_eq!(forwarded, b"a\x1b[31mb\x1b]0;t\x07c\x1b(Bd\x1b[?6n");
+        assert!(replies.is_empty());
+        assert_eq!(text(&g, 0), "abcd");
+    }
+
+    #[test]
+    fn a_reply_not_kept_leaves_its_request_forwarded() {
+        let mut g = grid(20, 3);
+        let (forwarded, replies) = forward(&mut g, &[b"x\x1b[6n"], false);
+        assert_eq!(forwarded, b"x\x1b[6n");
+        assert!(replies.is_empty());
+    }
+
+    #[test]
+    fn a_request_too_long_to_hold_is_forwarded_and_not_answered() {
+        let mut g = grid(20, 3);
+        let request = [&b"\x1b["[..], &[b'0'; super::grid::HELD][..], b"6n"].concat();
+        let (forwarded, replies) = forward(&mut g, &[&request[..10], &request[10..], b"\x1b[5n"], true);
+        assert_eq!(forwarded, request);
+        assert_eq!(replies, b"\x1b[0n");
+    }
+
+    #[test]
+    fn an_interrupted_sequence_is_forwarded_and_controls_inside_a_request_still_go() {
+        for bytes in [b"\x1b[6\x1b[5nX".as_slice(), b"\x1b[6\x1b[5\rnX".as_slice()] {
+            for split in 0..=bytes.len() {
+                let mut g = grid(20, 3);
+                let (forwarded, replies) = forward(&mut g, &[&bytes[..split], &bytes[split..]], true);
+                let expected = if bytes.contains(&b'\r') { b"\x1b[6\x18\rX".as_slice() } else { b"\x1b[6\x18X".as_slice() };
+                assert_eq!(forwarded, expected, "split {split}");
+                assert_eq!(replies, b"\x1b[0n");
+                let mut serial = grid(20, 3);
+                serial.write(&forwarded);
+                assert_eq!(text(&serial, 0), "X", "split {split}");
+                assert_eq!(text(&g, 0), "X", "split {split}");
+            }
+        }
     }
 }
 
@@ -868,10 +938,15 @@ mod line_discipline;
 #[path = "../../../kernel/src/tty/termios.rs"]
 mod termios;
 
+/// The kernel's `tty::read_to_user` refuses address 0 before taking any byte;
+/// copying to a real user address is outside the host discipline tests.
 pub fn read_to_user(
-    _: u64,
-    _: usize,
+    ptr: u64,
+    n: usize,
     _: impl FnMut(&mut [u8]) -> usize,
 ) -> (usize, Result<usize, i32>) {
+    if n > 0 && ptr == 0 {
+        return (0, Err(14));
+    }
     panic!("user address copying is outside the host discipline tests")
 }

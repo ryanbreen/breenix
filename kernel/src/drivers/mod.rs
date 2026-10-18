@@ -190,6 +190,35 @@ pub fn run_post_init_self_tests() {
     xhci::init();
 }
 
+/// Initialize the virtio-gpu PCI device and, when it offers VirGL, its 3D
+/// path (ARM64: Parallels, and QEMU's virtio-gpu-gl-pci).
+#[cfg(target_arch = "aarch64")]
+fn init_gpu_pci() {
+    use crate::serial_println;
+
+    match virtio::gpu_pci::init() {
+        Ok(()) => {
+            serial_println!("[drivers] VirtIO GPU (PCI) initialized");
+            // Attempt to initialize VirGL 3D acceleration if the device supports it
+            match virtio::gpu_pci::virgl_init() {
+                Ok(()) => {
+                    serial_println!("[drivers] VirGL 3D acceleration active");
+                    crate::graphics::set_compositor_backend(
+                        crate::graphics::CompositorBackend::VirGL,
+                    );
+                    serial_println!("[drivers] Compositor backend: VirGL");
+                    // Enable yielding during GPU command waits now that init is complete.
+                    // During runtime, GPU poll loops yield to the scheduler instead of
+                    // spinning, letting other tasks run during ~3.4ms GPU processing.
+                    virtio::gpu_pci::enable_gpu_yield();
+                }
+                Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
+            }
+        }
+        Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
+    }
+}
+
 /// Initialize the driver subsystem (ARM64 version)
 ///
 /// Detects the platform at runtime:
@@ -240,6 +269,12 @@ pub fn init() -> usize {
                     }
                 }
             }
+        }
+
+        // QEMU's virtio-gpu-gl-pci, when the boot attaches one (`--gpu-gl`):
+        // the screens then draw on it, as on Parallels.
+        if pci::find_device(0x1AF4, 0x1050).is_some() {
+            init_gpu_pci();
         }
 
         // Initialize AHCI from PCI
@@ -293,27 +328,7 @@ pub fn init() -> usize {
             virtio_devices.len()
         );
 
-        match virtio::gpu_pci::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
-                // Attempt to initialize VirGL 3D acceleration if the device supports it
-                match virtio::gpu_pci::virgl_init() {
-                    Ok(()) => {
-                        serial_println!("[drivers] VirGL 3D acceleration active");
-                        crate::graphics::set_compositor_backend(
-                            crate::graphics::CompositorBackend::VirGL,
-                        );
-                        serial_println!("[drivers] Compositor backend: VirGL");
-                        // Enable yielding during GPU command waits now that init is complete.
-                        // During runtime, GPU poll loops yield to the scheduler instead of
-                        // spinning, letting other tasks run during ~3.4ms GPU processing.
-                        virtio::gpu_pci::enable_gpu_yield();
-                    }
-                    Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
-                }
-            }
-            Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
-        }
+        init_gpu_pci();
 
         // Initialize VirtIO network driver (PCI transport) — Parallels
         match virtio::net_pci::init() {
