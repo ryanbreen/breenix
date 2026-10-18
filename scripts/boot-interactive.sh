@@ -195,9 +195,10 @@ case "$MODE" in
     suite) echo "==> Mode: suite $SUITE" ;;
     *) echo "==> Mode: $MODE" ;;
 esac
-# Build-host policy is opt-in and never changes VM priority or caller job limits.
+# Background only build subprocesses. A lane may itself be backgrounded; the
+# QEMU launcher restores boot policy independently, immediately before exec.
 run_build() {
-    if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
+    if [ "$(uname)" = Darwin ]; then
         taskpolicy -b "$@"
     else
         "$@"
