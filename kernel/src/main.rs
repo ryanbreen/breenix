@@ -677,6 +677,11 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // RAM disk is still unmounted, so the copy is the image as delivered.
     kernel::block::install_requested_root();
 
+    // Temporary hardware fault for PR #1992 ownership persistence validation.
+    if kernel::block::ramdisk::device().is_none() {
+        panic!("R240 validation: intentional failure after firmware install before root mount");
+    }
+
     // Initialize ext2 root filesystem once IRQ-driven block completions can arrive.
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
