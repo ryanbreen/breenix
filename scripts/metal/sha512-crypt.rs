@@ -1,4 +1,4 @@
-//! Host staging helper. Passwords arrive on stdin, never in argv or diagnostics.
+//! Host staging helper. Passwords arrive on stdin (console_send and test_password_is_sent_on_stdin_and_redacted).
 #[path = "../../libs/libbreenix/src/crypto/sha512.rs"]
 pub mod sha512;
 #[path = "../../libs/libbreenix/src/crypto/sha512_crypt.rs"]

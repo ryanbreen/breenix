@@ -6,6 +6,8 @@ image's first sector, which ext2 leaves unused: it asks the kernel to copy the R
 from pathlib import Path
 import re
 import hashlib
+import hmac
+import time
 import os
 import shutil
 import subprocess
@@ -62,7 +64,10 @@ def console_identity(site):
     user, password = site.get('CONSOLE_USER'), site.get('CONSOLE_PASSWORD', '')
     if user != 'root' or not 20 <= len(password) <= 256 or not re.fullmatch(r'[A-Za-z0-9_-]+', password):
         raise ValueError('console staging needs a root account and a private strong password')
-    return hashlib.sha256((user + '\0' + password).encode()).hexdigest()
+    key = site.get('CONSOLE_IDENTITY_KEY', '')
+    if not re.fullmatch(r'[0-9a-f]{64}', key):
+        raise ValueError('console staging needs a private random identity key')
+    return hmac.new(bytes.fromhex(key), (user + '\0' + password).encode(), hashlib.sha256).hexdigest()
 
 
 def console_shadow(site, hasher):
@@ -77,7 +82,7 @@ def console_shadow(site, hasher):
     value = result.stdout.decode('ascii', errors='replace')
     if not re.fullmatch(r'\$6\$' + re.escape(salt) + r'\$[./A-Za-z0-9]{86}', value):
         raise ValueError('console password hash is malformed')
-    return 'root:' + value + ':0:0:99999:7:::\n'
+    return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None):

@@ -2,7 +2,7 @@
 use libbreenix::{process, signal, termios, types::Fd};
 use libbreenix::crypto::sha512_crypt::verify;
 use std::ffi::CString;
-use std::io::{Read, Write};
+use std::io::Write;
 
 extern "C" {
     fn setgroups(count: usize, groups: *const u32) -> i32;
@@ -40,7 +40,7 @@ fn password() -> Result<Password, String> {
     let mut secret = Password(Vec::with_capacity(256));
     loop {
         let mut byte = [0];
-        if check(std::io::stdin().read(&mut byte))? == 0 { return Err("password input ended".into()); }
+        if check(libbreenix::io::read(Fd::STDIN, &mut byte))? == 0 { return Err("password input ended".into()); }
         if byte[0] == b'\n' { break; }
         if secret.0.len() == 256 || byte[0] == 0 { return Err("password input invalid".into()); }
         secret.0.push(byte[0]);

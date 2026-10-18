@@ -498,7 +498,9 @@ changes to its home and executes the shell with a login argv[0] and a fresh envi
 Missing, locked or unsupported shadow entries refuse authentication.
 
 The private site file supplies `CONSOLE_USER=root` and a generated `CONSOLE_PASSWORD`; the operator's
-copy belongs in their private credentials store. Neither is a guest site field. Staging builds a fresh random
+copy belongs in their private credentials store. `CONSOLE_IDENTITY_KEY` is a separate random 32-byte key
+encoded as 64 lowercase hex digits. The kept credential identity is an HMAC-SHA256 under that key,
+so records alone do not provide a password verifier. These fields are host-only. Staging builds a fresh random
 salt and hashes through a host helper compiled from the same Breenix SHA-512-crypt code used by login.
 It writes and reads back `/etc/shadow` with root ownership and mode 0600. The cached image has no password.
 Passwords reach the helper and SOL input over stdin, without command arguments or event text.
@@ -506,13 +508,13 @@ Passwords reach the helper and SOL input over stdin, without command arguments o
 The SOL challenge requires a wrong password refusal before the successful authentication, a whole computation
 answer line, logout, checked controlling-terminal reacquisition and a new login prompt. Its run records
 `input: sol` and `evidenceEligible: false`. The console-login definition records these producing stages and
-lists screen and keyboard proof as pending. The `first-local-login` stage remains waiting for the injector
+retains the screen and keyboard stages in its active stage list, with the milestone stubbed until a local measurement. The `first-local-login` stage remains waiting for the injector
 under ruling M2. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
 
 Only the storage lane may run `--mode console --input sol --disk install`: the console target and shadow
 then ride the verified image copy. A subsequent `--disk root` console request requires that recorded install's
 commit, console mode and credential identity to match. It does not restage or change credentials on the SSD.
-A changed credential requires the storage lane to install again. This lane's hardware proof uses RAM disk.
+A changed credential requires the storage lane to install again. This lane uses a RAM-disk hardware boot.
 
 ## Files
 
@@ -755,3 +757,7 @@ Both builds acquired `metal-build` with zero wait. The install built userspace o
 entry. The root record identified the install boot above. The later conflict-free main integration `4f5e0540`
 brought in thread retention changes; these storage measurements describe `cad77796`, not that later kernel.
 claim-lint:ok: 2 of 2 retained host build logs report acquired metal-build waited=0.0s and record userspace cache provenance.
+
+For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PATH`, compile
+`scripts/metal/sha512-crypt.rs` with `rustc --edition=2021 -O` to a temporary helper, then set
+`CONSOLE_HASH_HELPER` to that helper and run `python3 tests/metal_console_test.py`.

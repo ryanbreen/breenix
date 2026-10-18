@@ -502,8 +502,12 @@ class Driver:
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
-        self.challenge_shell(self.line)
-        self.challenge_console(self.line)
+        try:
+            self.challenge_shell(self.line)
+            self.challenge_console(self.line)
+        except Finish as finish:
+            if decision is None or finish.status != m.EXIT_DONE:
+                decision = finish
         if self.fatal_at is not None and decision is not None and decision.status == m.EXIT_DONE:
             return  # The fatal grace interval captures its backtrace before failing.
         if decision is not None:
@@ -593,7 +597,9 @@ class Driver:
             self.event('console-logout-returned-to-getty')
             # Prompts do not end in a newline. Re-evaluate completion against the
             # measured reacquisition marker after this new prompt has arrived.
-            if (self.final_seen and not any(self.required_stages) and self.fatal_at is None):
+            disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
+            if (self.final_seen and not any(self.required_stages) and self.fatal_at is None
+                    and (disk_evidence is None or disk_evidence in self.seen)):
                 self.completion_reported = True
                 raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out; keyboard proof waiting')
 
@@ -655,9 +661,9 @@ class Driver:
         self.challenge_shell(line)
         self.challenge_console(line)
         for stages in self.required_stages:
-            if stages and marker_matches(stages[0], line):
+            if stages and marker_matches(stages[0], line, getattr(self.args, 'input', None)):
                 stages.pop(0)
-        if (self.final_marker and marker_matches(self.final_marker, line)
+        if (self.final_marker and marker_matches(self.final_marker, line, getattr(self.args, 'input', None))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         disk_evidence = {None: None, 'install': 'disk-write', 'root': 'disk-root'}[getattr(self.args, 'disk', None)]
@@ -1027,9 +1033,14 @@ def progress_key(progress):
     return (progress.get('LastState'), progress.get('OemLastState') or '', progress.get('LastStateTime'))
 
 
-def marker_matches(spec, line):
+def marker_matches(spec, line, input_kind=None):
     """Pipe-separated literal alternatives; line matching requires the entire serial line."""
-    marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
+    if isinstance(spec, tuple) and len(spec) == 3:
+        marker, match, required_input = spec
+        if required_input != input_kind:
+            return False
+    else:
+        marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
     alternatives = marker.split('|')
     if match == 'line':
         return line in alternatives
@@ -1056,7 +1067,8 @@ def measured_stages(metal, mode, catalog, shape='ramdisk'):
                 continue  # These are checked by preflight, delivery and console setup.
             if not spec.get('marker'):
                 raise ValueError('unresolved measured serial stage')
-            group.append((spec['marker'], spec.get('match', 'contains')))
+            group.append((spec['marker'], spec.get('match', 'contains')) +
+                         ((spec['input'],) if spec.get('input') else ()))
         if group:
             groups.append(group)
     return groups
@@ -1082,7 +1094,7 @@ def final_marker(metal, mode, catalog, shape='ramdisk'):
                 continue
             stage = stage if isinstance(stage, dict) else markers.get(stage, {})
             if stage.get('marker'):
-                return (stage['marker'], stage.get('match', 'contains'))
+                return (stage['marker'], stage.get('match', 'contains')) + ((stage['input'],) if stage.get('input') else ())
             return None
     return None
 

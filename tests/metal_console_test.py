@@ -19,7 +19,7 @@ class ConsoleTest(unittest.TestCase):
     def driver(self):
         driver = object.__new__(boot.Driver)
         driver.args = SimpleNamespace(mode='console')
-        driver.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345'}
+        driver.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345', 'CONSOLE_IDENTITY_KEY': 'ab' * 32}
         driver.fatal_at = None
         driver.console_step = 0
         driver.console_done = False
@@ -47,6 +47,59 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual([call.args[0] for call in driver.console_send.call_args_list],
                          ['root', 'deliberately-wrong-password', 'root', driver.site['CONSOLE_PASSWORD'],
                           'print("metal-login-ok", 6*7)', 'exit'])
+
+    def test_console_completion_requires_disk_evidence(self):
+        driver = self.driver()
+        driver.args.disk = 'root'
+        driver.seen = set()
+        driver.console_step = 9
+        driver.challenge_console('Breenix login: ')
+        self.assertTrue(driver.console_done)
+        driver.console_step = 9
+        driver.seen.add('disk-root')
+        with self.assertRaises(boot.Finish) as result:
+            driver.challenge_console('Breenix login: ')
+        self.assertEqual(result.exception.status, 0)
+
+    def test_console_prompt_cannot_override_a_failing_serial_chunk(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            driver = fixture.driver
+            driver.args.mode = 'console'
+            driver.console_step = 9
+            driver.final_seen = True
+            driver.required_stages = []
+            driver.on_line = Mock(side_effect=boot.Finish(existing.m.EXIT_SHORT, 'disk mismatch'))
+            (driver.dir / 'serial.raw').write_bytes(b'disk mismatch\nBreenix login: ')
+            with self.assertRaises(boot.Finish) as result:
+                driver.pump_serial()
+            self.assertEqual(result.exception.status, existing.m.EXIT_SHORT)
+        finally:
+            fixture.tearDown()
+
+    def test_identity_is_keyed_and_tracks_password_changes(self):
+        site = self.driver().site
+        identity = metal_root.console_identity(site)
+        self.assertNotEqual(identity, metal_root.console_identity(dict(site, CONSOLE_IDENTITY_KEY='cd' * 32)))
+        self.assertNotEqual(identity, metal_root.console_identity(dict(site, CONSOLE_PASSWORD='changed_fixture_password_12345')))
+        with self.assertRaises(ValueError):
+            metal_root.console_identity(dict(site, CONSOLE_IDENTITY_KEY=''))
+
+    def test_keyboard_stage_rejects_sol_input(self):
+        stage = ('metal-login-ok 42', 'line', 'keyboard')
+        self.assertFalse(boot.marker_matches(stage, 'metal-login-ok 42', 'sol'))
+        self.assertTrue(boot.marker_matches(stage, 'metal-login-ok 42', 'keyboard'))
+        definition = existing.json.loads((existing.TOOLS.parents[1] / 'docs/metal/boot-path.json').read_text())
+        login = next(m for m in definition['milestones'] if m['id'] == 'console-login')
+        self.assertTrue(login['stub'])
+        self.assertIn('The answer is on the screen', [s['name'] for s in login['stages']['console']])
+
+    def test_console_input_options_are_validated_before_host_access(self):
+        runner = existing.load_script('metal-run')
+        for mode, input_kind in [('console', None), ('default', 'sol')]:
+            with self.assertRaisesRegex(SystemExit, 'console mode requires'):
+                runner.boot(SimpleNamespace(mode=mode, input=input_kind))
 
     def test_password_is_sent_on_stdin_and_redacted(self):
         driver = self.driver()

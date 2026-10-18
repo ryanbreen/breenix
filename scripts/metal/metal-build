@@ -205,6 +205,9 @@ def inner(args):
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
                  'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
+        if (out / 'sha512-crypt').is_file():
+            build['consoleHashHelper'] = {'size': (out / 'sha512-crypt').stat().st_size,
+                                          'sha256': sha256(out / 'sha512-crypt')}
         (out / 'build.json').write_text(json.dumps(build, indent=1) + '\n')
         print('[metal-build] inputs ready ' + json.dumps(timings), flush=True)
         return 0

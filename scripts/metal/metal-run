@@ -79,6 +79,8 @@ def verify_target(env, sha, branch):
 
 
 def boot(args):
+    if (args.mode == 'console') != (args.input == 'sol'):
+        raise SystemExit('console mode requires --input sol; --input requires console mode')
     env = host_env()
     payload = args.payload
     sha = target = ''

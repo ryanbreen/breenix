@@ -1,13 +1,13 @@
 //! A single console getty. Policy follows POSIX terminal/session semantics.
 use libbreenix::{io, process, signal, termios, types::Fd};
-use std::io::{Read, Write};
+use std::io::Write;
 
 fn check<T, E: std::fmt::Display>(result: Result<T, E>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
 }
 
 fn run() -> Result<(), String> {
-    // Init detached its session before spawning us. Repeating this on every
+    // Init detached its session before spawning us. Repeating this on a
     // respawn also acquires the terminal after the previous session leader exits.
     let sid = check(process::setsid())?;
     let fd = check(libbreenix::fs::open("/dev/console", 2))?;
@@ -34,7 +34,7 @@ fn run() -> Result<(), String> {
     let mut name = Vec::new();
     loop {
         let mut byte = [0];
-        if check(std::io::stdin().read(&mut byte))? == 0 { return Ok(()); }
+        if check(libbreenix::io::read(Fd::STDIN, &mut byte))? == 0 { return Ok(()); }
         if byte[0] == b'\n' { break; }
         if name.len() == 64 || !byte[0].is_ascii_alphanumeric() && byte[0] != b'_' && byte[0] != b'-' {
             return Err("invalid login name".into());

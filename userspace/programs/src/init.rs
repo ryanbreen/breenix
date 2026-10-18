@@ -242,9 +242,9 @@ fn run_console_mode() -> ! {
         reap_forever();
     }
     loop {
+        print!("[init] getty on the console\n");
         match spawn(b"/bin/getty\0") {
             Ok(child) => {
-                print!("[init] getty on the console\n");
                 while reap_one() != Some(child.raw() as i32) {}
                 print!("[init] console session ended; restarting getty\n");
             }
