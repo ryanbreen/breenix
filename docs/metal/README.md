@@ -396,8 +396,8 @@ in "Measured".
 | Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or boot progress returning to a state other than `OSBootStarted` or `OSRunning` (which the firmware reports once a boot option runs) | 124, 1, 1 |
-| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 30 minutes | 0, else 1 |
-| Whole attempt | — | 15 minutes from power-on, 45 for a suite (enforced by the reaper as well) | 124 |
+| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes | 0, else 1 |
+| Whole attempt | — | 15 minutes from power-on, 22 for a suite (enforced by the reaper as well) | 124 |
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice
 the longest of them (`post-times.json` in the boot store; the measured values are in "Measured", below). A POST
@@ -477,9 +477,8 @@ through SOL and requires the whole answer line `metal-console-ok 42` after sendi
 manifest and verdict tool into the boot record, waits for that suite's DONE line, and confirms power-off before
 running the manifest verdict against the captured serial. The scorer runs as a transient unprivileged user with
 management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
-180-second handoff deadline; suite mode uses the 1800-second suite DONE deadline of the ARM64 QEMU, Parallels and
-VMware launchers after handoff, and a further 900-second absolute budget for firmware and delivery (a 2700-second
-attempt ceiling).
+180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
+for firmware and delivery (a 1320-second attempt ceiling).
 
 Any main-path suite runs this way (`metal-run boot --mode suite --suite ID`). Its fixtures are the ones the other
 launchers attach: the ext2 root, here the RAM disk, and the machine's own network port with its DHCP lease where

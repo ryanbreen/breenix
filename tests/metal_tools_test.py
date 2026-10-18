@@ -1260,6 +1260,22 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=426):
             self.finish(d.check_deadlines, m.EXIT_HUNG)
 
+    def test_suite_deadline_and_attempt_ceiling_stop_unfinished_boots(self):
+        d = self.driver
+        d.args.mode = 'suite'
+        d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 530
+        with patch.object(m, 'now', return_value=530):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=531):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+        d.lease_ceiling = d.t0 + boot.ceiling_seconds(d.args)
+        d.kernel_started = d.last_serial = 1419
+        with patch.object(m, 'now', return_value=1419):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=1420):
+            self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
+
     def test_404_and_fatal_capture_graces(self):
         d = self.driver
         d.request_at = d.not_found_at = 110
