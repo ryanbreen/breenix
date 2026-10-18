@@ -120,7 +120,7 @@ static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
         case("caps-per-vt", "Caps Lock state is kept per terminal", keys_caps_per_vt),
         case("shift-pageup", "Shift+PageUp and Shift+PageDown move the view by half a screen", keys_shift_pageup),
     ]),
-]);
+]).defer_display();
 
 /// How the suite asks the kernel whether a layer is there.
 #[derive(Clone, Copy)]
