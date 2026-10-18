@@ -44,8 +44,8 @@ serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-s
 
 - **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
   `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and
-  a small per-boot target payload as `ramdisk`. The physical disk supplies the ext2 root; the target payload determines
-  the payload size.
+  a console intent payload as `ramdisk` only for console boots. Other disk-root modes omit
+  `ramdisk`; their target is written into the fresh physical ext2 root before boot.
 - **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
   builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
   image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
@@ -450,8 +450,8 @@ have no definition and are not scored.
 
 ## Physical-disk userspace
 
-When the userspace build digest or private site configuration changes, `metal_root.stage_root` calls the deployed copy of `scripts/write-boot-target.sh` to write
-`/etc/breenix/boot-target` as `console` onto the reusable ext2 image, remove a stale suite
+Before each main-path boot, `metal_root.stage_root` calls the deployed copy of `scripts/write-boot-target.sh` to write
+`/etc/breenix/boot-target` with the requested mode onto a fresh ext2 image, remove a stale suite
 sequence, and verify the configuration bytes and selected PID 1 ELF with host debugfs. Metal staging requires
 debugfs in the service container and does not launch a fallback container. Deployment carries the current shared
 writer, including when the selected kernel predates its default/shell options, and records the writer checksum. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
@@ -477,7 +477,7 @@ read of the physical disk, before any filesystem mount. After the suite boot
 powers off, the driver retains its lease and starts a separate cold-readback boot
 record with the same built firmware. The lease transfers directly to that record,
 so a queued disk user cannot intervene. A manual retry can use
-`metal-run boot --payload disk-readback --source-boot ID --branch BRANCH`; it builds
+`metal-run boot --payload disk-readback --source-boot ID --branch BRANCH --sha SOURCE_COMMIT`; it builds
 only the deployed firmware stub under a metal-build slot. The readback identifies the disk by its
 exact storage record, and uploads its raw sectors to a one-use, lease-bound HTTP
 route. No kernel or filesystem is loaded on that boot. An intervening disk-root
@@ -494,17 +494,22 @@ Embedded SATA stays enabled in **AHCI mode**, not RAID. The stream owns the disk
 after `metal-userspace`, in parallel with `metal-network`, to implement SATA/AHCI and the Breenix filesystem on it.
 The bootloader arrives over HTTP; the root for main-path boots lives on the
 physical disk. The firmware delivery stub selects the previously owned disk
-by its complete storage record, installs a changed userspace image, flushes and
+by its complete storage record, installs a fresh userspace image, flushes and
 reads its bytes back, and writes the new root record last. The kernel then takes
 the installed disk-root path from #1930. Other discovered disks keep their write
 refusal. Recovery fault boots retain a RAM-disk root.
 
-Installation is keyed by the build manifest's ext2 SHA-256 and the staged site
-configuration (including the console credential identity and configuration writer
-digest). A kernel-only commit or a mode/suite switch reuses the installed root.
-A reused root is writable and may contain files left by earlier boots. Boot
-records retain `disk: root`, `delivery.diskRoot.buildDigest`, `installedBy`, and
-the matching `disk-root-record` event. Main-path boot records identify the disk-root shape.
+Each main-path boot reinstalls its staged root, including kernel-only commits and
+mode/suite switches. No mutable ext2 state crosses boots: consumed fixtures and
+fixed-path writeback outputs from an earlier run cannot satisfy the next run.
+The build digest records the base image and private configuration for provenance;
+it does not authorize reuse. Firmware verifies the installed bytes before kernel
+entry, and the driver persists the new disk record on `suite fixture verified`,
+so a kernel panic before mount does not lose disk ownership. Kernel mount still
+has to report the exact record before a boot can pass.
+
+Private reconnaissance, site identifiers, addresses, credentials and service tags
+stay out of this repository and public evidence.
 
 ### The SATA controller
 

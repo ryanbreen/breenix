@@ -28,8 +28,8 @@ def config(action, size, expected, root, url=''):
     return HEADER.pack(MAGIC, action, size, expected, root) + (url.encode('ascii') + b'\0' if url else b'')
 
 
-def stage(directory, inputs, boot_id, commit, site, build):
-    """Install only when the userspace build or private site configuration changes."""
+def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False):
+    """Reset the writable root for each boot, including unchanged userspace builds."""
     previous = m.read_json(m.STATE / 'disk.json')
     if not previous:
         raise ValueError('disk delivery needs a previously verified install to identify its owned disk')
@@ -40,21 +40,19 @@ def stage(directory, inputs, boot_id, commit, site, build):
                     site={k: v for k, v in site.items() if k.startswith('GUEST_')},
                     writer=metal_image.sha256(writer))
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    if previous.get('buildDigest') == key:
-        facts = dict(previous)
-        files = {}
-    else:
-        image = inputs / 'ext2.img'
-        # Install one reusable root; per-boot mode selection travels separately.
-        metal_root.stage_root(image, 'console', None, site, hasher=inputs / 'sha512-crypt', writer=writer)
-        facts = metal_root.write_install_record(image, boot_id)
-        root = record(facts)
-        with image.open('r+b') as handle:
-            handle.write(root)
-        request = inputs / 'suite-disk.cfg'
-        request.write_bytes(config(1, facts['bytes'], record(previous), root))
-        facts.update(commit=commit, buildDigest=key)
-        files = {'suite-disk.cfg': request, 'suite-root.img': image}
+    image = inputs / 'ext2.img'
+    # A reused mutable root can preserve the exact bytes diskChecks must check
+    # this boot wrote, as well as consume fixtures needed by other suites.
+    metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
+                          idle_minutes=idle_minutes, replug=replug)
+    facts = metal_root.write_install_record(image, boot_id)
+    root = record(facts)
+    with image.open('r+b') as handle:
+        handle.write(root)
+    request = inputs / 'suite-disk.cfg'
+    request.write_bytes(config(1, facts['bytes'], record(previous), root))
+    facts.update(commit=commit, buildDigest=key)
+    files = {'suite-disk.cfg': request, 'suite-root.img': image}
     m.write_json(directory / 'suite-disk.json', facts)
     return facts, files
 

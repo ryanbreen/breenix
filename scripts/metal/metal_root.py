@@ -125,7 +125,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                 or any(char in value for char in '\r\n\x00')):
             raise ValueError('invalid guest site field')
         lines.append(key.removeprefix('GUEST_') + '=' + value + '\n')
-    if mode == 'probe' or site.get('BOOT_URL'):
+    if mode == 'probe':
         if not site.get('BOOT_URL'):
             raise ValueError('probe staging needs BOOT_URL')
         url = urlsplit(site['BOOT_URL'])

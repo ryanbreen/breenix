@@ -14,8 +14,7 @@ Run options: --payload image|hang|none, --mode default|shell|probe|suite|console
 --task NAME, --no-wait, --inject forceoff-fail|xhci-reset-device|xhci-short-read, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
 for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
 its stage folder, and serves boot.efi: the stub with its delivery disk appended. Main-path modes default to
-physical disk root, installing a changed userspace digest before the kernel starts. A small per-boot target
-payload selects the mode. `--disk install` is an explicit recovery install from a RAM disk; xHCI fault boots
+physical disk root, installing a fresh root with the requested target before the kernel starts. `--disk install` is an explicit recovery install from a RAM disk; xHCI fault boots
 retain a RAM-disk root (README, "The disks").
 """
 import argparse
@@ -373,7 +372,10 @@ class Driver:
         extracted = self.stage / 'esp'
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
         if disk == 'root':
-            facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build)
+            facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
+                mode=self.args.mode, suite=getattr(self.args, 'suite', None),
+                idle_minutes=self.args.idle_minutes if session(self.args) else None,
+                replug=self.args.mode == 'console' and not session(self.args))
             self.delivery['diskRoot'] = facts
             files.update(suite_files)
             if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):
@@ -381,14 +383,12 @@ class Driver:
         root_ramdisk = self.args.ramdisk and disk != 'root'
         if root_ramdisk:
             files['ramdisk'] = inputs / 'ext2.img'
-        if disk == 'root':
-            target = 'suite ' + self.args.suite if self.args.mode == 'suite' else self.args.mode
-            if self.args.mode == 'console':
-                self.console_intent = 'session' if session(self.args) else 'measure'
-                self.delivery['consoleIntent'] = self.console_intent
-                target += (' idle=' + str(self.args.idle_minutes)) if session(self.args) else ' replug'
+        if disk == 'root' and self.args.mode == 'console':
+            self.console_intent = 'session' if session(self.args) else 'measure'
+            self.delivery['consoleIntent'] = self.console_intent
+            # This format is supported by kernels preceding disk suite delivery.
             intent = self.stage / 'boot-intent'
-            intent.write_bytes(b'BREENIX-BOOT 1\n' + target.encode() + b'\n')
+            intent.write_bytes(b'BREENIX-CONSOLE 1\n' + self.console_intent.encode() + b'\n')
             files['ramdisk'] = intent
         disk = self.stage / 'boot-disk.img'
         facts = metal_image.assemble(disk, files)
@@ -887,6 +887,15 @@ class Driver:
             # The disk now holds this boot's root: a later disk-root boot expects this install.
             m.write_json(m.STATE / 'disk.json', dict(write, commit=self.args.commit, verifiedAt=observed_at, mode=self.args.mode,
                                                                consoleIdentity=self.delivery['root'].get('consoleIdentity')))
+        if disk == 'root' and 'disk-fixture' not in self.seen and (found := re.search(r'metal-stub: suite fixture verified: (\d+) bytes', line)):
+            installed = self.delivery['diskRoot']
+            if int(found.group(1)) != installed['bytes']:
+                raise Finish(m.EXIT_SHORT, 'the firmware fixture size differs from the staged image')
+            self.seen.add('disk-fixture')
+            # Firmware has flushed and read back the entire image and written
+            # the record last. Persist before a kernel panic can prevent mount.
+            m.write_json(m.STATE / 'disk.json', dict(installed, lastBoot=self.id))
+            self.event('disk-fixture-verified', observed_at=observed_at, bytes=installed['bytes'])
         if disk == 'root' and 'disk-root' not in self.seen and (found := ROOT_RECORD_LINE.search(line)):
             self.seen.add('disk-root')
             installed = self.delivery['diskRoot']

@@ -32,31 +32,72 @@ class DiskTest(existing.StateTest):
     def stage(self, boot='first'):
         return disk.stage(self.directory, self.inputs, boot, 'b' * 40, self.site, self.build)
 
-    def test_changed_build_installs_but_same_userspace_across_commits_reuses_disk(self):
+    def test_each_boot_reinstalls_even_unchanged_userspace_and_credentials(self):
+        original = (self.inputs / 'ext2.img').read_bytes()
+        previous = existing.m.read_json(existing.m.STATE / 'disk.json')
+        for boot, commit in [('first', 'b' * 40), ('next', 'c' * 40), ('same-commit', 'c' * 40)]:
+            (self.inputs / 'ext2.img').write_bytes(original)
+            with patch.object(metal_root, 'stage_root') as root:
+                facts, files = disk.stage(self.directory, self.inputs, boot, commit, self.site, self.build,
+                                         mode='suite', suite='files-io')
+                root.assert_called_once()
+                self.assertEqual(root.call_args.args[1:3], ('suite', 'files-io'))
+            self.assertEqual(set(files), {'suite-disk.cfg', 'suite-root.img'})
+            request = disk.HEADER.unpack(files['suite-disk.cfg'].read_bytes())
+            self.assertEqual(request[1:3], (1, 4096))
+            self.assertEqual(request[3], disk.record(previous))
+            self.assertEqual(request[4], disk.record(facts))
+            self.assertEqual(facts['installedBy'], boot)
+            existing.m.write_json(existing.m.STATE / 'disk.json', facts)
+            previous = facts
+        # Private credentials are also staged anew, even with unchanged ext2.
+        (self.inputs / 'ext2.img').write_bytes(original)
+        self.site['CONSOLE_PASSWORD'] += '_changed'
         with patch.object(metal_root, 'stage_root') as root:
-            facts, files = self.stage()
-            root.assert_called_once()
-        self.assertEqual(set(files), {'suite-disk.cfg', 'suite-root.img'})
-        request = disk.HEADER.unpack(files['suite-disk.cfg'].read_bytes())
-        self.assertEqual(request[1:3], (1, 4096))
-        self.assertEqual(request[3], metal_root.root_record('prior', 4096, 'a' * 64))
-        self.assertEqual(request[4], disk.record(facts))
-        self.assertEqual((self.inputs / 'ext2.img').read_bytes()[:512], disk.record(facts))
-        existing.m.write_json(existing.m.STATE / 'disk.json', facts)
-        with patch.object(metal_root, 'stage_root') as root:
-            reused, files = disk.stage(self.directory, self.inputs, 'next', 'c' * 40, self.site, self.build)
-            root.assert_not_called()
-        self.assertEqual(files, {})
-        self.assertEqual(reused['installedBy'], 'first')
-        self.assertEqual(reused['buildDigest'], facts['buildDigest'])
-        # A changed userspace digest must reinstall even at the same commit.
-        (self.inputs / 'ext2.img').write_bytes(bytes(1080) + b'\x53\xef' + bytes(3014))
-        self.build['ext2']['sha256'] = 'd' * 64
-        with patch.object(metal_root, 'stage_root') as root:
-            changed, files = self.stage('changed')
-            root.assert_called_once()
-        self.assertNotEqual(changed['buildDigest'], facts['buildDigest'])
+            changed, files = self.stage('credentials')
+            self.assertEqual(root.call_args.args[3]['CONSOLE_PASSWORD'], self.site['CONSOLE_PASSWORD'])
+        self.assertNotEqual(changed['buildDigest'], previous['buildDigest'])
         self.assertIn('suite-root.img', files)
+
+    def test_default_disk_boot_omits_the_new_ramdisk_format(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit = 'default', 'root', 'b' * 40
+            d.args.ramdisk = True
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            existing.m.write_json(inputs / 'build.json', dict(commit=d.args.commit, profile='production', features=[]))
+            with patch.object(existing.boot.metal_disk, 'stage', return_value=({}, {})) as stage, \
+                 patch.object(existing.boot.metal_image, 'extract_esp', return_value={}), \
+                 patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')) as assemble:
+                with self.assertRaisesRegex(RuntimeError, 'captured'):
+                    d.prepare_payload()
+            self.assertNotIn('ramdisk', assemble.call_args.args[1])
+            self.assertEqual(stage.call_args.kwargs['mode'], 'default')
+        finally:
+            fixture.tearDown()
+
+    def test_install_record_survives_a_kernel_panic_before_mount(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.disk = 'root'
+            facts = dict(installedBy='fresh', bytes=4096, sha256AfterRecord='a' * 64)
+            d.delivery['diskRoot'] = facts
+            d.on_disk_line('metal-stub: suite fixture verified: 4096 bytes', 2)
+            self.assertEqual(existing.m.read_json(existing.m.STATE / 'disk.json'), dict(facts, lastBoot=d.id))
+            self.assertNotIn('disk-root', d.seen)
+            # A short fixture must not replace the ownership record.
+            d.seen.discard('disk-fixture')
+            with self.assertRaises(existing.boot.Finish):
+                d.on_disk_line('metal-stub: suite fixture verified: 2048 bytes', 3)
+            self.assertEqual(existing.m.read_json(existing.m.STATE / 'disk.json'), dict(facts, lastBoot=d.id))
+        finally:
+            fixture.tearDown()
 
     def test_lease_handoff_keeps_competitors_out_and_preserves_the_live_unit(self):
         m = existing.m
