@@ -9,6 +9,7 @@ implementation; this tool uses object metadata only.
 """
 import argparse
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -31,6 +32,8 @@ def foreign(name):
 def clean(archive, tool_dir):
     before = hashlib.sha256(archive.read_bytes()).digest()
     timestamps = archive.stat()
+    record = archive.with_suffix('.a.cleaned.json')
+    previous = json.loads(record.read_text()) if record.exists() else None
     nm, ar, objcopy = [tool_dir / name for name in ('llvm-nm', 'llvm-ar', 'llvm-objcopy')]
     # rustc's llvm-tools ship llvm-readobj without the llvm-readelf name; its GNU style is readelf.
     readelf = [str(tool_dir / 'llvm-readelf')] if (tool_dir / 'llvm-readelf').exists() else \
@@ -73,10 +76,17 @@ def clean(archive, tool_dir):
             subprocess.run([str(ar), 'r', str(archive), str(obj)], check=True)
             removed += len(names)
         subprocess.run([str(ar), 's', str(archive)], check=True)
-    # Re-indexing an already-clean archive must not invalidate every std binary's
-    # rerun-if-changed dependency on libc.a. Changed bytes retain their new time.
-    if hashlib.sha256(archive.read_bytes()).digest() == before:
+    # Cargo can republish its original staticlib even on a fresh build. Remember
+    # the *cleaned* bytes across invocations, not just the bytes before this call,
+    # so republishing then cleaning identical libc does not relink every program.
+    after = hashlib.sha256(archive.read_bytes()).digest()
+    if previous and previous['sha256'] == after.hex():
+        os.utime(archive, ns=(timestamps.st_atime_ns, previous['mtime_ns']))
+    elif after == before:
         os.utime(archive, ns=(timestamps.st_atime_ns, timestamps.st_mtime_ns))
+    temporary = record.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'sha256': after.hex(), 'mtime_ns': archive.stat().st_mtime_ns}) + '\n')
+    temporary.replace(record)
     print(f'  libc-clean-archive: removed {removed} foreign math symbols')
 
 

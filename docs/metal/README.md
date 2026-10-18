@@ -331,7 +331,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    covers timestamp reconciliation and the build, so concurrent builds sharing a pool serialize there.
    Byte-identical source inputs retain their recorded timestamps across clones; changed inputs receive
    the current time after the lease is acquired. Cargo decides which binaries need rebuilding. Archive
-   cleaning preserves libc.a's timestamp only when its bytes are unchanged. Targets and artifacts share
+   cleaning records libc.a's cleaned digest and preserves its timestamp only when those bytes are unchanged,
+   including when Cargo republishes the original staticlib. Targets and artifacts share
    the cache's LRU eviction budget (`BREENIX_GATE_CACHE_GB`, default 12 GiB) and free-space floor
    (`BREENIX_GATE_FREE_GB`, default 15 GiB). Active leases can temporarily exceed the budget; pruning
    before and after builds, including failures, removes idle entries. The x86 gate reads
