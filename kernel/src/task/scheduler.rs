@@ -3585,6 +3585,12 @@ impl Scheduler {
                 core::hint::spin_loop();
             }
         }
+        // Local dispatch can bypass the placement guard after a blocked wake.
+        if let Some(pin) = thread.cpu_affinity.as_mut() {
+            if pin.cpu == cpu {
+                pin.relocating = false;
+            }
+        }
         thread.set_running();
         thread.run_start_ticks = crate::time::get_cpu_ticks();
     }
@@ -6930,7 +6936,7 @@ impl Scheduler {
     /// for that CPU; it does not discard it.
     /// claim-lint:ok: the placement rule, and the three mutation legs that
     /// redden on it, are in tests/loopback_pump_structure.rs
-    fn find_target_cpu_for_wakeup(&self, tid: u64) -> Option<usize> {
+    fn find_target_cpu_for_wakeup(&mut self, tid: u64) -> Option<usize> {
         let current_cpu = Self::current_cpu_id();
         if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
             // The pinned CPU is a placement decision like the other arms in
@@ -6952,6 +6958,7 @@ impl Scheduler {
             if pin.cpu < self.online_cpu_count()
                 && (home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))
             {
+                self.end_pin_relocation(tid);
                 return Some(pin.cpu);
             }
             // The home CPU cannot take it, and here the two pin kinds part
@@ -7109,6 +7116,9 @@ impl Scheduler {
             index += 1;
             if !self.pinned_wake_is_waiting_here(tid, cpu) {
                 continue;
+            }
+            if let Some(pin) = self.threads[index - 1].cpu_affinity.as_mut() {
+                pin.relocating = false;
             }
             self.per_cpu_queues[cpu].push_back(tid);
             PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
