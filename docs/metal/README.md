@@ -103,6 +103,45 @@ arrival time and byte offset. A dropped session is reopened within two seconds a
 boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_console` and `heal_console` in
 `scripts/metal/metal-boot`; the cleaner's rules are five tests in `tests/metal_tools_test.py`.
 
+## Starting and ending an operator session
+
+Ask an agent to start a console session, or choose **Boot → Console** in Vigil with the session option.
+The boot host command is:
+
+```sh
+metal-run boot --mode console --session
+metal-run follow ID
+metal-run stop ID
+```
+
+Keep the returned boot ID: `follow` shows the text console and `stop` ends that session immediately,
+then powers off through the normal driver cleanup. At the machine, use the monitor and USB keyboard
+once their console support has landed. The login credentials are in the operator's private credential store;
+ask an agent to locate them. A session leaves the login prompt and typing to the operator. It never types the
+automated login challenge. SOL and the local keyboard feed the same console TTY.
+
+**The power button boots nothing.** An agent or Vigil must stage and start the boot through the machine lease.
+A stray power-on has no image to fetch and the reaper turns it off. Do not use the power button to start a session.
+
+A session ends after **30 minutes without console input**, **four hours from power-on**, or `metal-run stop ID`.
+The kernel timestamps input on TTY 0, including editing and control characters from either source. Output does
+not reset the clock: kernel census lines, a busy program and SOL traffic cannot keep a session alive. At expiry,
+the kernel emits the one-shot line `[console] input idle 30 min`; the driver powers the machine off and releases
+the lease. The reaper honours the same four-hour ceiling even if the driver fails; a dead driver is still reaped
+promptly. The boot record has kind `console-session`, is evidence-ineligible, and is never scored because its
+capture holds the operator's typing. Captures remain in the private boot store.
+
+Sessions use a fresh RAM-disk root by default; files disappear at power-off. `--disk root` uses a console image
+previously installed by the storage lane, with the existing commit and credential checks. A session cannot install
+or rewrite that disk. To exercise input expiry quickly on a RAM-disk session:
+
+```sh
+metal-run boot --mode console --session --idle-minutes 2
+```
+
+Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
+the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
+
 ## Interrupts, time and processors
 
 The kernel takes one path on each firmware it boots on, QEMU's included (`kernel/src/arch_impl/x86_64/irq.rs`):

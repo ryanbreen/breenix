@@ -259,6 +259,9 @@ impl TtyDevice {
     /// without care. For interrupt context, use `input_char_nonblock`.
     #[allow(dead_code)] // Used by push_char in keyboard_task (conditionally compiled)
     pub fn input_char(&self, c: u8) {
+        if self.num == 0 {
+            super::input_clock::record_input();
+        }
         let mut ldisc = self.ldisc.lock();
 
         // Process the character through the line discipline
@@ -322,6 +325,9 @@ impl TtyDevice {
     /// reintroduction fail loudly rather than silently.
     #[allow(dead_code)]
     pub fn input_char_nonblock(&self, c: u8) -> bool {
+        if self.num == 0 {
+            super::input_clock::record_input();
+        }
         let _no_blocking_pm = crate::process::NoBlockingProcessManagerScope::enter();
 
         // Owe a foreground process group to the next thread-context reader
