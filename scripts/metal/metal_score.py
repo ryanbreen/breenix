@@ -1,4 +1,4 @@
-"""Score the milestones measurable by one boot shape, using that boot's definition."""
+"""Score the milestones measurable by one boot shape and mode, using that boot's definition."""
 import copy
 import json
 import metal_attended
@@ -9,9 +9,10 @@ def boot_shape(disk):
     return {'install': 'install', 'root': 'disk-root', None: 'ramdisk'}[disk]
 
 
-def measures(milestone, shape):
+def measures(milestone, shape, mode):
     # Commits preceding shape metadata describe the original RAM-disk boots.
-    return shape in milestone.get('bootShapes', ['ramdisk'])
+    return (shape in milestone.get('bootShapes', ['ramdisk'])
+            and ('bootModes' not in milestone or mode in milestone['bootModes']))
 
 
 def attended_definition(definition):
@@ -43,7 +44,7 @@ def score(directory):
             'post': 'post-code', 'image-complete': 'image-complete', 'handoff': 'handoff'}
     results = {}
     for milestone in definition['milestones']:
-        if milestone.get('stub') or not measures(milestone, shape):
+        if milestone.get('stub') or not measures(milestone, shape, run['mode']):
             continue
         if attended and milestone['id'] == 'console-login':
             challenge = metal_attended.Challenge(metal_attended.stages(definition))

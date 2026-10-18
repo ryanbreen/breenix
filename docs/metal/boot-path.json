@@ -427,6 +427,11 @@
         "install",
         "disk-root"
       ],
+      "bootModes": [
+        "default",
+        "shell",
+        "console"
+      ],
       "kernel": true,
       "stages": {
         "x86_64": [

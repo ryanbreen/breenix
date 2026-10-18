@@ -589,8 +589,8 @@ operator resolves that difference. No restore step writes storage.
 ### Local console definition
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
-Their stage lists cover RAM-disk, install and disk-root shapes. Each is measured; the `usb-keyboard` and
-`console-login` stages tagged `input: keyboard` are required only of an attended boot, so a SOL boot finishes
+Their stage lists cover RAM-disk, install and disk-root shapes, subject to each milestone's `bootModes`.
+The `usb-keyboard` and `console-login` stages tagged `input: keyboard` are required only of an attended boot, so a SOL boot finishes
 without them. Its verdict leaves those two milestones unpassed and counts the stages its input cannot produce
 (`inputUnmeasured`); those alone do not make the boot short. Existing modes keep their measured stages and
 completion markers.
@@ -936,7 +936,11 @@ subsequent review tightens the upper bound and staggers those windows, requiring
 ### Storage evidence and boot shapes
 
 Each metal milestone declares `bootShapes`: `ramdisk`, `install` or `disk-root`.
-The driver and retained `milestone-verdict.json` score only milestones that the boot's shape can measure.
+Optional `bootModes` further limits measurement to the listed modes; without it the mode is unrestricted.
+`fb-console` lists `default`, `shell` and `console`, whose console keeps the screen. Suite and probe programs
+can take the display, so those modes neither wait for nor score `fb-console`. Its four stages remain required
+where it applies.
+The driver and retained `milestone-verdict.json` score only milestones that the boot's shape and mode can measure.
 An install measures the RAM-disk root and disk copy; a disk-root boot measures the installed filesystem.
 Missing stages of a measured milestone still fail the boot. The RAM-disk root contract remains three stages.
 
