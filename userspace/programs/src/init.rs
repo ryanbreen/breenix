@@ -763,14 +763,19 @@ fn run_bssh_pubkey_oracle() {
     }
     let right = arm(b"--publickey\0");
     let wrong = arm(b"--publickey-wrong\0");
-    if right == 0 && wrong == 77 {
-        print!("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]\n");
+    let marker = if right == 0 && wrong == 77 {
+        "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]".to_string()
     } else {
-        print!(
-            "[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]\n",
-            right, wrong
-        );
-    }
+        format!("[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]", right, wrong)
+    };
+    // The refused arm leaves bsshd reporting its handshake failure, which can
+    // reach the console as a partial line. Flush init's own output, then
+    // write the marker in one write that starts and ends a line, so it is a
+    // whole line whatever bsshd has written so far (#1849).
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.flush();
+    let _ = libbreenix::io::write(libbreenix::types::Fd::STDOUT, format!("\n{}\n", marker).as_bytes());
 }
 
 fn start_bsshd() {
