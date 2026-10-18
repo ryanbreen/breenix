@@ -685,7 +685,7 @@ def supervise_worker(argv, parent):
             # Run Inspector supervises a gate with its own helper, which can predate the
             # tested checkout's: name the operations newer than the first supervisor.
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record,
-                       BREENIX_SLOT_OPERATIONS='quiet')
+                       BREENIX_SLOT_OPERATIONS='quiet,number')
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             deferred = []
             try:
@@ -793,7 +793,14 @@ def supervise_worker(argv, parent):
                                        'required': required, 'policy': policy,
                                        'quiet_since': time.monotonic(), 'quiet_samples': 0, 'next_sample': 0}
                         else:
-                            if operation == 'release':
+                            if operation == 'number':
+                                number = slots.held_number.get(request['resource'])
+                                response = ({'slot': number} if number is not None else
+                                            {'error': 'resource lease is not held'})
+                                client.sendall(json.dumps(response).encode() + b'\n')
+                                client.close()
+                                continue
+                            elif operation == 'release':
                                 if request['resource'].endswith('boot'):
                                     try:
                                         stop_qemu()
@@ -930,7 +937,7 @@ def supervise_worker(argv, parent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'quiet', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'number', 'quiet', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
@@ -941,6 +948,8 @@ def main():
         return supervise(values[1:] if values[0] == '--' else values)
     if args.operation in ('acquire', 'release'):
         send_request({'operation': args.operation, 'resource': values[0]})
+    elif args.operation == 'number':
+        print(send_request({'operation': 'number', 'resource': values[0]})['slot'])
     elif args.operation == 'quiet':
         if 'quiet' not in os.environ.get('BREENIX_SLOT_OPERATIONS', '').split(','):
             print('[host-slot] the supervising helper predates boot-start records: no quiet-host wait, start not recorded',
