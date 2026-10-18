@@ -12,10 +12,10 @@ spec.loader.exec_module(gpu_time)
 
 
 class GpuTimeTest(unittest.TestCase):
-    def judge(self, end=6.0, perf=7.0, ns=0):
+    def judge(self, end=6.0, perf=7.0, ns=0, idle=0):
         records = [{"kind": "vm", "pid": 1, "accel": "highest"}]
         records += [{"kind": "gpu", "t": t, "ns": n}
-                    for t, n in [(0.0, 0), (6.0, 0), (8.0, ns)]]
+                    for t, n in [(0.0, 0), (6.0, idle), (8.0, idle + ns)]]
         records += [{"kind": "line", "t": 1.0,
                      "line": "SUITE_IDLE gpu performance begin ms=5000"},
                     {"kind": "line", "t": end,
@@ -39,6 +39,11 @@ class GpuTimeTest(unittest.TestCase):
 
     def test_resolved_interval_with_sufficient_work_is_accepted(self):
         self.assertIsNone(self.judge(ns=400_000_000))
+
+    def test_category_rate_must_reach_ten_times_the_idle_rate(self):
+        # Idle runs at idle/6 ns per second and the category at ns/2: 3 * ns / idle times idle.
+        self.assertIn("does not show", self.judge(ns=18_000_000, idle=6_000_000))
+        self.assertIsNone(self.judge(ns=22_000_000, idle=6_000_000))
 
 
 if __name__ == "__main__":

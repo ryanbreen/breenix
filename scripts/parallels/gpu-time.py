@@ -17,8 +17,8 @@ time counts from the first sample that shows it, and time a client accumulated b
 VM process opened it cannot exist, so a client first seen with time is counted whole.
 
 `judge` accepts the run when the VM has 3D acceleration on and the `performance` category's
-GPU time exceeds the idle window's, scaled to the category's length, by at least 10% of the
-category's length. The idle window is the suite's `SUITE_IDLE gpu performance` interval
+host GPU time rate (GPU time over the category's wall time) is at least ten times the idle
+window's rate; with no GPU time in the idle window, the category needs some (ruling 51). The idle window is the suite's `SUITE_IDLE gpu performance` interval
 just before `performance` (libbreenix suite runner, `Category::idle_before`). The category runs
 from the end of that window to its last CASE record. Exit 0 accepts and prints the figures;
 exit 1 refuses and names why.
@@ -32,7 +32,7 @@ import sys
 import time
 
 INTERVAL = 0.25
-FLOOR = 0.10
+RATIO = 10
 CLIENT = re.compile(r"^\s*[| ]*\+-o (\S+)\s+<class [^,]+, id (0x[0-9a-f]+)")
 CREATOR = re.compile(r'"IOUserClientCreator" = "pid (\d+),')
 USAGE = re.compile(r'"accumulatedGPUTime"=(\d+)')
@@ -164,7 +164,7 @@ def judge_record(path, wait):
         return "the serial carries no performance CASE record"
     stop = perf[-1]
     # Batched serial reads cannot resolve an idle boundary and performance work at
-    # the same timestamp. Reject that interval before computing its wall-time floor.
+    # the same timestamp. Reject that interval before computing its rate.
     if perf[0] <= end or stop <= end or any(b < a for a, b in zip(perf, perf[1:])):
         return "the performance measurement interval is nonpositive or unresolved"
     idle_gpu = [gpu_at(samples, begin), gpu_at(samples, end)]
@@ -173,11 +173,12 @@ def judge_record(path, wait):
         return "the GPU time samples do not cover the idle window and the performance category"
     idle_s, cat_s = end - begin, stop - end
     idle_ns, cat_ns = idle_gpu[1] - idle_gpu[0], cat_gpu[1] - cat_gpu[0]
-    expected_idle = idle_ns / idle_s * cat_s
-    excess = cat_ns - expected_idle
-    figures = (f"idle {idle_ns / 1e6:.1f} ms GPU over {idle_s:.2f} s; performance {cat_ns / 1e6:.1f} ms GPU over "
-               f"{cat_s:.2f} s; excess {excess / 1e6:.1f} ms, floor {FLOOR * cat_s * 1e3:.1f} ms")
-    if excess < FLOOR * cat_s * 1e9:
+    idle_rate, cat_rate = idle_ns / idle_s, cat_ns / cat_s
+    ratio = cat_rate / idle_rate if idle_rate > 0 else math.inf if cat_ns > 0 else 0
+    figures = (f"idle {idle_ns / 1e6:.1f} ms GPU over {idle_s:.2f} s ({idle_rate / 1e6:.2f} ms/s); performance "
+               f"{cat_ns / 1e6:.1f} ms GPU over {cat_s:.2f} s ({cat_rate / 1e6:.2f} ms/s); rate {ratio:.1f}x idle, "
+               f"required {RATIO}x")
+    if ratio < RATIO:
         return f"host GPU time does not show the performance category's work: {figures}"
     print(f"Parallels host GPU time accepted (pid {vm['pid']}, 3D {vm['accel']}): {figures}")
     return None
