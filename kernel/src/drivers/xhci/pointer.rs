@@ -71,17 +71,12 @@ impl Controller {
                 }
             }
         }
-        let mut failure = None;
         for interface in interfaces {
-            if let Err(error) = self.configure_pointer(index, interface) {
-                log::warn!(
-                    "[usb] pointer interface {} refused: {error}",
-                    interface.interface
-                );
-                failure = Some(error);
-            }
+            // A command error can leave the controller owning device.input.
+            // Do not rewrite that shared DMA context for another interface.
+            self.configure_pointer(index, interface)?;
         }
-        failure.map_or(Ok(()), Err)
+        Ok(())
     }
 
     fn configure_pointer(
