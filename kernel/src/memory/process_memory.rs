@@ -2241,6 +2241,17 @@ impl ProcessPageTable {
             if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
                 continue;
             }
+            // An inherited supervisor-only root masks user access throughout
+            // its shared kernel hierarchy. It has no process leaf custody to
+            // release. Keep auditing an inherited root with USER_ACCESSIBLE:
+            // any user leaf there still needs a counted custody refusal.
+            #[cfg(target_arch = "x86_64")]
+            if shift == 39
+                && !self.owned_root_slots.contains(index)
+                && !flags.contains(PageTableFlags::USER_ACCESSIBLE)
+            {
+                continue;
+            }
             if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
                 if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
                     *frame_budget -= 1;
