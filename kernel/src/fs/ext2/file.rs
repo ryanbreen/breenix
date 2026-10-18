@@ -723,6 +723,8 @@ impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
 }
 
 impl<B: BlockDevice + ?Sized> BlockDevice for MetadataBatch<'_, B> {
+    fn is_read_only(&self) -> bool { self.device.is_read_only() }
+
     fn identity(&self) -> usize { self.device.identity() }
 
     fn read_block(&self, start: u64, bytes: &mut [u8]) -> Result<(), BlockError> {

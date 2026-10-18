@@ -23,6 +23,9 @@ class BreenixRunner:
                  success_any_patterns=None,
                  success_all_patterns=None,
                  failure_patterns=None):
+        policy = subprocess.run(["bash", os.path.join(os.path.dirname(__file__), "x86-qemu-policy.sh")])
+        if policy.returncode:
+            raise SystemExit(policy.returncode)
         self.mode = mode
         self.display = display
         self.process = None

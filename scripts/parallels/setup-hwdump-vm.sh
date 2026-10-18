@@ -52,6 +52,11 @@ prlctl set "$VM_NAME" --memsize 2048
 # Ensure EFI boot is on (should be default for ARM64)
 prlctl set "$VM_NAME" --efi-boot on
 
+# Disable app sharing; this is expected to reduce host app indexing activity.
+if ! prlctl set "$VM_NAME" --sh-app-guest-to-host off --sh-app-host-to-guest off; then
+    echo "WARNING: could not disable Parallels application sharing" >&2
+fi
+
 # Add a small disk for the OS install
 prlctl set "$VM_NAME" --device-add hdd --type plain --size 8192
 

@@ -52,6 +52,13 @@ elif [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "write-boot-target: not a suite id (lowercase words joined by '-'): $SUITE" >&2
     exit 2
 fi
+if [ "${BREENIX_CONSOLE_REPLUG:-0}" != 0 ]; then
+    if [ "$SUITE" != --console ] || [ "$BREENIX_CONSOLE_REPLUG" != 1 ] || [ -n "${BREENIX_CONSOLE_IDLE_MINUTES:-}" ]; then
+        echo "write-boot-target: replug needs --console without session idle options" >&2
+        exit 2
+    fi
+    BOOT_TARGET+=" replug"
+fi
 if [ -n "${BREENIX_CONSOLE_IDLE_MINUTES:-}" ]; then
     if [ "$SUITE" != --console ] || [[ ! "$BREENIX_CONSOLE_IDLE_MINUTES" =~ ^[1-9][0-9]{0,2}$ ]] || (( BREENIX_CONSOLE_IDLE_MINUTES > 240 )); then
         echo "write-boot-target: console idle must be 1 through 240 minutes with --console" >&2

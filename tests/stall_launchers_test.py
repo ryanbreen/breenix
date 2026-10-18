@@ -159,6 +159,7 @@ delete_vmware_bundle() { :; }
                     user.write_text('SIGKILL_TEARDOWN_TEST: FAIL\n')
                     args = [str(user),'tests','--timeout','10']
                 result = subprocess.run([sys.executable,'-c',INJECT,str(ROOT/'scripts'/name)] + args,
+                                        env=dict(os.environ, VIGIL_BOOT_ID='synthetic-stall-replay'),
                                         capture_output=True,text=True,timeout=6)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 record = json.loads(Path(str(user)+'.stall.json').read_text())

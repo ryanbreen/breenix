@@ -461,6 +461,22 @@ STD_BINARIES=(
     "bssh"
 )
 
+# A retained target may contain an executable whose Cargo target was removed.
+# Validate against this invocation's manifest, not the persistent output pool.
+CURRENT_TARGETS="$(cd "$SCRIPT_DIR" && cargo metadata --no-deps --format-version 1)"
+printf '%s' "$CURRENT_TARGETS" | python3 -c '
+import json, sys
+metadata = json.load(sys.stdin)
+manifest = sys.argv[1]
+names = {target["name"] for package in metadata["packages"]
+         if package["manifest_path"] == manifest
+         for target in package["targets"] if "bin" in target["kind"]}
+missing = [entry.split(":", 1)[0] for entry in sys.argv[2:]
+           if entry.split(":", 1)[0] not in names]
+if missing:
+    sys.exit("ERROR: install list has no current Cargo binary target: " + ", ".join(missing))
+' "$SCRIPT_DIR/Cargo.toml" "${STD_BINARIES[@]}"
+
 # Check producer names before copying outputs into the shared ELF directory.
 SEEN_NAMES="$UTILITY_NAMES libc-busybox "
 while read -r category _; do

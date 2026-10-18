@@ -1475,6 +1475,7 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
     } else {
         match scheduler_state {
             Some("Running") | Some("Ready") => b'R',
+            Some("Disk sleep") => b'D',
             Some("Blocked") => b'S',
             _ => match process.state {
                 ProcessState::Blocked => b'S',

@@ -92,6 +92,10 @@ class GDBChat:
 
     def start(self) -> Dict[str, Any]:
         """Start QEMU and GDB, connect them."""
+        if self.arch == "x86_64":
+            policy = subprocess.run(["bash", str(Path(__file__).resolve().parents[3] / "scripts/x86-qemu-policy.sh")])
+            if policy.returncode:
+                raise SystemExit(policy.returncode)
         # Clean up old serial log file
         try:
             os.remove(self.SERIAL_LOG_FILE)
@@ -726,6 +730,10 @@ def main():
     parser.add_argument("--arch", choices=["x86_64", "aarch64"], default=None,
                         help="Target architecture (default: auto-detect from kernel binary)")
     args = parser.parse_args()
+    if args.arch == "x86_64":
+        policy = subprocess.run(["bash", str(Path(__file__).resolve().parents[3] / "scripts/x86-qemu-policy.sh")])
+        if policy.returncode:
+            raise SystemExit(policy.returncode)
 
     # Force stdin line buffering
     import io

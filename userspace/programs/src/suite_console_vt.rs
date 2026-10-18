@@ -1224,10 +1224,21 @@ fn view(n: usize, marker: &str) -> Verdict<Vec<String>> {
     shows(n, marker)
 }
 
+/// Returns a terminal's view to its live screen when a case ends, however it
+/// ends, so a failed scrollback case leaves no scrolled-back view to later cases.
+struct LiveView<'a>(&'a Term);
+
+impl Drop for LiveView<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.scroll(-1_000_000);
+    }
+}
+
 pub fn scrollback_history_kept() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let tty2 = Term::vt(2)?;
+        let _live = LiveView(&tty2);
         let label = mark("hist");
         let rows = fill(&tty2, &label, 200)?;
         switch_to(2)?;
@@ -1246,6 +1257,7 @@ pub fn scrollback_history_per_vt() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let (tty2, tty3) = (Term::vt(2)?, Term::vt(3)?);
+        let _live = (LiveView(&tty2), LiveView(&tty3));
         let (two, three) = (mark("per-2"), mark("per-3"));
         let rows = fill(&tty2, &two, 150)?;
         fill(&tty3, &three, 150)?;
@@ -1264,6 +1276,7 @@ pub fn scrollback_survives_switch() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let tty2 = Term::vt(2)?;
+        let _live = LiveView(&tty2);
         let label = mark("survive");
         let rows = fill(&tty2, &label, 150)?;
         switch_to(2)?;
@@ -1283,6 +1296,7 @@ pub fn scrollback_view_holds_on_output() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let tty2 = Term::vt(2)?;
+        let _live = LiveView(&tty2);
         let label = mark("hold");
         let rows = fill(&tty2, &label, 150)?;
         switch_to(2)?;
@@ -1304,6 +1318,7 @@ pub fn scrollback_key_returns_live() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
         let tty2 = Term::vt(2)?;
+        let _live = LiveView(&tty2);
         let label = mark("key-live");
         let rows = fill(&tty2, &label, 150)?;
         switch_to(2)?;

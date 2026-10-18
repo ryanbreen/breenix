@@ -97,7 +97,8 @@ impl Controller {
         // auxiliary HID interface must not leave an unpolled endpoint behind.
         let mut device = self.devices.remove(index);
         let setup = spec::setup(0x81, 6, 0x2200, hid.interface as u16, hid.report_length);
-        let descriptor = self.read_descriptor(&mut device, setup, hid.report_length);
+        let descriptor =
+            self.read_descriptor(&mut device, &|_| setup, hid.report_length, hid.report_length);
         self.devices.insert(index, device);
         let descriptor = descriptor?;
         let layout = match Layout::parse(&descriptor) {

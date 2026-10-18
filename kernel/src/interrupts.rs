@@ -1832,31 +1832,11 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     );
     log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
 
-    // Enhanced logging for userspace GPFs (Ring 3 privilege violation tests)
+    // Memory at a Ring 3 RIP is not read here: a user can fault with a
+    // non-canonical RIP (#1852) or one a sibling thread has just unmapped,
+    // and reading either faults the kernel.
     if from_userspace {
         log::error!("  GPF from USERSPACE (Ring 3)");
-
-        // Try to identify which instruction caused the fault
-        {
-            let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
-            let byte = unsafe { core::ptr::read_volatile(rip) };
-            match byte {
-                0xfa => {
-                    log::info!("  ✓ CLI instruction detected (0xfa) - expected privilege violation")
-                }
-                0xf4 => {
-                    log::info!("  ✓ HLT instruction detected (0xf4) - expected privilege violation")
-                }
-                0x0f => {
-                    // Check for MOV CR3 (0x0f 0x22 0xd8)
-                    let byte2 = unsafe { core::ptr::read_volatile(rip.offset(1)) };
-                    if byte2 == 0x22 {
-                        log::info!("  ✓ MOV CR3 instruction detected (0x0f 0x22) - expected privilege violation");
-                    }
-                }
-                _ => log::debug!("  Instruction byte at fault: {:#02x}", byte),
-            }
-        }
     } else {
         log::error!(
             "RIP: {:#x}, CS: {:#x}",

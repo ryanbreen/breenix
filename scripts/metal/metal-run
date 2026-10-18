@@ -2,7 +2,7 @@
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
+  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
   metal-run stop ID
   metal-run status
@@ -26,6 +26,9 @@ import time
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
 HERE = Path(__file__).resolve().parent
+XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
+# The kernel feature that compiles the xHCI recovery exercise in; production kernels never carry it.
+FAULT_FEATURE = 'xhci_fault_inject'
 
 
 def host_env():
@@ -93,6 +96,10 @@ def boot(args):
         raise SystemExit('--idle-minutes needs a RAM-disk session and 1 through 240 minutes')
     if not is_session and not attended and (args.mode == 'console') != (args.input == 'sol'):
         raise SystemExit('console mode requires --input sol; --input requires console mode')
+    if args.inject in XHCI_FAULTS and (
+            args.payload != 'image' or args.mode != 'console' or args.input != 'sol'
+            or is_session or attended or args.disk):
+        raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
     env = host_env()
     payload = args.payload
     sha = target = ''
@@ -152,13 +159,15 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha],
+            # An xHCI fault boot gets a fault-test kernel; every other boot the production one.
+            features = ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else []
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features,
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     return 0
 
 
-def build(boot_id, sha):
+def build(boot_id, sha, features=None):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -189,7 +198,7 @@ def build(boot_id, sha):
     status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
                       '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
-                      '--stub', f'{tools}/efi-stub').returncode
+                      '--stub', f'{tools}/efi-stub', *(['--features', features] if features else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
@@ -238,7 +247,7 @@ def main():
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
-    p.add_argument('--inject', choices=('forceoff-fail',))
+    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read'))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
@@ -249,11 +258,12 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
+    p.add_argument('--features', choices=(FAULT_FEATURE,))
     args = parser.parse_args()
     if args.command == 'boot':
         return boot(args)
     if args.command == '_build':
-        return build(args.id, args.sha)
+        return build(args.id, args.sha, args.features)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)

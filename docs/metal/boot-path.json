@@ -493,7 +493,6 @@
       "id": "usb-keyboard",
       "title": "USB keyboard into the console",
       "summary": "Clean-room HID boot keyboard; its typed stages are measured only by attended boots, from kernel USB input provenance (M8).",
-      "stub": false,
       "bootShapes": [
         "ramdisk",
         "install",
@@ -573,7 +572,6 @@
         ]
       },
       "waitingFor": "An attended USB keyboard challenge; no successful human-typed boot has been measured yet.",
-      "stub": false,
       "attendedStages": [
         {
           "name": "Getty on the console",
