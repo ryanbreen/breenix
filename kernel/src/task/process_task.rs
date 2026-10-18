@@ -3770,7 +3770,60 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             "P1AB: reclaim progress gate changed nested proof-lock violations"
         );
     }
+    // Exercise the production frame budget on the same sparse hierarchy. This
+    // catches an audit that makes progress but starves table returns for hundreds
+    // of passes. Keep the original boot-owned F2/F9 checks above unchanged.
+    let (page_table, recorded) = match boot_oversized_page_table() {
+        Ok(fixture) => fixture,
+        Err(message) => return TestResult::Fail(message),
+    };
+    let mut production = boot_test_reclaim(BOOT_RECLAIM_PID_BASE + 105);
+    production.page_table = Some(page_table);
+    let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+    let mut passes = 0;
+    let mut worst_ns = 0;
+    while production.page_table.is_some() && passes < 32 {
+        let started = reclaim_probe_time_ns();
+        reclaim_preempt_disable();
+        let snapshot = scheduler::RetirementSnapshot::capture();
+        let proof = production.lock_free_root_proof(&snapshot, true);
+        #[cfg(target_arch = "x86_64")]
+        let peers_clear = production.release_root_on_peers();
+        #[cfg(target_arch = "aarch64")]
+        let peers_clear = true;
+        let clear = proof.blocker().is_none() && peers_clear
+            && !production.cached_root_is_live() && !production.live_row_names_root();
+        let progress = if clear {
+            Some(production.reclaim_bounded(PRODUCTION_RECLAIM_FRAME_BUDGET))
+        } else {
+            None
+        };
+        reclaim_preempt_enable();
+        worst_ns = worst_ns.max(reclaim_probe_time_ns().saturating_sub(started));
+        if progress.is_none() {
+            return TestResult::Fail("production reclaim probe encountered a live root");
+        }
+        passes += 1;
+    }
+    let returned = trace::PT_TABLE_FRAMES_RETURNED.aggregate() - returned_before;
+    crate::serial_println!(
+        "[RECLAIM_PRODUCTION_PROBE:passes={}:returned={}:expected={}:frame_budget={}:worst_step_ns={}]",
+        passes, returned, recorded + 1, PRODUCTION_RECLAIM_FRAME_BUDGET, worst_ns
+    );
+    if production.page_table.is_some() || returned != recorded as u64 + 1 {
+        return TestResult::Fail("production reclaim probe failed to return its sparse hierarchy within 32 passes");
+    }
     TestResult::Pass
+}
+
+#[cfg(feature = "boot_tests")]
+fn reclaim_probe_time_ns() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    let time = crate::arch_impl::aarch64::timer::monotonic_time();
+    #[cfg(target_arch = "x86_64")]
+    let time = crate::time::tsc::monotonic_time();
+    let (seconds, nanos) = time.unwrap_or_else(crate::time::timer::get_monotonic_time_ns);
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]

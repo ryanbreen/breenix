@@ -36,6 +36,13 @@ elif [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "write-boot-target: not a suite id (lowercase words joined by '-'): $SUITE" >&2
     exit 2
 fi
+if [ -n "${BREENIX_CONSOLE_IDLE_MINUTES:-}" ]; then
+    if [ "$SUITE" != --console ] || [[ ! "$BREENIX_CONSOLE_IDLE_MINUTES" =~ ^[1-9][0-9]{0,2}$ ]] || (( BREENIX_CONSOLE_IDLE_MINUTES > 240 )); then
+        echo "write-boot-target: console idle must be 1 through 240 minutes with --console" >&2
+        exit 2
+    fi
+    BOOT_TARGET+=" idle=$BREENIX_CONSOLE_IDLE_MINUTES"
+fi
 if [ -n "$ONLY" ]; then
     if [[ "$SUITE" = --* ]] || [ -n "$SEQUENCE" ] || [[ ! "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]]; then
         echo "write-boot-target: one case needs a suite, no sequence, and category/case" >&2

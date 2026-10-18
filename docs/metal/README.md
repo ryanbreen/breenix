@@ -103,6 +103,58 @@ arrival time and byte offset. A dropped session is reopened within two seconds a
 boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_console` and `heal_console` in
 `scripts/metal/metal-boot`; the cleaner's rules are five tests in `tests/metal_tools_test.py`.
 
+## Starting and ending an operator session
+
+Ask an agent to start a console session with the boot host command below. Vigil's Boot control does not yet
+offer Console sessions; that application control remains to be built.
+
+```sh
+metal-run boot --mode console --session
+metal-run follow ID
+metal-run stop ID
+```
+
+Keep the returned boot ID: `follow` shows the driver's progress log and `stop` ends that session immediately,
+then powers off through the normal driver cleanup. `follow` is read-only; the repository does not yet offer
+operator typing over SOL while the driver owns it. At the machine, use the monitor and USB keyboard
+once their console support has landed. The login credentials are in the operator's private credential store;
+ask an agent to locate them. A session leaves the login prompt and typing to the operator. It never types the
+automated login challenge. SOL and the local keyboard feed the same console TTY.
+claim-lint:ok: `tests/metal_session_test.py` checks that the session driver sends no challenge.
+
+**The power button boots nothing.** An agent or Vigil must stage and start the boot through the machine lease.
+A stray power-on has no image to fetch and the reaper turns it off. Do not use the power button to start a session.
+claim-lint:ok: the unstaged image-server contract in "Delivery" and the stray-power-on cases in `tests/metal_tools_test.py`.
+
+A session ends after **30 minutes without console input**, **four hours from power-on**, or `metal-run stop ID`.
+An observed power-off also closes the session at the next running-machine poll (30 seconds).
+The kernel timestamps input on TTY 0, including editing and control characters from either source. Output does
+not reset the clock: kernel census lines, a busy program and SOL traffic cannot keep a session alive. At expiry,
+the kernel emits the one-shot line `[console] input idle 30 min`; the driver powers the machine off and releases
+the lease. The reaper honours the same four-hour ceiling even if the driver fails; a dead driver is still reaped
+promptly. The boot record has kind `console-session`, is evidence-ineligible, and is never scored because its
+capture holds the operator's typing. Captures remain in the private boot store.
+claim-lint:ok: `tests/metal_session_test.py` checks the deadline, record kind, scoring refusal and reaper;
+`tests/console_input_activity.rs` includes the kernel input clock's expiry-boundary and one-shot tests.
+
+The input-clock worker emits a serial-only `[console] input clock alive` pulse each 30 seconds until expiry.
+If that pulse disappears for more than 120 seconds after handoff or the last pulse, the driver ends the boot as
+hung through its normal power-off cleanup, even if other serial output continues. This bounds a stopped clock
+or an idle line lost during SOL recovery without treating a quiet login prompt as a hang.
+claim-lint:ok: the worker in `kernel/src/tty/input_clock.rs` produces the pulse; `tests/metal_session_test.py`
+checks the missing-pulse boundary and powered-off reading.
+
+Sessions use a fresh RAM-disk root by default; files disappear at power-off. `--disk root` uses a console image
+previously installed by the storage lane, with the existing commit and credential checks. A session cannot install
+or rewrite that disk. To exercise input expiry quickly on a RAM-disk session:
+
+```sh
+metal-run boot --mode console --session --idle-minutes 2
+```
+
+Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
+the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
+
 ## The screen console
 
 The x86 kernel without `interactive` (`kernel/src/fbcon`) draws a text console on the firmware's framebuffer, the
@@ -200,7 +252,18 @@ specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide
 - **Initialization.** The guide's initialization procedure, step by step, with one host send ring (64 entries), one
   standard receive producer ring (64) and receive return ring 0 (128), each ring, the status block and each
   buffer in a page of its own. Interrupts are MSI through the local APIC (`kernel/src/arch_impl/x86_64/msi.rs`).
-  The PHY is reset and autonegotiates 10, 100 and 1000 Mb/s.
+  A completed, operational autonegotiated PHY link survives the bootcode handshake
+  and is retained from firmware HTTP boot. Otherwise the PHY is reset and
+  advertises 10, 100 and 1000 Mb/s; the loopback step requires current link-down
+  (two reads of latch-low status) before restarting negotiation and fails if the
+  link remains up after 1500 polls. Those polls include 15 ms of explicit
+  delays plus two MDIO reads per poll, so the error's "15 ms" describes the
+  explicit delay budget rather than elapsed time.
+  PR #1795's five hardware attempts exercised the retained-link path; they
+  did not exercise loopback fallback or establish that carrier survives a
+  PHY software reset on hardware. The host register model assumes carrier
+  survives reset to exercise stale latch-low handling; that is a model
+  scenario, not a measured hardware defect.
 - **Production rings.** A send-ring slot owns a separate DMA buffer until the
   controller's send consumer index retires it; a full ring returns backpressure.
   MSI acknowledges the device and raises NetRx. The bounded bottom half copies
@@ -555,6 +618,60 @@ Only the storage lane may run `--mode console --input sol --disk install`: the c
 then ride the verified image copy. A subsequent `--disk root` console request requires that recorded install's
 commit, console mode and credential identity to match. It does not restage or change credentials on the SSD.
 A changed credential requires the storage lane to install again. This lane uses a RAM-disk hardware boot.
+
+### The USB keyboard
+
+`kernel/src/drivers/hid_boot/` and `kernel/src/drivers/xhci/keyboard.rs` drive a USB HID boot keyboard on a
+root port of the clean-room xHCI controller. They are written only from xHCI 1.2, USB 2.0 chapter 9, HID 1.11
+and the HID Usage Tables; their comments cite the sections.
+
+- **Attach.** After the port census, and for each connection a Port Status Change Event reports later, the
+  driver looks in the device's first configuration for interface class 03, subclass 01, protocol 01 at
+  alternate setting 0 and its interrupt-IN endpoint. It issues Configure Endpoint for that endpoint (the
+  interval converted as xHCI 6.2.3.6 gives it), and only after that command succeeds sends SET_CONFIGURATION
+  (xHCI 4.3.5), then Set_Protocol(Boot) and Set_Idle with an indefinite duration to that interface number,
+  then the LED state with Set_Report(Output). It prints `[usb] boot keyboard attached:` with the port, speed,
+  interface, endpoint, whether the keyboard accepted the LED report, and the EP0 resends (`ep0-retries`) and
+  device resets the attach took. Set_Report is optional for a boot keyboard, so a refusal is reported, not fatal.
+- **Address and EP0 recovery.** After Address Device the driver waits the 2 ms SetAddress() recovery interval
+  (USB 2.0 9.2.6.3), which xHCI 4.6.5 leaves to software, before the first request to the new address. A
+  control transfer that halts EP0 (Stall, Transaction Error, Babble or Split Transaction Error) is recovered
+  with Reset Endpoint and a Set TR Dequeue Pointer onto the next Setup TD (xHCI 4.6.8, 4.8.3), then sent again
+  50 ms later (the USB 2.0 9.2.6.4 bound), up to three attempts; the device clears a protocol stall on that
+  SETUP. A descriptor read that comes back short does not halt EP0: once its Status stage completes
+  (xHCI 4.10.1.1), it is sent again on the same terms. Each resend prints `[usb] slot <n>: EP0 request <setup
+  packet> completed with code=<c> on attempt <k>; sending it again`. When the keyboard still refuses its
+  configuration, or a reattach's enumeration fails, the slot is disabled and returned and the device is reset
+  and enumerated again (xHCI 4.10.2.1.2), at most twice per attach.
+- **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
+  ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
+  leaves the previous keys standing. The US layout follows the Keyboard/Keypad page's usage names; Shift,
+  Ctrl (control codes, so Ctrl-C reaches the line discipline as from SOL), Alt (ESC before the key) and Caps,
+  Num and Scroll Lock, whose LEDs the host sets. Arrows, Home, End, Insert, Delete, PageUp and PageDown send
+  `ESC [ A`-`D`, `ESC [ H`, `ESC [ F` and `ESC [ 2~`, `3~`, `5~`, `6~`. Typematic is the host's: 500 ms, then
+  one repeat each 33.3 ms. Alt+F1 to Alt+F6, Alt+Left and Alt+Right decode as distinct chord events for the
+  virtual-terminal layer and send no bytes yet.
+- **Into TTY 0.** Bytes wait in a 4096-byte queue until `tty::push_char_nonblock` accepts them; a byte the
+  TTY refuses (its lock is held) stays at the head and is offered again 5 ms later. A key event is queued whole
+  or refused whole. `[hid] first key report` and `[hid] typed into the console tty: <n> bytes` print once each;
+  no key value is logged.
+- **Detach.** A disconnect, a disabled port or a new connection on a keyboard's port tears the device down:
+  Stop Endpoint for EP0 and the keyboard endpoint, the slot's transfer events discarded once those commands
+  complete, Disable Slot, its DCBAA entry cleared, and then its contexts, rings and buffers returned to the
+  frame allocator. Key state, modifiers and the repeat go with it. `[usb] boot keyboard detached:` gives the
+  page count. When the controller does not complete Disable Slot, the memory stays pinned.
+- **The replug exercise.** On a `console` boot, as init starts the console target, the driver detaches and
+  reattaches each boot keyboard ten times, so both paths run on the machine and an intermittent reattach shows:
+  with port power control (HCCPARAMS1.PPC) it powers the port off and on and attaches the connection the port
+  then reports; without it, it disables the port and resets it. `[usb] replug exercise: port <n>: reattached
+  <k> of 10 rounds` closes the exercise. The `usb-keyboard` milestone's stages are
+  the attach, the detach and the second attach; its typed-key stages are `input: keyboard` and wait for the
+  injector (ruling M2), which a SOL boot's `input: sol` record does not meet.
+- **Hubs.** The machine's census found its keyboard device on a root port, so there is no hub class driver;
+  a keyboard behind a hub is not attached.
+
+The pure parts have host tests in their own files, run with `rustc --edition=2021 --test` on
+`kernel/src/drivers/hid_boot/{report,queue,interface}.rs` and `kernel/src/drivers/xhci/spec.rs`.
 
 ## Files
 
