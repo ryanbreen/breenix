@@ -13,10 +13,12 @@ mod pagewalk;
 mod raster;
 
 mod grid_tests {
-    use super::grid::Grid;
+    use super::grid::{Grid, BLANK, MAX_COLS, MAX_ROWS};
 
     fn grid(cols: usize, rows: usize) -> Box<Grid> {
         let mut grid = Box::new(Grid::new());
+        let size = cols.min(MAX_COLS) * rows.min(MAX_ROWS);
+        grid.set_storage(vec![BLANK; size].leak(), vec![BLANK; size].leak());
         grid.set_size(cols, rows);
         grid
     }
@@ -868,10 +870,15 @@ mod line_discipline;
 #[path = "../../../kernel/src/tty/termios.rs"]
 mod termios;
 
+/// The kernel's `tty::read_to_user` refuses address 0 before taking any byte;
+/// copying to a real user address is outside the host discipline tests.
 pub fn read_to_user(
-    _: u64,
-    _: usize,
+    ptr: u64,
+    n: usize,
     _: impl FnMut(&mut [u8]) -> usize,
 ) -> (usize, Result<usize, i32>) {
+    if n > 0 && ptr == 0 {
+        return (0, Err(14));
+    }
     panic!("user address copying is outside the host discipline tests")
 }
