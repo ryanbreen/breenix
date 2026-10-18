@@ -133,6 +133,7 @@ class Driver:
         self.http_offset = 0
         self.bmc_events = []
         self.bmc_lock = threading.Lock()
+        self.power_seen_on = False
         self.post_code = None
         self.post_seen = False
         self.gap = False
@@ -821,7 +822,9 @@ class Driver:
             if 'error' in reading:
                 self.event('bmc-read-error', observed_at=observed_at, error=reading['error'])
                 continue
-            if reading.get('power') == 'Off':
+            if reading.get('power') == 'On':
+                self.power_seen_on = True
+            if reading.get('power') == 'Off' and (self.power_seen_on or self.kernel_started is not None):
                 self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
                 raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
                              'the machine powered off during the boot')

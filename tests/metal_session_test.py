@@ -64,7 +64,8 @@ class SessionTest(existing.StateTest):
 
     def test_power_off_observation_ends_session_without_waiting_for_idle_or_ceiling(self):
         d = self.driver
-        for reading in [{'t': 120, 'error': 'unavailable'}, {'t': 121, 'power': 'On'}]:
+        for reading in [{'t': 119, 'power': 'Off'}, {'t': 120, 'error': 'unavailable'},
+                        {'t': 121, 'power': 'On'}]:
             d.bmc_events = [reading]
             d.pump_bmc()
         d.bmc_events = [{'t': 122, 'power': 'Off'}]
