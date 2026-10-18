@@ -1,11 +1,12 @@
 //! Host tests for the screen console's grid, its font size rule, its drawing
 //! against the read-back oracle, and the x86 write-combining page-table walk.
 #![cfg(test)]
+#![feature(allocator_api)]
 
 #[path = "../../../kernel/src/console/boxdraw.rs"]
 mod boxdraw;
 #[path = "../../../kernel/src/console/grid.rs"]
-mod grid;
+pub mod grid;
 #[path = "../../../kernel/src/arch_impl/x86_64/pagewalk.rs"]
 mod pagewalk;
 #[path = "../../../kernel/src/console/raster.rs"]
@@ -780,4 +781,92 @@ mod pagewalk_tests {
         assert_eq!(report, Report::default());
         assert_eq!(fake.entry(pdpt, 0), RW | PAGE_SIZE | PCD | PWT);
     }
+}
+
+extern crate alloc;
+include!("vt_support.rs");
+
+#[path = "../../../kernel/src/tty/keyboard_input.rs"]
+mod keyboard_input;
+
+#[test]
+fn deferred_keys_stay_ordered_through_discipline_contention() {
+    let mut keys = keyboard_input::PendingInput::new();
+    let bytes = b"ab\x7f";
+    for &byte in bytes {
+        keys.push(byte);
+    }
+    keys.drain(|_| false);
+    let mut received = Vec::new();
+    keys.drain(|byte| {
+        received.push(byte);
+        true
+    });
+    assert_eq!(received, bytes);
+    let mut discipline = line_discipline::LineDiscipline::new();
+    let mut signals = Vec::new();
+    for byte in received {
+        if let Some(signal) = discipline.input_char(byte, &mut |_| {}) {
+            signals.push(signal);
+        }
+        assert!(
+            !discipline.has_data(),
+            "canonical input escaped before newline"
+        );
+    }
+    assert!(signals.is_empty());
+    discipline.input_char(b'\n', &mut |_| {});
+    let mut edited = [0; 8];
+    assert_eq!(discipline.read(&mut edited), Ok(2));
+    assert_eq!(&edited[..2], b"a\n");
+    for &byte in b"x\x03cd" {
+        keys.push(byte);
+    }
+    keys.drain(|byte| {
+        if let Some(signal) = discipline.input_char(byte, &mut |_| {}) {
+            signals.push(signal);
+        }
+        true
+    });
+    assert_eq!(signals, [2]);
+    assert!(!discipline.has_data());
+    discipline.input_char(b'\n', &mut |_| {});
+    let mut line = [0; 8];
+    assert_eq!(discipline.read(&mut line), Ok(3));
+    assert_eq!(&line[..3], b"cd\n");
+    keys.drain(|_| panic!("processed twice"));
+}
+
+#[test]
+fn scrollback_view_stays_on_the_same_row_after_the_ring_fills() {
+    let mut g = grid::Grid::new();
+    let cells = vec![grid::BLANK; 16 * 3].leak();
+    let alternate = vec![grid::BLANK; 16 * 3].leak();
+    g.set_storage(cells, alternate);
+    g.set_size(16, 3);
+    g.set_history(vec![grid::BLANK; 16 * grid::HISTORY_LINES].leak());
+    for n in 0..1100 {
+        g.write(format!("{n}\r\n").as_bytes());
+    }
+    g.scroll_view(10);
+    let viewed = g.view_row(0).to_vec();
+    g.write(b"1100\r\n");
+    assert_eq!(g.view_row(0), viewed);
+    assert_eq!(g.view(), 11);
+    g.scroll_view(2000);
+    g.write(b"1101\r\n");
+    assert_eq!(g.view(), grid::HISTORY_LINES);
+}
+
+#[path = "../../../kernel/src/tty/line_discipline.rs"]
+mod line_discipline;
+#[path = "../../../kernel/src/tty/termios.rs"]
+mod termios;
+
+pub fn read_to_user(
+    _: u64,
+    _: usize,
+    _: impl FnMut(&mut [u8]) -> usize,
+) -> (usize, Result<usize, i32>) {
+    panic!("user address copying is outside the host discipline tests")
 }
