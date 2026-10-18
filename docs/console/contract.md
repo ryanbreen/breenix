@@ -88,10 +88,17 @@ the VT's own size succeeds without effect; with any other size it fails with EIN
 
 ### 1.6 Scrollback
 
-- 1,000 lines per VT, allocated when the VT first receives output. If the allocation fails, the VT runs
-  without scrollback and the kernel logs `[console] ttyN scrollback unavailable` once.
+- 1,000 lines per VT, allocated when the VT first receives output. tty1's is allocated when the console
+  attaches to the display, since its output, the kernel log, begins with the boot. The others' is
+  allocated by their first write from a process; the allocation is not made in interrupt context, so
+  lines that interrupt-context echo scrolls off before that first write are not kept (V4). If the
+  allocation fails, the VT runs without scrollback and the kernel logs `[console] ttyN scrollback
+  unavailable` once.
+- Lines enter the scrollback when they scroll off the top of the main screen: full-screen scrolling, or a
+  scroll region whose top is the screen's first row. Erasing the screen does not move lines into it.
 - **Shift+PageUp** and **Shift+PageDown** move the foreground VT's view back and forward by half a screen
   (`rows / 2`, rounded down): the `Scroll_Backward` and `Scroll_Forward` actions `keymaps(5)` names.
+  `VT_SCROLLVIEW` (section 4.1) moves any VT's view by a number of lines, for programs and the suite.
 - New output does not move a scrolled-back view. A key that sends input to the VT returns the view to the
   live screen. The cursor is not drawn while the view is scrolled back.
 - Each VT's scrollback and view position survive switches.
@@ -180,15 +187,20 @@ On a pseudo-terminal or any other device they fail with ENOTTY. "The descriptor'
 | `VT_WAITACTIVE` | 0x5607 | value: VT number | Blocks until that VT is active (section 4.5) | ENXIO, EINTR |
 | `KDSETMODE` | 0x4B3A | value: `KD_TEXT` 0 or `KD_GRAPHICS` 1 | Sets the descriptor's VT's KD mode (section 4.3) | EINVAL, EPERM, EBUSY |
 | `KDGETMODE` | 0x4B3B | `int *` | Writes the descriptor's VT's KD mode | EFAULT |
+| `VT_SCROLLVIEW` | 0x56B0 | value: signed line count | Breenix's own: moves the descriptor's VT's view that many lines back (positive) or forward (negative), within its scrollback, and returns how many lines back from the live screen the view then is; 0 only asks | EPERM |
 
 - **Layouts.** `struct vt_mode` is 8 bytes: `mode` (u8, offset 0: `VT_AUTO` 0, `VT_PROCESS` 1), `waitv` (u8,
   offset 1), `relsig` (i16, offset 2), `acqsig` (i16, offset 4), `frsig` (i16, offset 6). `struct vt_stat`
   is 6 bytes: `v_active`, `v_signal`, `v_state` (u16 each, offsets 0, 2, 4). `VT_ACKACQ` is 2.
+  `relsig` and `acqsig` are valid from 1 to 64.
 - **`VT_GETSTATE`:** `v_active` is the foreground VT (during a pending switch, the VT still in the
   foreground); `v_signal` is 0; bit *n* of `v_state` is set while VT *n* is open, and bit 0 is clear. A VT is
-  open while a process holds a descriptor for `/dev/ttyN`, for `/dev/console` (tty1), or for `/dev/tty`
-  resolved to it. Descriptors for `/dev/tty0` and the `vcs` devices do not count.
-- **Permission.** The requests that change state (`VT_SETMODE`, `VT_ACTIVATE`, `KDSETMODE`) need root, or a
+  open while a process holds a descriptor for `/dev/ttyN`, for `/dev/console` (tty1, as are the console
+  standard streams the kernel gives a process it creates), or for `/dev/tty` resolved to it. Descriptors
+  for `/dev/tty0` and the `vcs` devices do not count.
+- **`VT_SCROLLVIEW`** is not in `linux/vt.h`: its number is outside the range that header uses, and its
+  argument is the line count as a signed `long`. A view on the alternate screen does not move.
+- **Permission.** The requests that change state (`VT_SETMODE`, `VT_ACTIVATE`, `KDSETMODE`, `VT_SCROLLVIEW`) need root, or a
   controlling terminal that is a VT; `VT_SETMODE` and `KDSETMODE` without root also need that controlling
   terminal to be the descriptor's VT. Otherwise they fail with EPERM. `VT_RELDISP` is answered only by the
   VT's `VT_PROCESS` owner (EPERM for any other process, root included). The read-only requests and
@@ -216,7 +228,10 @@ boots once the GPU effort's console draws the VTs, the top of the GPU display ow
   to the displayed pixels. Its calls succeed; their effect is not shown. When its VT is acquired again the
   owner's authority returns, the kernel sends `acqsig`, and the owner redraws: the kernel does not restore
   its pixels. On `--gpu-gl` boots the GPU effort implements this suspension of its ownership stack and the
-  restoration of the owner's mode and target (Q8); V4 implements it for the framebuffer path.
+  restoration of the owner's mode and target (Q8); V4 implements it for the framebuffer path. There, an
+  owner's `fb_mmap` mapping is a pane the kernel copies at each flush, not the scanout, so the suspension
+  is of the framebuffer draw and flush requests (`fbdraw`): they return success without drawing, and a
+  switch away waits for any of them already under way before the new VT is drawn.
 - A panic or fatal fault takes the screen regardless of VT state.
 
 ### 4.3 KD mode
@@ -295,6 +310,8 @@ before setting `fg := to`; the pending `from` loses presentation authority if it
   and wake `VT_WAITACTIVE` waiters. An owner's exit resets its mode as in section 4.3; if this makes the
   destination `KD_TEXT`, the resulting redraw must finish too.
 - A held next switch then starts as a new request.
+- **While the boot splash is up**, tty1's screen is the splash's: a switch is recorded at once (`fg := to`),
+  and its acquisition completes with the first frame drawn after the splash gives way (V4).
 
 ### 4.5 `VT_WAITACTIVE`
 
@@ -618,7 +635,8 @@ the backstop does not pass.
   it read after, and fails when the backing read is not the bound resource's or the flush had not completed.
   Marker lines on those boots say `backing after flush`.
 - **A switch logs** `[console] foreground ttyN (<source>)` (`key alt-f2`, `key ctrl-alt-f2`, `ioctl`, or
-  `chvt`), then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
+  `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
+  then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
   the shadow's SHA-256>` or `[console] ttyN shown: read back differs: <first mismatch>` (fatal). **A switch
   does not log screen contents:** terminals can show secrets, and serial and boot logs are retained.
 - **`/proc/console/check`** (root only, mode 0400) is how a case or a metal script reads the screen. Reading it

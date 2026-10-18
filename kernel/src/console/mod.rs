@@ -32,6 +32,13 @@
 //! structured log severity through `serial_line`; unlevelled serial records
 //! (`log_bytes`) are drawn as INFO.
 //!
+//! **Six virtual terminals** (`vt`, contract sections 1 to 4) share the screen:
+//! tty1 is the console TTY and carries the kernel log, and each terminal has
+//! its own grid and scrollback. The render thread draws the foreground
+//! terminal's view, and completes a switch once the new terminal's frame is on
+//! the display; it then reads that frame back and logs the terminal number and
+//! a digest, not its text.
+//!
 //! The console starts in init's session. While it is there, or in no session,
 //! kernel log records of INFO and above are drawn; while another session has
 //! it as its controlling terminal (a getty and the login it starts), only
@@ -44,6 +51,8 @@ pub mod display;
 pub mod grid;
 pub mod raster;
 pub mod splash;
+pub mod vcs;
+pub mod vt;
 #[path = "../../../libs/libbreenix/src/crypto/sha256.rs"]
 mod sha256;
 
@@ -51,9 +60,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use display::{Display, Source};
-use grid::Grid;
 use raster::Layout;
 use spin::Mutex;
 
@@ -80,23 +88,29 @@ macro_rules! say {
 
 static DISPLAY: OnceCell<Display> = OnceCell::uninit();
 
-/// The grid and who left its last line open.
+/// The terminals, which is in the foreground, and who left tty1's last line open.
 struct Console {
-    grid: Grid,
-    /// The last write was kernel log output that did not end its line.
+    vts: [vt::Vt; vt::VT_COUNT],
+    sw: vt::Switching,
+    /// The last write to tty1 was kernel log output that did not end its line.
     kernel_line_open: bool,
-    replies: [u8; 4096],
-    reply_head: usize,
-    reply_len: usize,
 }
 
 static CONSOLE: Mutex<Console> = Mutex::new(Console {
-    grid: Grid::new(),
+    vts: [const { vt::Vt::new() }; vt::VT_COUNT],
+    sw: vt::Switching::new(),
     kernel_line_open: false,
-    replies: [0; 4096],
-    reply_head: 0,
-    reply_len: 0,
 });
+
+/// tty1's screens, in static storage: x86-64 sizes its grid at `init_early`,
+/// before the heap, so the boot log is kept from the start. Sized for the
+/// largest grid; `set_size` blanks what it uses.
+const UNSET: grid::Cell = grid::Cell { glyph: 0, colours: 0, flags: 0 };
+static mut TTY1_CELLS: [grid::Cell; grid::MAX_COLS * grid::MAX_ROWS] = [UNSET; grid::MAX_COLS * grid::MAX_ROWS];
+static mut TTY1_ALTERNATE: [grid::Cell; grid::MAX_COLS * grid::MAX_ROWS] = [UNSET; grid::MAX_COLS * grid::MAX_ROWS];
+
+/// The terminal (1-based) whose switch the render thread reads back next, or 0.
+static SWITCH_CHECK: AtomicUsize = AtomicUsize::new(0);
 
 /// Grid writes given up because its lock stayed held (a holder that faulted).
 static DROPPED: AtomicU64 = AtomicU64::new(0);
@@ -165,8 +179,39 @@ fn set_display(display: Display) {
         return;
     }
     if DISPLAY.try_init_once(|| display).is_ok() {
-        with_grid(|console| console.grid.set_size(layout.cols(), layout.rows()));
+        // SAFETY: the display is recorded once, so these are the only
+        // references ever taken to tty1's static screens.
+        let (cells, alternate) =
+            unsafe { (&mut *core::ptr::addr_of_mut!(TTY1_CELLS), &mut *core::ptr::addr_of_mut!(TTY1_ALTERNATE)) };
+        with_grid(move |console| {
+            let tty1 = &mut console.vts[0].grid;
+            tty1.set_storage(cells, alternate);
+            tty1.set_size(layout.cols(), layout.rows());
+        });
     }
+}
+
+/// Give tty2 to tty6 their screens, now that the heap is up, and tty1 its
+/// scrollback: its output, the kernel log, began with the boot.
+fn size_terminals(layout: &Layout) {
+    let size = layout.cols() * layout.rows();
+    for index in 1..vt::VT_COUNT {
+        let mut cells = Vec::new();
+        let mut alternate = Vec::new();
+        if cells.try_reserve_exact(size).is_err() || alternate.try_reserve_exact(size).is_err() {
+            say!(warn, "[console] no tty{}: no memory for its screen", index + 1);
+            continue;
+        }
+        cells.resize(size, UNSET);
+        alternate.resize(size, UNSET);
+        let (cells, alternate) = (cells.leak(), alternate.leak());
+        with_grid(move |console| {
+            let grid = &mut console.vts[index].grid;
+            grid.set_storage(cells, alternate);
+            grid.set_size(layout.cols(), layout.rows());
+        });
+    }
+    vt::ensure_history(0);
 }
 
 /// Allocate the shadow, say what the console draws on, and draw the splash.
@@ -184,6 +229,7 @@ fn prepare(
         return;
     }
     shadow.resize(layout.bytes(), 0);
+    size_terminals(&layout);
     let font = layout.font;
     say!(
         info,
@@ -256,6 +302,12 @@ fn present_splash(display: &Display, shadow: &mut [u8], painter: &mut splash::Pa
     true
 }
 
+/// A text cell's size in pixels, once the console has a display.
+pub fn cell_size() -> Option<(usize, usize)> {
+    let font = DISPLAY.get()?.layout().font;
+    Some((font.glyph_width(), font.line_height()))
+}
+
 /// Whether the console has drawn on the screen (the splash, then its text).
 pub fn owns_screen() -> bool {
     SPLASH_DRAWN.load(Ordering::Acquire)
@@ -287,8 +339,9 @@ pub fn log_record(level: log::Level, args: &fmt::Arguments) {
     let mut line = Line { bytes: [0; 256], len: 0 };
     let _ = write!(line, "{:>5}: {}", level, args);
     with_grid(|console| {
-        console.grid.write_kernel(&line.bytes[..line.len], true);
-        console.grid.write_kernel(b"\n", false);
+        let tty1 = &mut console.vts[0].grid;
+        tty1.write_kernel(&line.bytes[..line.len], true);
+        tty1.write_kernel(b"\n", false);
         console.kernel_line_open = false;
     });
 }
@@ -311,30 +364,30 @@ pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
         return;
     }
     with_grid(|console| {
-        console.grid.write_kernel(bytes, !console.kernel_line_open);
+        console.vts[0].grid.write_kernel(bytes, !console.kernel_line_open);
         console.kernel_line_open = !bytes.ends_with(b"\n");
     });
 }
 
-/// Put console TTY output on the console.
+/// Put console TTY output (tty1's) on the console.
 pub fn write_tty(bytes: &[u8]) {
+    write_vt(1, bytes);
+}
+
+/// Put terminal `number`'s (1-based) output into its grid. A terminal that
+/// is not in the foreground keeps it there, shown when it returns.
+pub fn write_vt(number: usize, bytes: &[u8]) {
+    let index = number - 1;
+    vt::ensure_history(index);
     with_grid(|console| {
-        if console.kernel_line_open {
-            console.grid.begin_line();
+        if index == 0 && console.kernel_line_open {
+            console.vts[0].grid.begin_line();
             console.kernel_line_open = false;
         }
-        let Console { grid, replies, reply_head, reply_len, .. } = console;
-        grid.write_with_reply(bytes, |reply| {
-            // Keep whole replies until the input ring accepts them. The writer
-            // may be echoing in IRQ context, so it only queues fixed storage.
-            let capacity = replies.len();
-            if reply.len() <= capacity - *reply_len {
-                for &byte in reply {
-                    replies[(*reply_head + *reply_len) % capacity] = byte;
-                    *reply_len += 1;
-                }
-            }
-        });
+        let vt::Vt { grid, replies, .. } = &mut console.vts[index];
+        // Keep whole replies until the input ring accepts them. The writer
+        // may be echoing in IRQ context, so it only queues fixed storage.
+        grid.write_with_reply(bytes, |reply| replies.push(reply));
     });
 }
 
@@ -349,6 +402,12 @@ pub fn console_session(held: bool) {
 pub fn take_display() {
     splash::request(splash::Reason::DisplayTaken);
     DISPLAY_TAKEN.store(true, Ordering::SeqCst);
+    wait_until_not_presenting();
+}
+
+/// Wait until the render thread has no row of the console's on its way to
+/// the screen (and no fenced GPU command of its own outstanding).
+fn wait_until_not_presenting() {
     while PRESENTING.load(Ordering::SeqCst) {
         sleep_ms(1);
     }
@@ -363,18 +422,19 @@ pub fn take_display() {
 
 /// Return the display to the retained terminal, repainting even unchanged rows.
 pub fn give_back_display() {
+    vt::give_back_display();
     REDRAW.store(true, Ordering::Release);
     DISPLAY_TAKEN.store(false, Ordering::SeqCst);
 }
 
 /// Whether the console has the screen and no process has taken it.
 pub fn has_screen() -> bool {
-    SCREEN.load(Ordering::Acquire) && !DISPLAY_TAKEN.load(Ordering::Acquire)
+    SCREEN.load(Ordering::Acquire) && !DISPLAY_TAKEN.load(Ordering::Acquire) && !vt::foreground_graphics()
 }
 
 /// Asked with the screen held before each band is written.
 fn may_draw() -> bool {
-    if DISPLAY_TAKEN.load(Ordering::Acquire) {
+    if DISPLAY_TAKEN.load(Ordering::Acquire) || vt::foreground_graphics() {
         return false;
     }
     #[cfg(target_arch = "aarch64")]
@@ -629,7 +689,7 @@ struct Screen {
     complete: bool,
 }
 
-/// The grid as the render thread last copied it.
+/// The foreground terminal's view as the render thread last copied it.
 struct Snapshot {
     cols: usize,
     rows: usize,
@@ -637,6 +697,9 @@ struct Snapshot {
     cursor_visible: bool,
     cursor: (usize, usize),
     generation: u64,
+    /// The foreground terminal (0-based) and its acquisition, when copied.
+    fg: usize,
+    epoch: u64,
 }
 
 impl Snapshot {
@@ -644,26 +707,39 @@ impl Snapshot {
         &self.cells[row * self.cols..(row + 1) * self.cols]
     }
 
-    /// Copy the grid if it changed since `generation`. False when it did not
-    /// or its lock stayed held.
+    /// Copy the foreground terminal's view if it, or which terminal is in
+    /// the foreground, changed since the last copy. False when neither did or
+    /// the lock stayed held. A different terminal sets `REDRAW`, so each of
+    /// its rows is drawn.
     fn refresh(&mut self) -> bool {
-        let generation = self.generation;
+        let (generation, fg, epoch) = (self.generation, self.fg, self.epoch);
         let cells = &mut self.cells;
         let copied = with_grid(|console| {
-            let grid = &console.grid;
-            if grid.generation() == generation {
+            let frame = vt::frame(&vt::Terminals { vts: &mut console.vts, sw: &mut console.sw });
+            let grid = &console.vts[frame.fg].grid;
+            if grid.generation() == generation && frame.fg == fg && frame.epoch == epoch {
+                return None;
+            }
+            if grid.cols() * grid.rows() != cells.len() {
                 return None;
             }
             for row in 0..grid.rows() {
-                cells[row * grid.cols()..(row + 1) * grid.cols()].copy_from_slice(grid.row(row));
+                cells[row * grid.cols()..(row + 1) * grid.cols()].copy_from_slice(grid.view_row(row));
             }
-            Some((grid.generation(), grid.cursor(), grid.cursor_visible()))
+            // The cursor is not drawn while the view is scrolled back.
+            let visible = grid.cursor_visible() && grid.view() == 0;
+            Some((grid.generation(), grid.cursor(), visible, frame))
         });
         match copied.flatten() {
-            Some((generation, cursor, visible)) => {
+            Some((generation, cursor, visible, frame)) => {
+                if frame.fg != self.fg || frame.epoch != self.epoch {
+                    REDRAW.store(true, Ordering::Release);
+                }
                 self.generation = generation;
                 self.cursor = cursor;
                 self.cursor_visible = visible;
+                self.fg = frame.fg;
+                self.epoch = frame.epoch;
                 true
             }
             None => false,
@@ -675,7 +751,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
     #[cfg(target_arch = "x86_64")]
     display::linear::report_write_combining(attached.write_combining);
     let layout = display.layout();
-    let (cols, rows) = with_grid(|console| (console.grid.cols(), console.grid.rows())).unwrap_or((0, 0));
+    let (cols, rows) = with_grid(|console| (console.vts[0].grid.cols(), console.vts[0].grid.rows())).unwrap_or((0, 0));
     let mut snapshot = Snapshot {
         cols,
         rows,
@@ -683,6 +759,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         cursor: (0, 0),
         cursor_visible: true,
         generation: u64::MAX,
+        fg: usize::MAX,
+        epoch: u64::MAX,
     };
     let mut splash_run = attached.splash;
     let mut screen = Screen {
@@ -700,16 +778,14 @@ fn render_thread(display: &'static Display, attached: Attached) {
     while !crate::task::kthread::kthread_should_stop() {
         // Replies are input, independent of which owner currently draws. Retry
         // on a busy/full input ring instead of losing a CPR byte to contention.
-        // V4 routes this sink to the numbered terminal's input queue.
+        // Each terminal's replies go to its own input queue.
         with_grid(|console| {
-            while console.reply_len != 0 {
-                if !crate::ipc::stdin::push_byte_from_irq(console.replies[console.reply_head]) {
-                    break;
-                }
-                console.reply_head = (console.reply_head + 1) % console.replies.len();
-                console.reply_len -= 1;
+            for (index, terminal) in console.vts.iter_mut().enumerate() {
+                terminal.replies.drain(|byte| crate::tty::driver::push_reply(index + 1, byte));
             }
         });
+        // Switch deadlines, whichever owner draws.
+        vt::tick();
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
             splash_run.pass(display, &mut screen.shadow);
@@ -729,18 +805,29 @@ fn render_thread(display: &'static Display, attached: Attached) {
         if !may_draw() {
             PRESENTING.store(false, Ordering::SeqCst);
             answer_checks(Err(Absent::Taken), true);
-            sleep_ms(PASS_INTERVAL_MS * 10);
+            // A switch waits on these passes: look again soon while one does.
+            sleep_ms(if vt::switching() { PASS_INTERVAL_MS } else { PASS_INTERVAL_MS * 10 });
             continue;
         }
+        // A display owner whose terminal just left the foreground may still be
+        // finishing a presentation: draw over the screen once it has.
+        if vt::wait_for_presentations() {
+            PRESENTING.store(false, Ordering::SeqCst);
+            sleep_ms(1);
+            continue;
+        }
+        let changed = snapshot.refresh();
         if REDRAW.swap(false, Ordering::AcqRel) {
             screen.cleared = false;
             screen.complete = false;
             screen.shown.fill(None);
         }
-        let changed = snapshot.refresh();
         if changed || !screen.complete {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
+            if screen.complete {
+                vt::drawn(snapshot.epoch);
+            }
             if !announced && screen.complete {
                 announced = true;
                 let elapsed = elapsed_us(started);
@@ -769,8 +856,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
             last_session = session;
         }
+        let shown = SWITCH_CHECK.swap(0, Ordering::AcqRel);
+        if shown != 0 && shown == snapshot.fg + 1 && screen.complete {
+            report_switch(shown, &screen.check(snapshot.fg));
+        }
         if announced {
-            answer_checks(Ok(&screen), true);
+            answer_checks(Ok((&screen, snapshot.fg)), true);
         }
         PRESENTING.store(false, Ordering::SeqCst);
         sleep_ms(PASS_INTERVAL_MS);
@@ -1021,7 +1112,7 @@ impl Screen {
 
     /// Read the screen back and compare it with the shadow, and with the pixels
     /// the font gives for the text each row was drawn with.
-    fn check(&self) -> Check {
+    fn check(&self, fg: usize) -> Check {
         let layout = self.layout;
         let bpp = layout.bytes_per_pixel;
         let font = layout.font;
@@ -1071,6 +1162,7 @@ impl Screen {
             .filter(|text| !text.is_empty())
             .collect();
         Check {
+            fg,
             layout,
             kind: self.display.kind(),
             source,
@@ -1093,6 +1185,8 @@ impl Screen {
 
 /// One read-back of the screen.
 struct Check {
+    /// The foreground terminal (0-based) it read.
+    fg: usize,
     layout: Layout,
     kind: &'static str,
     /// What was read, or why the read could not be tied to the scanout.
@@ -1142,13 +1236,13 @@ impl fmt::Display for Hex<'_> {
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
 /// may answer it (`idle_allowed`): it reads the console's text, not the splash.
-fn answer_checks(screen: Result<&Screen, Absent>, idle_allowed: bool) {
+fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
     let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
     let token = PROC_CHECK.swap(0, Ordering::AcqRel);
     if !idle && token == 0 {
         return;
     }
-    let answer = screen.map(Screen::check);
+    let answer = screen.map(|(screen, fg)| screen.check(fg));
     if idle {
         match &answer {
             Ok(check) if check.identical() => match &check.source {
@@ -1190,6 +1284,26 @@ fn answer_checks(screen: Result<&Screen, Absent>, idle_allowed: bool) {
     if token != 0 {
         *PROC_RESULT.lock() = Some(answer);
         PROC_DONE.complete(token);
+    }
+}
+
+/// After a switch, the read-back of the new terminal's frame, logged with
+/// the terminal number and a digest of the shadow, not the screen's text
+/// (contract section 8).
+fn report_switch(number: usize, check: &Check) {
+    if check.identical() {
+        log::info!("[console] tty{} shown: read back identical; digest {}", number, Hex(&check.sha256[..8]));
+        return;
+    }
+    match (&check.source, check.first_difference) {
+        (Err(reason), _) => log::warn!("[console] tty{} shown: read back differs: not read from the scanout: {}", number, reason),
+        (Ok(_), Some((x, y))) => log::warn!("[console] tty{} shown: read back differs: x={} y={}", number, x, y),
+        (Ok(_), None) if !check.complete => log::warn!("[console] tty{} shown: read back differs: frame incomplete", number),
+        (Ok(_), None) => log::warn!(
+            "[console] tty{} shown: read back differs: {} pixels from the font",
+            number,
+            check.font_mismatches
+        ),
     }
 }
 
@@ -1262,7 +1376,7 @@ pub fn proc_console_check() -> Result<String, i32> {
         Some(Ok(check)) => {
             let layout = check.layout;
             let font = layout.font;
-            text.push_str("console foreground: tty1\n");
+            let _ = writeln!(text, "console foreground: tty{}", check.fg + 1);
             let _ = writeln!(
                 text,
                 "console display: {}x{} {}, font {} ({}x{} pixel cells), grid {}x{}",

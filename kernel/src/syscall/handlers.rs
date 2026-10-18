@@ -657,6 +657,19 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     // Write to console/tty
                     write_to_stdio(fd, &buffer)
                 }
+                // A virtual terminal: tty1 has serial and the screen, the
+                // others the screen. /dev/tty0 is the foreground one now.
+                DeviceType::Tty0 | DeviceType::Vt(_) => {
+                    match device_type.terminal().and_then(crate::tty::driver::vt) {
+                        Some(tty) => {
+                            tty.write_bytes(&buffer);
+                            SyscallResult::Ok(buffer.len() as u64)
+                        }
+                        None => SyscallResult::Err(6), // ENXIO
+                    }
+                }
+                // The screens are read-only.
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) => SyscallResult::Err(22),
             }
         }
         WriteOperation::RegularFile {
@@ -1578,6 +1591,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                }
+                // A virtual terminal reads its own input queue; /dev/tty0 the
+                // foreground terminal's at the time of the read.
+                crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_) => {
+                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking).map_err(|e| -e)
                 }
                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
             };
@@ -3493,6 +3511,30 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
+    // The display goes with the caller's terminal, its controlling terminal
+    // when that is a virtual terminal, else tty1; EBUSY while that terminal
+    // is not in the foreground (`docs/console/contract.md` section 4.2).
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    let owner = {
+        let guard = crate::process::manager();
+        guard.as_ref().and_then(|manager| {
+            let (pid, row) = manager.find_process_by_thread(tid)?;
+            let group = manager.thread_group_of(pid).unwrap_or(pid.as_u64());
+            let vt = match row.ctty {
+                Some(crate::tty::ctty::TtyId::Vt(n)) => usize::from(n),
+                _ => 1,
+            };
+            Some((group, vt))
+        })
+    };
+    let Some((group, vt)) = owner else {
+        return SyscallResult::Err(3);
+    };
+    if let Err(errno) = crate::console::vt::take_display(group, vt) {
+        return SyscallResult::Err(errno as u64);
+    }
     // Quiesce the console before publishing authority to the new owner's
     // other threads, which can issue framebuffer syscalls concurrently.
     crate::console::take_display();
@@ -3545,6 +3587,15 @@ pub fn sys_give_back_display() -> SyscallResult {
     }
     crate::console::give_back_display();
     SyscallResult::Ok(0)
+}
+
+/// Process group `group`'s last row exited: its virtual terminals return to
+/// `VT_AUTO` and `KD_TEXT`, and a display it held is given back.
+pub(crate) fn console_owner_exited(group: u64) {
+    if crate::console::vt::process_exited(group) {
+        crate::syscall::graphics::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
+        crate::console::give_back_display();
+    }
 }
 
 /// sys_cow_stats - Get Copy-on-Write statistics (for testing)

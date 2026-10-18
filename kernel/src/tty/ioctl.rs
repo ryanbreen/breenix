@@ -70,21 +70,10 @@ pub const TIOCSPTLCK: u64 = 0x40045431;
 /// Get PTY lock status
 pub const TIOCGPTLCK: u64 = 0x80045439;
 
-/// Set the console's KD mode (`linux/kd.h`): `KD_TEXT` 0, `KD_GRAPHICS` 1.
-pub const KDSETMODE: u64 = 0x4B3A;
-
-/// Get the console's KD mode.
-pub const KDGETMODE: u64 = 0x4B3B;
-
-const KD_TEXT: u64 = 0;
-const KD_GRAPHICS: i32 = 1;
-
 // =============================================================================
 // Error Codes
 // =============================================================================
 
-/// Operation not permitted
-const EPERM: i32 = 1;
 
 /// Invalid argument
 const EINVAL: i32 = 22;
@@ -231,25 +220,40 @@ pub fn handle_tiocspgrp(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
     Ok(())
 }
 
+/// A virtual terminal's size (`docs/console/contract.md` section 1.5): its
+/// grid, and the grid's size in pixels. Without a screen console, 80x25.
+fn terminal_winsize(tty: &Arc<TtyDevice>) -> Winsize {
+    let (cols, rows) = crate::console::vt::size(tty.vt());
+    match crate::console::cell_size() {
+        Some((width, height)) if cols != 0 && rows != 0 => Winsize {
+            ws_row: rows as u16,
+            ws_col: cols as u16,
+            ws_xpixel: (cols * width) as u16,
+            ws_ypixel: (rows * height) as u16,
+        },
+        _ => Winsize { ws_row: 25, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0 },
+    }
+}
+
 /// Handle TIOCGWINSZ - get window size
 ///
-/// Returns a default window size (80x25) for console.
-pub fn handle_tiocgwinsz(_tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
+/// Returns the terminal's grid, fixed for the boot.
+pub fn handle_tiocgwinsz(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
     }
-
-    // Default console window size
-    let winsize = Winsize {
-        ws_row: 25,
-        ws_col: 80,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-
-    copy_to_user(arg as *mut Winsize, &winsize).map_err(|_| EFAULT)?;
-
+    copy_to_user(arg as *mut Winsize, &terminal_winsize(tty)).map_err(|_| EFAULT)?;
     Ok(())
+}
+
+/// Handle TIOCSWINSZ: the size is fixed for the boot, so the terminal's own
+/// size is accepted without effect and any other is EINVAL.
+pub fn handle_tiocswinsz(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
+    let wanted: Winsize = copy_from_user(arg as *const Winsize).map_err(|_| EFAULT)?;
+    let size = terminal_winsize(tty);
+    let same = (wanted.ws_row, wanted.ws_col, wanted.ws_xpixel, wanted.ws_ypixel)
+        == (size.ws_row, size.ws_col, size.ws_xpixel, size.ws_ypixel);
+    if same { Ok(()) } else { Err(EINVAL) }
 }
 
 // =============================================================================
@@ -274,14 +278,15 @@ pub fn dispatch(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i
         TIOCGPGRP | TIOCSPGRP => super::jobctl::ioctl(t, side, request, arg),
         TIOCGWINSZ | TIOCSWINSZ | TIOCGPTN | TIOCSPTLCK | TIOCGPTLCK => match t {
             TtyRef::Pty(pair) => super::pty::ioctl::ioctl(pair, side, request, arg),
-            TtyRef::Console(tty) => tty_ioctl(tty, request, arg),
+            TtyRef::Vt(tty) => tty_ioctl(tty, request, arg),
         },
-        KDSETMODE | KDGETMODE => match t {
-            TtyRef::Console(_) => kd_ioctl(request, arg),
+        // The virtual-terminal and KD requests: a pseudo-terminal is no VT.
+        _ if super::vt_ioctl::handles(request) => match t {
+            TtyRef::Vt(tty) => super::vt_ioctl::ioctl(tty.vt(), request, arg),
             TtyRef::Pty(_) => Err(ENOTTY),
         },
         _ => match t {
-            TtyRef::Console(tty) => {
+            TtyRef::Vt(tty) => {
                 if matches!(request, TCSETS | TCSETSW | TCSETSF | TCFLSH | TCXONC | TCSBRK | TCSBRKP) {
                     super::jobctl::check(t, JobOp::Change)?;
                 }
@@ -290,46 +295,6 @@ pub fn dispatch(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i
             TtyRef::Pty(pair) => pty_termios_ioctl(t, pair, side, request, arg),
         },
     }
-}
-
-/// KDGETMODE, and the part of KDSETMODE the boot splash relies on
-/// (`docs/console/contract.md`, sections 4.3 and 7): while the splash is up
-/// tty1 reads `KD_GRAPHICS` with the kernel as its graphics owner, and
-/// `KDSETMODE(KD_TEXT)` ends the splash. `KD_GRAPHICS` from a process comes
-/// with the virtual terminals' display ownership (V4) and fails with EINVAL
-/// until then.
-fn kd_ioctl(request: u64, arg: u64) -> Result<i32, i32> {
-    use crate::console::splash;
-    if request == KDGETMODE {
-        let mode = if splash::is_up() && crate::console::owns_screen() { KD_GRAPHICS } else { 0 };
-        copy_to_user(arg as *mut i32, &mode).map_err(|_| EFAULT)?;
-        return Ok(0);
-    }
-    if !may_set_kd_mode() {
-        return Err(EPERM);
-    }
-    match arg {
-        KD_TEXT => {
-            splash::request(splash::Reason::KdText);
-            Ok(0)
-        }
-        _ => Err(EINVAL),
-    }
-}
-
-/// KDSETMODE on the console needs root, or the console as the caller's
-/// controlling terminal.
-fn may_set_kd_mode() -> bool {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return false;
-    };
-    let guard = crate::process::manager();
-    guard
-        .as_ref()
-        .and_then(|manager| manager.find_process_by_thread(tid))
-        .is_some_and(|(_, process)| {
-            process.cred.euid == 0 || process.ctty == Some(super::ctty::TtyId::Console)
-        })
 }
 
 /// TCGETS and TCSETS* on a pseudo-terminal (either side).
@@ -445,6 +410,10 @@ pub fn tty_ioctl(tty: &Arc<TtyDevice>, request: u64, arg: u64) -> Result<i32, i3
         }
         TIOCGWINSZ => {
             handle_tiocgwinsz(tty, arg)?;
+            Ok(0)
+        }
+        TIOCSWINSZ => {
+            handle_tiocswinsz(tty, arg)?;
             Ok(0)
         }
         TCFLSH => {
