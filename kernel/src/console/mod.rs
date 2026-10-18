@@ -827,19 +827,23 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         });
         crate::tty::driver::drain_keyboard_input();
+        // The `/proc/console/check` this pass may answer: one asked for before
+        // it copies the terminal, so the answer shows what was written before
+        // the request. One asked for later waits for the next pass.
+        let asked = PROC_CHECK.load(Ordering::Acquire);
         // A switch a key asked for, then switch deadlines, whichever owner draws.
         vt::take_key_switch();
         vt::tick();
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
             splash_run.pass(display, &mut screen.shadow);
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, asked);
             end_pass();
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
         if !SCREEN.load(Ordering::Acquire) {
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, asked);
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
@@ -854,7 +858,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 vt::checked(shown);
             }
             end_pass();
-            answer_checks(Err(Absent::Taken), true);
+            answer_checks(Err(Absent::Taken), true, asked);
             // A switch waits on these passes: look again soon while one does.
             sleep_ms(if vt::switching() { PASS_INTERVAL_MS } else { PASS_INTERVAL_MS * 10 });
             continue;
@@ -913,7 +917,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         }
         if announced {
-            answer_checks(Ok((&screen, snapshot.fg)), true);
+            answer_checks(Ok((&screen, snapshot.fg)), true, asked);
         }
         end_pass();
         sleep_ms(PASS_INTERVAL_MS);
@@ -1288,9 +1292,12 @@ impl fmt::Display for Hex<'_> {
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
 /// may answer it (`idle_allowed`): it reads the console's text, not the splash.
-fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
+fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, asked: u32) {
     let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
-    let token = PROC_CHECK.swap(0, Ordering::AcqRel);
+    let token = match asked {
+        0 => 0,
+        asked => PROC_CHECK.compare_exchange(asked, 0, Ordering::AcqRel, Ordering::Acquire).map_or(0, |_| asked),
+    };
     if !idle && token == 0 {
         return;
     }
