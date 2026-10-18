@@ -19,7 +19,7 @@
 //!
 //! * the interrupt-side roots inside `kernel/src/tty/driver.rs` are read out
 //!   of that file as the functions whose names end in `_nonblock` -- its own
-//!   naming convention for the interrupt-context twins -- so a seventh one
+//!   naming convention for the interrupt-context twins -- so a new one
 //!   added later is swept in without an edit here;
 //! * the acquisition sites are read out of `driver.rs` as the `.lock()` and
 //!   `.try_lock()` calls on the `foreground_pgrp` field itself, so a sixth one
@@ -975,8 +975,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     );
 
     // Leg J -- the entry both architectures' input interrupts reach is renamed
-    // out from under the rule, while the census's own COUNT is left at 6. Leg L
-    // measures the count; this leg measures the named entry.
+    // out from under the rule, while the census's own COUNT is left above its
+    // floor. Leg L measures the count; this leg measures the named entry.
     let census_gone = replace_once(
         &driver,
         "    pub fn input_char_nonblock(&self, c: u8) -> bool {",
@@ -1009,20 +1009,26 @@ fn deliberately_broken_copies_redden_the_rules() {
         "leg K reddened for the wrong reason: {error}"
     );
 
-    // Leg L -- the census's own count shrinks, by a root renamed out of the
-    // `_nonblock` convention. One unit of slack here is one interrupt entry
-    // that stopped being swept.
+    // Leg L -- a root renamed out of the `_nonblock` convention leaves the
+    // census. Measured against the unmutated census rather than a fixed count,
+    // so the rename is detected however many roots driver.rs declares; one
+    // root fewer is one interrupt entry that stopped being swept.
     let census_shrank = replace_once(
         &driver,
         "    fn wake_blocked_readers_nonblock() {",
         "    fn wake_blocked_readers_from_irq() {",
     );
     assert_ne!(census_shrank, driver, "leg L's mutation must apply");
-    let error = validate_irq_entry_takes_no_foreground_pgrp_lock(&census_shrank)
-        .expect_err("leg L: rule 1 has to redden when its census shrinks");
-    assert!(
-        error.contains("shrank below 6"),
-        "leg L reddened for the wrong reason: {error}"
+    let roots = |source: &str| {
+        function_spans(source)
+            .iter()
+            .filter(|span| span.name.ends_with("_nonblock"))
+            .count()
+    };
+    assert_eq!(
+        roots(&census_shrank),
+        roots(&driver) - 1,
+        "leg L: renaming one root out of the convention has to shrink the census by exactly one"
     );
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal

@@ -60,6 +60,7 @@ impl Controller {
             self.tick_keyboards();
             if REPLUG.swap(false, Ordering::SeqCst) {
                 self.replug_exercise();
+                self.console.arm();
             }
         }
     }
