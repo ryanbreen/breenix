@@ -8358,10 +8358,10 @@ pub fn preempt_schedule_irq() {
 /// restores the caller's prior DAIF/IF state on the way out, so a caller that
 /// had already masked is unaffected.
 ///
-/// Callers: 0 in this tree today, so `--gc-sections` drops this from the
-/// shipped kernel. Its live caller is `task::idle_sleep`'s idle-block refusal,
-/// which arrives in slice 3; landing the repair first means that caller arrives
-/// onto a masked function instead of re-deriving R153.
+/// Callers: the GPU PCI lock's sleep check, which refuses to put an idle thread
+/// to sleep (#1785). `task::idle_sleep`'s idle-block refusal is to call it
+/// too, in slice 3. The GPU PCI driver is built for AArch64 only, so x86_64
+/// has no caller until then, and the dead-code allowance is scoped to it.
 ///
 /// Review round 3. The mask delivers a SECOND repair beyond the self-deadlock
 /// R153 named. The comparison below reads the CPU index twice --
@@ -8372,13 +8372,7 @@ pub fn preempt_schedule_irq() {
 /// pair that did not coexist. Masked, that window does not exist. No such
 /// mis-answer has been observed; this is a window closed by construction, not
 /// a bug reproduced and fixed.
-///
-/// Review round 2, finding m5. `try_schedule` was deleted outright for having
-/// no caller on `origin/main` and no named future one. This function differs
-/// in the one fact that matters: it has a named future caller already,
-/// `task::idle_sleep` per the paragraph above, so `#[allow(dead_code)]` here is a
-/// placeholder for slice 3, not a hiding place for incomplete work.
-#[allow(dead_code)]
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 pub fn is_current_idle_thread() -> Option<bool> {
     without_interrupts(|| {
         if let Some(scheduler_lock) = try_lock_scheduler() {
