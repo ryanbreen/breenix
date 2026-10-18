@@ -32,46 +32,29 @@ use crate::syscall::ErrorCode;
 use crate::time::tsc;
 use crate::time::DateTime;
 
-/// S19: when the platform supplies no frequency, measure against a different
-/// timer from calibration's PIT, over one second (PIT uses 250-300 ms).
+#[path = "pm_reference.rs"]
+mod pm_reference;
+
+/// S19: measure against a different timer from calibration's PIT. CPUID
+/// cannot be the oracle: calibration may install it or deliberately reject it.
 fn independent_tsc_frequency() -> (u64, &'static str) {
-    use crate::arch_impl::x86_64::{platform, timer};
+    use crate::arch_impl::x86_64::platform;
     use x86_64::instructions::port::Port;
 
-    if let Some(rate) = timer::reported_tsc_frequency() {
-        return (rate.hz, rate.source);
-    }
     let (port, wide) = platform::pm_timer()
-        .expect("TSC validation needs a reported frequency or an independent reference timer");
-    const PM_HZ: u64 = 3_579_545;
+        .expect("TSC validation needs an independent ACPI PM reference timer");
     let mask = if wide { u32::MAX } else { 0x00ff_ffff };
     let mut pm = Port::<u32>::new(port);
     // SAFETY: platform::pm_timer obtained this I/O port from the FADT.
-    let mut sample = || unsafe {
+    let sample = || unsafe {
         let before = tsc::read_tsc_serialized();
         let ticks = pm.read() & mask;
         let after = tsc::read_tsc_serialized();
-        (ticks, before + (after - before) / 2)
+        pm_reference::Sample { ticks, before, after }
     };
-    let (start, start_at) = sample();
-    // Bound a dead timer even if the calibration is wrong: five seconds at
-    // the plausibility ceiling. The measured interval is controlled by PM,
-    // not by the TSC frequency being checked.
-    let timeout = start_at + 5 * 10_000_000_000;
-    loop {
-        let (end, end_at) = sample();
-        let elapsed = u64::from(end.wrapping_sub(start) & mask);
-        if elapsed >= PM_HZ {
-            let hz =
-                (u128::from(end_at - start_at) * u128::from(PM_HZ) / u128::from(elapsed)) as u64;
-            return (hz, "acpi-pm-1s");
-        }
-        assert!(
-            end_at < timeout,
-            "independent ACPI PM timer did not advance for one second"
-        );
-        core::hint::spin_loop();
-    }
+    let hz = pm_reference::measure(sample, mask)
+        .expect("independent ACPI PM reference remained stalled or imprecise after eight attempts");
+    (hz, "acpi-pm-1s")
 }
 
 /// In-kernel test for clock_gettime - only called in certain build configurations.
