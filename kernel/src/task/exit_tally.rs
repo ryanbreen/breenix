@@ -19,6 +19,7 @@ const MAX_FAILURES: usize = 8;
 const MAX_NAME_BYTES: usize = 128;
 
 static USERSPACE_STARTED: AtomicU32 = AtomicU32::new(0);
+static USERSPACE_WITHDRAWN: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_NONZERO_EXITS: AtomicU32 = AtomicU32::new(0);
 static USERSPACE_FAILURES: Mutex<FailureTable> = Mutex::new(FailureTable::new());
@@ -120,8 +121,23 @@ pub fn record_start() {
     USERSPACE_STARTED.fetch_add(1, Ordering::SeqCst);
 }
 
+/// Take back the start of a published row removed from the process table
+/// before it terminated: exits are recorded by `terminate` and
+/// `terminate_minimal`, and the removed row reaches neither. The in-kernel
+/// teardown oracles' rows and a failed init publication's row leave this way.
+pub fn withdraw_start() {
+    USERSPACE_STARTED.fetch_sub(1, Ordering::SeqCst);
+    USERSPACE_WITHDRAWN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Published processes that have not been withdrawn: each records one exit.
 pub fn started() -> u32 {
     USERSPACE_STARTED.load(Ordering::SeqCst)
+}
+
+/// Published rows withdrawn without an exit.
+pub fn withdrawn() -> u32 {
+    USERSPACE_WITHDRAWN.load(Ordering::SeqCst)
 }
 
 /// Record one real userspace process exit; `forked_child` is the pid of a
