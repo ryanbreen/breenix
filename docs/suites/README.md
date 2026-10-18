@@ -256,8 +256,8 @@ DONE, so `scripts/suite-verdict.py`, the launchers' watchers and Vigil read each
 they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds these records:
 
 ```text
-SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries>
-SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...]
+SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
+SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 SUITE_SEQUENCE RESET <id> FAIL <why>
 SUITE_SEQUENCE READY <id>
 SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
@@ -283,9 +283,16 @@ Each suite starts from the state its own boot gives it:
   kept: RESET names it, and that suite is scored NOT-ISOLATED, its own verdict alongside.
   Fixtures the launcher stages (the SDK suite's host results) are on the disk before the
   baseline, so they stay.
-- **What carries over.** PID numbers, the page cache, kernel memory and TCP connections in
-  TIME_WAIT (60 s; no `/proc/net/tcp` shows them) persist across suites, as in any boot that
-  runs programs one after another.
+- **Network.** An earlier suite's TCP connections outlive its processes: TIME_WAIT keeps a
+  connection, and its port, for 60 seconds. After the file reset the runner waits until
+  `/proc/net/tcp` (the first four columns of Linux's format: slot, local and remote address,
+  state) lists no listener or connection, up to 70 seconds, and RESET reports how many were
+  left (`tcp`) and how long it waited (`tcpwait`). A connection still listed makes the suite
+  NOT-ISOLATED.
+- **What carries over.** PID numbers, the page cache and kernel memory persist across suites,
+  as in any boot that runs programs one after another. BEGIN and RESET report the free memory
+  and kernel heap `/proc/meminfo` shows as each suite starts (`MemFree`, `KernelHeapFree`),
+  so memory an earlier suite left allocated is visible.
 
 A suite whose runner stops starting or finishing cases for 90 seconds (below the launchers'
 120-second stall watchdog, above the 25-second case allowance plus its kill and sweep) is
@@ -308,7 +315,7 @@ later kernel panic fails only the suite it happened in) and prints one line per 
 | PASS / FAIL | `scripts/suite-verdict.py`'s verdict for the suite; the last suite's disk checks too |
 | STALLED | The runner's watchdog, or the end of the boot, stopped it; the cases it reported are kept |
 | NOT-RUN | It did not print START: an earlier suite stopped the boot, or its binary could not start |
-| NOT-ISOLATED | Its RESET named state it could not restore; its own verdict follows |
+| NOT-ISOLATED | Its RESET named files it could not restore or a TCP connection still open; its own verdict follows |
 
 The boot passes when each suite passes. The ARM64 QEMU, Parallels and VMware launchers print
 the table's lines after the boot, even one stopped part way; x86-metal writes them to the

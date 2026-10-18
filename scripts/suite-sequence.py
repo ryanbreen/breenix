@@ -145,7 +145,9 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk):
                                 for line in records) if m), None)
     resets = [line[len("SUITE_SEQUENCE RESET "):] for line in records
               if line.startswith(f"SUITE_SEQUENCE RESET {suite} ")]
-    unrestored = [reset for reset in resets if " FAIL " in reset or not re.search(r" changed=0$", reset)]
+    # Files it could not put back, a TCP connection still open, or a reset that failed.
+    unrestored = [reset for reset in resets if " FAIL " in reset or not re.search(r" changed=0(?: |$)", reset)
+                  or re.search(r" tcp=[1-9]", reset)]
     if not started:
         failed_exec = any(line == f"SUITE_SEQUENCE FAIL exec {suite}" for line in records)
         return suite, "NOT-RUN", "its binary could not be started" if failed_exec else "it never printed START"

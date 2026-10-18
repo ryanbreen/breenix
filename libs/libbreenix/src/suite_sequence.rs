@@ -6,8 +6,8 @@
 //! hands PID 1 to the next suite with exec:
 //!
 //! ```text
-//! SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries>
-//! SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...]
+//! SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
+//! SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 //! SUITE_SEQUENCE RESET <id> FAIL <why>
 //! SUITE_SEQUENCE READY <id>
 //! SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
@@ -24,11 +24,16 @@
 //!   is removed, and a recorded path that is missing or differs is named in RESET (the
 //!   runner kept no copy to restore it from). A RESET with `changed` above 0, or a
 //!   RESET FAIL, means the suite did not start from the state its own boot gives it.
+//! - Before each later suite's START it also waits, up to [`TCP_DRAIN_MS`], until
+//!   `/proc/net/tcp` lists no listener or connection: an earlier suite's connections stay
+//!   in TIME_WAIT for 60 seconds and keep their ports. RESET says how many were left
+//!   (`tcp`, which must be 0) and how long it waited (`tcpwait`).
 //! - Between suites PID 1 is the only process, descriptors 0-2 the only open ones, each
 //!   signal has its default action and is unblocked, and no interval timer is armed.
 //!   Exec gives the next suite a fresh address space and the environment the kernel gave
-//!   the first. PID numbers, the page cache, kernel memory and TCP connections in
-//!   TIME_WAIT carry over; no suite case depends on them.
+//!   the first. PID numbers, the page cache and kernel memory carry over. BEGIN and RESET report the free memory and kernel heap
+//!   `/proc/meminfo` shows as each suite starts, so memory an earlier suite left
+//!   allocated is visible.
 //! - A watchdog ends a suite that makes no progress (no case starts or finishes) for
 //!   [`STALL_MS`]: SIGALRM from ITIMER_REAL prints STALLED with the cases reported so far
 //!   and hands off to the next suite. The handler uses system calls only, since the
@@ -65,6 +70,9 @@ const PATHS_SHOWN: usize = 8;
 const MAX_FDS: u64 = 4096;
 /// How long the hand-off waits for killed processes to be reaped.
 const REAP_MS: u64 = 2000;
+/// How long a reset waits for the earlier suites' TCP connections to end: TIME_WAIT and
+/// an orphan's FIN_WAIT2 each last 60 seconds.
+pub const TCP_DRAIN_MS: u64 = 70_000;
 
 /// Set once this suite is part of a sequence: cases' children then reset SIGALRM.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -102,15 +110,46 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
     progress();
     if index == 0 {
         let entries = record_baseline();
-        emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}", ids.join(","), entries));
+        emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
     } else {
         emit(&match reset() {
-            Ok(reset) => reset.record(&ids[index]),
+            Ok(reset) => {
+                // The wait is bounded below the watchdog's period, which restarts first.
+                progress();
+                reset.record(&ids[index]) + &drain_tcp() + &memory()
+            }
             Err(why) => std::format!("SUITE_SEQUENCE RESET {} FAIL {why}", ids[index]),
         });
     }
     // The walk is not the suite's progress: its own watchdog period starts at START.
     progress();
+}
+
+/// Wait until `/proc/net/tcp` lists no listener or connection, up to [`TCP_DRAIN_MS`]:
+/// ` tcp=<rows left> tcpwait=<ms>`, or an empty string when the kernel has no such file.
+fn drain_tcp() -> String {
+    let start = monotonic_ns();
+    loop {
+        let Ok(text) = std::fs::read_to_string("/proc/net/tcp") else { return String::new() };
+        let rows = text.lines().skip(1).filter(|line| !line.trim().is_empty()).count();
+        let waited = (monotonic_ns() - start) / 1_000_000;
+        if rows == 0 || waited >= TCP_DRAIN_MS {
+            return std::format!(" tcp={rows} tcpwait={waited}");
+        }
+        let _ = crate::time::sleep_ms(250);
+    }
+}
+
+/// ` memfree=<kB> heapfree=<kB>` from `/proc/meminfo` (MemFree, KernelHeapFree), or
+/// an empty string when it cannot be read.
+fn memory() -> String {
+    let Ok(text) = std::fs::read_to_string("/proc/meminfo") else { return String::new() };
+    let field = |name: &str| text.lines()
+        .find_map(|line| line.strip_prefix(name)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
+    match (field("MemFree:"), field("KernelHeapFree:")) {
+        (Some(free), Some(heap)) => std::format!(" memfree={free}kB heapfree={heap}kB"),
+        _ => String::new(),
+    }
 }
 
 /// The suite started or finished a case: restart the watchdog. Counts a finished case

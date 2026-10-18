@@ -81,6 +81,15 @@ class ScoreTests(unittest.TestCase):
         self.assertIn("in e", status["e"][1])
         self.assertEqual(status["f"][0], "NOT-RUN")
 
+    def test_a_connection_left_open_by_an_earlier_suite_is_not_isolation(self):
+        serial = (self.passing("a") + "SUITE_SEQUENCE RESET b removed=0 changed=0 tcp=0 tcpwait=812 memfree=9kB heapfree=9kB\n"
+                  + self.passing("b") + "SUITE_SEQUENCE RESET c removed=0 changed=0 tcp=1 tcpwait=70000 memfree=9kB heapfree=9kB\n"
+                  + self.passing("c"))
+        ok, rows = self.score(serial, ["a", "b", "c"])
+        self.assertFalse(ok)
+        self.assertEqual([status for _, status, _ in rows], ["PASS", "PASS", "NOT-ISOLATED"])
+        self.assertIn("tcp=1", rows[2][2])
+
     def test_a_boot_stopped_mid_suite_records_its_partial_cases(self):
         ok, rows = self.score(self.passing("a") + "SUITE b START cases=2\nSUITE b CASE case/one PASS ms=1\n", ["a", "b"])
         self.assertFalse(ok)
