@@ -268,7 +268,8 @@ API can still change that framebuffer until the BreenGL migration removes it.
 
 <!-- claim-lint:ok: Proposed G7 requirements implementing gpu.md sections 1.7 and 1.8. -->
 `SET_MODE` takes 16 bytes: `index: u32`, three reserved u32s, zero on input. An index other
-than 0 or 1 is EINVAL. Ownership is checked before decoding arguments (EPERM otherwise).
+than 0 or 1 is EINVAL. Ownership is checked before argument validation: a non-owner
+gets EPERM even with malformed arguments. The owner's SET_MODE(NULL, 0) returns EINVAL.
 The selection belongs to the current owner and is restored with that owner. SET_MODE does
 not resize existing resources: subsequent full-screen targets use the selected dimensions;
 small diagnostic scanout targets accepted since G2 remain legal. SET_MODE itself neither
@@ -287,7 +288,8 @@ userspace handles until their stack entry is replaced or removed.
 
 <!-- claim-lint:ok: Proposed G7 observation requirements implementing gpu.md sections 1.7 and 1.8. -->
 READBACK with target 0 means the current scanout, available only to the current display
-owner. Outside display ownership, 0 remains an unknown resource handle (EINVAL).
+owner. A live process that is not the current owner gets EPERM for target 0. When a child
+owner exits, the previous live parent owner is restored and can read back target 0.
 It uses the completed binding's actual resource and rendering context, including the
 kernel console's; no foreign resource handle is exposed. Unknown binding returns EIO,
 reason 10. Its record has target 0 and the actual device resource id; its pixels pass the
