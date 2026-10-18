@@ -114,7 +114,7 @@ metal-run follow ID
 metal-run stop ID
 ```
 
-Keep the returned boot ID: `follow` shows the text console and `stop` ends that session immediately,
+Keep the returned boot ID: `follow` shows the driver's progress log and `stop` ends that session immediately,
 then powers off through the normal driver cleanup. `follow` is read-only; the repository does not yet offer
 operator typing over SOL while the driver owns it. At the machine, use the monitor and USB keyboard
 once their console support has landed. The login credentials are in the operator's private credential store;
