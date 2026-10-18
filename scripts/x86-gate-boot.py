@@ -70,10 +70,28 @@ def main():
     progress = BootProgress(user_log, now=started)
     clock = WallClockCheck(user_log)
     command, relays = relay_api['live_serial_command'](sys.argv[3:], (user_log, kernel_log))
+    # On macOS this launcher also serves windowed lane diagnostics outside breenix-runs. Register before launch so
+    # architecture and the tracked-change snapshot describe what actually boots, not the checkout after it finishes.
+    recorder = pathlib.Path(__file__).with_name('vigil-record.sh')
+    record_env = dict(os.environ, BREENIX_VIGIL_ARCH='x86_64', BREENIX_LAUNCHER_PID=str(os.getpid()))
+    if '-smp' in command:
+        cpus = command[command.index('-smp') + 1]
+        if cpus != '1':
+            record_env['BREENIX_VIGIL_CPUS'] = cpus
+    boot_id = ''
+    if recorder.is_file():
+        registered = subprocess.run([str(recorder), 'start', 'qemu', 'tests', os.environ.get('BREENIX_BOOT_SUITE', ''),
+                                     str(kernel_log), str(user_log), os.environ.get('BREENIX_QEMU_PROFILE', '')],
+                                    env=record_env, capture_output=True, text=True, check=False)
+        if registered.returncode == 0:
+            boot_id = registered.stdout.strip()
+    result = 1
     try:
         process = subprocess.Popen(command, start_new_session=True)
     except BaseException:
         relay_api['close_relays'](relays)
+        if boot_id:
+            subprocess.run([str(recorder), 'finish', boot_id, '1'], env=record_env, check=False)
         raise
     try:
         while True:
@@ -87,12 +105,15 @@ def main():
                 print(clock_reason, flush=True)
                 if elapsed > deadline:
                     print(f'GATE: FAIL (full boot completed beyond {deadline:g}s scoring deadline; #1068)', flush=True)
-                    return 2
-                return 0 if clock_ok else 3
+                    result = 2
+                    return result
+                result = 0 if clock_ok else 3
+                return result
             if progress.stalled():
                 progress.record()
                 diagnose(user_log, kernel_log, text)
-                return 124
+                result = 124
+                return result
             if process.poll() is not None:
                 print(f'GATE: FAIL (full boot exited before USERSPACE TEST COMPLETE; status={process.returncode})', flush=True)
                 return 1
@@ -106,6 +127,10 @@ def main():
             stop(process)
         finally:
             relay_api['close_relays'](relays)
+            if boot_id:
+                error = sys.exc_info()[1]
+                status = error.code if isinstance(error, SystemExit) else result
+                subprocess.run([str(recorder), 'finish', boot_id, str(status)], env=record_env, check=False)
 
 
 if __name__ == '__main__':
