@@ -128,6 +128,15 @@ fn read_parses_the_file_on_the_root() {
     *fs::ext2::FILE.lock().unwrap() = Some(vec![b'x'; 300]);
     assert!(target::read().is_err());
     *fs::ext2::FILE.lock().unwrap() = None;
+
+    // Disk-root boots choose a fresh mode without modifying their installed target.
+    assert!(!target::capture(b"filesystem bytes"));
+    assert!(target::capture(b"BREENIX-BOOT 1\nsuite signals\n"));
+    *fs::ext2::FILE.lock().unwrap() = Some(b"console\n".to_vec());
+    match target::read() {
+        Ok(Some(Target::Suite(suite))) => assert_eq!(suite.id, "signals"),
+        _ => panic!("the per-boot suite did not override the installed console target"),
+    }
 }
 
 #[test]

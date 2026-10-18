@@ -80,6 +80,16 @@ pub unsafe fn init(addr: Option<u64>, len: u64) -> Result<(), &'static str> {
     // A disk-root console boot carries only its per-boot intent here. It
     // must not become a root block device or change the installed filesystem.
     let bytes = core::slice::from_raw_parts_mut(addr as *mut u8, len);
+    if crate::boot::target::capture(bytes) {
+        if let Some(line) = bytes.strip_prefix(b"BREENIX-BOOT 1\nconsole") {
+            crate::boot::console_intent::capture(if line == b" replug\n" {
+                b"BREENIX-CONSOLE 1\nmeasure\n"
+            } else {
+                b"BREENIX-CONSOLE 1\nsession\n"
+            });
+        }
+        return Ok(());
+    }
     if crate::boot::console_intent::capture(bytes) {
         return Ok(());
     }
