@@ -332,7 +332,7 @@ impl Controller {
                 let Some(pipe) = devices[index].keyboard.as_mut() else {
                     return;
                 };
-                match pipe.state.report(&report, now, &mut |code, value| console.event(code, value)) {
+                match pipe.state.report(&report, now, &mut |code, value| console.event(port, code, value)) {
                     Ok(summary) => console.note_report(&summary),
                     Err(report::ReportError::Length(length)) => {
                         pipe.bad_reports += 1;
@@ -380,7 +380,8 @@ impl Controller {
         let Controller { devices, console, .. } = self;
         for device in devices.iter_mut() {
             if let Some(pipe) = device.keyboard.as_mut() {
-                pipe.state.tick(now, &mut |code, value| console.event(code, value));
+                let port = device.port;
+                pipe.state.tick(now, &mut |code, value| console.event(port, code, value));
             }
         }
     }
@@ -431,7 +432,7 @@ impl Controller {
     fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
         if let Some(pipe) = device.keyboard.as_mut() {
-            pipe.state.release_all(&mut |code, value| self.console.event(code, value));
+            pipe.state.release_all(&mut |code, value| self.console.event(device.port, code, value));
         }
         let (port, slot, keyboard) = (device.port, device.slot, device.keyboard.is_some());
         let reclaimed = self.reclaim(device);

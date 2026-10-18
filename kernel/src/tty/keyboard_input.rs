@@ -18,11 +18,13 @@ impl PendingInput {
         }
     }
 
-    pub(super) fn push(&mut self, byte: u8, source: InputSource) {
+    pub(super) fn push(&mut self, byte: u8, source: InputSource) -> bool {
         if self.len < self.bytes.len() {
             self.bytes[(self.head + self.len) % self.bytes.len()] = (byte, source);
             self.len += 1;
+            return true;
         }
+        false
     }
 
     pub(super) fn drain(&mut self, mut process: impl FnMut(u8, InputSource) -> bool) {

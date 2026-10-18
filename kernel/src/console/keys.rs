@@ -11,16 +11,19 @@
 
 use super::keymap::{self, Action, Lock, Target};
 use super::vt::{self, VT_COUNT};
-use crate::input::event::{Modifiers, PRESS};
-use core::sync::atomic::{AtomicBool, Ordering};
+use crate::input::event::{Modifiers, PRESS, RELEASE, REPEAT};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Caps Lock, kept per terminal (section 9.1).
 static CAPS: [AtomicBool; VT_COUNT] = [const { AtomicBool::new(false) }; VT_COUNT];
 static NUM: AtomicBool = AtomicBool::new(false);
 static SCROLL: AtomicBool = AtomicBool::new(false);
 
+// Key codes in the console bindings fit in two words. Track each physical keyboard.
+static CONSUMED: [[AtomicU64; 2]; 258] = [const { [const { AtomicU64::new(0) }; 2] }; 258];
+
 /// One key event. Returns how many bytes it sent the foreground terminal.
-pub fn key(code: u16, value: i32, modifiers: Modifiers, reserved: bool, source: crate::tty::InputSource) -> usize {
+pub fn key(device: usize, code: u16, value: i32, modifiers: Modifiers, reserved: bool, source: crate::tty::InputSource) -> usize {
     // A key press while the boot splash is up ends it and is otherwise ignored.
     if value == PRESS && super::splash::key() {
         return 0;
@@ -31,13 +34,21 @@ pub fn key(code: u16, value: i32, modifiers: Modifiers, reserved: bool, source: 
         caps: CAPS[fg - 1].load(Ordering::Relaxed),
         num: NUM.load(Ordering::Relaxed),
     };
+    if code < 128 {
+        let word = &CONSUMED[device][code as usize / 64];
+        let bit = 1u64 << (code % 64);
+        if value == RELEASE {
+            word.fetch_and(!bit, Ordering::Relaxed);
+        } else if value == REPEAT && word.load(Ordering::Relaxed) & bit != 0 {
+            return 0;
+        } else if value == PRESS && keymap::consumes(code, modifiers, reserved, state.text) {
+            word.fetch_or(bit, Ordering::Relaxed);
+        }
+    }
     match keymap::action(code, value, modifiers, reserved, state) {
         Action::None => 0,
         Action::Bytes(bytes) => {
-            for &byte in bytes.as_slice() {
-                crate::tty::push_char_nonblock_from(byte, source);
-            }
-            bytes.as_slice().len()
+            bytes.as_slice().iter().filter(|&&byte| crate::tty::push_char_nonblock_from(byte, source)).count()
         }
         Action::Switch(target, chord) => {
             // Previous and next count from a switch a key asked for and the render thread has not made yet.

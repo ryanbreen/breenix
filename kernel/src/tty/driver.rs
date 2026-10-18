@@ -214,7 +214,6 @@ pub struct TtyDevice {
     output_stopped: AtomicBool,
     input_flow_stopped: AtomicBool,
     pending_echo: Mutex<super::pty::pair::PtyBuffer>,
-    pending_keys: Mutex<super::keyboard_input::PendingInput>,
 
     /// #822: `foreground_pgrp`'s value, published for interrupt-context
     /// readers, so that the 2 of them take 0 acquisitions of that mutex.
@@ -249,7 +248,6 @@ impl TtyDevice {
             output_stopped: AtomicBool::new(false),
             input_flow_stopped: AtomicBool::new(false),
             pending_echo: Mutex::new(super::pty::pair::PtyBuffer::new()),
-            pending_keys: Mutex::new(super::keyboard_input::PendingInput::new()),
             foreground_pgrp_snapshot: AtomicU64::new(FOREGROUND_PGRP_UNSET),
         }
     }
@@ -1296,45 +1294,37 @@ pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
     }
     let foreground = crate::console::vt::foreground();
     crate::console::vt::input_returns_view(foreground);
-    if foreground != 1 {
-        if let Some(tty) = vt(foreground) {
-            tty.queue_key(c, source);
+    // Admit to the destination's queue before looking up its TTY. In particular,
+    // contention on CONSOLE_TTY must not discard a USB key or retarget it after a switch.
+    crate::arch_without_interrupts(|| {
+        for _ in 0..KEY_QUEUE_SPINS {
+            if let Some(mut keys) = PENDING_KEYS[foreground - 1].try_lock() {
+                let accepted = keys.push(c, source);
+                let tty = if foreground == 1 {
+                    CONSOLE_TTY.try_lock().and_then(|guard| guard.clone())
+                } else {
+                    vt(foreground)
+                };
+                if let Some(tty) = tty {
+                    keys.drain(|byte, source| tty.admit_key(byte, source));
+                }
+                return accepted;
+            }
+            core::hint::spin_loop();
         }
-        return true;
-    }
-    // Try to get console without blocking
-    if let Some(guard) = CONSOLE_TTY.try_lock() {
-        if let Some(ref tty) = *guard {
-            let tty = Arc::clone(tty);
-            drop(guard);
-            tty.queue_key(c, source);
-            return true;
-        }
-    }
-    false
+        false
+    })
 }
 
 /// Attempts at a terminal's keyboard queue before a key byte is dropped. Its
 /// holders mask interrupts for a few bytes' processing; this is far longer.
 const KEY_QUEUE_SPINS: usize = 100_000;
 
-impl TtyDevice {
-    /// Queue a keyboard byte behind any the discipline refused, then offer the
-    /// queue to the discipline. A busy discipline keeps the bytes in order; the
-    /// render thread retries them (`drain_keyboard_input`), even after a switch.
-    fn queue_key(&self, byte: u8, source: super::InputSource) {
-        crate::arch_without_interrupts(|| {
-            for _ in 0..KEY_QUEUE_SPINS {
-                if let Some(mut keys) = self.pending_keys.try_lock() {
-                    keys.push(byte, source);
-                    keys.drain(|byte, source| self.admit_key(byte, source));
-                    return;
-                }
-                core::hint::spin_loop();
-            }
-        });
-    }
+// These queues exist independently of the TTY lookup lock and retain their destination.
+static PENDING_KEYS: [Mutex<super::keyboard_input::PendingInput>; 6] =
+    [const { Mutex::new(super::keyboard_input::PendingInput::new()) }; 6];
 
+impl TtyDevice {
     fn admit_key(&self, byte: u8, source: super::InputSource) -> bool {
         match source {
             super::InputSource::Other => self.input_char_nonblock(byte),
@@ -1349,7 +1339,7 @@ pub fn drain_keyboard_input() {
     for number in 1..=crate::console::vt::VT_COUNT {
         if let Some(tty) = vt(number) {
             crate::arch_without_interrupts(|| {
-                if let Some(mut keys) = tty.pending_keys.try_lock() {
+                if let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() {
                     keys.drain(|byte, source| tty.admit_key(byte, source));
                 }
             });

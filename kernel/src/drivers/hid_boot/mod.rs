@@ -45,8 +45,8 @@ impl Console {
     }
 
     /// One key event for the input core.
-    pub fn event(&mut self, code: u16, value: i32) {
-        let sent = crate::input::report_key(crate::input::Device::UsbBootKeyboard, code, value);
+    pub fn event(&mut self, port: u8, code: u16, value: i32) {
+        let sent = crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
         if sent == 0 {
             return;
         }

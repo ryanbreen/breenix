@@ -26,17 +26,18 @@ pub enum Device {
     /// `virtio-keyboard-device` over MMIO (ARM64 QEMU).
     VirtioKeyboard,
     /// A USB HID boot keyboard on the clean-room xHCI (x86-metal).
-    UsbBootKeyboard,
+    UsbBootKeyboard(u8),
 }
 
-const DEVICES: usize = 3;
+// USB root ports are numbered 1..=255 by xHCI. Keep their identities stable on detach.
+const DEVICES: usize = 258;
 
 impl Device {
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         match self {
             Device::Ps2 => 0,
             Device::VirtioKeyboard => 1,
-            Device::UsbBootKeyboard => 2,
+            Device::UsbBootKeyboard(port) => 2 + port as usize,
         }
     }
 
@@ -45,7 +46,7 @@ impl Device {
         match self {
             Device::Ps2 => crate::tty::InputSource::Ps2,
             Device::VirtioKeyboard => crate::tty::InputSource::Other,
-            Device::UsbBootKeyboard => crate::tty::InputSource::UsbKeyboard,
+            Device::UsbBootKeyboard(_) => crate::tty::InputSource::UsbKeyboard,
         }
     }
 }
@@ -53,7 +54,7 @@ impl Device {
 /// Each device's held modifier keys. The state the consumer sees is their union.
 static HELD: [AtomicU8; DEVICES] = [const { AtomicU8::new(0) }; DEVICES];
 /// Function keys whose press was a reserved chord, until their release.
-static RESERVED: AtomicU16 = AtomicU16::new(0);
+static RESERVED: [AtomicU16; DEVICES] = [const { AtomicU16::new(0) }; DEVICES];
 
 /// One key event from `device`. Returns how many bytes it sent the foreground terminal.
 pub fn report_key(device: Device, code: u16, value: i32) -> usize {
@@ -66,9 +67,9 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
     // their releases, reach the console under any grab; the window-manager effort's
     // compositor grab takes the other events while its terminal is in the foreground.
     let mut reserved = false;
-    let _ = RESERVED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |mut held| {
+    let _ = RESERVED[device.index()].fetch_update(Ordering::AcqRel, Ordering::Acquire, |mut held| {
         reserved = event::reserved(&mut held, code, value, modifiers);
         Some(held)
     });
-    crate::console::keys::key(code, value, modifiers, reserved, device.source())
+    crate::console::keys::key(device.index(), code, value, modifiers, reserved, device.source())
 }

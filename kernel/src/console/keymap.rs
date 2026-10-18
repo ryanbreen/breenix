@@ -91,6 +91,12 @@ pub struct State {
     pub num: bool,
 }
 
+/// A press disposition retained by the consumer until this device releases the key.
+pub fn consumes(code: u16, modifiers: Modifiers, reserved: bool, text: bool) -> bool {
+    binding(code, modifiers, reserved, text).is_some()
+        || matches!(code, KEY_CAPSLOCK | KEY_NUMLOCK | KEY_SCROLLLOCK)
+}
+
 /// The action of key `code` with `value` under `modifiers`. `reserved` is the
 /// input core's verdict that the event belongs to a Ctrl+Alt+F1..F12 chord.
 pub fn action(code: u16, value: i32, modifiers: Modifiers, reserved: bool, state: State) -> Action {
