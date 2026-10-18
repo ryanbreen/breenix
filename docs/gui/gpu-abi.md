@@ -290,7 +290,11 @@ than 0 or 1 is EINVAL. Ownership is checked before argument validation: a non-ow
 gets EPERM even with malformed arguments. The owner's SET_MODE(NULL, 0) returns EINVAL.
 The selection belongs to the current owner and is restored with that owner. SET_MODE does
 not resize existing resources: subsequent full-screen targets use the selected dimensions;
-small diagnostic scanout targets accepted since G2 remain legal. SET_MODE itself neither
+small diagnostic targets accepted since G2 remain legal. The suite shows them by copying on the GPU
+at origin (0,0) into a display-sized scanout (ruling 53, #1956); it never binds a target wider or taller
+than the display. The source record keeps its dimensions and actual resource id, with scanout bit clear
+when composed; READBACK(0) reports the actual display-sized scanout, whose resource id differs from the
+source's, and whose present fence and source pixels at that origin are checked separately. SET_MODE itself neither
 reinterprets nor destroys a previously drawn target.
 
 <!-- claim-lint:ok: Proposed G7 requirements implementing the ownership stack in gpu.md section 1.7. -->
