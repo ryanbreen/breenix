@@ -36,6 +36,8 @@ RATIO = 10
 CLIENT = re.compile(r"^\s*[| ]*\+-o (\S+)\s+<class [^,]+, id (0x[0-9a-f]+)")
 CREATOR = re.compile(r'"IOUserClientCreator" = "pid (\d+),')
 USAGE = re.compile(r'"accumulatedGPUTime"=(\d+)')
+FINAL_PERFORMANCE = "SUITE gpu CASE performance/present-rate-2560 "
+DONE = re.compile(r"^SUITE gpu DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+$")
 WANTED = re.compile(r"^(SUITE gpu (?:START|CASE|DONE)|SUITE_IDLE gpu performance) ")
 
 
@@ -141,9 +143,14 @@ def judge_record(path, wait):
             return f"unreadable GPU time record {path}: {e}"
         lines = [(r["t"], r["line"]) for r in records if r.get("kind") == "line"]
         samples = [(r["t"], r["ns"]) for r in records if r.get("kind") == "gpu"]
-        last_line = max((t for t, _ in lines), default=None)
-        # The sample after the last record bounds its time; wait briefly for the sampler.
-        if last_line is None or (samples and samples[-1][0] > last_line) or time.monotonic() > deadline:
+        final = next((t for t, line in lines if line.startswith(FINAL_PERFORMANCE)), None)
+        done = next((t for t, line in lines if DONE.fullmatch(line)), None)
+        # GPU samples are appended before serial records. A sample after an arbitrary
+        # prefix does not bound the whole category: wait for its final case and DONE.
+        complete = final is not None and done is not None and done >= final
+        if complete and samples and samples[-1][0] > done:
+            break
+        if time.monotonic() >= deadline:
             break
         time.sleep(INTERVAL)
     vm = next((r for r in records if r.get("kind") == "vm"), None)
@@ -160,9 +167,13 @@ def judge_record(path, wait):
     perf = [t for t, l in lines if l.startswith("SUITE gpu CASE performance/")]
     if begin is None or end is None or end <= begin:
         return "the serial carries no idle window before the performance category"
-    if not perf:
-        return "the serial carries no performance CASE record"
-    stop = perf[-1]
+    if not complete:
+        return "the serial carries no final performance CASE followed by full-suite DONE"
+    if not samples or samples[-1][0] <= done:
+        return "the GPU time samples do not extend beyond full-suite DONE"
+    stop = final
+    if perf[-1] != final:
+        return "the final performance CASE does not end the performance category"
     # Batched serial reads cannot resolve an idle boundary and performance work at
     # the same timestamp. Reject that interval before computing its rate.
     if perf[0] <= end or stop <= end or any(b < a for a, b in zip(perf, perf[1:])):
