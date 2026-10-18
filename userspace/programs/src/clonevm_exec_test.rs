@@ -1,18 +1,19 @@
 //! Runtime proof that exec detaches a former CLONE_VM process cleanly.
 //!
 //! Both architectures prove that a borrowed non-thread child can exec while
-//! its parent lives, and that an owner cannot retire a live sibling's root.
+//! its parent lives, and that an owner exec leaves its old sharers alive.
 //! After exec they exercise futex keys from the new address-space identity.
 
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
+use libbreenix::{io, Fd};
 use libbreenix::memory;
 use libbreenix::process;
 use libbreenix::syscall::{nr, raw};
 use libbreenix::time::now_monotonic;
 use libbreenix::Timespec;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 const SHARED_ALIVE_OFFSET: usize = 0;
 const SHARED_COMMAND_OFFSET: usize = 8;
@@ -30,6 +31,9 @@ const SPIN_LIMIT: u64 = 2_000_000;
 const CLONE_FLAGS: u64 = 0x00000100 | 0x00000400 | 0x00200000 | 0x01000000;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
+
+// A fresh image resets this word; every old sharer must retain its value.
+static IMAGE_GENERATION: AtomicU32 = AtomicU32::new(0);
 
 const PROGRAM: &[u8] = b"/usr/local/test/bin/clonevm_exec_test\0";
 const ARG0: &[u8] = b"clonevm_exec_test\0";
@@ -406,21 +410,99 @@ fn second_stage_argv() -> [*const u8; 3] {
     [ARG0.as_ptr(), SECOND_STAGE_ARG.as_ptr(), ptr::null()]
 }
 
-unsafe fn probe_live_sibling_exec() {
-    let argv = second_stage_argv();
-    match process::execv(PROGRAM, argv.as_ptr()) {
-        Err(Error::Os(Errno::EAGAIN)) => {
-            raw_msg(b"CLONEVM_EXEC_TEST: live sibling refused exec\n");
+/// CLONE_FILES shares descriptor custody, so neither old sharer closes the
+/// other endpoint. Nonblocking pipes keep a missing producer bounded instead.
+unsafe fn receive_handoff(fd: Fd) -> bool {
+    let deadline = monotonic_ns(b"CLONEVM_EXEC_TEST: ERROR handoff clock failed\n")
+        .saturating_add(5_000_000_000);
+    loop {
+        let mut byte = [0];
+        match io::read(fd, &mut byte) {
+            Ok(1) => return byte == [1],
+            Err(Error::Os(Errno::EAGAIN)) => {},
+            _ => return false,
         }
-        Err(error) => {
-            drop(error);
-            fail_closed(b"CLONEVM_EXEC_TEST: ERROR live-sibling exec returned unexpected errno\n");
+        if monotonic_ns(b"CLONEVM_EXEC_TEST: ERROR handoff clock failed\n") >= deadline {
+            return false;
         }
-        Ok(infallible) => match infallible {},
+        sys_yield();
     }
 }
 
+/// These two processes retain the original mapping across their owner's exec.
+/// Their handshake must still use the same futex key after custody transfers.
+extern "C" fn retained_waiter(arg: *mut u8) -> *mut u8 {
+    unsafe {
+        core::ptr::write_volatile(arg.add(READY_OFFSET) as *mut u32, 1);
+        let timeout = Timespec { tv_sec: 5, tv_nsec: 0 };
+        if futex_wait_with_timeout(arg.add(RENDEZVOUS_OFFSET) as *mut u32, 0, &timeout) != 0 {
+            thread_exit(1);
+        }
+        core::ptr::write_volatile(arg.add(CHILD_STATUS_OFFSET) as *mut u32, 1);
+        thread_exit(0);
+    }
+}
+
+extern "C" fn retained_coordinator(arg: *mut u8) -> *mut u8 {
+    unsafe {
+        let trigger = Fd::from_raw(core::ptr::read_volatile(arg.add(56) as *mut u64));
+        let report = Fd::from_raw(core::ptr::read_volatile(arg.add(64) as *mut u64));
+        let stack = map_region(CHILD_STACK_SIZE,
+            b"CLONEVM_EXEC_TEST: ERROR retained waiter stack failed\n");
+        let tid = arg.add(RENDEZVOUS_TID_OFFSET) as *mut u32;
+        core::ptr::write_volatile(tid, u32::MAX);
+        if clone_vm_child(stack, retained_waiter, arg, tid) < 0 {
+            thread_exit(1);
+        }
+        if !spin_until_u32(arg.add(READY_OFFSET) as *mut u32, 1) {
+            thread_exit(1);
+        }
+        core::ptr::write_volatile(arg as *mut u64, process::getpid().unwrap().raw());
+        if !receive_handoff(trigger) {
+            thread_exit(1);
+        }
+        // Only the new image writes the trigger. Reaching this point
+        // proves the owner has exec'd; both accesses below use the old root.
+        if IMAGE_GENERATION.load(Ordering::SeqCst) != 37
+            || core::ptr::read_volatile(arg.add(SHARED_COMMAND_OFFSET) as *mut u64) != 7
+            || !wake_queued_waiter(arg.add(RENDEZVOUS_OFFSET) as *mut u32) {
+            raw_msg(b"CLONEVM_EXEC_TEST: ERROR old mapping or futex identity lost\n");
+            thread_exit(1);
+        }
+        if !spin_until_u32(tid, 0) {
+            thread_exit(1);
+        }
+        if core::ptr::read_volatile(arg.add(CHILD_STATUS_OFFSET) as *mut u32) != 1
+            || io::write(report, &[1]).ok() != Some(1) {
+            thread_exit(1);
+        }
+        thread_exit(0);
+    }
+}
+
+unsafe fn owner_second_stage() -> ! {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 5 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR owner handoff arguments\n");
+    }
+    let trigger = Fd::from_raw(args[2].parse().unwrap());
+    let report = Fd::from_raw(args[3].parse().unwrap());
+    let child: i32 = args[4].parse().unwrap();
+    let mut status = 0;
+    if io::write(trigger, &[1]).ok() != Some(1)
+        || !receive_handoff(report)
+        || process::waitpid(child, &mut status, 0).map(|pid| pid.raw() as i32).ok() != Some(child)
+        || !process::wifexited(status) || process::wexitstatus(status) != 0 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR retained sharers failed after owner exec\n");
+    }
+    raw_msg(b"CLONEVM_EXEC_TEST: owner exec preserved sharer mapping and futex identity\n");
+    second_stage();
+}
+
 unsafe fn second_stage() -> ! {
+    if IMAGE_GENERATION.load(Ordering::SeqCst) != 0 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR new image retained old memory\n");
+    }
     // These nonblocking calls exercise both futex entry points on the post-exec
     // row at two addresses, so each group key is derived from that row's
     // post-exec identity.
@@ -523,7 +605,11 @@ unsafe fn second_stage() -> ! {
         b"CLONEVM_EXEC_TEST: ERROR rendezvous child tid was not cleared after release\n",
     );
     drop_child_custody();
-    raw_msg(b"CLONEVM_EXEC_TEST: post-exec rendezvous complete\n");
+    if std::env::args().nth(1).as_deref() == Some("--owner-second-stage") {
+        raw_msg(b"CLONEVM_EXEC_TEST: post-exec rendezvous complete\n");
+    } else {
+        raw_msg(b"CLONEVM_EXEC_TEST: borrowed image rendezvous complete\n");
+    }
 
     raw_msg(b"CLONEVM_EXEC_TEST: post-exec futex keys derived\n");
     raw_msg(b"CLONEVM_EXEC_TEST: PASS\n");
@@ -532,6 +618,7 @@ unsafe fn second_stage() -> ! {
 
 unsafe fn first_stage() -> ! {
     raw_msg(b"CLONEVM_EXEC_TEST: start\n");
+    IMAGE_GENERATION.store(37, Ordering::SeqCst);
     let invalid = raw::syscall6(nr::CLONE, 0x100 | 0x10000, 0x1000,
                                phase_one_child as *const () as u64, 0, 0, 0) as i64;
     if invalid != -(Errno::EINVAL as i64) {
@@ -569,44 +656,45 @@ unsafe fn first_stage() -> ! {
         || !process::wifexited(status) || process::wexitstatus(status) != 0 {
         fail_closed(b"CLONEVM_EXEC_TEST: ERROR borrowed child image failed\n");
     }
+    if IMAGE_GENERATION.load(Ordering::SeqCst) != 37 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR borrowed exec changed parent memory\n");
+    }
     raw_msg(b"CLONEVM_EXEC_TEST: borrowed child exec passed while parent live\n");
     core::ptr::write_volatile(alive, 0);
     core::ptr::write_volatile(command, 0);
     core::ptr::write_volatile(tid_addr, u32::MAX);
 
-    if clone_vm_child(stack, phase_one_child, shared, tid_addr) < 0 {
-        fail_closed(b"CLONEVM_EXEC_TEST: ERROR initial clone failed\n");
+    let (trigger_read, trigger_write) = io::pipe2(0x800).unwrap();
+    let (report_read, report_write) = io::pipe2(0x800).unwrap();
+    core::ptr::write_volatile(shared.add(56) as *mut u64, trigger_read.raw());
+    core::ptr::write_volatile(shared.add(64) as *mut u64, report_write.raw());
+    core::ptr::write_volatile(command, 7);
+    if clone_vm_child(stack, retained_coordinator, shared, tid_addr) < 0 {
+        fail_closed(b"CLONEVM_EXEC_TEST: ERROR retained coordinator clone failed\n");
     }
-    take_child_custody(ptr::null_mut(), command, tid_addr);
-
-    wait_for_nonzero_u64(
-        alive,
-        b"CLONEVM_EXEC_TEST: ERROR child did not report live\n",
-    );
-    raw_msg(b"CLONEVM_EXEC_TEST: child live\n");
-
+    take_child_custody(ptr::null_mut(), ptr::null_mut(), tid_addr);
+    wait_for_nonzero_u64(alive, b"CLONEVM_EXEC_TEST: ERROR retained sharers not live\n");
     prove_child_still_live(alive, tid_addr);
-    probe_live_sibling_exec();
-
-    core::ptr::write_volatile(command, 2);
-    wait_for_zero_u32(
-        tid_addr,
-        b"CLONEVM_EXEC_TEST: ERROR child tid was not cleared after release\n",
-    );
-    drop_child_custody();
-    raw_msg(b"CLONEVM_EXEC_TEST: child exited\n");
-
-    let argv = second_stage_argv();
-    let exec_result = process::execv(PROGRAM, argv.as_ptr());
-    drop(exec_result);
-    fail_closed(b"CLONEVM_EXEC_TEST: ERROR post-release exec returned\n");
+    let child_pid = core::ptr::read_volatile(alive);
+    // Pipe descriptors and the child PID survive exec; no old address is
+    // passed to the new image. Its futex checks run on a fresh mapping.
+    let owner_arg = b"--owner-second-stage\0";
+    let trigger_arg = format!("{}\0", trigger_write.raw());
+    let report_arg = format!("{}\0", report_read.raw());
+    let child_arg = format!("{}\0", child_pid);
+    let argv = [ARG0.as_ptr(), owner_arg.as_ptr(), trigger_arg.as_ptr(),
+        report_arg.as_ptr(), child_arg.as_ptr(), ptr::null()];
+    let result = process::execv(PROGRAM, argv.as_ptr());
+    drop(result);
+    fail_closed(b"CLONEVM_EXEC_TEST: ERROR owner exec returned\n");
 }
 
 fn main() {
     unsafe {
-        if std::env::args().nth(1).as_deref() == Some("--second-stage") {
-            second_stage();
+        match std::env::args().nth(1).as_deref() {
+            Some("--second-stage") => second_stage(),
+            Some("--owner-second-stage") => owner_second_stage(),
+            _ => first_stage(),
         }
-        first_stage();
     }
 }

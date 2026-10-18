@@ -28,6 +28,7 @@ fn run() -> Result<(), String> {
     t.c_cc[0] = 3; t.c_cc[1] = 28; t.c_cc[2] = 127; t.c_cc[3] = 21;
     t.c_cc[4] = 4; t.c_cc[10] = 26;
     check(termios::tcsetattr(Fd::STDIN, termios::TCSAFLUSH, &t))?;
+    check(termios::console_input_proof(Fd::STDIN, 0))?;
     check(std::io::stdout().write_all(b"[getty] console acquired\n\nBreenix login: "))?;
     check(std::io::stdout().flush())?;
     // Unbuffered: no bytes that belong to login may be stranded in a getty buffer.

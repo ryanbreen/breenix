@@ -826,6 +826,30 @@ class MilestoneScoreTest(StateTest):
             if disk == 'root':
                 self.assertNotIn('ramdisk-root', verdict['milestones'])
 
+    def test_sol_console_boot_is_not_short_for_stages_only_the_keyboard_produces(self):
+        import metal_score
+        root = TOOLS.parents[1]
+        directory = m.STATE / 'boot'
+        for name in ('docs/metal/boot-path.json',
+                     'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
+            dest = directory / 'definition' / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / name, dest)
+        (directory / 'events.jsonl').write_text('')
+        m.write_json(directory / 'run.json', {'mode': 'console', 'input': 'sol'})
+        lines = ['[usb] boot keyboard attached: port=2', '[usb] boot keyboard detached: port=2',
+                 '[usb] boot keyboard attached: port=2', '[init] getty on the console', 'Breenix login: root',
+                 'Login incorrect', 'metal-login-ok 42', 'fbcon check: shadow and screen identical, 9 glyph cells',
+                 'fbcon row: metal-login-ok 42', '[getty] console acquired']
+        for missing, short in ((None, False), ('fbcon row: metal-login-ok 42', True)):
+            (directory / 'serial.txt').write_text('\n'.join(line for line in lines if line != missing))
+            verdict = metal_score.score(directory)
+            console = {name: verdict['milestones'][name] for name in ('usb-keyboard', 'console-login')}
+            self.assertEqual({name: result['inputUnmeasured'] for name, result in console.items()},
+                             {'usb-keyboard': 2, 'console-login': 1})
+            self.assertFalse(any(result['passed'] for result in console.values()))
+            self.assertEqual(metal_score.falls_short({'captureComplete': True, 'milestones': console}), short)
+
 
 class DriverTest(StateTest):
     def setUp(self):

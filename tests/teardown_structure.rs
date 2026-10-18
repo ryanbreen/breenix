@@ -4060,6 +4060,11 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
+    // Ruling S2: an exec by a thread other than its process's first one moves
+    // the thread's row to the process's ID once the join has removed the
+    // leader's row.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exec_take_over_group => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exec_take_over_group => remove", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
     // P6a PR-2, per delta: the raw removal moved from `remove_process` into the shared `take_row_unconditionally`; still exactly one removal of a row from the map.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn take_row_unconditionally => remove", 1),
@@ -4143,11 +4148,12 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
-    // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
+    // Class 3 — the nineteen in-kernel oracle callers, eight enclosing items.
+    // Ruling S2: the exec detach oracle's sibling, a thread's row, now leaves
+    // through its own exit and the join, so its unowned-row helper is gone.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 7),
@@ -4161,6 +4167,9 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
 /// declines zombies (SIGCHLD ignored or SA_NOCLDWAIT).
 #[rustfmt::skip]
 const JOIN_REAP_ARM_CALLS: &[(&str, &str, usize)] = &[
+    // Ruling S2: an exec by a thread other than its process's first one reaps
+    // the retired leader's row, which no wait reports, as it takes it over.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exec_take_over_group", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_if_unwaited", 1),
     ("kernel/src/syscall/wait.rs", "fn complete_wait", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test::fn reap", 1),
@@ -4214,7 +4223,9 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
+    // Ruling S2: the exec detach oracle ends a sibling thread and then the
+    // leader through the real exit path in each of its two bodies.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
 ];
 #[rustfmt::skip]
@@ -4472,6 +4483,10 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // exec_process_with_argv makes for its manually-mapped user stack), mirroring
     // sys_spawn's identical ordering above.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_execv_with_frame", 1),
+    // Ruling S2: an exec waiting for the other threads of its process drives
+    // the drain each interval, so the dead leader's row retires and the exec
+    // can take it over.
+    ("kernel/src/syscall/exec.rs", "fn end_other_threads", 1),
     // #653 delta (3): the boot-test arm that drives the nested-refusal residual
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.
@@ -4591,7 +4606,6 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 4),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 3),
@@ -7128,7 +7142,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -8468,7 +8482,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
@@ -10023,10 +10037,13 @@ fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
         3,
         "exec detach oracle must retain all three group-kill probes"
     );
+    // Ruling S2: before the exec a kill aimed at the process reaches the
+    // member and the leader; after it, the process's ID reaches the exec'd row
+    // alone and the member's old row ID reaches no row, which needs no take.
     assert_eq!(
         identifier_offsets(oracle, &oracle_mask, "take_pending_signal_for_test").len(),
-        5,
-        "exec detach oracle must retain all five signal-delivery observations"
+        3,
+        "exec detach oracle must retain all three signal-delivery observations"
     );
     assert_eq!(
         code_offsets(oracle, &oracle_mask, "old_group_reached_pre += 1;").len(),
@@ -10044,8 +10061,8 @@ fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
         .find("let successful_exec =")
         .expect("exec detach oracle successful-exec arm");
     let post_exec_probe = oracle
-        .find("let old_group_post_count =")
-        .expect("exec detach oracle post-exec old-group probe");
+        .find("let group_post_count =")
+        .expect("exec detach oracle post-exec group probe");
     assert!(
         pre_exec_probe < failed_exec
             && failed_exec < successful_exec
@@ -15270,10 +15287,11 @@ fn blocked_handoff_validation_rejects_removal_movement_and_teardown() {
 ///   it in the next statement to observe `ROW_REMOVAL_EPOCH`; under the join it
 ///   would both strand a tombstone and stop bumping the epoch, silently
 ///   disarming P1's parked-reclaimer gate.
-/// * **class 3 — the twenty in-kernel oracle callers** in `teardown.rs`: per-site
-///   dispositions live in the PR body. All twenty stay on the unconditional
+/// * **class 3 — the nineteen in-kernel oracle callers** in `teardown.rs`: per-site
+///   dispositions live in the PR body. All nineteen stay on the unconditional
 ///   destructor because none of their fixture rows has a retirement event to
-///   join against inside the oracle's own measurement window.
+///   join against inside the oracle's own measurement window. claim-lint:ok:
+///   19 of 19 class-3 calls are counted in `ROW_DESTRUCTOR_CALLS`.
 #[test]
 fn debt4_row_removal_routes_through_the_join_on_both_arches() {
     let sources = rust_sources_below("kernel/src");

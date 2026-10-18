@@ -10,40 +10,71 @@ pub(crate) const ARG_MAX: usize = DEFAULT_STACK_LIMIT as usize / 4;
 
 pub(crate) fn manager_errno(error: &str) -> u64 {
     match error {
-        "exec blocked while CLONE_VM sibling shares old address space"
-        | "exec credentials changed while its image was prepared" => super::errno::EAGAIN as u64,
+        "exec credentials changed while its image was prepared" => super::errno::EAGAIN as u64,
         "exec arguments too large" => E2BIG as u64,
         _ => ENOMEM as u64,
     }
 }
 
-/// Nothing wakes this queue: an exec waiting for an exiting sibling sleeps on
-/// it for one interval at a time and checks again.
-static EXITING_SIBLING_WAIT: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
+/// No waker is registered on this queue: an exec waiting for the other threads
+/// of its process to end sleeps on it one interval at a time and checks again.
+static OTHER_THREADS_WAIT: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
 
-/// Before exec `pid` retires its address space, wait while every sibling
-/// that still holds it has begun to exit
-/// (`ProcessManager::exec_waits_for_exiting_sibling`), so a thread that has
-/// joined the others execs instead of finding them still present. The wait
-/// sleeps a millisecond at a time, so a sibling of lower priority runs, and
-/// a signal ends it with the errno its wait decided. Thread-group peers are
-/// terminated first; independent CLONE_VM processes retain the refusal gate.
-pub(crate) fn await_exiting_siblings(pid: crate::process::ProcessId) -> Result<(), u64> {
+/// POSIX exec by a thread of a multithreaded process (S2), before the new
+/// image is committed: end the process's other threads, wait until they are
+/// gone (`ProcessManager::exec_waits_for_group`), and make the calling row
+/// the process's (`ProcessManager::exec_take_over_group`). Returns the
+/// process ID the caller's row now has: its thread group's ID, which is
+/// `pid` when the caller already led its process or shares no thread group.
+/// Rows that share the address space without sharing the thread group
+/// (CLONE_VM only, vfork) are left running; the commit gives the caller a new
+/// address space and leaves them the old one.
+///
+/// The wait sleeps a millisecond at a time, so lower-priority threads run to
+/// their end, and drives the deferred reclaim that retires the leader's row.
+/// A signal ends it with the errno its wait decided. When another thread's
+/// exec or an exit of the process marked this thread first, it kills no
+/// thread and returns EINTR; the pending SIGKILL ends the thread at its
+/// return from the system call.
+pub(crate) fn end_other_threads(pid: crate::process::ProcessId) -> Result<crate::process::ProcessId, u64> {
     use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
     const INTERVAL_NS: u64 = 1_000_000;
-    // Only the execing thread survives. The existing kill path defers peers
-    // inside a syscall and protects their roots until their last dispatch ends.
-    crate::signal::delivery::terminate_thread_group_peers(pid, 0);
-    while crate::process::with_process_manager(|manager| manager.exec_waits_for_exiting_sibling(pid))
-        .unwrap_or(false)
-    {
+    // The existing kill path defers peers inside a system call and protects
+    // their roots until their last dispatch ends.
+    if !crate::signal::delivery::terminate_peers_for_exec(pid) {
+        return Err(super::errno::EINTR as u64);
+    }
+    loop {
+        let ended = crate::process::with_process_manager(|manager| {
+            (!manager.exec_waits_for_group(pid)).then(|| manager.exec_take_over_group(pid))
+        })
+        .ok_or(super::errno::ESRCH as u64)?;
+        match ended {
+            Some(None) => return Ok(pid),
+            Some(Some((process, leader_row))) => {
+                drop(leader_row);
+                if let Some(thread) = crate::task::scheduler::current_thread_id() {
+                    crate::task::scheduler::adopt_exec_owner(thread, process.as_u64());
+                }
+                // Adoption precedes clearing the PM-owned interlock. A kill
+                // in the publication gap must leave SIGKILL pending instead
+                // of claiming an empty scheduler owner set.
+                crate::process::with_process_manager(|manager| {
+                    if let Some(row) = manager.get_process_mut(process) {
+                        row.exec_owner_pending = false;
+                    }
+                });
+                return Ok(process);
+            }
+            None => {}
+        }
+        crate::task::process_task::reclaim_deferred_process_resources();
         let (sec, nsec) = crate::time::get_monotonic_time_ns();
         let at = sec.saturating_mul(1_000_000_000).saturating_add(nsec).saturating_add(INTERVAL_NS);
-        if let WaitEnd::Interrupted(errno) = wait_on(&EXITING_SIBLING_WAIT, &IpcDeadline::Monotonic(at), || true) {
+        if let WaitEnd::Interrupted(errno) = wait_on(&OTHER_THREADS_WAIT, &IpcDeadline::Monotonic(at), || true) {
             return Err(errno);
         }
     }
-    Ok(())
 }
 
 // Strings share one allocation; ranges are offsets within that owned buffer.
