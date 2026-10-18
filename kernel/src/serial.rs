@@ -1158,8 +1158,8 @@ pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
         let appended = crate::arch_without_interrupts(|| {
             let mut ring = LOG_RING.lock();
             let appended = ring.append(args, crate::STAGE_MARKERS);
-            // `/proc/kmsg` keeps every record, including one the ring has
-            // no room to send to the UART.
+            // A record the ring has no room to send to the UART still goes
+            // into `/proc/kmsg`.
             if appended.is_ok() {
                 crate::log_buffer::capture_fmt(args);
             }
