@@ -18,9 +18,9 @@ The renderer fills scanline spans at four sample rows per pixel and resolves a
 4 by 4 sample grid. Adjacent shapes with the same paint form a layer, with
 sample masks unioned so shared strokes do not darken at their joins. Each layer
 blends over the colour beneath it with coverage `c` from 0 to 16:
-`(src * c + under * (16 - c) + 8) / 16` per channel. The indigo-to-teal gradient interpolates by pixel row, including
-its endpoint colours. The oracle in `src/oracle.rs` independently evaluates point
-inequalities, including exact expected colours at antialiased edges, across the
+`(src * c + under * (16 - c) + 8) / 16` per channel. The indigo-to-teal
+gradient interpolates by pixel row, including its endpoint colours. The oracle
+in `src/oracle.rs` independently evaluates point inequalities, including exact expected colours at antialiased edges, across the
 badge, wordmark and progress shapes. It does not use rasterizer helpers.
 
 The logo origin is its bounding rectangle's top-left. To centre the badge at

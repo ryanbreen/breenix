@@ -429,90 +429,104 @@ and that table together.
 
 **Colours.** Field (the screen's background) 15, 20, 35. Badge gradient from 52, 92, 190 (top) to 34, 150, 160
 (bottom). The B 236, 241, 250. Cursor block 70, 200, 120. Wordmark 205, 215, 235. Bar track 40, 50, 75 and
-fill 70, 200, 120. Running dot 230, 170, 60. Dim text and pending-dot outline 110, 120, 145.
+fill 70, 200, 120. Running dot 230, 170, 65. Pending-dot outline 115, 135, 170. Dim text 110, 120, 145.
 
-**Shape kinds.** `rect(x0, y0, x1, y1)` is the half-open box `x0 <= x < x1, y0 <= y < y1`.
-`rrect(x0, y0, x1, y1, r)` is that box less its corners: a point with `x < x0 + r` or `x >= x1 - r`, and
-`y < y0 + r` or `y >= y1 - r`, is inside only within distance `r` of the nearest of the centres `(x0 + r, y0 + r)`,
-`(x1 - r, y0 + r)`, `(x0 + r, y1 - r)` and `(x1 - r, y1 - r)`. `half_annulus(cx, cy, R, r)` is
-`x > cx` and `r² <= (x - cx)² + (y - cy)² <= R²`. `quad(p0, p1, p2, p3)` is the convex quadrilateral with those
-corners in order, its edges included. `disc(cx, cy, r)` is `(x - cx)² + (y - cy)² <= r²`, and `ring(cx, cy, R,
-r)` is `r² <= d² <= R²`.
+**Shape kinds.** Here `rect(x, y, w, h)` uses position and size, as does the crate's table; its closed box is
+`x <= px <= x + w, y <= py <= y + h`. `rrect(x, y, w, h, r)` is that box with rounded corners: clamp the
+point to the inner box `[x+r, x+w-r]` by `[y+r, y+h-r]` and include it when the squared distance to the
+clamped point is at most `r²`. `half_annulus(cx, cy, R, r)` is `px >= cx` and
+`r² <= (px - cx)² + (py - cy)² <= R²`. `quad(p0, p1, p2, p3)` is the convex quadrilateral with those
+corners in order, its edges included. `disc(cx, cy, r)` is `(px - cx)² + (py - cy)² <= r²`, and
+`ring(cx, cy, R, r)` is `r² <= d² <= R²`. Fractional coordinates below are exact: the table stores
+integers in thirds of a design unit.
 
 **The badge** (64 by 64 units, origin at its top-left):
 
 | Layer | Shapes | Colour |
 |---|---|---|
-| Badge | `rrect(0, 0, 64, 64, 12)` | Gradient |
-| B spine | `rect(13, 14, 19, 50)` | B |
-| B upper bowl | `rect(19, 14, 27, 20)`, `rect(19, 28, 27, 34)`, `half_annulus(27, 24, 10, 4)` | B |
-| B lower bowl | `rect(19, 28, 29, 34)`, `rect(19, 44, 29, 50)`, `half_annulus(29, 39, 11, 5)` | B |
-| Cursor | `rect(44, 44, 52, 50)` | Cursor block |
+| Badge | `rrect(0, 0, 64, 64, 13)` | Gradient |
+| B spine | `rect(16, 14, 6, 36)` | B |
+| B upper bowl | `half_annulus(22, 23, 9, 4)` | B |
+| B lower bowl | `half_annulus(22, 39, 11, 5)` | B |
+| Cursor | `rect(38, 45, 13, 5)` | Cursor block |
 
-**The wordmark "BREENIX"** is 119 by 19 units, stroke 3. Letters, each from its own left edge:
+**The wordmark "BREENIX"** has ink bounds x=8..167, y=80..104 in the composition: 159 by 24 units.
+Its ink centre is x=87.5, half a unit left of the badge/bar axis at x=88. Most straight strokes are
+4 units wide. The B is the badge B scaled by exactly two-thirds, giving a 4-unit spine and bowl
+thicknesses 10/3 and 4; R retains its own bowl. Letters below use local coordinates relative to their
+listed left edge and y=80, in table order:
 
 | Letter | Left | Shapes |
 |---|---|---|
-| B | 0 | `rect(0, 0, 3, 19)`; `rect(3, 0, 7, 3)`, `rect(3, 7, 7, 10)`, `half_annulus(7, 5, 5, 2)`; `rect(3, 16, 7, 19)`, `half_annulus(7, 13, 6, 3)` |
-| R | 20 | `rect(0, 0, 3, 19)`; `rect(3, 0, 7, 3)`, `rect(3, 7, 7, 10)`, `half_annulus(7, 5, 5, 2)`; `quad((6, 10), (9, 10), (13, 19), (10, 19))` |
-| E | 40 | `rect(0, 0, 3, 19)`, `rect(3, 0, 11, 3)`, `rect(3, 8, 9, 11)`, `rect(3, 16, 11, 19)` |
-| E | 58 | as above |
-| N | 76 | `rect(0, 0, 3, 19)`, `rect(10, 0, 13, 19)`, `quad((0, 0), (3, 0), (13, 19), (10, 19))` |
-| I | 96 | `rect(0, 0, 3, 19)` |
-| X | 106 | `quad((0, 0), (3, 0), (13, 19), (10, 19))`, `quad((10, 0), (13, 0), (3, 19), (0, 19))` |
+| B | 8 | `rect(0, 0, 4, 24)`, `half_annulus(4, 6, 6, 8/3)`, `half_annulus(4, 50/3, 22/3, 10/3)` |
+| R | 27 | `rect(0, 0, 4, 24)`, `half_annulus(4, 7, 7, 3)`, `quad((4, 11), (9, 11), (20, 24), (15, 24))` |
+| E | 53 | `rect(0, 0, 4, 24)`, `rect(0, 0, 18, 4)`, `rect(0, 10, 15, 4)`, `rect(0, 20, 18, 4)` |
+| E | 79 | as above |
+| N | 105 | `rect(0, 0, 4, 24)`, `quad((0, 0), (4, 0), (18, 24), (14, 24))`, `rect(14, 0, 4, 24)` |
+| I | 129 | `rect(4, 0, 4, 24)`, `rect(0, 0, 12, 4)`, `rect(0, 20, 12, 4)` |
+| X | 147 | `quad((0, 0), (5, 0), (20, 24), (15, 24))`, `quad((15, 0), (20, 0), (5, 24), (0, 24))` |
 
 ### 6.2 Layout on the screen
 
-In pixels, with `W` by `H` the framebuffer, `cx = floor(W / 2)` and `top = floor(2 * H / 5) - 32k` (the badge's
-centre at 40% of the height):
+The crate draws a 176 by 136 unit composition. In pixels, with `W` by `H` the framebuffer,
+`cx = floor(W / 2)` and `top = floor(2 * H / 5) - 32k` (the badge's centre at 40% of the height),
+pass composition origin `(left, top) = (cx - 88k, top)` to `render`. Positions below are relative to that
+origin unless given as screen coordinates:
 
 | Element | Position and size |
 |---|---|
-| Badge | left `cx - 32k`, top `top` |
-| Wordmark | left `cx - floor(119k / 2)`, top `top + 78k` |
-| Progress bar | the wordmark's left, top `top + 113k`, 119 by 6 units: track `rrect(0, 0, 119, 6, 3)` |
-| Milestone dots | six, centre x `bar_left + floor(119k * (2i + 1) / 12)` for `i` 0 to 5, centre y `top + 130k`, radius `3k` |
-| Stage name | console font size `S`, dim, centred on `cx`, top `top + 141k` |
-| Boot mode, status | console font size `S`, dim, centred on `cx`, tops `H - 3(S + 2)` and `H - 2(S + 2)` |
+| Badge | `(56k, 0)`, 64 by 64 units |
+| Wordmark | local letter coordinates from 6.1, top `80k` |
+| Progress bar | `(0, 114k)`, 176 by 4 units: track `rrect(0, 114, 176, 4, 2)` |
+| Milestone dots | centre x `k * [3, 37, 71, 105, 139, 173][i]`, centre y `130k`, radius `3k` |
+| Stage name | console font size `S`, dim, centred on screen `cx`, screen top `top + 141k` |
+| Boot mode, status | console font size `S`, dim, centred on screen `cx`, tops `H - 3(S + 2)` and `H - 2(S + 2)` |
 
-- **The bar's fill** has the track's coverage on pixels left of `bar_left + floor(119k * reached / total)` and
-  0 coverage from that pixel on: a hard pixel edge, without antialiasing at the fill's right end. `reached` and `total` count the kernel stages of
-  the six milestones below.
+- **The bar's fill** has width `f = floor(176 * min(reached, total) / total)` design units; total 0 gives
+  width 0. When `f > 0`, draw `rrect(0, 114, f, 4, min(floor(f / 2), 2))` in green over the track.
+  Both layers have antialiased rounded edges. Width is quantized in design units before scaling by `k`.
+  `reached` and `total` count the kernel stages of the six milestones below.
 - **The dots** are the boot path's milestones `arch-bringup`, `interrupts-time`, `devices`, `filesystems`,
   `scheduler` and `first-userspace`, over their arch's stage lists in `docs/boot-path.json`, less stages
   printed after PID 1 starts. A dot is a fill `disc` in the fill colour when each of its stages is reached,
-  in the running colour while some are, and a `ring(…, 3k, 2k)` in the dim colour while no stage of it is.
+  in the running colour while some are, and a `ring(…, 3k, 2k)` in the pending colour while no stage of it is.
 - **The stage name** is the latest stage reached. The boot-mode line reads `Boot mode: <mode>` and the status
-  line names the next step, as today's boot screen does.
+  line names the next step, as today's boot screen does. Text is outside the crate's composition.
 - **The cursor block blinks:** drawn during the first 500 ms of each second since the splash was first
-  drawn, and not drawn (the badge shows) in the second 500 ms.
+  drawn, and not drawn (the badge shows) in the second 500 ms; held lit after boot hand-over.
 
 ### 6.3 Rasterization
 
 Each pixel `(px, py)` of a shape's layer has a coverage `c` from 0 to 16: the number of its 16 sample points
 inside the layer's shapes (a point inside any of them counts once). The sample points are at
-`((8(px - left) + 2i + 1) / 8k, (8(py - top) + 2j + 1) / 8k)` in units, for `i` and `j` from 0 to 3. No
-sample point lies exactly on a rectangle edge or an arc, so only quadrilateral edges need the "edges
-included" rule.
+`((8(px - left) + 2i + 1) / (8k), (8(py - top) + 2j + 1) / (8k))` in composition units,
+for `i` and `j` from 0 to 3. Shape boundaries are included as specified in 6.1.
 
-- **Blending:** each layer is blended over what is beneath it, in the order field, badge, B and cursor,
-  wordmark, bar track, bar fill, dots, text, per channel: `out = (src * c + under * (16 - c) + 8) / 16`,
-  integer division.
-- **The gradient's colour on a badge pixel row** `row` (0 at the badge's top pixel, `64k` rows in the badge) is
-  `top_c + ((bottom_c - top_c) * (2 * row + 1)) / (128k)` per channel, with integer division that discards the
-  fraction (Rust's `/` on signed integers).
+- **Layer grouping and order:** enumerate badge, badge B, wordmark, visible cursor, track, nonempty fill,
+  and dots left to right. Adjacent shapes with the same resolved RGB colour on the current pixel row
+  form one layer, with unioned sample coverage. A colour change ends the layer; a later occurrence of
+  the same colour starts another layer. Table order is part of the specification.
+- **Blending:** start with the field and blend layers in that order, per channel:
+  `out = (src * c + under * (16 - c) + 8) / 16`, integer division. Text is drawn afterwards.
+- **The gradient's colour on a badge pixel row** `row` (0 at the badge's top pixel) uses
+  `d = 64k - 1` and `t = clamp(row, 0, d)`. Per channel the colour is
+  `(top_c * (d - t) + bottom_c * t + floor(d / 2)) / d`, integer division. This rounds to nearest and
+  includes both endpoint colours at rows 0 and `64k - 1`.
 - Text is drawn from the font's glyphs as the console draws them.
-- **Pixel formats:** RGB or BGR order, 3 or 4 bytes per pixel; the fourth byte is written 0.
-- Pixels outside the framebuffer are clipped.
+- **Pixel formats:** RGB or BGR order, 3 or 4 bytes per pixel; the fourth byte is written 255 (opaque).
+- Pixels outside the framebuffer are clipped. The renderer writes the composition rectangle, including
+  its field pixels, and leaves pixels outside it and row padding untouched. The caller fills the rest
+  of the screen with the field colour.
 
 ### 6.4 The oracle
 
 `expected_at(px, py, state)` returns the exact colour of a pixel of the logo block from this section alone: it
 evaluates the 16 sample points of each layer by the shape inequalities, with no code shared with the
-rasterizer's scanline filler, and blends as above. `state` carries the stage mask and the cursor's blink
-phase. The geometry table and the colour formulas are the specification both sides share; the rasterization
-code is not. Because coverage is defined exactly, the oracle covers antialiased edges and the wordmark as well
-as interiors.
+rasterizer's scanline filler, and blends as above. `state` is the crate's `Frame`: completed/total stage
+counts, six milestone states and the cursor's blink phase. The oracle takes local composition pixel
+coordinates and scale `k`; V2b maps stage masks to this frame. The geometry table and the colour formulas
+are the specification both sides share; the rasterization code is not. Because coverage is defined exactly,
+the oracle covers antialiased edges and the wordmark as well as interiors.
 
 ---
 
