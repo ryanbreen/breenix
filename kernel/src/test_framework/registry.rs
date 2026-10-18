@@ -9202,7 +9202,7 @@ fn test_tty_foreground_pgrp() -> TestResult {
             return TestResult::Fail("process manager missing");
         };
         let root = crate::process::credentials::ProcessCredentials::root();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let pid = match manager.create_process_with_argv(
                 String::from("tty_pgrp_live"),
                 &elf,
@@ -9219,7 +9219,7 @@ fn test_tty_foreground_pgrp() -> TestResult {
             fixtures.push((pid, thread));
         }
     }
-    if fixtures.len() != 2 {
+    if fixtures.len() != 3 {
         for (_, thread) in fixtures {
             crate::task::scheduler::spawn(thread);
         }
@@ -9227,6 +9227,7 @@ fn test_tty_foreground_pgrp() -> TestResult {
     }
     let live_pid = fixtures[0].0;
     let member_pid = fixtures[1].0;
+    let second_member_pid = fixtures[2].0;
 
     // Leg 3: the group number is a live process's PID while that process is
     // in another group, as after tty_test's tcsetpgrp to its own PID.
@@ -9256,20 +9257,25 @@ fn test_tty_foreground_pgrp() -> TestResult {
         crate::process::creation::create_user_process(String::from("tty_pgrp_member"), &elf);
     let preserved_member_leg = tty.get_foreground_pgrp() == Some(MEMBER_ONLY);
 
-    // Leg 5: Ctrl+C through the console's interrupt-side entry reaches the
-    // foreground group's member, and not the process whose PID merely equals
-    // the group number (S25). The member's signal shows the group walk ran,
-    // so the other's absence is not vacuous. A busy console or process table
-    // drops an interrupt-side Ctrl+C, so the injection repeats, bounded.
-    let (member_signalled, pid_holder_signalled) = {
+    // Leg 5: one Ctrl+C through the console's interrupt-side entry reaches
+    // both members of the foreground group, and not the process whose PID
+    // merely equals the group number (S25). The members' signals show the
+    // group walk ran, so the other's absence is not vacuous. The entry refuses
+    // a byte only while the console's line discipline is busy, so the byte is
+    // offered again only until the console takes it; the signal itself is
+    // sent from the foreground signal thread, so the members are watched for
+    // it, bounded.
+    let (members_signalled, pid_holder_signalled) = {
         {
             let mut manager = crate::process::manager();
             if let Some(ref mut manager) = *manager {
                 if let Some(row) = manager.get_process_mut(live_pid) {
                     row.pgid = crate::process::ProcessId::new(crate::process::RESERVED_INIT_PID);
                 }
-                if let Some(row) = manager.get_process_mut(member_pid) {
-                    row.pgid = live_pid;
+                for pid in [member_pid, second_member_pid] {
+                    if let Some(row) = manager.get_process_mut(pid) {
+                        row.pgid = live_pid;
+                    }
                 }
             }
         }
@@ -9287,21 +9293,28 @@ fn test_tty_foreground_pgrp() -> TestResult {
                 .and_then(|manager| manager.get_process(pid))
                 .is_some_and(|row| row.signals.is_pending(sigint))
         };
+        let mut accepted = false;
         for _ in 0..200 {
-            let _ = crate::tty::push_char_nonblock(0x03);
-            if pending(member_pid) {
+            if crate::tty::push_char_nonblock(0x03) {
+                accepted = true;
                 break;
             }
             for _ in 0..10_000 {
                 core::hint::spin_loop();
             }
         }
-        let signalled = (pending(member_pid), pending(live_pid));
+        let both = || pending(member_pid) && pending(second_member_pid);
+        let deadline = crate::time::get_monotonic_time().saturating_add(2_000);
+        while accepted && !both() && crate::time::get_monotonic_time() < deadline {
+            crate::task::scheduler::yield_current();
+            crate::arch_halt_with_interrupts();
+        }
+        let signalled = (accepted && both(), pending(live_pid));
         tty.flush_input();
         tty.set_termios(&termios);
         let mut manager = crate::process::manager();
         if let Some(ref mut manager) = *manager {
-            for pid in [live_pid, member_pid] {
+            for pid in [live_pid, member_pid, second_member_pid] {
                 if let Some(row) = manager.get_process_mut(pid) {
                     row.signals.clear_pending(sigint);
                 }
@@ -9328,8 +9341,8 @@ fn test_tty_foreground_pgrp() -> TestResult {
     if !preserved_member_leg {
         return TestResult::Fail("creation stole a group with a live member");
     }
-    if !member_signalled {
-        return TestResult::Fail("Ctrl+C did not reach the foreground group's member");
+    if !members_signalled {
+        return TestResult::Fail("one Ctrl+C did not reach every foreground group member");
     }
     if pid_holder_signalled {
         return TestResult::Fail("Ctrl+C reached a process outside the group by its PID");

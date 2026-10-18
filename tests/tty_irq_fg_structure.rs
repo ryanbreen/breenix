@@ -1033,17 +1033,19 @@ fn deliberately_broken_copies_redden_the_rules() {
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
     // path. This is the call the round's review found still live at that hop,
-    // and rule 7's own subject.
+    // and rule 7's own subject. The hop is now the queueing step that hands
+    // the group to the foreground signal thread (the per-process sender it
+    // replaced is gone), so the mutation follows it there.
     let printed = inject_into_function(
         &driver,
-        "send_signal_to_process_nonblock",
-        "\n        crate::serial_println!(\"TTY: sig {}\", sig);\n",
+        "queue_foreground_signal_nonblock",
+        "\n    crate::serial_println!(\"TTY: sig {}\", sig);\n",
     );
     assert_ne!(printed, driver, "leg M's mutation must apply");
     let error = validate_irq_entry_takes_no_locking_output(&printed)
         .expect_err("leg M: rule 7 has to redden on a restored serial_println!");
     assert!(
-        error.contains("send_signal_to_process_nonblock") && error.contains("serial_println!"),
+        error.contains("queue_foreground_signal_nonblock") && error.contains("serial_println!"),
         "leg M reddened for the wrong reason: {error}"
     );
 

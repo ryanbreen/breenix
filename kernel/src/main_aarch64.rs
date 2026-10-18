@@ -1185,6 +1185,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Deferred reclamation drains on a timer too, not only when a CPU idles
     // or a process starts or ends (ruling S26).
     kernel::task::process_task::start_reclaim_daemon();
+    // Terminal signals the input interrupt generates are sent from a thread.
+    kernel::tty::driver::start_foreground_signal_thread();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);

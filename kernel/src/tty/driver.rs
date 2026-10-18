@@ -143,6 +143,82 @@ pub(crate) fn foreground_pgrp_is_live(
     })
 }
 
+/// Foreground-group signals the interrupt side has generated and the
+/// foreground signal thread has not yet sent. Each slot holds one group and
+/// signal, packed as `pgrp << 8 | sig`, or 0 when free. A pair already queued
+/// is not queued twice: the second keystroke's signal is the same pending
+/// signal, as a standard signal generated twice before delivery is.
+const FG_SIGNAL_SLOTS: usize = 16;
+static FG_SIGNAL_QUEUE: [AtomicU64; FG_SIGNAL_SLOTS] =
+    [const { AtomicU64::new(0) }; FG_SIGNAL_SLOTS];
+
+/// Signals the interrupt side could not queue: 16 distinct groups and
+/// signals already waiting for the foreground signal thread. A reading above
+/// 0 is a terminal signal that was not sent.
+static FG_SIGNAL_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
+
+/// The thread that sends queued foreground-group signals.
+static FG_SIGNAL_THREAD: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
+
+/// Terminal signals the interrupt side could not queue for sending.
+pub fn foreground_signal_overflows() -> u64 {
+    FG_SIGNAL_OVERFLOWS.load(Ordering::Relaxed)
+}
+
+/// Queue `sig` for the members of `pgrp` and wake the thread that sends it.
+/// Lock-free: called from the input interrupt.
+fn queue_foreground_signal_nonblock(pgrp: u64, sig: u32) {
+    let entry = (pgrp << 8) | u64::from(sig);
+    let queued = pgrp >> 56 == 0
+        && sig != 0
+        && sig < 256
+        && (FG_SIGNAL_QUEUE.iter().any(|slot| slot.load(Ordering::Acquire) == entry)
+            || FG_SIGNAL_QUEUE.iter().any(|slot| {
+                slot.compare_exchange(0, entry, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            }));
+    if !queued {
+        FG_SIGNAL_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    // Before the thread is published, its first pass sends what is queued.
+    if let Some(thread) = FG_SIGNAL_THREAD.get() {
+        crate::task::kthread::kthread_unpark(thread);
+    }
+}
+
+/// Send each queued foreground-group signal, in thread context, where the
+/// process table can be waited for, then park until the interrupt side queues
+/// another.
+fn foreground_signal_thread() {
+    loop {
+        for slot in &FG_SIGNAL_QUEUE {
+            let entry = slot.swap(0, Ordering::AcqRel);
+            if entry != 0 {
+                TtyDevice::send_signal_to_group(ProcessId::new(entry >> 8), (entry & 0xff) as u32);
+            }
+        }
+        crate::task::kthread::kthread_park_if(|| {
+            FG_SIGNAL_QUEUE
+                .iter()
+                .all(|slot| slot.load(Ordering::Acquire) == 0)
+        });
+    }
+}
+
+/// Start the foreground signal thread. Called once during boot, once kernel
+/// threads can be created and before a terminal can generate a signal from
+/// user input.
+pub fn start_foreground_signal_thread() {
+    let thread = FG_SIGNAL_THREAD.call_once(|| {
+        crate::task::kthread::kthread_run(foreground_signal_thread, "kttysig")
+            .expect("could not spawn the foreground signal thread")
+    });
+    // The thread may have parked before its handle became visible to the
+    // interrupt side; wake it once for anything queued in between.
+    crate::task::kthread::kthread_unpark(thread);
+}
+
 /// Maximum UART bytes emitted while interrupts are masked for one TTY write.
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
 
@@ -948,7 +1024,7 @@ impl TtyDevice {
     /// # Lock ordering
     ///
     /// This runs from IRQ context so must NOT use serial_println! (acquires
-    /// SERIAL1). Uses raw UART for any diagnostic output on ARM64.
+    /// SERIAL1).
     ///
     /// # #822
     ///
@@ -963,10 +1039,13 @@ impl TtyDevice {
     ///
     /// # S25
     ///
-    /// The signal goes to the group's members, each process once however many
-    /// threads it has, and not to a process whose PID merely equals the group
-    /// number. Members are found afresh under a non-blocking
-    /// process-manager hold that is released before each one is signalled.
+    /// The signal goes to the group's members, and not to a process
+    /// whose PID merely equals the group number. Finding the members needs the
+    /// process table, which an interrupt cannot wait for, so the group and
+    /// signal are queued for the foreground signal thread, which sends them
+    /// with `kill(-pgrp)`'s group walk in thread context. The walk this
+    /// replaced ran here under `try_manager` and ended at the first busy
+    /// acquisition, leaving the rest of the group unsignalled.
     #[allow(dead_code)]
     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
         let Some(pgrp) = self.foreground_pgrp_snapshot() else {
@@ -974,44 +1053,13 @@ impl TtyDevice {
             // during early boot before any shell sets its foreground pgrp.
             return;
         };
-        // #822 census, recorded before the lookup so it reads the dispatch the
-        // interrupt side actually made rather than only the ones that found a
-        // live member. See the statics' own comment for what a concurrent
-        // dispatch on another CPU can do to the triple.
+        // #822 census, recorded at the dispatch. See the statics' own comment
+        // for what a concurrent dispatch on another CPU can do to the triple.
         TTY_IRQ_FG_SIGNAL_LAST_PGRP.store(pgrp, Ordering::Relaxed);
         TTY_IRQ_FG_SIGNAL_LAST_SIG.store(u64::from(sig), Ordering::Relaxed);
         TTY_IRQ_FG_SIGNAL_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let mut sent = false;
-        let mut cursor = None;
-        while let Some((group, pid)) = Self::next_group_member_nonblock(pgrp, cursor) {
-            cursor = Some(group);
-            sent |= Self::send_signal_to_process_nonblock(pid, sig);
-        }
-
-        // Diagnostic output, one unit on both architectures, written with no
-        // PROCESS_MANAGER or SCHEDULER guard held. On x86_64 it takes SERIAL1
-        // the way this path's echo (`output_char_nonblock`) already does. The
-        // signal number and the group are NOT written here: they are already
-        // published lock-free, by the census stores above, and read back from
-        // thread context.
-        if sent {
-            crate::serial::write_bytes_atomic(
-                crate::serial::Writer::Kernel,
-                b"[TTY] sig sent to PID\n",
-            );
-        }
-    }
-
-    /// The next member of group `pgrp` after thread group `after`, as
-    /// `(thread group, row)`, from a non-blocking process-manager hold; empty
-    /// past the last member or while the manager is busy, in which case the
-    /// remaining members wait for the next input, as before.
-    #[allow(dead_code)]
-    fn next_group_member_nonblock(pgrp: u64, after: Option<u64>) -> Option<(u64, ProcessId)> {
-        let manager = crate::process::try_manager()?;
-        let pm = manager.as_ref()?;
-        crate::syscall::signal::next_process_after(pm, after, &|p| p.pgid.as_u64() == pgrp)
+        queue_foreground_signal_nonblock(pgrp, sig);
     }
 
     /// Send a signal from the terminal to the members of process group `pgrp`:
@@ -1027,74 +1075,6 @@ impl TtyDevice {
 
         #[cfg(not(test))]
         crate::syscall::signal::signal_pgrp_from_kernel(pgrp, sig);
-    }
-
-    /// Send a signal to a specific process (non-blocking)
-    ///
-    /// Used by send_signal_to_foreground_nonblock in interrupt context.
-    ///
-    /// # Lock ordering
-    ///
-    /// This runs from IRQ context and acquires PROCESS_MANAGER (level 2) and
-    /// SCHEDULER (level 1) via `with_scheduler`. It must NOT use serial_println!
-    /// (acquires SERIAL1, level 4) because SCHEDULER is a higher-priority lock.
-    /// It returns whether the signal was made pending; the caller writes the
-    /// diagnostic after both guards are released.
-    ///
-    /// The x86_64 arm printed through `serial_println!` until this round --
-    /// `SERIAL1.lock()`, blocking, taken from an interrupt entry while the
-    /// `PROCESS_MANAGER` guard above it is still held, which is the acquisition
-    /// the paragraph above forbids and the one scheduler.rs's lock-order
-    /// comment names ("never acquire SERIAL1 while holding SCHEDULER or
-    /// PROCESS_MANAGER"). It also formatted a string on that path. Both are
-    /// gone; what is left writes one fixed unit after both guards are dropped.
-    /// claim-lint:ok: kernel/src/task/scheduler.rs:21 is the quoted line.
-    #[allow(dead_code)]
-    fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) -> bool {
-        use crate::process;
-
-        // Set once the signal is pending.
-        let mut sent = false;
-
-        // Try to get the process manager without blocking
-        if let Some(mut manager) = process::try_manager() {
-            if let Some(ref mut pm) = *manager {
-                // A stop signal is taken, or discarded, as kill() takes it;
-                // from an interrupt, no thread here is the generating one.
-                if crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS
-                    != 0
-                    && crate::signal::delivery::generate_stop_locked(pm, pid, sig, None)
-                {
-                    return false;
-                }
-                let recipient = pm.signal_recipient(pid, sig);
-                if let Some(proc) = pm.get_process_mut(recipient) {
-                    proc.signals.set_process_pending(sig);
-                    sent = true;
-
-                    // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
-                    // Use unblock() instead of unblock_for_signal() because:
-                    // - unblock_for_signal() only handles BlockedOnSignal state
-                    // - unblock() handles BOTH Blocked (stdin read) and BlockedOnSignal
-                    // A stopped process waits for SIGCONT instead.
-                    if let Some(thread) = proc
-                        .main_thread
-                        .as_ref()
-                        .filter(|_| proc.job.stopped.is_none())
-                    {
-                        let thread_id = thread.id;
-                        drop(manager);
-
-                        crate::task::scheduler::unblock_thread(thread_id);
-                    }
-                }
-                // No diagnostic for "process not found" in IRQ context --
-                // this can happen normally during process teardown.
-            }
-        }
-        // No diagnostic for "manager lock busy" in IRQ context --
-        // the signal will be retried on next input.
-        sent
     }
 
     /// Register a thread as blocked waiting for TTY input

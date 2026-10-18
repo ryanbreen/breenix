@@ -807,7 +807,7 @@ fn send_signal_to_all_processes(sig: u32, sender: Sender, info: SigInfo) -> Sysc
 /// The process after thread group `after` (in thread-group ID order) with a
 /// row `member` selects, as (its thread-group ID, the row to signal): the
 /// first such row, or a live one where that row has exited.
-pub(crate) fn next_process_after(
+fn next_process_after(
     manager: &crate::process::ProcessManager,
     after: Option<u64>,
     member: &impl Fn(&crate::process::Process) -> bool,
