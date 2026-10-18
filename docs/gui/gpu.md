@@ -677,6 +677,7 @@ rests on host-side evidence that the gate checks, recorded with every run:
 - **Scale.** The scale factor is published with the mode. BreenGL lays out in logical units and multiplies by
   the scale. UI text is DejaVu Sans (ruling R3), rasterized from outlines at the physical pixel size (a 16 px
   string at scale 2 from the outline at 32 px, never replicated from a 16 px raster).
+<!-- claim-lint:ok: Normative presentation requirements amended by ruling 53, #1956; no measured result claimed. -->
 - **Present.** Two scanout targets per display owner. Scanout targets are declared at creation:
   `RESOURCE_CREATE` gains a scanout flag (`docs/gui/gpu-abi.md`); only targets created with it get the
   device's `SCANOUT` bind. `PRESENT` refuses a target created without it with EINVAL. `PRESENT` of a
@@ -933,6 +934,7 @@ saying so. A lane writes each case's check in its own commit, from this contract
 it measures; `device/version` is already its real check. ARM64 QEMU boots of the suite use the GL QEMU
 (`scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl`).
 
+<!-- claim-lint:ok: Normative suite viewing requirements amended by ruling 53, #1956; no measured result claimed. -->
 **No CPU canvas in the suite.** The suite does not use `Suite::gui()`, `suite_stage` or
 `suite::judged(&FrameBuf)`, which rasterize and compare CPU framebuffers. It judges with
 `suite::judged_readback(&Readback, &Expected)` over read-back bytes and their record (comparison, not
