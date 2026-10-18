@@ -136,7 +136,7 @@ fn only_the_display_owner_can_consent_to_switching() {
 }
 
 #[test]
-fn late_ack_holds_the_next_switch_until_readback() {
+fn late_ack_allows_release_before_readback() {
     let mut vts = [const { vt::Vt::new() }; vt::VT_COUNT];
     let mut sw = vt::Switching::new();
     let mut t = vt::Terminals {
@@ -150,13 +150,44 @@ fn late_ack_holds_the_next_switch_until_readback() {
     t.drawn(t.sw.epoch, &mut e);
     t.reldisp(1, 9, vt::VT_ACKACQ, &mut e).unwrap();
     assert!(t.active(1));
-    // Even a newer request must wait behind the completed frame's check.
+    // Contract 4.4: release starts now; acquisition waits for read-back.
     t.request(3, vt::Source::Ioctl, &mut e).unwrap();
     assert_eq!(t.sw.fg, 1);
-    assert_eq!(t.reldisp(1, 9, 1, &mut e), Err(22));
-    t.checked(1, &mut e);
     t.reldisp(1, 9, 1, &mut e).unwrap();
+    assert_eq!(t.sw.fg, 1);
+    t.checked(1, &mut e);
     assert_eq!(t.sw.fg, 3);
+}
+
+#[test]
+fn latest_activation_replaces_the_request_queued_during_acquisition() {
+    for release_before_readback in [false, true] {
+        let mut vts = [const { vt::Vt::new() }; vt::VT_COUNT];
+        let mut sw = vt::Switching::new();
+        let mut t = vt::Terminals {
+            vts: &mut vts,
+            sw: &mut sw,
+        };
+        let mut e = vt::Effects::default();
+        t.set_mode(1, 9, vt::VT_PROCESS, 10, 12).unwrap();
+        t.request(1, vt::Source::Ioctl, &mut e).unwrap(); // tty2 acquiring
+        t.request(2, vt::Source::Ioctl, &mut e).unwrap(); // tty3 queued
+        t.drawn(t.sw.epoch, &mut e);
+        t.reldisp(1, 9, vt::VT_ACKACQ, &mut e).unwrap();
+        t.request(3, vt::Source::Ioctl, &mut e).unwrap(); // tty4 supersedes tty3
+        if release_before_readback {
+            t.reldisp(1, 9, 1, &mut e).unwrap();
+        }
+        assert_eq!(t.sw.fg, 1, "read-back still holds tty2");
+        t.checked(1, &mut e);
+        if !release_before_readback {
+            t.reldisp(1, 9, 1, &mut e).unwrap();
+        }
+        assert_eq!(t.sw.fg, 3, "the latest destination is tty4");
+        t.drawn(t.sw.epoch, &mut e);
+        t.checked(3, &mut e);
+        assert!(t.active(3), "tty3 must not replay after tty4's read-back");
+    }
 }
 
 #[test]

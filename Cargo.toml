@@ -87,3 +87,10 @@ libc = "0.2"
 serde_json = "1.0"
 syn = { version = "2", features = ["full"] }
 proc-macro2 = "1"
+
+# The x86-64 kernel is the `kernel` build-dependency artifact above, so a
+# release build compiles it, and every crate it uses, under `build-override`,
+# whose opt-level defaults to 0. The ARM64 kernel (`cargo build --release -p
+# kernel`) is optimized; this optimizes the x86-64 kernel the same way.
+[profile.release.build-override]
+opt-level = 3
