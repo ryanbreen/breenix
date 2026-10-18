@@ -47,7 +47,8 @@ READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha2
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux')
-CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900}
+# A suite has the other launchers' 1800-second DONE deadline after handoff, and 900 seconds for firmware and delivery.
+CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 2700, 'console': 900}
 SESSION_CEILING_SECONDS = 4 * 3600
 
 
@@ -84,7 +85,7 @@ def ceiling_seconds(args):
     return SESSION_CEILING_SECONDS if session(args) else CEILING_SECONDS[args.mode]
 
 
-MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300}
+MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 1800, 'console': 300}
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
 CONSOLE_WAIT_SECONDS = 20
@@ -332,6 +333,8 @@ class Driver:
         profile = 'fault-test' if features else 'production'
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
+        if build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
+            raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
         self.delivery['build'] = build
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if (inputs / 'definition').is_dir():
