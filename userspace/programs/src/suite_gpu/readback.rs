@@ -24,7 +24,7 @@ fn observe(t: u64, rect: [u32; 4], px: &mut [u8], stride: u32, rec: &mut [u8; re
 fn present_fence(ctx: u64, t: u64) -> Result<u64, libbreenix::suite::CaseError> {
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.fence != 0 && p.answer == 0x1100, || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
+    ensure(r == 0 && p.fence != 0 && p.answer == native_success()?, || format!("PRESENT: {} fence={} answer={:#x}", errno(r), p.fence, p.answer))?;
     let (r, w) = gpu::wait(ctx, p.fence, 2_000_000_000);
     ensure(r == 0 && w.status == abi::fence_status::OK, || format!("WAIT PRESENT: {} status={}", errno(r), w.status))?;
     Ok(p.fence)
@@ -152,16 +152,17 @@ pub fn record_fields() -> CaseResult {
     let (px, rec) = read(t, 17, 9)?;
     ensure(u64_at(&rec, 184) == presented, || format!("record present fence {} differs from PRESENT {presented}", u64_at(&rec, 184)))?;
     want(17, 9, B).matches(&px, "record's pixels")?;
-    for (at, v) in [(0, 2), (4, 1024), (16, 4), (20, 4), (24, 1), (28, 0), (32, 0), (36, 0),
-        (40, 17), (44, 9), (48, 17), (52, 9), (56, 68), (60, 0), (112, 0x1100), (116, 0x207),
-        (128, 0x1100), (132, 0x206), (152, 0), (156, 0), (160, A), (164, 0), (192, 0x1100), (196, 0)] {
+    let native = observation_backend(&rec)?;
+    for (at, v) in [(0, 2), (4, 1024), (16, caps()?.backend), (20, 4), (24, 1), (28, 0), (32, 0), (36, 0),
+        (40, 17), (44, 9), (48, 17), (52, 9), (56, 68), (60, 0), (112, native.success), (116, native.draw),
+        (128, native.success), (132, native.readback), (160, A), (164, 0), (192, native.success), (196, 0)] {
         ensure(u32_at(&rec, at) == v, || format!("record[{at}]={} expected {v}", u32_at(&rec, at)))?;
     }
     for at in [8, 64, 80, 88, 96, 104, 120, 184] {
         ensure(u64_at(&rec, at) != 0, || format!("record[{at}] is zero"))?;
     }
     ensure(u64_at(&rec, 72) == t, || "record target handle".to_string())?;
-    for range in [136..152, 168..184, 200..712, 776..1024] {
+    for range in [168..184, 200..712, 776..1024] {
         ensure(rec[range.clone()].iter().all(|&b| b == 0), || format!("nonzero reserved/window range {range:?}"))?;
     }
     ensure(rec[712..776] == caps()?.renderer, || "renderer differs from CAPS".to_string())?;
@@ -173,8 +174,9 @@ pub fn device_path() -> CaseResult {
     let (ctx, t) = setup(format::B8G8R8A8, 9, 5)?;
     draw(ctx, t, B)?;
     let rec = expect(t, &want(9, 5, B), "device path")?;
-    for (at, v) in [(record::BACKEND, 4), (record::RENDER_KIND, 0x207), (record::RENDER_STATUS, 0x1100),
-        (record::READBACK_KIND, 0x206), (record::READBACK_STATUS, 0x1100)] {
+    let native = observation_backend(&rec)?;
+    for (at, v) in [(record::RENDER_KIND, native.draw), (record::RENDER_STATUS, native.success),
+        (record::READBACK_KIND, native.readback), (record::READBACK_STATUS, native.success)] {
         ensure(u32_at(&rec, at) == v, || format!("device path field {at}"))?;
     }
     ensure(u32_at(&rec, record::UNWRITTEN) == 0, || "unwritten device bytes".to_string())

@@ -218,8 +218,13 @@ pub fn device_error_reported() -> CaseResult {
     ensure(fired(test_point::DEVICE_ERROR) == before + 1, || "the device-error point did not fire".to_string())?;
     ensure(r == -EIO, || format!("WAIT on the forced device error returned {}", errno(r)))?;
     ensure(w.status == fence_status::DEVICE_ERROR, || format!("the fence's status is {}, expected DEVICE_ERROR", w.status))?;
-    // VirtIO 1.3 section 5.7.6.7: error responses are 0x1200 and above.
-    ensure((0x1200..0x1300).contains(&w.answer), || format!("the device's answer {:#x} is not an error response", w.answer))?;
-    value("device-answer", w.answer as i64, "", Some((0x1200, 0x12FF)));
+    // Native error answers: VirtIO 1.3 5.7.6.7 and VMware svga_reg.h.
+    let (low, high) = match caps()?.backend {
+        abi::backend::VIRGL => (0x1200, 0x12ff),
+        abi::backend::SVGA3D_DX => (3, 3), // SVGA_CB_STATUS_COMMAND_ERROR
+        b => return Err(fail_msg(format!("unknown backend {b}"))),
+    };
+    ensure((low..=high).contains(&w.answer), || format!("the device's answer {:#x} is not its backend's error response", w.answer))?;
+    value("device-answer", w.answer as i64, "", Some((low as i64, high as i64)));
     pass()
 }

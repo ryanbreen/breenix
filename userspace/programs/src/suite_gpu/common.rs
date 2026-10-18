@@ -282,3 +282,48 @@ pub fn counters(ctx: u64) -> Result<abi::Counters, CaseError> {
 pub fn pass() -> CaseResult {
     Ok(())
 }
+
+/// Native observation values required by gpu.md section 1.8, ruling 47.
+/// Kept in the suite, independent of the kernel's encoder and status translation.
+pub struct BackendValues {
+    pub success: u32,
+    pub draw: u32,
+    pub upload: u32,
+    pub readback: u32,
+    pub copy: u32,
+}
+
+pub fn backend_values(backend: u32) -> Result<BackendValues, CaseError> {
+    match backend {
+        abi::backend::VIRGL => Ok(BackendValues { success: 0x1100, draw: 0x207,
+            upload: 0x205, readback: 0x206, copy: 0 }),
+        abi::backend::SVGA3D_DX => Ok(BackendValues { success: 1, draw: 1152,
+            upload: 1102, readback: 1104, copy: 1042 }),
+        b => Err(fail_msg(format!("unknown observation backend {b}"))),
+    }
+}
+
+pub fn native_success() -> Result<u32, CaseError> {
+    Ok(backend_values(caps()?.backend)?.success)
+}
+
+pub fn observation_backend(rec: &[u8; record::SIZE]) -> Result<BackendValues, CaseError> {
+    let backend = u32_at(rec, record::BACKEND);
+    ensure(backend == caps()?.backend, || "observation backend differs from CAPS".to_string())?;
+    let values = backend_values(backend)?;
+    let surface = u64_at(rec, 136);
+    let mob = u64_at(rec, 144);
+    if backend == abi::backend::VIRGL {
+        ensure(surface == 0 && mob == 0, || "VirGL record names an SVGA readback surface or MOB".to_string())?;
+    } else {
+        ensure(surface != 0 && mob != 0 && surface != u64_at(rec, record::RESOURCE),
+            || "SVGA readback lacks its dedicated surface and MOB identities".to_string())?;
+    }
+    for (at, expected) in [(record::READBACK_KIND, values.readback),
+        (record::READBACK_STATUS, values.success), (152, values.copy),
+        (156, if values.copy == 0 { 0 } else { values.success })] {
+        ensure(u32_at(rec, at) == expected,
+            || format!("backend {backend} record[{at}]={} expected {expected}", u32_at(rec, at)))?;
+    }
+    Ok(values)
+}
