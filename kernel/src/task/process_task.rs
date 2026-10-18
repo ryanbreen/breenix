@@ -425,12 +425,12 @@ pub fn reclaim_drain_claim_snapshot() -> (bool, u32) {
 /// `BOOT_RECLAIM_PASS_SELECTIONS` and the oracles' drain-to-quiesce loops, whose
 /// meaning is "this pass took everything it could".
 const PRODUCTION_PASS_SELECTION_CAP: u32 = 1;
-/// Bound leaf and table release work in the non-preemptible production step.
+/// Bound audited entries and table returns in the non-preemptible production step.
 /// Boot-owned drains retain RETIRE_FRAME_BUDGET and their verification contract.
 const PRODUCTION_RECLAIM_FRAME_BUDGET: u32 = 16;
 /// Selections a production pass takes while memory is short. The bounded step
-/// above returns about 16 frames per idle pass, slower than a suite of forking
-/// processes frees them, and an allocation that finds no frame kills its
+/// above spends 16 work units per idle pass, which can all go to the audit
+/// before any table frame is returned. An allocation that finds no frame kills its
 /// process: a copy-on-write fault after fork ended PID 1 that way. Below the
 /// watermark a pass completes whole receipts again, trading the short step's
 /// dispatch latency for memory, as the uncapped drain did.
@@ -2347,7 +2347,7 @@ fn x86_forced_root_proof_case(pid: u64, blocker: RootBlocker) -> Result<(), &'st
         return Err("forced x86 proof blocker freed or lost its receipt");
     }
 
-    boot_reclaim_deferred_process_resources();
+    boot_drain_empty_page_table(pid, recorded);
     if root_blocker_counters() != blocked_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before + recorded as u64 + 1
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
@@ -2358,6 +2358,18 @@ fn x86_forced_root_proof_case(pid: u64, blocker: RootBlocker) -> Result<(), &'st
         return Err("cleared x86 proof blocker did not retire cleanly");
     }
     Ok(())
+}
+
+#[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
+fn boot_drain_empty_page_table(pid: u64, recorded: usize) {
+    let work = 256 + recorded * 512 + recorded + 1;
+    let passes = work.div_ceil(crate::memory::process_memory::RETIRE_FRAME_BUDGET as usize);
+    for _ in 0..passes {
+        if boot_reclaim_locations(pid) != (true, false) {
+            break;
+        }
+        boot_reclaim_deferred_process_resources();
+    }
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
@@ -2408,7 +2420,7 @@ fn x86_shadow_proof_case(pid: u64) -> Result<(), &'static str> {
         return Err("saved_process_cr3 shadow blocker freed or lost its receipt");
     }
 
-    boot_reclaim_deferred_process_resources();
+    boot_drain_empty_page_table(pid, recorded);
     if root_blocker_counters() != saved_expected
         || trace::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before + recorded as u64 + 1
         || trace::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
@@ -3169,8 +3181,9 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         );
     }
 
-    // O2/F: the fixture derives a hierarchy larger than the production budget.
-    // The first pass returns exactly the budget, then re-proves and completes.
+    // O2/F (S3): audit entries and returned table frames share a budget.
+    // Every pass consumes it or finishes, and the fixture's total work bounds
+    // the number of passes, even when early passes only advance the audit.
     let oversized_pid = BOOT_RECLAIM_PID_BASE + 100;
     let mut oversized = boot_test_reclaim(oversized_pid);
     let oversized_recorded;
@@ -3181,6 +3194,20 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         }
         Err(message) => return TestResult::Fail(message),
     }
+    use crate::memory::process_memory::LEAF_AUDIT_ENTRIES;
+    let frame_budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64;
+    #[cfg(target_arch = "x86_64")]
+    let root_entries = 256u64;
+    #[cfg(target_arch = "aarch64")]
+    let root_entries = 512u64;
+    let subtrees = frame_budget / 3 + 1;
+    // Each sentinel reserves a gig node, a span node and one chunk under a
+    // common custody root. Count their slots and terminal chunks too.
+    let expected_audit_entries = root_entries + oversized_recorded as u64 * 512
+        + (1 + 2 * subtrees) * 512 + subtrees;
+    let total_work = expected_audit_entries + oversized_recorded as u64 + 1;
+    let pass_bound = total_work.div_ceil(frame_budget);
+    let audit_before = LEAF_AUDIT_ENTRIES.load(Ordering::Relaxed);
     let budget_before = trace::PT_RETIRE_BUDGET_REQUEUED.aggregate();
     let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
     let roots_before = trace::PT_ROOTS_RETIRED.aggregate();
@@ -3219,13 +3246,14 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     let first_returned_delta = trace::PT_TABLE_FRAMES_RETURNED
         .aggregate()
         .saturating_sub(returned_before);
-    if first_returned_delta != crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64 {
+    let first_audit_delta = LEAF_AUDIT_ENTRIES.load(Ordering::Relaxed).saturating_sub(audit_before);
+    if first_audit_delta + first_returned_delta != frame_budget {
         fail_oversized_value!(
             "F2",
-            "pt_table_frames_returned_delta",
-            first_returned_delta,
-            crate::memory::process_memory::RETIRE_FRAME_BUDGET as u64,
-            "F2: oversized first pass returned-frame delta did not equal the budget",
+            "audited_entries_plus_returned_frames",
+            first_audit_delta + first_returned_delta,
+            frame_budget,
+            "F2: oversized first pass did not spend its budget on audit or frame progress",
             first_blockers_before,
             first_blockers_after,
             first_locations
@@ -3309,21 +3337,40 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
         );
     }
     let final_blockers_before = first_blockers_after;
-    boot_reclaim_deferred_process_resources();
+    let mut passes = 1;
+    let mut audit_after = LEAF_AUDIT_ENTRIES.load(Ordering::Relaxed);
+    let mut returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+    while boot_reclaim_locations(oversized_pid) == (true, false) && passes < pass_bound {
+        boot_reclaim_deferred_process_resources();
+        passes += 1;
+        let next_audit = LEAF_AUDIT_ENTRIES.load(Ordering::Relaxed);
+        let next_returned = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+        let spent = next_audit.saturating_sub(audit_after)
+            + next_returned.saturating_sub(returned_after);
+        let locations = boot_reclaim_locations(oversized_pid);
+        let finished = locations == (false, false);
+        let budget_requeues = trace::PT_RETIRE_BUDGET_REQUEUED.aggregate() - budget_before;
+        if spent == 0 || spent > frame_budget || (!finished && spent != frame_budget)
+            || budget_requeues != passes - u64::from(finished)
+        {
+            fail_oversized_value!(
+                "F9",
+                "audited_entries_plus_returned_frames_per_pass",
+                spent,
+                frame_budget,
+                "F9: oversized pass stalled, exceeded its budget, or requeued without budget progress",
+                final_blockers_before,
+                root_blocker_counters(),
+                locations
+            );
+        }
+        audit_after = next_audit;
+        returned_after = next_returned;
+    }
     let final_blockers_after = root_blocker_counters();
     let final_locations = boot_reclaim_locations(oversized_pid);
-    let final_budget_after = trace::PT_RETIRE_BUDGET_REQUEUED.aggregate();
-    if final_budget_after != budget_before + 1 {
-        fail_oversized_value!(
-            "F9",
-            "pt_retire_budget_requeued",
-            final_budget_after,
-            budget_before + 1,
-            "F9: oversized completion changed the budget-requeue total",
-            final_blockers_before,
-            final_blockers_after,
-            final_locations
-        );
+    if audit_after - audit_before != expected_audit_entries || passes != pass_bound {
+        return TestResult::Fail("F9: oversized audit rescanned entries or missed the derived completion bound");
     }
     let final_returned_delta = trace::PT_TABLE_FRAMES_RETURNED
         .aggregate()
@@ -3428,6 +3475,11 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
     {
         return TestResult::Fail("F: oversized retirement triggered a frame refusal");
     }
+
+    crate::serial_println!(
+        "[RECLAIM_PROGRESS_S3:passes={}:bound={}:audited={}:returned={}:budget={}:PASS]",
+        passes, pass_bound, audit_after - audit_before, returned_after - returned_before, frame_budget
+    );
 
     // O2/I: dropping an intentionally interrupted retirement counts the root
     // still in custody and never retries an already-popped lease.
@@ -3687,7 +3739,7 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             Err(message) => return TestResult::Fail(message),
         };
         enqueue_process_reclaim(healthy);
-        boot_reclaim_deferred_process_resources();
+        boot_drain_empty_page_table(healthy_pid, healthy_recorded);
         let recovery_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
         if recovery_no_arch_after != no_arch_before + 1 {
             fail_gate_value!(

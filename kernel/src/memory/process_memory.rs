@@ -24,6 +24,14 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+#[path = "leaf_audit.rs"]
+mod leaf_audit;
+use leaf_audit::LeafAudit;
+
+/// Actual descriptor/custody cursor steps, observed by the boot-owned gate.
+#[cfg(feature = "boot_tests")]
+pub(crate) static LEAF_AUDIT_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -367,31 +375,44 @@ fn leaf_slot<T: LeafZeroed>(slot: &mut Option<Box<T>>) -> Result<&mut T, &'stati
     Ok(&mut **slot.insert(node))
 }
 
-/// Teardown of the record tree, one freed allocation per call.
+/// Resumable custody-tree audit. Each slot and terminal chunk is charged
+/// once; dropping a finished node needs no recursive scan or allocation.
 trait LeafDrain {
-    /// Free one allocation below this one. False if there is none left.
-    fn drain_one(&mut self) -> bool;
+    fn drain_bounded(&mut self, budget: &mut u32) -> bool;
 }
 
 impl LeafDrain for LeafChunk {
-    fn drain_one(&mut self) -> bool {
-        false
+    fn drain_bounded(&mut self, budget: &mut u32) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        #[cfg(feature = "boot_tests")]
+        LEAF_AUDIT_ENTRIES.fetch_add(1, Ordering::Relaxed);
+        true
     }
 }
 
 impl<T: LeafDrain> LeafDrain for LeafNode<T> {
-    fn drain_one(&mut self) -> bool {
-        while self.next < LEAF_FANOUT {
+    fn drain_bounded(&mut self, budget: &mut u32) -> bool {
+        while self.next < LEAF_FANOUT && *budget > 0 {
             if let Some(child) = self.slots[self.next].as_deref_mut() {
-                if !child.drain_one() {
-                    self.slots[self.next] = None;
-                    self.next += 1;
+                if !child.drain_bounded(budget) {
+                    return false;
                 }
-                return true;
+                self.slots[self.next] = None;
+                // The child may consume the last unit. The empty parent slot
+                // remains at `next` until a later pass can charge its audit.
+                if *budget == 0 {
+                    return false;
+                }
             }
             self.next += 1;
+            *budget -= 1;
+            #[cfg(feature = "boot_tests")]
+            LEAF_AUDIT_ENTRIES.fetch_add(1, Ordering::Relaxed);
         }
-        false
+        self.next == LEAF_FANOUT
     }
 }
 
@@ -410,7 +431,7 @@ type LeafRoot = LeafNode<LeafGigs>;
 struct OwnedLeafFrames {
     root: Option<Box<LeafRoot>>,
     released: bool,
-    release_cursor: u64,
+    audit: LeafAudit,
 }
 
 impl OwnedLeafFrames {
@@ -418,7 +439,10 @@ impl OwnedLeafFrames {
         Self {
             root: None,
             released: false,
-            release_cursor: 0,
+            #[cfg(target_arch = "x86_64")]
+            audit: LeafAudit::new(256),
+            #[cfg(target_arch = "aarch64")]
+            audit: LeafAudit::new(512),
         }
     }
 
@@ -492,20 +516,17 @@ impl OwnedLeafFrames {
         self.root = None;
     }
 
-    /// Free the tree an allocation at a time, each charged to `budget`. True
-    /// once it is all freed.
+    /// Audit and free the record tree under the same budget as descriptors.
     fn clear_bounded(&mut self, budget: &mut u32) -> bool {
-        while *budget > 0 {
-            let Some(root) = self.root.as_deref_mut() else {
-                return true;
-            };
-            if !root.drain_one() {
-                self.root = None;
+        if let Some(root) = self.root.as_deref_mut() {
+            if !root.drain_bounded(budget) {
+                return false;
             }
-            *budget -= 1;
+            self.root = None;
         }
-        self.root.is_none()
+        true
     }
+
 }
 
 struct OwnedTableFrames {
@@ -2194,59 +2215,58 @@ impl ProcessPageTable {
     /// Walk mapped leaves resumably, including descriptors with no custody
     /// record. Such descriptors are counted as refusals: freeing their frames
     /// without allocator authority would risk returning somebody else's frame.
-    /// Tables remain owned until this scan completes. Empty subtrees are skipped
-    /// together, and both leaf release and descriptor scanning are bounded.
+    /// Tables remain owned until this scan completes. Each descriptor is visited
+    /// once and charged, including absent entries; custody-tree cleanup shares
+    /// that budget. Releasing a leaf is part of auditing its descriptor.
     pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {
         self.assert_unclaimed();
         if self.leaves.released {
             return RetireProgress::Complete;
         }
-        #[cfg(target_arch = "x86_64")]
-        const END: u64 = 1 << 47;
-        #[cfg(target_arch = "aarch64")]
-        const END: u64 = 1 << 48;
         let offset = crate::memory::physical_memory_offset();
-        let mut scans = 0;
-        while *budget > 0 && self.leaves.release_cursor < END {
-            let address = self.leaves.release_cursor;
-            let mut table_phys = self.level_4_frame.start_address().as_u64();
-            for shift in [39, 30, 21, 12] {
-                let table_virt = offset + table_phys;
-                let table = unsafe { &*(table_virt.as_ptr() as *const PageTable) };
-                let entry = &table[((address >> shift) & 511) as usize];
-                let flags = entry.flags();
-                scans += 1;
-                if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
-                    self.leaves.release_cursor = ((address >> shift) + 1) << shift;
-                    break;
-                }
-                if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
-                    self.leaves.release_cursor = ((address >> shift) + 1) << shift;
-                    if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                        *budget -= 1;
-                        match self.leaves.search(address) {
-                            Some(record) if shift == 12 => Self::release_leaf_record(
-                                record, PhysFrame::containing_address(entry.addr()),
-                            ),
-                            // No huge-leaf custody exists: never treat one 4 KiB
-                            // record as authority to return an entire huge page.
-                            _ => {
-                                crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
-                            },
-                        }
-                    }
-                    break;
-                }
-                table_phys = entry.addr().as_u64();
+        let root = self.level_4_frame.start_address().as_u64();
+        while *budget > 0 {
+            let Some((table_phys, index, address, shift)) = self.leaves.audit.next_entry(root) else {
+                break;
+            };
+            *budget -= 1;
+            #[cfg(feature = "boot_tests")]
+            LEAF_AUDIT_ENTRIES.fetch_add(1, Ordering::Relaxed);
+            let table_virt = offset + table_phys;
+            // SAFETY: the root and each descended table remain owned until
+            // the whole audit completes, including across budgeted passes.
+            let table = unsafe { &*(table_virt.as_ptr() as *const PageTable) };
+            let entry = &table[index];
+            let flags = entry.flags();
+            if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
+                continue;
             }
-            // Charge a bounded scan even if an address space contains no user
-            // leaves. Otherwise a sparse or corrupted root could monopolize idle.
-            if scans >= 512 {
-                *budget = budget.saturating_sub(1);
-                scans = 0;
+            // Inherited x86 root slots contain the shared kernel hierarchy,
+            // not this process's leaves or table leases.
+            #[cfg(target_arch = "x86_64")]
+            if shift == 39 && !self.owned_root_slots.contains(index) {
+                continue;
+            }
+            if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
+                if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    match self.leaves.search(address) {
+                        Some(record) if shift == 12 => Self::release_leaf_record(
+                            record, PhysFrame::containing_address(entry.addr()),
+                        ),
+                        // No huge-leaf custody exists: never treat one 4 KiB
+                        // record as authority to return an entire huge page.
+                        _ => {
+                            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+                        },
+                    }
+                }
+            } else {
+                self.leaves.audit.descend(entry.addr().as_u64(), address);
             }
         }
-        if self.leaves.release_cursor == END && self.leaves.clear_bounded(budget) {
+        // Finish ascending even when the last entry used the last unit;
+        // no descriptor is read here and no budget is borrowed from retirement.
+        if self.leaves.audit.finished() && self.leaves.clear_bounded(budget) {
             self.leaves.released = true;
             RetireProgress::Complete
         } else {

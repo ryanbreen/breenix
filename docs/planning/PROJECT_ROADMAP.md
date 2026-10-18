@@ -11,6 +11,9 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+[#1780](https://github.com/ryanbreen/breenix/issues/1780) makes deferred leaf audits
+resumable and charged, with reclaim progress checked against ruling S3's shared work budget.
+
 The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
 It advances from delivery to a RAM-disk shell, then networking and SATA/AHCI storage in parallel,
