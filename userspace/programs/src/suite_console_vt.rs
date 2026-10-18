@@ -7,7 +7,8 @@
 //! lines from `/proc/kmsg`. A case that switches puts tty1 back in the
 //! foreground when it ends (`BackToTty1`), after reaping the processes it
 //! started (`Child`), so the screen cases and the runner's final panel find
-//! the console as they expect. Keys come from the launcher (`HOSTKEY`, V6).
+//! the console as they expect. Keys come from the launcher (`HOSTKEY`, V6);
+//! the `keys` cases (V5) are in `suite_console_keys.rs`.
 
 use super::{identical, measured, require, screen_check, Verdict, O_NOCTTY};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -17,6 +18,10 @@ use libbreenix::signal;
 use libbreenix::suite::CaseResult;
 use libbreenix::syscall::{nr, raw};
 use libbreenix::types::Fd;
+
+#[path = "suite_console_keys.rs"]
+mod keys;
+pub use keys::*;
 
 const VT_OPENQRY: u64 = 0x5600;
 const VT_GETMODE: u64 = 0x5601;
