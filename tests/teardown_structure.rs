@@ -13291,7 +13291,7 @@ fn validate_x86_direct_teardown_gates(
     teardown: &str,
     harness: &str,
 ) -> Result<(), &'static str> {
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked");
     let retirement_call = kernel_main
         .find("process_task::run_x86_retirement_fence_gate();")
         .ok_or("missing direct x86 retirement-fence call")?;
@@ -13436,38 +13436,51 @@ fn x86_teardown_gates_are_direct_reachable_and_exactly_once() {
 }
 
 #[test]
-fn direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass() {
-    let main = r#"
-        fn kernel_main_on_kernel_stack() {
-            process_task::run_x86_retirement_fence_gate();
-            process_task::run_x86_reclaim_progress_gate();
-            teardown::run_x86_retire_cohort_gate();
-        }
-    "#;
-    let process = r#"
-        fn retirement_fence_gate_test() { serial_println!("[TEST:process:retirement_fence_gate:PASS]"); }
-        fn reclaim_progress_gate_test() {}
-        fn run_x86_retirement_fence_gate() {
-            serial_println!("[TEST:process:retirement_fence_gate:START]");
-            let result = retirement_fence_gate_test();
-            serial_println!("[TEST:process:retirement_fence_gate:PASS]");
-            serial_println!("[TEST:process:retirement_fence_gate:FAIL]");
-            assert!(result.is_pass());
-        }
-        fn run_x86_reclaim_progress_gate() {
-            serial_println!("[TEST:process:reclaim_progress_gate:START]");
-            let result = reclaim_progress_gate_test();
-            serial_println!("[TEST:process:reclaim_progress_gate:PASS]");
-            serial_println!("[TEST:process:reclaim_progress_gate:FAIL]");
-            assert!(result.is_pass());
-        }
-    "#;
-    let teardown = r#"
-        fn fork_exit_defer_reclaim_pairing_test() { serial_println!("[TEST:process:x86_retire_cohort:PASS]"); }
-        fn run_x86_retire_cohort_gate() {}
-    "#;
-    let harness = "TEST:process:retirement_fence_gate:PASS TEST:process:retirement_fence_gate:PASS -eq 1 TEST:process:reclaim_progress_gate:PASS TEST:process:reclaim_progress_gate:PASS -eq 1";
-    assert!(validate_x86_direct_teardown_gates(main, process, teardown, harness).is_err());
+fn x86_naked_entry_continues_into_the_checked_boot_body() {
+    let main = repo_text("kernel/src/main.rs");
+    let entry = function_body(&main, "kernel_main_on_kernel_stack");
+    assert!(entry.contains("\"jmp {continuation}\""));
+    assert!(normalized_code(entry)
+        .contains("continuation = sym kernel_main_on_kernel_stack_checked,"));
+}
+
+#[test]
+fn direct_x86_teardown_gate_validator_rejects_ordering_and_duplicate_pass() {
+    let main = repo_text("kernel/src/main.rs");
+    let process = repo_text("kernel/src/task/process_task.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&main, &process, &teardown, &harness),
+        Ok(())
+    );
+
+    let reordered = main
+        .replacen("process_task::run_x86_retirement_fence_gate();", "SWAP_GATE", 1)
+        .replacen(
+            "process_task::run_x86_reclaim_progress_gate();",
+            "process_task::run_x86_retirement_fence_gate();",
+            1,
+        )
+        .replacen("SWAP_GATE", "process_task::run_x86_reclaim_progress_gate();", 1);
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&reordered, &process, &teardown, &harness),
+        Err("x86 teardown-gate ordering or rationale changed")
+    );
+
+    let body = function_body(&process, "retirement_fence_gate_test");
+    let duplicate_pass = process.replacen(
+        body,
+        &format!(
+            "{} serial_println!(\"[TEST:process:retirement_fence_gate:PASS]\"); }}",
+            body.strip_suffix('}').unwrap(),
+        ),
+        1,
+    );
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&main, &duplicate_pass, &teardown, &harness),
+        Err("direct x86 gate is not fail-loud or has two PASS producers")
+    );
 }
 
 fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'static str> {
@@ -13629,7 +13642,7 @@ fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<
         if !entry.contains("arch: Arch::Aarch64")
             || entry.contains("arch: Arch::Any")
             || entry.contains("arch: Arch::X86_64")
-            || !function_body(main, "kernel_main_on_kernel_stack").contains(direct_call)
+            || !function_body(main, "kernel_main_on_kernel_stack_checked").contains(direct_call)
         {
             return Err(());
         }
@@ -13651,7 +13664,7 @@ fn direct_x86_teardown_gates_keep_only_aarch64_registry_producers() {
 #[test]
 fn gate_producer_validator_rejects_arch_any_double_registration() {
     let main = r#"
-        fn kernel_main_on_kernel_stack() {
+        fn kernel_main_on_kernel_stack_checked() {
             teardown::run_x86_retire_cohort_gate();
             process_task::run_x86_retirement_fence_gate();
             process_task::run_x86_reclaim_progress_gate();
@@ -14108,7 +14121,7 @@ fn validate_production_root_custody_summary(
     if body.matches("serial_println!").count() != 1
         || !function_body(procfs_trace, "generate_counters")
             .contains("emit_root_custody_summary();")
-        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_root_custody_summary();")
         || !function_body(arm_main, "kernel_main").contains("emit_root_custody_summary();")
     {
@@ -14142,7 +14155,7 @@ fn root_custody_summary_validator_rejects_a_boot_tests_only_emitter() {
         }
     "#;
     let caller = "fn generate_counters() { emit_root_custody_summary(); }";
-    let main = "fn kernel_main_on_kernel_stack() { emit_root_custody_summary(); }";
+    let main = "fn kernel_main_on_kernel_stack_checked() { emit_root_custody_summary(); }";
     assert!(validate_production_root_custody_summary(provider, caller, main, main).is_err());
 }
 
@@ -14300,9 +14313,9 @@ fn validate_kernel_stack_ownership_gate_launch(main: &str, registry: &str) -> Re
     if code_offsets(main, &main_mask, X86_CALL).len() != 1 {
         return Err("x86 kernel-stack ownership gate launch is not unique".to_owned());
     }
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked");
     if code_offsets(kernel_main, &code_mask(kernel_main), X86_CALL).len() != 1 {
-        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack".to_owned());
+        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack_checked".to_owned());
     }
 
     let registry_mask = code_mask(registry);
@@ -15545,7 +15558,7 @@ fn validate_production_tombstone_census(
     }
     if body.matches("serial_println!").count() != 1
         || !function_body(procfs_trace, "generate_counters").contains("emit_tombstone_census();")
-        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_tombstone_census();")
         || !function_body(arm_main, "kernel_main").contains("emit_tombstone_census();")
         || !function_body(strand_oracle, "report_strand").contains("emit_tombstone_census();")
