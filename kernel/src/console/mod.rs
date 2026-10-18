@@ -883,15 +883,13 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 let elapsed = elapsed_us(started);
                 say!(
                     info,
-                    "{} console tty and kernel log on the screen: {}x{} cells, {} rows drawn in {}.{:03} ms (diag write {} us, raster masked {} us)",
+                    "{} console tty and kernel log on the screen: {}x{} cells, {} rows drawn in {}.{:03} ms",
                     TAG,
                     cols,
                     rows,
                     drawn,
                     elapsed / 1000,
-                    elapsed % 1000,
-                    DIAG_WRITE_US.load(Ordering::Relaxed),
-                    DIAG_RASTER_US.load(Ordering::Relaxed)
+                    elapsed % 1000
                 );
                 // x86 reads the screen back at kernel idle; ARM64 once the
                 // console first fills it.
@@ -1069,56 +1067,6 @@ impl fmt::Display for ReadFrom<'_> {
     }
 }
 
-static DIAG_WRITE_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static DIAG_READ_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static DIAG_RASTER_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static DIAG_ORACLE_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static DIAG_SHA_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-#[cfg(target_arch = "x86_64")]
-fn diag_memory(shadow: &[u8]) {
-    fn sum(bytes: &[u8]) -> u64 {
-        bytes.chunks_exact(8).fold(0u64, |acc, c| acc.wrapping_add(u64::from_le_bytes(c.try_into().unwrap())))
-    }
-    let cr0: u64;
-    // SAFETY: reads CR0.
-    unsafe { core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags)) };
-    let pat = unsafe { x86_64::registers::model_specific::Msr::new(0x277).read() };
-    let cpu = crate::per_cpu::cpu_id();
-    let t0 = crate::time::get_monotonic_time_ns();
-    let a = crate::arch_without_interrupts(|| sum(shadow));
-    let shadow_us = elapsed_us(t0);
-    let fresh = alloc::vec![1u8; shadow.len()];
-    let t0 = crate::time::get_monotonic_time_ns();
-    let b = crate::arch_without_interrupts(|| sum(&fresh));
-    let fresh_us = elapsed_us(t0);
-    let t0 = crate::time::get_monotonic_time_ns();
-    let c = crate::arch_without_interrupts(|| {
-        let mut x = 0x9e37_79b9_7f4a_7c15u64;
-        for _ in 0..100_000_000u64 {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-        }
-        core::hint::black_box(x)
-    });
-    let spin_us = elapsed_us(t0);
-    log::info!(
-        "[console] diag memory cpu {} cr0 {:#x} pat {:#x} shadow {:#x} sum {} us, fresh {:#x} sum {} us, 100M xorshift {} us ({} {} {})",
-        cpu,
-        cr0,
-        pat,
-        shadow.as_ptr() as u64,
-        shadow_us,
-        fresh.as_ptr() as u64,
-        fresh_us,
-        spin_us,
-        a & 1,
-        b & 1,
-        c & 1
-    );
-}
-
 fn elapsed_us((seconds, nanos): (u64, u64)) -> u64 {
     let (now_seconds, now_nanos) = crate::time::get_monotonic_time_ns();
     let start = seconds * 1_000_000_000 + nanos;
@@ -1183,16 +1131,9 @@ impl Screen {
             if self.shown[row].as_ref() == Some(&wanted) {
                 continue;
             }
-            let t0 = crate::time::get_monotonic_time_ns();
-            crate::arch_without_interrupts(|| {
-                raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
-            });
-            DIAG_RASTER_US.fetch_add(elapsed_us(t0), Ordering::Relaxed);
+            raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
-            let t0 = crate::time::get_monotonic_time_ns();
-            let wrote = self.display.write(&self.shadow, band.clone(), may_draw);
-            DIAG_WRITE_US.fetch_add(elapsed_us(t0), Ordering::Relaxed);
-            if wrote {
+            if self.display.write(&self.shadow, band.clone(), may_draw) {
                 self.shown[row] = Some(wanted);
                 drawn += 1;
                 dirty = Some(match dirty {
@@ -1235,9 +1176,7 @@ impl Screen {
         if source.is_ok() {
             for y in 0..layout.height {
                 let bytes = layout.line(y);
-                let t0 = crate::time::get_monotonic_time_ns();
                 self.display.read_line(y, &mut line);
-                DIAG_READ_US.fetch_add(elapsed_us(t0), Ordering::Relaxed);
                 if line[..] != self.shadow[bytes.clone()] {
                     differing_lines += 1;
                     if first_difference.is_none() {
@@ -1246,7 +1185,6 @@ impl Screen {
                         first_difference = Some((x.unwrap_or(0), y));
                     }
                 }
-                let t1 = crate::time::get_monotonic_time_ns();
                 let row = y / font.line_height();
                 let shown = self.shown.get(row).and_then(Option::as_ref);
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
@@ -1260,7 +1198,6 @@ impl Screen {
                         font_mismatches += 1;
                     }
                 }
-                DIAG_ORACLE_US.fetch_add(elapsed_us(t1), Ordering::Relaxed);
             }
         }
         let shown: Vec<&Shown> = self.shown.iter().flatten().collect();
@@ -1288,12 +1225,7 @@ impl Screen {
             first_difference,
             font_mismatches,
             glyph_cells,
-            sha256: {
-                let t0 = crate::time::get_monotonic_time_ns();
-                let digest = sha256::sha256(&self.shadow);
-                DIAG_SHA_US.store(elapsed_us(t0), Ordering::Relaxed);
-                digest
-            },
+            sha256: sha256::sha256(&self.shadow),
             rows,
         }
     }
@@ -1362,24 +1294,8 @@ fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
     if !idle && token == 0 {
         return;
     }
-    DIAG_READ_US.store(0, Ordering::Relaxed);
-    DIAG_ORACLE_US.store(0, Ordering::Relaxed);
-    let t0 = crate::time::get_monotonic_time_ns();
-    #[cfg(target_arch = "x86_64")]
-    if idle {
-        if let Ok((screen, _)) = &screen {
-            diag_memory(&screen.shadow);
-        }
-    }
     let answer = screen.map(|(screen, fg)| screen.check(fg));
     if idle {
-        log::info!(
-            "[console] diag check {} us, read {} us, oracle {} us, sha {} us",
-            elapsed_us(t0),
-            DIAG_READ_US.load(Ordering::Relaxed),
-            DIAG_ORACLE_US.load(Ordering::Relaxed),
-            DIAG_SHA_US.load(Ordering::Relaxed)
-        );
         match &answer {
             Ok(check) if check.identical() => match &check.source {
                 #[cfg(target_arch = "aarch64")]
