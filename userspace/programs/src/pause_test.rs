@@ -25,6 +25,12 @@ extern "C" fn sigusr1_handler(_sig: i32) {
     raw_write_str("  HANDLER: SIGUSR1 received in parent!\n");
 }
 
+/// Whether every thread of process `pid` is blocked, as /proc reports it.
+fn parent_blocked(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .is_ok_and(|status| status.lines().any(|line| line == "State:\tBlocked"))
+}
+
 fn main() {
     println!("=== Pause Syscall Test ===");
 
@@ -42,10 +48,22 @@ fn main() {
     }
     println!("  PASS: sigaction registered SIGUSR1 handler");
 
-    // The child signals the parent until the parent reports, by closing this
-    // pipe, that pause() has returned. A single signal can arrive before the
-    // parent's pause() call (with the child on another CPU it often does), and
-    // pause() then waits for a signal that never comes.
+    // The parent writes a byte to `ready` as the last thing it does before
+    // pause(), and the child signals it only once /proc reports it blocked
+    // after that byte. A signal therefore never arrives before pause() has
+    // blocked, so a pause() that returns at once, without waiting, finds no
+    // handler run and fails the test. The parent closes `done` once pause()
+    // has returned; until then the child signals again each time it finds
+    // the parent blocked, so a signal lost to the kernel shows as a failure,
+    // not a hang.
+    let (ready_r, ready_w) = match io::pipe() {
+        Ok(fds) => fds,
+        Err(_) => {
+            println!("  FAIL: pipe() failed");
+            println!("PAUSE_TEST_FAILED");
+            std::process::exit(1);
+        }
+    };
     let (done_r, done_w) = match io::pipe2(O_NONBLOCK) {
         Ok(fds) => fds,
         Err(_) => {
@@ -70,24 +88,45 @@ fn main() {
             println!("[CHILD] My PID: {}", my_pid);
 
             let _ = io::close(done_w);
+            let _ = io::close(ready_w);
 
-            // Send SIGUSR1 to the parent every 10 ms until it closes the pipe,
-            // for at most 5 s.
+            let mut byte = [0u8; 1];
+            if !matches!(io::read(ready_r, &mut byte), Ok(1)) {
+                println!("[CHILD] The parent never said it was about to pause");
+                std::process::exit(1);
+            }
+
+            // Signal the parent each time it is blocked, which after the
+            // ready byte it can only be in pause(), until it closes the pipe,
+            // for at most 5 s in all.
             println!(
-                "[CHILD] Sending SIGUSR1 to parent (PID {}) until pause() returns...",
+                "[CHILD] Sending SIGUSR1 to parent (PID {}) once it blocks in pause()...",
                 parent_pid
             );
-            let mut byte = [0u8; 1];
-            for _ in 0..500 {
-                if kill(parent_pid, SIGUSR1).is_err() {
-                    println!("[CHILD] kill() failed");
-                    std::process::exit(1);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if parent_blocked(parent_pid) {
+                    if kill(parent_pid, SIGUSR1).is_err() {
+                        println!("[CHILD] kill() failed");
+                        std::process::exit(1);
+                    }
+                    for _ in 0..100 {
+                        let _ = libbreenix::time::sleep_ms(10);
+                        if let Ok(0) = io::read(done_r, &mut byte) {
+                            println!("[CHILD] Parent's pause() returned; exiting with code 0");
+                            std::process::exit(0);
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            break;
+                        }
+                    }
+                    continue;
                 }
-                let _ = libbreenix::time::sleep_ms(10);
                 if let Ok(0) = io::read(done_r, &mut byte) {
-                    println!("[CHILD] Parent's pause() returned; exiting with code 0");
+                    println!("[CHILD] Parent's pause() returned before it blocked");
                     std::process::exit(0);
                 }
+                let _ = libbreenix::time::sleep_ms(1);
             }
             println!("[CHILD] Parent never reported that pause() returned");
             std::process::exit(1);
@@ -98,28 +137,50 @@ fn main() {
             println!("[PARENT] Forked child PID: {}", child_pid_raw);
 
             let _ = io::close(done_r);
+            let _ = io::close(ready_r);
 
-            // Step 3: Call pause() to wait for signal. The child keeps
-            // signalling until the pipe closes, so a signal arrives after
-            // pause() blocks whenever the first one came earlier.
+            // Step 3: Call pause() to wait for signal. The child signals only
+            // once /proc reports this process blocked after the ready byte,
+            // and nothing after that byte blocks but pause(), so the handler
+            // runs inside pause() or not at all. The flag is read the moment
+            // pause() returns, before any other system call, so a handler
+            // that runs after pause() returned (the child's next SIGUSR1)
+            // cannot stand in for the one that should have ended it.
             println!("\nStep 3: Calling pause() to wait for signal...");
-            let pause_result = libbreenix::signal::pause();
-            let _ = io::close(done_w);
-
-            // pause() always returns Err with EINTR when a signal is caught
-            println!("[PARENT] pause() returned");
-
-            if pause_result.is_err() {
-                println!("  PASS: pause() correctly returned after signal");
-            } else {
-                println!("  FAIL: pause() should return error (EINTR)");
+            SIGUSR1_RECEIVED.store(false, Ordering::SeqCst);
+            if !matches!(io::write(ready_w, b"p"), Ok(1)) {
+                println!("  FAIL: could not tell the child that pause() is next");
                 println!("PAUSE_TEST_FAILED");
                 std::process::exit(1);
+            }
+            let pause_result = libbreenix::signal::pause();
+            let handler_ran = SIGUSR1_RECEIVED.load(Ordering::SeqCst);
+            let _ = io::close(done_w);
+            let _ = io::close(ready_w);
+
+            // pause() returns only when a caught signal's handler has run,
+            // and then fails with EINTR.
+            println!("[PARENT] pause() returned");
+
+            match pause_result {
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {
+                    println!("  PASS: pause() returned EINTR after the signal");
+                }
+                Err(error) => {
+                    println!("  FAIL: pause() failed with {:?}, not EINTR", error);
+                    println!("PAUSE_TEST_FAILED");
+                    std::process::exit(1);
+                }
+                Ok(()) => {
+                    println!("  FAIL: pause() returned success, not EINTR");
+                    println!("PAUSE_TEST_FAILED");
+                    std::process::exit(1);
+                }
             }
 
             // Step 4: Verify signal handler was called
             println!("\nStep 4: Verify SIGUSR1 handler was called");
-            if SIGUSR1_RECEIVED.load(Ordering::SeqCst) {
+            if handler_ran {
                 println!("  PASS: SIGUSR1 handler was called!");
             } else {
                 println!("  FAIL: SIGUSR1 handler was NOT called");
@@ -129,8 +190,16 @@ fn main() {
 
             // Step 5: Wait for child to exit
             println!("\nStep 5: Waiting for child to exit...");
+            // The child may send one more SIGUSR1 before it sees the pipe
+            // close; the handler has no SA_RESTART, so that signal ends the
+            // wait with EINTR, as on Linux, and the wait is made again.
             let mut status: i32 = 0;
-            let wait_result = process::waitpid(child_pid_raw, &mut status, 0);
+            let wait_result = loop {
+                match process::waitpid(child_pid_raw, &mut status, 0) {
+                    Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => {}
+                    other => break other,
+                }
+            };
 
             match wait_result {
                 Ok(pid)

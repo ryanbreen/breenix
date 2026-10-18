@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('artifacts', ROOT / 'scripts/gate-artifacts.py')
@@ -53,9 +53,9 @@ class CacheTests(unittest.TestCase):
         (repo / 'userspace/programs/target').mkdir(exist_ok=True)
         (repo / 'userspace/programs/target/stale').write_text('not a clean build')
 
-    def call(self):
+    def call(self, *flags):
         with patch.object(artifacts, 'checked'), patch.object(artifacts, 'key', return_value='a' * 64), patch.object(artifacts.sys, 'argv',
-                ['gate-artifacts.py', str(self.repo), str(self.logs)]):
+                ['gate-artifacts.py', *flags, str(self.repo), str(self.logs)]):
             artifacts.main()
 
     def test_clean_verified_once_then_hit_restores_bytes_and_removes_obsolete_elf(self):
@@ -221,10 +221,90 @@ class CacheTests(unittest.TestCase):
                 trees.prune(self.cache, protected=(self.repo,))
             trees.prune(self.cache, protected=(self.repo,), required=False)
 
+    def test_metal_builds_once_and_its_entry_is_never_verified_for_the_x86_gate(self):
+        helper = patch.dict(os.environ, HOST_SLOTS_HELPER='/nonexistent', BREENIX_SLOT_SESSION='/nonexistent')
+        with helper, patch.object(artifacts, 'build', side_effect=self.build) as build, \
+                patch.object(artifacts.subprocess, 'run') as slot:
+            self.call('--metal')
+            self.assertEqual([call.args[2] for call in build.call_args_list], ['metal'])
+            slot.assert_not_called()  # the metal caller holds its metal-build lease
+            entry = self.cache / 'metal-artifacts' / artifacts.metal_cache_key('a' * 64)
+            self.assertTrue((entry / 'built-once.json').exists())
+            self.assertFalse((self.cache / 'artifacts' / ('a' * 64)).exists())
+            (self.repo / 'userspace/programs/example.elf').write_bytes(b'stale')
+            self.call('--metal')
+            self.assertEqual(build.call_count, 1)
+            self.assertEqual((self.repo / 'userspace/programs/example.elf').read_bytes(), b'ELF bytes')
+            # The same inputs at the x86 gate still build twice and verify.
+            self.call()
+            self.assertEqual([call.args[2] for call in build.call_args_list[1:]], ['candidate', 'clean-verification'])
+
+    def test_redeployed_metal_builder_cannot_reuse_previous_artifacts(self):
+        helper = self.root / 'deployed-gate-artifacts.py'
+        helper.write_text('builder version one')
+        with patch.object(artifacts, '__file__', str(helper)), \
+                patch.object(artifacts, 'build', side_effect=self.build) as build:
+            self.call('--metal')
+            helper.write_text('builder version two')
+            self.call('--metal')
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual(len(list((self.cache / 'metal-artifacts').glob('*/built-once.json'))), 2)
+
     def test_fresh_without_verified_entry_fails_explicitly(self):
         with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):
             with self.assertRaisesRegex(RuntimeError, 'requires a verified cache entry'):
                 self.call()
+
+    def test_gate_refuses_missing_container_configuration_or_builder(self):
+        lane = 'a' * 64
+        tree = self.cache / 'trees' / lane
+        (tree / 'scripts').mkdir(parents=True)
+        host = self.root / 'build-host.env'
+        builder = tree / 'scripts/x86-gate-build.py'
+        for missing in ('host', 'builder'):
+            with self.subTest(missing=missing):
+                host.write_text('configured')
+                builder.touch()
+                (host if missing == 'host' else builder).unlink()
+                with patch.object(trees, 'BUILD_HOST', host), \
+                        patch.object(trees, 'reclaim_legacy'), \
+                        patch.object(trees, 'checkout'), \
+                        patch.object(trees.subprocess, 'Popen') as child, \
+                        patch.object(trees.sys, 'argv', ['gate-tree.py', 'repo', lane, 'b' * 40,
+                                                       str(self.logs), '1', 'full']):
+                    with self.assertRaisesRegex(RuntimeError, 'refusing to build in the gate VM'):
+                        trees.main()
+                    child.assert_not_called()
+
+    def test_gate_runs_container_then_boot_only(self):
+        lane = 'a' * 64
+        tree = self.cache / 'trees' / lane
+        (tree / 'scripts').mkdir(parents=True)
+        (tree / 'scripts/x86-gate-build.py').touch()
+        host = self.root / 'build-host.env'
+        host.touch()
+        commands = []
+
+        def launch(command, **kwargs):
+            commands.append((command, dict(kwargs['env'])))
+            if len(commands) == 1:
+                (self.logs / 'x86-build.json').write_text(json.dumps({'build_seconds': 42}))
+            child = Mock(returncode=0)
+            child.poll.return_value = 0
+            return child
+
+        with patch.object(trees, 'BUILD_HOST', host), \
+                patch.object(trees, 'reclaim_legacy'), patch.object(trees, 'checkout'), \
+                patch.object(trees.signal, 'signal'), \
+                patch.object(trees.subprocess, 'Popen', side_effect=launch), \
+                patch.object(trees.sys, 'argv', ['gate-tree.py', 'repo', lane, 'b' * 40,
+                                               str(self.logs), '1', 'full']):
+            self.assertEqual(trees.main(), 0)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0][0][1:3], [str(tree / 'scripts/x86-gate-build.py'), 'remote'])
+        self.assertEqual(commands[1][0], [str(tree / 'docker/qemu/run-x86-gate.sh'), '1', 'full'])
+        self.assertEqual(commands[1][1]['BREENIX_GATE_PHASE'], 'boot')
+        self.assertEqual(commands[1][1]['BREENIX_GATE_BUILD_SECS'], '42')
 
 
 

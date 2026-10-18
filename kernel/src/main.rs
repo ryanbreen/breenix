@@ -116,12 +116,29 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
 
 #[cfg(target_arch = "x86_64")]
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
+    // The local APIC as firmware left it, before anything here writes it.
+    let apic_handoff = kernel::arch_impl::x86_64::apic::Handoff::read();
+
     // Initialize logger early so all log messages work
     logger::init_early();
 
     // Now we can use log! macros immediately - they'll be buffered
     log::info!("Kernel entry point reached");
     log::debug!("Boot info address: {:p}", boot_info);
+
+    // The console rule picks the log's UART before the buffered lines are
+    // written out (docs/metal/README.md, "The console"). The SPCR is read
+    // through the bootloader's physical-memory window, which is mapped from
+    // entry.
+    let qemu = drivers::fw_cfg::present();
+    let (log_port, log_port_source) = serial::select_log_port(
+        qemu,
+        boot_info.physical_memory_offset.into_option().and_then(|offset| {
+            kernel::arch_impl::x86_64::acpi::read_spcr_port(boot_info.rsdp_addr.into_option(), offset)
+        }),
+    );
+
+    kernel::block::init_hardware_policy(qemu);
 
     // Initialize serial port
     log::info!("Initializing serial port...");
@@ -133,7 +150,23 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Tell logger that serial is ready - this will flush buffered messages
     logger::serial_ready();
 
+    log::info!("[console] uart {:#x} source={}", log_port, log_port_source);
+    log::info!(
+        "[apic] handoff base={:#x} mode={} msr={:#x}",
+        apic_handoff.base(),
+        apic_handoff.mode(),
+        apic_handoff.msr
+    );
     log::info!("Serial port initialized and buffer flushed");
+    if !qemu {
+        let mcfg = boot_info.physical_memory_offset.into_option().and_then(|offset| {
+            kernel::arch_impl::x86_64::acpi::read_mcfg(boot_info.rsdp_addr.into_option(), offset, |entry| {
+                log::info!("[acpi] MCFG base={:#x} segment={} buses={:02x}-{:02x}",
+                    entry.base, entry.segment, entry.first_bus, entry.last_bus);
+            })
+        });
+        if mcfg.is_none() { log::info!("[acpi] MCFG absent or invalid"); }
+    }
 
     // Get framebuffer and complete logger initialization
     log::info!("Setting up framebuffer...");
@@ -185,6 +218,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let rsdp_addr = boot_info.rsdp_addr.into_option();
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+
+    // BootInfo owns this writable mapping for the kernel lifetime.
+    unsafe { kernel::block::ramdisk::init(boot_info.ramdisk_addr.into_option(), boot_info.ramdisk_len) }
+        .expect("valid bootloader RAM disk");
 
     // #814 PR-1 / #629: enumerate the processors the firmware reports and
     // answer the CPU-count question from that enumeration instead of from a
@@ -279,6 +316,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
+
+    // The fixed ACPI tables first: the FADT's PM timer cross-checks the TSC
+    // calibration, and its boot flags say whether MSI may be used.
+    kernel::arch_impl::x86_64::platform::init(rsdp_addr, physical_memory_offset.as_u64());
 
     // Calibrate the TSC before device init: storage drivers measure their
     // command deadlines on it. time::init() keeps this calibration.
@@ -447,6 +488,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     kernel::arch_impl::x86_64::cpu_init::init_cpu(0);
     log::info!("System call infrastructure initialized");
 
+    // The screen console's display BAR, its write-combining mapping and shadow:
+    // after PCI enumeration and the boot CPU's PAT, before the other CPUs run.
+    #[cfg(not(feature = "interactive"))]
+    kernel::fbcon::attach();
+
     // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
 
@@ -509,13 +555,22 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 /// This function runs on the properly allocated kernel stack, not the bootstrap stack
 /// arg: the idle kernel stack top address (passed from kernel_main)
 #[cfg(target_arch = "x86_64")]
-extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
-    // Verify stack alignment per SysV ABI (RSP % 16 == 8 at function entry after call)
-    let current_rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
-    }
-    debug_assert_eq!(
+#[unsafe(naked)]
+extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
+    core::arch::naked_asm!(
+        "mov rsi, rsp",
+        "jmp {continuation}",
+        continuation = sym kernel_main_on_kernel_stack_checked,
+    );
+}
+
+#[cfg(target_arch = "x86_64")]
+extern "C" fn kernel_main_on_kernel_stack_checked(
+    arg: *mut core::ffi::c_void,
+    current_rsp: u64,
+) -> ! {
+    // The naked entry captures RSP before a compiler prologue changes it.
+    assert_eq!(
         current_rsp & 0xF,
         8,
         "SysV stack misaligned at callee entry"
@@ -613,10 +668,23 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     x86_64::instructions::interrupts::enable();
     drivers::run_post_init_self_tests();
 
+    // A storage-lane install copies the RAM disk to the hardware disk while the
+    // RAM disk is still unmounted, so the copy is the image as delivered.
+    kernel::block::install_requested_root();
+
     // Initialize ext2 root filesystem once IRQ-driven block completions can arrive.
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             log::info!("ext2 root filesystem mounted");
+            if kernel::block::ramdisk::device().is_some() {
+                log::info!("[fs] root mounted from the RAM disk");
+            } else if kernel::block::root_on_installed_disk() {
+                log::info!("[fs] root mounted from the installed disk");
+            }
+            if kernel::block::hardware_read_only() {
+                let count = kernel::block::devices().len();
+                log::info!("[block] hardware disks read-only: detected={} gated={}", count, count);
+            }
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
@@ -637,7 +705,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::fault_inject::run_fs_fault_leg();
     // Initialize ext2 home filesystem only when the x86 home disk is attached.
-    if kernel::block::disk(3).is_some() {
+    if !kernel::block::hardware_read_only() && kernel::block::disk(3).is_some() {
         match kernel::fs::ext2::init_home_fs() {
             Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
             Err(e) => log::warn!("No home filesystem: {}", e),
@@ -778,6 +846,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     if let Err(e) = graphics::render_task::spawn_render_thread() {
         log::error!("Failed to spawn render thread: {}", e);
     }
+    // Without `interactive`, the screen console's render thread.
+    #[cfg(not(feature = "interactive"))]
+    kernel::fbcon::start();
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -1157,9 +1228,13 @@ fn launch_x86_production_init(
     exe_path: &[u8],
     elf_data: &[u8],
     only: Option<&str>,
+    console_mode: Option<&str>,
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
+    if console_mode.is_some() {
+        serial::command::use_tty_input();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1168,6 +1243,9 @@ fn launch_x86_production_init(
 
         let path = alloc::format!("/sbin/{}", name);
         let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+        if let Some(mode) = console_mode {
+            argv.push(mode.as_bytes());
+        }
         if let Some(case) = only {
             argv.extend_from_slice(&[b"--case", case.as_bytes()]);
         }
@@ -1191,15 +1269,51 @@ fn launch_x86_production_init(
         reserved_collisions
     );
 
-    task::scheduler::spawn(thread);
+    if console_mode == Some("console") {
+        // Boot holds a scheduling brake here. Wait on an ordinary thread so
+        // the xHCI worker can finish before init can start getty.
+        // Keep ownership outside the closure until its creation succeeds: a
+        // failed kthread_run drops the closure, but init still needs to run.
+        let pending = alloc::sync::Arc::new(spin::Mutex::new(Some(thread)));
+        let startup = pending.clone();
+        if task::kthread::kthread_run(move || {
+            let thread = startup.lock().take().expect("console init thread missing");
+            if kernel::drivers::xhci::wait_console_ready() {
+                task::scheduler::spawn(thread);
+            } else {
+                log::error!("[console] keyboard preparation failed; starting init for serial login");
+                task::scheduler::spawn(thread);
+            }
+        }, "console-start").is_err() {
+            let thread = pending.lock().take().expect("console init thread missing");
+            log::error!("[console] cannot create startup thread; starting init for serial login");
+            task::scheduler::spawn(thread);
+        }
+    } else {
+        task::scheduler::spawn(thread);
+    }
 
     Ok(())
 }
 
-/// Which suite, if any, the production kernel runs as PID 1 instead of
+/// A PID 1 other than `/sbin/init` that the x86-64 production kernel runs.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(any(
+        feature = "testing",
+        feature = "interactive",
+        feature = "disable_x86_prod_init"
+    ))
+))]
+enum X86BootTarget {
+    Suite(kernel::boot::target::SuiteTarget),
+    Probe,
+}
+
+/// Which suite or probe, if any, the production kernel runs as PID 1 instead of
 /// `/sbin/init`: fw_cfg first (`opt/breenix/mode=suite` with
 /// `opt/breenix/suite=<id>`; `default` runs `/sbin/init` whatever the disk says),
-/// then the boot-target file (`kernel::boot::target`), else none. A request that
+/// then the boot-target file (`kernel::boot::target`), else `/sbin/init`. A request that
 /// cannot be used is noted on its own line and the default runs.
 #[cfg(all(
     target_arch = "x86_64",
@@ -1209,28 +1323,26 @@ fn launch_x86_production_init(
         feature = "disable_x86_prod_init"
     ))
 ))]
-fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
+fn x86_boot_target() -> Option<X86BootTarget> {
     use kernel::boot::target;
     use kernel::drivers::fw_cfg;
 
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
-            Ok(Some(target::Target::Suite(suite))) => Some(suite),
-            Ok(Some(target::Target::Probe)) => {
-                log::warn!("[boot] Ignoring probe boot target: x86-64 runs only default and suite");
-                None
-            }
+            Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
+            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
+            Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
                 None
             }
         },
-        Some("default") => None,
+        Some("default" | "shell" | "console") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
-                    Ok(suite) => Some(suite),
+                    Ok(suite) => Some(X86BootTarget::Suite(suite)),
                     Err(why) => {
                         log::warn!("[boot] Ignoring boot mode \"suite\": {}", why);
                         None
@@ -1261,11 +1373,35 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     }
 }
 
+/// Select init's interactive argument through the same fw_cfg-before-file rule.
+#[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
+fn x86_console_mode() -> Option<&'static str> {
+    match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        Some("shell") => Some("shell"),
+        Some("console") => {
+            kernel::drivers::xhci::console_session_starting(false);
+            Some("console")
+        },
+        None | Some("") => match kernel::boot::target::read() {
+            Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
+            Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
+                kernel::tty::input_clock::start(idle_minutes);
+                kernel::drivers::xhci::console_session_starting(
+                    kernel::boot::console_intent::replug_or(replug),
+                );
+                Some("console")
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Read the program the production kernel runs as PID 1 from the ext2 root:
-/// `/sbin/suite-<id>` when `x86_boot_suite` names a suite whose binary reads
-/// and is a loadable ELF, otherwise `/sbin/init`. Returns its process name,
-/// physical pathname and ELF. A suite binary that cannot be used is noted and
-/// the default init runs.
+/// `/sbin/suite-<id>` or `/sbin/probe` when `x86_boot_target` names one whose
+/// binary reads and is a loadable ELF, otherwise `/sbin/init`. Returns its
+/// process name, physical pathname and ELF. A binary that cannot be used is
+/// noted and the default init runs.
 #[cfg(all(
     target_arch = "x86_64",
     not(any(
@@ -1275,10 +1411,26 @@ fn x86_boot_suite() -> Option<kernel::boot::target::SuiteTarget> {
     ))
 ))]
 fn read_x86_production_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
-    if let Some(suite) = x86_boot_suite() {
+    let suite = match x86_boot_target() {
+        Some(X86BootTarget::Suite(suite)) => Some(suite),
+        Some(X86BootTarget::Probe) => {
+            match read_init_from_ext2("/sbin/probe")
+                .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
+            {
+                Ok((elf_data, exe_path)) => {
+                    log::info!("[boot] Boot mode: probe");
+                    return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, None));
+                }
+                Err(e) => log::warn!("[boot] Ignoring boot mode \"probe\": /sbin/probe could not be loaded ({})", e),
+            }
+            None
+        }
+        None => None,
+    };
+    if let Some(suite) = suite {
         let id = suite.id;
         let path = target::suite_path(&id);
         match read_init_from_ext2(&path)
@@ -1290,7 +1442,7 @@ fn read_x86_production_init(
                 } else {
                     log::info!("[boot] Boot mode: suite {}", id);
                 }
-                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case));
+                return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case, None));
             }
             Err(e) => log::warn!(
                 "[boot] Ignoring boot mode \"suite\": {} could not be loaded ({})",
@@ -1312,10 +1464,11 @@ fn read_x86_production_init(
     ))
 ))]
 fn read_default_x86_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>), &'static str> {
-    log::info!("[boot] Boot mode: default");
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<&'static str>), &'static str> {
+    let mode = x86_console_mode();
+    log::info!("[boot] Boot mode: {}", mode.unwrap_or("default"));
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
-        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None))
+        .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, mode))
 }
 
 /// Continue kernel initialization after setting up threading
@@ -1405,11 +1558,10 @@ fn kernel_main_continue() -> ! {
 
         let mut failures = test_framework::run_all_tests();
 
-        // ProcessContext is the last stage with registered x86 tests, and this
-        // is the only x86 context that can dispatch it: the stage's tests need
-        // preemption (they run in a joined kthread like every other stage), and
-        // the boot thread has none left after the `preempt_disable()` below.
-        // Its precondition holds here - `kernel_main_on_kernel_stack` has
+        // Dispatch ProcessContext while the boot thread is preemptible: the
+        // staged executor joins its kthreads, which requires preemption. The
+        // `preempt_disable()` below prevents those joins later in boot.
+        // Its precondition holds here - `kernel_main_on_kernel_stack_checked` has
         // already created and retired user processes by this point, so the
         // process manager is populated and the boot thread is a live scheduler
         // thread. The Userspace stage stays marker-only on both architectures:
@@ -1920,9 +2072,9 @@ fn kernel_main_continue() -> ! {
         let mut image = read_x86_production_init();
         loop {
             match image {
-                Ok((name, exe_path, elf_data, only)) => {
+                Ok((name, exe_path, elf_data, only, mode)) => {
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref())
+                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), mode)
                     });
                     match launched {
                         Ok(()) => {}
@@ -2300,7 +2452,7 @@ fn kernel_main_continue() -> ! {
     // This is part of the same check as PRECONDITION 1
     if idt_valid {
         log::info!("PRECONDITION 2: Timer handler registered ✓ PASS");
-        log::info!("  The IDT entry for IRQ0 (vector 32) is properly configured");
+        log::info!("  The IDT entry for IRQ0 (vector 48) is properly configured");
     } else {
         log::error!("PRECONDITION 2: Timer handler registered ✗ FAIL");
         log::error!("  IDT entry validation failed (see PRECONDITION 1)");
@@ -2591,6 +2743,18 @@ fn kernel_main_continue() -> ! {
                 e
             );
         }
+
+        // Boot's sequential work is done; from the release below it is the
+        // halt loop (docs/metal/boot-path.json, first-light). Logged inside
+        // the bracket, so the line cannot be stranded the way the census
+        // below once was.
+        if !drivers::fw_cfg::present() {
+            // The tick census reports after its staggered per-CPU windows.
+            kernel::arch_impl::x86_64::tick_census::start();
+            log::info!("[metal] kernel idle");
+        }
+        // The screen console reads the screen back once boot is idle.
+        kernel::fbcon::request_idle_check();
 
         kernel::per_cpu::preempt_enable();
 

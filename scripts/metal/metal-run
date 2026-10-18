@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
+
+  # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
+                 [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
+  metal-run stop ID
+  metal-run status
+  metal-run follow ID
+
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+`boot` returns as soon as the boot's driver unit holds (or waits for) the machine lease, printing the boot id, so
+the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the metal
+build container, detached, and streams the image inputs into the service container. Instance names and paths come from
+the host file named by BREENIX_METAL_HOST_ENV (default ~/.config/breenix-metal/host.env), never from the repository.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+TOOLS = '/opt/breenix-metal'
+STATE = '/var/lib/breenix-metal'
+HERE = Path(__file__).resolve().parent
+
+
+def host_env():
+    path = Path(os.environ.get('BREENIX_METAL_HOST_ENV', Path.home() / '.config/breenix-metal/host.env'))
+    values = {}
+    for line in path.read_text().splitlines():
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, _, value = line.partition('=')
+            values[key.strip()] = value.strip().strip('"\'')
+    return values
+
+
+def incus(*arguments, **options):
+    return subprocess.run(['sudo', '-n', 'incus', *arguments], stdin=options.pop('stdin', subprocess.DEVNULL),
+                          **options)
+
+
+def in_metal(env, *command, **options):
+    return incus('exec', env['METAL_INSTANCE'], '--', *command, **options)
+
+
+def in_build(env, *command, **options):
+    return incus('exec', env['BUILD_INSTANCE'], '--', *command, **options)
+
+
+def resolve(env, branch):
+    result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'ls-remote', 'origin', 'refs/heads/' + branch,
+                      capture_output=True, text=True)
+    line = result.stdout.strip().split('\t')[0] if result.returncode == 0 else ''
+    if not re.fullmatch(r'[0-9a-f]{40}', line):
+        raise SystemExit(f'cannot resolve origin/{branch}')
+    return line
+
+
+def validate_id(boot_id):
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot_id):
+        raise SystemExit('invalid metal boot id')
+    return boot_id
+
+
+def verify_target(env, sha, branch):
+    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise SystemExit('--sha must be a full commit id')
+    ref = 'refs/heads/' + branch
+    in_build(env, 'git', '-C', env['BUILD_REPO'], 'check-ref-format', ref, check=True)
+    tip = resolve(env, branch)
+    in_build(env, 'git', '-C', env['BUILD_REPO'], 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', tip, check=True)
+    result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'merge-base', '--is-ancestor', sha, tip)
+    if result.returncode != 0:
+        raise SystemExit('the requested commit is not contained in the target branch')
+
+
+def boot(args):
+    is_session = bool(getattr(args, 'session', False))
+    attended = bool(getattr(args, 'attended', False))
+    wait = getattr(args, 'wait', 30)
+    if attended and (is_session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk):
+        raise SystemExit('--attended needs a RAM-disk console boot, without --session or --input')
+    if not 0 < wait <= 240 or (wait != 30 and not attended):
+        raise SystemExit('--wait needs --attended and more than 0 through 240 minutes')
+    idle = getattr(args, 'idle_minutes', 30)
+    if is_session and (args.mode != 'console' or args.input or getattr(args, 'disk', None) == 'install'):
+        raise SystemExit('--session needs console mode, operator input and no disk install')
+    if not 1 <= idle <= 240 or (idle != 30 and (not is_session or getattr(args, 'disk', None) == 'root')):
+        raise SystemExit('--idle-minutes needs a RAM-disk session and 1 through 240 minutes')
+    if not is_session and not attended and (args.mode == 'console') != (args.input == 'sol'):
+        raise SystemExit('console mode requires --input sol; --input requires console mode')
+    env = host_env()
+    payload = args.payload
+    sha = target = ''
+    if payload == 'image':
+        if args.sha:
+            verify_target(env, args.sha, args.branch or 'main')
+            sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
+        else:
+            branch = args.branch or 'main'
+            sha = resolve(env, branch)
+            target = 'main' if branch == 'main' else 'branch:' + branch
+    boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+    command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
+    command += ['--mode', args.mode]
+    if attended:
+        command += ['--attended', '--wait', str(wait)]
+    elif is_session:
+        command += ['--session', '--idle-minutes', str(idle)]
+    elif args.mode == 'console':
+        command += ['--input', args.input]
+    if args.suite:
+        command += ['--suite', args.suite]
+    if sha:
+        command += ['--commit', sha, '--target', target]
+    if args.no_wait:
+        command.append('--no-wait')
+    if args.inject:
+        command += ['--inject', args.inject]
+    if args.nmi:
+        command.append('--nmi')
+    if payload == 'linux' and not args.linux_directory:
+        raise SystemExit('Linux payload needs --linux-directory')
+    if args.serve_as:
+        command += ['--serve-as', args.serve_as]
+    if args.content_type:
+        command += ['--content-type', args.content_type]
+    if args.ramdisk:
+        command.append('--ramdisk')
+    if args.disk:
+        command += ['--disk', args.disk]
+    result = in_metal(env, *command, capture_output=True, text=True)
+    print(result.stdout.strip() or result.stderr.strip(), flush=True)
+    if result.returncode != 0:
+        return result.returncode
+    if payload == 'linux':
+        source = Path(args.linux_directory).resolve()
+        stage = f'{STATE}/stage/{boot_id}/inputs'
+        try:
+            in_metal(env, 'mkdir', '-p', stage, check=True)
+            for name in ('metal-linux.efi', 'config', 'build.json'):
+                incus('file', 'push', str(source / name), f"{env['METAL_INSTANCE']}{stage}/{name}", check=True)
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
+        except Exception:
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
+            raise
+    if payload == 'image':
+        logs = Path.home() / '.local/state/breenix-metal'
+        logs.mkdir(parents=True, exist_ok=True)
+        with (logs / f'{boot_id}.log').open('w') as log:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
+    return 0
+
+
+def build(boot_id, sha):
+    """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
+    validate_id(boot_id)
+    env = host_env()
+    key = boot_id.lower()
+    tools = f"{env['BUILD_ROOT']}/breenix-metal-{key}-tools"
+    out = f"{env['BUILD_ROOT']}/breenix-metal-{key}-out"
+    stage = f'{STATE}/stage/{boot_id}/inputs'
+
+    def failed(why):
+        print(f'[metal-run] build failed: {why}', flush=True)
+        in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
+        in_build(env, 'rm', '-rf', tools, out)
+        return 1
+    in_build(env, 'rm', '-rf', tools, check=True)
+    in_build(env, 'mkdir', '-p', tools, check=True)
+    # The slot and artifact helpers travel with metal-build: a commit builds under the deployed tools' rules.
+    for name in ('metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py'):
+        # Deployed, they sit beside metal-run; in a checkout the helpers are in scripts/.
+        source = HERE / name if (HERE / name).exists() else HERE.parent / name
+        incus('file', 'push', str(source), f"{env['BUILD_INSTANCE']}{tools}/{name}", check=True)
+    # Push source files only: an old target tree or ignored local files must never reach staging.
+    stub = HERE / 'efi-stub'
+    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs'):
+        target = f'{tools}/efi-stub/{name}'
+        in_build(env, 'mkdir', '-p', str(Path(target).parent), check=True)
+        incus('file', 'push', str(stub / name), f"{env['BUILD_INSTANCE']}{target}", check=True)
+    started = time.time()
+    status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
+                      '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
+                      '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
+                      '--stub', f'{tools}/efi-stub').returncode
+    print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
+    if status == 3:
+        return failed('the effort-target guard refused the commit')
+    if status != 0:
+        return failed(f'the build failed (exit {status})')
+    in_metal(env, 'rm', '-rf', stage, check=True)
+    in_metal(env, 'mkdir', '-p', stage, check=True)
+    sender = subprocess.Popen(['sudo', '-n', 'incus', 'exec', env['BUILD_INSTANCE'], '--', 'tar', '-C', out, '-cf',
+                               '-', '.'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+    receiver = subprocess.run(['sudo', '-n', 'incus', 'exec', env['METAL_INSTANCE'], '--', 'tar', '-C', stage,
+                               '-xf', '-'], stdin=sender.stdout)
+    sender.stdout.close()
+    if sender.wait() != 0 or receiver.returncode != 0:
+        return failed('the inputs could not be copied into the service container')
+    in_build(env, 'rm', '-rf', tools, out)
+    in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
+    print(f'[metal-run] inputs delivered after {time.time() - started:.0f} s', flush=True)
+    return 0
+
+
+def follow(env, boot_id):
+    validate_id(boot_id)
+    directory = f'{STATE}/boots/{boot_id}'
+    script = (f'tail -n +1 -F {directory}/console.log & t=$!; '
+              f'while [ ! -e {directory}/ended ]; do sleep 2; done; sleep 2; kill $t; '
+              f'echo "exit-status $(cat {directory}/exit-status)"')
+    return in_metal(env, 'sh', '-c', script).returncode
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('boot')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
+    p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
+    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console'), default='default')
+    p.add_argument('--input', choices=('sol',))
+    p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
+    p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
+    p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
+    p.add_argument('--idle-minutes', type=int, default=30, help='RAM-disk session input idle limit; default 30')
+    p.add_argument('--disk', choices=('install', 'root'),
+                   help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
+    p.add_argument('--suite')
+    p.add_argument('--sha')
+    p.add_argument('--branch')
+    p.add_argument('--no-wait', action='store_true')
+    p.add_argument('--inject', choices=('forceoff-fail',))
+    p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
+    p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
+    p.add_argument('--content-type', choices=('application/octet-stream',))
+    p.add_argument('--ramdisk', action='store_true', default=True, help='a Breenix image also carries the ext2 root as `ramdisk`')
+    for name in ('stop', 'follow'):
+        sub.add_parser(name).add_argument('id')
+    sub.add_parser('status')
+    p = sub.add_parser('_build')
+    p.add_argument('id')
+    p.add_argument('sha')
+    args = parser.parse_args()
+    if args.command == 'boot':
+        return boot(args)
+    if args.command == '_build':
+        return build(args.id, args.sha)
+    env = host_env()
+    if args.command == 'follow':
+        return follow(env, args.id)
+    if args.command == 'stop':
+        validate_id(args.id)
+        return in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', args.id).returncode
+    return in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'status').returncode
+
+
+if __name__ == '__main__':
+    sys.exit(main())

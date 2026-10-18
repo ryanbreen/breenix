@@ -796,6 +796,7 @@ impl VirtioBlockDevice {
     }
 
     fn write_chunk(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Virtio(self as *const Self as usize)) { return Err("Hardware disks are read-only"); }
         if buffer.len() < SECTOR_SIZE {
             return Err("Buffer too small");
         }
@@ -883,6 +884,7 @@ impl VirtioBlockDevice {
     /// Flush the device cache using a header/status-only request. A device
     /// without FLUSH advertises writethrough operation by the VirtIO block ABI.
     pub fn flush(&self) -> Result<(), &'static str> {
+        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Virtio(self as *const Self as usize)) { return Ok(()); }
         if !self.flush_supported {
             return Ok(());
         }

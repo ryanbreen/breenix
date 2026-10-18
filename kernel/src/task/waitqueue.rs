@@ -75,7 +75,7 @@ impl WaitQueueHead {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            let published = crate::task::scheduler::with_scheduler(|sched| {
+            let published = crate::task::scheduler::with_current(|sched| {
                 sched.block_current_for_io_with_timeout(None)
             })
             .unwrap_or(false);
@@ -120,7 +120,7 @@ impl WaitQueueHead {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            let published = crate::task::scheduler::with_scheduler(|sched| {
+            let published = crate::task::scheduler::with_current(|sched| {
                 sched.block_current_for_io_with_timeout(wake_time_ns)
             })
             .unwrap_or(false);
@@ -347,6 +347,9 @@ fn in_interrupt_context() -> bool {
 /// that check as the end of the halt.
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn halt_blocked_current() {
+    #[cfg(target_arch = "x86_64")]
+    let others_ready = crate::task::scheduler::any_thread_queued();
+    #[cfg(not(target_arch = "x86_64"))]
     let others_ready =
         crate::task::scheduler::with_scheduler(|sched| sched.ready_queue_length() != 0)
             .unwrap_or(false);
@@ -369,7 +372,7 @@ pub fn schedule_current_wait() {
     crate::per_cpu::preempt_enable();
 
     loop {
-        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched
                 .current_thread_mut()
                 .map(|thread| thread.state == ThreadState::BlockedOnIO)

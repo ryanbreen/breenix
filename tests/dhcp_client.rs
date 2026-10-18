@@ -92,6 +92,7 @@ struct Peer {
     conflict: bool,
     no_router: bool,
     silent: bool,
+    drop_first_discover: bool,
     no_buffers: bool,
     nak: bool,
     pending: Option<Vec<u8>>,
@@ -106,6 +107,7 @@ static PEER: Mutex<Peer> = Mutex::new(Peer {
     conflict: false,
     no_router: false,
     silent: false,
+    drop_first_discover: false,
     no_buffers: false,
     nak: false,
     pending: None,
@@ -144,6 +146,9 @@ fn send(src: [u8; 4], dst: [u8; 4], data: &[u8]) -> Result<(), &'static str> {
     p.sent.push((dst, msg.to_vec()));
     if kind == 4 {
         p.declines += 1;
+        return Ok(());
+    }
+    if p.drop_first_discover && kind == 1 && p.sent.iter().filter(|(_, msg)| msg[242] == 1).count() == 1 {
         return Ok(());
     }
     if p.silent {
@@ -469,4 +474,49 @@ fn delayed_ack_does_not_add_time_to_initial_or_renewed_lease() {
         renewed.expires_at,
         REQUEST_TIME.load(Ordering::Relaxed) + 60_000_000_000
     );
+}
+
+#[test]
+fn a_bring_up_discover_is_answered_only_by_its_own_offer() {
+    let mac = [0x02, 0, 0, 0, 0, 0x5a];
+    let xid = 0x1234_5678;
+    let discover = dhcp::discover_message(xid, mac);
+    assert_eq!(discover[0], 1, "BOOTREQUEST");
+    assert_eq!(&discover[4..8], &xid.to_be_bytes());
+    assert_eq!(&discover[28..34], &mac);
+    assert_eq!(&discover[236..243], &[99, 130, 83, 99, 53, 1, 1], "cookie, then DHCPDISCOVER");
+    assert!(!dhcp::is_offer(&discover, xid, mac), "a request is not a reply");
+
+    let mut offer = discover;
+    offer[0] = 2;
+    offer[242] = 2;
+    assert!(dhcp::is_offer(&offer, xid, mac));
+    assert!(!dhcp::is_offer(&offer, xid ^ 1, mac), "another transaction");
+    assert!(!dhcp::is_offer(&offer, xid, [0x02, 0, 0, 0, 0, 0x5b]), "another client");
+    let mut ack = offer;
+    ack[242] = 5;
+    assert!(!dhcp::is_offer(&ack, xid, mac), "an ACK is not an offer");
+}
+
+#[test]
+fn lost_first_discover_retransmits_after_four_seconds_and_acquires_lease() {
+    let _guard = setup();
+    PEER.lock().unwrap().drop_first_discover = true;
+    let start = CLOCK.load(Ordering::Relaxed);
+    let lease = dhcp::acquire(MAC).expect("the second DISCOVER must complete DORA");
+    let peer = PEER.lock().unwrap();
+    let discovers: Vec<_> = peer.sent.iter().filter(|(_, message)| message[242] == 1).collect();
+    assert_eq!(discovers.len(), 2);
+    assert_eq!(&discovers[0].1[4..8], &discovers[1].1[4..8]);
+    assert!(REQUEST_TIME.load(Ordering::Relaxed) - start >= 4_000_000_000);
+    assert_eq!(lease.ip_addr, ADDRESS);
+    assert_eq!(lease.nameservers[0], Some([192, 0, 2, 53]));
+}
+
+#[test]
+fn procfs_marks_dhcp_policy_while_no_lease_is_usable() {
+    let _guard = setup();
+    dhcp::require_configuration();
+    dhcp::maintain(MAC, false);
+    assert_eq!(proc_net::generate_pnp().unwrap(), "#PROTO: DHCP\n");
 }

@@ -97,7 +97,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 - **File:** `kernel/src/drivers/ahci/mod.rs`, polling branch of `wait_cmd_slot0()`.
 - **Loop:** Poll `PORT_CI` until slot 0 clears, taskfile error, or the counter deadline.
-- **Justification:** Runtime completion uses `Completion::wait_timeout()` when registered and parkable. ARM64 uses this fallback during early boot; x86 IDENTIFY uses it after scheduler initialization with CPU interrupts enabled and HBA global interrupts disabled, before INTx registration.
+- **Justification:** Runtime completion uses `Completion::wait_timeout()` when registered and parkable. ARM64 uses this fallback during early boot; x86 IDENTIFY uses it after scheduler initialization with CPU interrupts enabled and HBA global interrupts disabled, before MSI or INTx registration.
 - **Linux precedent:** libata/AHCI uses interrupt-driven runtime completions and bounded polling for controller setup.
 - **Bounded:** `AHCI_TIMEOUT_SECS` using CNTPCT on ARM64 and calibrated TSC on x86.
 - **Frequency:** Controller initialization or when scheduler-backed completion is unavailable.
@@ -112,3 +112,13 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Bounded:** `AHCI_CI_COMPLETION_LOOP_LIMIT` caps the drain at 8 iterations.
 - **Frequency:** Runtime AHCI interrupt handling.
 - **Status:** ALLOWLISTED — interrupt-context site with deliberately minimal inline comment; not subject to polling-elimination conversion.
+
+## P12-Site-8: AHCI link establishment after the HBA reset (x86)
+
+- **File:** `kernel/src/drivers/ahci/mod.rs`, `spin_up_ports()`.
+- **Loop:** Poll each implemented port's `PxSSTS.DET` until each reads 3 (Phy communication established) or one second of TSC time passes; after a COMRESET of the ports still without a link (`PxSCTL.DET` held at 1 for two milliseconds of TSC time, then 0), poll again for up to one second.
+- **Justification:** The HBA reset makes each implemented port renegotiate its link, a controller that reports `CAP.SSS` also leaves each device unspun until software sets `PxCMD.SUD`, and a device is usable only once `PxSSTS.DET` reads 3; COMRESET needs `PxSCTL.DET` held at 1 for at least a millisecond (AHCI 1.3.1, 10.10.1, 10.4.2, 3.3.10 and 3.3.11). These are link-establishment handshakes during controller initialization, before a port has a command list or any interrupt source, not polling for a future completion.
+- **Precedent:** the AHCI 1.3.1 specification. The x86-metal clean-room rule (`docs/metal/README.md`, "Clean-room rule") applies to this driver, so no donor driver is cited for it.
+- **Bounded:** two seconds and two milliseconds of calibrated TSC time per controller at most; a port with no device costs the whole of both waits.
+- **Frequency:** Once per controller initialization.
+- **Status:** ALLOWLISTED.

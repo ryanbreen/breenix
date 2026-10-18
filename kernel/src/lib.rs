@@ -72,6 +72,8 @@ pub mod time;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
+#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+pub mod fbcon;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;
@@ -605,13 +607,10 @@ pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
     unsafe { arch_disable_interrupts() };
-    let current_blocked = |scheduler: &mut task::scheduler::Scheduler| {
-        scheduler
+    let wait_state = task::scheduler::with_current(|scheduler| {
+        let blocked = scheduler
             .current_thread_mut()
-            .is_some_and(|thread| thread.state.is_blocked())
-    };
-    let wait_state = task::scheduler::with_scheduler(|scheduler| {
-        let blocked = current_blocked(scheduler);
+            .is_some_and(|thread| thread.state.is_blocked());
         #[cfg(target_arch = "x86_64")]
         let release = blocked
             && (scheduler.has_queued_work_here()
@@ -644,18 +643,23 @@ pub fn arch_halt_while_blocked() {
     {
         if wait_state.1 && per_cpu::preempt_count() == 0 {
             task::scheduler::set_need_resched();
-            // SAFETY: the reschedule vector's gate is the timer entry, which
-            // saves and restores every register; a software interrupt enters
-            // it from here as the tick would from the halt. The thread
-            // resumes after it, with interrupts as they were, masked: once it
-            // is dispatched again after its wake, or at once if the switch
-            // was declined because the process manager is busy on another
-            // CPU. Only a waiter still blocked halts here, as before, and the
+            // SAFETY: the reschedule vector's gate is the reschedule entry,
+            // which saves the 15 general-purpose registers and restores them;
+            // a software interrupt enters it from here as the tick would from
+            // the halt. The thread resumes after it, with interrupts as they
+            // were, masked: once it is dispatched again after its wake, or at
+            // once if the switch was declined because the process manager is
+            // busy on another CPU. Only a waiter still blocked halts here, as before, and the
             // tick that ends that halt switches it out.
             unsafe {
                 core::arch::asm!("int {vector}", vector = const interrupts::RESCHEDULE_VECTOR);
             }
-            if !task::scheduler::with_scheduler(current_blocked).unwrap_or(false) {
+            let blocked = task::scheduler::with_current(|scheduler| {
+                scheduler
+                    .current_thread_mut()
+                    .is_some_and(|thread| thread.state.is_blocked())
+            });
+            if !blocked.unwrap_or(false) {
                 // SAFETY: as at the top, the caller halts with interrupts enabled.
                 unsafe { arch_enable_interrupts() };
                 return;
@@ -667,6 +671,7 @@ pub fn arch_halt_while_blocked() {
     // SAFETY: a non-preemptible caller keeps its CPU. A pending IRQ wakes
     // the masked WFI and is taken by the following unmask.
     unsafe {
+        crate::arch_impl::aarch64::irq_mask_account::closing();
         core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
     }
 }

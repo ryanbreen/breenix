@@ -271,8 +271,17 @@ pub fn generate_teardown_pid(pid: u64) -> String {
             .load(Ordering::Acquire);
         #[cfg(target_arch = "x86_64")]
         let tick_period = crate::time::tsc::frequency_hz() * crate::time::timer::MS_PER_TICK / 1000;
+        // The hypervisor's number for a CPU, so a host record can be matched
+        // to it: the local APIC id on x86-64 (QEMU's KVM vCPU id), the CPU
+        // index on ARM64.
+        #[cfg(target_arch = "x86_64")]
+        let vcpu = |cpu: u64| {
+            crate::arch_impl::x86_64::smp::cpu_apic_id(cpu as usize).map_or(u64::MAX, u64::from)
+        };
+        #[cfg(target_arch = "aarch64")]
+        let vcpu = |cpu: u64| cpu;
         return format!(
-            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
+            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\nkick_at: {}\nkick_ticks: {}\nkick_all_ticks: {}\nmasked_accounting: {}\nkick_masked_cpus: {}\nkick_held: {}\nkick_held_cpu: {}\nkick_cpu: {}\nkick_sender_cpu: {}\nkick_vcpu: {}\nkick_sender_vcpu: {}\ncounter_ticks_per_ms: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
             crate::task::scheduler::online_cpus(),
             pid,
             evidence.defer_count,
@@ -281,6 +290,18 @@ pub fn generate_teardown_pid(pid: u64) -> String {
             evidence.sgi_sent_count,
             evidence.kick_observed_count,
             evidence.kick_observed_interval,
+            evidence.kick_observed_at,
+            evidence.kick_observed_ticks,
+            evidence.kick_observed_all_ticks,
+            u64::from(crate::tracing::providers::teardown::MASKED_ACCOUNTING),
+            evidence.kick_observed_masked_cpus,
+            evidence.kick_observed_held,
+            evidence.kick_observed_held_cpu,
+            evidence.kick_observed_cpu,
+            evidence.kick_sender_cpu,
+            vcpu(evidence.kick_observed_cpu),
+            vcpu(evidence.kick_sender_cpu),
+            tick_period / crate::time::timer::MS_PER_TICK,
             tick_period,
             evidence.masked_frames_walked,
             evidence.report_count,

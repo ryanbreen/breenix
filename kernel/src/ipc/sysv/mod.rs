@@ -306,6 +306,13 @@ pub fn share_undo(parent: ProcessId, child: ProcessId) -> Result<(), i32> {
     sem::SYSV_SEM.lock().undo.share(parent.as_u64(), child.as_u64())
 }
 
+/// An exec moved task `old`'s row to process ID `new`
+/// (`ProcessManager::exec_take_over_group`), with PROCESS_MANAGER held: the
+/// task keeps its SEM_UNDO list under its new ID.
+pub fn rename_undo(old: ProcessId, new: ProcessId) {
+    sem::SYSV_SEM.lock().undo.rename(old.as_u64(), new.as_u64());
+}
+
 /// Undo `share_undo` for a clone that failed before publishing `child`; the
 /// creator still refers to the list, so nothing is applied.
 pub fn unshare_undo(child: ProcessId) {

@@ -757,9 +757,21 @@ name = "suite-gpu"
 path = "src/suite_gpu.rs"
 
 [[bin]]
+name = "suite-console"
+path = "src/suite_console.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
 
 [[bin]]
 name = "gpu-exec-probe"
 path = "src/gpu_exec_probe.rs"
+
+[[bin]]
+name = "getty"
+path = "src/getty.rs"
+
+[[bin]]
+name = "login"
+path = "src/login.rs"

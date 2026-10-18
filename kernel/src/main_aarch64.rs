@@ -81,6 +81,7 @@ enum BootMode {
     Default,
     Probe,
     Shell,
+    Console,
     Desktop,
     Program,
     Suite,
@@ -93,6 +94,7 @@ impl BootMode {
             BootMode::Default => "default",
             BootMode::Probe => "probe",
             BootMode::Shell => "shell",
+            BootMode::Console => "console",
             BootMode::Desktop => "desktop",
             BootMode::Program => "program",
             BootMode::Suite => "suite",
@@ -120,6 +122,7 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
     let mode = match requested.as_deref() {
         Some("probe") => BootMode::Probe,
         Some("shell") => BootMode::Shell,
+        Some("console") => BootMode::Console,
         Some("desktop") => BootMode::Desktop,
         Some("program") => BootMode::Program,
         Some("suite") => BootMode::Suite,
@@ -130,6 +133,9 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
     let mut only = None;
     let mode = match requested.as_deref() {
         None | Some("") => match target::read() {
+            Ok(Some(target::Target::Default)) => BootMode::Default,
+            Ok(Some(target::Target::Shell)) => BootMode::Shell,
+            Ok(Some(target::Target::Console { .. })) => BootMode::Console,
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
             Ok(Some(target::Target::Suite(suite))) => {
                 target_suite = Some(suite.id);
@@ -286,6 +292,7 @@ impl InitLaunch {
             BootMode::Default => InitLaunch::default_init(),
             BootMode::Probe => InitLaunch::new("/sbin/probe", &[b"/sbin/probe"]),
             BootMode::Shell => InitLaunch::new("/sbin/init", &[b"init", b"shell"]),
+            BootMode::Console => InitLaunch::new("/sbin/init", &[b"init", b"console"]),
             BootMode::Desktop => InitLaunch::new("/sbin/init", &[b"init", b"desktop"]),
             BootMode::Program => InitLaunch::new(
                 "/sbin/probe",
@@ -379,6 +386,8 @@ fn launch_init_from_elf(
             let ticket =
                 manager.create_init_process_with_argv(String::from(proc_name), exe_path, &elf_data, argv)?;
             let publication = manager.designate_init(ticket)?;
+            // Decide suite controls after designation and before the init thread is published.
+            kernel::test_control::latch_init_program(exe_path);
             let pid = publication.pid();
             let init_thread = manager.publish_init(publication);
             let designated_pid_raw = manager
@@ -2581,6 +2590,7 @@ fn panic(info: &PanicInfo) -> ! {
     unsafe {
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
+    kernel::arch_impl::aarch64::irq_mask_account::opened();
     // Output from here on names no thread (docs/gui/breengel.md section 22).
     kernel::output_accounting::panicking();
 

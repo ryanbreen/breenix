@@ -357,6 +357,33 @@ SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
 # Scoring-only mode has no kernel whose feature profile can be inspected.
 KERNEL_HAS_CAPTURE_SELFTEST=0
 
+# #1862: a focused boot_tests profile keeps init running, so its completion is
+# this scorer with the profile's own producers added, not the testing
+# kernel's userspace report. strand_inject_live_outgoing adds its oracle. Live
+# boots read the profile from $KERNEL below; scoring-only mode reads it from
+# BREENIX_STRICT_SCORE_KERNEL, the kernel that produced the serial, when given.
+STRAND_LIVE_OUTGOING_ORACLE_PATTERN='\[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=[1-9][0-9]*:live_outgoing=[1-9][0-9]*:outgoing_tid=[0-9]+:stranded=0:PASS\]'
+kernel_has_live_outgoing() {
+    # Read through EOF: grep -q can hide a later read error after a match.
+    local status=0
+    grep -aF '[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=' "$1" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "SCORE: FAIL - cannot read kernel for live-outgoing profile ($1)"; exit 1 ;;
+    esac
+}
+KERNEL_HAS_LIVE_OUTGOING=0
+if [ -n "${BREENIX_STRICT_SCORE_KERNEL:-}" ]; then
+    if [ ! -f "$BREENIX_STRICT_SCORE_KERNEL" ]; then
+        echo "SCORE: FAIL - BREENIX_STRICT_SCORE_KERNEL names no readable kernel ($BREENIX_STRICT_SCORE_KERNEL)"
+        exit 1
+    fi
+    if kernel_has_live_outgoing "$BREENIX_STRICT_SCORE_KERNEL"; then
+        KERNEL_HAS_LIVE_OUTGOING=1
+    fi
+fi
+
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
 # R191/PR-1: structure-suite + critical-path-census preflight, before any
@@ -448,6 +475,9 @@ KERNEL_HAS_CAPTURE_SELFTEST=0
 if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
     KERNEL_HAS_CAPTURE_SELFTEST=1
 fi
+if kernel_has_live_outgoing "$KERNEL"; then
+    KERNEL_HAS_LIVE_OUTGOING=1
+fi
 
 # Find ext2 disk (required for userspace)
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
@@ -514,6 +544,7 @@ score_serial() {
     local serial_file="$1"
     local boot_test_fail_line
     local crash_type
+    local timing_starved=0 scorer_status scorer
 
     # failure-trace-capture PR-5's own forced-fail knob: unset by default, so
     # an ordinary run's control flow here is unchanged. Set, this process
@@ -541,7 +572,15 @@ score_serial() {
         echo "Boot test failure: ${boot_test_fail_line:-[TEST:<missing>:FAIL:<missing>]}"
         return 1
     fi
-    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$serial_file" || return $?
+    for scorer in score-softirq-deferral.py score-sigkill-teardown.py; do
+        scorer_status=0
+        python3 "$BREENIX_ROOT/scripts/$scorer" "$serial_file" || scorer_status=$?
+        case "$scorer_status" in
+            0) ;;
+            2) timing_starved=1 ;;
+            *) return 1 ;;
+        esac
+    done
     if ! grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" \
         "$serial_file" 2>/dev/null; then
         echo "Userspace not detected"
@@ -621,6 +660,16 @@ score_serial() {
         echo "Scheduler strand injection oracle marker missing or failed"
         return 1
     fi
+    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ]; then
+        if grep -qE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
+            echo "Live-outgoing strand oracle reported failure ($(grep -aoE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+            return 1
+        fi
+        if ! grep -qE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+            echo "Live-outgoing strand oracle marker missing or failed"
+            return 1
+        fi
+    fi
     if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Census widening mutation oracle marker missing or failed"
         return 1
@@ -691,7 +740,7 @@ score_serial() {
     fi
     # #822, pinned as the same pair for the same reason.
     if grep -qF "[TTY_IRQ_FG_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
-        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
+        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[^]]*)?\]" "$serial_file" 2>/dev/null; then
         echo "TTY input IRQ foreground-pgrp oracle reported failure ($(grep -aoE '\[TTY_IRQ_FG_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
         return 1
     fi
@@ -843,6 +892,10 @@ score_serial() {
         echo "BSSH publickey oracle missing, duplicated, or failed"
         return 1
     fi
+    if [ "$timing_starved" -eq 1 ]; then
+        echo "STARVED: independent checks held; rerun the boot"
+        return 2
+    fi
     return 0
 }
 
@@ -913,7 +966,7 @@ report_failure() {
 
 run_single_test() {
     local iteration=$1
-    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$iteration"
+    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$attempt"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     # Q-1/PR-6 fix pass: avoid $OUTPUT_DIR/qmp.sock -- BREENIX_GATE_TMP is a
@@ -1238,7 +1291,10 @@ echo ""
 
 START_TIME=$(date +%s)
 
-for i in $(seq 1 $ITERATIONS); do
+i=1
+attempt=0
+while [ "$i" -le "$ITERATIONS" ]; do
+    attempt=$((attempt+1))
     if run_single_test $i; then
         SUCCESSES=$((SUCCESSES + 1))
     else
@@ -1246,11 +1302,14 @@ for i in $(seq 1 $ITERATIONS); do
         if [ "$BOOT_STATUS" -eq 2 ]; then
             STARVATIONS=$((STARVATIONS + 1))
             STARVED_ITERATIONS="$STARVED_ITERATIONS $i"
+            echo "STARVED: rerunning boot $i; attempt $attempt is not evidence"
+            continue
         else
             FAILURES=$((FAILURES + 1))
             FAILED_ITERATIONS="$FAILED_ITERATIONS $i"
         fi
     fi
+    i=$((i+1))
 done
 
 END_TIME=$(date +%s)
@@ -1267,10 +1326,7 @@ echo "Inconclusive (host starvation): $STARVATIONS"
 echo "Success rate: $(( (SUCCESSES * 100) / ITERATIONS ))%"
 echo "Duration: ${DURATION}s"
 
-if [ "$FAILURES" -eq 0 ] && [ "$STARVATIONS" -gt 0 ]; then
-    echo "INCONCLUSIVE: Host starvation in iterations:$STARVED_ITERATIONS"
-    exit 2
-elif [ $FAILURES -eq 0 ]; then
+if [ $FAILURES -eq 0 ]; then
     echo ""
     echo "========================================="
     echo "PASS: $SUCCESSES/$ITERATIONS boots succeeded"

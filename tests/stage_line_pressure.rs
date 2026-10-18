@@ -1,13 +1,14 @@
 //! Every line a boot-path stage depends on survives log pressure.
 //!
+//! claim-lint:ok: tests/stage_line_pressure.rs exercises marker retention under ring pressure.
 //! The x86 kernel log goes through a fixed ring (`kernel/src/log_ring.rs`):
 //! a line logged where the caller cannot wait on the UART is appended and left
 //! for a later writer, and an ordinary line that does not fit is dropped. This
 //! test compiles that ring and the kernel's stage-line scanner from their
-//! sources, reads every stage `docs/boot-path.json` lists the way the kernel
+//! sources, reads stages from both boot-path files the way the kernel
 //! build does (`kernel/stage_markers.rs`), and logs each stage's marker into a
-//! ring already full of ordinary lines and of other stage lines, with nothing
-//! writing the ring out except when the ring itself asks for room. Each stage
+//! ring already full of ordinary lines and of other stage lines, with the ring
+//! written out only when it asks for room. Each stage
 //! line must come out whole, on a line of its own, and every report of
 //! dropped bytes must be whole too.
 
@@ -26,10 +27,20 @@ const RING: usize = 4096;
 
 fn markers() -> Vec<String> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for source in stage_markers::sources(repo) {
+    let sources = stage_markers::sources(repo);
+    assert!(sources.contains(&repo.join("docs/boot-path.json")));
+    assert!(sources.contains(&repo.join("docs/metal/boot-path.json")));
+    for source in sources {
         assert!(source.exists(), "{} is missing", source.display());
     }
-    stage_markers::boot_path_markers(repo).expect("resolve the boot-path stage markers")
+    let markers = stage_markers::boot_path_markers(repo).expect("resolve the boot-path stage markers");
+    for metal in ["[console] uart 0x3f8 source=", "[apic] handoff base=", "[metal] kernel idle"] {
+        assert!(markers.iter().any(|m| m == metal), "missing metal marker {metal}");
+    }
+    for host in ["console-ready", "power-on", "firmware-text", "post", "image-complete"] {
+        assert!(!markers.iter().any(|m| m == host), "host event {host} became a serial marker");
+    }
+    markers
 }
 
 /// Log `line` as the kernel does. When the ring asks for room, write out its
@@ -155,4 +166,81 @@ fn every_boot_path_stage_line_survives_log_pressure() {
         lost.first(),
         split.first()
     );
+}
+
+#[test]
+fn metal_modes_resolve_only_against_the_gate_arch_catalog() {
+    let repo = std::env::temp_dir().join(format!(
+        "metal-marker-resolution-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let catalogs = repo.join("tools/breenix-runs/Sources/BreenixRuns/Resources");
+    std::fs::create_dir_all(&catalogs).unwrap();
+    std::fs::create_dir_all(repo.join("docs/metal")).unwrap();
+    std::fs::write(catalogs.join("boot-stages-aarch64.json"), r#"{"stages":[
+        {"name":"Shared", "marker":"arm-only-marker"},
+        {"name":"ARM only", "marker":"arm-exclusive"}]}"#).unwrap();
+    std::fs::write(catalogs.join("boot-stages-x86_64.json"), r#"{"stages":[
+        {"name":"Main", "marker":"main-marker"},
+        {"name":"Shared", "marker":"x86-only-marker"}]}"#).unwrap();
+    let main = repo.join("docs/boot-path.json");
+    let metal = repo.join("docs/metal/boot-path.json");
+    std::fs::write(&main, r#"{"milestones":[{"id":"main","stages":{"x86_64":["Main"]}}]}"#).unwrap();
+    let definition = r#"{"gateArch":"x86_64","scoring":"modes","milestones":[
+        {"id":"metal","stages":{"shell":["Shared",
+        {"name":"Console ready","host":"console-ready"},
+        {"name":"Inline","marker":"metal-inline|metal-alternative"}]}}]}"#;
+    std::fs::write(&metal, definition).unwrap();
+    let markers = stage_markers::boot_path_markers(&repo).unwrap();
+    for expected in ["main-marker", "x86-only-marker", "metal-inline", "metal-alternative"] {
+        assert!(markers.iter().any(|m| m == expected), "missing {expected}");
+    }
+    for excluded in ["arm-only-marker", "console-ready"] {
+        assert!(!markers.iter().any(|m| m == excluded), "unexpected {excluded}");
+    }
+    std::fs::write(&main, r#"{"milestones":[{"id":"main","stages":{"shell":["Shared"]}}]}"#).unwrap();
+    let markers = stage_markers::boot_path_markers(&repo).unwrap();
+    assert!(markers.iter().any(|m| m == "arm-only-marker"));
+    assert!(markers.iter().any(|m| m == "x86-only-marker"));
+    for (bad, message) in [
+        (definition.replace("\"gateArch\":\"x86_64\",", ""), "missing gateArch"),
+        (definition.replace("\"gateArch\":\"x86_64\"", "\"gateArch\":\"unknown\""), "unknown gateArch unknown"),
+    ] {
+        std::fs::write(&metal, bad).unwrap();
+        assert_eq!(stage_markers::boot_path_markers(&repo).unwrap_err(),
+            format!("docs/metal/boot-path.json: {message}"));
+    }
+    std::fs::write(&metal, definition.replace("Shared", "ARM only")).unwrap();
+    assert!(stage_markers::boot_path_markers(&repo).unwrap_err().contains("not in the x86_64 catalog"));
+    std::fs::write(&metal, definition.replace("metal-inline", &"x".repeat(129))).unwrap();
+    assert!(stage_markers::boot_path_markers(&repo).unwrap_err().contains("longer than 128 bytes"));
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+/// The console writer moves the ring a line at a time (`serial::queue_log_line`):
+/// `line_len` is the oldest line's length through its line end, across the
+/// ring's wrap, and the whole waiting length when no line end is waiting.
+#[test]
+fn line_len_is_the_oldest_lines_length_through_its_end() {
+    let mut ring = Box::new(LogRing::<RING>::new());
+    assert_eq!(ring.line_len(), 0);
+    let mut out = Vec::new();
+    // Push the ring's head near its end so the next lines wrap.
+    while ring.pushed() < (RING - 40) as u64 {
+        log(&mut ring, &mut out, &[], "x");
+        drain(&mut ring, &mut out);
+    }
+    log(&mut ring, &mut out, &[], "first line that wraps the ring's end");
+    log(&mut ring, &mut out, &[], "second");
+    assert_eq!(ring.line_len(), "first line that wraps the ring's end\n".len());
+    let mut first = vec![0u8; ring.line_len()];
+    assert_eq!(ring.pop(&mut first), first.len());
+    assert_eq!(first, b"first line that wraps the ring's end\n");
+    assert_eq!(ring.line_len(), "second\n".len());
+    let mut partial = [0u8; 3];
+    ring.pop(&mut partial);
+    assert_eq!(ring.line_len(), "ond\n".len());
+    let mut rest = [0u8; 3];
+    ring.pop(&mut rest);
+    assert_eq!(ring.line_len(), 1, "the line end alone");
 }

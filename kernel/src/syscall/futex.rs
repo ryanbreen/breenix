@@ -113,19 +113,13 @@ enum OwnerState {
 const PI_DYING_RECHECK_NS: u64 = 1_000_000;
 
 fn owner_state(tid: u64) -> OwnerState {
-    crate::task::scheduler::with_scheduler(|sched| match sched.get_thread(tid) {
+    match crate::task::scheduler::thread_fate(tid) {
         None => OwnerState::Gone,
-        Some(thread) if thread.sched.pi_exited => OwnerState::Gone,
-        Some(thread) if thread.state == ThreadState::Terminated => {
-            if sched.is_current_on_any_cpu(tid) {
-                OwnerState::Dying
-            } else {
-                OwnerState::Gone
-            }
-        }
-        Some(_) => OwnerState::Live,
-    })
-    .unwrap_or(OwnerState::Live)
+        Some((true, _, _)) => OwnerState::Gone,
+        Some((false, true, true)) => OwnerState::Dying,
+        Some((false, true, false)) => OwnerState::Gone,
+        Some((false, false, _)) => OwnerState::Live,
+    }
 }
 
 /// The highest-ranked of `waiters`, the earliest of those sharing that rank.
@@ -367,7 +361,7 @@ impl FutexTable {
             } else {
                 deadline.wake_ns()
             };
-            let published = crate::task::scheduler::with_scheduler(|sched| {
+            let published = crate::task::scheduler::with_current(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.realtime_sleep = realtime;
                 }
@@ -521,8 +515,36 @@ enum Prepared {
 /// taken under it.
 static FUTEX_QUEUES: Mutex<FutexTable> = Mutex::new(FutexTable::new());
 
+/// The futex table, locked with interrupts masked. Every futex operation on
+/// every CPU takes this one lock, so the reschedule IPIs of the wakes made
+/// under it are sent once it is released: a slow APIC write held every CPU
+/// entering a futex call.
 fn with_table<R>(f: impl FnOnce(&mut FutexTable) -> R) -> R {
-    crate::arch_without_interrupts(|| f(&mut FUTEX_QUEUES.lock()))
+    crate::arch_without_interrupts(|| {
+        crate::task::scheduler::with_resched_ipis_deferred(|| f(&mut lock_table()))
+    })
+}
+
+/// The futex table, waited for. x86_64: a CPU that waits dispatches nothing
+/// meanwhile, so past a few microseconds its peers take what is queued on it
+/// (`task::scheduler::LockSpin`).
+fn lock_table() -> spin::MutexGuard<'static, FutexTable> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if let Some(table) = FUTEX_QUEUES.try_lock() {
+            return table;
+        }
+        let mut spin = crate::task::scheduler::LockSpin::new();
+        loop {
+            if let Some(table) = FUTEX_QUEUES.try_lock() {
+                return table;
+            }
+            spin.tick();
+            core::hint::spin_loop();
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    FUTEX_QUEUES.lock()
 }
 
 fn monotonic_ns() -> u64 {
@@ -573,6 +595,18 @@ impl Deadline {
 /// keyed by its physical address unless the operation is private; the caller
 /// has touched the word, so its page is present.
 fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
+    // x86_64: a private word's key needs only the group, which the thread
+    // caches after its first lookup, so it is keyed without PROCESS_MANAGER: a
+    // CPU that stopped while it held that lock held every futex call up
+    // (#1650).
+    #[cfg(target_arch = "x86_64")]
+    if private {
+        let cached = crate::per_cpu::current_thread()
+            .map_or(0, |thread| thread.futex_group.load(core::sync::atomic::Ordering::Acquire));
+        if cached != 0 {
+            return Some((cached - 1, uaddr));
+        }
+    }
     let thread_id = crate::task::scheduler::current_thread_id()?;
     // A shared word's key translates through the caller's tables: a fork
     // copying them is waited for with the lock released (`memory::fork_copy`).
@@ -582,6 +616,12 @@ fn futex_key(uaddr: u64, private: bool) -> Option<FutexKey> {
         let (pid, process) = manager.find_process_by_thread(thread_id)?;
         process.address_space_lifetime.as_ref().map_or(pid.as_u64(), |owners| owners.id)
     };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(thread) = crate::per_cpu::current_thread().filter(|thread| thread.id == thread_id) {
+        thread
+            .futex_group
+            .store(group.wrapping_add(1), core::sync::atomic::Ordering::Release);
+    }
     if private {
         return Some((group, uaddr));
     }
@@ -733,7 +773,7 @@ fn futex_lock_pi(uaddr: u64, trylock: bool, deadline: Deadline, private: bool) -
                 }
             });
         }
-        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched.wake_expired_timers();
             sched
                 .current_thread_mut()
@@ -871,7 +911,7 @@ fn futex_wait_until(
             return Prepared::Expired;
         }
         table.enqueue(key, Waiter { tid: thread_id, bitset });
-        let published = crate::task::scheduler::with_scheduler(|sched| {
+        let published = crate::task::scheduler::with_current(|sched| {
             if let Some(thread) = sched.current_thread_mut() {
                 thread.realtime_sleep = realtime;
             }
@@ -906,7 +946,7 @@ fn futex_wait_until(
                 SyscallResult::Ok(0)
             };
         }
-        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched.wake_expired_timers();
             sched
                 .current_thread_mut()
@@ -925,7 +965,7 @@ fn futex_wait_until(
                     return Some(SyscallResult::Err(super::errno::ETIMEDOUT as u64));
                 }
                 // Not yet: wait again, to the deadline as it now stands.
-                let published = crate::task::scheduler::with_scheduler(|sched| {
+                let published = crate::task::scheduler::with_current(|sched| {
                     sched.block_current_for_io_with_timeout(deadline.wake_ns())
                 })
                 .unwrap_or(false);
@@ -1191,7 +1231,7 @@ fn futex_wait(
                 bitset: FUTEX_BITSET_MATCH_ANY,
             },
         );
-        let published = crate::task::scheduler::with_scheduler(|sched| {
+        let published = crate::task::scheduler::with_current(|sched| {
             sched.block_current_for_io_with_timeout(effective_wake_time_ns)
         })
         .unwrap_or(false);
@@ -1274,7 +1314,7 @@ fn futex_wait(
                 }
 
                 let (still_waiting, pop_observation) =
-                    crate::task::scheduler::with_scheduler(|sched| {
+                    crate::task::scheduler::with_current(|sched| {
                         sched.wake_expired_timers();
                         sched
                             .current_thread_mut()

@@ -152,6 +152,9 @@ pub mod draw_op {
     pub const WAIT_STRESS_WAKE: u32 = 29;
     /// F32c waitqueue stress stats.
     pub const WAIT_STRESS_STATS: u32 = 30;
+    /// Read a hardware framebuffer pixel (production x86_64 only).
+    #[cfg(target_arch = "x86_64")]
+    pub const READ_PIXEL: u32 = 32;
 }
 
 /// Ball descriptor for VirGL GPU rendering.
@@ -344,6 +347,23 @@ pub fn fb_mmap_pane() -> Result<(*mut u8, u64), Error> {
         width = fbinfo()?.left_pane_width();
     }
     Ok((ptr, width))
+}
+
+/// Read a hardware framebuffer pixel as 0x00RRGGBB (production x86_64 only).
+/// The caller must have effective UID 0, own the display, and have a whole-screen mapped pane.
+/// This reads the device framebuffer, not the caller's mapped drawing buffer.
+#[cfg(target_arch = "x86_64")]
+pub fn fb_read_pixel(x: i32, y: i32) -> Result<u32, Error> {
+    let cmd = FbDrawCmd {
+        op: draw_op::READ_PIXEL,
+        p1: x,
+        p2: y,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    Ok(Error::from_syscall(ret)? as u32)
 }
 
 /// Flush the framebuffer (sync double buffer to screen)

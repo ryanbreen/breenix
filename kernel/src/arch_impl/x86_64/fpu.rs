@@ -154,6 +154,18 @@ static OWNER: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(NO_OWNER) }; MAX_C
 ///
 /// Runs under the scheduler lock, with interrupts masked.
 pub fn hand_over(sched: &mut Scheduler, outgoing: Option<u64>, incoming: u64) {
+    hand_over_with(outgoing, incoming, |tid| {
+        sched.get_thread_mut(tid).map(|thread| thread as *mut crate::task::thread::Thread)
+    });
+}
+
+/// `hand_over`, finding the threads with `thread`, which returns a thread the
+/// caller's lock lets it write, or None.
+pub fn hand_over_with(
+    outgoing: Option<u64>,
+    incoming: u64,
+    mut thread: impl FnMut(u64) -> Option<*mut crate::task::thread::Thread>,
+) {
     let cpu = crate::per_cpu::cpu_id();
     let owner = match OWNER[cpu].load(Ordering::Relaxed) {
         NO_OWNER => outgoing,
@@ -162,11 +174,14 @@ pub fn hand_over(sched: &mut Scheduler, outgoing: Option<u64>, incoming: u64) {
     if owner == Some(incoming) {
         return;
     }
-    if let Some(thread) = owner.and_then(|owner| sched.get_thread_mut(owner)) {
-        thread.fpu.save();
+    if let Some(holder) = owner.and_then(&mut thread) {
+        // SAFETY: the caller's lock covers the thread, and no other reference
+        // to it is live here.
+        unsafe { (*holder).fpu.save() };
     }
-    if let Some(thread) = sched.get_thread(incoming) {
-        thread.fpu.restore();
+    if let Some(incoming_thread) = thread(incoming) {
+        // SAFETY: as above.
+        unsafe { (*incoming_thread).fpu.restore() };
         OWNER[cpu].store(incoming, Ordering::Relaxed);
     }
 }
@@ -180,11 +195,8 @@ pub fn user_state(thread_id: u64) -> FpuState {
         if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
             return FpuState::capture();
         }
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.get_thread(thread_id).map(|thread| thread.fpu)
-        })
-        .flatten()
-        .unwrap_or(FpuState::initial())
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.fpu)
+            .unwrap_or(FpuState::initial())
     })
 }
 
@@ -196,11 +208,7 @@ pub fn set_user_state(thread_id: u64, state: &FpuState) {
             state.restore();
             return;
         }
-        crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.fpu = *state;
-            }
-        });
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.fpu = *state);
     })
 }
 

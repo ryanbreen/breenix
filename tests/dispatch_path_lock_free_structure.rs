@@ -152,13 +152,40 @@ fn switch_to_kernel_page_table_takes_no_lock() {
         .next()
         .expect("a closing brace for the x86 arm");
     assert!(
-        body.contains("master_kernel_pml4()"),
-        "the x86 arm reads the master PML4 through the accessor"
-    );
-    assert!(
         !body.contains(".lock()"),
         "switch_to_kernel_page_table runs with IF=0 in the dispatch path; it must take no lock:\n{body}"
     );
+    if body.contains("master_kernel_pml4()") {
+        return;
+    }
+
+    // The x86 arm delegates to the idle loop's helper; the lock-free read and
+    // the no-lock rule then bind on the helper and its root announcement.
+    assert!(
+        body.contains("tlb::load_kernel_root("),
+        "the x86 arm reads the master PML4 through the accessor, directly or via tlb::load_kernel_root:\n{body}"
+    );
+    let tlb = read("kernel/src/memory/tlb.rs");
+    let helper = function_body(&tlb, "load_kernel_root");
+    assert!(
+        helper.contains("master_kernel_pml4()"),
+        "load_kernel_root reads the master PML4 through the accessor:\n{helper}"
+    );
+    assert!(
+        !helper.contains("MASTER_KERNEL_PML4"),
+        "load_kernel_root must not lock the master PML4 cell itself:\n{helper}"
+    );
+    assert!(
+        helper.contains("shootdown::note_kernel_root_loaded("),
+        "load_kernel_root announces the root through note_kernel_root_loaded:\n{helper}"
+    );
+    let announce = function_body(&tlb, "note_kernel_root_loaded");
+    for callee in [&helper, &announce] {
+        assert!(
+            !callee.contains(".lock()"),
+            "the kernel-root switch runs with IF=0 in the dispatch path; it must take no lock:\n{callee}"
+        );
+    }
 }
 
 /// A DENYLIST, not a census: it names the allocating spellings this suite knows

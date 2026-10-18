@@ -41,10 +41,26 @@ fails instead of falling back to TCG. The Linux Docker launchers select TCG:
 Apple's Hypervisor framework is available only to native macOS processes.
 
 The shared accelerator wrapper runs `scripts/qemu-ui-launch.sh`'s launcher
-immediately before QEMU, so its vCPU threads retain the user-interactive QoS
-class. `BREENIX_QEMU_UI=0` selects the default host priority for diagnostics;
-it does not change the accelerator. The Mac boot slot still covers the full
-VM lifetime, and boots do not wait for host load to fall.
+immediately before QEMU. It clears inherited Darwin background mode, nice
+priority and latency/throughput tiers before requesting the existing
+user-interactive QoS class (thread priority 46). A lane's `taskpolicy -b`
+therefore applies to its builds, not its boot. The canonical gate also runs
+its Mac build subprocesses under `taskpolicy -b` by default.
+
+A spawn QoS clamp survives fork and exec. When the launcher cannot attain
+the boot priority, `qemu-unclamp.py` uses a temporary Interactive launchd job
+and application spawn policy to start an unclamped task. It transfers the
+original console descriptors and environment over a private Unix socket,
+returns the payload's exit status, and requests QEMU termination and job removal when
+the caller exits or dies. After supervisor SIGKILL, QEMU termination can take
+up to five seconds; job removal in that path is not asserted by the host test.
+Ordinary backgrounded launches still exec in place.
+Launcher build or priority-restoration failures stop the boot.
+`BREENIX_QEMU_UI=0` explicitly bypasses this policy for diagnostics; it does
+not change the accelerator. The Mac boot slot serializes supervised boots;
+the SIGKILL cleanup delay above can outlive the supervisor's slot lease.
+Boots start without waiting for host load to fall. Keep the VM window open on a Mac
+(`--display`); apply background policy to builds rather than an entire landing-gate command.
 
 Parallels VMs get the same class: `run.sh` creates each one with the system flag
 `vm.vcpuprio=6`, so `prl_vm_app` starts its vCPU threads at user-interactive QoS
@@ -72,7 +88,9 @@ instructions cannot be emulated by this QEMU version.
   from a boot-target file containing `probe` on a copy of the ext2 disk. These
   runners request Vigil mode `probe` ([vigil#2](https://github.com/ryanbreen/vigil/issues/2)
   tracks the constructor overriding it to `default`), wait for `PROBE DONE`, stop
-  the VM, and exit nonzero for a missing completion or `failed>0`.
+  the VM, and exit nonzero for a missing completion or `failed>0`. The x86-64
+  production kernel runs `/sbin/probe` for the same boot-target file (the x86-metal
+  storage boots use it; `docs/metal/README.md`, "The disks").
 - `shell`: the production kernel runs `/sbin/init shell`, a bsh prompt on the serial
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
@@ -149,19 +167,49 @@ it does not establish that VMware can reach an external network.
 ## Shared host slots
 
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
-provides two build leases and one boot lease. Run Inspector installs its current
+provides `x86-build` leases and one `x86-boot` lease. Run Inspector installs its current
 helper outside the tested checkout, including when testing an older revision.
 Historical gates hold both leases for their whole run. Launchers sourcing
 `docker/qemu/lib/qemu-host-lock.sh` also enroll in the host queue; on Linux they
 hold a build lease until boot admission. Mac builds remain unrestricted.
 
+The gate VM boots; it does not build. When the VM's private host file
+(`~/.config/breenix-gate/build-host.env`) names the x86 build container and the commit
+carries `scripts/x86-gate-build.py`, `scripts/gate-tree.py` runs the gate's build phase
+(`BREENIX_GATE_PHASE=build`) in that container over ssh, then the boot phase in the VM. Missing
+configuration or a commit without that builder fails before building; there is no VM build
+fallback. A direct `docker/qemu/run-x86-gate.sh N MODE` in a clean private clone of the VM's
+canonical repository hands the whole gate to `scripts/gate-tree.py` for the clone's commit,
+in one cached tree shared by direct calls, with a unique run directory beneath
+`BREENIX_GATE_TMP`. Before handoff, the target guard checks the private clone's local effort
+refs against the project's remote heads and forwards the checked commit stamp. A gate-cache
+tree asking for both phases comes from an older launcher and is refused. Each tree's `origin`
+is the canonical repository's own remote, so the boot's effort target guard reads the
+project's branches rather than the canonical cache's stale local ones. The container keeps its lane checkout leased until its outputs finish streaming. The
+container's cpuset is the boot host's shared CPUs, outside the cores reserved for the gate
+VM, at the lowest CPU priority and with its own memory limit. It checks the commit out at
+the same path as the VM's tree, because the launcher has absolute paths compiled in, and
+builds there exactly as the VM did: `scripts/gate-artifacts.py` publishes userspace only
+after its candidate and clean-verification builds compare byte-identical, in the
+container's own cache, which holds no metal entries. The launcher, the UEFI image it
+names, the disks and the ELFs come back to the VM's tree (holes kept), with the build's
+logs in the run's `gate-tmp/build-logs-container/` and its result, including the CPUs it
+ran on, in `gate-tmp/x86-build.json`. The kernel ELF stays in the container's tree. The
+container's `x86-build` leases are its own: their count is its CPUs over each build's 4
+Cargo jobs, bounded by its memory limit over 4 GiB a build (`build_slots` in
+`scripts/host-slots.py`), and no boot waits for them or freezes them. Two metal builds
+compiling on the shared cores through a whole time-suite boot left it at 92/92 (run
+`20261017T205020Z-x86_64-gate-4f09`). A commit without the build phase still builds in
+the VM, as below.
+
 A guest's vCPUs are host threads, and a guest charges the time a busy host leaves them
-unscheduled as running, so timing cases fail on a loaded host. An x86 boot therefore first
-holds every build lease (after builds queued before it, ahead of those queued after it),
-then its boot lease, and keeps both until it ends: no build runs in the gate VM during a
-boot. A boot request queues for both in one step, and a session holding a build lease
-(a historical gate) gives it up while it waits for all of them, so two boots never wait on
-each other.
+unscheduled as running, so timing cases fail on a loaded host. A build inside the gate VM
+shares the boot's vCPUs, so an x86 boot first holds every build lease in the VM (after
+builds queued before it, ahead of those queued after it), then its boot lease, and keeps
+both until it ends: no build runs in the gate VM during a boot. A boot request queues for
+both in one step, and a session holding a build lease (a historical gate) gives it up while
+it waits for all of them, so two boots never wait on each other. claim-lint:ok: the lease order is pinned in
+`tests/host_slots_test.py` (`test_boot_holds_every_build_lease_until_it_ends`, `test_two_sessions_holding_build_leases_both_take_the_boot`).
 
 Every launcher calls `host_slot_quiet`, with the manifests of the suites it runs, just
 before it starts its VM: `scripts/boot-interactive.sh`, each VM path of `run.sh`, and
@@ -181,6 +229,13 @@ acquisition, at the VM's start, at the verdict (the serial's first `SUITE <id> D
 ones) and at release, and whether a quiet host was required and found. On Linux it also
 carries the vCPU gap at the start and the steal time from the start to the verdict: the
 physical host's contention as the gate VM saw it.
+
+Each x86 gate boot also keeps `host-stall.jsonl` beside its serials, written by
+`scripts/x86-gate-host-stall-sampler.py` while the boot runs, sampled at a 20 ms period: the guest's TSC
+(this host's TSC plus KVM's offset for the guest), each gate VM CPU's steal, and each of the
+guest's vCPU threads' run delay, run time, host CPU and state. The guest cannot write it.
+`scripts/score-sigkill-teardown.py` reads it to decide whether a SIGKILL kick window the
+guest calls starved was starved by the host.
 
 Use `scripts/boot-interactive.sh` or `run.sh` for a Mac boot. The shared helper
 queues QEMU, Parallels and VMware behind one Mac lease. VM deployment and the
@@ -307,6 +362,15 @@ scripts/boot-interactive.sh --mode program --program /usr/local/test/bin/argv_te
 until grep -q ' DONE ' "$log" 2>/dev/null; do sleep 2; done
 scripts/qmp-screendump.py "$TMPDIR/breenix.qmp" "$TMPDIR/screen.png"
 ```
+
+## Stub milestones
+
+A milestone with `"stub": true` is a definition under construction, not a completion claim: its stage
+lists are proposals that no kernel prints yet, so no boot passes it. The lane that produces its markers
+lands the exact strings with its code and the stage catalog, and removes the flag. `boot-logo` is one: the
+console effort's splash (`docs/console/contract.md`, section 7), finalized by its splash lane. Because a
+mode list replaces the architecture list, its `shell` and `default` lists repeat its four kernel stages
+before the hand-over stage, and each names the one hand-over reason that mode must reach.
 
 ## Focus and backtracking
 

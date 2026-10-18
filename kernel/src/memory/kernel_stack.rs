@@ -564,6 +564,79 @@ impl Drop for KernelStack {
     }
 }
 
+/// Pages of an x86 kernel stack, its guard page excluded.
+#[cfg(target_arch = "x86_64")]
+const STACK_PAGES: usize = (KERNEL_STACK_SIZE / 4096) as usize;
+
+/// x86_64: free `stacks` together, each as dropping it alone would, with one
+/// flush of the kernel's translations for the batch instead of one per stack.
+/// That flush, an NMI round to each other CPU, is most of what
+/// freeing a stack costs: the reclaim of terminated threads, which paid it
+/// for each thread, freed about 150 a second on the x86 gate, and a process
+/// creating threads faster ran out of thread slots (#1712). The order is
+/// `drop`'s: a stack a CPU may still be on is refused before anything is
+/// unmapped, the pages are unmapped before the flush, and frames and slots go
+/// back only after it. Without memory for the list of frames, the stacks are
+/// dropped one at a time.
+#[cfg(target_arch = "x86_64")]
+pub fn release_batch(stacks: alloc::vec::Vec<KernelStack>) {
+    let mut frames = alloc::vec::Vec::new();
+    let mut unmapped = alloc::vec::Vec::new();
+    if frames.try_reserve_exact(stacks.len() * STACK_PAGES).is_err()
+        || unmapped.try_reserve_exact(stacks.len()).is_err()
+    {
+        drop(stacks);
+        return;
+    }
+    for stack in stacks {
+        // Released here, so its own drop must not run.
+        let stack = core::mem::ManuallyDrop::new(stack);
+        if is_kernel_stack_slot_live(stack.top.as_u64()) {
+            KSTACK_DROP_REFUSED_LIVE.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        let mut unmap_failed = false;
+        for i in 0..STACK_PAGES {
+            let virt_addr = stack.bottom + (i as u64 * 4096);
+            match unsafe { crate::memory::kernel_page_table::unmap_kernel_page(virt_addr) } {
+                Ok(Some(frame)) => frames.push(frame),
+                Ok(None) => {}
+                Err(_) => unmap_failed = true,
+            }
+        }
+        if unmap_failed {
+            log::trace!("Refusing to free kernel stack slot after unmap failure");
+        } else {
+            unmapped.push(stack);
+        }
+    }
+    if !frames.is_empty() {
+        crate::memory::tlb::flush_all();
+    }
+    for frame in frames {
+        deallocate_frame(frame);
+        KSTACK_FRAMES_RELEASED.fetch_add(1, Ordering::Relaxed);
+    }
+    for stack in unmapped {
+        stack.return_slot();
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl KernelStack {
+    /// Return the slot of a stack `release_batch` has unmapped and whose
+    /// frames it has released, as `drop` returns one.
+    fn return_slot(&self) {
+        #[cfg(feature = "boot_tests")]
+        cohort_note_return(self.index);
+        free_stack_slot(self.index);
+        KSTACK_SLOTS_FREED.fetch_add(1, Ordering::Relaxed);
+        if let Some(pid) = self.owner_pid {
+            crate::tracing::providers::teardown::record_kernel_stack_slot_return(pid);
+        }
+    }
+}
+
 /// Allocate a new kernel stack
 ///
 /// This allocates 8 KiB for the stack + 4 KiB guard page.

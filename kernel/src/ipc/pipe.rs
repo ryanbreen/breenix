@@ -214,9 +214,7 @@ impl PipeBuffer {
     /// Wake all threads waiting to read from this pipe
     fn wake_read_waiters(&mut self) {
         for tid in self.read_waiters.drain(..) {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(tid);
-            });
+            crate::task::scheduler::unblock_thread(tid);
         }
     }
 

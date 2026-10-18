@@ -191,7 +191,7 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)` or `.defer_display()`, with no attributes inside it"
     )
 }
 
@@ -281,7 +281,10 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
     }
     let mut expr = &*table.expr;
     while let syn::Expr::MethodCall(method) = expr {
-        if method.method != "case_limit_ms" || method.args.len() != 1 || !method.attrs.is_empty() {
+        if !((method.method == "case_limit_ms" && method.args.len() == 1)
+            || (method.method == "defer_display" && method.args.is_empty()))
+            || !method.attrs.is_empty()
+        {
             return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
         }
         expr = &method.receiver;
@@ -587,7 +590,7 @@ fn the_table_main_runs_is_read() {
                 ),
             ]),
             category("two", "Second", &[ case("c", "Case c", c) ]),
-        ]).case_limit_ms(500);
+        ]).case_limit_ms(500).defer_display();
         static UNUSED: Suite = suite("other", "Other", &[category("x", "X", &[case("y", "Y", y)])]);
         fn not_a_case() { let _ = case("loose", "Loose", a); }
         fn main() { S.run() }
@@ -609,6 +612,7 @@ fn tables_that_could_differ_from_what_runs_are_refused() {
         r#"static S: Suite = suite("d", "D", CATEGORIES); fn main() { S.run() }"#,
         r#"static S: Suite = suite("d", "D", &[]); fn main() { if true { S.run() } }"#,
         r#"static S: Suite = suite("d", "D", &[]); fn main() {}"#,
+        r#"static S: Suite = suite("d", "D", &[]).defer_display(true); fn main() { S.run() }"#,
     ] {
         assert!(source_suite(source).is_err(), "{source}");
     }
@@ -741,6 +745,7 @@ fn effort_targets_are_known_and_ordered() {
     let mut guarded: Vec<&str> = line.split('\'').skip(1).step_by(2).collect();
     guarded.sort_unstable();
     let mut ours = TARGETS.to_vec();
+    ours.push("x86-metal");
     ours.sort_unstable();
     assert_eq!(guarded, ours, "the guard's TARGETS and this test's differ");
 
@@ -766,6 +771,7 @@ fn effort_target_lists_are_checked() {
         serde_json::json!({ "id": "a", "targets": "vmware" }),
         serde_json::json!({ "id": "a", "targets": ["qemu"] }),
         serde_json::json!({ "id": "a", "targets": ["x86-64"] }),
+        serde_json::json!({ "id": "a", "targets": ["x86-metal"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware", "parallels"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
@@ -773,5 +779,268 @@ fn effort_target_lists_are_checked() {
         serde_json::json!({ "id": "a", "targets": ["vmware"], "milestones": profiles }),
     ] {
         assert_eq!(check(bad.clone()).len(), 1, "{bad}");
+    }
+}
+
+fn read_definition(root: &Path, file: &str) -> Value {
+    serde_json::from_str(&fs::read_to_string(root.join(file)).unwrap()).unwrap()
+}
+
+/// Validate the independent stream without changing the main path's planned suite semantics.
+fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Value) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut ids = HashSet::new();
+    for path in [main, metal] {
+        for effort in path["efforts"].as_array().unwrap() {
+            let id = effort["id"].as_str().unwrap_or("");
+            if !is_id(id) || !ids.insert(id) {
+                errors.push(format!("duplicate or invalid effort id {id:?}"));
+            }
+        }
+    }
+    for (key, expected) in [("catalog", "xtask/src/boot_stages.rs"), ("gateArch", "x86_64"),
+                            ("bootProfile", "production"), ("scoring", "modes")] {
+        if boot[key].as_str() != Some(expected) {
+            errors.push(format!("metal boot path {key} must be {expected}"));
+        }
+    }
+    let modes = boot["modes"].as_object().unwrap();
+    let mut mode_names: Vec<&str> = modes.keys().map(String::as_str).collect();
+    mode_names.sort_unstable();
+    if mode_names != ["console", "default", "probe", "shell", "suite"] {
+        errors.push("metal modes must be console, default, probe, shell and suite".into());
+    }
+    let catalog = read_definition(root,
+        "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json");
+    let catalog_names: HashSet<&str> = catalog["stages"].as_array().unwrap().iter()
+        .map(|s| s["name"].as_str().unwrap()).collect();
+    let host_events = ["console-ready", "power-on", "firmware-text", "post", "image-complete", "handoff"];
+    let mut milestones = HashSet::new();
+    let mut stage_names = HashSet::new();
+    for milestone in boot["milestones"].as_array().unwrap() {
+        let id = milestone["id"].as_str().unwrap_or("");
+        if !is_id(id) || !milestones.insert(id) {
+            errors.push(format!("duplicate or invalid metal boot milestone {id:?}"));
+        }
+        if milestone.get("stub").is_some_and(|stub| stub != true) {
+            errors.push(format!("{id}: stub must be true or absent when finalized"));
+        }
+        let shapes = milestone["bootShapes"].as_array();
+        if !shapes.is_some_and(|shapes| !shapes.is_empty()
+            && shapes.iter().all(|shape| matches!(shape.as_str(), Some("ramdisk" | "install" | "disk-root")))
+            && shapes.iter().collect::<HashSet<_>>().len() == shapes.len()) {
+            errors.push(format!("{id}: bootShapes must name unique supported boot shapes"));
+        }
+        if let Some(boot_modes) = milestone.get("bootModes") {
+            if !boot_modes.as_array().is_some_and(|names| !names.is_empty()
+                && names.iter().all(|name| name.as_str().is_some_and(|name| modes.contains_key(name)))
+                && names.iter().collect::<HashSet<_>>().len() == names.len()) {
+                errors.push(format!("{id}: bootModes must name unique supported boot modes"));
+            }
+        }
+        let lists = milestone["stages"].as_object().unwrap();
+        if lists.is_empty() {
+            errors.push(format!("{id}: stages must not be empty, including stubs"));
+        }
+        if milestone["kernel"] == true && !lists.contains_key("x86_64") {
+            errors.push(format!("{id}: kernel milestone needs x86_64 stages"));
+        }
+        for (mode, stages) in lists {
+            if mode != "x86_64" && !modes.contains_key(mode) {
+                errors.push(format!("{id}: unknown metal stage mode {mode}"));
+            }
+            if mode == "x86_64" && milestone["kernel"] != true {
+                errors.push(format!("{id}: x86_64 stages need kernel=true"));
+            }
+            let Some(stages) = stages.as_array().filter(|s| !s.is_empty()) else {
+                errors.push(format!("{id}: stage list {mode} must not be empty"));
+                continue;
+            };
+            for stage in stages {
+                if let Some(name) = stage.as_str() {
+                    stage_names.insert(name);
+                    if !catalog_names.contains(name) {
+                        errors.push(format!("{id}: unknown x86 catalog stage {name}"));
+                    }
+                    continue;
+                }
+                let name = stage["name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    errors.push(format!("{id}: inline stage needs a name"));
+                }
+                stage_names.insert(name);
+                match (stage["marker"].as_str(), stage["host"].as_str()) {
+                    (Some(marker), None) if !marker.is_empty() => {
+                        if marker.split('|').any(|part| part.is_empty() || part.len() > 128) {
+                            errors.push(format!("{id}: invalid serial marker"));
+                        }
+                        if stage.get("match").is_some() && stage["match"] != "line" {
+                            errors.push(format!("{id}: unknown marker match rule"));
+                        }
+                    }
+                    (None, Some(host)) if host_events.contains(&host) => {}
+                    _ => errors.push(format!("{id}: stage needs one serial marker or known host event")),
+                }
+            }
+        }
+    }
+    for effort in metal["efforts"].as_array().unwrap() {
+        let id = effort["id"].as_str().unwrap_or("");
+        if !id.starts_with("metal-") || effort["targets"] != serde_json::json!(["x86-metal"]) {
+            errors.push(format!("{id}: metal effort requires metal- id and exactly x86-metal"));
+        }
+        let mut own_ids = HashSet::new();
+        for milestone in effort["milestones"].as_array().unwrap() {
+            let mid = milestone["id"].as_str().unwrap_or("");
+            if !is_id(mid) || !own_ids.insert(mid) {
+                errors.push(format!("{id}: duplicate or invalid milestone {mid}"));
+            }
+            let measure = milestone["measure"].as_object().unwrap();
+            if let Some(boot_id) = measure.get("bootPath").and_then(Value::as_str) {
+                if measure.len() != 1 || !milestones.contains(boot_id) {
+                    errors.push(format!("{id}/{mid}: unknown or mixed bootPath measure"));
+                }
+            } else if let Some(suite) = measure.get("suite").and_then(Value::as_str) {
+                let file = root.join(format!("docs/suites/{suite}.json"));
+                if !is_id(suite) || !file.is_file() {
+                    errors.push(format!("{id}/{mid}: unknown suite {suite}"));
+                    continue;
+                }
+                let manifest: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+                let known: HashSet<&str> = manifest["categories"].as_array().unwrap().iter()
+                    .map(|c| c["id"].as_str().unwrap()).collect();
+                let categories = measure.get("categories").and_then(Value::as_array);
+                let mut seen = HashSet::new();
+                if measure.len() != 2 || categories.is_none_or(|c| c.is_empty()) {
+                    errors.push(format!("{id}/{mid}: suite needs categories"));
+                }
+                for category in categories.into_iter().flatten() {
+                    let category = category.as_str().unwrap_or("");
+                    if !known.contains(category) || !seen.insert(category) {
+                        errors.push(format!("{id}/{mid}: unknown or repeated suite category {category}"));
+                    }
+                }
+            } else {
+                errors.push(format!("{id}/{mid}: unsupported metal measure"));
+            }
+        }
+    }
+    let mut first_ids = HashSet::new();
+    for first in boot["firsts"].as_array().unwrap() {
+        let id = first["id"].as_str().unwrap_or("");
+        if !is_id(id) || !first_ids.insert(id) ||
+            !stage_names.contains(first["stage"].as_str().unwrap_or("")) {
+            errors.push(format!("{id}: invalid first or unknown stage"));
+        }
+        if let Some(suite) = first.get("suite").and_then(Value::as_str) {
+            if !is_id(suite) || !root.join(format!("docs/suites/{suite}.json")).is_file() {
+                errors.push(format!("{id}: unknown first suite"));
+            }
+        }
+    }
+    errors
+}
+
+#[test]
+fn metal_stream_is_independent_and_resolves_its_measures() {
+    let root = repo_root();
+    let main = read_definition(&root, "docs/efforts/path.json");
+    let metal = read_definition(&root, "docs/efforts/metal.json");
+    let boot = read_definition(&root, "docs/metal/boot-path.json");
+    let errors = metal_definition_errors(&root, &main, &metal, &boot);
+    assert!(errors.is_empty(), "metal definitions:\n{}", errors.join("\n"));
+    assert_eq!(metal["efforts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap())
+        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage", "metal-console"]);
+    assert_eq!(boot["milestones"][0]["id"], "delivery");
+    assert_eq!(boot["milestones"][1]["id"], "first-light");
+    assert!(boot["milestones"][0].get("stub").is_none());
+    assert!(boot["milestones"][1].get("stub").is_none());
+    let milestone = |id: &str| boot["milestones"].as_array().unwrap().iter()
+        .find(|m| m["id"] == id).unwrap();
+    assert_eq!(milestone("smp")["stages"]["x86_64"][1]["marker"], "[smp] online=4 reported=4");
+    assert_eq!(boot["firsts"][2]["stage"], "Four CPUs online and reported");
+    assert_eq!(milestone("ramdisk-root")["stages"]["x86_64"].as_array().unwrap().len(), 3);
+    for id in ["sata-ahci", "disk-io", "disk-filesystem"] {
+        assert!(metal["efforts"][3]["milestones"].as_array().unwrap().iter()
+            .any(|m| m["measure"]["bootPath"] == id));
+        assert!(!milestone(id)["stages"]["probe"].as_array().unwrap().is_empty());
+    }
+    let suite_markers: HashSet<&str> = milestone("suite-finished")["stages"]["suite"][0]["marker"]
+        .as_str().unwrap().split('|').collect();
+    let expected_markers: HashSet<String> = fs::read_dir(root.join("docs/suites")).unwrap()
+        .map(Result::unwrap).map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .map(|path| {
+            let manifest: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            format!("SUITE {} DONE", manifest["id"].as_str().unwrap())
+        }).collect();
+    assert_eq!(suite_markers, expected_markers.iter().map(String::as_str).collect());
+    assert_eq!(boot["firsts"][7]["suite"], "networking");
+    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["stage"], "Logged-in computation answered");
+    for id in ["fb-console", "xhci", "usb-keyboard", "console-login"] {
+        assert!(metal["efforts"][4]["milestones"].as_array().unwrap().iter()
+            .any(|m| m["measure"]["bootPath"] == id));
+        assert_eq!(milestone(id)["bootShapes"], serde_json::json!(["ramdisk", "install", "disk-root"]));
+    }
+    assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
+        .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
+        ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
+    assert_eq!(boot["fatal"], serde_json::json!([
+        "panicked at kernel/src/", "!!! SOFT LOCKUP DETECTED !!!"]));
+}
+
+#[test]
+fn metal_definition_contract_rejects_invalid_inputs() {
+    let root = repo_root();
+    let main = read_definition(&root, "docs/efforts/path.json");
+    let metal = read_definition(&root, "docs/efforts/metal.json");
+    let boot = read_definition(&root, "docs/metal/boot-path.json");
+    for (pointer, value) in [
+        ("/efforts/0/id", main["efforts"][0]["id"].clone()),
+        ("/efforts/0/targets", serde_json::json!(["x86-metal", "x86"])),
+        ("/efforts/0/targets", Value::Null),
+        ("/efforts/0/milestones/0/measure/bootPath", serde_json::json!("missing")),
+        ("/efforts/1/milestones/3/measure/suite", serde_json::json!("missing")),
+        ("/efforts/1/milestones/3/measure/categories", serde_json::json!(["missing"])),
+    ] {
+        let mut bad = metal.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(!metal_definition_errors(&root, &main, &bad, &boot).is_empty(), "{pointer}");
+    }
+    for value in [
+        serde_json::json!([]),
+        serde_json::json!(["sutie"]),
+        serde_json::json!(["shell", "shell"]),
+        serde_json::json!("shell"),
+        serde_json::json!([null]),
+    ] {
+        let mut bad = boot.clone();
+        bad["milestones"][0]["bootModes"] = value;
+        assert!(metal_definition_errors(&root, &main, &metal, &bad)
+            .iter().any(|error| error.contains("bootModes")));
+    }
+    let mut finalized = boot.clone();
+    for milestone in finalized["milestones"].as_array_mut().unwrap() {
+        milestone.as_object_mut().unwrap().remove("stub");
+    }
+    assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
+    for (pointer, value) in [
+        ("/milestones/0/bootShapes", serde_json::json!(["unknown"])),
+        ("/milestones/0", {
+            let mut invalid = boot["milestones"][0].clone();
+            invalid["stub"] = serde_json::json!("true");
+            invalid
+        }),
+        ("/scoring", serde_json::json!("arch")),
+        ("/gateArch", serde_json::json!("aarch64")),
+        ("/milestones/0/stages/x86_64/0/host", serde_json::json!("missing")),
+        ("/milestones/1/stages/x86_64/0", serde_json::json!("ARM64 kernel starting")),
+        ("/milestones/1/stages", serde_json::json!({"desktop": ["Kernel entry point"]})),
+        ("/milestones/2/stages", serde_json::json!({})),
+        ("/firsts/0/stage", serde_json::json!("missing")),
+    ] {
+        let mut bad = boot.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(!metal_definition_errors(&root, &main, &metal, &bad).is_empty(), "{pointer}");
     }
 }

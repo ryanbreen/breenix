@@ -37,7 +37,6 @@ pub use types::*;
 
 pub mod argv;
 pub mod audio;
-#[cfg(feature = "std")]
 pub mod crypto;
 pub mod dns;
 pub mod errno;

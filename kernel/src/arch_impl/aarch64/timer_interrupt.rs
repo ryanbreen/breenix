@@ -499,6 +499,7 @@ fn arm_timer(ticks: u64) {
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
     }
+    super::irq_mask_account::armed(ticks);
 }
 
 #[inline(always)]
@@ -695,6 +696,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
+        super::irq_mask_account::armed(ticks);
     } else {
         arm_timer(ticks);
     }
@@ -1197,6 +1199,7 @@ pub fn rearm_timer() {
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
+        super::irq_mask_account::armed(ticks);
     } else {
         arm_timer(ticks);
     }

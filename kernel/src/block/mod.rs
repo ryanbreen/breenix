@@ -7,14 +7,124 @@
 use core::fmt;
 
 #[cfg(target_arch = "x86_64")]
+mod read_only;
+
+#[cfg(target_arch = "x86_64")]
+pub mod install;
+#[cfg(target_arch = "x86_64")]
 pub mod nvme;
+#[cfg(target_arch = "x86_64")]
+pub mod ramdisk;
 pub mod virtio;
 
-/// Enumerate usable x86 disks in backend order: VirtIO block devices, AHCI
-/// SATA disks, then NVMe namespaces. Consumers identify disk contents,
-/// rather than relying on PCI slots or a fixed index shared across transports.
+mod write_policy;
+pub use write_policy::{hardware_read_only, hardware_disk_read_only, HardwareDisk};
 #[cfg(target_arch = "x86_64")]
-pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
+pub use write_policy::init_hardware_policy;
+#[cfg(target_arch = "x86_64")]
+use write_policy::hardware_writes;
+
+/// Whether this boot's root is the installed hardware disk (`install`).
+#[cfg(target_arch = "x86_64")]
+static ROOT_ON_INSTALLED_DISK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Prefer a supplied bootloader RAM disk; refuse hardware root fallback on physical x86 (issue #1702),
+/// except for the one disk the storage lane installed a root on.
+#[cfg(target_arch = "x86_64")]
+pub fn root_devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
+    if let Some(device) = ramdisk::device() {
+        alloc::vec![device]
+    } else if hardware_read_only() {
+        installed_root().into_iter().collect()
+    } else {
+        devices()
+    }
+}
+
+/// Whether root was taken from the installed hardware disk.
+#[cfg(target_arch = "x86_64")]
+pub fn root_on_installed_disk() -> bool {
+    ROOT_ON_INSTALLED_DISK.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// On a physical boot without a RAM disk, the one hardware disk holding a root
+/// record, with writes granted for it.
+#[cfg(target_arch = "x86_64")]
+fn installed_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
+    let (disk, record) = match install::find_root(discovered()) {
+        Ok(found) => found,
+        Err(why) => {
+            log::info!("[storage] no installed root: {}", why);
+            return None;
+        }
+    };
+    let install::Record::Root { boot, bytes, sha256 } = record else { return None };
+    log::info!(
+        "[storage] root record: installed by boot {}, {} bytes, sha256 {}",
+        boot,
+        bytes,
+        install::hex(&sha256)
+    );
+    match install::matches(&*disk, bytes, &sha256) {
+        Ok(true) => log::info!("[storage] root image matches its install record"),
+        Ok(false) => log::info!("[storage] root image differs from its install record: written since"),
+        Err(why) => log::warn!("[storage] root image unreadable: {}", why),
+    }
+    hardware_writes(disk.hardware_disk()?, true);
+    log::info!("[block] hardware disk writes granted: the root the storage lane installed");
+    ROOT_ON_INSTALLED_DISK.store(true, core::sync::atomic::Ordering::Release);
+    Some(disk)
+}
+
+/// Before root mounts: when the RAM disk's first sector asks for an install,
+/// copy the RAM disk onto the machine's only hardware disk, read it back, and
+/// return the disks to read-only.
+#[cfg(target_arch = "x86_64")]
+pub fn install_requested_root() {
+    let Some(ram) = ramdisk::device() else { return };
+    let mut first = [0u8; install::SECTOR];
+    if ram.read_block(0, &mut first).is_err() {
+        return;
+    }
+    let Some(install::Record::Install { boot }) = install::Record::parse(&first) else { return };
+    let disks = discovered();
+    if disks.len() != 1 {
+        log::warn!("[storage] install refused: {} hardware disks, expected exactly one", disks.len());
+        return;
+    }
+    let Some(target) = disks[0].hardware_disk() else {
+        log::warn!("[storage] install refused: disk has no hardware identity");
+        return;
+    };
+    let bytes = ram.num_blocks() * install::SECTOR as u64;
+    log::info!("[storage] install requested by boot {}: {} bytes onto the hardware disk", boot, bytes);
+    let started = crate::time::get_monotonic_time();
+    let result = install::install(&*ram, &*disks[0], &boot, &mut |granted| {
+        hardware_writes(target, granted)
+    });
+    let elapsed = crate::time::get_monotonic_time().saturating_sub(started);
+    match result {
+        Ok(done) => {
+            log::info!("[storage] wrote {} bytes to the hardware disk from LBA 0", done.bytes);
+            match done.verified {
+                Ok(()) => log::info!(
+                    "[storage] read back identical: {} bytes, sha256 after the record sector {} ({} ms)",
+                    done.bytes,
+                    install::hex(&done.sha256),
+                    elapsed
+                ),
+                Err(why) => log::warn!("[storage] read back failed: {} bytes, {}", done.bytes, why),
+            }
+        }
+        Err(why) => log::warn!("[storage] install failed: {}", why),
+    }
+}
+
+/// The x86 disks the drivers attached, in backend order: VirtIO block
+/// devices, AHCI SATA disks, then NVMe namespaces, without the physical-boot
+/// write barrier.
+#[cfg(target_arch = "x86_64")]
+fn discovered() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
     let mut devices: alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> = alloc::vec::Vec::new();
     let mut index = 0;
     while let Some(device) = virtio::VirtioBlockWrapper::new(index) {
@@ -32,6 +142,19 @@ pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
         }
     }
     devices
+}
+
+/// Enumerate usable x86 disks in backend order: VirtIO block devices, AHCI
+/// SATA disks, then NVMe namespaces. Consumers identify disk contents,
+/// rather than relying on PCI slots or a fixed index shared across transports.
+#[cfg(target_arch = "x86_64")]
+pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
+    let devices = discovered();
+    if hardware_read_only() {
+        devices.into_iter().map(read_only::device).collect()
+    } else {
+        devices
+    }
 }
 
 /// The x86-64 disk at `index` in `devices()` order.
@@ -54,6 +177,9 @@ pub fn disk(index: usize) -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 #[allow(dead_code)] // Part of public block device API, will be used by ext2 filesystem
 pub trait BlockDevice: Send + Sync {
+    /// Hardware backend used for a device-specific write grant.
+    fn hardware_disk(&self) -> Option<HardwareDisk> { None }
+
     /// Stable allocation-quarantine identity, retained by operation-local wrappers.
     fn identity(&self) -> usize { self as *const Self as *const () as usize }
 

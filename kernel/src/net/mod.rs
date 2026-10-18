@@ -10,6 +10,8 @@ extern crate alloc;
 
 pub mod arp;
 pub mod dhcp;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dns_probe;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
@@ -88,6 +90,7 @@ pub(crate) fn net_lock_guard() -> NetLockGuard {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #2", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         NetLockGuard {
             saved_daif,
             _not_send_or_sync: PhantomData,
@@ -111,6 +114,7 @@ impl Drop for NetLockGuard {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,
@@ -145,7 +149,7 @@ macro_rules! net_log {
 fn get_mac_address() -> Option<[u8; 6]> {
     #[cfg(target_arch = "x86_64")]
     {
-        e1000::mac_address()
+        crate::drivers::bcm5720::mac_address().or_else(e1000::mac_address)
             .or_else(crate::drivers::virtio::net_legacy::mac_address)
             .or_else(crate::drivers::rtl8139::mac_address)
     }
@@ -162,6 +166,9 @@ fn get_mac_address() -> Option<[u8; 6]> {
 fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {
+        if crate::drivers::bcm5720::is_initialized() {
+            return crate::drivers::bcm5720::transmit(data);
+        }
         if crate::drivers::virtio::net_legacy::is_initialized() {
             return crate::drivers::virtio::net_legacy::transmit(data);
         }
@@ -810,6 +817,8 @@ pub fn register_net_softirq() {
 /// Initialize the network stack
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
+    DHCP_POLICY.store(!crate::drivers::fw_cfg::present(), core::sync::atomic::Ordering::Release);
+
     // Register NET_RX softirq handler FIRST - before any network operations
     // This ensures the handler is ready before e1000 can raise the softirq
     register_net_softirq();
@@ -872,6 +881,13 @@ pub fn init() {
 
 /// Common initialization logic for both architectures
 fn init_common() {
+    #[cfg(target_arch = "x86_64")]
+    if uses_dhcp() {
+        dhcp::require_configuration();
+        arp::init();
+        net_log!("Network stack initialized; awaiting DHCP after carrier");
+        return;
+    }
     let mac_available = get_mac_address().is_some();
 
     if !mac_available {
@@ -1027,12 +1043,20 @@ fn configure_from_dhcp() -> Option<[u8; 4]> {
     Some(lease.gateway)
 }
 
-/// Get the current network configuration.
-/// Uses bottom-half exclusion on x86_64 and IRQ masking on aarch64 to prevent
-/// same-CPU re-entry from the network softirq.
-pub fn config() -> NetConfig {
+#[cfg(target_arch = "x86_64")]
+static DHCP_POLICY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Physical x86 and bridged VMware obtain their addressing from DHCP.
+pub fn uses_dhcp() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    { DHCP_POLICY.load(core::sync::atomic::Ordering::Acquire) }
     #[cfg(target_arch = "aarch64")]
-    if active_tx_driver_is_e1000() {
+    { active_tx_driver_is_e1000() }
+}
+
+/// Current configuration; DHCP interfaces lose their address at lease expiry.
+pub fn config() -> NetConfig {
+    if uses_dhcp() {
         return dhcp::lease().map(|lease| NetConfig {
             ip_addr: lease.ip_addr, subnet_mask: lease.subnet_mask, gateway: lease.gateway,
         }).unwrap_or(VMWARE_CONFIG);
@@ -1085,6 +1109,9 @@ static X86_RX_REQUESTED: core::sync::atomic::AtomicBool =
 /// The next frame from whichever controller is attached, copied into `buffer`.
 #[cfg(target_arch = "x86_64")]
 fn x86_receive(buffer: &mut [u8]) -> Option<usize> {
+    if crate::drivers::bcm5720::is_initialized() {
+        return crate::drivers::bcm5720::receive(buffer);
+    }
     if crate::drivers::virtio::net_legacy::is_initialized() {
         return crate::drivers::virtio::net_legacy::receive(buffer);
     }
@@ -1282,6 +1309,16 @@ fn process_packet(data: &[u8]) {
             }
             ethernet::ETHERTYPE_IPV4 => {
                 if let Some(ip_packet) = ipv4::Ipv4Packet::parse(frame.payload) {
+                    #[cfg(target_arch = "x86_64")]
+                    if ip_packet.protocol == ipv4::PROTOCOL_UDP && ip_packet.dst_ip == config().ip_addr
+                        && ip_packet.flags_fragment & 0x3fff == 0
+                        && ipv4::internet_checksum(ip_packet.header) == 0 {
+                        if let Some((header, payload)) = udp::UdpHeader::parse(ip_packet.payload) {
+                            if (header.checksum == 0 || udp::udp_checksum(ip_packet.src_ip, ip_packet.dst_ip,
+                                &ip_packet.payload[..header.length as usize]) == 0)
+                                && dns_probe::receive(&ip_packet, &header, payload) { return; }
+                        }
+                    }
                     ipv4::handle_ipv4(&frame, &ip_packet);
                 }
             }
@@ -1302,8 +1339,7 @@ pub fn send_ethernet(
     if ethertype == ethernet::ETHERTYPE_IPV4 && ipv4::Ipv4Packet::parse(payload).is_none() {
         return Err("Invalid IPv4 packet");
     }
-    #[cfg(target_arch = "aarch64")]
-    if active_tx_driver_is_e1000() && ethertype == ethernet::ETHERTYPE_IPV4 {
+    if uses_dhcp() && ethertype == ethernet::ETHERTYPE_IPV4 {
         let ip = ipv4::Ipv4Packet::parse(payload).ok_or("Invalid IPv4 packet")?;
         // Queued packets and established sockets cannot retain an expired or
         // replaced source address. Discovery/DECLINE alone use 0.0.0.0.

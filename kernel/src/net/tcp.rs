@@ -347,16 +347,14 @@ fn tcp_timer_thread() {
         crate::net::drain_loopback_queue();
 
         crate::arch_without_interrupts(|| {
-            crate::task::scheduler::with_scheduler(|sched| match next {
+            crate::task::scheduler::with_current(|sched| match next {
                 Some(deadline) => {
                     sched.block_current_for_timer(deadline.saturating_mul(1_000_000))
                 }
                 None => sched.block_current(),
             });
             if TIMER_KICK.load(Ordering::Acquire) {
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(tid);
-                });
+                crate::task::scheduler::unblock_thread(tid);
             }
         });
         // A halting waiter keeps its CPU until it yields: yield before halting.
@@ -2694,7 +2692,7 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
             }
 
             // Block until the softirq handler wakes us on state change.
-            crate::task::scheduler::with_scheduler(|sched| {
+            crate::task::scheduler::with_current(|sched| {
                 sched.block_current_for_io();
             });
             crate::task::scheduler::yield_current();

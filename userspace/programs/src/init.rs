@@ -102,6 +102,7 @@ fn main() {
     // full boot below.
     match std::env::args().nth(1).as_deref() {
         Some("shell") => run_shell_mode(),
+        Some("console") => run_console_mode(),
         Some("desktop") => run_desktop_mode(),
         _ => {}
     }
@@ -223,6 +224,32 @@ fn run_shell_mode() -> ! {
             }
         }
         // A shell that dies at once must not turn this loop into a spin.
+        sleep_one_second();
+    }
+}
+
+/// Release init's terminal before starting an independent login session.
+fn run_console_mode() -> ! {
+    use libbreenix::signal::{self, Sigaction};
+    extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
+    let ignored = Sigaction { handler: signal::SIG_IGN, ..Sigaction::default() };
+    if let Err(e) = signal::sigaction(signal::SIGHUP, Some(&ignored), None) {
+        print!("[init] console detach failed: {}\n", e);
+        reap_forever();
+    }
+    if unsafe { ioctl(0, 0x5422, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() != Some(25) {
+        print!("[init] console detach failed\n");
+        reap_forever();
+    }
+    loop {
+        print!("[init] getty on the console\n");
+        match spawn(b"/bin/getty\0") {
+            Ok(child) => {
+                while reap_one() != Some(child.raw() as i32) {}
+                print!("[init] console session ended; restarting getty\n");
+            }
+            Err(e) => print!("[init] Failed to start getty: {}\n", e),
+        }
         sleep_one_second();
     }
 }
@@ -736,14 +763,19 @@ fn run_bssh_pubkey_oracle() {
     }
     let right = arm(b"--publickey\0");
     let wrong = arm(b"--publickey-wrong\0");
-    if right == 0 && wrong == 77 {
-        print!("[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]\n");
+    let marker = if right == 0 && wrong == 77 {
+        "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]".to_string()
     } else {
-        print!(
-            "[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]\n",
-            right, wrong
-        );
-    }
+        format!("[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]", right, wrong)
+    };
+    // The refused arm leaves bsshd reporting its handshake failure, which can
+    // reach the console as a partial line. Flush init's own output, then
+    // write the marker in one write that starts and ends a line, so it is a
+    // whole line whatever bsshd has written so far (#1849).
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.flush();
+    let _ = libbreenix::io::write(libbreenix::types::Fd::STDOUT, format!("\n{}\n", marker).as_bytes());
 }
 
 fn start_bsshd() {

@@ -228,74 +228,113 @@ impl ForkCopy {
     }
 }
 
+/// The error an exec commit returns while another thread of its process still
+/// runs (`ProcessManager::exec_blocked_by_group`). The exec system calls end
+/// those threads and wait for them before they commit
+/// (`syscall::exec::end_other_threads`), and on this error they wait again.
+pub(crate) const EXEC_GROUP_RUNNING: &str = "exec waits for the other threads of its process";
+
 impl ProcessManager {
-    /// Arch-neutral: walks only `Process`/`Thread` fields shared by both
-    /// architectures. Used by both arches' exec functions to refuse an exec
-    /// that would retire an address-space root a live `CLONE_VM` sibling
-    /// still holds (#721 B2 generalizes this off its original aarch64-only
-    /// gate — the body never referenced anything arch-specific).
-    fn find_live_clone_vm_sibling_holding_cr3(
-        &self,
-        pid: ProcessId,
-        old_cr3: u64,
-    ) -> Option<(ProcessId, u64)> {
-        self.live_clone_vm_siblings_holding_cr3(pid, old_cr3)?
-            .map(|(candidate_pid, candidate)| {
-                (candidate_pid, candidate.main_thread.as_ref().map_or(0, |thread| thread.id))
-            })
-            .next()
+    /// Whether an exec by `pid` must wait before it can run its new image as
+    /// the process (POSIX exec, S2): another row of its thread group has not
+    /// terminated, or `pid` is a thread of another row's process and that
+    /// row, the leader's, still holds resources it has not given back
+    /// (`Process::is_retired`); `exec_take_over_group` replaces the leader's
+    /// row only once its retirement has settled. A row that shares the
+    /// address space without sharing the thread group (CLONE_VM only, vfork)
+    /// does not make an exec wait: the exec gives the caller a new address
+    /// space and leaves the old one to the rows still on it.
+    pub(crate) fn exec_waits_for_group(&self, pid: ProcessId) -> bool {
+        let Some(row) = self.processes.live_row(&pid) else {
+            return false;
+        };
+        if self.group_has_other_live_rows(pid) {
+            return true;
+        }
+        row.is_non_leader_thread()
+            && row
+                .thread_group_id
+                .and_then(|group| self.processes.live_row(&ProcessId::new(group)))
+                .is_some_and(|leader| !leader.is_retired())
     }
 
-    /// The live `CLONE_VM` siblings of `pid` that hold its address-space
-    /// root `old_cr3`, which its exec would retire; `None` when exec retires
-    /// no root another row shares.
-    fn live_clone_vm_siblings_holding_cr3(
-        &self,
+    /// Whether an exec by `pid` cannot commit yet: another thread of its
+    /// process still runs (`exec_waits_for_group`), or `pid` has not taken
+    /// over its process's row (`exec_take_over_group`). The exec system calls
+    /// do both first (`syscall::exec::end_other_threads`); this keeps a
+    /// commit from retiring an address space another thread runs on.
+    fn exec_blocked_by_group(&self, pid: ProcessId) -> bool {
+        self.exec_waits_for_group(pid)
+            || self.processes.live_row(&pid).is_some_and(Process::is_non_leader_thread)
+    }
+
+    /// POSIX exec by a thread other than its process's first one (S2): the
+    /// process's other threads have ended (`exec_waits_for_group`), so the
+    /// calling row becomes the process. It takes the process ID (its thread
+    /// group's ID), the parent, the start time and the job-control report
+    /// from the leader's row, which leaves the table unreported, and its
+    /// children are told their parent's new ID. The thread keeps its thread
+    /// ID, signal mask and pending signals, as POSIX requires.
+    ///
+    /// Returns the process ID the row now has, and the leader's row for the
+    /// caller to drop once PROCESS_MANAGER is released (condition C8); the
+    /// caller then gives the thread's scheduler copy its new owner
+    /// (`scheduler::adopt_exec_owner`). When `pid` is not a thread of another
+    /// row's process, or that process still runs another thread, there is no
+    /// takeover and no row changes.
+    #[must_use]
+    pub(crate) fn exec_take_over_group(
+        &mut self,
         pid: ProcessId,
-        old_cr3: u64,
-    ) -> Option<impl Iterator<Item = (ProcessId, &Process)> + '_> {
-        let caller = self.processes.live_row(&pid)?;
-        // A non-thread CLONE_VM child borrows its parent's root. Exec gives
-        // it a new root without retiring the parent's table (vfork/spawn).
-        if caller.page_table.is_none() && caller.thread_group_id.is_none() {
+    ) -> Option<(ProcessId, Option<Process>)> {
+        let row = self.processes.live_row(&pid)?;
+        if !row.is_non_leader_thread() || self.exec_waits_for_group(pid) {
             return None;
         }
-        let owners = caller.address_space_lifetime.as_ref()?;
-        if alloc::sync::Arc::strong_count(owners) == 1 {
-            return None;
+        let leader = ProcessId::new(row.thread_group_id?);
+        // The leader's row has terminated and retired, so the reap completes
+        // the join and removes it. It credits no CPU time: the leader's
+        // account is the process's, which the calling row goes on charging.
+        let status = self
+            .processes
+            .live_row(&leader)
+            .map(|leader_row| leader_row.exit_code.unwrap_or(0));
+        let evicted = match status {
+            Some(status) => match self.reap_row(leader, leader, status) {
+                ReapOutcome::Claimed(evicted) => evicted,
+                ReapOutcome::Refused => return None,
+            },
+            None => None,
+        };
+        let mut row = self.processes.remove(&pid)?;
+        if let Some(leader_row) = evicted.as_ref() {
+            row.parent = leader_row.parent;
+            row.start_ms = leader_row.start_ms;
+            row.job.report = leader_row.job.report;
+            row.job.report_owed = leader_row.job.report_owed;
+            row.children.extend(leader_row.children.iter().copied());
         }
-        Some(self.processes.iter().filter_map(move |(&candidate_pid, candidate)| {
-            if candidate_pid == pid || candidate.is_terminated()
-                || candidate.main_thread.as_ref().is_some_and(|thread| {
-                    thread.state == crate::task::thread::ThreadState::Terminated
-                })
-                || candidate.cr3_value() != Some(old_cr3)
-                || !candidate.address_space_lifetime.as_ref()
-                    .is_some_and(|peer| alloc::sync::Arc::ptr_eq(owners, peer))
-            {
-                return None;
+        row.exec_owner_pending = true;
+        row.id = leader;
+        row.thread_group_id = None;
+        if let Some(thread) = row.main_thread.as_mut() {
+            thread.owner_pid = Some(leader.as_u64());
+        }
+        for child in &row.children {
+            if let Some(child_row) = self.processes.live_row_mut(child) {
+                child_row.parent = Some(leader);
             }
-            Some((candidate_pid, candidate))
-        }))
-    }
-
-    /// Whether an exec by `pid` should wait rather than refuse: the siblings
-    /// that would make it refuse (`find_live_clone_vm_sibling_holding_cr3`)
-    /// all exist, and every one of them has begun to exit. Such a thread may
-    /// already have cleared its clear_child_tid word, so a thread that joined
-    /// it can exec straight away; it leaves the address space shortly.
-    pub(crate) fn exec_waits_for_exiting_sibling(&self, pid: ProcessId) -> bool {
-        let Some(old_cr3) = self.processes.live_row(&pid).and_then(|row| row.cr3_value()) else {
-            return false;
-        };
-        let Some(mut siblings) = self.live_clone_vm_siblings_holding_cr3(pid, old_cr3) else {
-            return false;
-        };
-        let mut any = false;
-        siblings.all(|(_, sibling)| {
-            any = true;
-            sibling.exit_started || sibling.group_exit_code.is_some()
-        }) && any
+        }
+        crate::ipc::sysv::rename_undo(pid, leader);
+        row.publish_identity();
+        self.processes.insert(leader, row);
+        for queued in self.ready_queue.iter_mut().filter(|queued| **queued == pid) {
+            *queued = leader;
+        }
+        if self.current_pid == Some(pid) {
+            self.current_pid = Some(leader);
+        }
+        Some((leader, evicted))
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -426,14 +465,6 @@ impl ProcessManager {
 
         self.designated_init = Some(pid);
         crate::tracing::providers::teardown::record_init_designation(true);
-        // The one place the suite-mode test-control latch is decided, before init runs.
-        #[cfg(target_arch = "aarch64")]
-        crate::test_control::latch_init_program(
-            self.processes
-                .live_row(&pid)
-                .and_then(|process| process.exe_path.as_deref())
-                .map_or(&[][..], |path| path.as_slice()),
-        );
         Ok(InitPublication { pid, main_thread })
     }
 
@@ -1710,6 +1741,7 @@ impl ProcessManager {
             privilege: crate::task::thread::ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1729,6 +1761,7 @@ impl ProcessManager {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1805,6 +1838,7 @@ impl ProcessManager {
             privilege: crate::task::thread::ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1824,6 +1858,7 @@ impl ProcessManager {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1899,6 +1934,8 @@ impl ProcessManager {
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         crate::task::exit_tally::record_start();
+        process.publish_identity();
+        process.publish_fd_table();
         self.processes.insert(pid, process);
     }
 
@@ -1955,15 +1992,21 @@ impl ProcessManager {
 
     /// The credentials `pid` runs `image` with if its exec commits
     /// (`ProcessCredentials::after_exec`). The working directory counts as
-    /// shared when another live row holds it through `CLONE_FS`.
+    /// shared when a live row of another process holds it through `CLONE_FS`;
+    /// the other threads of the caller's own process end before the image
+    /// runs (`syscall::exec::end_other_threads`).
     pub(crate) fn credentials_after_exec(
         &self,
         pid: ProcessId,
         image: super::credentials::ExecIdentity,
     ) -> Option<super::credentials::ProcessCredentials> {
         let process = self.processes.live_row(&pid)?;
+        let group = process.thread_group_id.unwrap_or(pid.as_u64());
         let shared_fs = self.iter_processes().any(|(other, row)| {
-            other != pid && !row.is_terminated() && row.cwd.same_as(&process.cwd)
+            other != pid
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(other.as_u64()) != group
+                && row.cwd.same_as(&process.cwd)
         });
         Some(process.cred.after_exec(image, shared_fs))
     }
@@ -2177,8 +2220,9 @@ impl ProcessManager {
                 .map(crate::signal::delivery::child_exit_info);
             // A leader whose other threads still run has not exited as a
             // process: its parent is told when the last of them ends
-            // (`group_exited`).
-            let withheld = self.leader_waits_for_group(pid);
+            // (`group_exited`). A thread's row is nobody's child.
+            let withheld = self.leader_waits_for_group(pid)
+                || self.processes.live_row(&pid).is_some_and(Process::is_non_leader_thread);
             if let (Some(parent_pid), Some(info), false) = (parent_pid, child_info, withheld) {
                 signal_wake = self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
             }
@@ -2348,27 +2392,38 @@ impl ProcessManager {
         groups
     }
 
-    /// Reap `child`, which has terminated, at once when its parent has SIGCHLD
-    /// ignored or set with SA_NOCLDWAIT: that parent's children do not become
-    /// zombies, so no wait can report them. Returns the row when the join
-    /// removed it, for the caller to drop after releasing PM (condition C8).
+    /// Reap `child`, which has terminated, at once when no wait will: it is a
+    /// thread of another row's process (`Process::is_non_leader_thread`), or
+    /// its parent has SIGCHLD ignored or set with SA_NOCLDWAIT, whose children
+    /// do not become zombies. Returns the row when the join removed it, for
+    /// the caller to drop after releasing PM (condition C8).
     #[must_use]
-    pub(crate) fn reap_if_parent_declines(&mut self, child: ProcessId) -> Option<Process> {
+    pub(crate) fn reap_if_unwaited(&mut self, child: ProcessId) -> Option<Process> {
         let row = self.processes.live_row(&child)?;
         if !row.is_terminated() || self.leader_waits_for_group(child) {
             return None;
         }
-        let parent_pid = row.parent?;
         let status = row.exit_code.unwrap_or(0);
-        let parent = self.processes.live_row_mut(&parent_pid)?;
-        let action = parent
-            .signals
-            .get_handler(crate::signal::constants::SIGCHLD);
-        if !action.is_ignore() && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0 {
-            return None;
-        }
-        parent.children.retain(|&id| id != child);
-        match self.reap_row(child, parent_pid, status) {
+        let reaper = match row.thread_group_id.filter(|_| row.is_non_leader_thread()) {
+            // The leader's row stands as reaper; a thread's reap carries no
+            // CPU time (`reap_row`), so it is credited to nobody.
+            Some(group) => ProcessId::new(group),
+            None => {
+                let parent_pid = row.parent?;
+                let parent = self.processes.live_row_mut(&parent_pid)?;
+                let action = parent
+                    .signals
+                    .get_handler(crate::signal::constants::SIGCHLD);
+                if !action.is_ignore()
+                    && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0
+                {
+                    return None;
+                }
+                parent.children.retain(|&id| id != child);
+                parent_pid
+            }
+        };
+        match self.reap_row(child, reaper, status) {
             ReapOutcome::Claimed(evicted) => evicted,
             ReapOutcome::Refused => None,
         }
@@ -2389,6 +2444,7 @@ impl ProcessManager {
         let Some((pid, target)) = self.find_process_by_thread(tid) else {
             return;
         };
+        if target.killed_by_exec { return; }
         let group = target.thread_group_id.unwrap_or(pid.as_u64());
         let eligible =
             !target.signals.blocked() | target.signals.thread.wait_set.load(Ordering::Acquire);
@@ -2424,12 +2480,13 @@ impl ProcessManager {
     pub fn signal_recipient(&self, pid: ProcessId, sig: u32) -> ProcessId {
         use core::sync::atomic::Ordering;
         let Some(group) = self.thread_group_of(pid) else { return pid; };
+        let survivor = || self.group_rows(group).find(|p| !p.killed_by_exec).map(|p| p.id).unwrap_or(pid);
         self.group_rows(group).find(|p| {
-            (!p.signals.is_blocked(sig)
+            !p.killed_by_exec && (!p.signals.is_blocked(sig)
                 || p.signals.thread.wait_set.load(Ordering::Acquire)
                     & crate::signal::constants::sig_mask(sig) != 0)
                 && p.main_thread.is_some()
-        }).map(|p| p.id).unwrap_or(pid)
+        }).map(|p| p.id).unwrap_or_else(survivor)
     }
 
     /// Queue a process signal and return its eligible recipient for the caller
@@ -2440,7 +2497,7 @@ impl ProcessManager {
         let row = self.get_process_mut(recipient)?;
         row.signals.generate(sig, info, true);
         let eligible = row.signals.has_deliverable_signals()
-            || row.signals.pending & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
+            || row.signals.pending() & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
         if row.job.stopped.is_none() && eligible {
             row.main_thread.as_ref().map(|t| t.id)
         } else {
@@ -2614,7 +2671,7 @@ impl ProcessManager {
             .and_then(|parent| self.processes.live_row(&parent))
             .and_then(|row| row.main_thread.as_ref())
             .map(|thread| thread.id);
-        let reaped = self.reap_if_parent_declines(leader);
+        let reaped = self.reap_if_unwaited(leader);
         GroupExited {
             signal_wake,
             parent_tid,
@@ -2753,7 +2810,9 @@ impl ProcessManager {
                 None
             } else {
                 // SAFETY: the current thread remains owned by this CPU until
-                // interrupts are restored; id and owner_pid do not change.
+                // interrupts are restored. Its id does not change, and its
+                // owner_pid changes only in its own exec
+                // (`scheduler::adopt_exec_owner`), not while it reads it here.
                 unsafe { ((*ptr).id == thread_id).then_some((*ptr).owner_pid).flatten() }
             }
         });
@@ -3485,6 +3544,8 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3684,6 +3745,8 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3902,6 +3965,7 @@ impl ProcessManager {
                 privilege: parent_thread.privilege,
                 has_started: true,
                 blocked_in_syscall: false,
+                uninterruptible_io: false,
                 saved_by_inline_schedule: false,
                 inline_schedule_spsr: 0,
                 inline_schedule_prev_elr: 0,
@@ -3921,6 +3985,7 @@ impl ProcessManager {
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
                 kill_custody: core::sync::atomic::AtomicU64::new(0),
+                futex_group: core::sync::atomic::AtomicU64::new(0),
                 // A per-CPU worker's or hold pen's pin is not inherited: a
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin
@@ -3976,6 +4041,8 @@ impl ProcessManager {
             }
 
             // Add the child process to the process table
+            child_process.publish_identity();
+            child_process.publish_fd_table();
             crate::task::exit_tally::record_start();
             self.processes.insert(child_pid, child_process);
 
@@ -4032,34 +4099,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
-
-        // #721 K5: refuse to retire this address space while a live CLONE_VM sibling
-        // still holds the same CR3 — matches exec_process_with_argv (#721 B2) and
-        // aarch64's own exec_process, same relative position (right after
-        // old_cr3 capture, before any fallible page-table work).
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
-        }
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
 
         {
             let process = self
@@ -4197,8 +4244,16 @@ impl ProcessManager {
 
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
+        }
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
@@ -4239,6 +4294,7 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.cred.suid = process.cred.euid;
         process.cred.sgid = process.cred.egid;
+        process.publish_identity();
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4262,6 +4318,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -4274,21 +4331,15 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above (#721 K5/B2) is what
-        // makes that byte-identical claim true for a failed exec: it runs
-        // before this point, so nothing here observes a sibling that still
-        // holds the old root.
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
+        process.publish_identity();
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -4337,6 +4388,9 @@ impl ProcessManager {
             // These must match what the GDT defines
             thread.context.cs = 0x33; // User code segment (GDT index 6, ring 3)
             thread.context.ss = 0x2b; // User data segment (GDT index 5, ring 3)
+
+            // A new address space: the futex key group is read again.
+            thread.futex_group.store(0, core::sync::atomic::Ordering::Release);
 
             // Mark the thread as ready to run the new program
             thread.state = crate::task::thread::ThreadState::Ready;
@@ -4609,15 +4663,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
         // The identity the new image runs with. The prepared stack reports the
         // credentials decided before it was built; if a set*id call or a
         // CLONE_FS sharer has changed them since, the exec is refused rather
@@ -4633,23 +4686,8 @@ impl ProcessManager {
             cred
         };
 
-        // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
-        // holds the same CR3 — matches aarch64's exec_process_with_argv, same relative
-        // position (right after old_cr3 capture, before any fallible
-        // page-table work; #721 precheck K5).
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process_with_argv: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
         }
 
         log::info!(
@@ -4691,8 +4729,12 @@ impl ProcessManager {
 
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
@@ -4742,6 +4784,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -4749,21 +4792,16 @@ impl ProcessManager {
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above (#721 B2) is what makes
-        // that byte-identical claim true for a failed exec: it runs before this
-        // point, so nothing here observes a sibling that still holds the old root.
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
         process.cred = cred;
+        process.publish_identity();
         let new_cr3 = process
             .page_table
             .as_ref()
@@ -5034,15 +5072,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
         // still points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
         // The identity the new image runs with. The prepared stack reports the
         // credentials decided before it was built; if a set*id call or a
         // CLONE_FS sharer has changed them since, the exec is refused rather
@@ -5058,19 +5095,8 @@ impl ProcessManager {
             cred
         };
 
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
         }
 
         log::info!(
@@ -5111,8 +5137,12 @@ impl ProcessManager {
         let new_entry_point = loaded_elf.entry_point;
 
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
@@ -5161,29 +5191,23 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
         closes.release_record_locks(process.lock_owner.id());
 
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. #721 B2/K6: the live-sibling guard above is what makes
-        // that byte-identical claim true for a failed exec (it was mislabeled
-        // "unrelated" here, which was false — that guard is exactly what runs
-        // before this point, so nothing here observes a sibling that still holds
-        // the old root).
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
         process.cred = cred;
+        process.publish_identity();
         let new_ttbr0 = process
             .page_table
             .as_ref()
@@ -5333,30 +5357,14 @@ impl ProcessManager {
 
         // Keep the live table installed until every fallible construction step
         // has succeeded. A failed exec must leave TTBR0 custody unchanged.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
-
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
-        }
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
 
         {
             let process = self
@@ -5474,8 +5482,16 @@ impl ProcessManager {
         );
 
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
+        }
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // All fallible construction is complete; only now supersede the live
         // address space and transfer the unpublished table into the Process.
@@ -5505,6 +5521,7 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.cred.suid = process.cred.euid;
         process.cred.sgid = process.cred.egid;
+        process.publish_identity();
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -5526,6 +5543,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -5538,22 +5556,15 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. #721 B2/K6: the live-sibling guard above is what makes
-        // that byte-identical claim true for a failed exec (it was mislabeled
-        // "unrelated" here, which was false — that guard is exactly what runs
-        // before this point, so nothing here observes a sibling that still holds
-        // the old root).
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
+        process.publish_identity();
         let new_ttbr0 = process
             .page_table
             .as_ref()

@@ -408,6 +408,8 @@ STD_BINARIES=(
 
     # Services
     "init"
+    "getty"
+    "login"
     "probe"
 
     # Effort suites, installed as /sbin/suite-<id>
@@ -429,6 +431,7 @@ STD_BINARIES=(
     "suite-sdk"
     "suite-gpu"
     "gpu-exec-probe"
+    "suite-console"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"

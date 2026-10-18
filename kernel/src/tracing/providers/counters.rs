@@ -79,6 +79,15 @@ pub static CTX_SWITCH_TOTAL: TraceCounter =
 pub static TIMER_TICK_TOTAL: TraceCounter =
     TraceCounter::new("TIMER_TICK_TOTAL", "Total timer tick interrupts");
 
+/// x86_64: IPIs explicitly sent through the timer gate, counted per
+/// DESTINATION CPU. Retry and reschedule vectors use separate gates. The
+/// tick census subtracts only timer-gate IPIs to bound the ticks a CPU took.
+///
+/// GDB: `print TIMER_GATE_IPI_SENT`
+#[no_mangle]
+pub static TIMER_GATE_IPI_SENT: TraceCounter =
+    TraceCounter::new("TIMER_GATE_IPI_SENT", "IPIs sent to a CPU through the timer gate");
+
 /// Total fork operations across all CPUs.
 ///
 /// Incremented at fork entry, before the fork is performed.
@@ -908,6 +917,7 @@ pub fn init() {
     register_counter(&IRQ_TOTAL);
     register_counter(&CTX_SWITCH_TOTAL);
     register_counter(&TIMER_TICK_TOTAL);
+    register_counter(&TIMER_GATE_IPI_SENT);
     register_counter(&FORK_TOTAL);
     register_counter(&EXEC_TOTAL);
     register_counter(&COW_FAULT_TOTAL);

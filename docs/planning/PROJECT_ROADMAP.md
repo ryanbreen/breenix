@@ -11,6 +11,21 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+PR #1880 enables x86 release kernel optimization; its [evidence record](../efforts/1868-x86-release-evidence.md)
+distinguishes diagnostic results from interrupted acceptance. PR #1881 bypasses
+the ext2 lock only for root entering virtual mounts; its [scope record](../efforts/1863-dns-config-scope.md)
+keeps #1863 open and tracks the remaining writer-lock cause in #1882.
+
+The x86 boot continuation and synthetic kernel Rust entries preserve SysV stack
+alignment in PR #1841; [the entry evidence](green-program/process/1841-x86-entry-alignment.md)
+records the conditional idle probe and the separate completion-accounting failure (#1854).
+
+The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
+with its production boot stages in [the metal boot path](../metal/boot-path.json).
+It advances from delivery to a RAM-disk shell, then networking and SATA/AHCI storage in parallel,
+including disk writes and the Breenix filesystem, separately from the main effort path.
+The RAM-disk userspace lane is tracked in [#1702](https://github.com/ryanbreen/breenix/issues/1702).
+
 ARM64 QEMU uses HVF on native Apple Silicon hosts in [#1452](https://github.com/ryanbreen/breenix/issues/1452),
 with the testing kernel, production probe and effort suites as its gates. Native
 launchers retain the shared QoS launcher and explicit TCG selection

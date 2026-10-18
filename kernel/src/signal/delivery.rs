@@ -266,7 +266,7 @@ pub enum DeliverResult {
 
 /// A pending SIGKILL ends a stopped process: it is not held stopped.
 fn sigkill_pending(process: &Process) -> bool {
-    process.signals.pending & sig_mask(SIGKILL) != 0
+    process.signals.pending() & sig_mask(SIGKILL) != 0
 }
 
 /// Whether `sig` takes its default action in `process` and that action stops
@@ -486,8 +486,7 @@ fn deliver_to_user_handler_x86_64(
         rflags: interrupt_frame.cpu_flags.bits(),
     };
     install_user_handler_x86_64(
-        process,
-        shared_table,
+        &mut RowTarget { process, shared_table },
         &mut user_return,
         saved_regs,
         sig,
@@ -538,8 +537,7 @@ pub fn deliver_caught_signal_on_syscall_return(
             }
             handler_addr => {
                 return match install_user_handler_x86_64(
-                    process,
-                    &mut shared_table,
+                    &mut RowTarget { process, shared_table: &mut shared_table },
                     user_return,
                     saved_regs,
                     sig,
@@ -597,10 +595,326 @@ fn fault_address(sig: u32, info: &SigInfo) -> u64 {
 /// interrupted x87/SSE state lies above the frame, and the handler starts
 /// with the initial x87/SSE state, as on Linux. On the thread's own stack the
 /// 128-byte red zone below the interrupted RSP is left alone.
+/// What installing a handler frame reads and writes: the process row, under
+/// PROCESS_MANAGER (`RowTarget`), or the thread's own copies of its row's
+/// signal state, without it (`LocklessTarget`).
+#[cfg(target_arch = "x86_64")]
+trait HandlerTarget {
+    /// The alternate signal stack.
+    fn alt_stack(&self) -> AltStack;
+    /// The siginfo the handler is given for `sig`.
+    fn info(&self, sig: u32) -> SigInfo;
+    /// The signal mask the frame records, which sigreturn restores.
+    fn frame_mask(&self) -> u64;
+    /// The thread the handler runs on, whose x87/SSE state the frame saves.
+    fn thread_id(&self) -> Option<u64>;
+    /// Write `bytes` to the user stack at `addr`.
+    fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), PrepareWriteError>;
+    /// Take the signal and set the handler's mask, once the frame is written.
+    fn enter_handler(&mut self, sig: u32, action: &SignalAction);
+}
+
+/// The process row, with the address space's owner row for a CLONE_VM
+/// thread. PROCESS_MANAGER held.
+#[cfg(target_arch = "x86_64")]
+struct RowTarget<'a, 'b> {
+    process: &'a mut Process,
+    shared_table: &'a mut Option<&'b mut Process>,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl HandlerTarget for RowTarget<'_, '_> {
+    fn alt_stack(&self) -> AltStack {
+        *self.process.signals.alt_stack()
+    }
+
+    fn info(&self, sig: u32) -> SigInfo {
+        self.process.signals.next_info(sig)
+    }
+
+    fn frame_mask(&self) -> u64 {
+        self.process
+            .signals
+            .thread
+            .wait_mask()
+            .unwrap_or_else(|| self.process.signals.blocked())
+    }
+
+    fn thread_id(&self) -> Option<u64> {
+        self.process.main_thread.as_ref().map(|thread| thread.id)
+    }
+
+    fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), PrepareWriteError> {
+        write_signal_stack(self.process, self.shared_table, addr, bytes)
+    }
+
+    fn enter_handler(&mut self, sig: u32, action: &SignalAction) {
+        enter_handler(self.process, sig, action);
+    }
+}
+
+/// The current thread's own signal state (`ThreadSignals::mirror`), for a
+/// timer's signal, with the siginfo that goes with it and the alternate
+/// stack read from the mirror beforehand. The frame is written with this CPU
+/// on the thread's page tables, and a write that would fault is refused
+/// rather than resolved.
+#[cfg(target_arch = "x86_64")]
+struct LocklessTarget<'a> {
+    signals: &'a ThreadSignals,
+    thread_id: u64,
+    info: SigInfo,
+    alt: AltStack,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl HandlerTarget for LocklessTarget<'_> {
+    fn alt_stack(&self) -> AltStack {
+        self.alt
+    }
+
+    fn info(&self, _sig: u32) -> SigInfo {
+        self.info
+    }
+
+    fn frame_mask(&self) -> u64 {
+        self.signals
+            .wait_mask()
+            .unwrap_or_else(|| self.signals.blocked.load(core::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn thread_id(&self) -> Option<u64> {
+        Some(self.thread_id)
+    }
+
+    fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), PrepareWriteError> {
+        crate::syscall::userptr::write_user_bytes_nofault(addr, bytes.as_ptr(), bytes.len())
+            .map_err(|_| PrepareWriteError::Retry)
+    }
+
+    fn enter_handler(&mut self, sig: u32, action: &SignalAction) {
+        use core::sync::atomic::Ordering;
+        self.signals.take_wait_mask();
+        let mut mask = action.mask;
+        if (action.flags & SA_NODEFER) == 0 {
+            mask |= sig_mask(sig);
+        }
+        self.signals
+            .blocked
+            .fetch_or(mask & !UNCATCHABLE_SIGNALS, Ordering::Relaxed);
+    }
+}
+
+/// Deliver a due timer signal -- an interval timer's, or a POSIX timer's --
+/// or a standard signal kill or tgkill generated without PROCESS_MANAGER
+/// (`ThreadSignals::sent`) to its user handler on the way back to Ring 3,
+/// from the current thread's own signal state and without PROCESS_MANAGER,
+/// so a CPU that stopped while holding that lock does not hold the handler up
+/// (#1635, #1650). Returns whether it did. It declines, leaving the signal
+/// due, whenever the process-manager path is needed: the row holds a pending
+/// signal or a stop, more than one such signal is due, the action is a
+/// default one or SA_RESETHAND, the dispositions are being rewritten, the
+/// timer table is busy, or the frame cannot be written without a fault
+/// resolved.
+#[cfg(target_arch = "x86_64")]
+fn deliver_timer_signal_lockless(
+    thread_id: u64,
+    signals: &ThreadSignals,
+    timers: Option<&super::IntervalTimers>,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+) -> bool {
+    use core::sync::atomic::Ordering;
+    let mirror = &signals.mirror;
+    if mirror.pending() != 0
+        || mirror.job_stopped()
+        || signals.posix_retry.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    let ignored = mirror.ignored();
+    let blocked = signals.blocked.load(Ordering::Relaxed);
+    let itimer = signals.timer_pending.load(Ordering::Acquire) & !ignored & !blocked;
+    let posix = signals.posix_pending.load(Ordering::Acquire) & !ignored & !blocked;
+    let sent = signals.sent.load(Ordering::Acquire) & !ignored & !blocked;
+    if (itimer | posix | sent).count_ones() != 1 || [itimer, posix, sent].iter().filter(|&&due| due != 0).count() != 1 {
+        return false;
+    }
+    let sig = (itimer | posix | sent).trailing_zeros() + 1;
+    let bit = sig_mask(sig);
+    let (Some(action), Some(alt)) = (mirror.action(sig), mirror.alt_stack()) else {
+        return false;
+    };
+    if !action.is_handler() || action.flags & SA_RESETHAND != 0 {
+        return false;
+    }
+
+    if sent != 0 {
+        let Some((info, process)) = signals.take_sent(sig) else {
+            return false;
+        };
+        let mut target = LocklessTarget { signals, thread_id, info, alt };
+        let installed =
+            install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+        if installed.is_err() {
+            signals.restore_sent(sig, &info, process);
+            return false;
+        }
+        return true;
+    }
+
+    if itimer != 0 {
+        if signals.timer_pending.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+            return false;
+        }
+        let mut target = LocklessTarget { signals, thread_id, info: SigInfo::kernel(), alt };
+        let installed =
+            install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+        if installed.is_err() {
+            signals.timer_pending.fetch_or(bit, Ordering::AcqRel);
+            return false;
+        }
+        return true;
+    }
+
+    // The claim holds the process's timer table until the frame is written,
+    // so a timer_delete or timer_settime in a sibling thread waits for the
+    // outcome; a claim dropped undelivered leaves the signal due for the
+    // process-manager path, as if it had never been claimed.
+    let Some(claim) = timers.and_then(|timers| timers.posix.try_claim_due(signals, bit)) else {
+        return false;
+    };
+    if claim.sig() != sig {
+        return false;
+    }
+    let mut target = LocklessTarget { signals, thread_id, info: claim.info(), alt };
+    let installed =
+        install_user_handler_x86_64(&mut target, user_return, saved_regs, sig, action.handler, &action);
+    if installed.is_err() {
+        return false;
+    }
+    claim.commit();
+    true
+}
+
+/// `deliver_timer_signal_lockless` for current thread `thread_id`, on its
+/// return to Ring 3 at `user_return` with `saved_regs`, writing the frame
+/// through the thread's own page tables. It declines for a thread with no
+/// cached root, a deferred SIGKILL or a CPU-limit signal pending: those are
+/// the process-manager path's.
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_current_timer_signal_lockless(
+    thread_id: u64,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+) -> bool {
+    deliver_current_lockless(thread_id, user_return, saved_regs, true)
+}
+
+/// `deliver_current_timer_signal_lockless`; with `claim_posix` false it
+/// declines a POSIX timer's signal, whose claim tries the process's timer
+/// table lock, and so takes no lock at all.
+#[cfg(target_arch = "x86_64")]
+fn deliver_current_lockless(
+    thread_id: u64,
+    user_return: &mut X86UserReturn,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+    claim_posix: bool,
+) -> bool {
+    let Some(thread) = crate::per_cpu::current_thread() else {
+        return false;
+    };
+    if thread.id != thread_id
+        || thread.cached_ttbr0 == 0
+        || thread.kill_pending()
+        || thread
+            .resource_limits
+            .as_ref()
+            .is_some_and(|limits| limits.has_pending_cpu_signals())
+    {
+        return false;
+    }
+    let root = thread.cached_ttbr0;
+    unsafe {
+        use x86_64::registers::control::{Cr3, Cr3Flags};
+        use x86_64::structures::paging::PhysFrame;
+        use x86_64::PhysAddr;
+        if Cr3::read().0.start_address().as_u64() != root & !0xfff {
+            crate::memory::tlb::note_root_load(root);
+            Cr3::write(
+                PhysFrame::containing_address(PhysAddr::new(root)),
+                Cr3Flags::empty(),
+            );
+        }
+    }
+    deliver_timer_signal_lockless(
+        thread_id,
+        &thread.signals,
+        thread.signal_timers.as_deref().filter(|_| claim_posix),
+        user_return,
+        saved_regs,
+    )
+}
+
+/// `deliver_current_timer_signal_lockless` on a syscall return: the handler
+/// frame is installed from, and the return is rewritten in, the syscall frame.
+/// A POSIX timer's signal is left to the process-manager path that follows
+/// (`syscall::handler`'s `deliver_signals_on_syscall_return`): claiming it
+/// tries the process's timer table lock, and the syscall return takes none
+/// whose fallback is not direct.
+#[cfg(target_arch = "x86_64")]
+pub fn deliver_timer_signal_on_syscall_return(
+    thread_id: u64,
+    frame: &mut crate::syscall::handler::SyscallFrame,
+) -> bool {
+    let mut user_return = X86UserReturn {
+        rip: frame.rip,
+        rsp: frame.rsp,
+        rflags: frame.rflags,
+    };
+    let mut regs = crate::task::process_context::SavedRegisters {
+        rax: frame.rax,
+        rbx: frame.rbx,
+        rcx: frame.rcx,
+        rdx: frame.rdx,
+        rsi: frame.rsi,
+        rdi: frame.rdi,
+        rbp: frame.rbp,
+        r8: frame.r8,
+        r9: frame.r9,
+        r10: frame.r10,
+        r11: frame.r11,
+        r12: frame.r12,
+        r13: frame.r13,
+        r14: frame.r14,
+        r15: frame.r15,
+    };
+    if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, false) {
+        return false;
+    }
+    frame.rip = user_return.rip;
+    frame.rsp = user_return.rsp;
+    frame.rflags = user_return.rflags;
+    frame.rax = regs.rax;
+    frame.rbx = regs.rbx;
+    frame.rcx = regs.rcx;
+    frame.rdx = regs.rdx;
+    frame.rsi = regs.rsi;
+    frame.rdi = regs.rdi;
+    frame.rbp = regs.rbp;
+    frame.r8 = regs.r8;
+    frame.r9 = regs.r9;
+    frame.r10 = regs.r10;
+    frame.r11 = regs.r11;
+    frame.r12 = regs.r12;
+    frame.r13 = regs.r13;
+    frame.r14 = regs.r14;
+    frame.r15 = regs.r15;
+    true
+}
+
 #[cfg(target_arch = "x86_64")]
 fn install_user_handler_x86_64(
-    process: &mut Process,
-    shared_table: &mut Option<&mut Process>,
+    target: &mut impl HandlerTarget,
     user_return: &mut X86UserReturn,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
     sig: u32,
@@ -611,24 +925,20 @@ fn install_user_handler_x86_64(
 
     const RED_ZONE: u64 = 128;
     let original_rsp = user_return.rsp;
+    let alt = target.alt_stack();
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
     // A handler interrupting code already on the alternate stack nests below
     // it there, as one without SA_ONSTACK does on any stack.
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
-        && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack(original_rsp);
+        && (alt.flags & super::constants::SS_DISABLE as u32) == 0
+        && alt.size > 0
+        && !alt.on_stack(original_rsp);
 
     let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
-        match process
-            .signals
-            .alt_stack
-            .base
-            .checked_add(process.signals.alt_stack.size as u64)
-        {
+        match alt.base.checked_add(alt.size as u64) {
             Some(alt_top) => alt_top,
             None => return Err(PrepareWriteError::Fault),
         }
@@ -667,7 +977,6 @@ fn install_user_handler_x86_64(
         return Err(PrepareWriteError::Fault);
     };
     // A frame on the alternate stack, first or nested, must fit on it.
-    let alt = &process.signals.alt_stack;
     if (use_alt_stack || alt.on_stack(original_rsp)) && !alt.on_stack(frame_rsp) {
         return Err(PrepareWriteError::Fault);
     }
@@ -678,14 +987,10 @@ fn install_user_handler_x86_64(
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
 
-    let thread_id = process.main_thread.as_ref().map(|thread| thread.id);
+    let thread_id = target.thread_id();
     let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
-    let info = process.signals.next_info(sig);
-    let blocked = process
-        .signals
-        .thread
-        .wait_mask()
-        .unwrap_or_else(|| process.signals.blocked());
+    let info = target.info(sig);
+    let blocked = target.frame_mask();
 
     let signal_frame = SignalFrame {
         // When the handler does 'ret', it pops this and jumps there.
@@ -693,7 +998,7 @@ fn install_user_handler_x86_64(
         uc: UContext {
             uc_flags: 0,
             uc_link: 0,
-            uc_stack: process.signals.alt_stack.stack_t(original_rsp),
+            uc_stack: alt.stack_t(original_rsp),
             uc_mcontext: SigContext {
                 r8: saved_regs.r8,
                 r9: saved_regs.r9,
@@ -728,14 +1033,9 @@ fn install_user_handler_x86_64(
     };
 
     if let Some(addr) = trampoline_addr {
-        write_signal_stack(
-            process,
-            shared_table,
-            addr,
-            &super::trampoline::SIGNAL_TRAMPOLINE,
-        )?;
+        target.write(addr, &super::trampoline::SIGNAL_TRAMPOLINE)?;
     }
-    write_signal_stack(process, shared_table, fp_addr, fp_state.as_bytes())?;
+    target.write(fp_addr, fp_state.as_bytes())?;
     // SAFETY: SignalFrame is repr(C) plain data with no padding (types.rs
     // checks each size against its fields), and every field is initialized.
     let bytes = unsafe {
@@ -744,8 +1044,8 @@ fn install_user_handler_x86_64(
             SignalFrame::SIZE,
         )
     };
-    write_signal_stack(process, shared_table, frame_rsp, bytes)?;
-    enter_handler(process, sig, action);
+    target.write(frame_rsp, bytes)?;
+    target.enter_handler(sig, action);
     if let Some(thread_id) = thread_id {
         fpu::set_user_state(thread_id, &fpu::FpuState::initial());
     }
@@ -813,17 +1113,17 @@ fn deliver_to_user_handler_aarch64(
     // A handler interrupting code already on the alternate stack nests below
     // it there, as one without SA_ONSTACK does on any stack.
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
-        && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack(original_sp);
+        && (process.signals.alt_stack().flags & super::constants::SS_DISABLE as u32) == 0
+        && process.signals.alt_stack().size > 0
+        && !process.signals.alt_stack().on_stack(original_sp);
 
     let top = if use_alt_stack {
         // Use alternate stack - stack grows down, so start at top (base + size)
         match process
             .signals
-            .alt_stack
+            .alt_stack()
             .base
-            .checked_add(process.signals.alt_stack.size as u64)
+            .checked_add(process.signals.alt_stack().size as u64)
         {
             Some(alt_top) => alt_top,
             None => return Err(PrepareWriteError::Fault),
@@ -853,7 +1153,7 @@ fn deliver_to_user_handler_aarch64(
         return Err(PrepareWriteError::Fault);
     };
     // A frame on the alternate stack, first or nested, must fit on it.
-    let alt = &process.signals.alt_stack;
+    let alt = process.signals.alt_stack();
     if (use_alt_stack || alt.on_stack(original_sp)) && !alt.on_stack(frame_sp) {
         return Err(PrepareWriteError::Fault);
     }
@@ -904,7 +1204,7 @@ fn deliver_to_user_handler_aarch64(
         uc: UContext {
             uc_flags: 0,
             uc_link: 0,
-            uc_stack: process.signals.alt_stack.stack_t(original_sp),
+            uc_stack: process.signals.alt_stack().stack_t(original_sp),
             uc_sigmask: blocked,
             unused: [0; 120],
             _pad: 0,
@@ -1060,13 +1360,15 @@ pub fn notify_parent_of_job_change_locked(
     let Some(parent_tid) = parent.main_thread.as_ref().map(|thread| thread.id) else {
         return;
     };
-    crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.unblock_for_job_change(parent_tid, signal_eligible);
-        if let Some(tid) = signal_wake {
-            scheduler.unblock_for_signal(tid);
-            scheduler.unblock_for_child_exit(tid);
-        }
-    });
+    // `Scheduler::unblock_for_job_change`: waitpid always, a signal wait when
+    // the SIGCHLD is deliverable.
+    crate::task::scheduler::wake_for_child_exit(parent_tid);
+    if signal_eligible {
+        crate::task::scheduler::wake_for_signal(parent_tid, false);
+    }
+    if let Some(tid) = signal_wake {
+        crate::task::scheduler::wake_for_signal(tid, true);
+    }
 }
 
 /// Stop `pid`'s process for stop signal `sig`, with PM held: every row of its
@@ -1086,9 +1388,25 @@ fn stop_thread_group(
     let Some(group) = manager.thread_group_of(pid) else {
         return;
     };
+    // x86_64: each thread under the lock of the CPU that owns it (#1649).
+    #[cfg(target_arch = "x86_64")]
+    for row in manager.group_rows_mut(group) {
+        row.job.stopped = Some(sig);
+        row.signals.thread.mirror.set_job_stopped(true);
+        row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
+        row.signals.clear_pending(SIGCONT);
+        let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
+            continue;
+        };
+        if crate::task::scheduler::park_for_stop(thread_id, Some(thread_id) == caller_tid) {
+            row.job.parked = true;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.job.stopped = Some(sig);
+            row.signals.thread.mirror.set_job_stopped(true);
             row.signals.thread.return_work.store(true, core::sync::atomic::Ordering::Release);
             row.signals.clear_pending(SIGCONT);
             let Some(thread_id) = row.main_thread.as_ref().map(|thread| thread.id) else {
@@ -1121,6 +1439,13 @@ fn complete_stop_report(manager: &mut ProcessManager, group: u64, caller_tid: Op
     {
         return;
     }
+    #[cfg(target_arch = "x86_64")]
+    let quiescent = manager.group_rows(group).all(|row| {
+        row.main_thread.as_ref().is_none_or(|thread| {
+            Some(thread.id) == caller_tid || !crate::task::scheduler::thread_may_run(thread.id)
+        })
+    });
+    #[cfg(not(target_arch = "x86_64"))]
     let quiescent = crate::task::scheduler::with_scheduler(|scheduler| {
         manager.group_rows(group).all(|row| {
             row.main_thread.as_ref().is_none_or(|thread| {
@@ -1198,10 +1523,25 @@ pub fn continue_thread_group_locked(manager: &mut ProcessManager, pid: ProcessId
         return;
     };
     let mut was_stopped = false;
+    // x86_64: each wake under the lock of the CPU that owns the thread
+    // (#1649).
+    #[cfg(target_arch = "x86_64")]
+    for row in manager.group_rows_mut(group) {
+        row.signals.discard_pending(STOP_SIGNALS);
+        was_stopped |= row.job.stopped.take().is_some();
+        row.signals.thread.mirror.set_job_stopped(false);
+        if core::mem::take(&mut row.job.parked) {
+            if let Some(thread) = row.main_thread.as_ref() {
+                let _ = crate::task::scheduler::unblock_thread(thread.id);
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     crate::task::scheduler::with_scheduler(|scheduler| {
         for row in manager.group_rows_mut(group) {
             row.signals.discard_pending(STOP_SIGNALS);
             was_stopped |= row.job.stopped.take().is_some();
+            row.signals.thread.mirror.set_job_stopped(false);
             if core::mem::take(&mut row.job.parked) {
                 if let Some(thread) = row.main_thread.as_ref() {
                     let _ = scheduler.unblock(thread.id);
@@ -1296,7 +1636,7 @@ pub fn hold_stopped_thread_on_interrupt_return_or_busy(thread_id: u64) -> Option
     if !take_stop_locked(manager, thread_id) {
         return Some(false);
     }
-    let blocked = crate::task::scheduler::with_scheduler(|scheduler| {
+    let blocked = crate::task::scheduler::with_current(|scheduler| {
         let current = scheduler.current_thread_mut().map(|thread| thread.id);
         if current == Some(thread_id) {
             scheduler.block_current();
@@ -1336,7 +1676,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
     loop {
         // Block first, then look: a SIGCONT after the look finds the thread
         // parked and wakes it.
-        let terminated = crate::task::scheduler::with_scheduler(|scheduler| {
+        let terminated = crate::task::scheduler::with_current(|scheduler| {
             match scheduler.current_thread_mut() {
                 Some(thread) if thread.state != crate::task::thread::ThreadState::Terminated => {
                     scheduler.block_current_in_syscall();
@@ -1374,7 +1714,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
         }
     }
     let terminated =
-        crate::task::scheduler::with_scheduler(|scheduler| match scheduler.current_thread_mut() {
+        crate::task::scheduler::with_current(|scheduler| match scheduler.current_thread_mut() {
             Some(thread) if thread.state != crate::task::thread::ThreadState::Terminated => {
                 thread.blocked_in_syscall = false;
                 thread.set_ready();
@@ -1392,7 +1732,7 @@ pub fn hold_stopped_thread_on_syscall_return() {
 /// terminated, or its process's row is gone. The thread is marked terminated
 /// and waits, preemptible, for the scheduler to switch away for good.
 fn abandon_syscall_return() -> ! {
-    crate::task::scheduler::with_scheduler(|scheduler| {
+    crate::task::scheduler::with_current(|scheduler| {
         if let Some(thread) = scheduler.current_thread_mut() {
             thread.set_terminated();
         }
@@ -1442,6 +1782,11 @@ pub fn signal_death_exit_code(process: &Process, sig: u32) -> i32 {
 pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i32) {
     let current = crate::task::scheduler::current_thread_id();
     let peers = crate::process::with_process_manager(|manager| {
+        // A row an exec killed dies alone: the thread that exec'd goes on as
+        // the process (`Process::killed_by_exec`).
+        if manager.get_process(pid).is_some_and(|row| row.killed_by_exec) {
+            return alloc::vec::Vec::new();
+        }
         // A leader that already ended with its own exit, while the rest of
         // its group ran on, reports the status the process dies with now,
         // not that exit's.
@@ -1453,31 +1798,100 @@ pub fn terminate_thread_group_peers(pid: crate::process::ProcessId, exit_code: i
                 leader.restate_exit_status(exit_code);
             }
         }
-        let mut peers = manager.thread_group_peers(pid);
-        peers.retain(|&peer| {
-            let Some(row) = manager.get_process_mut(peer) else {
-                return false;
-            };
-            // Every peer is marked in this one acquisition, before any is
-            // killed: a peer's clone refuses from here on, so the group gains
-            // no thread the kills below would miss.
-            row.group_exit_code.get_or_insert(exit_code);
-            let runs_this = current.is_some()
-                && row.main_thread.as_ref().map(|thread| thread.id) == current;
-            // Only the peer running this is told here. The others are killed
-            // below, and `kill_process_now` leaves SIGKILL pending on a peer
-            // only when it cannot claim it (#1413).
-            if runs_this {
-                row.signals.set_pending(SIGKILL);
-            }
-            !runs_this
-        });
-        peers
+        mark_thread_group_peers(manager, pid, exit_code, current, false)
     })
     .unwrap_or_default();
     for peer in peers {
         crate::syscall::signal::kill_process_now(peer, exit_code, None);
     }
+}
+
+/// POSIX exec by a thread of `pid`'s process ends the process's other
+/// threads: they are marked in one acquisition and killed, as
+/// `terminate_thread_group_peers` does. The process does not exit, so no
+/// status is restated. Returns false, and kills no thread, when `pid` was
+/// itself marked first, by another thread's exec or by an exit or fatal
+/// signal of the process: that is ending this thread too, and of two threads
+/// that exec at once exactly one goes on.
+pub fn terminate_peers_for_exec(pid: crate::process::ProcessId) -> bool {
+    let current = crate::task::scheduler::current_thread_id();
+    let peers = crate::process::with_process_manager(|manager| {
+        let caller = manager.get_process(pid)?;
+        if caller.group_exit_code.is_some() || sigkill_pending(caller) {
+            return None;
+        }
+        let peers = manager.thread_group_peers(pid);
+        // Reserve before excluding any peer: failure leaves the group intact.
+        let capacity = peers.iter().filter_map(|peer| manager.get_process(*peer))
+            .fold(0usize, |n, row| n.saturating_add(row.signals.exec_pending_capacity()));
+        if !manager.get_process_mut(pid)?.signals.reserve_exec_pending(capacity) {
+            return None;
+        }
+        for peer in &peers {
+            if let Some(row) = manager.get_process_mut(*peer) {
+                row.signals.thread.exec_victim.store(true, core::sync::atomic::Ordering::Release);
+            }
+        }
+        // A sender either precedes this drain or observes exec_victim after
+        // its post and regenerates under PM on the surviving thread.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        for peer in peers {
+            if let Some(row) = manager.get_process_mut(peer) {
+                row.signals.collect_sent_signals();
+            }
+            loop {
+                let row = manager.get_process_mut(peer)?;
+                let bits = row.signals.process_pending;
+                if bits == 0 { break; }
+                let sig = bits.trailing_zeros() + 1;
+                if let Some(moved) = row.signals.take_process_directed(sig) {
+                    manager.get_process_mut(pid)?.signals.accept_moved(moved, sig);
+                }
+            }
+        }
+        Some(mark_thread_group_peers(manager, pid, 0, current, true))
+    })
+    .flatten();
+    let Some(peers) = peers else {
+        return false;
+    };
+    for peer in peers {
+        crate::syscall::signal::kill_process_now(peer, 0, None);
+    }
+    true
+}
+
+/// Mark the other live rows of `pid`'s thread group as dying with
+/// `exit_code`, and as killed by an exec when `by_exec`, under
+/// PROCESS_MANAGER, and return the ones to kill.
+fn mark_thread_group_peers(
+    manager: &mut crate::process::ProcessManager,
+    pid: crate::process::ProcessId,
+    exit_code: i32,
+    current: Option<u64>,
+    by_exec: bool,
+) -> alloc::vec::Vec<crate::process::ProcessId> {
+    let mut peers = manager.thread_group_peers(pid);
+    peers.retain(|&peer| {
+        let Some(row) = manager.get_process_mut(peer) else {
+            return false;
+        };
+        // The peers are marked in this one acquisition, before any is
+        // killed: a peer's clone refuses from here on, so the group gains
+        // no thread the kills below would miss.
+        row.group_exit_code.get_or_insert(exit_code);
+        row.killed_by_exec |= by_exec;
+        let runs_this = current.is_some()
+            && row.main_thread.as_ref().map(|thread| thread.id) == current;
+        // Only the peer running this is told here. The others are killed
+        // below, and `kill_process_now` leaves SIGKILL pending on a peer
+        // only when it cannot claim it (#1413).
+        if runs_this {
+            row.signals.set_pending(SIGKILL);
+        }
+        !runs_this
+    });
+    peers
 }
 
 /// Take the calling process's next deliverable signal off its pending set
@@ -1582,7 +1996,7 @@ fn exit_on_syscall_return(exit_code: i32) -> ! {
         }
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
     }
-    crate::task::scheduler::with_scheduler(|scheduler| {
+    crate::task::scheduler::with_current(|scheduler| {
         if let Some(thread) = scheduler.current_thread_mut() {
             thread.set_terminated();
         }
@@ -1626,7 +2040,7 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         let child_info = manager.get_process(child_pid).map(child_exit_info);
         // A parent that declines zombies reaps the child now; the row is
         // dropped once the guard is released (condition C8).
-        let auto_reaped = manager.reap_if_parent_declines(child_pid);
+        let auto_reaped = manager.reap_if_unwaited(child_pid);
 
         let signal_wake = manager.queue_process_signal(parent_pid, SIGCHLD, child_info.unwrap_or_else(SigInfo::kernel));
         // Find parent process and wake its child-status wait
@@ -1657,23 +2071,18 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
     };
     drop(auto_reaped);
     if let Some(tid) = signal_wake {
-        crate::task::scheduler::with_scheduler(|s| {
-            s.unblock_for_signal(tid);
-            s.unblock_for_child_exit(tid);
-        });
+        crate::task::scheduler::wake_for_signal(tid, true);
     }
 
     // Unblock parent thread if it's waiting on waitpid or sigsuspend
     if let Some((parent_tid, signal_eligible)) = parent_thread_id {
-        crate::task::scheduler::with_scheduler(|sched| {
-            // Wake parent if blocked in waitpid (BlockedOnChildExit)
-            sched.unblock_for_child_exit(parent_tid);
-            // A child exit wakes waitpid even when SIGCHLD is ignored or blocked.
-            // Signal waits only wake when there is actual delivery work.
-            if signal_eligible {
-                sched.unblock_for_signal(parent_tid);
-            }
-        });
+        // Wake parent if blocked in waitpid (BlockedOnChildExit)
+        crate::task::scheduler::wake_for_child_exit(parent_tid);
+        // A child exit wakes waitpid even when SIGCHLD is ignored or blocked.
+        // Signal waits only wake when there is actual delivery work.
+        if signal_eligible {
+            crate::task::scheduler::wake_for_signal(parent_tid, false);
+        }
         log::info!(
             "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
             parent_tid,
@@ -1692,6 +2101,11 @@ pub fn child_exit_info(child: &Process) -> SigInfo {
 /// Internal function called from deliver_default_action
 /// Returns parent notification info if parent should be notified (does NOT acquire lock)
 fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
+    // A thread's row is nobody's child: its exit hook reaps it, and the
+    // process's parent hears when the last thread ends.
+    if process.is_non_leader_thread() {
+        return None;
+    }
     let parent_pid = process.parent?;
 
     log::debug!(

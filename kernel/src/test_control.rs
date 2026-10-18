@@ -30,9 +30,8 @@ static DECIDED: AtomicBool = AtomicBool::new(false);
 /// The path prefix of a suite binary.
 const SUITE_PREFIX: &[u8] = b"/sbin/suite-";
 
-/// Decide the latch from the program the kernel designated as PID 1. Called from
-/// `ProcessManager::designate_init`, which succeeds once per boot; only the first call
-/// decides.
+/// Decide the latch from the program the ARM64 init launcher has designated as PID 1,
+/// before publishing its thread. The first call decides the latch for the boot.
 pub fn latch_init_program(exe_path: &[u8]) {
     if DECIDED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)

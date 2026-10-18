@@ -1421,6 +1421,7 @@ fn test_timer_delay() -> TestResult {
                     core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
                     core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
                 }
+                crate::arch_impl::aarch64::irq_mask_account::opened();
                 Self(daif)
             }
 
@@ -1432,6 +1433,7 @@ fn test_timer_delay() -> TestResult {
 
         impl Drop for TimerDelayMaskGuard {
             fn drop(&mut self) {
+                crate::arch_impl::aarch64::irq_mask_account::restoring(self.0);
                 unsafe {
                     core::arch::asm!("msr daif, {}", "isb", in(reg) self.0, options(nomem, nostack));
                 }
@@ -1478,6 +1480,7 @@ fn test_timer_delay() -> TestResult {
             let mut counters = counter_snapshot(cpu);
 
             if may_open_windows {
+                crate::arch_impl::aarch64::irq_mask_account::closing();
                 unsafe {
                     core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
                 }
@@ -1505,6 +1508,7 @@ fn test_timer_delay() -> TestResult {
                 unsafe {
                     core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
                 }
+                crate::arch_impl::aarch64::irq_mask_account::opened();
                 counters = counter_snapshot(cpu);
             }
 
@@ -1961,12 +1965,11 @@ pub fn run_x86_tracing_provider_gate() {
 // Critical-path logging drain PR-1: the dispatch-fact publication oracle
 // =============================================================================
 
-/// Forced-leg oracle for the ten `DispatchLogFact` counters PR-1 of the
-/// critical-path logging drain added to replace ten deleted `log::*!` calls in
-/// `interrupts::context_switch`.
+/// Forced-leg oracle for the five `DispatchLogFact` counters that replace
+/// deleted `log::*!` calls in `interrupts::context_switch`.
 ///
-/// WHAT IT MEASURES. That each of the ten facts has its OWN field in the
-/// `[DISPATCH_STRAND_CENSUS:...]` line, that the ten fields move
+/// WHAT IT MEASURES. That each of the five facts has its OWN field in the
+/// `[DISPATCH_STRAND_CENSUS:...]` line, that the five fields move
 /// INDEPENDENTLY, and that each moves by EXACTLY the number of legs driven
 /// against it -- one -- with the counter read back through the same
 /// thread-context reporter the gate reads. It brackets the legs with two
@@ -1975,20 +1978,18 @@ pub fn run_x86_tracing_provider_gate() {
 ///
 /// WHAT IT DOES NOT MEASURE. That any site in
 /// `kernel/src/interrupts/context_switch.rs` calls `note_fact`. This oracle
-/// drives the counters directly, because seven of the ten arms are defensive
-/// arms that this tree cannot reach on a running kernel (a userspace thread
-/// with no process row, an idle thread with no kernel stack, a process
-/// manager option left unset after `process::init`), and reaching them would
-/// mean injecting a fault into a Tier-2 dispatch path. The site-to-counter
+/// drives the counters directly, because four of the five arms are defensive
+/// arms that this tree cannot reach on a running kernel (a user thread with
+/// no scheduler row, an idle thread with no kernel stack), and reaching them
+/// would mean injecting a fault into a Tier-2 dispatch path. The site-to-counter
 /// binding is pinned instead, per site, by
 /// `tests/dispatch_fact_census_structure.rs`, and the absence of the deleted
 /// prints by `tests/critical_path_logging_census_structure.rs`.
-/// claim-lint:ok: the 10 legs and the 7 unreachable arms are the per-site
-/// table in
-/// docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md.
+/// claim-lint:ok: the 5 legs and the 4 unreachable arms are the per-site
+/// table pinned by tests/dispatch_fact_census_structure.rs.
 ///
-/// The ten increments are permanent for the rest of the boot, so each census
-/// line after this oracle carries the oracle's own 1 in each of the ten
+/// The five increments are permanent for the rest of the boot, so each census
+/// line after this oracle carries the oracle's own 1 in each of the five
 /// fields on top of whatever the dispatch path produced. That offset is
 /// stated here rather than subtracted, so a reader of a later line is not
 /// handed a number the kernel did not print.
@@ -1999,12 +2000,7 @@ pub fn run_x86_dispatch_fact_oracle() {
     };
 
     const LEGS: [DispatchLogFact; DISPATCH_LOG_FACT_COUNT] = [
-        DispatchLogFact::SaveNoMainThread,
-        DispatchLogFact::SaveProcessNotFound,
-        DispatchLogFact::SaveManagerNone,
-        DispatchLogFact::SignalPendingBlocked,
-        DispatchLogFact::SignalContextBlocked,
-        DispatchLogFact::SignalDeliveredBlocked,
+        DispatchLogFact::SaveNoThread,
         DispatchLogFact::IdleStackMissing,
         DispatchLogFact::KernelThreadInfoMissing,
         DispatchLogFact::UserKernelStackMissing,
@@ -3682,7 +3678,7 @@ fn test_exception_vectors() -> TestResult {
 
 /// Test that exception handlers are registered and point to valid addresses.
 ///
-/// On x86_64: Validates that the timer interrupt handler (vector 32) is
+/// On x86_64: Validates that the timer interrupt handler (vector 48) is
 /// properly configured in the IDT with a valid handler address.
 ///
 /// On ARM64: Validates that exception handlers are linked by checking
@@ -7046,8 +7042,8 @@ fn test_tty_irq_pm_oracle() -> TestResult {
 /// global stdin ring a userspace reader would see.
 const TTY_IRQ_FG_BYTE: u8 = b's';
 /// The INTR byte. `line_discipline.rs` maps it to SIGINT while ISIG is set,
-/// which is the console's default, and returns before the canonical buffer is
-/// touched -- so it generates the signal without disturbing the byte above.
+/// which is the console's default. With NOFLSH clear it also flushes the
+/// canonical buffer, so the plain byte must be measured before this leg.
 const TTY_IRQ_FG_INTR_BYTE: u8 = 0x03;
 /// The foreground process group the oracle installs. It names no live process
 /// on purpose: see `target_absent` below.
@@ -7239,6 +7235,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     // where the acquisition shows up, and it shows up with no holder to wait on.
     let (processed_a, _entry_a_us, touches_a, blocking_a, reads_a, calls_a) =
         tty_irq_fg_inject(TTY_IRQ_FG_BYTE);
+    // S1 (#1782): INTR must flush this byte, not invalidate its leg-1 witness.
+    let buffered = tty.input_line_pending() as u64;
+    let termios = tty.get_termios();
 
     // Leg 2 -- the INTR byte through the same entry, with foreground_pgrp
     // genuinely held by a thread with interrupts unmasked.
@@ -7373,7 +7372,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         }
     }
 
-    let buffered = tty.input_line_pending() as u64;
+    let buffered_after_intr = tty.input_line_pending();
     let (_, sig_pid, sig_num) = crate::tty::driver::tty_irq_fg_signal_census();
 
     // Leg 3 -- the thread side still owns the field, and the snapshot tracks
@@ -7401,6 +7400,9 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         && reads >= 2
         && processed == 2
         && buffered >= 1
+        && termios.c_lflag & crate::tty::termios::ISIG != 0
+        && termios.c_lflag & crate::tty::termios::NOFLSH == 0
+        && buffered_after_intr == 0
         && irqs_enabled_before == 1
         && fg_busy_probe == 1
         && sig_calls == 1
@@ -7423,6 +7425,62 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     let passed = common_pass && arm == TTY_IRQ_FG_ARM_LOCAL_HOLD;
 
+    // Failure diagnostics name each conjunct, including the architecture's
+    // arming witnesses; preserve the passing marker consumed by the gates.
+    let common_checks = [
+        ("fg_known", fg_known == TTY_IRQ_FG_PGRP),
+        ("target_absent", target_absent == 1),
+        ("fg_lock_touches", touches == 0),
+        ("fg_blocking_acquires", blocking == 0),
+        ("snapshot_reads", reads >= 2),
+        ("processed", processed == 2),
+        ("buffered", buffered >= 1),
+        ("isig", termios.c_lflag & crate::tty::termios::ISIG != 0),
+        (
+            "noflsh_clear",
+            termios.c_lflag & crate::tty::termios::NOFLSH == 0,
+        ),
+        ("intr_flushed", buffered_after_intr == 0),
+        ("irqs_enabled_before", irqs_enabled_before == 1),
+        ("fg_busy_probe", fg_busy_probe == 1),
+        ("sig_calls", sig_calls == 1),
+        ("sig_pid", sig_pid == TTY_IRQ_FG_PGRP),
+        ("sig_num", sig_num == TTY_IRQ_FG_SIGINT),
+        ("snapshot_agrees", snapshot_agrees == 1),
+        ("restored", restored == 1),
+    ];
+
+    #[cfg(target_arch = "aarch64")]
+    let arch_checks = [
+        ("arm", arm == TTY_IRQ_FG_ARM_PEER_HOLD),
+        ("peer_held_after", peer_held_after),
+        ("peer_irqs_masked", peer_irqs_masked),
+        (
+            "hold_safety",
+            !TTY_IRQ_FG_HOLD_SAFETY.load(AtomicOrdering::Acquire),
+        ),
+        ("holder_cpu", holder_cpu != u64::MAX),
+        ("hold_us", hold_us >= TTY_IRQ_FG_HOLD_US),
+        ("entry_us", entry_us < TTY_IRQ_FG_ENTRY_CEILING_US),
+        ("joined", joined == 1),
+    ];
+
+    #[cfg(not(target_arch = "aarch64"))]
+    let arch_checks = [("arm", arm == TTY_IRQ_FG_ARM_LOCAL_HOLD)];
+
+    let failures: alloc::vec::Vec<_> = common_checks
+        .iter()
+        .chain(arch_checks.iter())
+        .filter_map(|(name, ok)| if *ok { None } else { Some(*name) })
+        .collect();
+    // Keep the passing boot oracle allocation-free, like its original verdict.
+    let failure_verdict = if passed {
+        None
+    } else {
+        Some(alloc::format!("FAIL:failed={}", failures.join(",")))
+    };
+    let verdict = failure_verdict.as_deref().unwrap_or("PASS");
+
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
         "[TTY_IRQ_FG_ORACLE:aarch64:fg_known={}:target_absent={}:fg_lock_touches={}:fg_blocking_acquires={}:snapshot_reads={}:processed={}:buffered={}:irqs_enabled_before={}:holder_cpu={}:fg_busy_probe={}:hold_us={}:entry_us={}:joined={}:sig_calls={}:sig_pid={}:sig_num={}:snapshot_agrees={}:restored={}:{}:{}]",
@@ -7444,7 +7502,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         sig_num,
         snapshot_agrees,
         restored,
-        if passed { "PASS" } else { "FAIL" },
+        verdict,
         arm,
     );
 
@@ -7466,7 +7524,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         sig_num,
         snapshot_agrees,
         restored,
-        if passed { "PASS" } else { "FAIL" },
+        verdict,
         arm,
     );
 
@@ -7492,7 +7550,7 @@ fn test_tty_irq_fg_oracle() -> TestResult {
     if run_tty_irq_fg_oracle() {
         TestResult::Pass
     } else {
-        TestResult::Fail("a TTY interrupt entry touched the console's foreground_pgrp mutex")
+        TestResult::Fail("TTY IRQ foreground-pgrp oracle failed; see named conjuncts")
     }
 }
 

@@ -267,18 +267,11 @@ impl PendingProcessReclaim {
         RootProof::default()
     }
 
+    /// Whether a thread that has not terminated still caches one of this
+    /// receipt's roots: ARM64 keeps its last TTBR0 there, and x86_64
+    /// dispatches a user thread on the root cached there.
     fn cached_root_is_live(&self) -> bool {
-        #[cfg(target_arch = "aarch64")]
-        {
-            scheduler::with_scheduler(|scheduler| {
-                scheduler.any_cached_ttbr0_matches(|cached| self.any_root_matches(cached))
-            })
-            .unwrap_or(false)
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            false
-        }
+        scheduler::any_cached_root_matches(|cached| self.any_root_matches(cached))
     }
 
     /// x86_64 switches CR3 lazily: idle keeps running on the tables of
@@ -354,31 +347,22 @@ impl PendingProcessReclaim {
     }
 }
 
+// A hold of these queues runs to its end. `IrqSafeMutex` masks local
+// interrupts for the whole hold, so the holder cannot be preempted or
+// abandoned mid-hold; that is how the plain `spin::Mutex` queues of 6c5be902
+// were left held, and why their non-owning paths try-locked. A holder takes
+// neither PROCESS_MANAGER, a scheduler lock nor the other queue. It may
+// allocate (`try_reserve`), which takes the heap lock, and the heap does not
+// touch these queues. The drain's scan checks each receipt with atomics only,
+// so its hold is O(queue length). Publishers therefore wait for a peer's hold:
+// a failed try-lock used to abandon the receipt, and its row was settled
+// without a reclaim (#1693).
 static PENDING_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
 static PARKED_PROCESS_RECLAIMS: crate::irq_safe_mutex::IrqSafeMutex<
     alloc::vec::Vec<PendingProcessReclaim>,
 > = crate::irq_safe_mutex::IrqSafeMutex::new(alloc::vec::Vec::new());
-/// A reclaim queue for publishing into or sweeping. x86_64 waits for a holder
-/// on another CPU: every hold is short and masks interrupts, so it always
-/// finishes, and the try-lock's `None` -- park nothing, sweep nothing, abandon
-/// the reclaim and leak its address space -- was the answer for nesting on one
-/// CPU, not for contention between CPUs, which with four CPUs leaked a dead
-/// process's page tables at a time. aarch64 keeps its try-lock.
-fn reclaim_queue<T>(
-    queue: &crate::irq_safe_mutex::IrqSafeMutex<T>,
-) -> Option<crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T>> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        Some(queue.lock())
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        queue.try_lock()
-    }
-}
-
 static RECLAIM_PASS_ID: AtomicU32 = AtomicU32::new(0);
 static ROW_REMOVAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -782,9 +766,9 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
 fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
-        let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
-            return false;
-        };
+        #[cfg(feature = "force_reclaim_queue_contention")]
+        probe_forced_contention(reclaim.as_ref().map(|reclaim| reclaim.pid));
+        let mut pending = PENDING_PROCESS_RECLAIMS.lock();
         #[cfg(feature = "boot_tests")]
         let reservation = if boot_forces_reclaim_reserve_failure() {
             pending.try_reserve(usize::MAX)
@@ -838,7 +822,119 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    let forced = force_reclaim_queue_contention(&reclaim).then_some(reclaim.pid);
     push_pending_or_abandon(reclaim);
+    #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+    if let Some(pid) = forced {
+        if FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire) {
+            crate::serial_println!(
+                "FORCED_RECLAIM_QUEUE_CONTENTION: pid={pid}'s publisher found the pending queue held by a peer (try-lock probe failed)"
+            );
+        }
+    }
+}
+
+/// `force_reclaim_queue_contention`: the pid whose publication is forced, and
+/// whether its publisher's probe found the pending queue held.
+#[cfg(feature = "force_reclaim_queue_contention")]
+static FORCED_CONTENTION_PID: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "force_reclaim_queue_contention")]
+static FORCED_CONTENTION_PROBE_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Called by `push_pending_or_abandon` just before it takes the pending queue.
+/// For the forced pid, a failed try-lock here is the point where the publisher
+/// used to give up its receipt; the guard of a successful one is dropped at
+/// once.
+#[cfg(feature = "force_reclaim_queue_contention")]
+fn probe_forced_contention(pid: Option<u64>) {
+    if pid.is_some_and(|pid| FORCED_CONTENTION_PID.load(Ordering::Acquire) == pid)
+        && PENDING_PROCESS_RECLAIMS.try_lock().is_none()
+    {
+        FORCED_CONTENTION_PROBE_FAILED.store(true, Ordering::Release);
+    }
+}
+
+/// Hold the real publication queue on a peer until the publisher's probe has
+/// found it held. This forces the first `sigkill_teardown_test` victim killed
+/// by its own parent whose receipt carries page tables (the forked V2), and
+/// the first whose receipt carries no page tables (the CLONE_VM victim). V1 is
+/// killed by a helper and is left to `force_exit_report_reap_race`, which
+/// needs its parent free to reap. This changes only scheduling of the holder;
+/// the victim takes the production enqueue path and the userspace test keeps
+/// its ordinary pairing requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
+fn force_reclaim_queue_contention(reclaim: &PendingProcessReclaim) -> bool {
+    static ROOTED_ARMED: AtomicBool = AtomicBool::new(true);
+    static ROOTLESS_ARMED: AtomicBool = AtomicBool::new(true);
+    static HELD: AtomicBool = AtomicBool::new(false);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let publisher = scheduler::current_thread_id();
+    let victim = crate::process::with_process_manager(|manager| {
+        let killer = publisher
+            .and_then(|thread| manager.find_process_by_thread(thread))
+            .map(|(pid, _)| pid);
+        manager
+            .get_process(ProcessId::new(reclaim.pid))
+            .is_some_and(|row| {
+                row.name.contains("sigkill_teardown_test")
+                    && row.parent.is_some()
+                    && row.parent == killer
+            })
+    })
+    .unwrap_or(false);
+    if !victim {
+        return false;
+    }
+    let rooted = reclaim.page_table.is_some() || !reclaim.old_page_tables.is_empty();
+    let armed = if rooted { &ROOTED_ARMED } else { &ROOTLESS_ARMED };
+    if !armed.swap(false, Ordering::AcqRel) {
+        return false;
+    }
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    assert!(online > 1, "queue contention regression requires a peer CPU");
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let frequency = crate::arch_impl::aarch64::timer::frequency_hz();
+    HELD.store(false, Ordering::Release);
+    FORCED_CONTENTION_PROBE_FAILED.store(false, Ordering::Release);
+    FORCED_CONTENTION_PID.store(reclaim.pid, Ordering::Release);
+    crate::task::kthread::kthread_run_on_cpu(
+        move || {
+            let _queue = PENDING_PROCESS_RECLAIMS.lock();
+            HELD.store(true, Ordering::Release);
+            let start = counter();
+            while !FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire)
+                && counter().wrapping_sub(start) < frequency
+            {
+                core::hint::spin_loop();
+            }
+            assert!(
+                FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire),
+                "publisher's probe did not find the pending queue held"
+            );
+            // The publisher takes the queue right after its probe, with its
+            // interrupts masked; keep holding so that acquisition waits too.
+            let start = counter();
+            while counter().wrapping_sub(start) < frequency / 1000 {
+                core::hint::spin_loop();
+            }
+        },
+        "reclaim-queue-holder",
+        (cpu + 1) % online,
+    )
+    .expect("queue contention holder");
+    let start = counter();
+    while !HELD.load(Ordering::Acquire) && counter().wrapping_sub(start) < frequency {
+        core::hint::spin_loop();
+    }
+    assert!(HELD.load(Ordering::Acquire), "peer did not hold reclaim queue");
+    true
 }
 
 /// Close extracted file descriptor entries outside the PM lock.
@@ -956,10 +1052,15 @@ impl ProcessScheduler {
                 let group_wake = manager.last_group_row_exiting(thread_id);
                 // A leader whose other threads still run has not exited as a
                 // process: its parent gets SIGCHLD when the last of them ends
-                // (`group_exited`), not now.
-                let sigchld_withheld = manager
+                // (`group_exited`), not now. A thread's row is nobody's child:
+                // its exit is not reported, and no parent waits for it.
+                let thread_row = manager
                     .find_process_by_thread(thread_id)
-                    .is_some_and(|(pid, _)| manager.leader_waits_for_group(pid));
+                    .is_some_and(|(_, row)| row.is_non_leader_thread());
+                let sigchld_withheld = thread_row
+                    || manager
+                        .find_process_by_thread(thread_id)
+                        .is_some_and(|(pid, _)| manager.leader_waits_for_group(pid));
                 let terminal_exit = manager.find_process_by_thread(thread_id)
                     .map(|(pid, _)| pid)
                     .and_then(|pid| crate::tty::ctty::on_exit_locked(manager, pid));
@@ -1046,7 +1147,7 @@ impl ProcessScheduler {
                         .get_process(pid)
                         .map(crate::signal::delivery::child_exit_info);
                     let mut signal_wake = None;
-                    let parent_tid = if let Some(parent_pid) = parent_pid {
+                    let parent_tid = if let Some(parent_pid) = parent_pid.filter(|_| !thread_row) {
                         if let (true, Some(info)) = (sigchld_pending && !sigchld_withheld, child_info) {
                             signal_wake = manager.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
                         }
@@ -1071,13 +1172,14 @@ impl ProcessScheduler {
                     // per row: a signal death has already terminated the row
                     // (`already_terminated`), and this is still its first ask.
                     let orphaned_groups = manager.groups_orphaned_by_exit(pid, &children);
-                    // A parent that declines zombies reaps the row now; it is
-                    // dropped after PM is released.
                     #[cfg(target_arch = "aarch64")]
                     {
                         gpu_owner = crate::gpu::exited_locked(manager, pid);
                     }
-                    let auto_reaped = manager.reap_if_parent_declines(pid);
+                    // A thread's row, or a child whose parent declines
+                    // zombies, is reaped now; it is dropped after PM is
+                    // released.
+                    let auto_reaped = manager.reap_if_unwaited(pid);
                     // The group's last row has ended after its leader: the
                     // process has now exited, so its parent may reap it.
                     let group_exited = group_wake.map(|leader| manager.group_exited(leader));
@@ -1150,19 +1252,14 @@ impl ProcessScheduler {
             }
 
             if let Some(tid) = signal_wake {
-                scheduler::with_scheduler(|s| {
-                    s.unblock_for_signal(tid);
-                    s.unblock_for_child_exit(tid);
-                });
+                scheduler::wake_for_signal(tid, true);
             }
             // Wake the parent's thread if it waits in waitpid. An interruptible
             // wait (pause, a futex wait) is woken only by `signal_wake` above,
             // which is set when the SIGCHLD is one the parent will act on: an
             // ignored SIGCHLD is discarded without waking anybody, as on Linux.
             if let Some(parent_tid) = parent_tid {
-                scheduler::with_scheduler(|sched| {
-                    sched.unblock_for_child_exit(parent_tid);
-                });
+                scheduler::wake_for_child_exit(parent_tid);
                 crate::tracing::providers::process::trace_waitpid_wake(
                     parent_tid as u16,
                     pid.as_u64() as u16,
@@ -1170,20 +1267,8 @@ impl ProcessScheduler {
             }
 
             if report_claimed {
-                #[cfg(feature = "btrt")]
-                crate::test_framework::btrt::on_process_exit(pid.as_u64(), reported_exit_code);
-                #[cfg(not(feature = "btrt"))]
-                let _ = reported_exit_code;
-                crate::tracing::providers::teardown::record_report(pid.as_u64());
-
                 let completing_claimer = scheduler::current_thread_id().unwrap_or(report_claimer);
-                let _ = crate::process::with_process_manager(|manager| {
-                    if let Some(process) = manager.get_process_mut(pid) {
-                        process
-                            .exit_notifications
-                            .complete_report(completing_claimer);
-                    }
-                });
+                redeem_exit_report(pid, reported_exit_code, completing_claimer);
             }
 
             #[cfg(target_arch = "x86_64")]
@@ -1213,22 +1298,36 @@ impl ProcessScheduler {
     }
 }
 
+/// Redeem a process's exit report, which `claimer` claimed under
+/// PROCESS_MANAGER: the effect runs here, with PM released, and the claim is
+/// completed under a fresh hold. The one redemption site for both exit paths,
+/// `handle_thread_exit` and `process::exit_process_and_retire`.
+pub(crate) fn redeem_exit_report(pid: ProcessId, exit_code: i32, claimer: u64) {
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
+    #[cfg(not(feature = "btrt"))]
+    let _ = exit_code;
+    crate::tracing::providers::teardown::record_report(pid.as_u64());
+    let _ = crate::process::with_process_manager(|manager| {
+        if let Some(process) = manager.get_process_mut(pid) {
+            process.exit_notifications.complete_report(claimer);
+        }
+    });
+}
+
 /// A thread group's last row has ended (`ProcessManager::group_exited`):
 /// wake its leader's parent, and drop a leader row that parent reaped.
 /// Called with PROCESS_MANAGER released (condition C8).
 fn wake_group_parent(exited: crate::process::manager::GroupExited) {
     drop(exited.reaped);
-    scheduler::with_scheduler(|sched| {
-        if let Some(tid) = exited.signal_wake {
-            sched.unblock_for_signal(tid);
-            sched.unblock_for_child_exit(tid);
-        }
-        // As for a single-threaded child's exit: waitpid only, never an
-        // interruptible wait for a SIGCHLD the parent discards.
-        if let Some(tid) = exited.parent_tid {
-            sched.unblock_for_child_exit(tid);
-        }
-    });
+    if let Some(tid) = exited.signal_wake {
+        scheduler::wake_for_signal(tid, true);
+    }
+    // As for a single-threaded child's exit: waitpid only, never an
+    // interruptible wait for a SIGCHLD the parent discards.
+    if let Some(tid) = exited.parent_tid {
+        scheduler::wake_for_child_exit(tid);
+    }
 }
 
 fn next_reclaim_pass_id(mut pass: u32) -> u32 {
@@ -1277,7 +1376,7 @@ pub fn defer_fault_exit(thread_id: u64, exit_code: i32) -> bool {
     if let Some(daemon) = FAULT_EXIT_DAEMON.get() {
         crate::task::kthread::kthread_unpark(daemon);
         // Publishing a fatal signal's status cannot wait a busy CPU's quantum.
-        scheduler::with_scheduler(|s| s.expedite_signal_recipient(daemon.tid()));
+        scheduler::expedite_thread(daemon.tid());
     }
     queued
 }
@@ -1426,9 +1525,7 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
     reclaim.parked = Some(park_record);
     let mut reclaim = Some(reclaim);
     let parked = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
-            return false;
-        };
+        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
         if parked.try_reserve(1).is_err() {
             false
         } else {
@@ -1451,10 +1548,8 @@ fn park_reclaim(mut reclaim: PendingProcessReclaim) {
 
 fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch: u64) {
     let mut ready = alloc::vec::Vec::new();
-    let swept = crate::arch_without_interrupts(|| {
-        let Some(mut parked) = reclaim_queue(&PARKED_PROCESS_RECLAIMS) else {
-            return false;
-        };
+    crate::arch_without_interrupts(|| {
+        let mut parked = PARKED_PROCESS_RECLAIMS.lock();
         let mut index = 0;
         while index < parked.len() {
             let reason = parked[index]
@@ -1475,17 +1570,11 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
                 index += 1;
             }
         }
-        true
     });
-    if !swept {
-        return;
-    }
     if !ready.is_empty() {
         let mut ready = Some(ready);
         let queued = crate::arch_without_interrupts(|| {
-            let Some(mut pending) = reclaim_queue(&PENDING_PROCESS_RECLAIMS) else {
-                return false;
-            };
+            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
             let ready_len = ready.as_ref().expect("ready reclaims retained").len();
             if pending.try_reserve(ready_len).is_err() {
                 false
@@ -1495,8 +1584,10 @@ fn unpark_sweep_with_snapshot(snapshot: scheduler::RetirementSnapshot, row_epoch
             }
         });
         if !queued {
+            // One at a time: each receipt the queue still cannot take is
+            // counted and its row's retirement settled, not left a tombstone.
             for reclaim in ready.take().expect("unqueued ready reclaims retained") {
-                abandon_unqueued_reclaim(reclaim);
+                push_pending_or_abandon(reclaim);
             }
         }
     }
@@ -3689,7 +3780,60 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             "P1AB: reclaim progress gate changed nested proof-lock violations"
         );
     }
+    // Exercise the production frame budget on the same sparse hierarchy. This
+    // catches an audit that makes progress but starves table returns for hundreds
+    // of passes. Keep the original boot-owned F2/F9 checks above unchanged.
+    let (page_table, recorded) = match boot_oversized_page_table() {
+        Ok(fixture) => fixture,
+        Err(message) => return TestResult::Fail(message),
+    };
+    let mut production = boot_test_reclaim(BOOT_RECLAIM_PID_BASE + 105);
+    production.page_table = Some(page_table);
+    let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
+    let mut passes = 0;
+    let mut worst_ns = 0;
+    while production.page_table.is_some() && passes < 32 {
+        let started = reclaim_probe_time_ns();
+        reclaim_preempt_disable();
+        let snapshot = scheduler::RetirementSnapshot::capture();
+        let proof = production.lock_free_root_proof(&snapshot, true);
+        #[cfg(target_arch = "x86_64")]
+        let peers_clear = production.release_root_on_peers();
+        #[cfg(target_arch = "aarch64")]
+        let peers_clear = true;
+        let clear = proof.blocker().is_none() && peers_clear
+            && !production.cached_root_is_live() && !production.live_row_names_root();
+        let progress = if clear {
+            Some(production.reclaim_bounded(PRODUCTION_RECLAIM_FRAME_BUDGET))
+        } else {
+            None
+        };
+        reclaim_preempt_enable();
+        worst_ns = worst_ns.max(reclaim_probe_time_ns().saturating_sub(started));
+        if progress.is_none() {
+            return TestResult::Fail("production reclaim probe encountered a live root");
+        }
+        passes += 1;
+    }
+    let returned = trace::PT_TABLE_FRAMES_RETURNED.aggregate() - returned_before;
+    crate::serial_println!(
+        "[RECLAIM_PRODUCTION_PROBE:passes={}:returned={}:expected={}:frame_budget={}:worst_step_ns={}]",
+        passes, returned, recorded + 1, PRODUCTION_RECLAIM_FRAME_BUDGET, worst_ns
+    );
+    if production.page_table.is_some() || returned != recorded as u64 + 1 {
+        return TestResult::Fail("production reclaim probe failed to return its sparse hierarchy within 32 passes");
+    }
     TestResult::Pass
+}
+
+#[cfg(feature = "boot_tests")]
+fn reclaim_probe_time_ns() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    let time = crate::arch_impl::aarch64::timer::monotonic_time();
+    #[cfg(target_arch = "x86_64")]
+    let time = crate::time::tsc::monotonic_time();
+    let (seconds, nanos) = time.unwrap_or_else(crate::time::timer::get_monotonic_time_ns);
+    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
 }
 
 #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]

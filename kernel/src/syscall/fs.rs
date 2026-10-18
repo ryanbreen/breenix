@@ -3504,6 +3504,8 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
+    } else if cfg!(all(target_arch = "x86_64", not(feature = "interactive"))) && dir_path == "/proc/fbcon" {
+        alloc::vec![String::from("check")]
     } else {
         Vec::new()
     };
@@ -3854,7 +3856,7 @@ fn handle_fifo_open(
                 // 2. If a context switch happens while in HLT, the scheduler sees
                 //    from_userspace=false (kernel mode) but blocked_in_syscall tells
                 //    it to save/restore kernel context, not userspace context
-                crate::task::scheduler::with_scheduler(|sched| {
+                crate::task::scheduler::with_current(|sched| {
                     sched.block_current_in_syscall();
                 });
 
@@ -3875,7 +3877,7 @@ fn handle_fifo_open(
                         thread_id
                     );
                     // Other end opened during the race window - unblock and complete
-                    crate::task::scheduler::with_scheduler(|sched| {
+                    crate::task::scheduler::with_current(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.blocked_in_syscall = false;
                             thread.set_ready();
@@ -3893,7 +3895,7 @@ fn handle_fifo_open(
                     // Check for pending signals that should interrupt this syscall
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                         // Signal pending - clean up thread state and return EINTR
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                                 thread.set_ready();
@@ -3923,7 +3925,7 @@ fn handle_fifo_open(
                     crate::per_cpu::preempt_disable();
 
                     // Check if we were unblocked (thread state changed from Blocked)
-                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                    let still_blocked = crate::task::scheduler::with_current(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.state == crate::task::thread::ThreadState::Blocked
                         } else {
@@ -3940,17 +3942,18 @@ fn handle_fifo_open(
                 }
 
                 // Clear blocked_in_syscall now that we're resuming normal syscall execution
-                crate::task::scheduler::with_scheduler(|sched| {
+                crate::task::scheduler::with_current(|sched| {
                     if let Some(thread) = sched.current_thread_mut() {
                         thread.blocked_in_syscall = false;
                     }
                 });
-                // Reset quantum to prevent immediate preemption after long blocking wait
+                // Start a fresh quantum after a long blocking wait. A
+                // reschedule requested since the wake stays pending for the
+                // syscall return (#1753).
                 #[cfg(target_arch = "x86_64")]
                 crate::interrupts::timer::reset_quantum();
                 #[cfg(target_arch = "aarch64")]
                 {}
-                crate::task::scheduler::check_and_clear_need_resched();
 
                 let checked = recheck_fifo_open(&entry, for_write, partner_opens_seen);
                 if let FifoOpenResult::Error(e) = checked {
@@ -3982,7 +3985,7 @@ fn fail_pending_fifo_open(
     entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
     error: u64,
 ) -> SyscallResult {
-    crate::task::scheduler::with_scheduler(|sched| {
+    crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
             thread.set_ready();

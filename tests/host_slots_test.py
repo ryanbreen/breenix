@@ -4,6 +4,7 @@ import importlib.util
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import signal
@@ -19,9 +20,59 @@ HELPER = Path(__file__).resolve().parents[1] / 'scripts' / 'host-slots.py'
 spec = importlib.util.spec_from_file_location('host_slots', HELPER)
 slots = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(slots)
+# These tests model the gate VM's two build leases; build_slots() sizes them to the host it runs on.
+slots.RESOURCES['x86-build'] = 2
 
 
 class HostSlotsTest(unittest.TestCase):
+    def test_vmware_names_are_reused_per_held_mac_boot_slot(self):
+        # Use the launcher's actual naming expression against two real leases.
+        source = (HELPER.parents[1] / 'run.sh').read_text()
+        name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
+        script = (f'source {HELPER.with_suffix(".sh")}; '
+                  + self.vmware_name_function(source) + '; host_slot_acquire mac-boot; ' + name + '; '
+                  'echo READY:$VM_NAME; read -r release')
+        first = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
+        self.assertIn('READY:breenix-mac-boot-1', self.line_matching(first, 'READY:'))
+        second = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
+        self.assertIn('READY:breenix-mac-boot-2', self.line_matching(second, 'READY:'))
+        first.communicate(input=b'finish\n', timeout=15)
+        self.assertEqual(first.returncode, 0)
+        again = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
+        self.assertIn('READY:breenix-mac-boot-1', self.line_matching(again, 'READY:'))
+        for process in (second, again):
+            process.communicate(input=b'finish\n', timeout=15)
+            self.assertEqual(process.returncode, 0)
+
+    def vmware_name_function(self, source):
+        body = re.search(r'(?ms)^vmware_boot_name\(\) \{\n(.*?)^\}', source)[1]
+        return 'vmware_boot_name() {\n' + body + '\n}'
+
+    def test_unqueued_vmware_names_do_not_require_or_reuse_a_slot(self):
+        source = (HELPER.parents[1] / 'run.sh').read_text()
+        name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
+        script = (f'source {HELPER.with_suffix(".sh")}; '
+                  + self.vmware_name_function(source) + '; set -e; '
+                  'host_slot_acquire mac-boot; ' + name + '; echo NAME:$VM_NAME; '
+                  + name + '; echo NAME:$VM_NAME')
+        process = self.launch(script, bypass=True)
+        output = process.communicate(timeout=15)[0].decode()
+        self.assertEqual(process.returncode, 0, output)
+        names = [line for line in output.splitlines() if line.startswith('NAME:')]
+        self.assertEqual(len(names), 2, output)
+        self.assertTrue(all(n.startswith('NAME:breenix-unqueued-') for n in names), output)
+        self.assertNotEqual(names[0], names[1], output)
+
+    def test_slot_number_requires_a_held_lease(self):
+        script = (self.request('number', 'mac-boot') + '; test $? != 0; '
+                  + self.request('acquire', 'mac-boot') + '; '
+                  + self.request('release', 'mac-boot') + '; '
+                  + self.request('number', 'mac-boot') + '; test $? != 0')
+        process = self.launch(script)
+        output = process.communicate(timeout=15)[0].decode()
+        self.assertEqual(process.returncode, 0, output)
+        self.assertEqual(output.count('RuntimeError: resource lease is not held'), 2, output)
+
     def test_staged_classifier_stops_checkout_without_watchdog(self):
         bundle = self.root / 'watchdog'
         repo = HELPER.parents[1]
@@ -94,6 +145,7 @@ for i in range(100):
 spec = importlib.util.spec_from_file_location('host_slots', {str(HELPER)!r})
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SLOT_DIR = m.Path({str(self.root / 'locks')!r})
+m.RESOURCES['x86-build'] = 2
 m.mac_vms = lambda: []
 m.x86_vms = lambda: []
 m.vcpu_gap_ms = lambda seconds: 0.0
@@ -142,6 +194,13 @@ sys.exit(m.supervise(['bash', '-c', sys.argv[1]]))'''
                 if not chunk:
                     break
         self.fail(f'missing {text!r}: {collected.decode()}')
+
+    def test_build_slots_fit_the_machines_cpus_and_memory(self):
+        for cpus, memory, expected in ((24, 8 * 1024 ** 3, 2), (24, 64 * 1024 ** 3, 6), (8, 64 * 1024 ** 3, 2), (2, 1024 ** 3, 1)):
+            with self.subTest(cpus=cpus, memory=memory), \
+                    mock.patch.object(slots.os, 'sched_getaffinity', lambda pid: set(range(cpus)), create=True), \
+                    mock.patch.object(slots.Path, 'read_text', lambda self: str(memory)):
+                self.assertEqual(slots.build_slots(), expected)
 
     def test_two_builders_and_one_waiter(self):
         command = self.request('acquire', 'x86-build') + '; echo READY; read -r release'
@@ -364,6 +423,15 @@ sys.stdin.readline()
         self.assertIn('x86-boot running', self.line_matching(build, 'waiting for x86-build:'))
         boot.stdin.write(b'release\n'); boot.stdin.flush()
         self.line_matching(boot, 'RELEASED')
+        self.line_matching(build, 'BUILDING')
+        for process in (boot, build):
+            process.stdin.write(b'done\n'); process.stdin.flush()
+            self.assertEqual(process.wait(timeout=10), 0)
+
+    def test_metal_build_runs_beside_an_x86_boot_and_its_builds(self):
+        boot = self.launch(self.request('acquire', 'x86-boot') + '; echo BOOTING; read -r done')
+        self.line_matching(boot, 'BOOTING')
+        build = self.launch(self.request('acquire', 'metal-build') + '; echo BUILDING; read -r done')
         self.line_matching(build, 'BUILDING')
         for process in (boot, build):
             process.stdin.write(b'done\n'); process.stdin.flush()

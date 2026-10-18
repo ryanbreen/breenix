@@ -34,6 +34,7 @@
 /* External Rust functions */
 .extern rust_syscall_handler_aarch64
 .extern check_need_resched_and_switch_arm64
+.extern aarch64_complete_exception_switch
 .extern aarch64_resume_user_time
 .extern trace_eret_to_el0
 
@@ -249,6 +250,18 @@ syscall_entry_from_el0:
     bl check_need_resched_and_switch_arm64
 
     /*
+     * After a context switch x0 is the dispatched frame, staged on this CPU's
+     * scheduler stack. Restore from the copy: once SP is off the old thread's
+     * kernel stack, clear the mark that holds another CPU off the old thread,
+     * which the switch has already requeued (#1785). The call is one store,
+     * with no lock. x0 == 0 leaves SP on the frame this syscall pushed.
+     */
+    cbz x0, .Lsvc_frame_ready
+    mov sp, x0
+    bl aarch64_complete_exception_switch
+.Lsvc_frame_ready:
+
+    /*
      * Set PREEMPT_ACTIVE to protect register restoration sequence.
      * This prevents timer interrupts from attempting context switch
      * while we have mixed kernel/user state during register restore + ERET.
@@ -264,9 +277,8 @@ syscall_entry_from_el0:
      * Restore registers from exception frame.
      *
      * Read ELR/SPSR from the exception frame (written by dispatch function
-     * if a context switch occurred). The deferred requeue mechanism prevents
-     * cross-CPU frame overwrite: the old thread stays in per-CPU
-     * DEFERRED_REQUEUE until the next timer tick on THIS CPU.
+     * if a context switch occurred, and then staged off the old thread's
+     * kernel stack above).
      *
      * Order:
      * 1. Do TTBR0 switch using x0/x1 as scratch (nothing is restored yet)

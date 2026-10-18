@@ -56,7 +56,7 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe) => panic!("{text:?} parsed as probe"),
+        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console { .. }) => panic!("{text:?} parsed as another mode"),
         Err(why) => panic!("{text:?} was refused: {why}"),
     }
 }
@@ -75,6 +75,9 @@ fn suite_and_probe_lines_parse() {
         ("smoke".into(), Some("No_Such.case/x-1".into()))
     );
     assert!(matches!(parse("probe\n"), Ok(Target::Probe)));
+    assert!(matches!(parse("default\n"), Ok(Target::Default)));
+    assert!(matches!(parse("shell\n"), Ok(Target::Shell)));
+    assert!(matches!(parse("console\n"), Ok(Target::Console { .. })));
 }
 
 #[test]
@@ -130,4 +133,24 @@ fn read_parses_the_file_on_the_root() {
 #[test]
 fn check_elf_refuses_a_non_elf() {
     assert!(target::check_elf(b"not an elf").is_err());
+}
+
+#[test]
+fn console_idle_threshold_is_bounded_and_keeps_the_console_target() {
+    assert!(matches!(parse("console\n"), Ok(Target::Console { idle_minutes: 30, replug: false })));
+    assert!(matches!(parse("console idle=2\n"), Ok(Target::Console { idle_minutes: 2, replug: false })));
+    assert!(matches!(parse("console idle=240\n"), Ok(Target::Console { idle_minutes: 240, replug: false })));
+    for text in ["console idle=0", "console idle=241", "console idle=-1", "console idle=+2",
+                 "console idle=", "console  idle=2", "console idle=2 extra", "shell idle=2"] {
+        assert!(parse(text).is_err(), "{text:?} was accepted");
+    }
+}
+
+#[test]
+fn only_an_explicit_measured_console_target_requests_replug() {
+    assert!(matches!(parse("console replug\n"),
+        Ok(Target::Console { idle_minutes: 30, replug: true })));
+    for text in ["console idle=2 replug", "console replug idle=2", "shell replug", "console  replug"] {
+        assert!(parse(text).is_err(), "{text:?} was accepted");
+    }
 }

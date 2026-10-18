@@ -7,8 +7,8 @@ use spin::Mutex;
 
 use super::{ethernet, ipv4, udp};
 
-const CLIENT_PORT: u16 = 68;
-const SERVER_PORT: u16 = 67;
+pub(crate) const CLIENT_PORT: u16 = 68;
+pub(crate) const SERVER_PORT: u16 = 67;
 
 /// RFC 2131 section 3: the options field starts with this cookie.
 const MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
@@ -41,11 +41,13 @@ const DHCPACK: u8 = 5;
 const DHCPNAK: u8 = 6;
 
 /// How long each attempt waits for the OFFER, and then for the ACK. Three
-/// attempts bound a network with no server to 10 s of boot time. Attempts
+/// attempts bound a network with no server to 10 s waiting for offers. Attempts
 /// retransmit the DISCOVER in one transaction, so an OFFER that answers an
 /// earlier copy after that copy's wait still counts.
-const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [2_000, 4_000, 4_000];
+const ATTEMPT_TIMEOUTS_MS: [u64; 3] = [4_000, 4_000, 2_000];
 
+/// DHCP policy remains in force before acquisition and after lease expiry.
+static REQUIRED: AtomicBool = AtomicBool::new(false);
 /// The reply the running exchange waits for; zero while none runs, so the
 /// receive hook costs one atomic load on every other boot.
 static AWAITED: AtomicU8 = AtomicU8::new(0);
@@ -92,9 +94,19 @@ struct Reply {
     rebinding: Option<u32>,
 }
 
+/// Mark an interface as DHCP-managed before carrier and discovery finish.
+pub fn require_configuration() {
+    REQUIRED.store(true, Ordering::Release);
+}
+
+pub fn configuration_required() -> bool {
+    REQUIRED.load(Ordering::Acquire)
+}
+
 /// Obtain a lease for the interface whose hardware address is `mac`.
 /// Returns `None` when no server completed the exchange.
 pub fn acquire(mac: [u8; 6]) -> Option<Lease> {
+    require_configuration();
     CLIENT_MAC.store(mac_to_u64(mac), Ordering::Relaxed);
     let seed = crate::time::tsc::nanoseconds_since_base().unwrap_or(0) as u32;
     XID.store(
@@ -352,7 +364,11 @@ fn exchange(
         let _ = take_reply();
     }
     REQUEST_SENT.store(now(), Ordering::Relaxed);
-    let message = build_message(kind, XID.load(Ordering::Relaxed), mac, request);
+    let message = if kind == DHCPDISCOVER {
+        discover_message(XID.load(Ordering::Relaxed), mac)
+    } else {
+        build_message(kind, XID.load(Ordering::Relaxed), mac, request)
+    };
     send_message(&message, [0; 4], [255; 4])?;
     wait_reply(timeout_ms)
 }
@@ -375,6 +391,21 @@ fn take_reply() -> Option<Reply> {
     let _guard = super::net_lock_guard();
     let reply = REPLY.lock().take();
     reply
+}
+
+/// A DHCPDISCOVER from `mac` in transaction `xid`, for a driver that checks
+/// its first frame reaches the network and is answered. It is the client's
+/// own message; the exchange that would take a lease is not run.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // The BCM5720 driver is x86-only.
+pub(crate) fn discover_message(xid: u32, mac: [u8; 6]) -> [u8; MIN_MESSAGE_LEN] {
+    build_message(DHCPDISCOVER, xid, mac, None)
+}
+
+/// Whether `message`, a UDP payload from the server port to the client port,
+/// is an OFFER answering transaction `xid` for `mac`.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // The BCM5720 driver is x86-only.
+pub(crate) fn is_offer(message: &[u8], xid: u32, mac: [u8; 6]) -> bool {
+    parse_reply(message, xid, mac).is_some_and(|reply| reply.kind == DHCPOFFER)
 }
 
 fn build_message(
@@ -436,6 +467,9 @@ pub fn receive(ip: &ipv4::Ipv4Packet) -> bool {
     }
     let mac = CLIENT_MAC.load(Ordering::Relaxed).to_be_bytes();
     let mac = [mac[2], mac[3], mac[4], mac[5], mac[6], mac[7]];
+    if awaited == DHCPOFFER && !is_offer(message, XID.load(Ordering::Relaxed), mac) {
+        return true;
+    }
     let Some(reply) = parse_reply(message, XID.load(Ordering::Relaxed), mac) else {
         return true;
     };

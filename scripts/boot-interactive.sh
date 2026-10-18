@@ -187,6 +187,7 @@ fi
 case "$SERIAL_LOG" in /*) ;; *) SERIAL_LOG="$PWD/$SERIAL_LOG" ;; esac
 
 cd "$ROOT"
+echo "==> Commit: $(git rev-parse HEAD) dirty=$(test -z "$(git status --porcelain)" && echo 0 || echo 1)"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
 
@@ -195,9 +196,10 @@ case "$MODE" in
     suite) echo "==> Mode: suite $SUITE" ;;
     *) echo "==> Mode: $MODE" ;;
 esac
-# Build-host policy is opt-in and never changes VM priority or caller job limits.
+# Background only build subprocesses. A lane may itself be backgrounded; the
+# QEMU launcher restores boot policy independently, immediately before exec.
 run_build() {
-    if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
+    if [ "$(uname)" = Darwin ]; then
         taskpolicy -b "$@"
     else
         "$@"

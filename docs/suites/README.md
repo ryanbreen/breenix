@@ -40,7 +40,7 @@ on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
 
 Use `scripts/boot-interactive.sh --mode suite --suite ID --case CATEGORY/CASE`
 on ARM64 QEMU, or `./run.sh --parallels|--vmware --suite ID --case CATEGORY/CASE`.
-The selection lives in the shared suite runner, so the 16 suites take it the same way.
+The selection lives in the shared suite runner, so each suite takes it the same way.
 It runs only the named case, with the same isolation, limits, measurements and display
 as a full run; any setup belongs to that case. The panel shows only that case and
 identifies the run as one case. The three launchers hold its final panel for

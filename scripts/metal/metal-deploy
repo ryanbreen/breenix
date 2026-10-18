@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Installs the x86-metal tools from this checkout onto the boot host (docs/metal/README.md, "Deploying").
+#
+#   scripts/metal/metal-deploy HOST [--create] [--restart]
+#
+# HOST is the boot host's ssh name. Instance names, CPU set, memory limit and the published address come from the
+# host's ~/.config/breenix-metal/host.env, never from the repository. claim-lint:ok: #1680 reviewed deployment paths and credential transport.
+#   --create   create the service container if it does not exist (limits, autostart, proxy device, packages)
+#   --restart  restart the machine service (refused while a boot holds the lease)
+# The service container gets the tools in /opt/breenix-metal and the machine service unit; the boot host gets
+# metal-run, metal-build, its slot and artifact helpers and the delivery stub's source in ~/.local/share/breenix-metal (user files; nothing is
+# installed on the host's OS). claim-lint:ok: #1680 reviewed deployment paths and credential transport.
+set -euo pipefail
+
+HOST=${1:?usage: metal-deploy HOST [--create] [--restart]}
+shift
+CREATE=0 RESTART=0
+for argument in "$@"; do
+    case "$argument" in
+        --create) CREATE=1 ;;
+        --restart) RESTART=1 ;;
+        *) echo "metal-deploy: unknown option $argument" >&2; exit 2 ;;
+    esac
+done
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TAG=$(git -C "$HERE" rev-parse HEAD)
+[ -z "$(git -C "$HERE" status --porcelain -- .)" ] || TAG="$TAG-dirty"
+# ustar carries no extended attributes, so a macOS checkout sends plain files.
+pack() { COPYFILE_DISABLE=1 tar -C "$HERE" --format=ustar --exclude=__pycache__ --exclude=target -cf - "$@"; }
+
+remote() {
+    # shellcheck disable=SC2029
+    ssh -o BatchMode=yes "$HOST" "set -euo pipefail; set -a; . ~/.config/breenix-metal/host.env; set +a; $1"
+}
+
+if [ "$CREATE" = 1 ]; then
+    remote '
+if ! sudo -n incus info "$METAL_INSTANCE" >/dev/null 2>&1; then
+    sudo -n incus init "$METAL_IMAGE" "$METAL_INSTANCE" -c limits.cpu="$METAL_CPUS" -c limits.memory="$METAL_MEMORY" \
+        -c boot.autostart=true </dev/null
+    sudo -n incus config device add "$METAL_INSTANCE" http proxy listen="tcp:$METAL_LISTEN" \
+        connect="tcp:127.0.0.1:${METAL_LISTEN##*:}" </dev/null
+    sudo -n incus start "$METAL_INSTANCE" </dev/null
+    sleep 8
+fi
+sudo -n incus config set "$METAL_INSTANCE" limits.cpu="$METAL_CPUS" limits.memory="$METAL_MEMORY" boot.autostart=true </dev/null
+sudo -n incus exec "$METAL_INSTANCE" -- sh -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ipmitool tmux mtools dosfstools \
+    gdisk e2fsprogs xorriso ca-certificates >/dev/null" </dev/null
+echo "metal-deploy: service container ready"'
+fi
+
+pack . -C "$HERE/.." write-boot-target.sh | remote '
+sudo -n incus exec "$METAL_INSTANCE" -- sh -c "rm -rf /opt/breenix-metal.new && mkdir -p /opt/breenix-metal.new && \
+    tar -C /opt/breenix-metal.new --no-same-owner -xf - && rm -rf /opt/breenix-metal && \
+    mv /opt/breenix-metal.new /opt/breenix-metal"'
+printf '%s\n' "$TAG" | remote 'sudo -n incus exec "$METAL_INSTANCE" -- sh -c "cat > /opt/breenix-metal/COMMIT"'
+pack metal-run metal-build efi-stub/Cargo.toml efi-stub/Cargo.lock efi-stub/rust-toolchain.toml efi-stub/src \
+    -C "$HERE/.." host-slots.py gate-artifacts.py gate-tree.py | remote 'mkdir -p ~/.local/share/breenix-metal && rm -rf ~/.local/share/breenix-metal/efi-stub && tar -C ~/.local/share/breenix-metal --no-same-owner -xf -'
+remote '
+sudo -n incus exec "$METAL_INSTANCE" -- sh -c "install -d -m 700 /etc/breenix-metal /var/lib/breenix-metal && \
+    install -m 644 /opt/breenix-metal/units/breenix-metal-machine.service /etc/systemd/system/ && \
+    systemctl daemon-reload && systemctl enable breenix-metal-machine.service >/dev/null 2>&1" </dev/null'
+if [ "$RESTART" = 1 ]; then
+    remote '
+if sudo -n incus exec "$METAL_INSTANCE" -- test -e /var/lib/breenix-metal/lease.json </dev/null; then
+    echo "metal-deploy: a boot holds the lease; not restarting the machine service" >&2; exit 75
+fi
+sudo -n incus exec "$METAL_INSTANCE" -- systemctl restart breenix-metal-machine.service </dev/null'
+else
+    remote 'sudo -n incus exec "$METAL_INSTANCE" -- sh -c "test -s /etc/breenix-metal/site.env && systemctl start breenix-metal-machine.service || true" </dev/null'
+fi
+echo "metal-deploy: deployed $TAG"
