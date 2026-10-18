@@ -1,0 +1,11 @@
+
+running 5 tests
+test p6a_retire_arm_stays_outside_masked_and_queue_held_windows ... ok
+test debt4_row_removal_routes_through_the_join_on_both_arches ... ok
+test current_teardown_bypass_surface_is_exact ... ok
+test v3_structural_closures_are_exact ... ok
+test deliberately_broken_variants_fail_the_ratchet has been running for over 60 seconds
+test deliberately_broken_variants_fail_the_ratchet ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 103 filtered out; finished in 149.11s
+
