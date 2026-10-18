@@ -31,7 +31,7 @@ The first nonblocking sampler tried the owner lock once. Boot `20261018T153808Z-
 
 A single acquisition attempt can collide with an ordinary scheduler pass. The revised sampler uses the scheduler's existing `OWNER_TRIES` budget of 256 nonblocking attempts, also used by its owner-lock lookups. For local and remote owners, it calls `try_remote` with the owner CPU, so an unavailable lock advances the finite retry loop. Exhausting that budget still leaves the sample conservatively stranded. This changes acquisition retry policy, not the timer deadline predicate.
 
-The bounded sampler passed the affected release build without warnings. The unchanged census-format, classification, and consumer host tests were not repeated for the acquisition-loop change. A clean merge of #1912 added clock/workqueue validation files; it changed none of the census, wait-sampling, or production clock implementation, so it did not trigger another local test or build run.
+The bounded sampler passed the affected release build without warnings. The unchanged census-format, classification, and consumer host tests were not repeated for the acquisition-loop change. The 4 of 4 files in the clean merge of #1912 were clock/workqueue validation files, outside the census, wait-sampling, and production clock implementation; that merge did not trigger another local test or build run.
 
 
 ## Completed production session
