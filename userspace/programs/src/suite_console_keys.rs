@@ -81,10 +81,15 @@ impl Drop for Raw {
 
 /// Switch with each chord in turn, requiring the terminal and the switch's log line.
 fn switches(steps: &[(&str, usize)]) -> Verdict {
+    let label = mark("key-switch");
+    for &(_, n) in steps {
+        fill(&Term::vt(n)?, &format!("{label}-tty{n}"), 1)?;
+    }
     for &(chord, n) in steps {
         let line = format!("[console] foreground tty{n} (key {chord})");
         let before = count(&kmsg()?, &line);
         key_switch(chord, n)?;
+        view(n, &format!("{label}-tty{n}-000"))?;
         require(within(KEY_MS, || kmsg().is_ok_and(|log| count(&log, &line) == before + 1)), &format!("no line {line}"))?;
     }
     Ok(())
