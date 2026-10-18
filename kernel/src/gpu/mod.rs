@@ -98,8 +98,15 @@ fn now_ns() -> u64 {
 
 fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     crate::per_cpu::preempt_disable();
-    let r = CORE.lock().as_mut().map(f);
-    ring_doorbell();
+    let (r, kick) = {
+        let mut core = CORE.lock();
+        let r = core.as_mut().map(f);
+        // Claim this operation's notification before another CPU can enter the core.
+        (r, KICK.swap(false, Ordering::AcqRel))
+    };
+    if kick {
+        ring_doorbell();
+    }
     crate::per_cpu::preempt_enable();
     r
 }
@@ -107,14 +114,13 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
 /// Notify the device of the requests [`Core::flush`] made available, after the core's lock
 /// is released. The notification is an MMIO write, and a hypervisor may hold the writing
 /// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
-/// requests' descriptors and ring index were published before `KICK` was set.
+/// requests' descriptors and ring index were published before `KICK` was set, and the
+/// caller claimed that kick while still holding the core's lock.
 fn ring_doorbell() {
-    if KICK.swap(false, Ordering::AcqRel) {
-        let at = DOORBELL.load(Ordering::Acquire);
-        if at != 0 {
-            // SAFETY: the control queue's mapped notification address; queue 0.
-            unsafe { core::ptr::write_volatile(at as *mut u16, 0) };
-        }
+    let at = DOORBELL.load(Ordering::Acquire);
+    if at != 0 {
+        // SAFETY: the control queue's mapped notification address; queue 0.
+        unsafe { core::ptr::write_volatile(at as *mut u16, 0) };
     }
 }
 
