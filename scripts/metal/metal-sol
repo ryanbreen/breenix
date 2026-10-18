@@ -8,4 +8,5 @@ set -a
 set +a
 IPMI_PASSWORD="$IDRAC_PASSWORD"
 export IPMI_PASSWORD
-exec ipmitool -I lanplus -C 17 -H "$IDRAC_HOST" -U "$IDRAC_USER" -E sol "$1"
+# A pipe is the authoritative capture; flush the startup banner before power-on.
+exec stdbuf -o0 -e0 ipmitool -I lanplus -C 17 -H "$IDRAC_HOST" -U "$IDRAC_USER" -E sol "$1"
