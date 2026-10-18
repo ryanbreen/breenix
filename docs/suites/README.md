@@ -203,6 +203,9 @@ Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BI
 - x86-metal: `metal-run boot --mode suite --suite <id>` on the boot host, which stages the suite's fixtures
   onto the delivered RAM-disk root and scores the boot with this manifest
   ([the metal boot loop](../metal/README.md), "RAM-disk userspace").
+<!-- claim-lint:ok: `all` is the flag's name, resolved by scripts/suite-sequence.py. -->
+- The first three also take a list, `--suite <id>,<id>,...`, or `--suite all`, and run the
+  suites one after another in one boot ("Several suites in one boot", below).
 - x86-64 gate: `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh`, or
   `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. The gate scores
   the boot with `scripts/suite-verdict.py`: one START with the manifest's case count, a CASE
@@ -219,6 +222,100 @@ fw_cfg mode first (`opt/breenix/mode=suite` with `opt/breenix/suite=<id>`; on x8
 then that file, else the default `/sbin/init`. A suite binary that is missing or not a
 loadable ELF for the kernel's architecture runs `/sbin/init` instead, and so does one that
 then fails to start.
+
+## Several suites in one boot
+
+A boot can run a list of suites in turn, so a machine whose boots each cost minutes of
+firmware, delivery and build time runs the list for one boot's overhead:
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite directories,processes,time
+./run.sh --parallels --suite all
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite files-io,directories,memory
+```
+
+<!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and
+tests/suite_sequence_test.py exercises it. -->
+`scripts/suite-sequence.py resolve` turns the argument into the list, checked before the
+boot: known, distinct suite ids, each with a manifest. `all` is every suite of
+`docs/efforts/path.json` the target runs (on x86-metal every main-path effort's), in path order,
+leaving out those with no manifest yet and, on a target without a 3D GPU (x86-metal; ARM64
+QEMU without `--gpu-gl`), those whose manifest says `"needs3dGpu": true`. Two suites cannot
+share a boot anywhere but at one end, and their manifests say so with `"sequence"`:
+`console` (`"first"`) needs the kernel's own console on screen, and nothing gives the
+console back once a suite has taken the display; `files-io` (`"last"`) has host disk checks,
+read from the disk after the boot, so nothing may write after it.
+`tests/suite_manifests.rs` requires `"sequence": "last"` of any manifest with `diskChecks`.
+A list that puts either elsewhere is refused with that reason, and `all` orders them so.
+One-case runs (`--case`) take a single suite.
+
+The launcher writes the list to `/etc/breenix/suite-sequence` on the boot's disk
+(`scripts/write-boot-target.sh IMAGE FIRST PID1_ELF LIST`) and boots the first suite as PID 1.
+Each suite prints exactly the lines it prints in a boot of its own, from its START to its
+DONE, so `scripts/suite-verdict.py`, the launchers' watchers and Vigil read each suite as
+they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds these records:
+
+```text
+SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries>
+SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...]
+SUITE_SEQUENCE RESET <id> FAIL <why>
+SUITE_SEQUENCE READY <id>
+SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
+SUITE_SEQUENCE FAIL exec <id>
+SUITE_SEQUENCE DONE suites=<n>
+```
+
+Each suite starts from the state its own boot gives it:
+
+- **Processes and descriptors.** Once a suite's DONE is out (and its panel drawn), the runner
+  kills each process but PID 1 and reaps it, closes each descriptor but 0, 1 and 2, sets
+  each signal back to its default action, unblocks them and disarms its timer, then
+  execs the next suite: PID 1 again, with a fresh address space and the environment the
+  kernel gave the first. Processes that outlive SIGKILL are reported as a RESET FAIL of the
+  next suite.
+- **Files and IPC names.** Before its START the first suite records the root filesystem in
+  `/etc/breenix/suite-baseline`: each path's type, permission bits, owner and size, with a
+  content hash for symlinks and for files of at most 64 KiB and the modification time for
+  larger files; `/proc` and `/dev` are left out, but for the POSIX shared memory and message
+  queue names in `/dev/shm` and `/dev/mqueue`. Before each later suite's START the runner
+  removes whatever earlier suites created and prints RESET. A recorded path that is missing
+  or differs (a fixture an earlier suite changed) cannot be put back, since no copy was
+  kept: RESET names it, and that suite is scored NOT-ISOLATED, its own verdict alongside.
+  Fixtures the launcher stages (the SDK suite's host results) are on the disk before the
+  baseline, so they stay.
+- **What carries over.** PID numbers, the page cache, kernel memory and TCP connections in
+  TIME_WAIT (60 s; no `/proc/net/tcp` shows them) persist across suites, as in any boot that
+  runs programs one after another.
+
+A suite whose runner stops starting or finishing cases for 90 seconds (below the launchers'
+120-second stall watchdog, above the 25-second case allowance plus its kill and sweep) is
+ended by the runner's own watchdog, SIGALRM from ITIMER_REAL in PID 1: it prints STALLED
+with the cases reported so far and hands off to the next suite from the signal handler,
+using system calls only. Case processes start with SIGALRM back at its default action, and a
+SIGALRM that arrives before the watchdog's time (a case may signal PID 1) is not the
+watchdog. If the kernel itself stops, no code in the boot can move to the next suite: the
+launcher's stall watchdog ends the boot, and the suites after the stalled one are NOT-RUN.
+
+Each suite has its own DONE deadline, counted from its START (`--gate-timeout` on ARM64
+QEMU, Parallels and VMware, 420 s per suite on x86-metal, whose attempt ceiling grows by
+420 s per suite). The sequence is finished at `SUITE_SEQUENCE DONE`; the last suite keeps its
+final panel. `scripts/suite-sequence.py score LIST SERIAL [--disk IMAGE]` then scores each
+suite from its own part of the serial (from where it begins to where the next begins, so a
+later kernel panic fails only the suite it happened in) and prints one line per suite:
+
+| Status | Meaning |
+|---|---|
+| PASS / FAIL | `scripts/suite-verdict.py`'s verdict for the suite; the last suite's disk checks too |
+| STALLED | The runner's watchdog, or the end of the boot, stopped it; the cases it reported are kept |
+| NOT-RUN | It did not print START: an earlier suite stopped the boot, or its binary could not start |
+| NOT-ISOLATED | Its RESET named state it could not restore; its own verdict follows |
+
+The boot passes when each suite passes. The ARM64 QEMU, Parallels and VMware launchers print
+the table's lines after the boot, even one stopped part way; x86-metal writes them to the
+boot record's `suite-verdict.txt` and names the suites in `run.json` (`suites`; `suite` only
+for a boot of one). `scripts/vigil-record.sh` files a Mac boot of several suites as one
+Vigil record per suite, `<boot id>-<suite>`, over the boot's serial. The retired x86 QEMU
+gate runs one suite per boot.
 
 ## The panel
 
