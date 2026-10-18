@@ -488,6 +488,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     kernel::arch_impl::x86_64::cpu_init::init_cpu(0);
     log::info!("System call infrastructure initialized");
 
+    // The screen console's display BAR, its write-combining mapping and shadow:
+    // after PCI enumeration and the boot CPU's PAT, before the other CPUs run.
+    #[cfg(not(feature = "interactive"))]
+    kernel::fbcon::attach();
+
     // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
 
@@ -832,6 +837,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     if let Err(e) = graphics::render_task::spawn_render_thread() {
         log::error!("Failed to spawn render thread: {}", e);
     }
+    // Without `interactive`, the screen console's render thread.
+    #[cfg(not(feature = "interactive"))]
+    kernel::fbcon::start();
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -2706,6 +2714,8 @@ fn kernel_main_continue() -> ! {
             kernel::arch_impl::x86_64::tick_census::start();
             log::info!("[metal] kernel idle");
         }
+        // The screen console reads the screen back once boot is idle.
+        kernel::fbcon::request_idle_check();
 
         kernel::per_cpu::preempt_enable();
 
