@@ -1,0 +1,10 @@
+15:26:36 waiting for <artifacts>/ptr.sock
+15:40:38 connected
+15:40:38 boot tests started
+15:40:40 dump 000-during pointer=(300,600) {'return': {}}
+15:40:42 dump 001-during pointer=(900,620) {'return': {}}
+15:40:44 dump 002-during pointer=(500,300) {'return': {}}
+15:40:46 dump 003-during pointer=(1100,200) {'return': {}}
+15:40:48 dump 004-after-tests pointer=(200,700) {'return': {}}
+15:40:53 dump 005-final pointer=(640,650) {'return': {}}
+15:40:53 done: 403 pointer moves, 6 screendumps

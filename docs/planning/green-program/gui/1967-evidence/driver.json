@@ -1,0 +1,65 @@
+{
+ "moves": 403,
+ "events": [
+  {
+   "shot": "000-during",
+   "t": 2.12,
+   "pointer": [
+    300,
+    600
+   ],
+   "reply": "ok",
+   "serial_tail": 573
+  },
+  {
+   "shot": "001-during",
+   "t": 4.23,
+   "pointer": [
+    900,
+    620
+   ],
+   "reply": "ok",
+   "serial_tail": 582
+  },
+  {
+   "shot": "002-during",
+   "t": 6.37,
+   "pointer": [
+    500,
+    300
+   ],
+   "reply": "ok",
+   "serial_tail": 600
+  },
+  {
+   "shot": "003-during",
+   "t": 8.49,
+   "pointer": [
+    1100,
+    200
+   ],
+   "reply": "ok",
+   "serial_tail": 710
+  },
+  {
+   "shot": "004-after-tests",
+   "t": 10.62,
+   "pointer": [
+    200,
+    700
+   ],
+   "reply": "ok",
+   "serial_tail": 933
+  },
+  {
+   "shot": "005-final",
+   "t": 15.25,
+   "pointer": [
+    640,
+    650
+   ],
+   "reply": "ok",
+   "serial_tail": 1074
+  }
+ ]
+}

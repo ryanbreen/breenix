@@ -1813,6 +1813,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "boot_tests")]
     {
         serial_println!("[boot] Running parallel boot tests...");
+        // The boot is not complete until they finish: say why it is waiting.
+        boot_screen::set_status(format_args!("Running kernel boot tests"));
         #[cfg(feature = "btrt")]
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = kernel::test_framework::run_all_tests();
