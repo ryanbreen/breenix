@@ -32,19 +32,35 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Absolute monotonic-milliseconds deadline for blocking receives; 0 = disarmed.
 static RECV_DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
+static RECV_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
 /// Sticky: set when a deadline actually expired, so callers can distinguish a
 /// mid-stream stall from an ordinary error however the error was remapped by
 /// the TLS/HTTP layers above.
 static RECV_DEADLINE_FIRED: AtomicBool = AtomicBool::new(false);
 
-/// Arm the process-global deadline used by blocking connected-socket receives.
-pub fn arm_recv_deadline(absolute_monotonic_ms: u64) {
+/// Configure a receive budget to start after HTTP's TCP connection succeeds.
+/// DNS and connect time do not spend this budget.
+pub fn arm_recv_timeout(timeout_ms: u64) {
     RECV_DEADLINE_FIRED.store(false, Ordering::Release);
-    RECV_DEADLINE_MS.store(absolute_monotonic_ms, Ordering::Release);
+    RECV_DEADLINE_MS.store(0, Ordering::Release);
+    RECV_TIMEOUT_MS.store(timeout_ms, Ordering::Release);
+}
+
+pub(crate) fn start_recv_deadline() -> Result<(), Error> {
+    let timeout_ms = RECV_TIMEOUT_MS.load(Ordering::Acquire);
+    if timeout_ms != 0 {
+        let now = crate::time::now_monotonic()?;
+        let now_ms = (now.tv_sec.max(0) as u64)
+            .saturating_mul(1000)
+            .saturating_add(now.tv_nsec.max(0) as u64 / 1_000_000);
+        RECV_DEADLINE_MS.store(now_ms.saturating_add(timeout_ms), Ordering::Release);
+    }
+    Ok(())
 }
 
 /// Disarm the process-global connected-socket receive deadline.
 pub fn disarm_recv_deadline() {
+    RECV_TIMEOUT_MS.store(0, Ordering::Release);
     RECV_DEADLINE_MS.store(0, Ordering::Release);
 }
 
