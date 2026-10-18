@@ -1075,6 +1075,50 @@ static DIAG_RASTER_US: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 static DIAG_ORACLE_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static DIAG_SHA_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+#[cfg(target_arch = "x86_64")]
+fn diag_memory(shadow: &[u8]) {
+    fn sum(bytes: &[u8]) -> u64 {
+        bytes.chunks_exact(8).fold(0u64, |acc, c| acc.wrapping_add(u64::from_le_bytes(c.try_into().unwrap())))
+    }
+    let cr0: u64;
+    // SAFETY: reads CR0.
+    unsafe { core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags)) };
+    let pat = unsafe { x86_64::registers::model_specific::Msr::new(0x277).read() };
+    let cpu = crate::per_cpu::cpu_id();
+    let t0 = crate::time::get_monotonic_time_ns();
+    let a = crate::arch_without_interrupts(|| sum(shadow));
+    let shadow_us = elapsed_us(t0);
+    let fresh = alloc::vec![1u8; shadow.len()];
+    let t0 = crate::time::get_monotonic_time_ns();
+    let b = crate::arch_without_interrupts(|| sum(&fresh));
+    let fresh_us = elapsed_us(t0);
+    let t0 = crate::time::get_monotonic_time_ns();
+    let c = crate::arch_without_interrupts(|| {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..100_000_000u64 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+        }
+        core::hint::black_box(x)
+    });
+    let spin_us = elapsed_us(t0);
+    log::info!(
+        "[console] diag memory cpu {} cr0 {:#x} pat {:#x} shadow {:#x} sum {} us, fresh {:#x} sum {} us, 100M xorshift {} us ({} {} {})",
+        cpu,
+        cr0,
+        pat,
+        shadow.as_ptr() as u64,
+        shadow_us,
+        fresh.as_ptr() as u64,
+        fresh_us,
+        spin_us,
+        a & 1,
+        b & 1,
+        c & 1
+    );
+}
+
 fn elapsed_us((seconds, nanos): (u64, u64)) -> u64 {
     let (now_seconds, now_nanos) = crate::time::get_monotonic_time_ns();
     let start = seconds * 1_000_000_000 + nanos;
@@ -1321,6 +1365,12 @@ fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
     DIAG_READ_US.store(0, Ordering::Relaxed);
     DIAG_ORACLE_US.store(0, Ordering::Relaxed);
     let t0 = crate::time::get_monotonic_time_ns();
+    #[cfg(target_arch = "x86_64")]
+    if idle {
+        if let Ok((screen, _)) = &screen {
+            diag_memory(&screen.shadow);
+        }
+    }
     let answer = screen.map(|(screen, fg)| screen.check(fg));
     if idle {
         log::info!(
