@@ -7,12 +7,14 @@ use crate::{badge_color, Color, Frame, BACKGROUND};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Expected {
     pub color: Color,
-    /// True when the sixteen samples cross a visible colour boundary. Such
+    /// True when a partially covered layer contributes a colour boundary. Such
     /// pixels still have an exact expected colour; callers must check them.
     pub antialiased: bool,
 }
 
 fn contains(shape: Primitive, px: i64, py: i64, scale: u16) -> bool {
+    let px = px * geometry::UNITS;
+    let py = py * geometry::UNITS;
     let unit = i64::from(scale) * 8;
     let c = |v: i32| i64::from(v) * unit;
     match shape {
@@ -86,38 +88,47 @@ pub fn expected_at(x: i32, y: i32, scale: u16, frame: &Frame) -> Option<Expected
             antialiased: false,
         });
     }
-    let mut samples = [BACKGROUND; 16];
+    let mut output = BACKGROUND;
+    let mut covered = [false; 16];
+    let mut source = BACKGROUND;
+    let mut edge = false;
+    let resolve = |under: Color, source: Color, covered: &[bool; 16]| {
+        let count = covered.iter().filter(|inside| **inside).count() as u32;
+        let channel = |src: u8, dst: u8| {
+            ((u32::from(src) * count + u32::from(dst) * (16 - count) + 8) / 16) as u8
+        };
+        (
+            Color(
+                channel(source.0, under.0),
+                channel(source.1, under.1),
+                channel(source.2, under.2),
+            ),
+            count > 0 && count < 16 && source != under,
+        )
+    };
     geometry::shapes(frame, |shape| {
         let color = match shape.paint {
             Paint::Solid(color) => color,
             Paint::BadgeGradient => badge_color(y, scale),
         };
+        if source != color {
+            let (next, boundary) = resolve(output, source, &covered);
+            output = next;
+            edge |= boundary;
+            covered = [false; 16];
+            source = color;
+        }
         for row in 0..4 {
             for column in 0..4 {
                 let px = i64::from(x) * 8 + column as i64 * 2 + 1;
                 let py = i64::from(y) * 8 + row as i64 * 2 + 1;
-                if contains(shape.primitive, px, py, scale) {
-                    samples[row * 4 + column] = color;
-                }
+                covered[row * 4 + column] |= contains(shape.primitive, px, py, scale);
             }
         }
     });
-    let mut red = 0u32;
-    let mut green = 0u32;
-    let mut blue = 0u32;
-    let mut edge = false;
-    for sample in samples {
-        red += u32::from(sample.0);
-        green += u32::from(sample.1);
-        blue += u32::from(sample.2);
-        edge |= sample != samples[0];
-    }
+    let (color, boundary) = resolve(output, source, &covered);
     Some(Expected {
-        color: Color(
-            ((red + 8) / 16) as u8,
-            ((green + 8) / 16) as u8,
-            ((blue + 8) / 16) as u8,
-        ),
-        antialiased: edge,
+        color,
+        antialiased: edge || boundary,
     })
 }

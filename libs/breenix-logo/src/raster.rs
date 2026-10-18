@@ -176,7 +176,7 @@ pub fn render(
                 Paint::BadgeGradient => badge_color(local_y as i32, scale),
             };
             for sy in 0..4 {
-                let y = local_y * 8 + 2 * sy as i64 + 1;
+                let y = (local_y * 8 + 2 * sy as i64 + 1) * geometry::UNITS;
                 layers[count].spans[sy] = span(shape.primitive, y, k * 8);
                 holes[count][sy] = hole_span(shape.primitive, y, k * 8);
             }
@@ -184,29 +184,30 @@ pub fn render(
             count += 1;
         });
         for px in x0..x1 {
-            let mut samples = [BACKGROUND; 16];
+            let mut rgb = [BACKGROUND.0, BACKGROUND.1, BACKGROUND.2];
+            let mut coverage = 0u16;
+            let mut color = BACKGROUND;
             let local_x = (px - i64::from(origin.0)) * 8;
             for (layer, hole) in layers[..count].iter().zip(&holes[..count]) {
+                if layer.color != color {
+                    rgb = blend(rgb, color, coverage.count_ones() as u16);
+                    coverage = 0;
+                    color = layer.color;
+                }
                 for sy in 0..4 {
                     let row = layer.spans[sy];
                     for sx in 0..4 {
-                        let x = local_x + 2 * sx as i64 + 1;
+                        let x = (local_x + 2 * sx as i64 + 1) * geometry::UNITS;
                         if x >= row.left
                             && x <= row.right
                             && !(x >= hole[sy].left && x <= hole[sy].right)
                         {
-                            samples[sy * 4 + sx] = layer.color;
+                            coverage |= 1 << (sy * 4 + sx);
                         }
                     }
                 }
             }
-            let mut sums = [0u16; 3];
-            for Color(r, g, b) in samples {
-                sums[0] += u16::from(r);
-                sums[1] += u16::from(g);
-                sums[2] += u16::from(b);
-            }
-            let mut rgb = sums.map(|sum| ((sum + 8) / 16) as u8);
+            rgb = blend(rgb, color, coverage.count_ones() as u16);
             if matches!(surface.format, PixelFormat::Bgr | PixelFormat::Bgra) {
                 rgb.swap(0, 2);
             }
@@ -218,4 +219,11 @@ pub fn render(
         }
     }
     Ok(())
+}
+
+fn blend(under: [u8; 3], Color(r, g, b): Color, coverage: u16) -> [u8; 3] {
+    let source = [r, g, b];
+    core::array::from_fn(|i| {
+        ((u16::from(source[i]) * coverage + u16::from(under[i]) * (16 - coverage) + 8) / 16) as u8
+    })
 }

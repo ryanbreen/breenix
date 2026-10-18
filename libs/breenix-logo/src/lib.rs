@@ -1,7 +1,8 @@
 #![no_std]
 //! Original geometric Breenix splash art. Coordinates are design units; a pixel
 //! uses sixteen sample centres at (1, 3, 5, 7)/8 along both axes. Covered samples
-//! take the topmost shape's colour. Channels resolve as (sum + 8) / 16.
+//! are unioned within a paint layer. Each layer blends over the underlying
+//! colour as (src * coverage + under * (16 - coverage) + 8) / 16.
 
 pub mod geometry;
 pub mod oracle;
@@ -19,6 +20,7 @@ pub const WHITE: Color = Color(236, 241, 250);
 pub const WORDMARK: Color = Color(205, 215, 235);
 pub const GREEN: Color = Color(70, 200, 120);
 pub const AMBER: Color = Color(230, 170, 65);
+pub const PENDING: Color = Color(115, 135, 170);
 pub const TRACK: Color = Color(40, 50, 75);
 pub const WIDTH: u32 = 176;
 pub const HEIGHT: u32 = 136;

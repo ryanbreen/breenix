@@ -26,9 +26,9 @@ fn bowls_join_spines_without_a_background_seam() {
         for (seam, row, color) in [
             (78, 15, WHITE),
             (78, 48, WHITE),
-            (4, 81, WORDMARK),
-            (4, 102, WORDMARK),
-            (30, 81, WORDMARK),
+            (12, 81, WORDMARK),
+            (12, 102, WORDMARK),
+            (31, 81, WORDMARK),
         ] {
             for x in seam * k - 2..seam * k + 2 {
                 assert_eq!(pixel(&pixels, WIDTH as usize * k, x, row * k), color);
@@ -40,7 +40,7 @@ fn bowls_join_spines_without_a_background_seam() {
             badge_color((23 * k) as i32, k as u16)
         );
         assert_eq!(
-            pixel(&pixels, WIDTH as usize * k, 5 * k, 87 * k),
+            pixel(&pixels, WIDTH as usize * k, 13 * k, 86 * k),
             BACKGROUND
         );
     }
@@ -99,6 +99,11 @@ fn oracle_checks_badge_wordmark_and_antialiased_edges() {
                     }
                 }
             }
+        }
+        if k == 2 {
+            // Contract section 6.3: at (1, 228), both bar layers cover 3/16 samples.
+            // Track over field gives (20,26,43), then green gives (29,59,57).
+            assert_eq!(pixel(&pixels, width, 1, 228), Color(29, 59, 57));
         }
         assert!(badge_edges > 0 && word_edges > 0 && dot_edges > 0);
         let cursor = pixel(&pixels, width, 98 * usize::from(k), 47 * usize::from(k));

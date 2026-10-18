@@ -4,6 +4,9 @@
 It is a dependency-free `no_std` crate using integer arithmetic. The authored
 geometry is in `src/geometry.rs`; the badge is 64 design units square, within a
 176 by 136 unit composition containing the wordmark, progress bar and six dots.
+Coordinates are stored in thirds of a design unit so the wordmark B can use the
+badge B at exactly two-thirds size. Letter origins follow optical spacing rather
+than a fixed pitch. Pending outlines use a brighter blue-grey than the bar track.
 
 `render` takes a checked `Surface`, a signed pixel origin, an integer scale and a
 `Frame`. RGB, BGR, RGBA and BGRA layouts support byte strides and clipped surfaces.
@@ -12,10 +15,12 @@ its surroundings and row padding untouched. Four-byte formats write alpha 255.
 Fill the surroundings with `BACKGROUND` when drawing a splash.
 
 The renderer fills scanline spans at four sample rows per pixel and resolves a
-4 by 4 sample grid. Samples use the topmost covering shape; channels resolve with
-`(sum + 8) / 16`. The indigo-to-teal gradient interpolates by pixel row, including
-its endpoint colours. The oracle in `src/oracle.rs` independently evaluates point
-inequalities, including exact expected colours at antialiased edges, across the
+4 by 4 sample grid. Adjacent shapes with the same paint form a layer, with
+sample masks unioned so shared strokes do not darken at their joins. Each layer
+blends over the colour beneath it with coverage `c` from 0 to 16:
+`(src * c + under * (16 - c) + 8) / 16` per channel. The indigo-to-teal
+gradient interpolates by pixel row, including its endpoint colours. The oracle
+in `src/oracle.rs` independently evaluates point inequalities, including exact expected colours at antialiased edges, across the
 badge, wordmark and progress shapes. It does not use rasterizer helpers.
 
 The logo origin is its bounding rectangle's top-left. To centre the badge at
