@@ -382,6 +382,9 @@ pub struct Process {
     /// group as a fatal signal's otherwise does
     /// (`terminate_thread_group_peers`): that thread lives on as the process.
     pub killed_by_exec: bool,
+    /// The row has its exec PID, but scheduler ownership has not caught up.
+    /// PM serializes this flag with kill claiming; such kills stay pending.
+    pub(crate) exec_owner_pending: bool,
 
     /// Interval timers for setitimer/getitimer (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
     pub itimers: alloc::sync::Arc<crate::signal::IntervalTimers>,
@@ -551,6 +554,7 @@ impl Process {
             clear_child_tid: None,
             exit_started: false,
             killed_by_exec: false,
+            exec_owner_pending: false,
             user_stack_bottom: 0,
             user_stack_top: 0,
             pending_old_page_tables: Vec::new(),

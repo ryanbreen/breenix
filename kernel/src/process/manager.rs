@@ -314,6 +314,7 @@ impl ProcessManager {
             row.job.report_owed = leader_row.job.report_owed;
             row.children.extend(leader_row.children.iter().copied());
         }
+        row.exec_owner_pending = true;
         row.id = leader;
         row.thread_group_id = None;
         if let Some(thread) = row.main_thread.as_mut() {

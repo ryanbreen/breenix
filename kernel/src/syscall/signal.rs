@@ -224,6 +224,9 @@ fn claim_kill_locked(
         // A deferred kill reports this status, not SIGKILL's own.
         process.group_exit_code.get_or_insert(exit_code);
         process.signals.set_pending(SIGKILL);
+        if process.exec_owner_pending {
+            return false;
+        }
     }
     let claimed = crate::task::scheduler::claim_process_threads_for_kill(victim.as_u64());
     if claimed {

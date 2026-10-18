@@ -56,6 +56,14 @@ pub(crate) fn end_other_threads(pid: crate::process::ProcessId) -> Result<crate:
                 if let Some(thread) = crate::task::scheduler::current_thread_id() {
                     crate::task::scheduler::adopt_exec_owner(thread, process.as_u64());
                 }
+                // Adoption precedes clearing the PM-owned interlock. A kill
+                // in the publication gap must leave SIGKILL pending instead
+                // of claiming an empty scheduler owner set.
+                crate::process::with_process_manager(|manager| {
+                    if let Some(row) = manager.get_process_mut(process) {
+                        row.exec_owner_pending = false;
+                    }
+                });
                 return Ok(process);
             }
             None => {}

@@ -3858,6 +3858,25 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             }
             None => member_pid,
         };
+        // Drive a kill in the real publication/adoption gap: the row has
+        // the leader PID but its fixture thread has no scheduler owner yet.
+        // Claiming that empty owner set used to discard SIGKILL and tear the
+        // row down. It must instead remain pending on the surviving row.
+        crate::syscall::signal::kill_process_now(process_pid, -(crate::signal::constants::SIGKILL as i32), None);
+        let kill_deferred = crate::process::with_process_manager(|manager| {
+            let Some(row) = manager.get_process_mut(process_pid) else { return false; };
+            let deferred = row.exec_owner_pending && !row.is_terminated()
+                && row.signals.pending() & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL) != 0;
+            // The fixture does not run a scheduler thread; finish its simulated
+            // adoption and remove the injected kill before the exec arm.
+            row.exec_owner_pending = false;
+            row.signals.clear_pending(crate::signal::constants::SIGKILL);
+            row.group_exit_code = None;
+            deferred
+        }).unwrap_or(false);
+        if !kill_deferred && first_failure.is_none() {
+            first_failure = Some("SIGKILL claimed the row before exec scheduler adoption");
+        }
         let successful_exec = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
