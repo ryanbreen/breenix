@@ -849,15 +849,6 @@ if [ "$PARALLELS" = true ]; then
     # sudo service restarts. Using unique names sidesteps this entirely.
     PARALLELS_VM="breenix-$(date +%s)"
     echo "VM name: $PARALLELS_VM"
-    # Delete earlier boots' VMs, which nothing else removed: only stopped ones named breenix-<epoch>, never a running,
-    # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*).
-    # Finish this sweep before launching so none of its children outlive the runner.
-    (
-        bounded_vm_command prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
-            while read -r old_vm; do
-                [ "$old_vm" = "$PARALLELS_VM" ] || bounded_vm_command prlctl delete "$old_vm" >/dev/null 2>&1 || true
-            done
-    )
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
@@ -1070,9 +1061,11 @@ if [ "$VMWARE" = true ]; then
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
-        if [ ! -f "$VMWARE_DIR/boot.vmdk" ]; then
-            echo "ERROR: No boot VMDK found at $VMWARE_DIR/boot.vmdk"
-            echo "Run without --no-build first to create it."
+        if [ ! -f "$LOADER_EFI" ] || [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: No prebuilt loader/kernel found:"
+            echo "  loader: $LOADER_EFI"
+            echo "  kernel: $KERNEL_ELF"
+            echo "Run without --no-build first to build them."
             exit 1
         fi
     else
