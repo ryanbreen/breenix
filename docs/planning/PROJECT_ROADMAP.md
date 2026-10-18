@@ -32,9 +32,13 @@ records the conditional idle probe and the separate completion-accounting failur
 
 The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
-It advances from delivery to a RAM-disk shell, then networking and SATA/AHCI storage in parallel,
-including disk writes and the Breenix filesystem, separately from the main effort path.
-The RAM-disk userspace lane is tracked in [#1702](https://github.com/ryanbreen/breenix/issues/1702).
+The R240 disk-root work in [#1972](https://github.com/ryanbreen/breenix/issues/1972)
+extends installed-disk console boots to default and suite modes, with digest-keyed
+installation and cold raw writeback verification. The
+[physical-root evidence](../metal/1972-1973-evidence.md) records the three suite
+results and cold disk checks. SOL capture work is tracked in
+[#1973](https://github.com/ryanbreen/breenix/issues/1973). The earlier RAM-disk
+userspace lane remains documented in [#1702](https://github.com/ryanbreen/breenix/issues/1702).
 
 ARM64 QEMU uses HVF on native Apple Silicon hosts in [#1452](https://github.com/ryanbreen/breenix/issues/1452),
 with the testing kernel, production probe and effort suites as its gates. Native
