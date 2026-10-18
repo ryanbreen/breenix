@@ -60,7 +60,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use display::{Display, Source};
 use raster::Layout;
 use spin::Mutex;
@@ -109,8 +109,9 @@ const UNSET: grid::Cell = grid::Cell { glyph: 0, colours: 0, flags: 0 };
 static mut TTY1_CELLS: [grid::Cell; grid::MAX_COLS * grid::MAX_ROWS] = [UNSET; grid::MAX_COLS * grid::MAX_ROWS];
 static mut TTY1_ALTERNATE: [grid::Cell; grid::MAX_COLS * grid::MAX_ROWS] = [UNSET; grid::MAX_COLS * grid::MAX_ROWS];
 
-/// The terminal (1-based) whose switch the render thread reads back next, or 0.
-static SWITCH_CHECK: AtomicUsize = AtomicUsize::new(0);
+/// Boot output can scroll before the heap exists.
+static mut TTY1_HISTORY: [grid::Cell; grid::MAX_COLS * grid::HISTORY_LINES] =
+    [UNSET; grid::MAX_COLS * grid::HISTORY_LINES];
 
 /// Grid writes given up because its lock stayed held (a holder that faulted).
 static DROPPED: AtomicU64 = AtomicU64::new(0);
@@ -187,12 +188,14 @@ fn set_display(display: Display) {
             let tty1 = &mut console.vts[0].grid;
             tty1.set_storage(cells, alternate);
             tty1.set_size(layout.cols(), layout.rows());
+            // SAFETY: installed once with the display, like the static screens.
+            tty1.set_history(unsafe { &mut *core::ptr::addr_of_mut!(TTY1_HISTORY) });
         });
     }
 }
 
-/// Give tty2 to tty6 their screens, now that the heap is up, and tty1 its
-/// scrollback: its output, the kernel log, began with the boot.
+/// Give tty2 to tty6 their screens and scrollback before keyboard input can
+/// reach them. tty1 already retains boot output in static storage.
 fn size_terminals(layout: &Layout) {
     let size = layout.cols() * layout.rows();
     for index in 1..vt::VT_COUNT {
@@ -210,8 +213,9 @@ fn size_terminals(layout: &Layout) {
             grid.set_storage(cells, alternate);
             grid.set_size(layout.cols(), layout.rows());
         });
+        // Reserve before this terminal can receive interrupt-generated echo.
+        vt::ensure_history(index);
     }
-    vt::ensure_history(0);
 }
 
 /// Allocate the shadow, say what the console draws on, and draw the splash.
@@ -421,10 +425,11 @@ fn end_pass() {
 /// the screen and no fenced GPU command of its own outstanding: a timed-out
 /// fenced command still belongs to the device, and a new owner may not draw
 /// until that DMA has stopped. The caller is a process in a system call. It
-/// blocks as an interruptible I/O wait, woken at the end of each pass and
-/// after at most a millisecond to look at the GPU again; a signal ends the
-/// wait. (The render thread's own `sleep_ms` blocks a kernel thread on the
-/// timer, which a process's system call must not do.)
+/// blocks as an I/O wait, woken at the end of each pass and
+/// after at most a millisecond to look at the GPU again. A signal cannot
+/// finish the hand-over while a presentation is outstanding. The render
+/// thread's own `sleep_ms` blocks a kernel thread on the timer, which a
+/// process's system call must not do.
 fn wait_until_not_presenting() {
     use crate::task::waitqueue::PrepareOutcome;
     let busy = || {
@@ -447,7 +452,9 @@ fn wait_until_not_presenting() {
             continue;
         }
         if crate::syscall::blocking_io::wait_prepared(&PASS_ENDED, outcome).is_err() {
-            return;
+            // The wait cleaned up its publication. Yield before rechecking;
+            // ownership must not escape this barrier on EINTR or a wait error.
+            crate::task::scheduler::yield_current();
         }
     }
     display::wait_until_idle();
@@ -817,6 +824,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 terminal.replies.drain(|byte| crate::tty::driver::push_reply(index + 1, byte));
             }
         });
+        crate::tty::driver::drain_keyboard_input();
         // Switch deadlines, whichever owner draws.
         vt::tick();
         if splash::is_up() {
@@ -836,6 +844,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
         // pass and waits, or this pass observes the take and submits nothing.
         PRESENTING.store(true, Ordering::SeqCst);
         if !may_draw() {
+            // A completed text acquisition can change KD mode before this pass.
+            // Record an unavailable read-back verdict rather than strand the next switch.
+            if let Some(shown) = vt::readback_pending() {
+                report_switch(shown + 1, &screen.check(shown));
+                vt::checked(shown);
+            }
             end_pass();
             answer_checks(Err(Absent::Taken), true);
             // A switch waits on these passes: look again soon while one does.
@@ -889,9 +903,11 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
             last_session = session;
         }
-        let shown = SWITCH_CHECK.swap(0, Ordering::AcqRel);
-        if shown != 0 && shown == snapshot.fg + 1 && screen.complete {
-            report_switch(shown, &screen.check(snapshot.fg));
+        if let Some(shown) = vt::readback_pending() {
+            if shown == snapshot.fg && screen.complete {
+                report_switch(shown + 1, &screen.check(snapshot.fg));
+                vt::checked(shown);
+            }
         }
         if announced {
             answer_checks(Ok((&screen, snapshot.fg)), true);

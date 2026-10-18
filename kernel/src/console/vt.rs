@@ -139,6 +139,8 @@ pub(super) struct Switching {
     pub(super) fg: usize,
     /// The foreground terminal's acquisition is complete.
     acquired: bool,
+    /// Hold the displayed frame until its read-back verdict is recorded.
+    check: Option<usize>,
     pending: Option<Pending>,
     /// A switch requested while one was being acquired; the latest wins.
     next: Option<(usize, Source)>,
@@ -150,7 +152,7 @@ pub(super) struct Switching {
 
 impl Switching {
     pub(super) const fn new() -> Self {
-        Self { fg: 0, acquired: true, pending: None, next: None, epoch: 0, display_owner: None }
+        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None }
     }
 }
 
@@ -185,8 +187,6 @@ pub(super) struct Effects {
     signals: [Option<(u64, u32)>; 4],
     notes: [Option<Note>; 4],
     wake: bool,
-    /// A text terminal was acquired: the render thread reads it back.
-    pub(super) shown: Option<usize>,
     /// The foreground terminal must be redrawn from its grid.
     pub(super) redraw: bool,
 }
@@ -235,9 +235,6 @@ impl Effects {
         for (pid, sig) in self.signals.into_iter().flatten() {
             crate::syscall::signal::signal_process_from_kernel(crate::process::ProcessId::new(pid), sig);
         }
-        if let Some(vt) = self.shown {
-            super::SWITCH_CHECK.store(vt + 1, Ordering::Release);
-        }
     }
 }
 
@@ -267,13 +264,19 @@ impl Terminals<'_> {
     /// `VT_PROCESS`.
     fn display_owned_auto(&self) -> bool {
         let fg = self.sw.fg;
-        self.sw.display_owner.is_some_and(|(_, vt)| vt == fg) && self.vts[fg].process.is_none()
+        self.sw.display_owner.is_some_and(|(owner, vt)| {
+            vt == fg && self.vts[fg].process.is_none_or(|mode| mode.owner != owner)
+        })
     }
 
     /// A switch request (section 4.4): `VT_ACTIVATE`, `chvt` or a key.
     pub(super) fn request(&mut self, to: usize, source: Source, effects: &mut Effects) -> Result<(), i32> {
         if to >= VT_COUNT {
             return Err(ENXIO);
+        }
+        if self.sw.check.is_some() {
+            self.sw.next = Some((to, source));
+            return Ok(());
         }
         match self.sw.pending.as_mut() {
             Some(pending) => match pending.phase {
@@ -364,7 +367,8 @@ impl Terminals<'_> {
         effects.wake = true;
         effects.note(Note::Foreground { vt: pending.to, source: pending.source });
         if self.vts[pending.to].graphics.is_none() {
-            effects.shown = Some(pending.to);
+            self.sw.check = Some(pending.to);
+            return;
         }
         if let Some((to, source)) = self.sw.next.take() {
             let _ = self.request(to, source, effects);
@@ -441,7 +445,9 @@ impl Terminals<'_> {
                 if !valid(relsig) || !valid(acqsig) {
                     return Err(EINVAL);
                 }
-                if owner.is_some_and(|owner| owner != pid) {
+                if owner.is_some_and(|owner| owner != pid)
+                    || self.sw.display_owner.is_some_and(|(owner, owned)| owned == vt && owner != pid)
+                {
                     return Err(EBUSY);
                 }
                 self.vts[vt].process = Some(ProcessMode { owner: pid, relsig: relsig as u32, acqsig: acqsig as u32 });
@@ -474,6 +480,7 @@ impl Terminals<'_> {
         if self.sw.display_owner.is_some_and(|(owner, owned)| owned == vt && owner != pid) {
             return Err(EBUSY);
         }
+        let changed = self.vts[vt].graphics.is_some() != graphics;
         if graphics {
             self.vts[vt].graphics = Some(pid);
         } else {
@@ -483,8 +490,29 @@ impl Terminals<'_> {
                 effects.redraw = true;
             }
         }
+        if changed && vt == self.sw.fg {
+            self.sw.epoch = self.sw.epoch.wrapping_add(1);
+            if let Some(Pending { to, phase: Phase::Acquiring { epoch, drawn, .. }, .. }) = self.sw.pending.as_mut() {
+                if *to == vt {
+                    *epoch = self.sw.epoch;
+                    *drawn = graphics;
+                }
+            }
+            self.settle(effects);
+        }
         self.publish();
         Ok(())
+    }
+
+    /// The render thread recorded the verdict before another VT may draw.
+    pub(super) fn checked(&mut self, vt: usize, effects: &mut Effects) {
+        if self.sw.check != Some(vt) {
+            return;
+        }
+        self.sw.check = None;
+        if let Some((to, source)) = self.sw.next.take() {
+            let _ = self.request(to, source, effects);
+        }
     }
 
     pub(super) fn kd_graphics(&self, vt: usize) -> bool {
@@ -492,12 +520,12 @@ impl Terminals<'_> {
     }
 
     /// `sys_take_over_display` by process `pid`, whose terminal is `vt`.
-    pub(super) fn take_display(&mut self, pid: u64, vt: usize) -> Result<(), i32> {
+    pub(super) fn take_display(&mut self, pid: u64, vt: usize, effects: &mut Effects) -> Result<(), i32> {
         if vt != self.sw.fg {
             return Err(EBUSY);
         }
         self.sw.display_owner = Some((pid, vt));
-        self.vts[vt].graphics = Some(pid);
+        self.set_kd(vt, pid, true, effects)?;
         self.publish();
         Ok(())
     }
@@ -506,7 +534,7 @@ impl Terminals<'_> {
     pub(super) fn give_back_display(&mut self, effects: &mut Effects) {
         if let Some((owner, vt)) = self.sw.display_owner.take() {
             if self.vts[vt].graphics == Some(owner) {
-                self.vts[vt].graphics = None;
+                let _ = self.set_kd(vt, owner, false, effects);
             }
         }
         effects.redraw = true;
@@ -683,7 +711,7 @@ pub fn kd_graphics(vt: usize) -> bool {
 /// `sys_take_over_display` by process `pid` on its terminal `vt` (1-based):
 /// EBUSY unless that terminal is in the foreground.
 pub fn take_display(pid: u64, vt: usize) -> Result<(), i32> {
-    with_terminals(|terminals, _| terminals.take_display(pid, vt - 1))
+    with_terminals(|terminals, effects| terminals.take_display(pid, vt - 1, effects))
 }
 
 /// The display owner's process ID and terminal (1-based).
@@ -710,6 +738,14 @@ pub(super) fn tick() {
 /// The render thread put frame `epoch` on the display.
 pub(super) fn drawn(epoch: u64) {
     with_terminals(|terminals, effects| terminals.drawn(epoch, effects));
+}
+
+pub(super) fn readback_pending() -> Option<usize> {
+    with_terminals(|terminals, _| terminals.sw.check)
+}
+
+pub(super) fn checked(vt: usize) {
+    with_terminals(|terminals, effects| terminals.checked(vt, effects));
 }
 
 /// A display owner's presentation, counted while it runs so a switch away
@@ -760,17 +796,20 @@ pub(super) fn frame(terminals: &Terminals<'_>) -> Frame {
     Frame { fg: terminals.sw.fg, epoch: terminals.sw.epoch }
 }
 
-/// Install terminal `index`'s scrollback if it has no scrollback yet: allocated outside the
-/// console's lock, in thread context, on its first output (section 1.6).
+/// Reserve terminal `index`'s scrollback outside the console lock, before
+/// keyboard input is enabled. An installed history is reused.
 pub(super) fn ensure_history(index: usize) {
     static READY: [AtomicBool; VT_COUNT] = [const { AtomicBool::new(false) }; VT_COUNT];
     if READY[index].load(Ordering::Acquire) || crate::per_cpu::in_interrupt() {
         return;
     }
-    let Some(cols) = super::with_grid(|console| console.vts[index].grid.cols()) else {
+    let Some((cols, installed)) = super::with_grid(|console| {
+        let grid = &console.vts[index].grid;
+        (grid.cols(), grid.has_history())
+    }) else {
         return;
     };
-    if cols == 0 {
+    if cols == 0 || installed {
         return;
     }
     if READY[index].swap(true, Ordering::AcqRel) {

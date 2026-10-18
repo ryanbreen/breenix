@@ -73,3 +73,5 @@ pub fn init() {
     pty::init();
     log::info!("TTY subsystem initialized");
 }
+
+mod keyboard_input;

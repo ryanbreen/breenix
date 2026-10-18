@@ -88,12 +88,11 @@ the VT's own size succeeds without effect; with any other size it fails with EIN
 
 ### 1.6 Scrollback
 
-- 1,000 lines per VT, allocated when the VT first receives output. tty1's is allocated when the console
-  attaches to the display, since its output, the kernel log, begins with the boot. The others' is
-  allocated by their first write from a process; the allocation is not made in interrupt context, so
-  lines that interrupt-context echo scrolls off before that first write are not kept (V4). If the
-  allocation fails, the VT runs without scrollback and the kernel logs `[console] ttyN scrollback
-  unavailable` once.
+- 1,000 lines per VT, retaining output from the first output, including interrupt-generated echo.
+  tty1 uses static storage because its boot output begins before the heap exists. The others reserve
+  their history when their screens are initialized, before keyboard input can reach them; allocation
+  runs in thread context. If allocation fails, the VT runs without scrollback and the kernel
+  logs `[console] ttyN scrollback unavailable` once.
 - Lines enter the scrollback when they scroll off the top of the main screen: full-screen scrolling, or a
   scroll region whose top is the screen's first row. Erasing the screen does not move lines into it.
 - **Shift+PageUp** and **Shift+PageDown** move the foreground VT's view back and forward by half a screen

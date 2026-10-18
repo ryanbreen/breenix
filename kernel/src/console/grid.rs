@@ -333,9 +333,9 @@ impl Grid {
                 self.history_start = (self.history_start + 1) % HISTORY_LINES;
             } else {
                 self.history_len += 1;
-                if self.view != 0 {
-                    self.view += 1;
-                }
+            }
+            if self.view != 0 {
+                self.view = (self.view + 1).min(self.history_len);
             }
         }
     }

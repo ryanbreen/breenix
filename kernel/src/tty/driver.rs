@@ -213,6 +213,7 @@ pub struct TtyDevice {
     output_stopped: AtomicBool,
     input_flow_stopped: AtomicBool,
     pending_echo: Mutex<super::pty::pair::PtyBuffer>,
+    pending_keys: Mutex<super::keyboard_input::PendingInput>,
 
     /// #822: `foreground_pgrp`'s value, published for interrupt-context
     /// readers, so that the 2 of them take 0 acquisitions of that mutex.
@@ -246,6 +247,7 @@ impl TtyDevice {
             output_stopped: AtomicBool::new(false),
             input_flow_stopped: AtomicBool::new(false),
             pending_echo: Mutex::new(super::pty::pair::PtyBuffer::new()),
+            pending_keys: Mutex::new(super::keyboard_input::PendingInput::new()),
             foreground_pgrp_snapshot: AtomicU64::new(FOREGROUND_PGRP_UNSET),
         }
     }
@@ -1231,11 +1233,12 @@ pub fn push_char_nonblock(c: u8) -> bool {
     let foreground = crate::console::vt::foreground();
     crate::console::vt::input_returns_view(foreground);
     if foreground != 1 {
-        // With its line discipline busy the byte goes straight to that
-        // terminal's queue: the drivers' fallback would give it to the console.
+        // Preserve ordering through contention. The render thread retries
+        // these bytes through this terminal's discipline, even after a switch.
         if let Some(tty) = vt(foreground) {
-            if !tty.input_char_nonblock(c) {
-                tty.push_input(c);
+            if let Some(mut keys) = tty.pending_keys.try_lock() {
+                keys.push(c);
+                keys.drain(|byte| tty.input_char_nonblock(byte));
             }
         }
         return true;
@@ -1249,6 +1252,18 @@ pub fn push_char_nonblock(c: u8) -> bool {
         }
     }
     false
+}
+
+/// Retry deferred keyboard bytes without holding the console grid lock.
+/// tty2 through tty6 are drained, including terminals left by a switch.
+pub fn drain_keyboard_input() {
+    for number in 2..=crate::console::vt::VT_COUNT {
+        if let Some(tty) = vt(number) {
+            if let Some(mut keys) = tty.pending_keys.try_lock() {
+                keys.drain(|byte| tty.input_char_nonblock(byte));
+            }
+        }
+    }
 }
 
 /// Take any foreground-pgrp adoption the input IRQ entry deferred (#821).
