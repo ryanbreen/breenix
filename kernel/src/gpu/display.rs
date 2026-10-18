@@ -6,6 +6,8 @@
 use super::*;
 use abi::errno::EPERM;
 
+const EBUSY: i64 = 16;
+
 #[derive(Clone, Copy)]
 pub(super) struct Binding {
     pub id: u32,
@@ -224,38 +226,37 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         if c.queue_size < 2 {
             return Some(Err(ENOMEM));
         }
-        let skip = crate::test_control::take(test_point::SKIP_PRESENT_FLUSH, a.target).is_some();
         let other = c.procs.get(&tgid).and_then(|p| {
             p.resources
                 .values()
                 .copied()
                 .filter(|&rid| rid != id)
                 .filter(|rid| {
-                    c.resources.get(rid).is_some_and(|r| {
-                        r.scanout
-                            && !r.lost
-                            && !r.dropped
-                            && !r.invalid
-                            && r.last.is_some()
-                            && r.writers == 0
-                    })
+                    c.resources
+                        .get(rid)
+                        .is_some_and(|r| r.scanout && !r.lost && !r.dropped)
                 })
                 .min()
         });
-        let id = if let Some(other) = other {
-            if crate::test_control::take(test_point::WRONG_SCANOUT, a.target).is_some() {
-                other
-            } else {
-                id
-            }
+        let wrong =
+            other.and_then(|_| crate::test_control::reserve(test_point::WRONG_SCANOUT, a.target));
+        let id = if wrong.is_some() {
+            other.unwrap_or(id)
         } else {
             id
         };
+        if c.resources.get(&id).is_some_and(|r| r.writers != 0) {
+            return None;
+        }
+        if let Some(wrong) = wrong {
+            wrong.fire();
+        }
         let (width, height) = c
             .resources
             .get(&id)
             .map(|r| (r.width, r.height))
             .unwrap_or((width, height));
+        let skip = crate::test_control::take(test_point::SKIP_PRESENT_FLUSH, a.target).is_some();
         if skip {
             if c.display.holds.insert(id) {
                 if let Some(r) = c.resources.get_mut(&id) {
@@ -476,7 +477,7 @@ fn publish_owner(c: &mut Core) {
         .display
         .stack
         .last()
-        .map_or((0, 0, 1), |o| (o.group, o.pid, o.mode));
+        .map_or((u64::MAX, u64::MAX, 1), |o| (o.group, o.pid, o.mode));
     c.display.mode = mode;
     crate::syscall::graphics::DISPLAY_OWNER_GROUP.store(group, Ordering::Release);
     crate::syscall::graphics::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
@@ -487,7 +488,7 @@ impl Transition {
     pub(super) fn for_observation(group: u64) -> Result<Self, i64> {
         let guard = Self::acquire()?;
         if !owner(group) {
-            return Err(EPERM);
+            return Err(EINVAL);
         }
         Ok(guard)
     }
@@ -521,14 +522,17 @@ impl Drop for Transition {
 }
 
 pub(super) fn take(group: u64, pid: u64) -> Result<(), i64> {
-    let _transition = Transition::acquire()?;
-    super::console::ensure()?;
-    with_core(|c| {
+    // No device operation belongs to TAKE_DISPLAY. Refusal checks precede even
+    // waiting for a transition, and waiting cannot add an undocumented EINTR.
+    wait_for(None, false, |c| {
         if c.display.stack.last().is_some_and(|o| o.group == group) {
-            return Ok(());
+            return Some(Ok(()));
         }
         if c.display.stack.len() >= 4 || c.display.stack.iter().any(|o| o.group == group) {
-            return Err(16);
+            return Some(Err(EBUSY));
+        }
+        if c.display.changing || c.display.outstanding != 0 {
+            return None;
         }
         c.display.stack.push(Owner {
             group,
@@ -537,9 +541,9 @@ pub(super) fn take(group: u64, pid: u64) -> Result<(), i64> {
             last: None,
         });
         publish_owner(c);
-        Ok(())
+        Some(Ok(()))
     })
-    .ok_or(ENODEV)?
+    .unwrap_or(Err(ENODEV))
 }
 
 pub(super) fn back(group: u64) -> Result<(), i64> {
@@ -549,15 +553,28 @@ pub(super) fn back(group: u64) -> Result<(), i64> {
             return Err(EPERM);
         }
         let o = c.display.stack.pop().ok_or(EPERM)?;
-        publish_owner(c);
-        Ok(o.last)
+        Ok(o)
     })
     .ok_or(ENODEV)??;
-    let outcome = restore();
-    if let Some(b) = removed {
-        with_core(|c| c.unhold(b.id));
+    match restore() {
+        Ok(()) => {
+            with_core(|c| {
+                publish_owner(c);
+                if let Some(b) = removed.last {
+                    c.unhold(b.id);
+                }
+            });
+            Ok(())
+        }
+        Err(e) => {
+            with_core(|c| {
+                c.display.stack.push(removed);
+                c.display.known = false;
+            });
+            super::console::request_restore();
+            Err(e)
+        }
     }
-    outcome
 }
 
 /// Remove an ended owner and ask the render thread to restore a displaced frame.
@@ -614,7 +631,7 @@ pub(super) fn restore_pending() -> Result<(), i64> {
     let seq = with_core(|c| c.display.owner_sequence).ok_or(ENODEV)?;
     let outcome = restore();
     with_core(|c| {
-        if c.display.owner_sequence == seq {
+        if outcome.is_ok() && c.display.owner_sequence == seq {
             super::console::restored_pending();
         }
     });

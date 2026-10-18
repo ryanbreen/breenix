@@ -18,10 +18,13 @@ static HASH: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: AtomicU64 = AtomicU64::new(0);
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
+static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
+const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
 struct Console {
     epoch: u64,
     context: u32,
+    handle: u64,
     target: u32,
     atlas: u32,
     scratch: u32,
@@ -51,7 +54,11 @@ pub(super) fn describe(a: &mut abi::Modes) {
     a.console_fixture_bytes = FIXTURE.load(Ordering::Acquire);
     a.handoff = HANDOFF.load(Ordering::Acquire) as u64;
     a.firmware_hash_at_handoff = HASH.load(Ordering::Acquire);
-    a.firmware_hash_now = if active() { firmware_hash() } else { 0 };
+    a.firmware_hash_now = if active() && caller().is_ok_and(display::owner) {
+        firmware_hash()
+    } else {
+        0
+    };
 }
 
 /// Inspect the actual framebuffer memory while its writer lock is held.
@@ -168,6 +175,7 @@ fn resource(
 struct Building {
     ids: Vec<u32>,
     armed: bool,
+    handle: u64,
 }
 impl Drop for Building {
     fn drop(&mut self) {
@@ -181,8 +189,24 @@ impl Drop for Building {
                 }
                 c.unhold(id);
             }
-            c.reclaim(0);
         });
+        destroy_context(0, self.handle);
+    }
+}
+
+impl Drop for Console {
+    fn drop(&mut self) {
+        with_core(|c| {
+            for id in [self.target, self.atlas, self.scratch, self.vertices] {
+                if let Some(r) = c.resources.get_mut(&id) {
+                    r.dropped = true;
+                }
+                c.unhold(id);
+            }
+        });
+        destroy_context(0, self.handle);
+        let _ =
+            RESOURCE.compare_exchange(self.target as u64, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 }
 
@@ -192,6 +216,7 @@ impl Console {
         let mut build = Building {
             ids: Vec::new(),
             armed: true,
+            handle,
         };
         let (ctx, epoch) = with_core(|c| {
             let id = c.ctx_of(0, handle).ok_or(EIO)?;
@@ -269,6 +294,7 @@ impl Console {
         Ok(Self {
             epoch,
             context: ctx,
+            handle,
             target,
             atlas,
             scratch,
@@ -326,7 +352,7 @@ impl Console {
         );
         1
     }
-    fn draw(&mut self) -> Result<(), i64> {
+    fn draw(&mut self, bind: bool) -> Result<(), i64> {
         let mut s = Vec::new();
         stream::encode::begin(&mut s, self.target as u64);
         stream::encode::clear(&mut s, BG);
@@ -391,14 +417,16 @@ impl Console {
                 r.invalid = false;
             }
         });
-        quiesce();
-        self.bind(display::Binding {
-            id: self.target,
-            fence: 0,
-            answer: 0,
-        })?;
+        if bind {
+            quiesce();
+            self.bind(display::Binding {
+                id: self.target,
+                fence: 0,
+                answer: 0,
+            })?;
+            handoff();
+        }
         DRAWN.fetch_add(draws, Ordering::Release);
-        handoff();
         Ok(())
     }
     fn bind(&self, mut b: display::Binding) -> Result<(), i64> {
@@ -487,42 +515,34 @@ impl encode::Bindings for Console {
     }
 }
 
-pub(super) fn ensure() -> Result<(), i64> {
-    let mut guard = CONSOLE.lock();
-    if guard.as_ref().is_none_or(|c| !c.live()) {
-        // A reset retires these old device objects; confirmed-reset resources are safe
-        // to release through the normal dropped-resource path.
-        if let Some(old) = guard.take() {
-            RESOURCE.store(0, Ordering::Release);
-            with_core(|c| {
-                for id in [old.target, old.atlas, old.scratch, old.vertices] {
-                    if let Some(r) = c.resources.get_mut(&id) {
-                        r.dropped = true;
-                    }
-                    c.unhold(id);
-                }
-                c.reclaim(0);
-            });
-        }
-        let mut console = Console::new()?;
-        console.draw()?;
-        *guard = Some(console);
+/// The transition guard serializes users; the spin lock only moves the value.
+/// Device waits run with the console owned by this lease, with no spin lock held.
+struct ConsoleLease(Option<Console>);
+impl ConsoleLease {
+    fn take() -> Self {
+        Self(CONSOLE.lock().take())
     }
-    Ok(())
+    fn ensure(&mut self) -> Result<&mut Console, i64> {
+        if self.0.as_ref().is_none_or(|c| !c.live()) {
+            self.0 = None;
+            let mut console = Console::new()?;
+            // Preparing a replacement must not change a live owner's scanout.
+            console.draw(false)?;
+            self.0 = Some(console);
+        }
+        self.0.as_mut().ok_or(EIO)
+    }
+}
+impl Drop for ConsoleLease {
+    fn drop(&mut self) {
+        *CONSOLE.lock() = self.0.take();
+    }
 }
 pub(super) fn redraw() -> Result<(), i64> {
-    ensure()?;
-    CONSOLE.lock().as_mut().ok_or(EIO)?.draw()
+    ConsoleLease::take().ensure()?.draw(true)
 }
 pub(super) fn bind_saved(b: display::Binding) -> Result<(), i64> {
-    ensure()?;
-    CONSOLE.lock().as_ref().ok_or(EIO)?.bind(b)
-}
-pub(super) fn observation_context(id: u32) -> Result<u32, i64> {
-    ensure()?;
-    let ctx = CONSOLE.lock().as_ref().ok_or(EIO)?.context;
-    exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[id])?;
-    Ok(ctx)
+    ConsoleLease::take().ensure()?.bind(b)
 }
 /// Called on the render thread. It replaces its legacy CPU console loop after handoff.
 pub fn pump() {
@@ -530,26 +550,33 @@ pub fn pump() {
     if !display::active() {
         return;
     }
+    let now = now_ns();
+    if now < NEXT_DRAW.load(Ordering::Acquire) {
+        return;
+    }
+    // Includes restore failures and construction failures, not just successful draws.
+    NEXT_DRAW.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
     if RESTORE.load(Ordering::Acquire) {
-        let _ = display::restore_pending();
+        if display::restore_pending().is_err() {
+            return;
+        }
         notify();
     }
     let Some(_transition) = display::Transition::for_console() else {
         return;
     };
-    if ensure().is_err() {
-        return;
-    }
-    let Some(mut guard) = CONSOLE.try_lock() else {
-        return;
-    };
-    let Some(c) = guard.as_mut() else {
+    let mut lease = ConsoleLease::take();
+    let Ok(c) = lease.ensure() else {
         return;
     };
     let mut bytes = [0u8; 1024];
     let n = crate::graphics::log_capture::drain(&mut bytes);
-    if n > 0 {
+    let visible = with_core(|core| {
+        core.display.known && core.display.binding.is_some_and(|b| b.id == c.target)
+    })
+    .unwrap_or(false);
+    if n > 0 || !visible {
         c.bytes(&bytes[..n]);
-        let _ = c.draw();
+        let _ = c.draw(true);
     }
 }
