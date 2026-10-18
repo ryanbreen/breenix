@@ -21,6 +21,9 @@ pub const RETRY_NS: u64 = 5_000_000;
 /// Where boot keyboard input meets the console TTY.
 pub struct Console {
     queue: Box<queue::Retained<QUEUE_BYTES>>,
+    /// The console target has started and its replug exercise is over; the
+    /// one-shot first-key lines report only keys pressed after that.
+    armed: bool,
     first_report: bool,
     first_typed: bool,
 }
@@ -29,13 +32,22 @@ impl Console {
     pub fn new() -> Self {
         Self {
             queue: Box::new(queue::Retained::new()),
+            armed: false,
             first_report: false,
             first_typed: false,
         }
     }
 
+    /// Arm the first-key lines, and TTY 0's first-USB-byte line with them.
+    pub fn arm(&mut self) {
+        self.armed = true;
+        if let Some(tty) = crate::tty::console() {
+            tty.arm_first_usb();
+        }
+    }
+
     pub fn note_report(&mut self, summary: &report::Summary) {
-        if summary.nonempty && !self.first_report {
+        if self.armed && summary.nonempty && !self.first_report {
             self.first_report = true;
             log::info!("[hid] first key report");
         }
@@ -69,7 +81,7 @@ impl Console {
         if taken != 0 {
             if let Some(tty) = crate::tty::console() { tty.report_first_usb(); }
         }
-        if taken != 0 && !self.first_typed {
+        if taken != 0 && self.armed && !self.first_typed {
             self.first_typed = true;
             log::info!("[hid] typed into the console tty: {} bytes", taken);
         }

@@ -643,6 +643,14 @@ impl TtyDevice {
         crate::ipc::stdin::flush_input();
     }
 
+    /// The console target has started: from now on the first USB keyboard byte
+    /// is reported, so a key pressed before it cannot be reported first.
+    pub fn arm_first_usb(&self) {
+        if self.num == 0 {
+            self.input_sources.arm_first_usb();
+        }
+    }
+
     /// Thread-context reporting; the IRQ input path only updates source bits.
     pub fn report_first_usb(&self) {
         if self.num == 0 && self.input_sources.take_first_usb() {
