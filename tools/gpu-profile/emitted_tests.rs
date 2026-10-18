@@ -70,12 +70,17 @@ impl Shader {
                 if op == "UIF" || op == "BGNLOOP" {
                     stack.push(i);
                 }
+                if op == "ELSE" {
+                    // A false condition enters after the ELSE; the true branch leaves at ENDIF.
+                    let start = stack.pop().unwrap();
+                    assert_eq!(instructions[start].op, "UIF");
+                    instructions[start].jump = i + 1;
+                    stack.push(i);
+                }
                 if op == "ENDIF" || op == "ENDLOOP" {
                     let start = stack.pop().unwrap();
-                    assert_eq!(
-                        instructions[start].op,
-                        if op == "ENDIF" { "UIF" } else { "BGNLOOP" }
-                    );
+                    let opener = instructions[start].op.as_str();
+                    assert!(if op == "ENDIF" { opener == "UIF" || opener == "ELSE" } else { opener == "BGNLOOP" });
                     instructions[start].jump = i + 1;
                     jump = start + 1;
                 }
@@ -97,15 +102,21 @@ impl Shader {
         }
     }
     fn run(&self, routine: u32, word: u32, args: &[u32; 18]) -> u32 {
-        let mut temp = vec![[0u32; 4]; 256];
         let constants: Vec<[u32; 4]> = args[..16]
             .chunks(4)
             .map(|a| a.try_into().unwrap())
             .chain([[word, routine, 0, 0]])
             .collect();
+        let output = self.shade(&constants, [args[16], args[17]]).expect("probe programs do not KILL");
+        let bytes: [u32; 4] = output.map(|v| (f32::from_bits(v) * 255.0).round() as u32);
+        bytes[2] | bytes[1] << 8 | bytes[0] << 16 | bytes[3] << 24
+    }
+    /// The fragment at integer window position `at`: its OUT[0] words, absent after KILL.
+    fn shade(&self, constants: &[[u32; 4]], at: [u32; 2]) -> Option<[u32; 4]> {
+        let mut temp = vec![[0u32; 4]; 256];
         let input = [[
-            (args[16] as f32 + 0.5).to_bits(),
-            (args[17] as f32 + 0.5).to_bits(),
+            (at[0] as f32 + 0.5).to_bits(),
+            (at[1] as f32 + 0.5).to_bits(),
             0,
             0,
         ]];
@@ -130,11 +141,16 @@ impl Shader {
             };
             match ins.op.as_str() {
                 "END" => break,
+                "KILL" => return None,
                 "UIF" => {
                     if read(ins.regs[0])[0] == 0 {
                         pc = ins.jump;
                         continue;
                     }
+                }
+                "ELSE" => {
+                    pc = ins.jump;
+                    continue;
                 }
                 "ENDIF" => {}
                 "BGNLOOP" => loops.push(ins.jump),
@@ -215,8 +231,7 @@ impl Shader {
             }
             pc += 1;
         }
-        let bytes: [u32; 4] = output[0].map(|v| (f32::from_bits(v) * 255.0).round() as u32);
-        bytes[2] | bytes[1] << 8 | bytes[0] << 16 | bytes[3] << 24
+        Some(output[0])
     }
 }
 
@@ -481,4 +496,54 @@ fn committed_programs_are_the_tested_generator_output() {
         );
     }
     assert!(!directory.join(format!("r{:02}.tgsi", programs.len())).exists());
+}
+
+#[test]
+fn triangle_pipeline_matches_the_model_predicate() {
+    let path = std::path::Path::new(file!())
+        .parent()
+        .unwrap()
+        .join("../../kernel/src/gpu/virgl/pipelines/15.tgsi");
+    let shader = Shader::parse(&std::fs::read_to_string(path).unwrap());
+    let (p, out) = program(23);
+    let colour = [1.0f32.to_bits(), 0.5f32.to_bits(), 0.25f32.to_bits(), 1.0f32.to_bits()];
+    let mut triangles = vec![
+        [1, 1, 15, 1, 1, 11],
+        [1, 11, 15, 1, 1, 1],
+        [-20, -10, 28, 3, 6, 30],
+        [0, 0, 3, 3, 6, 6],
+        [i32::MIN, i32::MIN, i32::MAX, i32::MIN, i32::MAX, i32::MAX],
+        [3, 2, 3, 9, 12, 2],
+    ];
+    let mut seed = 0x51ed_2701u32;
+    for _ in 0..40 {
+        triangles.push(core::array::from_fn(|_| {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 27) as i32 - 6
+        }));
+    }
+    for t in triangles {
+        let v = t.map(|c| c as u32);
+        let constants = [
+            [v[0], v[1], v[2], v[3]],
+            [v[4], v[5], 0, 0],
+            [0; 4],
+            [0; 4],
+            [0; 4],
+            colour,
+            [0; 4],
+            [0; 4],
+        ];
+        for y in 0..13u32 {
+            for x in 0..17u32 {
+                let mut args = [0u32; 16];
+                args[0] = x;
+                args[1] = y;
+                args[2..8].copy_from_slice(&v);
+                let inside = p.eval(&args, &out)[0] == 1;
+                let shaded = shader.shade(&constants, [x, y]);
+                assert_eq!(shaded, inside.then_some(colour), "triangle {t:?} at ({x}, {y})");
+            }
+        }
+    }
 }

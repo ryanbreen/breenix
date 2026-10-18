@@ -849,70 +849,87 @@ impl Code {
         self.subwide(&l, &r)
     }
     fn triangle(&mut self, a: &[V]) -> V {
-        let z = self.k(0);
-        let one = self.k(1);
-        let mut px = self.wide(a[0]);
-        let mut py = self.wide(a[1]);
-        px = self.addwide(&px, &px.clone());
-        py = self.addwide(&py, &py.clone());
-        px = self.addwide(&px, &[one, z, z]);
-        py = self.addwide(&py, &[one, z, z]);
+        let (px, py) = self.centre(a[0], a[1]);
         let x0 = self.wide(a[2]);
         let y0 = self.wide(a[3]);
         let x1 = self.wide(a[4]);
         let y1 = self.wide(a[5]);
         let x2 = self.wide(a[6]);
         let y2 = self.wide(a[7]);
-        let dx = self.subwide(&x1, &x0);
-        let dy = self.subwide(&y1, &y0);
-        let ex = self.subwide(&x2, &x0);
-        let ey = self.subwide(&y2, &y0);
-        let area = self.cross(&dx, &dy, &ex, &ey);
-        let negative = self.shrk(area[2], 31);
-        let area01 = self.or(area[0], area[1]);
-        let areaall = self.or(area01, area[2]);
-        let valid = self.nz(areaall);
+        let (valid, negative) = self.triangle_area(&x0, &y0, &x1, &y1, &x2, &y2);
         let mut result = valid;
         for (ax, ay, bx, by) in [
             (&x0, &y0, &x1, &y1),
             (&x1, &y1, &x2, &y2),
             (&x2, &y2, &x0, &y0),
         ] {
-            let mut dx = self.subwide(bx, ax);
-            let mut dy = self.subwide(by, ay);
-            let ndx = self.subwide(&[z, z, z], &dx);
-            let ndy = self.subwide(&[z, z, z], &dy);
-            for i in 0..3 {
-                dx[i] = self.sel(negative, ndx[i], dx[i]);
-                dy[i] = self.sel(negative, ndy[i], dy[i]);
-            }
-            let ax2 = self.addwide(ax, ax);
-            let ay2 = self.addwide(ay, ay);
-            let ex = self.subwide(&px, &ax2);
-            let ey = self.subwide(&py, &ay2);
-            let edge = self.cross(&dx, &dy, &ex, &ey);
-            let neg = self.shrk(edge[2], 31);
-            let nonneg = self.eq(neg, z);
-            let dyneg = self.shrk(dy[2], 31);
-            let dy01 = self.or(dy[0], dy[1]);
-            let dyall = self.or(dy01, dy[2]);
-            let dyeq = self.eq(dyall, z);
-            let dxneg = self.shrk(dx[2], 31);
-            let dxpos = self.eq(dxneg, z);
-            let dx01 = self.or(dx[0], dx[1]);
-            let dxall = self.or(dx01, dx[2]);
-            let dxnz = self.nz(dxall);
-            let dxpos = self.and(dxpos, dxnz);
-            let horizontal = self.and(dyeq, dxpos);
-            let top = self.or(dyneg, horizontal);
-            let e01 = self.or(edge[0], edge[1]);
-            let eall = self.or(e01, edge[2]);
-            let enz = self.nz(eall);
-            let accept = self.or(enz, top);
-            let accept = self.and(accept, nonneg);
+            let accept = self.triangle_edge(&px, &py, ax, ay, bx, by, negative);
             result = self.and(result, accept);
         }
         result
+    }
+    /// The pixel centre doubled, (2x + 1, 2y + 1), in three words each.
+    fn centre(&mut self, x: V, y: V) -> (Vec<V>, Vec<V>) {
+        let z = self.k(0);
+        let one = self.k(1);
+        let mut px = self.wide(x);
+        let mut py = self.wide(y);
+        px = self.addwide(&px, &px.clone());
+        py = self.addwide(&py, &py.clone());
+        px = self.addwide(&px, &[one, z, z]);
+        py = self.addwide(&py, &[one, z, z]);
+        (px, py)
+    }
+    /// Whether the triangle has a nonzero area (1 or 0), and whether that area is
+    /// negative (1 or 0).
+    fn triangle_area(&mut self, x0: &[V], y0: &[V], x1: &[V], y1: &[V], x2: &[V], y2: &[V]) -> (V, V) {
+        let dx = self.subwide(x1, x0);
+        let dy = self.subwide(y1, y0);
+        let ex = self.subwide(x2, x0);
+        let ey = self.subwide(y2, y0);
+        let area = self.cross(&dx, &dy, &ex, &ey);
+        let negative = self.shrk(area[2], 31);
+        let area01 = self.or(area[0], area[1]);
+        let areaall = self.or(area01, area[2]);
+        let valid = self.nz(areaall);
+        (valid, negative)
+    }
+    /// Whether pixel centre (px, py) is inside the edge from a to b (1 or 0), with the
+    /// top-left rule for a centre on the edge; `negative` orients the edge.
+    fn triangle_edge(&mut self, px: &[V], py: &[V], ax: &[V], ay: &[V], bx: &[V], by: &[V], negative: V) -> V {
+        let z = self.k(0);
+        let mut dx = self.subwide(bx, ax);
+        let mut dy = self.subwide(by, ay);
+        let ndx = self.subwide(&[z, z, z], &dx);
+        let ndy = self.subwide(&[z, z, z], &dy);
+        for i in 0..3 {
+            dx[i] = self.sel(negative, ndx[i], dx[i]);
+            dy[i] = self.sel(negative, ndy[i], dy[i]);
+        }
+        let ax2 = self.addwide(ax, ax);
+        let ay2 = self.addwide(ay, ay);
+        let ex = self.subwide(px, &ax2);
+        let ey = self.subwide(py, &ay2);
+        let edge = self.cross(&dx, &dy, &ex, &ey);
+        let neg = self.shrk(edge[2], 31);
+        let nonneg = self.eq(neg, z);
+        let dyneg = self.shrk(dy[2], 31);
+        let dy01 = self.or(dy[0], dy[1]);
+        let dyall = self.or(dy01, dy[2]);
+        let dyeq = self.eq(dyall, z);
+        let dxneg = self.shrk(dx[2], 31);
+        let dxpos = self.eq(dxneg, z);
+        let dx01 = self.or(dx[0], dx[1]);
+        let dxall = self.or(dx01, dx[2]);
+        let dxnz = self.nz(dxall);
+        let dxpos = self.and(dxpos, dxnz);
+        let horizontal = self.and(dyeq, dxpos);
+        let top = self.or(dyneg, horizontal);
+        let e01 = self.or(edge[0], edge[1]);
+        let eall = self.or(e01, edge[2]);
+        let enz = self.nz(eall);
+        let accept = self.or(enz, top);
+        self.and(accept, nonneg)
     }
     fn line(&mut self, a: &[V]) -> V {
         let dx = self.absdiff(a[4], a[2]);
