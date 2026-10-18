@@ -39,11 +39,25 @@ static WORK: Work = Work::new();
 /// exercise). It wakes the worker without claiming hardware work.
 static REPLUG: AtomicBool = AtomicBool::new(false);
 
+/// A thread-context request: the console's lock state changed without a
+/// keyboard report (a switch to a terminal with other locks), so the worker
+/// sends attached keyboards their LEDs (`keyboard::sync_leds`).
+static LEDS: AtomicBool = AtomicBool::new(false);
+
 /// Init is starting the console target: exercise detach and reattach of each
 /// boot keyboard once, before anyone types (`keyboard::replug_exercise`).
 pub fn console_session_starting() {
+    request(&REPLUG);
+}
+
+/// The foreground terminal changed: its lock state is what keyboards show.
+pub fn lock_state_changed() {
+    request(&LEDS);
+}
+
+fn request(flag: &AtomicBool) {
     // Store, then read the waiter: the worker publishes, then checks the flag.
-    REPLUG.store(true, Ordering::SeqCst);
+    flag.store(true, Ordering::SeqCst);
     let tid = WORK.waiter();
     if tid != 0 {
         scheduler::wake_waitqueue_thread(tid);
@@ -701,7 +715,7 @@ impl Controller {
     /// `requests` is set, a thread-context request arrives (false).
     fn wait_work(&self, deadline: Option<u64>, requests: bool) -> Result<bool, &'static str> {
         let tid = scheduler::current_thread_id().ok_or("worker has no thread identity")?;
-        let requested = || requests && REPLUG.load(Ordering::SeqCst);
+        let requested = || requests && (REPLUG.load(Ordering::SeqCst) || LEDS.load(Ordering::SeqCst));
         loop {
             WORK.publish(tid);
             if WORK.take() {

@@ -74,26 +74,33 @@ impl Replies {
         Self { bytes: [0; 1024], head: 0, len: 0 }
     }
 
-    /// Keep a whole reply, or drop it when it does not fit.
-    pub(super) fn push(&mut self, reply: &[u8]) {
+    /// Keep a whole reply, or drop it when it does not fit; whether it was kept.
+    pub(super) fn push(&mut self, reply: &[u8]) -> bool {
         let capacity = self.bytes.len();
-        if reply.len() <= capacity - self.len {
-            for &byte in reply {
-                self.bytes[(self.head + self.len) % capacity] = byte;
-                self.len += 1;
-            }
+        if reply.len() > capacity - self.len {
+            return false;
         }
+        for &byte in reply {
+            self.bytes[(self.head + self.len) % capacity] = byte;
+            self.len += 1;
+        }
+        true
     }
 
-    /// Hand bytes to `sink` until it refuses one.
-    pub(super) fn drain(&mut self, mut sink: impl FnMut(u8) -> bool) {
-        while self.len != 0 {
-            if !sink(self.bytes[self.head]) {
-                break;
-            }
-            self.head = (self.head + 1) % self.bytes.len();
-            self.len -= 1;
+    /// Copy the oldest bytes into `out`, keeping them; how many.
+    pub(super) fn peek(&self, out: &mut [u8]) -> usize {
+        let n = self.len.min(out.len());
+        for (index, byte) in out[..n].iter_mut().enumerate() {
+            *byte = self.bytes[(self.head + index) % self.bytes.len()];
         }
+        n
+    }
+
+    /// Forget the `n` oldest bytes.
+    pub(super) fn consume(&mut self, n: usize) {
+        let n = n.min(self.len);
+        self.head = (self.head + n) % self.bytes.len();
+        self.len -= n;
     }
 }
 
@@ -151,11 +158,13 @@ pub(super) struct Switching {
     pub(super) epoch: u64,
     /// The process holding the display (`sys_take_over_display`) and its terminal.
     display_owner: Option<(u64, usize)>,
+    /// When the last acquisition began (monotonic seconds and nanoseconds).
+    switched: (u64, u64),
 }
 
 impl Switching {
     pub(super) const fn new() -> Self {
-        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None }
+        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None, switched: (0, 0) }
     }
 }
 
@@ -196,6 +205,8 @@ pub(super) struct Effects {
     wake: bool,
     /// The foreground terminal must be redrawn from its grid.
     pub(super) redraw: bool,
+    /// The foreground changed, and with it the lock state keyboards show.
+    leds: bool,
 }
 
 impl Effects {
@@ -238,6 +249,12 @@ impl Effects {
         }
         if self.wake {
             WAITACTIVE.wake_up();
+        }
+        // The keyboard driver sends the new LED state from its own thread
+        // (the x86 xHCI boot keyboard's; ARM64's USB keyboard is V7's).
+        if self.leds {
+            #[cfg(target_arch = "x86_64")]
+            crate::drivers::xhci::lock_state_changed();
         }
         for (pid, sig) in self.signals.into_iter().flatten() {
             crate::syscall::signal::signal_process_from_kernel(crate::process::ProcessId::new(pid), sig);
@@ -347,6 +364,7 @@ impl Terminals<'_> {
             self.sw.pending = Some(Pending { from, to, source, phase: Phase::Released });
             return;
         }
+        self.sw.switched = crate::time::get_monotonic_time_ns();
         self.sw.acquired = false;
         self.sw.epoch = self.sw.epoch.wrapping_add(1);
         let text = self.vts[to].graphics.is_none();
@@ -363,6 +381,7 @@ impl Terminals<'_> {
             },
         });
         self.sw.fg = to;
+        effects.leds = true;
         // The screen goes to `to`: a process drawing on it is no longer shown.
         if text {
             super::DISPLAY_TAKEN.store(false, Ordering::SeqCst);
@@ -795,6 +814,11 @@ pub(super) fn drawn(epoch: u64) {
 
 pub(super) fn readback_pending() -> Option<usize> {
     with_terminals(|terminals, _| terminals.sw.check)
+}
+
+/// When the last acquisition began, for its read-back's report.
+pub(super) fn switched_at() -> (u64, u64) {
+    with_terminals(|terminals, _| terminals.sw.switched)
 }
 
 pub(super) fn checked(vt: usize) {

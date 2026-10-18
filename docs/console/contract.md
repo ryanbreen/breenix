@@ -93,6 +93,10 @@ the VT's own size succeeds without effect; with any other size it fails with EIN
   their history when their screens are initialized, before keyboard input can reach them; allocation
   runs in thread context. If allocation fails, the VT runs without scrollback and the kernel
   logs `[console] ttyN scrollback unavailable` once.
+- Once tty2 to tty6 have their screens and scrollback, the kernel logs what they took from the heap,
+  measured, beside the size they add up to, and the heap's high-water mark (plan Q10): `[console]
+  terminals: tty2 to tty6 took <n> KiB of the kernel heap, measured (calculated: ...); heap high-water <n>
+  KiB of <heap size> KiB`. `/proc/meminfo`'s `KernelHeapPeak` gives the high-water mark at any later time.
 - Lines enter the scrollback when they scroll off the top of the main screen: full-screen scrolling, or a
   scroll region whose top is the screen's first row. Erasing the screen does not move lines into it.
 - **Shift+PageUp** and **Shift+PageDown** move the foreground VT's view back and forward by half a screen
@@ -428,6 +432,15 @@ Other parameters are parsed and have no effect.
   character first moves to the start of the next line (scrolling the region at its bottom). A cursor movement
   clears the pending wrap. With autowrap off, characters past the last column overwrite it.
 - Tab stops start at each 8th column. HT moves to the next stop, or to the last column.
+- **Reports** (the DSR answers) are the VT's input, as keys are: they join the VT's keyboard queue behind the
+  keys already in it and go through its line discipline, so in canonical mode an answer becomes part of the
+  line being typed and is read with it (`keys/report-joins-typed-line`). tty1's output also goes to serial,
+  where a terminal could answer the same request. **On tty1 the screen is the one terminal that answers**,
+  because tty1's window size is its grid's: while the render thread runs to deliver answers, the serial copy
+  of tty1's output leaves out each request the screen answered (control characters inside it still go), so
+  a terminal on serial is not asked. Any other escape sequence reaches serial whole and in order, held back
+  only until it ends. A request the screen does not answer, because it came before the render thread ran,
+  its answer did not fit the VT's reply queue, or it was longer than 64 bytes, goes to serial unchanged.
 - Sequences not listed are consumed without effect.
 - Login and init set `TERM=breenix`. A terminfo source entry is added when a curses library arrives.
 
@@ -640,7 +653,9 @@ the backstop does not pass.
 - **A switch logs** `[console] foreground ttyN (<source>)` (`key alt-f2`, `key ctrl-alt-f2`, `ioctl`, or
   `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
   then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
-  the shadow's SHA-256>` or `[console] ttyN shown: read back differs: <first mismatch>` (fatal). **A switch
+  the shadow's SHA-256>; <ms> ms after the switch` or `[console] ttyN shown: read back differs: <first
+  mismatch>; <ms> ms after the switch` (fatal). The time runs from the moment ttyN became the foreground
+  to the verdict (plan Q25); `vt-switch/switch-readback` requires it under that case's 2000 ms. **A switch
   does not log screen contents:** terminals can show secrets, and serial and boot logs are retained.
 - **`/proc/console/check`** (root only, mode 0400) is how a case or a metal script reads the screen. Reading it
   runs the check on the foreground VT and returns:
