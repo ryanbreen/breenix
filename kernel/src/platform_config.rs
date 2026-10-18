@@ -101,8 +101,8 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 // Loader stack:   0x41E0_0000 - 0x4200_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
-// Heap:           0x5020_0000 - 0x541F_FFFF (64 MB)
-// Kernel stacks:  0x5420_0000 - 0x561F_FFFF (32 MB)
+// Heap:           0x5020_0000 - 0x581F_FFFF (128 MB)
+// Kernel stacks:  0x5820_0000 - 0x5A1F_FFFF (32 MB)
 // The rest of the RAM the firmware describes is the frame pool.
 
 /// The kernel's fixed physical ranges at a RAM base of 0x4000_0000: the DTB,
@@ -111,7 +111,7 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 const KERNEL_FIXED_RANGES: [PhysRange; 2] = [
     PhysRange::new(arm64_boot_contract::LINKED_RAM_START, 0x4400_0000),
-    PhysRange::new(0x5000_0000, 0x5620_0000),
+    PhysRange::new(0x5000_0000, 0x5A20_0000),
 ];
 
 #[cfg(target_arch = "aarch64")]
@@ -126,7 +126,9 @@ const _: () = {
             <= low.end
     );
     let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
-    assert!(heap >= high.start && heap + crate::memory::heap::HEAP_SIZE <= high.end);
+    assert!(heap >= high.start);
+    assert!(heap + crate::memory::heap::HEAP_SIZE
+        <= crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE);
     assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE >= high.start);
     assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE <= high.end);
 };

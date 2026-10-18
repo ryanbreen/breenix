@@ -14,17 +14,22 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 // The heap MUST be in TTBR1 because TTBR0 gets switched to process page tables.
 //
 // Memory layout (physical):
-//   Frame allocator: 0x4400_0000 - 0x5000_0000  (192 MB)
+//   Frame allocator: firmware RAM outside the fixed kernel reservations
 //   .dma (NC) block: 0x5000_0000 - 0x501F_FFFF  (2 MB, Non-Cacheable for xHCI DMA)
-//   Heap:            0x5020_0000 - 0x541F_FFFF  (64 MB, Write-Back Cacheable)
-//   Kernel stacks:   0x5420_0000 - 0x561F_FFFF  (32 MB)
+//   Heap:            0x5020_0000 - 0x581F_FFFF  (128 MB, Write-Back Cacheable)
+//   Kernel stacks:   0x5820_0000 - 0x5A1F_FFFF  (32 MB)
 //
 // The heap MUST start AFTER the 2 MB NC DMA block to avoid overlapping
 // with xHCI DMA buffers placed in the .dma linker section.
 pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5020_0000;
 
-/// Heap size: 64 MiB — GPU backing needs ~33MB at 2560x1600 (2 x 16.4MB textures).
+/// x86 retains its existing heap reservation.
+#[cfg(target_arch = "x86_64")]
 pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
+/// ARM64 legacy VirGL startup holds about 52 MiB at 1280x960 before the
+/// console and other kernel allocations (#1914). Reserve space for both.
+#[cfg(target_arch = "aarch64")]
+pub const HEAP_SIZE: u64 = 128 * 1024 * 1024;
 
 /// IRQ-safe wrapper around the kernel's free-list allocator.
 ///
