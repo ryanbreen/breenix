@@ -131,7 +131,9 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None)
             source = scratch / 'shadow'
             source.touch(mode=0o600)
             source.write_text(shadow)
-            commands.extend(['rm /etc/shadow', f'write {source} /etc/shadow',
+            commands.extend(['mkdir /root', 'set_inode_field /root mode 040700',
+                             'set_inode_field /root uid 0', 'set_inode_field /root gid 0',
+                             'rm /etc/shadow', f'write {source} /etc/shadow',
                              'set_inode_field /etc/shadow mode 0100600',
                              'set_inode_field /etc/shadow uid 0', 'set_inode_field /etc/shadow gid 0'])
         script = scratch / 'commands'
@@ -143,6 +145,10 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None)
             if result.stdout != text.encode():
                 raise ValueError('RAM-disk boot configuration readback differs')
         if shadow is not None:
+            home = subprocess.run([debugfs, '-R', 'stat /root', str(image)], check=True, capture_output=True).stdout
+            if (b'Type: directory' not in home or b'Mode:  0700' not in home
+                    or not re.search(rb'User:\s+0\s+Group:\s+0', home)):
+                raise ValueError('console home directory or permissions differ')
             readback = subprocess.run([debugfs, '-R', 'cat /etc/shadow', str(image)], check=True, capture_output=True)
             stat = subprocess.run([debugfs, '-R', 'stat /etc/shadow', str(image)], check=True, capture_output=True).stdout
             if (readback.stdout != shadow.encode() or b'Mode:  0600' not in stat

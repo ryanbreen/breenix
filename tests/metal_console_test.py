@@ -101,6 +101,9 @@ class ConsoleTest(unittest.TestCase):
             self.assertRegex(shadow, rb'^root:\$6\$[./A-Za-z0-9]{16}\$[./A-Za-z0-9]{86}:')
             self.assertNotIn(site['CONSOLE_PASSWORD'].encode(), shadow)
             self.assertIn(b'Mode:  0600', read('stat /etc/shadow'))
+            home = read('stat /root')
+            self.assertIn(b'Type: directory', home)
+            self.assertIn(b'Mode:  0700', home)
             before = image.read_bytes()
             with patch.object(metal_root.subprocess, 'run', return_value=SimpleNamespace(stdout=b'$6$malformed')):
                 with self.assertRaisesRegex(ValueError, 'malformed'):
