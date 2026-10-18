@@ -131,7 +131,7 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
 /// exists and exactly how narrow it is.
 fn code_mask(source: &str) -> Rc<Vec<bool>> {
     // Mutation legs copy the whole kernel snapshot but usually change one file.
-    // Reuse lexical work by complete text, never by path, address or length:
+    // Reuse lexical work keyed by complete text rather than path, address or length:
     // a private mutation (including a same-length edit) must get its own mask.
     // Each test thread drops its cache when it finishes.
     thread_local! {

@@ -272,10 +272,13 @@ fn drivers_have_no_interruptible_completion_waits() {
 // Admit that deliberate addition only in its exact function and module cfg.
 fn validate_console_ready_wait(module: &str, driver: &str) -> Result<(), String> {
     let declarations = code_occurrences(module, "pub mod xhci;");
-    if declarations.len() != 1
-        || !module[..declarations[0]]
-            .trim_end()
-            .ends_with("#[cfg(target_arch = \"x86_64\")]")
+    let attribute = "#[cfg(target_arch = \"x86_64\")]";
+    let cfg_is_code = declarations.first().is_some_and(|declaration| {
+        let prefix = module[..*declaration].trim_end();
+        prefix.ends_with(attribute)
+            && code_mask(module)[prefix.len() - attribute.len()]
+    });
+    if declarations.len() != 1 || !cfg_is_code
     {
         return Err("xhci must remain cfg(target_arch = \"x86_64\")".into());
     }
@@ -323,6 +326,14 @@ fn console_ready_wait_census_rejects_a_different_name_or_cfg() {
         &module.replace("#[cfg(target_arch = \"x86_64\")]\npub mod xhci;", "pub mod xhci;"),
         &driver,
     ).is_err());
+    for fake_attribute in [
+        "// #[cfg(target_arch = \"x86_64\")]",
+        "/* #[cfg(target_arch = \"x86_64\")] */",
+    ] {
+        let commented = module.replace("#[cfg(target_arch = \"x86_64\")]", fake_attribute);
+        assert!(validate_console_ready_wait(&commented, &driver).is_err());
+    }
+
 }
 
 #[test]
