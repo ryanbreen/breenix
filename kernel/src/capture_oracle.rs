@@ -36,7 +36,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// Guest uptime at which the oracle panics, in milliseconds.
+/// Minimum guest uptime at which the hook panics, in milliseconds.
+/// GPU boots also wait for handoff and acquire the display locks before firing.
 ///
 /// The same checkpoint `capture::selftest` uses, for the reason recorded in
 /// `kernel/src/capture/selftest.rs`: it is late enough that the boot's own
@@ -57,6 +58,19 @@ pub fn observe(tick_count: u64) {
     }
     let elapsed_ms = tick_count.saturating_mul(crate::time::timer::MS_PER_TICK);
     if elapsed_ms < PANIC_AT_MS {
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if !crate::gpu::panic::test_ready() {
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::console::active() {
+        crate::gpu::panic::test_with_locks(|| {
+            if !FIRED.swap(true, Ordering::AcqRel) {
+                fire(elapsed_ms, tick_count);
+            }
+        });
         return;
     }
     if FIRED.swap(true, Ordering::AcqRel) {
