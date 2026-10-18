@@ -428,14 +428,22 @@ stage_boot_ext2_disk() {
     fi
 }
 
+ext2_source_identity() {
+    (set -o pipefail; shasum -a 256 "$EXT2_DISK" | awk '{print $1}')
+}
+
 # Whether the VM's wrapped data disk (whose boot-target marker file is $1) must
 # be made again: when the built disk changed, this run selects a boot target,
 # an earlier run's boot target must be cleared, or the disk names another
 # nameserver. Otherwise the wrapped disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
-    local rebuilt="$1" marker="$2"
-    [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
-        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]
+    local rebuilt="$1" marker="$2" identity
+    if [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
+        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]; then
+        return 0
+    fi
+    identity=$(ext2_source_identity) || return 0
+    [ "$(cat "$marker.source.sha256" 2>/dev/null)" != "$identity" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
@@ -444,6 +452,7 @@ mark_wrapped_ext2() {
     if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
     # Staging verifies the nameserver before the wrapped disk is published.
     target_nameserver > "$marker.dns"
+    ext2_source_identity > "$marker.source.sha256"
 }
 
 # Cargo can restore a cached profile with an older mtime. Compare the exact
