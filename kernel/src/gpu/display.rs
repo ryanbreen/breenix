@@ -602,12 +602,18 @@ pub(super) fn restored(b: Binding) {
 
 pub(super) fn restore_pending() -> Result<(), i64> {
     let _transition = Transition::acquire()?;
-    let seq = with_core(|c| c.display.owner_sequence).ok_or(ENODEV)?;
-    if !super::console::restoring(seq) {
-        // Requested for an owner stack that has changed since: obsolete.
-        super::console::restored_pending();
-        return Ok(());
-    }
+    // Owner exit publishes its request under the core lock too: deciding that a request
+    // is obsolete and clearing it must not straddle publication of the next request.
+    let seq = with_core(|c| {
+        let seq = c.display.owner_sequence;
+        if super::console::restoring(seq) {
+            Some(seq)
+        } else {
+            super::console::restored_pending();
+            None
+        }
+    }).ok_or(ENODEV)?;
+    let Some(seq) = seq else { return Ok(()) };
     let outcome = restore();
     with_core(|c| {
         if outcome.is_ok() && c.display.owner_sequence == seq {
