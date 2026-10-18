@@ -590,8 +590,9 @@ operator resolves that difference. No restore step writes storage.
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
 Their stage lists cover RAM-disk, install and disk-root shapes, subject to each milestone's `bootModes`.
-The `usb-keyboard` and `console-login` stages tagged `input: keyboard` are required only of an attended boot, so a SOL boot finishes
-without them. Its verdict leaves those two milestones unpassed and counts the stages its input cannot produce
+The `usb-keyboard` and `console-login` stages tagged `input: keyboard` are required only of an attended boot,
+so a SOL boot finishes without them. Its verdict leaves those two milestones unpassed and counts the stages
+its input cannot produce
 (`inputUnmeasured`); those alone do not make the boot short. Existing modes keep their measured stages and
 completion markers.
 Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
