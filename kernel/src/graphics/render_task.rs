@@ -1,12 +1,10 @@
-//! Framebuffer render thread.
+//! Framebuffer render thread (ARM64, displays without VirGL).
 //!
-//! This module provides a kernel thread that drains the render queue and
-//! draws to the framebuffer. By running rendering on a dedicated thread with
-//! its own 512 KiB stack, we avoid stack overflow in syscall/interrupt context.
+//! The thread copies the shell framebuffer's double buffer to the screen and
+//! flushes its dirty rectangle to the display, for the boot screen and for a
+//! process that owns the display, and draws the mouse cursor for that owner.
+//! The screen console draws with its own thread (`crate::console`).
 
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-use super::log_capture;
-use super::render_queue;
 use crate::task::kthread::{kthread_run, kthread_should_stop, KthreadHandle};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
@@ -27,7 +25,6 @@ static RENDER_KTHREAD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
 
 /// Spawn the render thread.
 ///
-/// This should be called during kernel initialization when interactive mode is enabled.
 /// Returns Ok(thread_id) on success, or Err if the thread couldn't be spawned.
 pub fn spawn_render_thread() -> Result<u64, &'static str> {
     if RENDER_THREAD_RUNNING.load(Ordering::SeqCst) {
@@ -58,50 +55,26 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 /// This function is called via the kthread API (passed via RDI register).
 /// It contains the main rendering loop and checks for shutdown signals.
 ///
-/// CRITICAL: No logging allowed in this function! The render thread processes
-/// the render queue. Logging here could cause deadlocks if the logger tries
-/// to write to the render queue while this thread holds locks.
+/// No logging in this function: it runs with interrupts enabled (see
+/// `boot_screen::presenter_main`).
 fn render_thread_main_kthread() {
     // Main rendering loop - runs until kthread_stop() is called
     while !kthread_should_stop() {
-        // Always update the mouse cursor, even when BWM owns the display.
-        // The cursor is drawn directly into the framebuffer VRAM; SVGA3 VRAM
-        // traces detect the pixel writes and update the display automatically.
-        #[cfg(target_arch = "aarch64")]
-        update_mouse_cursor();
-
-        // When BWM owns the display, the render thread only handles cursor.
-        // BWM handles text drawing, terminal content, and GPU flushing via
-        // fbdraw syscalls. Flush any cursor dirty rect, then sleep.
+        // When BWM owns the display, the render thread draws the mouse cursor
+        // into the framebuffer VRAM (SVGA3 VRAM traces detect the pixel writes
+        // and update the display), flushes its dirty rect, then sleeps. BWM
+        // handles the rest of the drawing and GPU flushing via fbdraw syscalls.
+        // Until then the screen is the kernel's, and a cursor would be drawn
+        // over the console's pixels.
         if DISPLAY_TAKEN.load(Ordering::Acquire) {
+            update_mouse_cursor();
             flush_framebuffer();
             wait_for_next_tick();
             continue;
         }
 
-        let mut did_work = false;
-
-        // Process all pending render queue data (terminal text, log capture)
-        while render_queue::has_pending_data() {
-            let rendered = render_queue::drain_and_render();
-            if rendered == 0 {
-                break; // Queue was empty or locked
-            }
-            did_work = true;
-        }
-
-        // Draw kernel log lines when the on-screen log console is enabled.
-        #[cfg(target_arch = "aarch64")]
-        if super::log_console::pump() {
-            did_work = true;
-        }
-
         // Flush dirty regions to the GPU. Returns true if a flush happened.
         if flush_framebuffer() {
-            did_work = true;
-        }
-
-        if did_work {
             // Work was done — loop immediately to check for more.
             // When bounce submits frames at 60fps, the render thread must
             // flush each one promptly. Yielding here caused the thread to
@@ -120,11 +93,7 @@ fn render_thread_main_kthread() {
         // if data arrives after the check but before park sets parked=true,
         // wake_render_thread's kthread_unpark is lost. Instead, the thread
         // runs again on the next timer tick and re-checks all data sources.
-        if !RENDER_WAKE.swap(false, Ordering::Acquire)
-            && !render_queue::has_pending_data()
-            && !log_capture::has_pending_data()
-            && !has_pending_flush()
-        {
+        if !RENDER_WAKE.swap(false, Ordering::Acquire) && !has_pending_flush() {
             wait_for_next_tick();
         }
     }
@@ -133,7 +102,6 @@ fn render_thread_main_kthread() {
 }
 
 /// One ARM64 timer tick: the timer runs at 1 kHz.
-#[cfg(target_arch = "aarch64")]
 const TICK_NS: u64 = 1_000_000;
 
 /// Wait until the next timer tick, when the loop re-checks its work.
@@ -146,7 +114,6 @@ const TICK_NS: u64 = 1_000_000;
 /// members queued there wait about 12 ms to run (#1177). Asleep, the thread
 /// leaves the CPU to the threads queued on it or to its idle thread, which
 /// other CPUs wake with a reschedule IPI when they give it work.
-#[cfg(target_arch = "aarch64")]
 fn wait_for_next_tick() {
     use crate::task::{scheduler, thread::ThreadState};
 
@@ -172,29 +139,19 @@ fn wait_for_next_tick() {
     }
 }
 
-/// Wait until the next timer tick, when the loop re-checks its work.
-#[cfg(not(target_arch = "aarch64"))]
-fn wait_for_next_tick() {
-    arch_halt();
-}
-
 /// Architecture-specific halt (wait for interrupt).
 ///
-/// A private park primitive, kept separate from `crate::arch_halt` so the
-/// aarch64 arm keeps the exact `asm!` it emits today. It carries the
-/// same #772 park bump the shared primitives do, so the render thread's waits
-/// that use it -- x86's wait for the next tick, and aarch64's when the thread
-/// has no scheduler identity -- are counted the way the loops that use the
-/// shared primitives are.
+/// A private park primitive, kept separate from `crate::arch_halt` so it
+/// keeps the exact `asm!` it emits today. It carries the same #772 park bump
+/// the shared primitives do, so the render thread's wait when it has no
+/// scheduler identity is counted the way the loops that use the shared
+/// primitives are.
 #[inline(always)]
 fn arch_halt() {
     crate::per_cpu::note_wait_loop_park();
-    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("wfi");
     }
-    #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::hlt();
 }
 
 /// Signal the render thread to wake up and check for work.
@@ -226,7 +183,6 @@ pub fn is_display_taken() -> bool {
 /// VirtIO tablet (QEMU/Parallels) or XHCI USB HID mouse (VMware/Parallels).
 /// Redraws the cursor sprite if the position has changed. This runs on
 /// the render thread's stack, not in interrupt context.
-#[cfg(target_arch = "aarch64")]
 fn update_mouse_cursor() {
     let (mx, my) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_position()
@@ -256,55 +212,31 @@ fn update_mouse_cursor() {
 
 /// Check if there's a pending GPU flush without consuming the dirty state.
 fn has_pending_flush() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        crate::graphics::arm64_fb::has_dirty_rect()
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        false
-    }
+    crate::graphics::arm64_fb::has_dirty_rect()
 }
 
 /// Flush the framebuffer if dirty. Returns true if a flush was performed.
 fn flush_framebuffer() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
-            if let Some(mut guard) = fb.try_lock() {
-                if let Some(db) = guard.double_buffer_mut() {
-                    db.flush_if_dirty();
-                    // x86_64 double buffer handles its own dirty tracking;
-                    // return false to avoid tight-looping on x86.
-                    return false;
-                }
+    // First, flush the double buffer (shadow → BAR0 copy) if present.
+    // This must happen while holding SHELL_FRAMEBUFFER so the shadow
+    // buffer isn't modified mid-copy.
+    if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
+        if let Some(mut fb_guard) = fb.try_lock() {
+            if let Some(db) = fb_guard.double_buffer_mut() {
+                db.flush_if_dirty();
             }
         }
-        false
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // First, flush the double buffer (shadow → BAR0 copy) if present.
-        // This must happen while holding SHELL_FRAMEBUFFER so the shadow
-        // buffer isn't modified mid-copy.
-        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-            if let Some(mut fb_guard) = fb.try_lock() {
-                if let Some(db) = fb_guard.double_buffer_mut() {
-                    db.flush_if_dirty();
-                }
-            }
-        }
 
-        // Then flush dirty regions to the display (DSB + optional VirtIO hint).
-        // No SHELL_FRAMEBUFFER lock needed here — we're not touching the pixel
-        // buffer, just submitting GPU commands.
-        if let Some((x, y, w, h)) = crate::graphics::arm64_fb::take_dirty_rect() {
-            if let Err(e) = crate::graphics::arm64_fb::flush_dirty_rect(x, y, w, h) {
-                crate::serial_println!("[render] GPU flush failed: {}", e);
-            }
-            true
-        } else {
-            false
+    // Then flush dirty regions to the display (DSB + optional VirtIO hint).
+    // No SHELL_FRAMEBUFFER lock needed here — we're not touching the pixel
+    // buffer, just submitting GPU commands.
+    if let Some((x, y, w, h)) = crate::graphics::arm64_fb::take_dirty_rect() {
+        if let Err(e) = crate::graphics::arm64_fb::flush_dirty_rect(x, y, w, h) {
+            crate::serial_println!("[render] GPU flush failed: {}", e);
         }
+        true
+    } else {
+        false
     }
 }

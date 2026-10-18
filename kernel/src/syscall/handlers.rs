@@ -3493,6 +3493,9 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
+    // Quiesce the console before publishing authority to the new owner's
+    // other threads, which can issue framebuffer syscalls concurrently.
+    crate::console::take_display();
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3515,12 +3518,9 @@ pub fn sys_take_over_display() -> SyscallResult {
 
         // Tell the render thread to stop flushing the framebuffer.
         // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+        #[cfg(target_arch = "aarch64")]
         crate::graphics::render_task::set_display_taken();
 
-        // The x86_64 screen console stops drawing.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::take_display();
     }
     SyscallResult::Ok(0)
 }
@@ -3528,6 +3528,22 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    {
+        let mut guard = crate::process::manager();
+        let Some((pid, process)) = guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(tid)) else {
+            return SyscallResult::Err(3);
+        };
+        let owner = &crate::syscall::graphics::DISPLAY_OWNER_PID;
+        if owner.load(core::sync::atomic::Ordering::Acquire) != pid.as_u64() && process.cred.euid != 0 {
+            return SyscallResult::Err(1);
+        }
+        process.has_display_ownership = false;
+        owner.store(u64::MAX, core::sync::atomic::Ordering::Release);
+    }
+    crate::console::give_back_display();
     SyscallResult::Ok(0)
 }
 

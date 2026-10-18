@@ -187,6 +187,10 @@ impl SerialPort {
             write_reg(reg::CR, cr | cr::UARTEN | cr::TXE | cr::RXE);
         }
 
+        // ARM64 kernel records need severity for the console session policy.
+        if log::set_logger(&KERNEL_LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
         SERIAL_INITIALIZED.store(true, Ordering::Release);
 
         // Publish UART virtual address for assembly-level diagnostics
@@ -316,6 +320,25 @@ pub fn get_received_byte() -> Option<u8> {
             Some((read_reg(reg::DR) & 0xFF) as u8)
         }
     }
+}
+
+struct KernelLogger;
+static KERNEL_LOGGER: KernelLogger = KernelLogger;
+
+impl log::Log for KernelLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            use core::fmt::Write;
+            let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
+                "{:>5}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 pub use crate::serial_writer::Writer;

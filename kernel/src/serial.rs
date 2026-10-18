@@ -790,7 +790,10 @@ pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
     let lead = crate::serial_writer::lead(writer, bytes);
     for &byte in lead.iter().chain(bytes) {
         queue_byte(queue, byte);
-        crate::log_buffer::capture_byte(byte);
+        // Terminal text belongs to its reader, not the persistent kernel log.
+        if writer == Writer::Kernel {
+            crate::log_buffer::capture_byte(byte);
+        }
     }
     if let Some(&last) = bytes.last() {
         crate::serial_writer::wrote(writer, last);

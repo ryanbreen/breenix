@@ -12,11 +12,11 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 use super::progress::{
     get_overall_progress, get_progress, get_stage_progress, is_complete, is_started,
 };
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 use super::registry::{SubsystemId, TestStage};
 
 /// Whether graphical display is available and initialized
@@ -73,19 +73,12 @@ pub fn request_refresh() {
 
 /// Check if framebuffer is available (architecture-specific)
 ///
-/// On x86_64, SHELL_FRAMEBUFFER only exists with the `interactive` feature.
-/// On ARM64, SHELL_FRAMEBUFFER is always available when VirtIO GPU initializes.
+/// On x86_64 the framebuffer belongs to the screen console. On ARM64,
+/// SHELL_FRAMEBUFFER is available when VirtIO GPU initializes.
 fn has_framebuffer_available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        #[cfg(feature = "interactive")]
-        {
-            crate::logger::SHELL_FRAMEBUFFER.get().is_some()
-        }
-        #[cfg(not(feature = "interactive"))]
-        {
-            false
-        }
+        false
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -98,14 +91,11 @@ fn has_framebuffer_available() -> bool {
 // Graphical rendering implementation
 // =============================================================================
 //
-// The full rendering code is compiled on platforms that can have a framebuffer:
-// - x86_64 with interactive feature (SHELL_FRAMEBUFFER exists)
-// - ARM64 (VirtIO GPU provides SHELL_FRAMEBUFFER)
-//
-// On x86_64 without interactive, a no-op stub is provided instead.
+// The full rendering code is compiled on ARM64 (VirtIO GPU provides
+// SHELL_FRAMEBUFFER). On x86_64, a no-op stub is provided instead.
 
 /// Render to the appropriate framebuffer based on platform
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 fn render_to_framebuffer() {
     use crate::graphics::primitives::{
         draw_rect, draw_text, fill_rect, Canvas, Color, Rect, TextStyle,
@@ -410,32 +400,20 @@ fn render_to_framebuffer() {
         }
     }
 
-    // Actual rendering dispatch based on architecture
-    #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-    {
-        if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
-            let mut guard = fb.lock();
-            render_panel(&mut *guard);
-        }
+    // Only while the boot screen has the display: once the screen console, a
+    // display owner or the diagnostics screen has it, the panel would be drawn
+    // over their pixels.
+    if !crate::graphics::boot_screen::is_up() {
+        return;
     }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-            let mut guard = fb.lock();
-            render_panel(&mut *guard);
-            // Flush to display on ARM64
-            guard.flush();
-        }
+    if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
+        let mut guard = fb.lock();
+        render_panel(&mut *guard);
+        // Flush to display on ARM64
+        guard.flush();
     }
 }
 
-/// No-op rendering stub for x86_64 without interactive feature.
-///
-/// On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature because
-/// without it, the raw framebuffer is consumed by the basic text logger.
-/// This stub ensures the code compiles cleanly with zero warnings.
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-fn render_to_framebuffer() {
-    // No graphical display available - framebuffer is used by basic text logger
-}
+/// No-op rendering stub for x86_64, whose framebuffer is the screen console's.
+#[cfg(target_arch = "x86_64")]
+fn render_to_framebuffer() {}

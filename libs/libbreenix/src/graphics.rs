@@ -152,8 +152,7 @@ pub mod draw_op {
     pub const WAIT_STRESS_WAKE: u32 = 29;
     /// F32c waitqueue stress stats.
     pub const WAIT_STRESS_STATS: u32 = 30;
-    /// Read a hardware framebuffer pixel (production x86_64 only).
-    #[cfg(target_arch = "x86_64")]
+    /// Read a display pixel from scanout memory or its attached backing.
     pub const READ_PIXEL: u32 = 32;
 }
 
@@ -349,10 +348,9 @@ pub fn fb_mmap_pane() -> Result<(*mut u8, u64), Error> {
     Ok((ptr, width))
 }
 
-/// Read a hardware framebuffer pixel as 0x00RRGGBB (production x86_64 only).
-/// The caller must have effective UID 0, own the display, and have a whole-screen mapped pane.
-/// This reads the device framebuffer, not the caller's mapped drawing buffer.
-#[cfg(target_arch = "x86_64")]
+/// Read a display pixel as 0x00RRGGBB. The caller must have effective UID 0
+/// and own the display (on x86, a whole-screen mapping is also required).
+/// Reads scanout memory or the attached GPU backing, not the drawing buffer.
 pub fn fb_read_pixel(x: i32, y: i32) -> Result<u32, Error> {
     let cmd = FbDrawCmd {
         op: draw_op::READ_PIXEL,

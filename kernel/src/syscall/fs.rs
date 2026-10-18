@@ -1130,6 +1130,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         PtySlave(alloc::sync::Arc<crate::tty::pty::PtyPair>),
         Fifo(alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>),
         ProcfsFile {
+            mode: u32,
             size: i64,
             owner: (u32, u32),
         },
@@ -1210,7 +1211,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::FifoRead(_, _, entry)
                 | FdKind::FifoWrite(_, _, entry)
                 | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
-                FdKind::ProcfsFile { ref content, owner, .. } => FstatKind::ProcfsFile {
+                FdKind::ProcfsFile { ref content, owner, mode, .. } => FstatKind::ProcfsFile {
+                    mode: *mode,
                     size: content.len() as i64,
                     owner: *owner,
                 },
@@ -1329,10 +1331,10 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 return SyscallResult::Err(e);
             }
         }
-        FstatKind::ProcfsFile { size, owner } => {
+        FstatKind::ProcfsFile { size, owner, mode } => {
             stat.st_dev = 0xffff0004;
             stat.st_ino = 0;
-            stat.st_mode = S_IFREG | 0o444;
+            stat.st_mode = S_IFREG | mode;
             stat.st_nlink = 1;
             stat.st_size = size;
             (stat.st_uid, stat.st_gid) = owner;
@@ -2779,6 +2781,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     };
 
     let fd_kind = FdKind::ProcfsFile {
+        mode: if matches!(normalized, "/proc/console/check" | "/proc/fbcon/check" | "/proc/kmsg") { 0o400 } else { 0o444 },
         content,
         position: 0,
         owner: crate::fs::procfs::owner(path),
@@ -3499,7 +3502,7 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
-    } else if cfg!(all(target_arch = "x86_64", not(feature = "interactive"))) && dir_path == "/proc/fbcon" {
+    } else if dir_path == "/proc/console" || (cfg!(target_arch = "x86_64") && dir_path == "/proc/fbcon") {
         alloc::vec![String::from("check")]
     } else {
         Vec::new()

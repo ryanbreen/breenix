@@ -137,7 +137,6 @@ struct Layer {
     probe: Probe,
 }
 
-const SCREEN: Layer = Layer { name: "the console core on the screen (V1)", probe: Probe::ConsoleCheck };
 const EMULATION: Layer = Layer { name: "the terminal emulation (V3)", probe: Probe::ConsoleCheck };
 const VT: Layer = Layer { name: "the six virtual terminals (V4)", probe: Probe::VtGetstate };
 const USER: Layer = Layer { name: "chvt and a getty on each terminal (V4u)", probe: Probe::VtGetstate };
@@ -179,6 +178,265 @@ fn missing(layer: &Layer) -> CaseResult {
     }
 }
 
+// Screen cases use the public root read-back and display/session APIs. No
+// test-only record injector: setsid emits INFO and invalid mmap emits WARN.
+type Verdict<T = ()> = Result<T, String>;
+
+fn measured(run: impl FnOnce() -> Verdict) -> CaseResult {
+    run().map_err(libbreenix::suite::CaseError::Fail)
+}
+
+fn require(ok: bool, message: &str) -> Verdict {
+    if ok { Ok(()) } else { Err(message.into()) }
+}
+
+fn pause() -> Verdict {
+    libbreenix::time::sleep_ms(100).map_err(|e| format!("sleep: {e}"))
+}
+
+fn screen_check() -> Verdict<String> {
+    std::fs::read_to_string("/proc/console/check").map_err(|e| format!("console check: {e}"))
+}
+
+fn identical(text: &str) -> Verdict {
+    require(text.lines().any(|line| line == "console check: shadow and screen identical"), text)?;
+    require(text.lines().any(|line| line.starts_with("console frame: ") && line.ends_with(" complete")), text)
+}
+
+fn wait_for_row(marker: &str) -> Verdict<String> {
+    for _ in 0..20 {
+        let text = screen_check()?;
+        if text.lines().any(|line| line.starts_with("console row: ") && line.contains(marker)) {
+            identical(&text)?;
+            return Ok(text);
+        }
+        pause()?;
+    }
+    Err(format!("no displayed row contains {marker}"))
+}
+
+fn tty_write(text: &str) -> Verdict {
+    let fd = fs::open("/dev/console", fs::O_WRONLY | O_NOCTTY).map_err(|e| format!("console open: {e}"))?;
+    let mut bytes = text.as_bytes();
+    let result = (|| {
+        while !bytes.is_empty() {
+            let count = io::write(fd, bytes).map_err(|e| format!("console write: {e}"))?;
+            require(count != 0, "console write made no progress")?;
+            bytes = &bytes[count..];
+        }
+        Ok(())
+    })();
+    let _ = io::close(fd);
+    result
+}
+
+fn marker(label: &str) -> Verdict<String> {
+    let pid = libbreenix::process::getpid().map_err(|e| format!("getpid: {e}"))?;
+    Ok(format!("screen-{label}-{}", pid.raw()))
+}
+
+fn screen_tty1_on_screen() -> CaseResult {
+    measured(|| {
+        let marker = marker("tty")?;
+        tty_write(&format!("\r\n{marker}\r\n"))?;
+        let text = wait_for_row(&marker)?;
+        require(text.contains("console foreground: tty1\n"), &text)?;
+        let log = std::fs::read_to_string("/proc/kmsg").map_err(|e| format!("root kmsg: {e}"))?;
+        require(!log.contains(&marker), "TTY text leaked into the kernel ring")?;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata("/proc/console/check").map_err(|e| format!("stat check: {e}"))?.permissions().mode();
+        require(mode & 0o777 == 0o400, "console/check does not report mode 0400")?;
+        let pid = match libbreenix::process::fork().map_err(|e| format!("fork: {e}"))? {
+            libbreenix::process::ForkResult::Child => {
+                #[cfg(target_arch = "x86_64")]
+                const SETUID: u64 = 105;
+                #[cfg(target_arch = "aarch64")]
+                const SETUID: u64 = 146;
+                let dropped = unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0;
+                let denied = ["/proc/kmsg", "/proc/console/check"].iter().all(|path| {
+                    std::fs::read(path).err().and_then(|e| e.raw_os_error()) == Some(13)
+                });
+                libbreenix::process::exit(if dropped && denied { 0 } else { 1 });
+            }
+            libbreenix::process::ForkResult::Parent(pid) => pid,
+        };
+        let mut status = 0;
+        libbreenix::process::waitpid(pid.raw() as i32, &mut status, 0).map_err(|e| format!("waitpid: {e}"))?;
+        require(status == 0, "unprivileged process could read a privileged snapshot")
+    })
+}
+
+fn screen_readback_identical() -> CaseResult {
+    measured(|| {
+        let marker = marker("pixels")?;
+        tty_write(&format!("\r\n{marker} Wm09!?\r\n"))?;
+        identical(&wait_for_row(&marker)?)
+    })
+}
+
+fn screen_scanout_bound() -> CaseResult {
+    measured(|| {
+        let text = screen_check()?;
+        identical(&text)?;
+        let source = text.lines().find_map(|line| line.strip_prefix("console scanout: "))
+            .ok_or("missing scanout source")?;
+        if source.starts_with("scanout memory at ") {
+            require(source.contains("display BAR") || source.contains("GOP"), source)
+        } else {
+            require(source.starts_with("backing after flush ") && source.contains("bound to scanout 0"), source)
+        }
+    })
+}
+
+fn oracle(text: &str) -> Verdict {
+    identical(text)?;
+    let line = text.lines().find_map(|line| line.strip_prefix("console oracle: cells="))
+        .ok_or("missing font oracle")?;
+    let (cells, mismatches) = line.split_once(" mismatches=").ok_or("malformed font oracle")?;
+    require(cells.parse::<usize>().map_err(|e| e.to_string())? > 0 && mismatches == "0", line)
+}
+
+fn screen_font_oracle() -> CaseResult {
+    measured(|| {
+        let marker = marker("font")?;
+        tty_write(&format!("\r\n{marker} ABC xyz 012 []{{}} !?\r\n"))?;
+        oracle(&wait_for_row(&marker)?)
+    })
+}
+
+fn pair(text: &str) -> Verdict<(usize, usize)> {
+    let (a, b) = text.split_once('x').ok_or("missing dimension separator")?;
+    Ok((a.parse::<usize>().map_err(|e| e.to_string())?, b.parse::<usize>().map_err(|e| e.to_string())?))
+}
+
+fn screen_size_class() -> CaseResult {
+    measured(|| {
+        let text = screen_check()?;
+        identical(&text)?;
+        let line = text.lines().find_map(|line| line.strip_prefix("console display: ")).ok_or("missing display")?;
+        let (width, height) = pair(line.split_whitespace().next().ok_or("missing dimensions")?)?;
+        let (_, rest) = line.split_once(", font ").ok_or("missing font")?;
+        let (size, rest) = rest.split_once(" (").ok_or("missing cell")?;
+        let (cell, grid) = rest.split_once(" pixel cells), grid ").ok_or("missing grid")?;
+        let fonts = [(16, 7, 18), (20, 9, 22), (24, 11, 26), (32, 14, 34)];
+        let &(wanted, cw, ch) = fonts.iter().rev().find(|&&(_, cw, ch)| width / cw >= 128 && height / ch >= 36)
+            .unwrap_or(&fonts[0]);
+        require(size.parse::<usize>().map_err(|e| e.to_string())? == wanted, line)?;
+        require(pair(cell)? == (cw, ch), line)?;
+        require(pair(grid)? == ((width / cw).min(255), (height / ch).min(255)), line)
+    })
+}
+
+fn screen_cursor_drawn() -> CaseResult {
+    measured(|| {
+        let marker = marker("cursor")?;
+        tty_write(&format!("\r\n{marker}"))?;
+        let first = wait_for_row(&marker)?;
+        oracle(&first)?;
+        tty_write("   ")?;
+        pause()?;
+        let second = screen_check()?;
+        oracle(&second)?;
+        let digest = |s: &str| s.lines().find(|line| line.starts_with("console sha256: ")).unwrap_or("").to_string();
+        require(digest(&first) != digest(&second), "moving the cursor across blank cells did not change the screen")
+    })
+}
+
+fn screen_log_on_tty1() -> CaseResult {
+    measured(|| {
+        let sid = libbreenix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+        wait_for_row(&format!("sys_setsid: process {} created new session", sid.raw())).map(drop)
+    })
+}
+
+fn screen_log_quiet_in_session() -> CaseResult {
+    measured(|| {
+        libbreenix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+        let fd = fs::open("/dev/console", fs::O_RDWR | O_NOCTTY).map_err(|e| format!("open console: {e}"))?;
+        let acquired = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), 0x540e, 1) };
+        let _ = io::close(fd);
+        Error::from_syscall(acquired as i64).map_err(|e| format!("acquire session: {e}"))?;
+        pause()?;
+        // A second process creates an INFO record after the session is held.
+        let pid = match libbreenix::process::fork().map_err(|e| format!("fork: {e}"))? {
+            libbreenix::process::ForkResult::Child => {
+                let ok = libbreenix::process::setsid().is_ok();
+                libbreenix::process::exit(if ok { 0 } else { 1 });
+            }
+            libbreenix::process::ForkResult::Parent(pid) => pid,
+        };
+        let mut status = 0;
+        libbreenix::process::waitpid(pid.raw() as i32, &mut status, 0).map_err(|e| format!("waitpid: {e}"))?;
+        require(status == 0, "INFO producer failed")?;
+        // This is a real invalid memory request, refused before any mapping.
+        let ret = unsafe { raw::syscall6(nr::MMAP, 0, 0, 3, 0x22, u64::MAX, 0) };
+        require(ret as i64 == -22, "zero-length mmap did not fail with EINVAL")?;
+        let text = wait_for_row("sys_mmap: length is 0")?;
+        require(!text.lines().any(|line| line.starts_with("console row: ") &&
+            line.contains(&format!("sys_setsid: process {} created new session", pid.raw()))),
+            "INFO was drawn during the login session")
+    })
+}
+
+struct DisplayOwner;
+impl DisplayOwner {
+    fn take() -> Verdict<Self> {
+        libbreenix::graphics::take_over_display().map_err(|e| format!("take display: {e}"))?;
+        Ok(Self)
+    }
+}
+impl Drop for DisplayOwner {
+    fn drop(&mut self) { let _ = libbreenix::graphics::give_back_display(); }
+}
+
+fn paint_owner() -> Verdict<libbreenix::graphics::FbInfo> {
+    let info = libbreenix::graphics::fbinfo().map_err(|e| format!("fbinfo: {e}"))?;
+    let (pixels, width) = libbreenix::graphics::fb_mmap_pane().map_err(|e| format!("fb_mmap: {e}"))?;
+    require(width == info.width, "display owner did not map the whole screen")?;
+    let bytes = (width * info.height * info.bytes_per_pixel) as usize;
+    // The mapping holds the whole screen, using the reported pane stride.
+    unsafe { core::ptr::write_bytes(pixels, 0x3c, bytes); }
+    libbreenix::graphics::fb_flush().map_err(|e| format!("fb_flush: {e}"))?;
+    Ok(info)
+}
+
+fn screen_display_taken_stops_drawing() -> CaseResult {
+    measured(|| {
+        let owner = DisplayOwner::take()?;
+        let info = paint_owner()?;
+        tty_write("\r\nconsole must retain this without drawing\r\n")?;
+        pause()?;
+        require(screen_check()?.contains("console check: a process has the display"), "console did not yield display")?;
+        // Sample the text area, including cursor bands, from the display's
+        // memory/backing rather than the owner's staging mapping.
+        for y in (0..info.height as i32).step_by(13) {
+            for x in (0..info.width as i32).step_by(29) {
+                let pixel = libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("read pixel: {e}"))?;
+                require(pixel == 0x3c3c3c, "console overwrote the display owner's pixels")?;
+            }
+        }
+        drop(owner);
+        Ok(())
+    })
+}
+
+fn screen_display_released_redraws() -> CaseResult {
+    measured(|| {
+        let before = marker("before-take")?;
+        tty_write(&format!("\r\n{before}\r\n"))?;
+        wait_for_row(&before)?;
+        let owner = DisplayOwner::take()?;
+        paint_owner()?;
+        let retained = marker("while-taken")?;
+        tty_write(&format!("\r\n{retained}\r\n"))?;
+        drop(owner);
+        let text = wait_for_row(&retained)?;
+        require(text.lines().any(|line| line.starts_with("console row: ") && line.contains(&before)),
+            "release did not redraw the terminal's earlier text")?;
+        oracle(&text)
+    })
+}
+
 /// One function per case that has no check yet, each failing with the layer it needs.
 macro_rules! needs {
     ($($name:ident => $layer:ident;)*) => {
@@ -187,16 +445,6 @@ macro_rules! needs {
 }
 
 needs! {
-    screen_tty1_on_screen => SCREEN;
-    screen_readback_identical => SCREEN;
-    screen_scanout_bound => SCREEN;
-    screen_font_oracle => SCREEN;
-    screen_size_class => SCREEN;
-    screen_cursor_drawn => SCREEN;
-    screen_log_on_tty1 => SCREEN;
-    screen_log_quiet_in_session => SCREEN;
-    screen_display_taken_stops_drawing => SCREEN;
-    screen_display_released_redraws => SCREEN;
     emulation_sgr_colours => EMULATION;
     emulation_sgr_256_mapped => EMULATION;
     emulation_bold_reverse_underline => EMULATION;

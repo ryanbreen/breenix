@@ -1,12 +1,12 @@
-//! Host tests for the x86 screen console's grid, its drawing against the
-//! read-back oracle, and the write-combining page-table walk.
+//! Host tests for the screen console's grid, its font size rule, its drawing
+//! against the read-back oracle, and the x86 write-combining page-table walk.
 #![cfg(test)]
 
-#[path = "../../../kernel/src/fbcon/grid.rs"]
+#[path = "../../../kernel/src/console/grid.rs"]
 mod grid;
-#[path = "../../../kernel/src/fbcon/pagewalk.rs"]
+#[path = "../../../kernel/src/arch_impl/x86_64/pagewalk.rs"]
 mod pagewalk;
-#[path = "../../../kernel/src/fbcon/raster.rs"]
+#[path = "../../../kernel/src/console/raster.rs"]
 mod raster;
 
 mod grid_tests {
@@ -102,15 +102,23 @@ mod grid_tests {
 }
 
 mod raster_tests {
-    use super::raster::{
-        draw_row, expected_intensity, pixel_is, Layout, CURSOR, GLYPH_HEIGHT, GLYPH_WIDTH, LINE_HEIGHT,
-    };
+    use super::raster::{clear, draw_row, expected_intensity, Font, Layout, CURSOR};
+    use noto_sans_mono_bitmap::RasterHeight;
+
+    const SIZE_16: Font = Font::new(RasterHeight::Size16);
 
     /// A framebuffer `cols` cells and `extra` pixels wide, `rows` text rows and
     /// `extra_lines` pixel rows tall, with `pad` bytes after each pixel row.
-    fn layout(bpp: usize, cols: usize, extra: usize, rows: usize, extra_lines: usize, pad: usize) -> Layout {
-        let width = cols * GLYPH_WIDTH + extra;
-        Layout { width, height: rows * LINE_HEIGHT + extra_lines, bytes_per_pixel: bpp, stride_bytes: width * bpp + pad }
+    fn layout(font: Font, bpp: usize, cols: usize, extra: usize, rows: usize, extra_lines: usize, pad: usize) -> Layout {
+        let width = cols * font.glyph_width() + extra;
+        Layout {
+            width,
+            height: rows * font.line_height() + extra_lines,
+            bytes_per_pixel: bpp,
+            stride_bytes: width * bpp + pad,
+            reserved: if bpp == 4 { 0xff } else { 0 },
+            font,
+        }
     }
 
     fn printable() -> Vec<u8> {
@@ -118,9 +126,9 @@ mod raster_tests {
     }
 
     /// Each pixel of each band, against the oracle; padding is left alone.
-    fn check(bpp: usize) {
+    fn check(font: Font, bpp: usize) {
         let ascii = printable();
-        let layout = layout(bpp, ascii.len(), 5, 3, 7, 12);
+        let layout = layout(font, bpp, ascii.len(), 5, 3, 7, 12);
         let mut frame = vec![0xaa; layout.bytes()];
         let rows: [(&[u8], Option<usize>); 3] =
             [(&ascii, Some(10)), (b"metal-login-ok 42", None), (b"#\x7f\x01", Some(2))];
@@ -135,8 +143,8 @@ mod raster_tests {
             for y in layout.band(row) {
                 let line = &frame[layout.line(y)];
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
-                    let expected = expected_intensity(&cells, *cursor, x, y - layout.band(row).start);
-                    assert!(pixel_is(pixel, expected), "row {row} x {x} y {y}: {pixel:?} vs {expected}");
+                    let expected = expected_intensity(font, &cells, *cursor, x, y - layout.band(row).start);
+                    assert!(layout.pixel_is(pixel, expected), "size {} row {row} x {x} y {y}: {pixel:?} vs {expected}", font.size());
                 }
                 let padding = layout.line(y).end..(y + 1) * layout.stride_bytes;
                 assert!(frame[padding].iter().all(|&byte| byte == 0xaa));
@@ -146,37 +154,99 @@ mod raster_tests {
 
     #[test]
     fn drawn_rows_match_the_oracle_at_four_bytes_per_pixel() {
-        check(4);
+        check(SIZE_16, 4);
     }
 
     #[test]
     fn drawn_rows_match_the_oracle_at_three_bytes_per_pixel() {
-        check(3);
+        check(SIZE_16, 3);
+    }
+
+    #[test]
+    fn drawn_rows_match_the_oracle_at_every_font_size() {
+        for size in Font::SIZES {
+            check(Font::new(size), 4);
+        }
+    }
+
+    #[test]
+    fn the_fourth_byte_is_the_displays() {
+        let layout = layout(SIZE_16, 4, 2, 0, 1, 0, 0);
+        let mut frame = vec![0; layout.bytes()];
+        draw_row(&mut frame, &layout, 0, b"W ", Some(1));
+        assert!(frame.chunks_exact(4).all(|pixel| pixel[3] == 0xff));
+        let pixel = &frame[..4];
+        assert!(!layout.pixel_is(&[pixel[0], pixel[1], pixel[2], 0], expected_intensity(SIZE_16, b"W ", Some(1), 0, 0)));
+    }
+
+    #[test]
+    fn a_cleared_screen_is_background_in_its_margins_too() {
+        let layout = layout(SIZE_16, 4, 3, 5, 2, 7, 12);
+        let mut frame = vec![0xaa; layout.bytes()];
+        clear(&mut frame, &layout);
+        for y in 0..layout.height {
+            assert!(frame[layout.line(y)].chunks_exact(4).all(|pixel| layout.pixel_is(pixel, 0)), "y {y}");
+            assert!(frame[layout.line(y).end..(y + 1) * layout.stride_bytes].iter().all(|&byte| byte == 0xaa));
+        }
     }
 
     #[test]
     fn the_oracle_tells_glyphs_apart() {
+        let font = SIZE_16;
         let lit = |byte: u8| -> Vec<u8> {
-            (0..GLYPH_HEIGHT)
-                .flat_map(|y| (0..GLYPH_WIDTH).map(move |x| expected_intensity(&[byte], None, x, y)))
+            (0..font.glyph_height())
+                .flat_map(|y| (0..font.glyph_width()).map(move |x| expected_intensity(font, &[byte], None, x, y)))
                 .collect()
         };
         assert!(lit(b' ').iter().all(|&i| i == 0));
         assert!(lit(b'A').iter().filter(|&&i| i > 0x80).count() > 10);
         assert_ne!(lit(b'4'), lit(b'2'));
         // The cursor is in the two rows under the glyph, in its column only.
-        assert_eq!(expected_intensity(b"ab", Some(1), GLYPH_WIDTH, GLYPH_HEIGHT), CURSOR);
-        assert_eq!(expected_intensity(b"ab", Some(1), 0, GLYPH_HEIGHT + 1), 0);
-        assert_eq!(expected_intensity(b"ab", Some(1), GLYPH_WIDTH * 2, 0), 0);
+        let (width, height) = (font.glyph_width(), font.glyph_height());
+        assert_eq!(expected_intensity(font, b"ab", Some(1), width, height), CURSOR);
+        assert_eq!(expected_intensity(font, b"ab", Some(1), 0, height + 1), 0);
+        assert_eq!(expected_intensity(font, b"ab", Some(1), width * 2, 0), 0);
     }
 
     #[test]
     fn a_partial_last_band_is_clipped() {
-        let layout = layout(4, 4, 0, 1, LINE_HEIGHT / 2, 0);
+        let line_height = SIZE_16.line_height();
+        let layout = layout(SIZE_16, 4, 4, 0, 1, line_height / 2, 0);
         let mut frame = vec![0; layout.bytes()];
         draw_row(&mut frame, &layout, 1, b"WWWW", Some(0));
-        assert_eq!((layout.rows(), layout.band(1).len()), (1, LINE_HEIGHT / 2));
+        assert_eq!((layout.rows(), layout.band(1).len()), (1, line_height / 2));
         assert!(frame.iter().any(|&byte| byte != 0));
+    }
+
+    /// The size rule against `docs/console/contract.md` section 2's table.
+    #[test]
+    fn the_size_rule_picks_the_contracts_font_and_grid() {
+        let cases = [
+            ((1024, 768), 16, (7, 18), (146, 42)),
+            ((1280, 800), 20, (9, 22), (142, 36)),
+            ((1280, 960), 20, (9, 22), (142, 43)),
+            ((1920, 1080), 24, (11, 26), (174, 41)),
+            ((1920, 1200), 24, (11, 26), (174, 46)),
+            ((2560, 1600), 32, (14, 34), (182, 47)),
+        ];
+        for ((width, height), size, cell, grid) in cases {
+            let font = Font::for_display(width, height);
+            let layout = Layout { width, height, bytes_per_pixel: 4, stride_bytes: width * 4, reserved: 0, font };
+            assert_eq!(
+                (font.size(), (font.glyph_width(), font.line_height()), (layout.cols(), layout.rows())),
+                (size, cell, grid),
+                "{width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_small_display_uses_size_16_and_a_large_one_is_capped() {
+        let small = Font::for_display(800, 600);
+        assert_eq!(small.size(), 16);
+        let font = Font::for_display(7680, 4320);
+        let layout = Layout { width: 7680, height: 4320, bytes_per_pixel: 4, stride_bytes: 7680 * 4, reserved: 0, font };
+        assert_eq!((font.size(), layout.cols(), layout.rows()), (32, 255, 127));
     }
 }
 

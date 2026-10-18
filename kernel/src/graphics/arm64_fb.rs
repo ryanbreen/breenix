@@ -4,9 +4,8 @@
 //! - **VirtIO GPU**: Used on QEMU with virtio-gpu-device (original backend)
 //! - **UEFI GOP**: Linear framebuffer in physical memory (used on Parallels)
 //!
-//! This module also provides a SHELL_FRAMEBUFFER interface compatible with
-//! the x86_64 version in logger.rs, allowing split_screen.rs
-//! to work on both architectures.
+//! This module also provides SHELL_FRAMEBUFFER, which the boot and diagnostics
+//! screens and display owners' fb syscalls draw into.
 
 #![cfg(target_arch = "aarch64")]
 
@@ -683,8 +682,8 @@ pub fn clear_screen(color: Color) -> Result<(), &'static str> {
 
 /// Shell framebuffer wrapper for ARM64
 ///
-/// This provides an interface compatible with x86_64's ShellFrameBuffer in logger.rs,
-/// allowing the split_screen module to work on both architectures.
+/// The canvas the boot and diagnostics screens and display owners' fb syscalls
+/// draw on.
 pub struct ShellFrameBuffer {
     /// The underlying framebuffer
     fb: Arm64FrameBuffer,

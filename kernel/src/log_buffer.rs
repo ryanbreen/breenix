@@ -3,8 +3,7 @@
 //! Captures serial output bytes into a lock-free ring buffer so that userspace
 //! programs can read kernel logs via /proc/kmsg.
 //!
-//! On ARM64, this reuses the existing `graphics::log_capture` buffer.
-//! On x86_64, this module provides its own capture ring buffer.
+//! Both architectures feed it from their serial log writers.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 

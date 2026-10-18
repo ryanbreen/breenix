@@ -64,16 +64,15 @@ pub mod time;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-pub mod fbcon;
+pub mod console;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]
 pub mod platform_config;
-// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+// Graphics module: the ARM64 framebuffer, boot screen and display owners' drawing
+#[cfg(target_arch = "aarch64")]
 pub mod graphics;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
@@ -188,10 +187,6 @@ pub mod macros;
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub mod clock_gettime_test;
-
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-#[allow(dead_code)]
-pub mod terminal_emulator;
 
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 #[allow(dead_code)]

@@ -14,9 +14,9 @@
 //! without effect. A UTF-8 character takes one cell and is shown as `?`, which
 //! is what the console font draws for characters it does not have.
 
-/// The largest grid kept: 2048 x 2304 pixels in the console font.
-pub const MAX_COLS: usize = 256;
-pub const MAX_ROWS: usize = 128;
+/// The largest grid kept: the size rule's cap of 255 by 255 cells.
+pub const MAX_COLS: usize = 255;
+pub const MAX_ROWS: usize = 255;
 
 /// The blank cell.
 pub const BLANK: u8 = b' ';
@@ -54,7 +54,9 @@ impl Grid {
             cols: 0,
             rows: 0,
             top: 0,
-            cells: [BLANK; MAX_COLS * MAX_ROWS],
+            // Initialized to 0, so the storage sits in .bss rather than in the
+            // kernel image; `set_size` blanks it before the grid holds a row.
+            cells: [0; MAX_COLS * MAX_ROWS],
             row: 0,
             col: 0,
             pending_wrap: false,

@@ -244,29 +244,6 @@ fn announce_boot_mode(mode: BootMode, arg: Option<&str>, only: Option<&str>) {
     }
 }
 
-/// Whether `-fw_cfg name=opt/breenix/fbconsole,string=log` asks for kernel log
-/// lines on the screen. Anything else keeps the boot screen, noting a bad value.
-#[cfg(target_arch = "aarch64")]
-fn read_fbconsole_log() -> bool {
-    if !kernel::platform_config::is_qemu() {
-        return false;
-    }
-    match kernel::drivers::fw_cfg::read_string("opt/breenix/fbconsole").as_deref() {
-        Some("log") => {
-            serial_println!("[boot] fbconsole: log (kernel log lines on screen)");
-            true
-        }
-        None | Some("") => false,
-        Some(other) => {
-            serial_println!(
-                "[boot] Ignoring unknown fbconsole {:?} (expected log)",
-                other
-            );
-            false
-        }
-    }
-}
-
 /// The program a boot mode launches as PID 1, and its argv.
 #[cfg(target_arch = "aarch64")]
 struct InitLaunch {
@@ -334,6 +311,7 @@ impl InitLaunch {
             .map_err(|_| "init pathname does not resolve")?;
         boot_screen::stage(Stage::StartingPid1);
         boot_screen::set_status(format_args!("Starting {}", shown));
+        kernel::console::take_screen();
         launch_init_from_elf(elf_data, &self.path, &exe_path, &argv)
     }
 }
@@ -614,8 +592,6 @@ use kernel::drivers::virtio::input_mmio;
 use kernel::graphics::arm64_fb;
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::boot_screen::{self, Stage};
-#[cfg(target_arch = "aarch64")]
-use kernel::graphics::particles;
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
 
@@ -1048,9 +1024,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         match arm64_fb::init_gpu_pci_gop_framebuffer() {
             Ok(()) => {
                 serial_println!("[boot] GPU PCI+GOP hybrid display initialized");
-                if let Err(e) = init_gop_display() {
-                    serial_println!("[boot] Display setup failed: {}", e);
-                }
                 true
             }
             Err(e) => {
@@ -1058,9 +1031,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 match arm64_fb::init_gop_framebuffer() {
                     Ok(()) => {
                         serial_println!("[boot] GOP framebuffer initialized (fallback)");
-                        if let Err(e) = init_gop_display() {
-                            serial_println!("[boot] GOP display setup failed: {}", e);
-                        }
                         true
                     }
                     Err(e2) => {
@@ -1075,10 +1045,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         match arm64_fb::init_gop_framebuffer() {
             Ok(()) => {
                 serial_println!("[boot] GOP framebuffer initialized");
-                // Draw initial split-screen layout
-                if let Err(e) = init_gop_display() {
-                    serial_println!("[boot] GOP display setup failed: {}", e);
-                }
                 true
             }
             Err(e) => {
@@ -1111,18 +1077,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // screen presents it synchronously and stops once userspace takes the display.
     if has_display && arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
         kernel::graphics::arm64_fb::upgrade_to_double_buffer();
-        // The screen shows the boot screen; kernel log lines stay on serial unless
-        // -fw_cfg name=opt/breenix/fbconsole,string=log asks for them on screen.
-        if read_fbconsole_log() {
-            kernel::graphics::log_console::start();
+        boot_screen::set_last_stage_label(if cfg!(feature = "testing") {
+            "Starting test programs"
         } else {
-            boot_screen::set_last_stage_label(if cfg!(feature = "testing") {
-                "Starting test programs"
-            } else {
-                "Starting PID 1"
-            });
-            boot_screen::show();
-        }
+            "Starting PID 1"
+        });
+        boot_screen::show();
+        // The screen console keeps the kernel log and the console TTY from
+        // here, and takes the screen from the boot screen when the first
+        // process starts.
+        kernel::console::attach();
     }
 
     // Initialize input devices (capability-based detection)
@@ -1196,18 +1160,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
-    // Spawn render thread for deferred framebuffer rendering
-    // This MUST come after scheduler is initialized (needs kthread infrastructure).
+    // The screen console's render thread, and the framebuffer render thread.
+    // These MUST come after scheduler is initialized (needs kthread infrastructure).
     //
-    // Boot graphics architecture (shared with x86_64):
-    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
-    // - Both use SHELL_FRAMEBUFFER (arm64_fb.rs on ARM64, logger.rs on x86_64)
-    // - Both use graphics::render_queue for lock-free echo from interrupt context
-    // - BWM (userspace window manager) handles terminal rendering
-    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
-    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
-    // Spawn render thread if any display is available (GOP or VirtIO)
-    // Skip when VirGL owns the display — no 2D rendering needed.
+    // - The screen console (crate::console) draws the kernel log and the
+    //   console TTY once it has the screen, with its own thread.
+    // - The boot screen and the test progress panel draw into SHELL_FRAMEBUFFER
+    //   until then; render_task copies and flushes it, and draws the mouse
+    //   cursor for a process that owns the display.
+    // - Skip render_task when VirGL owns the display — no 2D rendering needed.
+    kernel::console::start();
     if has_display && !virgl_display {
         match kernel::graphics::render_task::spawn_render_thread() {
             Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
@@ -1888,25 +1850,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!();
     boot_screen::stage(Stage::BootComplete);
 
-    // Spawn particle animation thread (if graphics is available and not running boot tests)
-    // This MUST be done BEFORE userspace loading because launch_init_from_elf never returns
-    // DISABLED: Investigating EC=0x0 crash during fill_rect memcpy
-    #[cfg(not(feature = "boot_tests"))]
-    #[cfg(feature = "particle_animation")] // Disabled by default - crashes with EC=0x0
-    {
-        let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER
-            .get()
-            .is_some();
-        if has_graphics {
-            serial_println!("[graphics] Starting particle animation...");
-            match kernel::task::spawn::spawn_thread("particles", particles::animation_thread_entry)
-            {
-                Ok(tid) => serial_println!("[graphics] Particle animation started (tid={})", tid),
-                Err(e) => serial_println!("[graphics] Failed to start animation: {}", e),
-            }
-        }
-    }
-
     // In testing mode, load test binaries from ext2 and let the scheduler
     // dispatch them. Do NOT call launch_init_from_elf() - its manual
     // spawn_as_current() + return_to_userspace() bypasses the scheduler and
@@ -2058,6 +2001,7 @@ fn run_test_loader() {
     kernel::test_framework::btrt::end_loading();
     kernel::per_cpu_aarch64::preempt_enable();
     boot_screen::stage(Stage::StartingPid1);
+    kernel::console::take_screen();
     serial_println!("[test] Test processes loaded - will run via timer interrupts");
     serial_println!("[test] Entering scheduler idle loop");
     // The prompt signals to the test harness that boot is complete. It is the
@@ -2492,13 +2436,9 @@ fn current_exception_level() -> u8 {
     ((el >> 2) & 0x3) as u8
 }
 
-/// Initialize graphics subsystem
-///
-/// This initializes the VirtIO GPU and sets up the split-screen terminal UI
-/// with graphics demo on the left and terminal on the right.
+/// Initialize the VirtIO GPU (QEMU virt) and the shell framebuffer on it.
 #[cfg(target_arch = "aarch64")]
 fn init_graphics() -> Result<(), &'static str> {
-    // Initialize VirtIO GPU backend.
     // GPU PCI is initialized earlier in drivers::init() — only init GPU MMIO
     // if PCI is not available (QEMU virt platform).
     if !kernel::drivers::virtio::gpu_pci::is_initialized() {
@@ -2507,63 +2447,8 @@ fn init_graphics() -> Result<(), &'static str> {
 
     arm64_fb::init_shell_framebuffer()?;
 
-    // Get framebuffer dimensions
     let (width, height) = arm64_fb::dimensions().ok_or("Failed to get framebuffer dimensions")?;
     serial_println!("[graphics] Framebuffer: {}x{}", width, height);
-
-    let left_width = width / 2;
-
-    // The boot screen (or the fbconsole=log console) is drawn once the
-    // framebuffer is double-buffered; see kernel_main.
-
-    // Initialize particle system for left pane (animation will start later)
-    // Leave a small margin from edges
-    let margin = 10;
-    particles::start_animation(
-        margin as i32,
-        margin as i32,
-        (left_width - margin) as i32,
-        (height - margin) as i32,
-    );
-    serial_println!("[graphics] Particle system initialized");
-
-    // Initialize the render queue for deferred framebuffer rendering
-    // This enables lock-free echo from interrupt context
-    kernel::graphics::render_queue::init();
-
-    serial_println!("[graphics] Split-screen terminal UI initialized");
-    Ok(())
-}
-
-/// Initialize GOP framebuffer display with split-screen terminal UI.
-///
-/// Called after init_gop_framebuffer() when a UEFI GOP framebuffer is available.
-/// Draws the same layout as VirtIO init_graphics() but without VirtIO-specific init.
-#[cfg(target_arch = "aarch64")]
-fn init_gop_display() -> Result<(), &'static str> {
-    // Get framebuffer dimensions
-    let (width, height) = arm64_fb::dimensions().ok_or("Failed to get framebuffer dimensions")?;
-    serial_println!("[graphics] GOP Framebuffer: {}x{}", width, height);
-
-    let left_width = width / 2;
-
-    // The boot screen (or the fbconsole=log console) is drawn once the
-    // framebuffer is double-buffered; see kernel_main.
-
-    // Initialize particle system for left pane
-    let margin = 10;
-    particles::start_animation(
-        margin as i32,
-        margin as i32,
-        (left_width - margin) as i32,
-        (height - margin) as i32,
-    );
-    serial_println!("[graphics] Particle system initialized");
-
-    // Initialize the render queue for deferred framebuffer rendering
-    kernel::graphics::render_queue::init();
-
-    serial_println!("[graphics] GOP split-screen terminal UI initialized");
     Ok(())
 }
 

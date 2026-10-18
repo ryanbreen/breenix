@@ -9,7 +9,7 @@
 //! The SDM does not support mapping one physical page with different memory
 //! types, so this walks the present entries of a four-level tree and changes
 //! each leaf that maps part of the range, wherever it is mapped (host tests:
-//! `tools/fbcon-host-tests`). A large page
+//! `tools/console-host-tests`). A large page
 //! that maps the range only in part is first split into a table of the next
 //! size with the same translation and attributes, so memory beside the range
 //! keeps its type. The caller flushes the TLBs afterwards.

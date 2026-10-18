@@ -8,10 +8,12 @@
 //!
 //! Drawing happens only on the boot thread (not from interrupt context), redraws
 //! only rows whose state changed, and takes the framebuffer with `try_lock`: a
-//! contended update is skipped and caught up by the next one. Once userspace takes
-//! the display (`stop_drawing`) the kernel stops drawing; when userspace actually
-//! draws (`hand_over`) the kernel's screen is cleared to a plain background for it.
-//! If userspace does not draw, the boot screen stays up.
+//! contended update is skipped and caught up by the next one. When the first
+//! process starts, the boot screen gives way to the screen console (`give_way`,
+//! from `console::take_screen`). Once userspace takes the display
+//! (`stop_drawing`) the kernel stops drawing; when userspace actually draws
+//! (`hand_over`) the kernel's screen is cleared to a plain background for it.
+//! If userspace does not draw, the kernel's screen stays up.
 //!
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
 //! screen with the failure, the boot stage and the last log lines. They do not
@@ -99,9 +101,10 @@ const GROUPS: [(&str, usize, usize); 6] = [
 static REACHED: AtomicU32 = AtomicU32::new(0);
 /// The boot screen has been drawn and its pixels are still on screen.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-/// The fbconsole=log console was drawing and its pixels are still on screen.
-static LOG_CONSOLE_UP: AtomicBool = AtomicBool::new(false);
-/// Userspace has taken the display; the kernel no longer draws the boot screen.
+/// The screen console took the screen from the boot screen, and its pixels are
+/// still on screen.
+static CONSOLE_UP: AtomicBool = AtomicBool::new(false);
+/// The console or userspace has the screen; the kernel no longer draws the boot screen.
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
 /// Userspace has drawn and the kernel's screen has been replaced by the split layout.
 static LAYOUT_SETTLED: AtomicBool = AtomicBool::new(false);
@@ -466,18 +469,43 @@ fn clear_line(canvas: &mut impl Canvas, layout: &Layout, y: i32) {
     );
 }
 
-/// Userspace has taken the display: stop drawing the boot screen (or log
-/// console), leaving its pixels up until userspace draws (`hand_over`). If the
-/// new owner fails before it draws, the boot screen stays on screen.
+/// The screen console takes the screen: stop drawing the boot screen, whose
+/// pixels the console draws over. Waits out a boot-screen update in progress.
+///
+/// Returns false once the diagnostics screen is up or userspace has the display.
+pub fn give_way() -> bool {
+    let _guard = arm64_fb::SHELL_FRAMEBUFFER.get().map(|fb| fb.lock());
+    if DIAG_CLAIMED.load(Ordering::Acquire) || HANDED_OVER.load(Ordering::Acquire) {
+        return false;
+    }
+    HANDED_OVER.store(true, Ordering::Release);
+    ACTIVE.store(false, Ordering::Release);
+    CONSOLE_UP.store(true, Ordering::Release);
+    true
+}
+
+/// Whether the boot screen still has the display: neither the console, a
+/// process nor the diagnostics screen has taken it.
+pub fn is_up() -> bool {
+    !HANDED_OVER.load(Ordering::Acquire) && !DIAG_CLAIMED.load(Ordering::Acquire)
+}
+
+/// Whether the diagnostics screen has the screen.
+pub fn diagnostics_up() -> bool {
+    DIAG_CLAIMED.load(Ordering::Acquire)
+}
+
+/// Userspace has taken the display: stop drawing the boot screen and the
+/// screen console, leaving their pixels up until userspace draws (`hand_over`).
+/// If the new owner fails before it draws, the kernel's screen stays up.
 ///
 /// Returns false once the diagnostics screen is up: it keeps the screen.
 pub fn stop_drawing() -> bool {
     if DIAG_CLAIMED.load(Ordering::Acquire) {
         return false;
     }
-    if !HANDED_OVER.swap(true, Ordering::AcqRel) && super::log_console::stop() {
-        LOG_CONSOLE_UP.store(true, Ordering::Release);
-    }
+    HANDED_OVER.store(true, Ordering::Release);
+    crate::console::take_display();
     true
 }
 
@@ -500,8 +528,8 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
         return true;
     }
     let boot_screen_up = ACTIVE.swap(false, Ordering::AcqRel);
-    let log_console_up = LOG_CONSOLE_UP.swap(false, Ordering::AcqRel);
-    if boot_screen_up || log_console_up {
+    let console_up = CONSOLE_UP.swap(false, Ordering::AcqRel);
+    if boot_screen_up || console_up {
         let (width, height) = (fb.width(), fb.height());
         fill_rect(
             fb,
@@ -823,7 +851,6 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     };
     ACTIVE.store(false, Ordering::Release);
     HANDED_OVER.store(true, Ordering::Release);
-    super::log_console::stop();
     let canvas = &mut *guard;
     let (width, height) = (canvas.width() as i32, canvas.height() as i32);
     fill_rect(

@@ -60,8 +60,6 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 extern crate kernel;
 
 // Re-import commonly used kernel modules for unqualified access
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-use kernel::graphics;
 // Unqualified `test_framework::` appears in exactly one place: the staged
 // registry dispatch below. Every other reference is fully qualified, so this
 // import's cfg has to match that block exactly or a `btrt`-only build warns on
@@ -246,74 +244,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         btrt::pass(catalog::FRAME_ALLOC_INIT);
     }
 
-    // Upgrade framebuffer to double buffering now that heap is available
-    #[cfg(feature = "interactive")]
-    logger::upgrade_to_double_buffer();
-
-    // Initialize multi-terminal split-screen mode:
-    // - Left side: Graphics demo (static)
-    // - Right side: Tabbed terminals (Shell, Logs)
-    // - F1/F2 to switch between terminals
-    #[cfg(feature = "interactive")]
-    {
-        log::info!("Initializing multi-terminal display...");
-        if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
-            let mut fb_guard = fb.lock();
-
-            use kernel::graphics::primitives::Canvas;
-            let width = Canvas::width(&*fb_guard);
-            let height = Canvas::height(&*fb_guard);
-
-            // Calculate layout: 50% left for demo, 50% right for terminals
-            let divider_x = width / 2;
-            let divider_width = 4;
-            // Clear entire screen with dark background
-            graphics::primitives::fill_rect(
-                &mut *fb_guard,
-                graphics::primitives::Rect {
-                    x: 0,
-                    y: 0,
-                    width: width as u32,
-                    height: height as u32,
-                },
-                graphics::primitives::Color::rgb(20, 30, 50),
-            );
-
-            // Draw graphics demo on left pane
-            let left_region = graphics::split_screen::ClippedRegion {
-                offset_x: 0,
-                offset_y: 0,
-                width: divider_x as u32,
-                height: height as u32,
-            };
-            graphics::demo::run_demo_in_region(&mut *fb_guard, &left_region);
-
-            // Draw vertical divider
-            for i in 0..divider_width {
-                graphics::primitives::draw_vline(
-                    &mut *fb_guard,
-                    (divider_x + i) as i32,
-                    0,
-                    height as i32 - 1,
-                    graphics::primitives::Color::rgb(60, 80, 100),
-                );
-            }
-
-            // Initialize the render queue for deferred framebuffer rendering
-            graphics::render_queue::init();
-
-            // Initialize log capture ring buffer for serial output tee
-            graphics::log_capture::init();
-
-            // Flush to screen
-            if let Some(db) = fb_guard.double_buffer_mut() {
-                db.flush_full();
-            }
-
-            log::info!("Split-screen display ready");
-        }
-    }
-
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 
@@ -490,8 +420,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // The screen console's display BAR, its write-combining mapping and shadow:
     // after PCI enumeration and the boot CPU's PAT, before the other CPUs run.
-    #[cfg(not(feature = "interactive"))]
-    kernel::fbcon::attach();
+    kernel::console::attach();
 
     // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
@@ -823,23 +752,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     x86_64::instructions::interrupts::disable();
     log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");
 
-    // Spawn render thread for deferred framebuffer rendering (interactive mode only)
-    // This must be done after kthread infrastructure is ready.
-    //
-    // Boot graphics architecture (shared with ARM64):
-    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
-    // - Both use SHELL_FRAMEBUFFER (logger.rs on x86_64, arm64_fb.rs on ARM64)
-    // - Both use graphics::render_queue for lock-free echo from interrupt context
-    // - BWM (userspace window manager) handles terminal rendering
-    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
-    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
-    #[cfg(feature = "interactive")]
-    if let Err(e) = graphics::render_task::spawn_render_thread() {
-        log::error!("Failed to spawn render thread: {}", e);
-    }
-    // Without `interactive`, the screen console's render thread.
-    #[cfg(not(feature = "interactive"))]
-    kernel::fbcon::start();
+    // The screen console's render thread: after the kthread infrastructure is
+    // ready. It draws the kernel log and the console TTY on the screen.
+    kernel::console::start();
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -2729,7 +2644,7 @@ fn kernel_main_continue() -> ! {
             log::info!("[metal] kernel idle");
         }
         // The screen console reads the screen back once boot is idle.
-        kernel::fbcon::request_idle_check();
+        kernel::console::request_idle_check();
 
         kernel::per_cpu::preempt_enable();
 

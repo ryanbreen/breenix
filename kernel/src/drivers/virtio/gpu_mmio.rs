@@ -385,6 +385,30 @@ struct GpuDeviceState {
     height: u32,
     resource_id: u32,
     last_used_idx: u16,
+    /// The resource whose backing the device accepted, the backing's physical
+    /// address and its length.
+    backing: Option<(u32, u64, usize)>,
+    /// The resource the device accepted for scanout 0 at the last SET_SCANOUT.
+    scanout: Option<u32>,
+    /// TRANSFER_TO_HOST_2D and RESOURCE_FLUSH pairs the device completed.
+    flushes: u64,
+}
+
+/// What scanout 0 shows, as the device accepted it: the resource given to the
+/// last SET_SCANOUT, and the guest backing attached to that resource.
+#[derive(Clone, Copy)]
+pub struct ScanoutBinding {
+    pub resource_id: u32,
+    pub backing_phys: u64,
+    pub backing_len: usize,
+}
+
+/// A transfer and flush the device completed.
+#[derive(Clone, Copy)]
+pub struct Flushed {
+    pub resource_id: u32,
+    /// Its number among the flushes completed since the device was set up.
+    pub number: u64,
 }
 
 #[inline(always)]
@@ -478,6 +502,9 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64, _slot: u32) -> Result<(
             height: init_h,
             resource_id: RESOURCE_ID,
             last_used_idx: 0,
+            backing: None,
+            scanout: None,
+            flushes: 0,
         });
     }
 
@@ -743,7 +770,9 @@ fn attach_backing() -> Result<(), &'static str> {
             device,
             state,
             core::mem::size_of::<AttachBackingCmd>() as u32,
-        )
+        )?;
+        state.backing = Some((state.resource_id, fb_addr, fb_len as usize));
+        Ok(())
     })
 }
 
@@ -772,7 +801,9 @@ fn set_scanout() -> Result<(), &'static str> {
             device,
             state,
             core::mem::size_of::<VirtioGpuSetScanout>() as u32,
-        )
+        )?;
+        state.scanout = Some(state.resource_id);
+        Ok(())
     })
 }
 
@@ -854,22 +885,56 @@ fn resource_flush(
     )
 }
 
+/// Transfer a rectangle of the backing to the host resource and flush it,
+/// counting the pair once the device has completed both.
+fn transfer_and_flush(
+    device: &VirtioMmioDevice,
+    state: &mut GpuDeviceState,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<Flushed, &'static str> {
+    fence(Ordering::SeqCst);
+    transfer_to_host(device, state, x, y, width, height)?;
+    resource_flush(device, state, x, y, width, height)?;
+    state.flushes += 1;
+    Ok(Flushed { resource_id: state.resource_id, number: state.flushes })
+}
+
 /// Flush the entire framebuffer to the display.
 pub fn flush() -> Result<(), &'static str> {
     with_device_state(|device, state| {
-        fence(Ordering::SeqCst);
-        transfer_to_host(device, state, 0, 0, state.width, state.height)?;
-        resource_flush(device, state, 0, 0, state.width, state.height)
+        let (width, height) = (state.width, state.height);
+        transfer_and_flush(device, state, 0, 0, width, height).map(drop)
     })
 }
 
 /// Flush a rectangular region of the framebuffer to the display.
 pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
-    with_device_state(|device, state| {
-        fence(Ordering::SeqCst);
-        transfer_to_host(device, state, x, y, width, height)?;
-        resource_flush(device, state, x, y, width, height)
+    flush_rect_completed(x, y, width, height).map(drop)
+}
+
+/// Flush a rectangular region of the framebuffer to the display, and say which
+/// resource it went to and which completed flush it was.
+pub fn flush_rect_completed(x: u32, y: u32, width: u32, height: u32) -> Result<Flushed, &'static str> {
+    with_device_state(|device, state| transfer_and_flush(device, state, x, y, width, height))
+}
+
+/// The resource the device accepted for scanout 0 at the last SET_SCANOUT and
+/// the backing attached to it; absent before both were accepted, or when the
+/// backing belongs to another resource.
+pub fn scanout_binding() -> Option<ScanoutBinding> {
+    with_device_state(|_, state| {
+        let resource_id = state.scanout.ok_or("no SET_SCANOUT accepted")?;
+        match state.backing {
+            Some((owner, backing_phys, backing_len)) if owner == resource_id => {
+                Ok(ScanoutBinding { resource_id, backing_phys, backing_len })
+            }
+            _ => Err("the scanout's resource has no backing"),
+        }
     })
+    .ok()
 }
 
 /// Flush a rectangle without waiting for the GPU lock; returns false if it is held.
@@ -889,9 +954,7 @@ pub fn try_flush_rect(x: u32, y: u32, width: u32, height: u32) -> bool {
     let Some(device) = VirtioMmioDevice::probe(state.base) else {
         return false;
     };
-    fence(Ordering::SeqCst);
-    transfer_to_host(&device, state, x, y, width, height).is_ok()
-        && resource_flush(&device, state, x, y, width, height).is_ok()
+    transfer_and_flush(&device, state, x, y, width, height).is_ok()
 }
 
 /// Get the framebuffer dimensions

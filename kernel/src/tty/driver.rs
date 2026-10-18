@@ -593,8 +593,7 @@ impl TtyDevice {
         // While a session other than init's has the console (a getty and its
         // login), the screen console draws only kernel warnings and errors
         // among the console's own output.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::console_session(
+        crate::console::console_session(
             session.is_some_and(|sid| sid.as_u64() != crate::process::RESERVED_INIT_PID),
         );
     }
@@ -658,10 +657,7 @@ impl TtyDevice {
             return;
         }
         crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        for &byte in unit { let _ = crate::graphics::render_queue::queue_byte(byte); }
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::write_tty(unit);
+        crate::console::write_tty(unit);
     }
 
     fn drain_echo(&self) {
@@ -673,18 +669,12 @@ impl TtyDevice {
             let n = pending.read(&mut scratch);
             if n == 0 { break; }
             crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
-            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-            for &byte in &scratch[..n] { let _ = crate::graphics::render_queue::queue_byte(byte); }
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-            crate::fbcon::write_tty(&scratch[..n]);
+            crate::console::write_tty(&scratch[..n]);
         }
     }
 
-    /// Write a character to the terminal output
-    ///
-    /// This writes to serial immediately and queues for deferred framebuffer rendering.
-    /// The render queue is drained by a dedicated kernel task with its own stack,
-    /// avoiding the stack overflow that occurred with direct framebuffer calls.
+    /// Write a character to the terminal output: to serial, and to the screen
+    /// console's grid, which its render thread draws.
     #[allow(dead_code)] // Used by input_char (conditionally compiled)
     pub fn output_char(&self, c: u8) {
         // Handle NL -> CR-NL translation if ONLCR is set
@@ -696,12 +686,7 @@ impl TtyDevice {
             &crlf[1..]
         };
         crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        for &byte in unit {
-            let _ = crate::graphics::render_queue::queue_byte(byte);
-        }
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::write_tty(unit);
+        crate::console::write_tty(unit);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -710,8 +695,7 @@ impl TtyDevice {
     /// settings once and processes all bytes with those settings. This avoids
     /// the lock acquire/release overhead per character that output_char() has.
     ///
-    /// Framebuffer rendering is deferred to a separate kernel task via the
-    /// render queue, avoiding the stack overflow from deep rendering call stacks.
+    /// The screen console's grid gets the same bytes; its render thread draws them.
     ///
     /// # Arguments
     /// * `buf` - Buffer of bytes to write
@@ -740,8 +724,7 @@ impl TtyDevice {
                             crate::serial::Writer::Tty,
                             &expanded[..expanded_len],
                         );
-                        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-                        crate::fbcon::write_tty(&expanded[..expanded_len]);
+                        crate::console::write_tty(&expanded[..expanded_len]);
                         expanded_len = 0;
                     }
                     if output_len == 2 {
@@ -758,19 +741,7 @@ impl TtyDevice {
                         crate::serial::Writer::Tty,
                         &expanded[..expanded_len],
                     );
-                    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-                    crate::fbcon::write_tty(&expanded[..expanded_len]);
-                }
-
-                // Both architectures use the render queue — it's lock-free on the
-                // producer side and never drops data unless the buffer overflows.
-                for &c in line {
-                    if do_onlcr && c == b'\n' {
-                        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                        let _ = crate::graphics::render_queue::queue_byte(b'\r');
-                    }
-                    #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                    let _ = crate::graphics::render_queue::queue_byte(c);
+                    crate::console::write_tty(&expanded[..expanded_len]);
                 }
             });
         });
@@ -808,14 +779,8 @@ impl TtyDevice {
         let unit = if do_crlf { &crlf[..] } else { &crlf[1..] };
         crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
 
-        // Queue for deferred framebuffer rendering
-        // This is lock-free and safe for interrupt context
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        for &byte in unit {
-            let _ = crate::graphics::render_queue::queue_byte(byte);
-        }
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::write_tty(unit);
+        // The console's grid takes writes from interrupt context.
+        crate::console::write_tty(unit);
     }
 
     /// Send a signal to the foreground process group
