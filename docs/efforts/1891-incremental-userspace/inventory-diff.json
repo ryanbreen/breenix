@@ -1,0 +1,14 @@
+{
+ "target/test_binaries.img": {
+  "cold": "8bcc2e9b81ac336459a11e68e40bdabd43a84d53a85533a8d56011a4e7542e17",
+  "incremental": "48976574ea86411d94e142104034a63cb0ac082bd544a76a61681c5901ef804d"
+ },
+ "testdata/ext2.img": {
+  "cold": "fdf945cf4f5fce53216c0a185f8180e6bd02f2687a82629e6e999f08a76f5cdd",
+  "incremental": "cf83b64cfd7385aa79056245da088548a02ab5a16ae9edf0f1b722360b796b83"
+ },
+ "userspace/programs/hello_time.elf": {
+  "cold": "6fec37a4d1a4f30a68b4b4ea6569d4dc08d43e43c45de87fc4e70701803192e7",
+  "incremental": "37bfddf08c6187a854ddfdf196f07b1cd63fed66f746841d399ff1c9b62e77d7"
+ }
+}

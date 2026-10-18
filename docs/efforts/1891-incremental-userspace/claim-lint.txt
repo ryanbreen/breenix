@@ -1,0 +1,13 @@
+Changed-hunk claim-lint:
+claim-lint: clean (10 file(s) checked, changed hunks vs 588ff5f0a6ad).
+claim-lint: 12 pre-existing finding(s) outside this branch's changed hunks not reported.
+JSON artifacts and the extensionless metal-build script are outside claim-lint's supported extensions.
+
+PR description claim-lint:
+claim-lint: clean (1 file(s) checked, whole files).
+
+Historical safeguard changed-hunk claim-lint:
+claim-lint: clean (10 file(s) checked, changed hunks vs a8e6472edd92).
+
+Final PR description and new text excerpts:
+claim-lint: clean (4 file(s) checked, whole files).

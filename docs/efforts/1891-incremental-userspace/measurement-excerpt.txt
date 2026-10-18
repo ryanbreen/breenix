@@ -1,0 +1,14 @@
+fixed-baseline
+  Finished `release` profile [optimized] target(s) in 39.87s
+  Finished `release` profile [optimized] target(s) in 33.60s
+  Finished `release` profile [optimized] target(s) in 4m 18s
+fixed-incremental
+  Finished `release` profile [optimized] target(s) in 1.43s
+  Finished `release` profile [optimized] target(s) in 0.37s
+  Finished `release` profile [optimized] target(s) in 2.09s
+incremental build driver
+[gate-phase] phase=userspace-build started=1792327933.049 build=metal
+[gate-phase] phase=userspace-build ended=1792328058.865 seconds=125.816 status=0
+[metal-build] inputs ready {"slot_wait": 0, "userspace": 176, "kernel": 86, "stub": 21}
+[metal-build] build exit=0 seconds=299
+[metal-run] inputs delivered after 302 s

@@ -903,6 +903,10 @@ if [ "$PARALLELS" = true ]; then
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
     prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
+    # Disable app sharing; this is expected to reduce host app indexing activity.
+    if ! prlctl set "$PARALLELS_VM" --sh-app-guest-to-host off --sh-app-host-to-guest off; then
+        echo "WARNING: could not disable Parallels application sharing" >&2
+    fi
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
