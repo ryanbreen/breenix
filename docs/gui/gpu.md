@@ -675,6 +675,14 @@ rests on host-side evidence that the gate checks, recorded with every run:
   from its built-in font tables (`purpose` `Fixture`) through `bitmap_text`. Before it starts, the boot
   console and panic screen are CPU-written on the firmware framebuffer, and nowhere else (ruling R7).
 
+G7's argument layouts, ownership transitions, console observation, firmware-memory hashes and
+present fault effects are defined in `gpu-abi.md`, "G7 display interface". These definitions
+supply the observability for the existing present cases; their case counts and expectations stay fixed.
+
+Under `--gpu-gl`, G7 shows the GPU kernel console until E17 migrates bwm from the legacy
+compositor interface. Boots without `--gpu-gl` retain bwm's existing desktop behavior.
+G7 does not restore legacy takeover bookkeeping (ruling 39).
+
 ### 1.8 Observation by device readback
 
 `READBACK` and BreenGL's `SCANOUT_READBACK` share one record, `ObservationRecord` version 2: 1,024 bytes,
@@ -911,6 +919,13 @@ Notes on the cases that carry the most weight:
   the latter over every printable glyph of the pinned fonts at the five reviewed reference sizes.
 - `readback/fault-suppress-draw` and `textures/fault-wrong-texture` show a completed fence is not proof the
   intended command ran: each must fail the exact comparison.
+- `readback/owner-only` checks that a live non-owner gets EPERM for READBACK target 0
+  while another process owns the display. After the child owner exits, the restored parent
+  can read back target 0; the restored parent is not the non-owner probe (ruling 37).
+- `isolation/client-cannot-scanout` expects EPERM from a non-owner SET_MODE with valid
+  arguments. Ownership is checked before argument validation, so malformed arguments also
+  return EPERM for a non-owner. The current owner's SET_MODE(NULL, 0) returns EINVAL
+  (ruling 38); ENOSYS is no longer the G7 expectation.
 - `readback/poison-unwritten` checks the two complementary observations of section 1.8, and
   `fault-skip-transfer` shows a skipped transfer is refused through them. `textures/upload-visibility` reads
   an upload back as well as sampling it, because a dropped upload samples as a texture of zeros.
@@ -1163,6 +1178,8 @@ implementation. This amendment states those interfaces, in its own PR before the
   form of a user, kernel or physical address on either architecture. Each value an op writes back is a handle,
   a context fence (`ns << 32 | n`), a device id below 2³², a count, a size, a serial, a generation, a status,
   an answer or a reason, a capability value, a string, or bytes of the caller's own pixels.
+  G7 also exposes the current scanout's pixels to its display owner and the FNV memory fingerprints
+  specified in `gpu-abi.md`, G7 display interface.
 <!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
 - **`SET_MODE` before G7.** Until G7 builds it, `SET_MODE` refuses a caller that is not the display owner
   with EPERM before its argument is decoded and returns ENOSYS to the owner; `MODES` returns ENOSYS.

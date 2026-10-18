@@ -72,7 +72,7 @@
         { "id": "fault-corrupt-pixel", "title": "A pixel corrupted outside the draw fails the exact comparison at that pixel" },
         { "id": "fault-suppress-draw", "title": "A draw dropped from the device stream while its fence completes fails the exact comparison" },
         { "id": "error-invalidates-targets", "title": "A failed submission's targets read back EIO until a later submission writes them whole" },
-        { "id": "owner-only", "title": "Only the display owner reads back the scanout" },
+        { "id": "owner-only", "title": "A live non-owner gets EPERM for scanout readback and the restored parent can read back" },
         { "id": "efault", "title": "A readback into unmapped or read-only memory returns EFAULT with no side effect" },
         { "id": "large-target", "title": "A 2560x1600 target reads back exactly" }
       ]
@@ -189,7 +189,7 @@
         { "id": "unknown-op", "title": "An unknown op returns EINVAL" },
         { "id": "test-hooks-absent", "title": "Test-control points 19 to 31 are refused to every non-root process" },
         { "id": "killable-wait", "title": "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms" },
-        { "id": "client-cannot-scanout", "title": "A process that is not the display owner can neither present nor set a mode" },
+        { "id": "client-cannot-scanout", "title": "A non-owner cannot present and gets EPERM for valid SET_MODE; the owner gets EINVAL for SET_MODE(NULL, 0)" },
         { "id": "irq-masked-bound", "title": "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload" }
       ]
     },

@@ -101,7 +101,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("fault-corrupt-pixel", "A pixel corrupted outside the draw fails the exact comparison at that pixel", readback::fault_corrupt_pixel),
         case("fault-suppress-draw", "A draw dropped from the device stream while its fence completes fails the exact comparison", readback::fault_suppress_draw),
         case("error-invalidates-targets", "A failed submission's targets read back EIO until a later submission writes them whole", readback::error_invalidates_targets),
-        case("owner-only", "Only the display owner reads back the scanout", readback::owner_only),
+        case("owner-only", "A live non-owner gets EPERM for scanout readback and the restored parent can read back", readback::owner_only),
         case("efault", "A readback into unmapped or read-only memory returns EFAULT with no side effect", readback::efault),
         case("large-target", "A 2560x1600 target reads back exactly", readback::large_target),
     ]),
@@ -202,7 +202,7 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("unknown-op", "An unknown op returns EINVAL", isolation::unknown_op),
         case("test-hooks-absent", "Test-control points 19 to 31 are refused to every non-root process", isolation::test_hooks_absent),
         case("killable-wait", "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms", isolation::killable_wait),
-        case("client-cannot-scanout", "A process that is not the display owner can neither present nor set a mode", isolation::client_cannot_scanout),
+        case("client-cannot-scanout", "A non-owner cannot present and gets EPERM for valid SET_MODE; the owner gets EINVAL for SET_MODE(NULL, 0)", isolation::client_cannot_scanout),
         case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation::irq_masked_bound),
     ]),
     category("present", "display modes, HiDPI & present", &[
