@@ -416,10 +416,13 @@ impl Controller {
                         }
                     }
                 }
-                self.sync_leds();
+                // Rearm before synchronous SET_REPORT: the console can ask
+                // the host for another key as soon as this report is delivered.
+                // Keep interrupt-IN available while the LED transfer waits.
                 if let Err(error) = self.queue_report(index) {
                     log::error!("[usb] port {port}: cannot post the next report: {error}");
                 }
+                self.sync_leds();
             }
             // Stopped by a teardown in progress.
             26..=28 => {}
