@@ -134,6 +134,7 @@ pub enum FdKind {
     FifoReadWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Procfs virtual file (content generated at open time, shared by reads)
     ProcfsFile {
+        mode: u32,
         content: Arc<alloc::vec::Vec<u8>>,
         position: usize,
         /// The entry's user and group (`procfs::owner`).

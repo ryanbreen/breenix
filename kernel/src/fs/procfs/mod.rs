@@ -668,7 +668,21 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Stat => text(generate_stat()),
         ProcEntryType::CowInfo => text(generate_cowinfo()),
         ProcEntryType::Pids => text(generate_pids()),
-        ProcEntryType::Kmsg => text(generate_kmsg()),
+        ProcEntryType::Kmsg => {
+            // The serial ring can contain privileged TTY output. Authorize
+            // before generating the open-time snapshot, as for console/check.
+            let root = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
+                let guard = crate::process::manager();
+                guard.as_ref().is_some_and(|manager| {
+                    manager.find_process_by_thread(tid)
+                        .is_some_and(|(_, process)| process.cred.euid == 0)
+                })
+            });
+            if !root {
+                return Err(-13);
+            }
+            text(generate_kmsg())
+        },
         ProcEntryType::Mounts => text(generate_mounts()),
         ProcEntryType::XhciDir => {
             let entries = list_xhci_entries();
