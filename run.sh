@@ -602,7 +602,18 @@ finish_vm_boot() {
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
-    if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
+    if [ "$PARALLELS" = true ] && [ "$stopped" = true ]; then
+        # eb298971 removed the global stopped-VM sweep because those VMs belong to
+        # other runs. Delete only this run's VM, after its verdict, retaining the
+        # reusable disks outside its bundle by detaching them first.
+        if prlctl set "$PARALLELS_VM" --device-del hdd0 \
+            && { [ ! -d "$EXT2_HDD_DIR" ] || prlctl set "$PARALLELS_VM" --device-del hdd1; }; then
+            prlctl delete "$PARALLELS_VM" || echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
+        else
+            echo "WARNING: keeping owned VM $PARALLELS_VM because disk detach failed" >&2
+        fi
+        host_slot_release mac-boot
+    elif [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
         # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
         # vmware.log stays beside the serial log.
         cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
