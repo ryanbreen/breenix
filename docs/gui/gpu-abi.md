@@ -364,6 +364,19 @@ of `textures/upload-visibility`'s 10 s window until its contexts report state 0;
 other case deadlines are unchanged.
 A clear counts as one draw of one instance covering the target.
 
+## Terminal panic boundary
+
+<!-- claim-lint:ok: Normative post-handoff terminal requirements from gpu.md section 1.7.1 (#1749); not measured results. -->
+A kernel panic or fatal EL1 fault after GPU handoff latches the terminal display
+path defined in `gpu.md` section 1.7.1. It stops normal GPU producers and preserves
+outstanding DMA backing; syscall 416 and the display ownership stack do not offer
+recovery from that state. It introduces no ABI field or operation. Serial remains
+the panic record if preparation is unavailable, the 100 ms producer drain expires,
+or device work cannot finish within the shared 2 s deadline. The firmware write
+count must remain zero after handoff even on that failure path. Intentional CPU
+parking in terminal mode must not produce a later soft-lockup capture; ordinary
+lockup detection before the fatal stop remains required.
+
 ## The BGL command stream
 
 32-bit little-endian words. Each command starts with its code and its length in words, counting both;

@@ -703,6 +703,40 @@ Under `--gpu-gl`, G7 shows the GPU kernel console until E17 migrates bwm from th
 compositor interface. Boots without `--gpu-gl` retain bwm's existing desktop behavior.
 G7 does not restore legacy takeover bookkeeping (ruling 39).
 
+#### 1.7.1 Terminal panic display after GPU handoff
+
+<!-- claim-lint:ok: Normative post-handoff panic requirements for #1749, separated under coordinator ruling 9; not measured results. -->
+Serial remains the authoritative panic record (ruling 40). Before GPU handoff, the
+firmware diagnostics screen follows R7. After handoff, a kernel panic or fatal EL1
+fault attempts a GPU-drawn red diagnostics screen containing the headline, location
+or fault details, boot stage and recent kernel log. Recoverable EL0 faults do not
+enter terminal display mode. The kernel must not write the firmware framebuffer
+after handoff, including when the GPU attempt fails.
+
+<!-- claim-lint:ok: Normative terminal ownership and deadlines for #1749; not measured results. -->
+The first fatal caller latches terminal mode for the rest of the boot. Normal GPU
+producers stop without releasing backing the device may still access; later fatal
+callers cannot become another queue writer. The attempt uses prepared, pinned
+resources and requests, without allocating or waiting for the ordinary core,
+console or framebuffer locks. Other CPUs' active queue accesses have at most
+100 ms to drain. If they do not, the GPU attempt ends. After that drain, queue
+drain, draw, bind, flush and any capture-profile device observation share one
+2 s deadline measured by the architectural counter, independent of interrupts.
+Timeout, unavailable preparation, reset-invalidated state or a device error leaves
+serial as the record; it does not permit a CPU-rendered fallback or a retry on the
+normal queue. Requests and DMA backing stay pinned after a timeout.
+
+<!-- claim-lint:ok: Normative terminal-stop and acceptance requirements for #1749; not measured results. -->
+Terminal mode does not resume scheduling or display ownership. CPUs parked by this
+fatal stop mask interrupts; the soft-lockup detector must recognize that intentional
+terminal state and must not append a LOCKUP capture to the panic record. This does
+not exempt a lockup before terminal mode or change ordinary lockup detection. The
+panic capture profiles must read the bound panic target through both complementary
+poisons, require exact equality to the expected diagnostics pixels, and end with
+no subsequent soft-lockup capture. Screen failure never suppresses the serial
+panic record. This terminal path adds no syscall, userspace recovery operation or
+change to the ordinary watchdog, fence, readback or IRQ-masking bounds.
+
 ### 1.8 Observation by device readback
 
 `READBACK` and BreenGL's `SCANOUT_READBACK` share one record, `ObservationRecord` version 2: 1,024 bytes,
