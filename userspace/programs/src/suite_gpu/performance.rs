@@ -71,8 +71,16 @@ fn colour(n: u64) -> u32 {
 fn read_rect(t: u64, r: [u32; 4]) -> R<Vec<u8>> {
     let mut px = vec![0u8; (r[2] * r[3] * 4) as usize];
     let mut rec = [0u8; record::SIZE];
-    let ret = gpu::readback(t, r, &mut px, r[2] * 4, &mut rec);
-    ensure(ret == 0, || format!("READBACK returned {} (unwritten {})", errno(ret), u32_at(&rec, record::UNWRITTEN)))?;
+    let (ret, a) = gpu::readback_why(t, r, &mut px, r[2] * 4, &mut rec);
+    ensure(ret == 0, || {
+        format!(
+            "READBACK returned {} (reason {}, failed submission {}, unwritten {})",
+            errno(ret),
+            a.reason,
+            a.failed_submission,
+            u32_at(&rec, record::UNWRITTEN)
+        )
+    })?;
     Ok(px)
 }
 
