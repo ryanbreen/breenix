@@ -14,10 +14,11 @@
 //! compares it with the shadow and with pixels worked out from the font and the
 //! text alone (`raster::expected_intensity`).
 //!
-//! While no session has the console as its controlling terminal, kernel log
-//! records of INFO and above are drawn; while one does (a getty and the login
-//! it starts, or the shell init starts there), only warnings and errors are, so
-//! the console's user is not shown the per-second census lines. Serial keeps each record. Once a
+//! The console starts in init's session. While it is there, or in no session,
+//! kernel log records of INFO and above are drawn; while another session has
+//! it as its controlling terminal (a getty and the login it starts), only
+//! warnings and errors are, so the console's user is not shown the per-second
+//! census lines. Serial keeps each record. Once a
 //! process takes the display (`sys_take_over_display`) the console stops drawing.
 
 pub mod grid;
@@ -54,7 +55,7 @@ static GRID: Mutex<Grid> = Mutex::new(Grid::new());
 /// Grid writes given up because its lock stayed held (a holder that faulted).
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
-/// A session has the console as its controlling terminal.
+/// A session other than init's has the console as its controlling terminal.
 static SESSION: AtomicBool = AtomicBool::new(false);
 /// Only warnings and errors are drawn. The render thread follows `SESSION`
 /// here, saying so on the screen as it changes.
@@ -163,8 +164,8 @@ pub fn write_tty(bytes: &[u8]) {
     }
 }
 
-/// A session took the console as its controlling terminal (`true`), or the
-/// console's session ended (`false`).
+/// A session other than init's took the console as its controlling terminal
+/// (`true`), or the console is back in init's session or out of sessions (`false`).
 pub fn console_session(held: bool) {
     SESSION.store(held, Ordering::Release);
 }

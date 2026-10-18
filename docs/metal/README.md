@@ -119,10 +119,10 @@ display on the server's VGA port. It runs on x86 kernels built without `interact
   interrupts masked at a time. Drawing does not read video memory. A display owner's `fbdraw` flush and pixel
   read take the same row token, so they do not interleave with the console's rows. When a process takes the display
   (`sys_take_over_display`) the console stops drawing.
-- **The log on the screen.** While no session has the console as its controlling terminal, records of INFO and
-  above are drawn; while one does (a getty and its login, or the shell init starts there), only warnings and errors
-  are, so the per-second census does not scroll the user's session away. A session that ends (init's TTY self-test in
-  the default mode, or a logout) brings the full log back. Serial keeps each record.
+- **The log on the screen.** The console starts in init's session. While it is there, or in no session, records of
+  INFO and above are drawn; while another session has it as its controlling terminal (a getty and its login), only
+  warnings and errors are, so the per-second census does not scroll the user's session away. When that session ends
+  the full log comes back. Serial keeps each record.
 - **Write-combining.** Each CPU programs the same page attribute table in its per-CPU init, before it is online:
   entry 1, power-up write-through and unused by the kernel, becomes write-combining (Intel SDM Vol. 3A, "Page
   Attribute Table (PAT)"), following the SDM's cache-disable and flush sequence. Before the other CPUs start, the
