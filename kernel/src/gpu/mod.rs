@@ -86,9 +86,12 @@ static ISR: AtomicU64 = AtomicU64::new(0);
 /// was last written: see [`ring_doorbell`].
 static DOORBELL: AtomicU64 = AtomicU64::new(0);
 static KICK: AtomicBool = AtomicBool::new(false);
-/// The ISR's configuration-change bit was seen: the device may have set DEVICE_NEEDS_RESET.
+/// A configuration change was signalled: the device may have set DEVICE_NEEDS_RESET.
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
+/// The control queue's interrupt (or the INTx line), and with MSI-X the configuration
+/// change interrupt.
 static INTID: AtomicU32 = AtomicU32::new(0);
+static CONFIG_INTID: AtomicU32 = AtomicU32::new(0);
 static REAPER: AtomicU64 = AtomicU64::new(0);
 static REAPER_STARTING: AtomicBool = AtomicBool::new(false);
 
@@ -363,10 +366,11 @@ struct Core {
 // ---------------------------------------------------------------------------------------
 // Initialisation and the profile.
 
-/// Find and initialise the GPU on QEMU's PCI bus, read its profile, and route its
-/// interrupt. Called once from driver initialisation; an absent or failing device leaves
-/// a core that refuses every op naming why.
-pub fn init_qemu() {
+/// Find and initialise the virtio-gpu PCI device (QEMU's virtio-gpu-gl-pci, or Parallels'
+/// virtio-gpu when the launcher selects the core), read its profile, and route its
+/// interrupts. Called once from driver initialisation; an absent or failing device leaves
+/// a core that refuses its ops naming why.
+pub fn init() {
     let mut core = Core::empty();
     match Device::probe() {
         Ok(dev) => {
@@ -391,11 +395,26 @@ pub fn init_qemu() {
                     core::str::from_utf8(&core.caps.renderer).unwrap_or("").trim_end_matches('\0')
                 );
             }
-            ISR.store(dev.isr, Ordering::Release);
             DOORBELL.store(dev.doorbell(), Ordering::Release);
-            INTID.store(dev.intid, Ordering::Release);
-            crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
-            crate::arch_impl::aarch64::gic::enable_spi(dev.intid);
+            use crate::arch_impl::aarch64::gic;
+            match dev.irq {
+                virgl::Irq::Intx(intid) => {
+                    ISR.store(dev.isr, Ordering::Release);
+                    INTID.store(intid, Ordering::Release);
+                    gic::configure_spi_level_triggered(intid);
+                    gic::enable_spi(intid);
+                }
+                virgl::Irq::Msix { queue, config } => {
+                    crate::serial_println!("[gpu] MSI-X: queue SPI {} config SPI {}", queue, config);
+                    INTID.store(queue, Ordering::Release);
+                    CONFIG_INTID.store(config, Ordering::Release);
+                    for spi in [queue, config] {
+                        gic::configure_spi_edge_triggered(spi);
+                        gic::clear_spi_pending(spi);
+                        gic::enable_spi(spi);
+                    }
+                }
+            }
             core.queue_size = dev.queue_size();
             core.dev = Some(dev);
         }
@@ -1459,7 +1478,8 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
 // ---------------------------------------------------------------------------------------
 // The interrupt and the reaper thread.
 
-/// The GIC interrupt id of the GPU's INTx line, once the device is up.
+/// The GIC interrupt id of the GPU's INTx line, or of its control queue's MSI-X vector,
+/// once the device is up.
 pub fn irq() -> Option<u32> {
     match INTID.load(Ordering::Acquire) {
         0 => None,
@@ -1467,26 +1487,47 @@ pub fn irq() -> Option<u32> {
     }
 }
 
-/// The GPU interrupt: acknowledge it through the ISR byte, count it and wake whoever
-/// waits. No lock, no allocation, no output.
+/// The GIC interrupt id of the GPU's configuration-change MSI-X vector, when it uses MSI-X.
+pub fn config_irq() -> Option<u32> {
+    match CONFIG_INTID.load(Ordering::Acquire) {
+        0 => None,
+        id => Some(id),
+    }
+}
+
+/// The GPU interrupt: with INTx, acknowledge it through the ISR byte; with MSI-X it is the
+/// control queue's vector, and the ISR byte is not read (VirtIO 1.3 section 4.1.4.5.2).
+/// Count it and wake whoever waits. No lock, no allocation, no output.
 pub fn handle_interrupt() {
     // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
     let start = crate::tracing::providers::gpu::interrupt_begin();
     let isr = ISR.load(Ordering::Acquire);
-    let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
-    if status != 0 {
-        // Bit 1 is a configuration change (VirtIO 1.3 section 4.1.4.5).
-        if status & 2 != 0 {
-            CONFIG_CHANGED.store(true, Ordering::Release);
-        }
-        EVENTS.fetch_add(1, Ordering::AcqRel);
-        WAITERS.wake_up();
-        let tid = REAPER.load(Ordering::Acquire);
-        if tid != 0 {
-            crate::task::scheduler::wake_thread_any_context(tid);
-        }
-    }
+    signal(if isr != 0 { virgl::read_isr(isr) } else { 1 });
     crate::tracing::providers::gpu::interrupt_end(start);
+}
+
+/// The configuration-change MSI-X vector. No lock, no allocation, no output.
+pub fn handle_config_interrupt() {
+    let start = crate::tracing::providers::gpu::interrupt_begin();
+    signal(2);
+    crate::tracing::providers::gpu::interrupt_end(start);
+}
+
+/// Wake for an interrupt whose cause is `status`, in the ISR byte's encoding: bit 0 a
+/// used buffer, bit 1 a configuration change (VirtIO 1.3 section 4.1.4.5).
+fn signal(status: u8) {
+    if status == 0 {
+        return;
+    }
+    if status & 2 != 0 {
+        CONFIG_CHANGED.store(true, Ordering::Release);
+    }
+    EVENTS.fetch_add(1, Ordering::AcqRel);
+    WAITERS.wake_up();
+    let tid = REAPER.load(Ordering::Acquire);
+    if tid != 0 {
+        crate::task::scheduler::wake_thread_any_context(tid);
+    }
 }
 
 /// Start `kgpu` if it is not running; false when it cannot be started.

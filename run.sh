@@ -68,6 +68,7 @@ PARALLELS_TEST_WAIT=35
 VMWARE=false
 SUITE=""
 ONLY=""
+GPU_CORE=false
 PROBE=false
 TESTS=false
 BOOT_MODE=default
@@ -181,6 +182,10 @@ while [[ $# -gt 0 ]]; do
             SUITE="${2:-}"
             shift 2
             ;;
+        --gpu-core)
+            GPU_CORE=true
+            shift
+            ;;
         --retina)
             RETINA=true
             shift
@@ -220,6 +225,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --gpu-core                 Parallels: the GPU core (kernel/src/gpu/) owns the virtio-gpu device"
+            echo "                             instead of the legacy display driver; implied by --parallels --suite gpu"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
@@ -312,6 +319,15 @@ run_build() {
 [[ "$GATE_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "--gate-timeout needs positive seconds"; exit 2; }
 if [ "$VMWARE" = true ] && [ "$PARALLELS_TEST" = true ]; then
     echo "--test screenshots are supported only on Parallels"
+    exit 2
+fi
+
+# --gpu-core: the ESP carries \EFI\BREENIX\GPUCORE, which the loader reports to the kernel
+# (arm64_boot_contract::BOOT_FLAG_GPU_CORE), so the GPU core drives the virtio-gpu device and
+# shows its kernel console. The gpu suite needs it; other boots keep the legacy display.
+if [ "$PARALLELS" = true ] && [[ ",$SUITE," == *",gpu,"* ]]; then GPU_CORE=true; fi
+if [ "$GPU_CORE" = true ] && [ "$PARALLELS" != true ]; then
+    echo "--gpu-core is for --parallels"
     exit 2
 fi
 
@@ -442,7 +458,7 @@ mark_wrapped_ext2() {
 # Cargo can restore a cached profile with an older mtime. Compare the exact
 # kernel and loader contents, rather than dates, before reusing an EFI image.
 efi_artifact_identity() {
-    (set -o pipefail; shasum -a 256 "$KERNEL_ELF" "$LOADER_EFI" | awk '{print $1}')
+    (set -o pipefail; shasum -a 256 "$KERNEL_ELF" "$LOADER_EFI" | awk '{print $1}') && echo "gpu-core=$GPU_CORE"
 }
 
 efi_artifacts_match() {
@@ -782,10 +798,12 @@ if [ "$PARALLELS" = true ]; then
         mkdir -p "$VOLUME/EFI/BREENIX"
         cp "$LOADER_EFI" "$VOLUME/EFI/BOOT/BOOTAA64.EFI"
         cp "$KERNEL_ELF" "$VOLUME/EFI/BREENIX/KERNEL"
+        [ "$GPU_CORE" = true ] && echo gpu-core > "$VOLUME/EFI/BREENIX/GPUCORE"
         hdiutil detach "$VOLUME" >/dev/null 2>&1
 
         echo "  Loader: $(stat -f%z "$LOADER_EFI") bytes"
         echo "  Kernel: $(stat -f%z "$KERNEL_ELF") bytes"
+        echo "  GPU core: $GPU_CORE"
 
         # Convert DMG to raw disk image
         echo ""

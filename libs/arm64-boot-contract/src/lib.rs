@@ -11,7 +11,12 @@ pub const LINKED_RAM_START: u64 = 0x4000_0000;
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
 /// HardwareConfig v5 carries only final-map conventional memory as free RAM.
 /// Earlier versions included boot-services memory before loader allocations.
-pub const HARDWARE_CONFIG_VERSION: u32 = 5;
+/// v6 adds `boot_flags`.
+pub const HARDWARE_CONFIG_VERSION: u32 = 6;
+
+/// `boot_flags` bit: the ESP carries `\EFI\BREENIX\GPUCORE`, so the GPU core
+/// (`kernel/src/gpu/`) owns the display device instead of the legacy display driver.
+pub const BOOT_FLAG_GPU_CORE: u32 = 1 << 0;
 
 /// Firmware ranges that must remain identity mapped for physical-mode runtime
 /// services after ExitBootServices. They are excluded from usable RAM.

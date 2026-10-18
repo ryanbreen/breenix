@@ -2,10 +2,13 @@
 //!
 //! Written from VirtIO 1.3 CSD01: device initialisation (section 3.1), the PCI transport
 //! (section 4.1), split virtqueues (section 2.7) and the GPU device (section 5.7). The
-//! control queue carries every command; a fenced command's response arrives only after
+//! control queue carries the commands; a fenced command's response arrives only after
 //! the device has finished it and echoes its fence (section 5.7.6.7). Completion is
-//! signalled by the transport's interrupt; with MSI-X off the device uses its PCI INTx
-//! pin and the ISR status byte, whose read acknowledges it (section 4.1.4.5).
+//! signalled by the transport's interrupt. On QEMU the device uses its PCI INTx pin and
+//! the ISR status byte, whose read acknowledges it (section 4.1.4.5). On Parallels it uses
+//! MSI-X (section 4.1.4.8, PCI Local Bus 3.0 section 6.8.2) through the GICv2m doorbell:
+//! vector 0 for the control queue and vector 1 for configuration changes, each its own
+//! edge-triggered SPI, and the driver does not read the ISR byte for a queue vector.
 //!
 //! A request owns every buffer the device may touch for it, including any resource
 //! backing it reads or writes, until the device returns it or a confirmed reset ends the
@@ -174,16 +177,28 @@ pub struct Info {
     pub num_scanouts: u32,
 }
 
+/// How the device interrupts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Irq {
+    /// One level-triggered INTx line for both causes, told apart by the ISR byte.
+    Intx(u32),
+    /// MSI-X: the control queue's SPI and the configuration-change SPI.
+    Msix { queue: u32, config: u32 },
+}
+
 pub struct Device {
     pci: VirtioPciDevice,
     queue: Queue,
     inflight: Vec<Option<Request>>,
     pub info: Info,
-    /// The GIC interrupt id of the device's INTx line.
-    pub intid: u32,
+    pub irq: Irq,
     /// The ISR status byte's address.
     pub isr: u64,
 }
+
+/// MSI-X vector numbers the driver assigns (VirtIO 1.3 section 4.1.4.3).
+const QUEUE_VECTOR: u16 = 0;
+const CONFIG_VECTOR: u16 = 1;
 
 /// Features the backend asks for: VirGL, and the modern interface (section 6).
 const WANTED: u64 = wire::F_VIRGL | wire::F_VERSION_1;
@@ -198,14 +213,11 @@ fn qemu_virt_intx(slot: u8, pin: u8) -> u32 {
     32 + 3 + ((slot as u32 + pin as u32 - 1) % 4)
 }
 
-impl Device {
-    /// Find, reset and initialise the device; read its display information and
-    /// capability sets with polled commands. Interrupts are not enabled yet.
-    pub fn probe() -> Result<Device, &'static str> {
-        if !crate::platform_config::is_qemu() {
-            return Err("the GPU core drives QEMU's virtio-gpu-gl-pci on this target");
-        }
-        let pci_dev = pci::find_device(pci::VIRTIO_VENDOR_ID, GPU_PCI_ID).ok_or("no virtio-gpu PCI device")?;
+/// Route the device's interrupts: INTx on QEMU's `virt` machine, MSI-X through the GICv2m
+/// doorbell on Parallels. The MSI-X table entries live in the function's BAR and survive a
+/// device reset; the virtio vector registers do not, so [`Device::enable_queue`] writes them.
+fn route(pci_dev: &pci::Device) -> Result<Irq, &'static str> {
+    if crate::platform_config::is_qemu() {
         let pin = pci::pci_read_config_byte(pci_dev.bus, pci_dev.device, pci_dev.function, 0x3D);
         if pin == 0 || pin > 4 {
             return Err("the virtio-gpu PCI device has no INTx pin");
@@ -213,7 +225,34 @@ impl Device {
         // Command register bit 10 masks INTx; the transport needs it clear.
         let command = pci::pci_read_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04);
         pci::pci_write_config_word(pci_dev.bus, pci_dev.device, pci_dev.function, 0x04, command & !(1 << 10));
-        let intid = qemu_virt_intx(pci_dev.device, pin);
+        return Ok(Irq::Intx(qemu_virt_intx(pci_dev.device, pin)));
+    }
+    if !crate::platform_config::is_parallels() {
+        return Err("the GPU core drives virtio-gpu on QEMU and Parallels only");
+    }
+    let cap = pci_dev.find_msix_capability().ok_or("the virtio-gpu PCI device has no MSI-X capability")?;
+    if pci_dev.msix_table_size(cap) <= CONFIG_VECTOR {
+        return Err("the virtio-gpu MSI-X table has fewer than two vectors");
+    }
+    let doorbell = crate::platform_config::gicv2m_doorbell().ok_or("no GICv2m frame for virtio-gpu MSI-X")?;
+    let queue = crate::platform_config::allocate_msi_spi();
+    let config = crate::platform_config::allocate_msi_spi();
+    if queue == 0 || config == 0 {
+        return Err("no GICv2m SPI left for virtio-gpu MSI-X");
+    }
+    pci_dev.configure_msix_entry(cap, QUEUE_VECTOR, doorbell, queue);
+    pci_dev.configure_msix_entry(cap, CONFIG_VECTOR, doorbell, config);
+    pci_dev.enable_msix(cap);
+    pci_dev.disable_intx();
+    Ok(Irq::Msix { queue, config })
+}
+
+impl Device {
+    /// Find, reset and initialise the device; read its display information and
+    /// capability sets with polled commands. Interrupts are not enabled yet.
+    pub fn probe() -> Result<Device, &'static str> {
+        let pci_dev = pci::find_device(pci::VIRTIO_VENDOR_ID, GPU_PCI_ID).ok_or("no virtio-gpu PCI device")?;
+        let irq = route(&pci_dev)?;
         let mut pci = VirtioPciDevice::probe(pci_dev).ok_or("virtio-gpu PCI capabilities missing")?;
         let isr = pci.isr_address().ok_or("virtio-gpu PCI ISR capability missing")?;
         let size = Self::start(&mut pci)?;
@@ -223,13 +262,13 @@ impl Device {
             queue,
             inflight: Vec::new(),
             info: Info { features: 0, capset_ids: Vec::new(), capset: None, scanouts: Vec::new(), num_scanouts: 0 },
-            intid,
+            irq,
             isr,
         };
         dev.inflight.resize_with(dev.queue.size() as usize, || None);
-        dev.enable_queue();
+        let up = dev.enable_queue();
         dev.info.features = dev.pci.device_features() & WANTED;
-        if let Err(error) = dev.read_info() {
+        if let Err(error) = up.and_then(|()| dev.read_info()) {
             // DRIVER_OK made the ring and request buffers DMA-visible. Only a
             // confirmed status-zero reset ends that ownership (VirtIO 2.4.2).
             dev.begin_reset();
@@ -260,15 +299,25 @@ impl Device {
         Ok(size)
     }
 
-    fn enable_queue(&mut self) {
+    /// Set up the control queue and, with MSI-X, its vectors (section 4.1.4.3: a vector
+    /// the device cannot use reads back as NO_VECTOR), then set DRIVER_OK.
+    fn enable_queue(&mut self) -> Result<(), &'static str> {
+        let msix = matches!(self.irq, Irq::Msix { .. });
+        if msix && self.pci.set_config_msix_vector(CONFIG_VECTOR) != CONFIG_VECTOR {
+            return Err("virtio-gpu refused its configuration MSI-X vector");
+        }
         self.pci.select_queue(0);
         self.pci.set_queue_num(self.queue.size() as u32);
         self.pci.set_queue_desc(self.queue.desc_addr());
         self.pci.set_queue_avail(self.queue.avail_addr());
         self.pci.set_queue_used(self.queue.used_addr());
+        if msix && self.pci.set_queue_msix_vector(QUEUE_VECTOR) != QUEUE_VECTOR {
+            return Err("virtio-gpu refused its control queue MSI-X vector");
+        }
         self.pci.set_queue_ready(true);
         self.pci.cache_queue_notify_addr(0);
         self.pci.driver_ok();
+        Ok(())
     }
 
     /// Display information and capability sets, polled.
@@ -411,10 +460,7 @@ impl Device {
         let held: Vec<Request> = self.inflight.iter_mut().filter_map(Option::take).collect();
         self.queue.reset();
         let up = match Self::start(&mut self.pci) {
-            Ok(size) if size >= self.queue.size() => {
-                self.enable_queue();
-                Ok(())
-            }
+            Ok(size) if size >= self.queue.size() => self.enable_queue(),
             Ok(_) => Err("virtio-gpu control queue shrank across the reset"),
             Err(e) => Err(e),
         };
