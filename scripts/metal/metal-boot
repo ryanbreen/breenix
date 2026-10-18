@@ -11,7 +11,7 @@
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 Run options: --payload image|hang|none, --mode default|shell|probe|suite|console, --commit SHA, --target main|branch:NAME,
---task NAME, --no-wait, --inject forceoff-fail, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
+--task NAME, --no-wait, --inject forceoff-fail|xhci-reset-device|xhci-short-read, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
 for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
 its stage folder, and serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as
 `ramdisk` by default). `--disk install` (probe mode) stages the install request on the RAM disk, so the kernel copies
@@ -63,6 +63,18 @@ def attended(args):
 def input_kind(args):
     """Who types: the operator on the USB keyboard (attended), SOL, or nobody."""
     return 'keyboard' if attended(args) else getattr(args, 'input', None)
+
+
+def xhci_fault(args):
+    value = getattr(args, 'inject', None)
+    return {'xhci-reset-device': 'reset-device', 'xhci-short-read': 'short-read'}.get(value)
+
+
+def validate_xhci_fault(args):
+    if xhci_fault(args) and (args.payload != 'image' or args.mode != 'console'
+                            or getattr(args, 'input', None) != 'sol'
+                            or session(args) or attended(args) or getattr(args, 'disk', None)):
+        raise ValueError('xHCI faults need a RAM-disk console boot with --input sol')
 
 
 def ceiling_seconds(args):
@@ -195,7 +207,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        kind = 'console-session' if session(self.args) else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
+        kind = 'fault-test' if xhci_fault(self.args) else 'console-session' if session(self.args) else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'suite': getattr(self.args, 'suite', None), 'inject': self.args.inject or None,
@@ -205,7 +217,7 @@ class Driver:
                'waitMinutes': self.args.wait if attended(self.args) else None,
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not session(self.args) and (self.args.mode != 'console' or attended(self.args))}
+               'evidenceEligible': not xhci_fault(self.args) and not session(self.args) and (self.args.mode != 'console' or attended(self.args))}
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -347,7 +359,8 @@ class Driver:
                                                            install=self.id if disk == 'install' else None,
                                                            hasher=inputs / 'sha512-crypt',
                                                            idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-                                                           replug=self.args.mode == 'console' and not session(self.args))
+                                                           replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
+                                                           xhci_fault=xhci_fault(self.args))
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -403,6 +416,11 @@ class Driver:
             kind = input_kind(self.args)
             self.final_marker = final_marker(metal, self.args.mode, catalog, shape, kind)
             self.required_stages = measured_stages(metal, self.args.mode, catalog, shape, kind)
+        if xhci_fault(self.args):
+            marker = '[xhci-fault] ' + xhci_fault(self.args) + ' PASS:'
+            self.final_marker = (marker, 'contains')
+            self.required_stages = [[(marker, 'contains')]]
+            self.console_done = True
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
@@ -621,6 +639,8 @@ class Driver:
         subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
 
     def challenge_console(self, text, complete=False):
+        if xhci_fault(self.args):
+            return
         if self.args.mode != 'console' or session(self.args) or self.fatal_at is not None:
             return
         if attended(self.args):
@@ -1137,7 +1157,7 @@ class Driver:
             if self.t0 is not None:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
-        if not session(self.args) and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
+        if not session(self.args) and not xhci_fault(self.args) and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
                 m.write_json(self.dir / 'milestone-verdict.json', verdict)
@@ -1281,7 +1301,7 @@ def main():
         p.add_argument('--target', default='main')
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
-        p.add_argument('--inject', choices=('forceoff-fail',))
+        p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read'))
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
         p.add_argument('--ramdisk', action='store_true', default=True, help='put the ext2 root on the boot disk as `ramdisk`')
@@ -1301,6 +1321,10 @@ def main():
     sub.add_parser('status')
     args, _ = parser.parse_known_args()
     if args.command in ('launch', 'run'):
+        try:
+            validate_xhci_fault(args)
+        except ValueError as error:
+            parser.error(str(error))
         if args.mode == 'suite':
             if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', args.suite or ''):
                 parser.error('suite mode needs --suite ID')
