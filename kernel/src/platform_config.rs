@@ -101,7 +101,7 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 // Loader stack:   0x41E0_0000 - 0x4200_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
-// Heap:           0x5020_0000 - 0x581F_FFFF (128 MB)
+// Heap:           0x5020_0000 - 0x581F_FFFF (128 MB native, 64 MB QEMU)
 // Kernel stacks:  0x5820_0000 - 0x5A1F_FFFF (32 MB)
 // The rest of the RAM the firmware describes is the frame pool.
 
@@ -126,6 +126,7 @@ const _: () = {
             <= low.end
     );
     let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
+    assert!(crate::memory::heap::QEMU_HEAP_SIZE <= crate::memory::heap::HEAP_SIZE);
     assert!(heap >= high.start);
     assert!(heap + crate::memory::heap::HEAP_SIZE
         <= crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE);
@@ -210,12 +211,16 @@ fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
     }
     // SAFETY: as above; `size` lies inside the mapped block.
     let blob = unsafe { core::slice::from_raw_parts(base, size) };
-    frame_pool_from_fdt(
-        blob,
-        QEMU_DTB_PHYS,
-        kernel_fixed_ranges(0),
-        direct_map_ram_window(0),
-    )
+    // The native legacy VirGL buffers need the larger heap. QEMU's GPU core
+    // uses frames instead, so its unused heap tail stays in the frame pool.
+    let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
+    let stacks = crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE;
+    let fixed = [
+        KERNEL_FIXED_RANGES[0],
+        PhysRange::new(KERNEL_FIXED_RANGES[1].start, heap + crate::memory::heap::QEMU_HEAP_SIZE),
+        PhysRange::new(stacks, KERNEL_FIXED_RANGES[1].end),
+    ];
+    frame_pool_from_fdt(blob, QEMU_DTB_PHYS, fixed, direct_map_ram_window(0))
 }
 
 /// The frame allocator's free memory: the pages the firmware describes as

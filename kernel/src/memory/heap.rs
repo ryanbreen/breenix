@@ -16,7 +16,7 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 // Memory layout (physical):
 //   Frame allocator: firmware RAM outside the fixed kernel reservations
 //   .dma (NC) block: 0x5000_0000 - 0x501F_FFFF  (2 MB, Non-Cacheable for xHCI DMA)
-//   Heap:            0x5020_0000 - 0x581F_FFFF  (128 MB, Write-Back Cacheable)
+//   Heap:            0x5020_0000 - 0x581F_FFFF  (128 MB on native VMs, 64 MB on QEMU)
 //   Kernel stacks:   0x5820_0000 - 0x5A1F_FFFF  (32 MB)
 //
 // The heap MUST start AFTER the 2 MB NC DMA block to avoid overlapping
@@ -30,6 +30,9 @@ pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
 /// console and other kernel allocations (#1914). Reserve space for both.
 #[cfg(target_arch = "aarch64")]
 pub const HEAP_SIZE: u64 = 128 * 1024 * 1024;
+/// QEMU's GPU core uses frames for backing; retain its frame-pool capacity.
+#[cfg(target_arch = "aarch64")]
+pub const QEMU_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
 /// IRQ-safe wrapper around the kernel's free-list allocator.
 ///
@@ -116,8 +119,16 @@ static ALLOCATOR: IrqSafeLockedHeap = IrqSafeLockedHeap::empty();
 
 /// Initialize the heap allocator
 pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let heap_size = HEAP_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    let heap_size = if crate::platform_config::is_qemu() {
+        QEMU_HEAP_SIZE
+    } else {
+        HEAP_SIZE
+    };
     let heap_start = VirtAddr::new(HEAP_START);
-    let heap_end = heap_start + HEAP_SIZE;
+    let heap_end = heap_start + heap_size;
 
     // On x86_64, we need to map heap pages. On ARM64, boot.S sets up a direct map
     // so HEAP_START is already backed by physical memory.
@@ -166,13 +177,13 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 
     // Initialize the allocator
     unsafe {
-        ALLOCATOR.init(HEAP_START as *mut u8, HEAP_SIZE as usize);
+        ALLOCATOR.init(HEAP_START as *mut u8, heap_size as usize);
     }
 
     log::info!(
         "Heap initialized at {:#x} with size {} KiB",
         HEAP_START,
-        HEAP_SIZE / 1024
+        heap_size / 1024
     );
 
     Ok(())
