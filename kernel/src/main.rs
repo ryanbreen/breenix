@@ -1235,9 +1235,6 @@ fn launch_x86_production_init(
     if console_mode.is_some() {
         serial::command::use_tty_input();
     }
-    if console_mode == Some("console") {
-        kernel::drivers::xhci::console_session_starting();
-    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1272,7 +1269,19 @@ fn launch_x86_production_init(
         reserved_collisions
     );
 
-    task::scheduler::spawn(thread);
+    if console_mode == Some("console") {
+        // Boot holds a scheduling brake here. Wait on an ordinary thread so
+        // the xHCI worker can finish before init can start getty.
+        task::kthread::kthread_run(move || {
+            if kernel::drivers::xhci::wait_console_ready() {
+                task::scheduler::spawn(thread);
+            } else {
+                log::error!("[console] keyboard preparation failed; init not started");
+            }
+        }, "console-start").map_err(|_| "cannot create console startup thread")?;
+    } else {
+        task::scheduler::spawn(thread);
+    }
 
     Ok(())
 }
@@ -1359,11 +1368,15 @@ fn x86_boot_target() -> Option<X86BootTarget> {
 fn x86_console_mode() -> Option<&'static str> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
         Some("shell") => Some("shell"),
-        Some("console") => Some("console"),
+        Some("console") => {
+            kernel::drivers::xhci::console_session_starting(false);
+            Some("console")
+        },
         None | Some("") => match kernel::boot::target::read() {
             Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
-            Ok(Some(kernel::boot::target::Target::Console { idle_minutes })) => {
+            Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 kernel::tty::input_clock::start(idle_minutes);
+                kernel::drivers::xhci::console_session_starting(replug);
                 Some("console")
             },
             _ => None,
