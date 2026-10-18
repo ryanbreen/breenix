@@ -359,11 +359,12 @@ fn host(width: u32, height: u32, tally: &mut Tally) {
         } else {
             " motion=relative"
         };
-        if moved && passed {
+        if moved && passed && relative_target.is_some() {
             let absolute = state.0.abs_diff(*x) <= 1 && state.1.abs_diff(*y) <= 1;
             let relative = relative_target
                 .is_some_and(|(rx, ry)| state.0.abs_diff(rx) <= 1 && state.1.abs_diff(ry) <= 1);
-            // A position compatible with both models cannot distinguish them.
+            // The first request has no known host origin. Later positions
+            // compatible with both models cannot distinguish them either.
             absolute_seen |= absolute && !relative;
             relative_seen |= relative && !absolute;
         }
