@@ -355,6 +355,13 @@ class Driver:
         files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
         if self.args.ramdisk and disk != 'root':
             files['ramdisk'] = inputs / 'ext2.img'
+        if getattr(self.args, 'disk', None) == 'root' and self.args.mode == 'console':
+            # The installed target cannot describe this boot's session/test
+            # choice. A small intent payload is consumed before root discovery.
+            intent = self.stage / 'console-intent'
+            intent.write_bytes(b'BREENIX-CONSOLE 1\n' +
+                               (b'session\n' if session(self.args) else b'measure\n'))
+            files['ramdisk'] = intent
         disk = self.stage / 'boot-disk.img'
         facts = metal_image.assemble(disk, files)
         shutil.rmtree(extracted, ignore_errors=True)

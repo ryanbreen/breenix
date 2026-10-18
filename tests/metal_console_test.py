@@ -146,6 +146,35 @@ class ConsoleTest(unittest.TestCase):
         finally:
             fixture.tearDown()
 
+    def test_disk_root_console_carries_per_boot_intent_without_restaging_root(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit = 'console', 'root', 'a' * 40
+            d.args.ramdisk = False
+            d.site = self.driver().site
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            existing.m.write_json(inputs / 'build.json', {'commit': d.args.commit,
+                                  'profile': 'production', 'features': []})
+            existing.m.write_json(existing.m.STATE / 'disk.json', {'commit': d.args.commit,
+                                  'mode': 'console', 'consoleIdentity': metal_root.console_identity(d.site)})
+            for is_session, expected in [(True, b'BREENIX-CONSOLE 1\nsession\n'),
+                                         (False, b'BREENIX-CONSOLE 1\nmeasure\n')]:
+                d.args.session = is_session
+                with patch.object(boot.metal_root, 'stage_root') as stage, \
+                     patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+                     patch.object(boot.metal_image, 'assemble', side_effect=RuntimeError('assembly captured')) as assemble:
+                    with self.assertRaisesRegex(RuntimeError, 'assembly captured'):
+                        d.prepare_payload()
+                stage.assert_not_called()
+                files = assemble.call_args.args[1]
+                self.assertEqual(files['ramdisk'].read_bytes(), expected)
+        finally:
+            fixture.tearDown()
+
     def test_only_measured_boots_stage_the_replug_exercise(self):
         fixture = existing.DriverTest()
         fixture.setUp()

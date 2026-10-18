@@ -52,3 +52,14 @@ fn console_session_filters_at_record_admission_without_waiting_for_render() {
         assert!(!snapshot.contains(sink), "census enters console sink {sink}");
     }
 }
+
+#[test]
+fn disk_root_intent_is_consumed_before_registering_a_ram_block_device() {
+    let ramdisk = source("kernel/src/block/ramdisk.rs");
+    let init = body(&ramdisk, "pub unsafe fn init(");
+    assert!(init.contains("if crate::boot::console_intent::capture(bytes) {\n        return Ok(());"));
+    assert!(init.find("console_intent::capture(bytes)").unwrap() < init.find("RamDisk::new(bytes)").unwrap());
+    let main = source("kernel/src/main.rs");
+    let mode = body(&main, "fn x86_console_mode()");
+    assert!(mode.contains("kernel::boot::console_intent::replug_or(replug)"));
+}

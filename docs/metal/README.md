@@ -154,6 +154,10 @@ metal-run boot --mode console --session --idle-minutes 2
 
 Sessions never run the keyboard replug exercise. Measured attended and SOL test boots stage `console replug`;
 the kernel completes keyboard attachment and the exercise before starting init and getty.
+Disk-root console boots carry a small per-boot intent payload through the bootloader's RAM-payload slot; the
+kernel consumes it as metadata, without registering a RAM block device or changing the installed root. A
+session intent suppresses an installed measurement flag; a test intent requests the exercise even on a plain
+installed console target.
 
 Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
 the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.

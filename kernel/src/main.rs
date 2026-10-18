@@ -1376,7 +1376,9 @@ fn x86_console_mode() -> Option<&'static str> {
             Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 kernel::tty::input_clock::start(idle_minutes);
-                kernel::drivers::xhci::console_session_starting(replug);
+                kernel::drivers::xhci::console_session_starting(
+                    kernel::boot::console_intent::replug_or(replug),
+                );
                 Some("console")
             },
             _ => None,
