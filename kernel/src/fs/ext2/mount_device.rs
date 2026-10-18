@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub struct MountDevice {
     inner: Box<dyn BlockDevice>,
     failed: Arc<AtomicBool>,
+    read_only: bool,
     cache: Option<SectorCache>,
 }
 
@@ -27,7 +28,8 @@ impl MountDevice {
     /// memory for one is available.
     pub(super) fn new(inner: Box<dyn BlockDevice>, failed: Arc<AtomicBool>, cached: bool) -> Self {
         let cache = if cached { SectorCache::new(inner.block_size()) } else { None };
-        Self { inner, failed, cache }
+        let read_only = inner.is_read_only();
+        Self { inner, failed, read_only, cache }
     }
 
     /// The device itself, past the copy: for checks of what reached the disk.
@@ -36,6 +38,7 @@ impl MountDevice {
     }
 
     fn write(&self, start_block: u64, buf: &[u8], write: impl FnOnce() -> Result<(), BlockError>) -> Result<(), BlockError> {
+        if self.is_read_only() { return Err(BlockError::IoError); }
         if self.failed.load(Ordering::Acquire) {
             return Err(BlockError::IoError);
         }
@@ -48,6 +51,8 @@ impl MountDevice {
 }
 
 impl BlockDevice for MountDevice {
+    fn is_read_only(&self) -> bool { self.read_only }
+
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         let size = self.inner.block_size();
         if buf.len() < size {
@@ -109,5 +114,43 @@ impl BlockDevice for MountDevice {
 
     fn flush(&self) -> Result<(), BlockError> {
         self.inner.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::AtomicUsize;
+
+    struct ReadOnlyDisk(Arc<AtomicUsize>);
+    impl BlockDevice for ReadOnlyDisk {
+        fn is_read_only(&self) -> bool { true }
+        fn read_block(&self, _block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            buf.fill(0x5a);
+            Ok(())
+        }
+        fn write_block(&self, _block: u64, _buf: &[u8]) -> Result<(), BlockError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { 4 }
+        fn flush(&self) -> Result<(), BlockError> { Ok(()) }
+    }
+
+    #[test]
+    fn read_only_mount_refuses_writes_before_backend_or_cache_changes() {
+        let writes = Arc::new(AtomicUsize::new(0));
+        let disk = MountDevice::new(Box::new(ReadOnlyDisk(writes.clone())), Arc::new(AtomicBool::new(false)), true);
+        assert!(disk.is_read_only());
+        let mut bytes = [0; 512];
+        disk.read_block(0, &mut bytes).unwrap();
+        assert_eq!(disk.write_block(0, &[1; 512]), Err(BlockError::IoError));
+        assert_eq!(disk.write_blocks(0, 2, &[2; 1024]), Err(BlockError::IoError));
+        assert_eq!(writes.load(Ordering::Relaxed), 0);
+        disk.uncached().read_block(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x5a; 512]);
+        disk.read_block(0, &mut bytes).unwrap();
+        assert_eq!(bytes, [0x5a; 512]);
     }
 }

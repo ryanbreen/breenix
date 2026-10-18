@@ -680,7 +680,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
 
             let (write_offset, bytes_written) = if is_home {
-                let mut fs_guard = match crate::fs::ext2::home_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+                let mut fs_guard = match crate::fs::ext2::home_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
                 let fs = match fs_guard.as_mut() {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
@@ -719,7 +719,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 };
                 (wo, bw)
             } else {
-                let mut fs_guard = match crate::fs::ext2::root_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+                let mut fs_guard = match crate::fs::ext2::root_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
                 let fs = match fs_guard.as_mut() {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
@@ -4179,13 +4179,13 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let mut fs_guard = match ext2::home_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+        let mut fs_guard = match ext2::home_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         match fs_guard.as_mut() {
             Some(fs) => write_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),
         }
     } else {
-        let mut fs_guard = match ext2::root_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+        let mut fs_guard = match ext2::root_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         match fs_guard.as_mut() {
             Some(fs) => write_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),

@@ -165,6 +165,8 @@ mod features {
     pub const SIZE_MAX: u32 = 1 << 1;
     /// Maximum number of segments in a request is in seg_max
     pub const SEG_MAX: u32 = 1 << 2;
+    /// Device is read-only.
+    pub const RO: u32 = 1 << 5;
     /// Cache flush command support
     pub const FLUSH: u32 = 1 << 9;
 }
@@ -399,7 +401,7 @@ pub struct VirtioBlockDevice {
 impl VirtioBlockDevice {
     /// Initialize a VirtIO block device from a PCI device
     pub fn new(pci_dev: &PciDevice) -> Result<Self, &'static str> {
-        let requested = features::SIZE_MAX | features::SEG_MAX | features::FLUSH;
+        let requested = features::SIZE_MAX | features::SEG_MAX | features::RO | features::FLUSH;
         pci_dev.enable_intx();
         let (device, queue, capacity, flush_supported) =
             if pci_dev.device_id == crate::drivers::pci::VIRTIO_BLOCK_DEVICE_ID_MODERN {
@@ -535,6 +537,15 @@ impl VirtioBlockDevice {
     #[allow(dead_code)] // Part of public block device API
     pub fn capacity(&self) -> u64 {
         self.capacity
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        (match &self.device {
+            BlockTransport::Legacy(d) => d.read_device_features() & features::RO != 0,
+            BlockTransport::Modern(d) => d.device_features() & features::RO as u64 != 0,
+        }) || crate::block::hardware_disk_read_only(
+            crate::block::HardwareDisk::Virtio(self as *const Self as usize),
+        )
     }
 
     /// Allocate a DMA buffer of the given size
@@ -796,7 +807,7 @@ impl VirtioBlockDevice {
     }
 
     fn write_chunk(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Virtio(self as *const Self as usize)) { return Err("Hardware disks are read-only"); }
+        if self.is_read_only() { return Err("Read-only filesystem"); }
         if buffer.len() < SECTOR_SIZE {
             return Err("Buffer too small");
         }

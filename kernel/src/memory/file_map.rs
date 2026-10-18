@@ -1911,10 +1911,12 @@ pub(crate) fn handle_fault(
 }
 
 /// errno for a failed file write: one that could not allocate cache pages for
-/// the mapped holes it fills is ENOMEM, with the file unchanged; anything else
-/// is EIO.
+/// the mapped holes it fills is ENOMEM, with the file unchanged. A read-only
+/// mount reports EROFS; other storage failures report EIO.
 pub(crate) fn mutation_errno(error: &'static str) -> u64 {
-    if error.starts_with("Out of memory") {
+    if error == "Read-only filesystem" {
+        crate::syscall::errno::EROFS as u64
+    } else if error.starts_with("Out of memory") {
         crate::syscall::errno::ENOMEM as u64
     } else {
         crate::syscall::errno::EIO as u64

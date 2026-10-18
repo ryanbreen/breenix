@@ -43,11 +43,121 @@ fn find_inode_in_dir(dir_path: &str, target_name: &[u8]) -> Option<u64> {
     result
 }
 
+// Acceptance boots attach an ext2 copy read-only at /home, alongside the
+// writable root used by the ordinary mutation cases below.
+fn readonly_fixture() -> bool {
+    use libbreenix::{Error, errno::Errno};
+    let fd = match fs::open("/home/.breenix-readonly-fixture", O_RDONLY) {
+        Ok(fd) => fd,
+        Err(Error::Os(Errno::ENOENT)) => return true,
+        Err(_) => return false,
+    };
+    let stats = fs::fstatfs(fd);
+    let _ = close(fd);
+    let stats = match stats { Ok(stats) => stats, Err(_) => return false };
+    if stats.f_flags & 1 == 0 {
+        println!("READONLY_EXT2: FAIL fixture mount did not report ST_RDONLY");
+        return false;
+    }
+    let erofs = |result: Result<(), Error>| matches!(result, Err(Error::Os(Errno::EROFS)));
+    let close_open = |fd| { let _ = close(fd); };
+    let checks = [
+        ("create", erofs(fs::open_with_mode("/home/readonly-new", O_WRONLY | O_CREAT, 0o600).map(close_open))),
+        ("write-open", erofs(fs::open("/home/hello.txt", O_WRONLY).map(close_open))),
+        ("truncate", erofs(fs::open("/home/hello.txt", O_WRONLY | O_TRUNC).map(close_open))),
+        ("mkdir", erofs(fs::mkdir("/home/readonly-dir", 0o700))),
+        ("mkfifo", erofs(fs::mkfifo("/home/readonly-fifo", 0o600))),
+        ("unlink", erofs(fs::unlink("/home/hello.txt"))),
+    ];
+    for (name, ok) in checks {
+        if !ok { println!("READONLY_EXT2: FAIL {} did not return EROFS", name); return false; }
+    }
+    let fd = match fs::open_with_mode("/home/hello.txt", O_RDONLY | O_CREAT, 0o600) {
+        Ok(fd) => fd,
+        Err(_) => return false,
+    };
+    let mut bytes = [0; 32];
+    let readable = matches!(fs::read(fd, &mut bytes), Ok(n) if n > 0);
+    let _ = close(fd);
+    if readable { println!("READONLY_EXT2: PASS (ST_RDONLY, six EROFS operations, existing O_CREAT read)"); }
+    readable
+}
+
+// The reader must see published EOF with an allocated suffix: this observes
+// the truncate in progress, rather than timing an uncontended lookup afterwards.
+fn lookup_reader() -> Option<libbreenix::types::Pid> {
+    let (ready_read, ready_write) = libbreenix::io::pipe().ok()?;
+    match fork().ok()? {
+        ForkResult::Child => {
+            extern "C" {
+                fn setuid(uid: u32) -> i32;
+                fn geteuid() -> u32;
+            }
+            let _ = close(ready_read);
+            if unsafe { setuid(1001) } != 0 || unsafe { geteuid() } != 1001 {
+                std::process::exit(1);
+            }
+            let fd = match fs::open("/tmp/blockreuse.txt", O_RDONLY) {
+                Ok(fd) => fd,
+                Err(_) => std::process::exit(1),
+            };
+            let _ = libbreenix::io::write(ready_write, &[1]);
+            let _ = close(ready_write);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                match fs::fstat(fd) {
+                    Ok(stat) if stat.st_size == 0 && stat.st_blocks > 0 => break,
+                    Ok(stat) if stat.st_size == 0 => {
+                        println!("LOOKUP_DURING_SHRINK: NOT_EXERCISED (suffix already reclaimed)");
+                        std::process::exit(1);
+                    }
+                    Err(_) => std::process::exit(1),
+                    _ => {}
+                }
+                if std::time::Instant::now() >= deadline {
+                    println!("LOOKUP_DURING_SHRINK: FAIL (truncate never observed)");
+                    std::process::exit(1);
+                }
+                let _ = libbreenix::process::yield_now();
+            }
+            let mut timings = [0u128; 2];
+            for (index, path) in ["/proc/net/pnp", "/hello.txt"].iter().enumerate() {
+                let start = std::time::Instant::now();
+                let input = match fs::open(path, O_RDONLY) {
+                    Ok(input) => input,
+                    Err(_) => std::process::exit(1),
+                };
+                let mut bytes = [0u8; 128];
+                let result = fs::read(input, &mut bytes);
+                let _ = close(input);
+                timings[index] = start.elapsed().as_millis();
+                if !matches!(result, Ok(n) if n > 0) { std::process::exit(1); }
+            }
+            let remaining = fs::fstat(fd).map(|stat| stat.st_blocks).unwrap_or(-1);
+            let _ = close(fd);
+            println!("LOOKUP_DURING_SHRINK: uid=1001 config_ms={} lookup_ms={} remaining_blocks={}", timings[0], timings[1], remaining);
+            std::process::exit(if remaining > 0 { 0 } else { 1 });
+        }
+        ForkResult::Parent(child_pid) => {
+            let _ = close(ready_write);
+            let mut ready = [0];
+            let started = matches!(libbreenix::io::read(ready_read, &mut ready), Ok(1));
+            let _ = close(ready_read);
+            if started { Some(child_pid) } else {
+                let mut status = 0;
+                let _ = waitpid(child_pid.raw() as i32, &mut status, 0);
+                None
+            }
+        }
+    }
+}
+
 fn main() {
     println!("=== Filesystem Block Allocation Regression Test ===");
     println!("BLOCK_ALLOC_TEST_START");
 
     let mut tests_failed = 0;
+    if !readonly_fixture() { tests_failed += 1; }
 
     // ============================================
     // Test 1: Truncate properly frees blocks
@@ -238,6 +348,7 @@ fn main() {
                 let after_write = fs::fstatfs(fd);
                 let _ = close(fd);
 
+                let reader = lookup_reader();
                 match fs::open("/tmp/blockreuse.txt\0", O_WRONLY | O_TRUNC) {
                     Ok(fd2) => {
                         let after_truncate = fs::fstatfs(fd2);
@@ -311,6 +422,13 @@ fn main() {
                         println!("FAILED: truncate open failed");
                         tests_failed += 1;
                     }
+                }
+                let mut status = 0;
+                if reader.is_none_or(|pid| waitpid(pid.raw() as i32, &mut status, 0).is_err())
+                    || !wifexited(status) || wexitstatus(status) != 0
+                {
+                    println!("FAILED: non-root lookup did not complete during shrink");
+                    tests_failed += 1;
                 }
             }
             Err(_) => {

@@ -70,11 +70,31 @@ pub struct Ext2Fs {
     /// The last inode the cache service reached with budget left; the next
     /// pass starts after it.
     eviction_cursor: u32,
-    shrink_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
+    shrink_reclaims: alloc::collections::BTreeMap<u32, PendingShrink>,
+}
+
+struct PendingShrink {
+    progress: reclaim::Reclaim,
+    owner: alloc::sync::Weak<()>,
+    failed: bool,
+}
+
+/// A live truncate caller owns its suffix work across mount-guard releases.
+/// Dropping the ticket makes unfinished work available to the finalizer.
+pub struct ShrinkTicket {
+    inode: u32,
+    mount: live_inode::MountPin,
+    owner: alloc::sync::Arc<()>,
+    // Drop the owner before allowing a pending kill to abandon this stack.
+    _custody: crate::task::thread::KillCustody,
+}
+
+impl Drop for ShrinkTicket {
+    fn drop(&mut self) { writeback::request(); }
 }
 
 /// Bitmap transitions suffix/orphan reclamation performs per write-guard hold.
-const RECLAIM_BUDGET: usize = 128;
+const RECLAIM_BUDGET: usize = 8;
 
 /// What a finalizer pass left behind.
 pub(super) enum Finalize {
@@ -151,6 +171,12 @@ impl Ext2Fs {
         })
     }
 
+    pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
+
+    pub fn ensure_writable(&self) -> Result<(), &'static str> {
+        if self.is_read_only() { Err("Read-only filesystem") } else { Ok(()) }
+    }
+
     /// Stop writing after a failure left the tree inconsistent: record the
     /// error in the superblock, then refuse every later write. Reads continue.
     fn fail_writes(&mut self) {
@@ -207,6 +233,7 @@ impl Ext2Fs {
 
     /// Service mapped data and failed shrinks before the orphan commit window.
     fn finalize_writeback(&mut self) -> Finalize {
+        if self.is_read_only() { return Finalize::Idle; }
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut after = None;
@@ -224,7 +251,7 @@ impl Ext2Fs {
         }
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
         let evictions = self.live_inodes.evictions(self.eviction_cursor);
-        let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
+        let mut write_budget = RECLAIM_BUDGET;
         for object in &evictions {
             if write_budget != 0 && cache_budget != 0 {
                 self.eviction_cursor = object.key.inode;
@@ -249,9 +276,10 @@ impl Ext2Fs {
         outcome
     }
 
-    /// Orphan passes stage at most 128 blocks in tails of at most 64 blocks,
-    /// visit at most 32 inodes, and release at most 128 bitmap allocations.
+    /// Stage and release a bounded allocation batch, retaining quarantine
+    /// and the detachment barrier across guard releases.
     fn finalize_pending_orphans(&mut self) -> Finalize {
+        if self.is_read_only() { return Finalize::Idle; }
         let mut budget = RECLAIM_BUDGET;
         let objects = self.live_inodes.pending(self.finalization_cursor);
         let mut outcome = self.finalize_orphans(&objects, &mut budget);
@@ -336,7 +364,7 @@ impl Ext2Fs {
         outcome
     }
 
-    /// Retry failed shrinks without preventing work on other inodes.
+    /// Retry abandoned or failed shrinks without taking work from a live caller.
     fn finalize_shrinks(&mut self, budget: &mut usize) -> Finalize {
         let inodes: Vec<u32> = self.shrink_reclaims.keys().copied().collect();
         let mut outcome = Finalize::Idle;
@@ -344,11 +372,16 @@ impl Ext2Fs {
             if *budget == 0 {
                 return outcome.merge(Finalize::More);
             }
-            let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
-            match progress.finish(self, ino, budget) {
+            if self.shrink_reclaims[&ino].owner.strong_count() != 0 {
+                outcome = outcome.merge(Finalize::More);
+                continue;
+            }
+            let mut pending = self.shrink_reclaims.remove(&ino).expect("queued shrink");
+            match pending.progress.finish(self, ino, budget) {
                 Ok(true) => {}
                 result => {
-                    self.shrink_reclaims.insert(ino, progress);
+                    pending.failed |= result.is_err();
+                    self.shrink_reclaims.insert(ino, pending);
                     if matches!(result, Ok(false)) {
                         return outcome.merge(Finalize::More);
                     }
@@ -735,6 +768,7 @@ impl Ext2Fs {
         offset: u64,
         bytes: &[u8],
     ) -> Result<usize, &'static str> {
+        self.ensure_writable()?;
         self.write_file_range_disk(ino, offset, bytes, true, true)
     }
 
@@ -765,6 +799,7 @@ impl Ext2Fs {
         data: &[u8],
         unprivileged: bool,
     ) -> Result<usize, &'static str> {
+        self.ensure_writable()?;
         // Private mappings: give bound holes cache frames and reserve poison
         // room before the disk changes; afterwards only apply what ext2
         // published, which allocates nothing.
@@ -919,6 +954,7 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        self.ensure_writable()?;
         if let Some(object) = self.live_inodes.get(inode_num) {
             object.map.note_disk_write(self.durable_epoch());
             fifo_times::write_metadata(&object.ctime_pending, || {
@@ -959,6 +995,7 @@ impl Ext2Fs {
         uid: u32,
         gid: u32,
     ) -> Result<u32, &'static str> {
+        self.ensure_writable()?;
         // Validate name
         if name.is_empty() || name.len() > 255 {
             return Err("Invalid filename length");
@@ -1031,17 +1068,18 @@ impl Ext2Fs {
         }
     }
 
-    /// Resize a regular file, preserving its prefix and zero-filling extension.
-    pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
-        self.resize_file_as(inode_num, length, false)
-    }
-
-    pub fn resize_file_as(
+    /// Publish the new size and queue suffix reclamation. The caller must
+    /// complete the returned ShrinkTicket before reporting success.
+    pub fn begin_resize_file_as(
         &mut self,
         inode_num: u32,
         length: u64,
         unprivileged: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<ShrinkTicket>, &'static str> {
+        self.ensure_writable()?;
+        let custody = crate::task::thread::KillCustody::try_enter()
+            .expect("ext2 resize requires its write guard custody");
+        let owner = alloc::sync::Arc::new(());
         let mapped = self.live_inodes.get(inode_num);
         let before = mapped
             .as_ref()
@@ -1049,7 +1087,17 @@ impl Ext2Fs {
         if let (Some(object), Some(before)) = (&mapped, before) {
             object.map.prepare_resize(before, length)?;
         }
-        let result = self.resize_file_disk(inode_num, length, unprivileged);
+        let result = self.resize_file_disk(inode_num, length, unprivileged).map(|progress| {
+            progress.map(|progress| {
+                let ticket = ShrinkTicket { inode: inode_num, mount: self.mount_pin, owner, _custody: custody };
+                self.shrink_reclaims.insert(inode_num, PendingShrink {
+                    progress,
+                    owner: alloc::sync::Arc::downgrade(&ticket.owner),
+                    failed: false,
+                });
+                ticket
+            })
+        });
         if let (Some(object), Some(before)) = (mapped, before) {
             // A shrink publishes its EOF before it can fail, so the published
             // size is followed on failure too.
@@ -1069,7 +1117,7 @@ impl Ext2Fs {
         inode_num: u32,
         length: u64,
         unprivileged: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<reclaim::Reclaim>, &'static str> {
         self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
@@ -1099,33 +1147,19 @@ impl Ext2Fs {
         self.write_inode(inode_num, &inode)?;
         self.live_inodes.publish_size(inode_num, length);
         if shrinking {
-            let mut progress = reclaim::Reclaim::shrink(
+            let progress = reclaim::Reclaim::shrink(
                 inode,
                 length.div_ceil(self.superblock.block_size() as u64),
             );
-            // Success is synchronous: stat and the allocator observe the completed
-            // shrink when this syscall returns. Only I/O failure queues custody.
-            let mut budget = usize::MAX;
-            match progress.finish(self, inode_num, &mut budget) {
-                Ok(true) => {}
-                _ => {
-                    self.shrink_reclaims.insert(inode_num, progress);
-                    writeback::request();
-                    return Err("Failed to reclaim resized suffix");
-                }
-            }
+            return Ok(Some(progress));
         }
-        Ok(())
-    }
-
-    /// Truncate a file to zero length, reclaiming data and indirect blocks.
-    pub fn truncate_file(&mut self, inode_num: u32) -> Result<(), &'static str> {
-        self.resize_file(inode_num, 0)
+        Ok(None)
     }
 
     /// Relatime: update after modification/change or once a day. Reload under
     /// the filesystem write lock rather than overwriting a reader's stale inode.
     pub fn update_atime(&mut self, inode_num: u32) -> Result<(), &'static str> {
+        if self.is_read_only() { return Ok(()); }
         let mut inode = self.read_inode(inode_num)?;
         let now = crate::time::current_unix_time() as u32;
         if inode.needs_atime_update() {
@@ -1177,6 +1211,7 @@ impl Ext2Fs {
         parent_inode_num: u32,
         filename: &str,
     ) -> Result<(), &'static str> {
+        self.ensure_writable()?;
         let parent_inode = self.read_inode(parent_inode_num)?;
 
         if !parent_inode.is_dir() {
@@ -1306,6 +1341,7 @@ impl Ext2Fs {
         uid: u32,
         gid: u32,
     ) -> Result<u32, &'static str> {
+        self.ensure_writable()?;
         // Validate name
         if dirname.is_empty() || dirname.len() > 255 {
             return Err("Invalid directory name length");
@@ -1434,6 +1470,7 @@ impl Ext2Fs {
         parent_inode_num: u32,
         dir_name: &str,
     ) -> Result<(), &'static str> {
+        self.ensure_writable()?;
         let parent_inode = self.read_inode(parent_inode_num)?;
         if !parent_inode.is_dir() {
             return Err("Parent is not a directory");
@@ -1581,6 +1618,7 @@ impl Ext2Fs {
         new_parent_inode_num: u32,
         new_filename: &str,
     ) -> Result<(), &'static str> {
+        self.ensure_writable()?;
         let source_inode = self.read_inode(source_inode_num)?;
         if source_inode.i_links_count == 0 {
             return Err("Source not found");
@@ -1730,6 +1768,7 @@ impl Ext2Fs {
         uid: u32,
         gid: u32,
     ) -> Result<(), &'static str> {
+        self.ensure_writable()?;
         // Validate the link name
         if link_name.is_empty() || link_name.len() > 255 {
             return Err("Invalid filename length");
@@ -2538,6 +2577,54 @@ pub struct Ext2WriteGuard {
     _custody: crate::task::thread::KillCustody,
 }
 
+impl Ext2WriteGuard {
+    /// Finish this syscall's suffix, keeping errors with their producer.
+    /// Readers may run between batches; other mutators wait for the ticket.
+    pub fn finish_shrink(mut self, ticket: ShrinkTicket) -> Result<Self, &'static str> {
+        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        loop {
+            let fs = self.as_mut().ok_or("Missing ext2 mount")?;
+            ticket.mount.verify(fs)?;
+            let mut pending = fs.shrink_reclaims.remove(&ticket.inode).ok_or("Missing ext2 shrink")?;
+            assert!(pending.owner.ptr_eq(&alloc::sync::Arc::downgrade(&ticket.owner)));
+            let mut budget = RECLAIM_BUDGET;
+            let result = pending.progress.finish(fs, ticket.inode, &mut budget);
+            if matches!(result, Ok(true)) { return Ok(self); }
+            pending.failed |= result.is_err();
+            fs.shrink_reclaims.insert(ticket.inode, pending);
+            if result.is_err() { return Err("Failed to reclaim resized suffix"); }
+            drop(self);
+            writeback::pause(1_000_000);
+            self = fs_write_raw(home)?;
+        }
+    }
+
+    /// Preserve writer serialization while allowing unrelated readers through.
+    /// A killed caller's healthy work finishes in the service before a new
+    /// mutator enters. Failed suffixes retain their per-inode retry policy.
+    fn wait_for_shrink_writer(mut self) -> Result<Self, &'static str> {
+        let _wait_custody = crate::task::thread::KillCustody::try_enter()
+            .expect("ext2 writer wait requires its write guard custody");
+        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        let pin = self.as_ref().map(|fs| fs.mount_pin);
+        loop {
+            if let Some(fs) = self.as_ref() {
+                if let Some(pin) = pin { pin.verify(fs)?; }
+                if !fs.shrink_reclaims.values().any(|pending| pending.owner.strong_count() != 0 || !pending.failed) {
+                    return Ok(self);
+                }
+            } else if pin.is_none() {
+                return Ok(self);
+            } else {
+                return Err("ext2 mount changed during shrink wait");
+            }
+            drop(self);
+            writeback::pause(1_000_000);
+            self = fs_write_raw(home)?;
+        }
+    }
+}
+
 impl core::ops::Deref for Ext2WriteGuard {
     type Target = Option<Ext2Fs>;
     fn deref(&self) -> &Option<Ext2Fs> {
@@ -2800,9 +2887,11 @@ fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
 
 fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     let guard = fs_write_raw(home)?;
+    if let Some(fs) = guard.as_ref() { fs.ensure_writable()?; }
+    let guard = guard.wait_for_shrink_writer()?;
     let pressure = guard.as_ref().is_some_and(|fs| {
         let stats = fs.statfs();
-        stats.free_blocks <= (stats.blocks / 16).max(RECLAIM_BUDGET as u64)
+        stats.free_blocks <= (stats.blocks / 16).max(128)
             || stats.free_inodes <= 32
     });
     if pressure {
@@ -2810,11 +2899,11 @@ fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
         // Last-observer reclamation must not turn rm followed by allocation
         // into ENOSPC solely because the background service has not run yet.
         if let Ok(guard) = accounting_fs_write(home) {
-            return Ok(guard);
+            return guard.wait_for_shrink_writer();
         }
         // Failed I/O keeps allocations quarantined; normal operations report
         // their own errors rather than exposing those allocations for reuse.
-        fs_write_raw(home)
+        fs_write_raw(home)?.wait_for_shrink_writer()
     } else {
         Ok(guard)
     }
@@ -2867,6 +2956,14 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
             }
         }
     }
+}
+
+/// Persist relatime without making a reader finish unrelated suffix work.
+/// This changes only the inode's timestamp under the same exclusive guard;
+/// reclaim reloads the inode before each detachment batch.
+pub(crate) fn update_read_atime(inode: u32, home: bool) -> Result<(), &'static str> {
+    let mut guard = fs_write_raw(home)?;
+    guard.as_mut().ok_or("Missing ext2 mount")?.update_atime(inode)
 }
 
 /// Check if the root filesystem is mounted
