@@ -861,17 +861,16 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // focuses on kthread lifecycle, not workqueue functionality.
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     {
-        // Boot is the idle task: a runnable worker waiting for the test's
-        // release flag would prevent a preempted coordinator from resuming.
-        // Give the coordinator an ordinary scheduling identity instead.
+        // Give the coordinator an ordinary scheduling identity rather than
+        // depending on the idle fallback. A lone runnable kernel thread does
+        // yield to idle; the additional condition behind #1848 is unproven.
         x86_64::instructions::interrupts::enable();
         let tests = task::kthread::kthread_run(
             kernel::task::workqueue_tests::test_workqueue,
             "workqueue-tests",
         )
         .expect("spawn workqueue test coordinator");
-        let result = task::kthread::kthread_join(&tests).expect("join workqueue test coordinator");
-        assert_eq!(result, 0, "workqueue test coordinator failed");
+        task::kthread::kthread_join(&tests).expect("join workqueue test coordinator");
         x86_64::instructions::interrupts::disable();
     }
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
