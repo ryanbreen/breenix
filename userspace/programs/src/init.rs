@@ -95,7 +95,6 @@ fn run_init_group_refusal_probe(phase: &str) {
 }
 
 fn main() {
-    std::env::set_var("TERM", "breenix");
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
@@ -252,7 +251,8 @@ fn run_console_mode() -> ! {
             let tty = format!("tty{}\0", index + 1);
             let argv = [b"getty\0".as_ptr(), tty.as_ptr(), core::ptr::null()];
             // tty1 retains getty's default /dev/console path.
-            print!("[init] getty on tty{}\n", index + 1);
+            if index == 0 { print!("[init] getty on the console\n"); }
+            else { print!("[init] getty on tty{}\n", index + 1); }
             let result = if index == 0 { spawn(b"/bin/getty\0") }
                 else { spawnv(b"/bin/getty\0", argv.as_ptr()) };
             match result {
@@ -272,7 +272,8 @@ fn run_console_mode() -> ! {
                     if let Some(index) = children.iter().position(|p| *p == Some(pid.raw() as i32)) {
                         children[index] = None;
                         retry_at[index] = libbreenix::time::now_monotonic().expect("console clock").as_nanos() + 1_000_000_000;
-                        print!("[init] tty{} session ended\n", index + 1);
+                        if index == 0 { print!("[init] console session ended; restarting getty\n"); }
+                        else { print!("[init] tty{} session ended\n", index + 1); }
                     }
                 }
                 _ => break,
