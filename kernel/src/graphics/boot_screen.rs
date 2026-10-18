@@ -235,6 +235,12 @@ impl Layout {
     fn status_y(&self) -> i32 {
         self.height - 72
     }
+    /// The bottom edge of the lower of the two stage columns.
+    fn stages_bottom(&self) -> i32 {
+        let left = self.stage_pos(GROUPS[2].1 + GROUPS[2].2 - 1).1;
+        let right = self.stage_pos(STAGE_COUNT - 1).1;
+        left.max(right) + LINE
+    }
 
     /// Top-left of stage `index`'s row. Groups 0-2 fill the left column, 3-5 the right.
     fn stage_pos(&self, index: usize) -> (i32, i32) {
@@ -469,6 +475,34 @@ fn clear_line(canvas: &mut impl Canvas, layout: &Layout, y: i32) {
         },
         BG,
     );
+}
+
+/// The part of the screen the boot screen leaves free while it is up: the band
+/// between the stage rows and the status line, across the content width. A
+/// kernel panel that shares the screen with the boot screen (the boot-test
+/// runner) draws only there, and only while this returns `Some`.
+///
+/// Call with the framebuffer lock held, so the answer stays true while drawing:
+/// `hand_over` and the diagnostics screen take the screen under that lock.
+pub fn runner_area(canvas: &impl Canvas) -> Option<Rect> {
+    if !ACTIVE.load(Ordering::Acquire)
+        || HANDED_OVER.load(Ordering::Acquire)
+        || DIAG_CLAIMED.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    let layout = Layout::of(canvas);
+    let top = layout.stages_bottom() + 8;
+    let bottom = layout.status_y() - 8;
+    if bottom <= top {
+        return None;
+    }
+    Some(Rect {
+        x: layout.left,
+        y: top,
+        width: (layout.col_width * 2) as u32,
+        height: (bottom - top) as u32,
+    })
 }
 
 /// Userspace has taken the display: stop drawing the boot screen (or log
