@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Focused ELF fixture checks for libc archive cleanup and the symbol audit."""
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -77,13 +78,32 @@ _ZN17compiler_builtins4math9libm_math7table: .byte 0
             self.assertEqual(audit.main(), 1)
 
     def test_cleanup_removes_code_and_data_preserves_runtime(self):
+        original = self.archive.read_bytes()
+        os.utime(self.archive, ns=(1, 1))
         cleaner.clean(self.archive, TOOLS)
+        self.assertGreater(self.archive.stat().st_mtime_ns, 1)
         found = audit.definitions('aarch64')
         self.assertIn('__runtime_helper', found)
         self.assertNotIn('sqrt', found)
         self.assertFalse(any(cleaner.foreign(name) for name in found))
+        timestamp = self.archive.stat().st_mtime_ns
         cleaner.clean(self.archive, TOOLS)
+        self.assertEqual(self.archive.stat().st_mtime_ns, timestamp)
         self.assertEqual(found, audit.definitions('aarch64'))
+        # A fresh Cargo invocation republishes its uncleaned staticlib. Cleaning
+        # it back to identical bytes must retain the earlier cleaned timestamp.
+        self.archive.write_bytes(original)
+        cleaner.clean(self.archive, TOOLS)
+        self.assertEqual(self.archive.stat().st_mtime_ns, timestamp)
+        self.assertEqual(found, audit.definitions('aarch64'))
+        src = self.dir / 'changed.s'
+        src.write_text('.text\n.global additional_runtime\nadditional_runtime: ret\n')
+        obj = self.dir / 'changed.o'
+        subprocess.run([str(TOOLS / 'clang'), '--target=aarch64-unknown-linux-gnu', '-c', str(src), '-o', str(obj)], check=True)
+        subprocess.run([str(TOOLS / 'llvm-ar'), 'r', str(self.archive), str(obj)], check=True)
+        cleaner.clean(self.archive, TOOLS)
+        self.assertGreater(self.archive.stat().st_mtime_ns, timestamp)
+        self.assertIn('additional_runtime', audit.definitions('aarch64'))
 
 if __name__ == '__main__':
     unittest.main()

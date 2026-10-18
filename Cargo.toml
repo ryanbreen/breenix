@@ -4,6 +4,11 @@ name = "breenix"
 version = "0.1.0"
 edition = "2021"
 
+# The x86 kernel is a target artifact in build-dependencies. Cargo otherwise
+# gives it the unoptimized build-dependency profile even for --release.
+[profile.release.package.kernel]
+opt-level = 3
+
 [features]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]

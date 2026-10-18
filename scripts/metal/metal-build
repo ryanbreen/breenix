@@ -5,7 +5,7 @@
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
-(gate-artifacts.py --metal, content-keyed in the container's own cache), then the production kernel and its UEFI
+(gate-artifacts.py --metal, exact artifacts over leased incremental targets in the container's cache), then the production kernel and its UEFI
 image, and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
 commit's kernel is delivered the same way), all under one lease of the container's metal-build slots. The slot and
 artifact helpers are the deployed tools' copies beside this file, not the commit's, so every commit builds the same

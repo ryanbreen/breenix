@@ -11,6 +11,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+PR #1880 enables x86 release kernel optimization; its [evidence record](../efforts/1868-x86-release-evidence.md)
+distinguishes diagnostic results from interrupted acceptance. PR #1881 bypasses
+the ext2 lock only for root entering virtual mounts; its [scope record](../efforts/1863-dns-config-scope.md)
+keeps #1863 open and tracks the remaining writer-lock cause in #1882.
+
 The x86 boot continuation and synthetic kernel Rust entries preserve SysV stack
 alignment in PR #1841; [the entry evidence](green-program/process/1841-x86-entry-alignment.md)
 records the conditional idle probe and the separate completion-accounting failure (#1854).

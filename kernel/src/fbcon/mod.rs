@@ -57,8 +57,8 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// A session other than init's has the console as its controlling terminal.
 static SESSION: AtomicBool = AtomicBool::new(false);
-/// Only warnings and errors are drawn. The render thread follows `SESSION`
-/// here, saying so on the screen as it changes.
+/// Last session state recorded by the render thread. Notices go to serial; filtering reads
+/// `SESSION` directly so it takes effect before getty can print its prompt.
 static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// A process has the display.
@@ -144,7 +144,7 @@ impl Write for Line {
 /// Put a kernel log record on the console, as its own line.
 pub fn log_record(level: log::Level, args: &fmt::Arguments) {
     if DISPLAY_TAKEN.load(Ordering::Acquire)
-        || (QUIET.load(Ordering::Acquire) && level > log::Level::Warn)
+        || (SESSION.load(Ordering::Acquire) && level > log::Level::Warn)
     {
         return;
     }
