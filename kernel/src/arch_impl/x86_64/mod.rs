@@ -30,6 +30,7 @@ pub mod msi;
 mod msi_message;
 pub mod nmi_report;
 pub mod paging;
+pub mod pat;
 pub mod platform;
 pub mod percpu;
 pub mod pic;

@@ -64,6 +64,8 @@ pub mod time;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
+#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+pub mod fbcon;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;

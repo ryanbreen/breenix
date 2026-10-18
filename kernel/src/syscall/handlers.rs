@@ -3518,10 +3518,9 @@ pub fn sys_take_over_display() -> SyscallResult {
         #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
         crate::graphics::render_task::set_display_taken();
 
-        // The production x86_64 kernel has no render thread: its log sink stops
-        // drawing log records on the framebuffer instead.
+        // The x86_64 screen console stops drawing.
         #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::logger::take_display();
+        crate::fbcon::take_display();
     }
     SyscallResult::Ok(0)
 }
