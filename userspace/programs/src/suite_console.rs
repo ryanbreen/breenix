@@ -933,16 +933,26 @@ fn type_line(text: &str) -> Verdict {
     libbreenix::suite::hostkeys(&keys.join(",")).map(|_| ())
 }
 
+// The terminal's last three non-blank rows. Getty echoes the login name and
+// login reports its own failure there, so a failed login's verdict carries them.
+fn screen_ends(number: usize) -> String {
+    vt_text(number).map(|text| {
+        let rows: Vec<_> = text.lines().map(str::trim_end).filter(|row| !row.is_empty()).collect();
+        rows[rows.len().saturating_sub(3)..].join(" | ")
+    }).unwrap_or_else(|error| format!("unreadable: {error}"))
+}
+
 fn login_vt(number: usize, password: &str) -> Verdict<String> {
     let began = libbreenix::suite::case_ms_left();
     wait_vt(number, "Breenix login: ")?;
     activate(number)?;
     type_line("root")?;
-    wait_vt(number, "Password: ")?;
+    wait_vt(number, "Password: ").map_err(|e| format!("{e}; screen ends: {}", screen_ends(number)))?;
     let password_at = libbreenix::suite::case_ms_left();
     type_line(password)?;
-    let text = wait_vt(number, &format!("VTLOGIN tty{number} "))
-        .map_err(|e| format!("{e}; login began with {began}ms, password with {password_at}ms left"))?;
+    let text = wait_vt(number, &format!("VTLOGIN tty{number} ")).map_err(|e| {
+        format!("{e}; login began with {began}ms, password with {password_at}ms left; screen ends: {}", screen_ends(number))
+    })?;
     require(!text.contains(password), "password appeared on the screen")?;
     Ok(text.lines().find(|line| line.starts_with("VTLOGIN ")).ok_or("missing login proof")?.trim().into())
 }
