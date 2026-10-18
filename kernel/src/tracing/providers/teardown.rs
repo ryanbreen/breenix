@@ -225,13 +225,17 @@ pub(crate) struct KickSlot {
 
 /// Delivered timer ticks between a kick's publication and its observation,
 /// on the observing CPU and summed over the CPUs, the CPUs that were masked
-/// across the window (`masked_across_window`), and the publishing CPU. Only
-/// testing kernels count the ticks and the masked CPUs.
+/// across the window (`masked_across_window`), the longest time one CPU was
+/// held off a due tick inside it and that CPU (`held_across_window`), and the
+/// publishing CPU. Only testing kernels count the ticks, the masked CPUs and
+/// the held time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KickWindow {
     pub(crate) observer_ticks: u64,
     pub(crate) all_ticks: u64,
     pub(crate) masked_cpus: u64,
+    pub(crate) held: u64,
+    pub(crate) held_cpu: u64,
     pub(crate) sender_cpu: u64,
 }
 
@@ -262,6 +266,33 @@ fn masked_across_window(at: u64) -> u64 {
     {
         let _ = at;
         0
+    }
+}
+
+/// The longest time, in counter ticks, that one CPU spent inside the window
+/// opened at `at` and closing at `now` with interrupts enabled and its timer
+/// tick due but not taken, and that CPU. The guest cannot hold an enabled
+/// CPU off a due tick, so that time is the host's
+/// (`irq_mask_account::held_within`). `(0, 0)` where `MASKED_ACCOUNTING` is
+/// false.
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+#[inline(always)]
+fn held_across_window(at: u64, now: u64) -> (u64, u64) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        (0..crate::task::scheduler::MAX_CPUS).fold((0, 0), |(held, held_cpu), cpu| {
+            let cpu_held = crate::arch_impl::aarch64::irq_mask_account::held_within(cpu, at, now);
+            if cpu_held > held {
+                (cpu_held, cpu as u64)
+            } else {
+                (held, held_cpu)
+            }
+        })
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = (at, now);
+        (0, 0)
     }
 }
 
@@ -460,8 +491,10 @@ impl KickSlot {
                 );
                 #[cfg(any(feature = "boot_tests", feature = "testing"))]
                 let masked_cpus = masked_across_window(at);
+                #[cfg(any(feature = "boot_tests", feature = "testing"))]
+                let (held, held_cpu) = held_across_window(at, crate::tracing::trace_timestamp());
                 #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
-                let (observer_ticks, all_ticks, masked_cpus) = (0, 0, 0);
+                let (observer_ticks, all_ticks, masked_cpus, held, held_cpu) = (0, 0, 0, 0, 0);
                 (
                     KickObservation {
                         generation: first_state >> 2,
@@ -472,6 +505,8 @@ impl KickSlot {
                         observer_ticks,
                         all_ticks,
                         masked_cpus,
+                        held,
+                        held_cpu,
                         sender_cpu,
                     },
                 )
@@ -1097,6 +1132,8 @@ struct BootTestPidCountSlot {
     kick_observed_ticks: AtomicU64,
     kick_observed_all_ticks: AtomicU64,
     kick_observed_masked_cpus: AtomicU64,
+    kick_observed_held: AtomicU64,
+    kick_observed_held_cpu: AtomicU64,
     kick_observed_cpu: AtomicU64,
     kick_sender_cpu: AtomicU64,
     masked_frames_walked: AtomicU64,
@@ -1123,6 +1160,8 @@ impl BootTestPidCountSlot {
             kick_observed_ticks: AtomicU64::new(0),
             kick_observed_all_ticks: AtomicU64::new(0),
             kick_observed_masked_cpus: AtomicU64::new(0),
+            kick_observed_held: AtomicU64::new(0),
+            kick_observed_held_cpu: AtomicU64::new(0),
             kick_observed_cpu: AtomicU64::new(0),
             kick_sender_cpu: AtomicU64::new(0),
             masked_frames_walked: AtomicU64::new(0),
@@ -1210,6 +1249,10 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                     slot.kick_observed_at.store(at, Ordering::Relaxed);
                     slot.kick_observed_masked_cpus
                         .store(window.masked_cpus, Ordering::Relaxed);
+                    slot.kick_observed_held
+                        .store(window.held, Ordering::Relaxed);
+                    slot.kick_observed_held_cpu
+                        .store(window.held_cpu, Ordering::Relaxed);
                     slot.kick_observed_ticks
                         .store(window.observer_ticks, Ordering::Relaxed);
                     slot.kick_observed_all_ticks
@@ -1266,6 +1309,8 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.kick_observed_ticks.store(0, Ordering::Relaxed);
         slot.kick_observed_all_ticks.store(0, Ordering::Relaxed);
         slot.kick_observed_masked_cpus.store(0, Ordering::Relaxed);
+        slot.kick_observed_held.store(0, Ordering::Relaxed);
+        slot.kick_observed_held_cpu.store(0, Ordering::Relaxed);
         slot.kick_observed_cpu.store(0, Ordering::Relaxed);
         slot.kick_sender_cpu.store(0, Ordering::Relaxed);
         slot.masked_frames_walked.store(0, Ordering::Relaxed);
@@ -1487,6 +1532,8 @@ pub struct TeardownPidEvidence {
     pub kick_observed_ticks: u64,
     pub kick_observed_all_ticks: u64,
     pub kick_observed_masked_cpus: u64,
+    pub kick_observed_held: u64,
+    pub kick_observed_held_cpu: u64,
     pub kick_observed_cpu: u64,
     pub kick_sender_cpu: u64,
     pub masked_frames_walked: u64,
@@ -1520,6 +1567,8 @@ pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
         kick_observed_ticks: slot.kick_observed_ticks.load(Ordering::Acquire),
         kick_observed_all_ticks: slot.kick_observed_all_ticks.load(Ordering::Acquire),
         kick_observed_masked_cpus: slot.kick_observed_masked_cpus.load(Ordering::Acquire),
+        kick_observed_held: slot.kick_observed_held.load(Ordering::Acquire),
+        kick_observed_held_cpu: slot.kick_observed_held_cpu.load(Ordering::Acquire),
         kick_observed_cpu: slot.kick_observed_cpu.load(Ordering::Acquire),
         kick_sender_cpu: slot.kick_sender_cpu.load(Ordering::Acquire),
         masked_frames_walked: slot.masked_frames_walked.load(Ordering::Acquire),

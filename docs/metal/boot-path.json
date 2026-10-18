@@ -452,8 +452,7 @@
     {
       "id": "xhci",
       "title": "USB controller by MSI",
-      "summary": "Not yet measured: the producing lane has not landed.",
-      "stub": true,
+      "summary": "Clean-room x86 controller handoff, reset, repeated MSI completions across event-ring wraps, and root-port descriptor enumeration.",
       "bootShapes": [
         "ramdisk",
         "install",
@@ -476,7 +475,7 @@
           },
           {
             "name": "Command completed by MSI",
-            "marker": "[xhci] no-op completed by MSI"
+            "marker": "[xhci] no-op completed by MSI: "
           },
           {
             "name": "Port census",
@@ -515,8 +514,7 @@
     {
       "id": "console-login",
       "title": "Login at the machine's own console",
-      "summary": "Not yet measured: the producing lane has not landed.",
-      "stub": true,
+      "summary": "SOL development exercises authentication and console reacquisition; local keyboard and screen proof remain unmeasured.",
       "bootShapes": [
         "ramdisk",
         "install",
@@ -539,7 +537,8 @@
           {
             "name": "Logged-in computation answered",
             "marker": "metal-login-ok 42",
-            "match": "line"
+            "match": "line",
+            "input": "keyboard"
           },
           {
             "name": "The session is on the screen",
@@ -548,9 +547,16 @@
           {
             "name": "The answer is on the screen",
             "marker": "fbcon row: metal-login-ok 42"
+          },
+          {
+            "name": "Getty reacquired the console after logout",
+            "marker": "[getty] console acquired",
+            "match": "line"
           }
         ]
-      }
+      },
+      "waitingFor": "Keyboard typing through the injector (ruling M2) and screen readback from the framebuffer lane.",
+      "stub": true
     }
   ],
   "firsts": [
