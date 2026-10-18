@@ -84,8 +84,8 @@ impl Reclaim {
     }
 
     /// The shortened inode is already on disk. Keep its prefix and its inode
-    /// allocation. The truncating syscall completes it inline; failed I/O leaves
-    /// custody here and prevents this inode's data writes or resizing.
+    /// allocation. The truncating syscall drains it across bounded guard holds;
+    /// failed I/O retains custody and prevents data writes or resizing.
     pub fn shrink(inode: Ext2Inode, keep: u64) -> Self {
         Self {
             inode,
@@ -177,7 +177,7 @@ impl Reclaim {
         let key = device_key(fs.device.as_ref());
         while !self.tree_done {
             if *budget == 0 { return Ok(false); }
-            let mut staging_budget = BATCH_BLOCKS;
+            let mut staging_budget = BATCH_BLOCKS.min(*budget);
             self.stage(fs, ino, &mut staging_budget)?;
             let Self { batch, write_attempted, .. } = self;
             let batch = batch.as_mut().expect("reclamation batch staged");
