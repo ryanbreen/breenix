@@ -179,7 +179,7 @@ pub fn port_power_off(old: u32) -> u32 {
 }
 
 /// A standard device request as a Setup Stage parameter (USB 2.0 9.3, 9.4).
-const fn setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
+pub(super) const fn setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
     request_type as u64
         | (request as u64) << 8
         | (value as u64) << 16

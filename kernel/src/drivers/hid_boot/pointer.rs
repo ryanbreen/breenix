@@ -50,7 +50,8 @@ struct Field {
 struct Globals {
     page: u16,
     minimum: i32,
-    maximum: i32,
+    maximum: u32,
+    maximum_bytes: usize,
     size: u8,
     count: u16,
     id: u8,
@@ -109,11 +110,8 @@ impl Layout {
                 }
                 (1, 1) => globals.minimum = if bytes == 0 { 0 } else { signed(value, bytes) },
                 (1, 2) => {
-                    globals.maximum = if globals.minimum < 0 && bytes != 0 {
-                        signed(value, bytes)
-                    } else {
-                        i32::try_from(value).map_err(|_| "HID logical maximum too large")?
-                    }
+                    globals.maximum = value;
+                    globals.maximum_bytes = bytes;
                 }
                 (1, 7) => {
                     globals.size = u8::try_from(value).map_err(|_| "HID report size too large")?;
@@ -209,7 +207,14 @@ impl Layout {
                                         page,
                                         usage,
                                         minimum: globals.minimum,
-                                        maximum: globals.maximum,
+                                        maximum: if globals.minimum < 0
+                                            && globals.maximum_bytes != 0
+                                        {
+                                            signed(globals.maximum, globals.maximum_bytes)
+                                        } else {
+                                            i32::try_from(globals.maximum)
+                                                .map_err(|_| "HID logical maximum too large")?
+                                        },
                                         relative: value & 4 != 0,
                                     };
                                     layout.count += 1;
@@ -310,6 +315,21 @@ mod tests {
         assert_eq!(motion.wheel, -1);
         assert!(layout.decode(&[0, 1]).is_err());
     }
+    #[test]
+    fn maximum_uses_the_minimum_at_the_input_item() {
+        // Maximum precedes a new minimum: the previous negative minimum
+        // must not sign-extend the new unsigned 255 maximum.
+        let descriptor = [
+            0x05, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95, 1, 0x81, 2,
+        ];
+        let motion = Layout::parse(&descriptor)
+            .unwrap()
+            .decode(&[255])
+            .unwrap()
+            .unwrap();
+        assert_eq!(motion.x.unwrap().position(0, 256), 255);
+    }
+
     #[test]
     fn report_ids_absolute_axes_and_unrelated_reports() {
         let descriptor = [

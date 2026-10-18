@@ -21,10 +21,29 @@ impl Controller {
         crate::drivers::hid_boot::interface::pointers(&self.devices[index].config, &mut |p| {
             interfaces.push(p)
         })?;
-        for interface in interfaces {
-            self.configure_pointer(index, interface)?;
+        if self.devices[index].keyboard.is_none() {
+            if let Some(interface) = interfaces.first() {
+                if self.control(
+                    index,
+                    spec::set_configuration(interface.configuration),
+                    None,
+                )? != 1
+                {
+                    return Err("pointer SET_CONFIGURATION refused");
+                }
+            }
         }
-        Ok(())
+        let mut failure = None;
+        for interface in interfaces {
+            if let Err(error) = self.configure_pointer(index, interface) {
+                log::warn!(
+                    "[usb] pointer interface {} refused: {error}",
+                    interface.interface
+                );
+                failure = Some(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
     }
 
     fn configure_pointer(
@@ -36,9 +55,26 @@ impl Controller {
         if self.devices[index].pointers.iter().any(|p| p.dci == dci) {
             return Ok(());
         }
-        let ring = Ring::new(self.address64)?;
-        let buffer = Dma::new(4096, self.address64)?;
+        // Classify the report before configuring an interrupt endpoint. An
+        // auxiliary HID interface must not leave an unpolled endpoint behind.
+        let mut device = self.devices.remove(index);
+        let setup = spec::setup(0x81, 6, 0x2200, hid.interface as u16, hid.report_length);
+        let descriptor = self.read_descriptor(&mut device, setup, hid.report_length);
+        self.devices.insert(index, device);
+        let layout = match Layout::parse(&descriptor?) {
+            Ok(layout) => layout,
+            Err("HID descriptor has no pointer fields") => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let interval = spec::interrupt_interval(self.devices[index].speed, hid.interval)?;
+        let ring = Ring::new(self.address64)?;
+        let buffer = match Dma::new(4096, self.address64) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                ring.memory.release();
+                return Err(error);
+            }
+        };
         let burst = if self.devices[index].speed >= 480_000_000 {
             hid.extra_transactions
         } else {
@@ -78,7 +114,22 @@ impl Controller {
                 buffer.release();
                 return Err("pointer Configure Endpoint refused");
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                // A timed-out command may still own the ring. Keep it in the
+                // device until teardown disables the slot before freeing DMA.
+                self.devices[index].pointers.push(Pipe {
+                    dci,
+                    endpoint: hid.endpoint,
+                    ring,
+                    buffer,
+                    request: hid.max_packet as u32,
+                    outstanding: None,
+                    layout: Some(layout),
+                    buttons: 0,
+                    errors: 0,
+                });
+                return Err(error);
+            }
         }
         self.devices[index].pointers.push(Pipe {
             dci,
@@ -87,27 +138,10 @@ impl Controller {
             buffer,
             request: hid.max_packet as u32,
             outstanding: None,
-            layout: None,
+            layout: Some(layout),
             buttons: 0,
             errors: 0,
         });
-        if self.devices[index].keyboard.is_none()
-            && self.devices[index].pointers.len() == 1
-            && self.control(index, spec::set_configuration(hid.configuration), None)? != 1
-        {
-            return Err("pointer SET_CONFIGURATION refused");
-        }
-        let mut device = self.devices.remove(index);
-        // USB 2.0 9.4.3 and HID 1.11 7.1: standard interface GET_DESCRIPTOR.
-        let setup = 0x0681
-            | (0x22u64 << 24)
-            | ((hid.interface as u64) << 32)
-            | ((hid.report_length as u64) << 48);
-        let descriptor = self.read_descriptor(&mut device, setup, hid.report_length);
-        self.devices.insert(index, device);
-        let layout = Layout::parse(&descriptor?)?;
-        let pipe_index = self.devices[index].pointers.len() - 1;
-        self.devices[index].pointers[pipe_index].layout = Some(layout);
         // Stay in Report protocol, including wheel/absolute axes and report IDs.
         // Boot mouse protocol's fixed three bytes cannot describe a tablet.
         self.queue_pointer(index, self.devices[index].pointers.len() - 1);
@@ -142,6 +176,7 @@ impl Controller {
         let pipe = &mut self.devices[index].pointers[pipe_index];
         pipe.outstanding = None;
         if matches!(event.code(), 1 | 13) && (event.status & 0xff_ffff) <= pipe.request {
+            pipe.errors = 0;
             let data = pipe
                 .buffer
                 .copy(0, (pipe.request - (event.status & 0xff_ffff)) as usize);
