@@ -135,7 +135,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
         scratch = Path(scratch)
         files = {'site.env': ''.join(lines)}
-        # Always replace this file: an ordinary boot must disarm a prior fault.
+        # Replace this file so ordinary staging disarms a prior fault.
         files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
         commands = []
         for name, text in files.items():

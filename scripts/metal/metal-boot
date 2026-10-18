@@ -11,7 +11,7 @@
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 Run options: --payload image|hang|none, --mode default|shell|probe|suite|console, --commit SHA, --target main|branch:NAME,
---task NAME, --no-wait, --inject forceoff-fail, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
+--task NAME, --no-wait, --inject forceoff-fail|xhci-reset-device|xhci-short-read, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
 for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
 its stage folder, and serves boot.efi: the stub with the boot disk appended (the ext2 root joins the disk as
 `ramdisk` by default). `--disk install` (probe mode) stages the install request on the RAM disk, so the kernel copies

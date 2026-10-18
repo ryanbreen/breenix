@@ -2,7 +2,7 @@
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
+  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
   metal-run stop ID
   metal-run status

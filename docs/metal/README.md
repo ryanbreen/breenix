@@ -1012,14 +1012,14 @@ Short-read requests 19 bytes of the 18-byte device descriptor once, waits for
 the real Short Packet and Status completions, then resends for 18 bytes.
 
 HID Set_Idle requests periodic reports during the exercise. The short-read
-check requires a real interrupt-IN completion retained across the EP0 waits;
+check looks for a real interrupt-IN completion after the EP0 waits;
 both exercises require a valid report decoded and the next input TD queued,
 then restore change-only reports. These unchanged reports exercise delivery
 without manufacturing key presses or claiming a human login. A distinct
 `[xhci-fault] <path> PASS:` line ends the boot only after those checks succeed.
 
 Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specification)
-9.4.3 and 9.4.7, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
+9.4.3, 9.4.7 and 9.6.1, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
 7.2.4, and [xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
 4.6.8 and 4.10.1.1. No other implementation is a reference.
 
@@ -1032,8 +1032,8 @@ remain in the private boot store.
 | Boot | Kind | Result |
 |---|---|---|
 | `20261018T163435Z-metal` | Reset-device fault test | Two injected configuration refusals, both failed slots reclaimed, resets 1 and 2, successful re-enumeration with `device-resets=2`, then a real HID report decoded and requeued |
-| `20261018T163951Z-metal` | Short-read fault test | Real completion code 13, Status retired, full descriptor resend, retained HID completion decoded and requeued |
-| `20261018T164449Z-metal` | Ordinary SOL console | Replug and refusal/login/computation/screen/logout challenge completed; every RAM-disk console milestone scored |
+| `20261018T163951Z-metal` | Short-read fault test | Real completion code 13, Status retired, full descriptor resend, HID completion decoded and requeued |
+| `20261018T164449Z-metal` | Ordinary SOL console | Replug and refusal/login/computation/screen/logout challenge completed; 11/11 RAM-disk console milestones scored |
 
 Both fault records are evidence-ineligible and have no milestone verdict.
 The ordinary SOL record is also evidence-ineligible for physical-keyboard
@@ -1056,3 +1056,40 @@ stream definition contract, the console staging/protocol tests, the affected
 metal-tool scoring/driver tests and the fault-record tests. Production image
 builds added no warnings. No kernel boot was repeated after a documentation-only
 change, commit or push.
+
+Sanitized serial excerpts from those retained fault captures:
+
+```text
+20261018T163435Z-metal:
+device-resets=2
+[xhci-fault] reset-device PASS: refusals=2 shorts=0 input-report-decoded-and-requeued
+20261018T163951Z-metal:
+[xhci-fault] short-read PASS: refusals=0 shorts=1 input-report-decoded-and-requeued
+```
+
+The exercise calls `service()` directly after the control transfer and while
+waiting for input. These checks establish descriptor recovery and subsequent
+report decoding/requeueing, but do not establish interrupt delivery or whether
+the input completion was already queued during the EP0 waits.
+The reset exercise demonstrates two successful resets and re-enumeration;
+it does not test refusal of a third reset. Issue #1797 retains that coverage gap.
+
+A failed Status stage following a short read is recovered if halted, then
+returned immediately rather than retried, including transient completion code 4.
+That can abandon enumeration and consume a device reset. The existing host
+Status-failure test checks this terminal behavior.
+
+Fault injection currently ships in production metal kernels, enabled by a
+separate root-file intent alongside the replug intent. Retain that opt-in design
+for this landing; feature gating and intent unification need a separate change.
+An unreadable or malformed nonempty fault intent currently propagates an error
+out of the USB worker and can leave the boot without its USB keyboard. Ordinary
+staging writes an empty intent; handling bad intent without ending service remains
+follow-up work in issue #1931.
+
+Landing validation: `python3 tests/metal_xhci_fault_test.py FaultTest` passed
+3/3 fault-record checks after the conflict-free main merge. Runtime tests and
+boots were not repeated for the comment, usage-string and documentation edits.
+Claim-lint on the branch diff against `origin/main` checked 10 files with zero
+findings; it reported three unsupported extensions (the JSON definition and the
+two extensionless launchers). The revised PR body also had zero findings.

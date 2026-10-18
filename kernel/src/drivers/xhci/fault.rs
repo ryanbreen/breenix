@@ -1,6 +1,7 @@
-//! Opt-in, per-boot recovery exercise. This is never milestone evidence.
+//! Opt-in, per-boot recovery exercise. Its boot records are evidence-ineligible.
 //! Configuration failure is injected at the driver boundary. USB 2.0
-//! 9.4.3: a device descriptor has 18 bytes, even if wLength requests more.
+//! 9.4.3 covers short Get Descriptor replies; 9.6.1 defines the 18-byte
+//! device descriptor, even if wLength requests more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mode { ResetDevice, ShortRead }
 impl Mode {
@@ -118,7 +119,7 @@ impl super::Controller {
         }
         log::info!("[xhci-fault] {} PASS: refusals={} shorts={} input-report-decoded-and-requeued",
                    mode.name(), self.fault.refusals, self.fault.shorts);
-        // Keep the marker distinct from every production boot stage.
+        // Use the separate fault-test completion marker.
         Ok(())
     }
 }
