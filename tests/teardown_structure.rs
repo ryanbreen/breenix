@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 #[path = "shared_coreproof/mutation_leg_mask.rs"]
 mod mutation_leg_mask;
 
@@ -127,10 +129,25 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
 /// `raw_code_mask`, with every compiled-out core-proof mutation leg additionally
 /// masked out. See `shared_coreproof/mutation_leg_mask.rs` for why the exemption
 /// exists and exactly how narrow it is.
-fn code_mask(source: &str) -> Vec<bool> {
-    let mut mask = raw_code_mask(source);
-    mutation_leg_mask::apply(source, &mut mask);
-    mask
+fn code_mask(source: &str) -> Rc<Vec<bool>> {
+    // Mutation legs copy the whole kernel snapshot but usually change one file.
+    // Reuse lexical work by complete text, never by path, address or length:
+    // a private mutation (including a same-length edit) must get its own mask.
+    // Each test thread drops its cache when it finishes.
+    thread_local! {
+        static MASKS: RefCell<HashMap<String, Rc<Vec<bool>>>> = RefCell::new(HashMap::new());
+    }
+    MASKS.with(|masks| {
+        let mut masks = masks.borrow_mut();
+        if let Some(mask) = masks.get(source) {
+            return Rc::clone(mask);
+        }
+        let mut mask = raw_code_mask(source);
+        mutation_leg_mask::apply(source, &mut mask);
+        let mask = Rc::new(mask);
+        masks.insert(source.to_owned(), Rc::clone(&mask));
+        mask
+    })
 }
 
 fn raw_code_mask(source: &str) -> Vec<bool> {
@@ -315,7 +332,7 @@ fn normalized_code(fragment: &str) -> String {
     let mask = code_mask(fragment);
     let kept: Vec<u8> = fragment
         .bytes()
-        .zip(mask)
+        .zip(mask.iter().copied())
         .filter_map(|(byte, code)| code.then_some(byte))
         .collect();
     String::from_utf8_lossy(&kept)
@@ -3919,6 +3936,14 @@ let _same_line = "needle"; let _real = needle();
         code_offsets(fixture, &mask, "needle"),
         vec![fixture.rfind("needle();").expect("real code occurrence")]
     );
+
+    // The same allocation and length can hold different lexical code.
+    let mut edited = String::from("// needle();");
+    assert!(code_offsets(&edited, &code_mask(&edited), "needle").is_empty());
+    edited.replace_range(..2, "  ");
+    assert_eq!(code_offsets(&edited, &code_mask(&edited), "needle"), vec![3]);
+    edited.replace_range(..2, "//");
+    assert!(code_offsets(&edited, &code_mask(&edited), "needle").is_empty());
 
     let aliases = aliases_derived_from_free_frames(
         "if let Some(mut first) = FREE_FRAMES.try_lock() { let second = &mut *first; second.insert(0, frame); }",
