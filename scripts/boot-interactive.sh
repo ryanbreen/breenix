@@ -279,6 +279,14 @@ if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
         echo "==> Vigil QMP disabled: socket path exceeds 103 bytes: $VIGIL_QMP_SOCKET"
     fi
 fi
+# A suite or shell boot takes host keys (scripts/hostkeys.py): it needs a QMP socket even if Vigil
+# registered no socket and the caller named no socket.
+HOSTKEYS_SOCKET=
+if [ -z "$QMP_SOCKET" ] && { [ "$MODE" = suite ] || [ "$MODE" = shell ]; }; then
+    HOSTKEYS_SOCKET="${TMPDIR:-/tmp}/breenix-hk-$$.sock"
+    [ "$(printf '%s' "$HOSTKEYS_SOCKET" | wc -c)" -le 103 ] || HOSTKEYS_SOCKET="/tmp/breenix-hk-$$.sock"
+    QMP_SOCKET="$HOSTKEYS_SOCKET"
+fi
 QMP_ARGS=()
 if [ -n "$QMP_SOCKET" ]; then
     rm -f "$QMP_SOCKET"
@@ -293,6 +301,12 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 exec 3<&0
 set +e
+HOSTKEYS_PID=
+if [ -n "$QMP_SOCKET" ] && { [ "$MODE" = suite ] || [ "$MODE" = shell ]; }; then
+    python3 "$ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "qmp:$QMP_SOCKET" \
+        --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+    HOSTKEYS_PID=$!
+fi
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
@@ -315,6 +329,8 @@ qemu_host_lock_track_pid "$WATCHER_PID"
 wait "$WATCHER_PID"
 code=$?
 set -e
+[ -z "$HOSTKEYS_PID" ] || kill "$HOSTKEYS_PID" 2>/dev/null || true
+[ -z "$HOSTKEYS_SOCKET" ] || rm -f "$HOSTKEYS_SOCKET"
 echo
 echo "==> VM stopped (exit $code)"
 if [ "$GPU_GL" -eq 1 ]; then
