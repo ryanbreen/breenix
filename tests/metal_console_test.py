@@ -58,6 +58,27 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].kwargs['input'], (secret + '\r').encode())
         self.assertNotIn(secret, existing.m.Redactor(driver.site)('Password: ' + secret))
 
+    def test_disk_root_refuses_an_install_with_a_different_target_or_credential(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            driver = fixture.driver
+            driver.args.mode, driver.args.disk, driver.args.commit = 'console', 'root', 'a' * 40
+            driver.site = self.driver().site
+            inputs = driver.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            existing.m.write_json(inputs / 'build.json', {'commit': driver.args.commit, 'profile': 'production', 'features': []})
+            for mode, identity in [('probe', metal_root.console_identity(driver.site)), ('console', 'wrong-identity')]:
+                existing.m.write_json(existing.m.STATE / 'disk.json', {'commit': driver.args.commit,
+                                      'mode': mode, 'consoleIdentity': identity})
+                with self.assertRaises(boot.Finish) as result:
+                    driver.prepare_payload()
+                self.assertEqual(result.exception.status, existing.m.EXIT_CANCELLED)
+                self.assertNotIn('diskRoot', driver.delivery)
+        finally:
+            fixture.tearDown()
+
     def test_staged_shadow_permissions_and_target_and_malformed_hash_refusal(self):
         hasher = Path(os.environ['CONSOLE_HASH_HELPER'])
         prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
