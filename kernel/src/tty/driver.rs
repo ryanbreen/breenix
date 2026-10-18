@@ -258,7 +258,7 @@ impl TtyDevice {
     /// - Echo it back to the terminal
     ///
     /// This method acquires locks and should not be called from interrupt context
-    /// without care. For interrupt context, use `input_char_nonblock_from`.
+    /// without care. For interrupt context, use `input_char_from_nonblock`.
     pub fn input_char_from(&self, c: u8, source: super::InputSource) {
         if self.num == 0 {
             super::input_clock::record_input();
@@ -325,7 +325,7 @@ impl TtyDevice {
     /// (`adopt_deferred_foreground_pgrp`, driven from the stdin read path),
     /// where the reader's own pid is already in hand. The scope below makes a
     /// reintroduction fail loudly rather than silently.
-    pub fn input_char_nonblock_from(&self, c: u8, source: super::InputSource) -> bool {
+    pub fn input_char_nonblock(&self, c: u8) -> bool {
         if self.num == 0 {
             super::input_clock::record_input();
         }
@@ -345,6 +345,24 @@ impl TtyDevice {
             TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
         }
 
+        self.input_char_source_nonblock(c, super::InputSource::Other)
+    }
+
+    /// Source-aware entry used by the USB worker. Keep its IRQ-safe naming so
+    /// the same reachable-call census covers it as the untagged entry.
+    pub fn input_char_from_nonblock(&self, c: u8, source: super::InputSource) -> bool {
+        if self.num == 0 {
+            super::input_clock::record_input();
+        }
+        let _no_blocking_pm = crate::process::NoBlockingProcessManagerScope::enter();
+        if self.foreground_pgrp_snapshot().is_none() {
+            self.adopt_pending.store(true, Ordering::Release);
+            TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
+        }
+        self.input_char_source_nonblock(c, source)
+    }
+
+    fn input_char_source_nonblock(&self, c: u8, source: super::InputSource) -> bool {
         let mut ldisc = match self.ldisc.try_lock() {
             Some(guard) => guard,
             None => return false,
@@ -1203,7 +1221,10 @@ pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
         if let Some(ref tty) = *guard {
             let tty = Arc::clone(tty);
             drop(guard);
-            return tty.input_char_nonblock_from(c, source);
+            return match source {
+                super::InputSource::Other => tty.input_char_nonblock(c),
+                _ => tty.input_char_from_nonblock(c, source),
+            };
         }
     }
     false
