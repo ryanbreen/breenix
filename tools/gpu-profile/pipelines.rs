@@ -150,7 +150,8 @@ impl Asm {
     /// the bound is not known when the program is compiled, so the program carries one
     /// copy of the body, which a compiler cannot unroll into `n`. On
     /// Parallels compile time grows with program length (pipeline 8's warm-up step took
-    /// 0.86 to 1.64 s across 124 contexts on a busy host), and each compilation is held to
+    /// 0.86 to 1.64 s across 124 contexts on a busy host, from uncommitted
+    /// timing diagnostics; historical and unverified under ruling 12), and each compilation is held to
     /// the 2 s watchdog.
     fn passes(&mut self, n: u32, body: impl FnOnce(&mut Self)) {
         let one = self.k(1);

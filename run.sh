@@ -992,6 +992,7 @@ if [ "$PARALLELS" = true ]; then
     GPU_TIME_RECORD=""
     if [ "$SUITE" = gpu ] && [ -z "$ONLY" ]; then
         GPU_TIME_RECORD="$SERIAL_LOG.gpu-time.jsonl"
+        export BREENIX_GPU_TIME_JSONL="$GPU_TIME_RECORD"
         python3 "$BREENIX_ROOT/scripts/parallels/gpu-time.py" sample --vm "$PARALLELS_VM" \
             --serial "$SERIAL_LOG" --out "$GPU_TIME_RECORD" &
         GPU_TIME_PID=$!

@@ -976,10 +976,15 @@ The facts these establish, for this host and renderer:
 
 ## Parallels catch-up values
 
+The #1875 per-step warm-up timings cited in the catalogue derivation and `Asm::passes`
+used uncommitted timing diagnostics. Those historical timings are unverified under
+ruling 12 and are not reproducible from the recorded revision.
+
 | Value or design | Source |
 |---|---|
-| A shift whose count is not a literal takes its count's low five bits with an explicit `AND` with 31 first (59 such shifts across the 15 generated programs): the division loop's two shifts by its bit counter (counts 95 to 0) in `tools/gpu-profile/math.rs`, each variable `SHL` and `USHR` the model's emitter writes, and `bitmap_text`'s bit-row shift in `tools/gpu-profile/pipelines.rs` | L: SHL 1283 and USHR 1313 define the shift by the count's low five bits, so the `AND` changes no result where that definition holds; B18 shows a host renderer where it does not |
+| Variable shifts that can reach 32 take the count's low five bits with an explicit `AND` with 31 first (45 masked shifts across 39 generated programs): the division loop's two shifts by its bit counter (counts 95 to 0) in `tools/gpu-profile/math.rs`, each variable `SHL` and `USHR` the model's emitter writes, and `bitmap_text`'s bit-row shift in `tools/gpu-profile/pipelines.rs`. The eight shifts by `CONST[6].w` in pipeline 8 are unmasked because their count is at most 14 | L: SHL 1283 and USHR 1313 define the shift by the count's low five bits, so the `AND` changes no result where that definition holds; B18 shows a host renderer where it does not |
 | Parallels' virtio-gpu interrupts through MSI-X: vector 0 for the control queue and vector 1 for configuration changes, each an edge-triggered SPI from the GICv2m frame; the driver does not read the ISR byte for the queue vector | VirtIO 1.3 sections 4.1.4.3, 4.1.4.5 and 4.1.5.1.2; the Arm GICv2m frame's MSI_SETSPI_NS register at offset 0x40 |
+| In the 39 generated programs an instruction with only immediate sources (a word copy `UADD x, k, 0`, or a select between two literals lowered to `XOR`) takes `CONST[4].z` in place of its immediate 0; the draws of these programs supply that word as 0 (`kernel/src/gpu/virgl/encode.rs`: catalogue draws pass `CONST[4]` as `0, 0, 0, 0`, PROBE passes `word, routine, 0, 0`) | B19; the operation and its result are unchanged where `CONST[4].z` is 0 |
 
 The programs were regenerated with the commands in "G4 shader derivation" and "G5 parameterized
 catalogue"; the generator's model and emitted-ISA tests passed on the result. The generator at the
@@ -1003,7 +1008,6 @@ defined on the low five bits, so the host received a bare variable count.
 The program printed `SHIFT COUNT NOT MASKED TO FIVE BITS`. On this host renderer a shift by a register
 count of 32 or more gives 0, where TGSI defines the shift by the count's low five bits. The ARM64 QEMU
 renderer follows TGSI's definition: the G5 programs, which relied on it, pass there.
-| In the 15 generated programs an instruction with only immediate sources (a word copy `UADD x, k, 0`, or a select between two literals lowered to `XOR`) takes `CONST[4].z` in place of its immediate 0; the draws of these programs supply that word as 0 (`kernel/src/gpu/virgl/encode.rs`: catalogue draws pass `CONST[4]` as `0, 0, 0, 0`, PROBE passes `word, routine, 0, 0`) | B19; the operation and its result are unchanged where `CONST[4].z` is 0 |
 
 ## B19: Parallels folding of literal-only instructions
 
@@ -1044,6 +1048,9 @@ was for ARM64 QEMU's renderer.
 
 ## B20: Parallels virtio-gpu BAR0 memory
 
+The Breenix-side hash observation below used uncommitted diagnostics and cannot be
+reproduced from its recorded revision; it is historical, unverified evidence under ruling 12.
+
 On Parallels the UEFI framebuffer that `present/firmware-handoff` hashes is BAR0 of the virtio-gpu
 device itself (`1af4:1050`, 128 MiB at `0x10000000`; the GOP mode used its first 3 MiB). In a one-case run
 of that case (`run.sh --parallels --suite gpu --case present/firmware-handoff` at `9d8cebd1` with
@@ -1067,3 +1074,13 @@ display). The pattern written into BAR0 from the guest CPU was replaced within o
 guest action: while the virtio-gpu drives the display, the device rewrites its BAR0 memory. A hash of
 that memory changes without any guest write, so on Parallels it cannot show whether the kernel wrote
 the firmware framebuffer after the handoff.
+
+## Parallels attestation negative control
+
+Run `20261018T114114Z-parallels` at `af4fc2f3`, with
+`BREENIX_PARALLELS_3D=off` and `run.sh --parallels --suite gpu`, finished
+with 0 passed, 170 failed and 0 skipped. Admission refused `missing 3d-feature`,
+and the host judge refused the disabled 3D configuration before measuring its rate.
+This checks admission, not the ten-times-idle rate against a negative device run.
+Under ruling 51, an idle interval measuring 0 ns GPU time requires only positive performance GPU time;
+that positive-time rule has no stronger measured negative-control claim here.
