@@ -2489,18 +2489,19 @@ fn try_with_thread<R>(tid: u64, f: impl FnOnce(&mut Held, &mut Thread) -> R) -> 
 /// (`get_process_display_state`): None when it has none, or a thread's
 /// owner's lock stayed busy.
 pub(super) fn display_state(pid: u64) -> Option<&'static str> {
-    let (mut found, mut running, mut ready, mut blocked, mut terminated, mut unknown) =
-        (false, false, false, false, false, false);
+    let (mut found, mut running, mut ready, mut disk_sleep, mut blocked, mut terminated, mut unknown) =
+        (false, false, false, false, false, false, false);
     each_of_pid(pid, |tid, dead| {
         found = true;
         if dead {
             terminated = true;
             return;
         }
-        match try_with_thread(tid, |_, thread| thread.state) {
-            Some(ThreadState::Running) => running = true,
-            Some(ThreadState::Ready) => ready = true,
-            Some(ThreadState::Terminated) => terminated = true,
+        match try_with_thread(tid, |_, thread| (thread.state, thread.uninterruptible_io)) {
+            Some((ThreadState::Running, _)) => running = true,
+            Some((ThreadState::Ready, _)) => ready = true,
+            Some((ThreadState::Terminated, _)) => terminated = true,
+            Some((ThreadState::BlockedOnIO, true)) => disk_sleep = true,
             Some(_) => blocked = true,
             None => unknown = true,
         }
@@ -2511,6 +2512,8 @@ pub(super) fn display_state(pid: u64) -> Option<&'static str> {
         Some("Running")
     } else if ready {
         Some("Ready")
+    } else if disk_sleep {
+        Some("Disk sleep")
     } else if blocked {
         Some("Blocked")
     } else if terminated {

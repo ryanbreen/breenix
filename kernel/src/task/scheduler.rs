@@ -9697,6 +9697,7 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
         let scheduler = scheduler_lock.as_ref()?;
 
         let mut saw_ready = false;
+        let mut saw_disk_sleep = false;
         let mut saw_blocked = false;
         let mut saw_terminated = false;
 
@@ -9708,6 +9709,9 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
             match thread.state {
                 super::thread::ThreadState::Running => return Some("Running"),
                 super::thread::ThreadState::Ready => saw_ready = true,
+                super::thread::ThreadState::BlockedOnIO if thread.uninterruptible_io => {
+                    saw_disk_sleep = true
+                }
                 super::thread::ThreadState::Blocked
                 | super::thread::ThreadState::BlockedOnSignal
                 | super::thread::ThreadState::BlockedOnChildExit
@@ -9719,6 +9723,8 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
 
         if saw_ready {
             Some("Ready")
+        } else if saw_disk_sleep {
+            Some("Disk sleep")
         } else if saw_blocked {
             Some("Blocked")
         } else if saw_terminated {
