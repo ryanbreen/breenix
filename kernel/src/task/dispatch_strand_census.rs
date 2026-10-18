@@ -218,7 +218,9 @@ impl fmt::Display for TidList<'_> {
 /// `stranded` and `waiting` split the threads whose saved kernel context was
 /// not restored and that did not exit: `waiting` holds the ones still parked in
 /// a wait (`parked_in_wait`), `stranded` and `tids` the rest. Before #1885 they
-/// were one count, and a production boot listed its blocked init and getty as
+/// were one count. Concurrent restores and exits may be discarded by a second
+/// ledger read, so their sum need not equal that earlier count. A production boot
+/// listed its blocked init and getty as
 /// stranded for the whole session.
 ///
 /// The fact fields are APPENDED, so every consumer that reads the first
@@ -233,22 +235,16 @@ pub(crate) fn report_snapshot() {
     snapshot(false);
 }
 
-/// Whether a thread whose saved kernel context has not been restored is
-/// waiting on purpose rather than stranded: blocked with no deadline, or with a
-/// deadline less than one census interval behind `now_ns`.
-///
-/// A thread parked in a blocking syscall stays saved and unrestored for as long
-/// as it waits, so the ledger alone lists init in waitpid and getty reading the
-/// console for a whole production session (#1885). Everything else the ledger
-/// lists stays a strand: a Ready or Running thread whose context was not put
-/// back, a terminated thread or one without a scheduler row that left no exit
-/// record, and a timed wait whose deadline passed a census interval ago, which
-/// the per-tick timer sweep would have ended (a lost timer wake).
+/// A blocked timer needs an unexpired deadline; a missing or expired deadline
+/// is a lost wake, not a legitimate indefinite wait. Other blocked states may
+/// wait indefinitely for an external event. An unavailable scheduler sample is
+/// conservatively left stranded so contention cannot hide a lost dispatch.
 fn parked_in_wait(tid: u64, now_ns: u64) -> bool {
+    use super::thread::ThreadState;
+
     match super::scheduler::thread_wait(tid) {
-        Some((state, deadline)) if state.is_blocked() => {
-            deadline.is_none_or(|wake_ns| now_ns.saturating_sub(wake_ns) < HEARTBEAT_INTERVAL_NS)
-        }
+        Some((state, Some(wake_ns))) if state.is_blocked() => wake_ns > now_ns,
+        Some((state, None)) => state.is_blocked() && state != ThreadState::BlockedOnTimer,
         _ => false,
     }
 }
