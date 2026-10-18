@@ -9,7 +9,7 @@
 //! and Appendices B and F. A refused configuration is retried on a reset
 //! device (4.10.2.1.2). Devices behind hubs are not driven: the machine's
 //! port census found its keyboard on a root port.
-use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, PORT_CHANGES, REPLUG, SECOND};
+use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, PORT_CHANGES, CONSOLE_START, CONSOLE_READY, REPLUG, SECOND};
 use crate::drivers::hid_boot::{interface, report, RETRY_NS};
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, Ordering};
@@ -58,9 +58,12 @@ impl Controller {
             }
             self.dispatch();
             self.tick_keyboards();
-            if REPLUG.swap(false, Ordering::SeqCst) {
-                self.replug_exercise();
+            if CONSOLE_START.swap(false, Ordering::SeqCst) {
+                if REPLUG.swap(false, Ordering::Relaxed) {
+                    self.replug_exercise();
+                }
                 self.console.arm();
+                CONSOLE_READY.complete(1);
             }
         }
     }
