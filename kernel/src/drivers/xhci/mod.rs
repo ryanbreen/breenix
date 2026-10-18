@@ -242,8 +242,8 @@ struct Device {
     /// The first configuration's full descriptor, for class drivers.
     config: Vec<u8>,
     keyboard: Option<keyboard::Pipe>,
-    /// EP0 halts recovered since Address Device.
-    ep0_recoveries: u32,
+    /// EP0 requests sent again since Address Device.
+    ep0_retries: u32,
 }
 struct Controller {
     pci: pci::Device,
@@ -894,7 +894,7 @@ impl Controller {
                 speed,
                 config: Vec::new(),
                 keyboard: None,
-                ep0_recoveries: 0,
+                ep0_retries: 0,
             })
         })();
         let mut device = match allocated {
@@ -995,7 +995,8 @@ impl Controller {
         index: u8,
         len: u16,
     ) -> Result<Vec<u8>, &'static str> {
-        let event = self.ep0_transfer(device, &|device: &mut Device| {
+        let request = spec::get_descriptor(kind, index, len).parameter;
+        let event = self.ep0_transfer(device, request, &|device: &mut Device| {
             // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
             // The DMA allocation need not itself be 64 KiB aligned, so split there.
             let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
@@ -1037,11 +1038,13 @@ impl Controller {
         Ok(device.data.copy(0, len as usize))
     }
     /// One control transfer on EP0, its TDs queued by `queue` (which returns
-    /// their TRB addresses). A transfer that halts EP0 is recovered and sent
-    /// again (`spec::ep0_next`); the completion returned is the last attempt's.
+    /// their TRB addresses), for the setup packet `request`. A transfer that
+    /// halts EP0 or reads short is sent again (`spec::ep0_next`); the
+    /// completion returned is the last attempt's.
     fn ep0_transfer(
         &mut self,
         device: &mut Device,
+        request: u64,
         queue: &dyn Fn(&mut Device) -> Vec<u64>,
     ) -> Result<Trb, &'static str> {
         let mut attempt = 1;
@@ -1052,26 +1055,43 @@ impl Controller {
             if event.slot() != device.slot || (event.control >> 16) & 31 != 1 {
                 return Err("EP0 transfer identity mismatch");
             }
-            let next = spec::ep0_next(event.code(), attempt);
-            if matches!(next, spec::Ep0Next::Done | spec::Ep0Next::Fail) {
-                return Ok(event);
-            }
-            // 4.6.8: Reset Endpoint, then a Set TR Dequeue Pointer onto the
-            // next Setup TD, past the halted TD's remaining stages.
-            self.reset_endpoint(device.slot, 1)?;
-            self.set_dequeue(device.slot, 1, device.ep0.enqueue())?;
-            device.ep0_recoveries += 1;
-            let spec::Ep0Next::Retry { after_ns } = next else {
-                return Ok(event);
+            let after_ns = match spec::ep0_next(event.code(), attempt) {
+                spec::Ep0Next::Done | spec::Ep0Next::Fail => return Ok(event),
+                spec::Ep0Next::RecoverAndFail => {
+                    self.recover_ep0(device)?;
+                    return Ok(event);
+                }
+                spec::Ep0Next::Retry { after_ns } => {
+                    self.recover_ep0(device)?;
+                    after_ns
+                }
+                spec::Ep0Next::Resend { after_ns } => {
+                    // The Status TD still runs (4.10.1.1); take its completion.
+                    let status = pointers[pointers.len() - 1];
+                    if event.parameter & !15 != status {
+                        let done = self.event_any(&[status], 32)?;
+                        if spec::halts_endpoint(done.code()) {
+                            self.recover_ep0(device)?;
+                        }
+                    }
+                    after_ns
+                }
             };
+            device.ep0_retries += 1;
             log::warn!(
-                "[usb] slot {}: EP0 halted with code={} on attempt {attempt}; recovered, sending the request again",
+                "[usb] slot {}: EP0 request {request:#018x} completed with code={} on attempt {attempt}; sending it again",
                 device.slot,
                 event.code()
             );
             delay(after_ns);
             attempt += 1;
         }
+    }
+    /// 4.6.8: Reset Endpoint, then a Set TR Dequeue Pointer onto the next
+    /// Setup TD, past the halted TD's remaining stages.
+    fn recover_ep0(&mut self, device: &Device) -> Result<(), &'static str> {
+        self.reset_endpoint(device.slot, 1)?;
+        self.set_dequeue(device.slot, 1, device.ep0.enqueue())
     }
     /// Reset Endpoint with TSP 0, for a halted endpoint (4.6.8).
     fn reset_endpoint(&mut self, slot: u8, dci: u8) -> Result<(), &'static str> {

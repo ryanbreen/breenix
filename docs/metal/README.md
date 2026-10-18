@@ -568,15 +568,18 @@ and the HID Usage Tables; their comments cite the sections.
   interval converted as xHCI 6.2.3.6 gives it), and only after that command succeeds sends SET_CONFIGURATION
   (xHCI 4.3.5), then Set_Protocol(Boot) and Set_Idle with an indefinite duration to that interface number,
   then the LED state with Set_Report(Output). It prints `[usb] boot keyboard attached:` with the port, speed,
-  interface, endpoint, whether the keyboard accepted the LED report, and the EP0 recoveries and device resets
-  the attach took. Set_Report is optional for a boot keyboard, so a refusal is reported, not fatal.
+  interface, endpoint, whether the keyboard accepted the LED report, and the EP0 resends (`ep0-retries`) and
+  device resets the attach took. Set_Report is optional for a boot keyboard, so a refusal is reported, not fatal.
 - **Address and EP0 recovery.** After Address Device the driver waits the 2 ms SetAddress() recovery interval
   (USB 2.0 9.2.6.3), which xHCI 4.6.5 leaves to software, before the first request to the new address. A
   control transfer that halts EP0 (Stall, Transaction Error, Babble or Split Transaction Error) is recovered
   with Reset Endpoint and a Set TR Dequeue Pointer onto the next Setup TD (xHCI 4.6.8, 4.8.3), then sent again
   50 ms later (the USB 2.0 9.2.6.4 bound), up to three attempts; the device clears a protocol stall on that
-  SETUP. When the keyboard still refuses its configuration, its slot is disabled and returned, and the device
-  is reset and enumerated again (xHCI 4.10.2.1.2), at most twice.
+  SETUP. A descriptor read that comes back short does not halt EP0: once its Status stage completes
+  (xHCI 4.10.1.1), it is sent again on the same terms. Each resend prints `[usb] slot <n>: EP0 request <setup
+  packet> completed with code=<c> on attempt <k>; sending it again`. When the keyboard still refuses its
+  configuration, or a reattach's enumeration fails, the slot is disabled and returned and the device is reset
+  and enumerated again (xHCI 4.10.2.1.2), at most twice per attach.
 - **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
   ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
   leaves the previous keys standing. The US layout follows the Keyboard/Keypad page's usage names; Shift,

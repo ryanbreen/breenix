@@ -109,7 +109,8 @@ impl Controller {
     /// Configure an enumerated device's boot keyboard, if it has one. A
     /// device that still refuses after EP0 recovery has a control endpoint
     /// the next SETUP did not clear, so it is reset and enumerated again
-    /// (4.10.2.1.2); `resets` counts the resets this attach has used.
+    /// (4.10.2.1.2), as is one whose enumeration failed (`attach`); `resets`
+    /// counts the resets this attach has used.
     fn attach_keyboard(&mut self, index: usize, resets: u32) {
         let port = self.devices[index].port;
         let boot = match interface::find(&self.devices[index].config) {
@@ -136,6 +137,12 @@ impl Controller {
                 return;
             }
         }
+        self.reset_device(port, resets);
+    }
+
+    /// Reset and enumerate the device on `port` again, while it is connected
+    /// and this attach has resets left.
+    fn reset_device(&mut self, port: u8, resets: u32) {
         if resets < DEVICE_RESETS && self.portsc(port) & CCS != 0 {
             log::warn!("[usb] port {port}: resetting the device ({} of {DEVICE_RESETS})", resets + 1);
             self.attach(port, resets + 1);
@@ -230,24 +237,24 @@ impl Controller {
         log::info!(
             "[usb] boot keyboard attached: port={port} path=root speed={speed} bit/s slot={slot} \
              interface={} endpoint={:#04x} max-packet={} bInterval={} interval={interval} leds={leds} \
-             ep0-recoveries={} device-resets={resets}",
+             ep0-retries={} device-resets={resets}",
             boot.interface,
             boot.endpoint,
             boot.max_packet,
             boot.interval,
-            self.devices[index].ep0_recoveries
+            self.devices[index].ep0_retries
         );
         Ok(())
     }
 
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
-    /// its completion code; a halted EP0 is recovered and the request resent
+    /// its completion code; a request that halted EP0 is recovered and resent
     /// (`Controller::ep0_transfer`).
     fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
         // The device leaves the list for the transfer so the controller can
         // wait for it. The list is read by `dispatch`, between transfers.
         let mut device = self.devices.remove(index);
-        let result = self.ep0_transfer(&mut device, &|device: &mut Device| {
+        let result = self.ep0_transfer(&mut device, setup, &|device: &mut Device| {
             let mut pointers = Vec::new();
             match out {
                 None => pointers.push(device.ep0.push(spec::setup_no_data(setup))),
@@ -404,7 +411,7 @@ impl Controller {
             self.teardown(index, why);
         }
         // Only a connect change attaches: our own port resets also post
-        // events, and a device that failed enumeration is not retried.
+        // events, and a device whose attach used its resets is not retried.
         if connected && status & CSC != 0 {
             self.attach(port, 0);
         }
@@ -416,7 +423,11 @@ impl Controller {
                 let index = self.devices.len() - 1;
                 self.attach_keyboard(index, resets);
             }
-            Err(error) => log::error!("[usb] port {port}: attach FAILED: {error}"),
+            Err(error) => {
+                // `enumerate` has given the slot back.
+                log::error!("[usb] port {port}: attach FAILED: {error}");
+                self.reset_device(port, resets);
+            }
         }
     }
 

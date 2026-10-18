@@ -81,10 +81,15 @@ pub enum Ep0Next {
     /// `after_ns`. The device clears a protocol stall on that SETUP (USB 2.0
     /// 8.5.3.4, xHCI 4.10.2.1.2).
     Retry { after_ns: u64 },
+    /// A Short Packet in the Data stage: EP0 did not halt, and the xHC went on
+    /// to the Status TD (4.10.1.1). Once that completes, send the request
+    /// again after `after_ns`: the data received is shorter than requested.
+    Resend { after_ns: u64 },
     /// EP0 halted on the last attempt: recover it, then report the failure.
     /// The device needs a reset (4.10.2.1.2), which is the caller's.
     RecoverAndFail,
-    /// The endpoint did not halt; report the completion as it is.
+    /// Report the completion as it is: the endpoint did not halt, or a
+    /// short read persisted to the last attempt.
     Fail,
 }
 
@@ -98,6 +103,10 @@ pub fn halts_endpoint(code: u8) -> bool {
 pub fn ep0_next(code: u8, attempt: u32) -> Ep0Next {
     if code == 1 {
         Ep0Next::Done
+    } else if code == 13 && attempt < EP0_ATTEMPTS {
+        Ep0Next::Resend {
+            after_ns: EP0_RETRY_NS,
+        }
     } else if !halts_endpoint(code) {
         Ep0Next::Fail
     } else if attempt < EP0_ATTEMPTS {
@@ -400,9 +409,14 @@ mod tests {
         }
         assert_eq!(ep0_next(1, 1), Ep0Next::Done);
         assert_eq!(ep0_next(1, EP0_ATTEMPTS), Ep0Next::Done);
-        // A short packet or a TRB error does not halt the endpoint: no
-        // Reset Endpoint, which would fail with Context State Error.
-        assert_eq!(ep0_next(13, 1), Ep0Next::Fail);
+        // A short read does not halt the endpoint: it is sent again with no
+        // Reset Endpoint (which would fail with Context State Error), and a
+        // read still short on the last attempt is reported. A TRB error is
+        // reported at once.
+        assert_eq!(ep0_next(13, 1), Ep0Next::Resend { after_ns: EP0_RETRY_NS });
+        assert_eq!(ep0_next(13, EP0_ATTEMPTS - 1), Ep0Next::Resend { after_ns: EP0_RETRY_NS });
+        assert_eq!(ep0_next(13, EP0_ATTEMPTS), Ep0Next::Fail);
+        assert!(!halts_endpoint(13));
         assert_eq!(ep0_next(5, 1), Ep0Next::Fail);
         // The recovery interval is USB 2.0's 2 ms, the retry its 50 ms bound.
         assert_eq!((SET_ADDRESS_RECOVERY_NS, EP0_RETRY_NS), (2_000_000, 50_000_000));
