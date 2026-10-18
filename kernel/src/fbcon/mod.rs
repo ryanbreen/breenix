@@ -55,14 +55,12 @@ static GRID: Mutex<Grid> = Mutex::new(Grid::new());
 /// Grid writes given up because its lock stayed held (a holder that faulted).
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
-/// A session other than init's has the console as its controlling terminal.
-static SESSION: AtomicBool = AtomicBool::new(false);
-/// Last session state recorded by the render thread. Notices go to serial; filtering reads
-/// `SESSION` directly so it takes effect before getty can print its prompt.
+mod records;
+use records::{DISPLAY_TAKEN, SESSION};
+pub use records::{console_session, log_record, take_display, write_tty};
+/// Last session state recorded by the render thread; admission reads SESSION.
 static QUIET: AtomicBool = AtomicBool::new(false);
 
-/// A process has the display.
-static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 /// Held, with interrupts masked, by whoever is writing a row of video memory.
 static VRAM_BUSY: AtomicBool = AtomicBool::new(false);
 
@@ -124,55 +122,6 @@ fn with_grid<R>(f: impl FnOnce(&mut Grid) -> R) -> Option<R> {
         DROPPED.fetch_add(1, Ordering::Relaxed);
         None
     })
-}
-
-/// A log line formatted into fixed storage; longer lines are cut short.
-struct Line {
-    bytes: [u8; 256],
-    len: usize,
-}
-
-impl Write for Line {
-    fn write_str(&mut self, text: &str) -> fmt::Result {
-        let take = text.len().min(self.bytes.len() - self.len);
-        self.bytes[self.len..self.len + take].copy_from_slice(&text.as_bytes()[..take]);
-        self.len += take;
-        Ok(())
-    }
-}
-
-/// Put a kernel log record on the console, as its own line.
-pub fn log_record(level: log::Level, args: &fmt::Arguments) {
-    if DISPLAY_TAKEN.load(Ordering::Acquire)
-        || (SESSION.load(Ordering::Acquire) && level > log::Level::Warn)
-    {
-        return;
-    }
-    let mut line = Line { bytes: [0; 256], len: 0 };
-    let _ = write!(line, "{:>5}: {}", level, args);
-    with_grid(|grid| {
-        grid.begin_line();
-        grid.write(&line.bytes[..line.len]);
-        grid.write(b"\r\n");
-    });
-}
-
-/// Put console TTY output on the console.
-pub fn write_tty(bytes: &[u8]) {
-    if !DISPLAY_TAKEN.load(Ordering::Acquire) {
-        with_grid(|grid| grid.write(bytes));
-    }
-}
-
-/// A session other than init's took the console as its controlling terminal
-/// (`true`), or the console is back in init's session or out of sessions (`false`).
-pub fn console_session(held: bool) {
-    SESSION.store(held, Ordering::Release);
-}
-
-/// A process has the display: stop drawing on it.
-pub fn take_display() {
-    DISPLAY_TAKEN.store(true, Ordering::Release);
 }
 
 /// The framebuffer's layout: width, height and stride in pixels, bytes per

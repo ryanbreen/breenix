@@ -5,6 +5,10 @@ root=pathlib.Path(__file__).resolve().parents[1]
 arch,leg=sys.argv[1:3]
 if arch not in ('x86', 'arm') or leg not in ('accept', 'readonly'):
     raise SystemExit('usage: ext2-acceptance.sh x86|arm accept|readonly OUTPUT')
+if arch == "x86":
+    policy = subprocess.run(["bash", str(root / "scripts/x86-qemu-policy.sh")])
+    if policy.returncode:
+        raise SystemExit(policy.returncode)
 out=pathlib.Path(sys.argv[3]).resolve()
 if (out/'qemu.pid').exists(): raise RuntimeError('retain the previous boot folder')
 out.mkdir(parents=True, exist_ok=True)
@@ -16,7 +20,7 @@ shutil.copyfile(image,out/'home.img')
 marker=out/'readonly-marker.txt'; marker.write_text('Read-only ext2 acceptance fixture\n')
 debugfs=shutil.which('debugfs') or '/opt/homebrew/opt/e2fsprogs/sbin/debugfs'
 with (out/'fixture.log').open('w') as f:
-    subprocess.run(['taskpolicy','-b',debugfs,'-w','-R',f'write {marker} /.breenix-readonly-fixture',str(out/'home.img')],stdout=f,stderr=subprocess.STDOUT,check=True)
+    subprocess.run([str(root/'scripts/build-background.sh'),debugfs,'-w','-R',f'write {marker} /.breenix-readonly-fixture',str(out/'home.img')],stdout=f,stderr=subprocess.STDOUT,check=True)
 check=subprocess.check_output([debugfs,'-R','stat /.breenix-readonly-fixture',str(out/'home.img')],stderr=subprocess.STDOUT,text=True)
 if 'Inode:' not in check: raise RuntimeError('read-only fixture marker missing')
 cmd=['qemu-system-'+('x86_64' if arch=='x86' else 'aarch64')]

@@ -5,6 +5,12 @@ comes back over the management controller's serial-over-LAN (SOL), and the boot 
 attempt. This file is the target's contract: how a kernel is delivered, how the console is captured, the deadlines
 and exit statuses, the machine service and its reaper, the boot record, the disk rule and the clean-room rule. The
 tools are in `scripts/metal/`; their host tests are `tests/metal_tools_test.py`.
+The staging tests require `mke2fs` and `debugfs` from e2fsprogs: install with
+`brew install e2fsprogs` on macOS or `sudo apt-get install e2fsprogs` on Debian/Ubuntu.
+Run `python3 tests/metal_tools_test.py` in the checkout, including in the metal build
+container. The tests resolve distribution sbin directories and Homebrew's keg even
+when those directories are absent from `PATH`; a missing tool stops the runner with
+its prerequisite and install command before any tests run.
 
 Private values stay out of this repository. The management controller's address and account, the boot URL and the
 site's identifiers live in the **site file** (`BREENIX_METAL_SITE`, default `/etc/breenix-metal/site.env`, mode

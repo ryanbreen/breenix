@@ -23,3 +23,6 @@ pub mod target;
 
 // Per-boot measurement/session intent for an installed console target.
 pub mod console_intent;
+
+#[cfg(target_arch = "x86_64")]
+pub mod console_start;
