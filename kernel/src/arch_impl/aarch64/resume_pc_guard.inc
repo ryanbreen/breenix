@@ -33,7 +33,7 @@
 .endm
 
 // Do not exclude the kernel-text window here. On Parallels the kernel is
-// identity-mapped around 0x4008_0000, overlapping the 0x4000_0000 and
+// identity-mapped around 0x4020_0000, overlapping the 0x4000_0000 and
 // 0x4100_0000 ranges where userspace programs are linked.
 //
 // Branches to \ok when \pc is a plausible EL0 resume PC: 4-byte aligned, at

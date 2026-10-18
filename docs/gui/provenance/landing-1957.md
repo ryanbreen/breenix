@@ -20,7 +20,7 @@ below; strict acceptance remains open.
    stays removed: 16 isolated short runs can precede a usable contiguous run.
    The frontier advances across a finite memory map, failed CAS operations
    observe competing progress, short claims are returned, and a ledger refusal
-   fails closed. The existing 16-short-run regression remains and passes.
+   fails closed. This PR adds the 16-short-run regression; its recorded run passes.
    No x86 QEMU was run (S23).
 3. **Host coverage.** [The inventory](landing-1957-host.json) contains all 80
    requested targets: 70 structure files, six `gpu_*` targets,
@@ -121,6 +121,7 @@ received the strict run above. The production receipt API's new return value
 is ignored by its existing consumers; the GPU behavior and suite were not
 changed by that main merge.
 
-The full branch prose scan has 150 inherited claim-lint findings and is not
-reported clean. The landing repair files, repair/merge messages and PR body
+The review scan against main `f79e590c` reports 149 claim-lint findings in
+122 files. These prose findings arrive on main with this PR; they are not
+inherited from main, and the branch is not reported clean. The landing repair files, repair/merge messages and PR body
 passed their scoped claim-lint checks.
