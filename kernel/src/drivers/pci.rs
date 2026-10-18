@@ -978,6 +978,16 @@ fn probe_device(bus: u8, device: u8, function: u8) -> Option<Device> {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if class_code == 0x0c
+        && subclass == 3
+        && prog_if == 0x30
+        && !crate::drivers::fw_cfg::present()
+    {
+        // Unknown until the metal xHCI driver measures it during attachment.
+        bars[0].size = 0;
+    }
+
     Some(Device {
         bus,
         device,
@@ -1336,7 +1346,8 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 /// `$OUTPUT_DIR/serial_user.txt` and `$OUTPUT_DIR/serial_kernel.txt` and
 /// grep across `serial_*.txt`, so both read this stream.
 ///
-/// Called from `drivers::init()` immediately after `pci::enumerate()`. There
+/// Called from `drivers::init()` immediately after `pci::enumerate()`. Metal
+/// xHCI defers the census until the driver publishes the measured BAR0. There
 /// is no `assign_bars()` step to sequence after on this arch:
 /// `pci::assign_bars()` is `#[cfg(target_arch = "aarch64")]` and its only
 /// call site is the aarch64 arm of `drivers::init()`, so on x86-64 "after
@@ -1346,9 +1357,43 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 pub fn dump_enumerated_functions() {
     let devices = get_devices().unwrap_or_default();
 
+    // Keep enumeration order and the terminal total line even when metal
+    // xHCI has not yet measured its firmware-owned BAR.
+    if !crate::drivers::fw_cfg::present()
+        && devices
+            .iter()
+            .find(|dev| dev.raw_class == 0x0c && dev.subclass == 3 && dev.prog_if == 0x30)
+            .is_some_and(|dev| dev.bars[0].size == 0)
+    {
+        return;
+    }
     for dev in &devices {
-        let bar0 = &dev.bars[0];
-        crate::serial_println!(
+        dump_function(dev);
+    }
+
+    crate::serial_println!("PCI_FN_TOTAL {}", devices.len());
+}
+
+/// Publish the metal driver's measured BAR instead of the probe's placeholder.
+#[cfg(target_arch = "x86_64")]
+pub fn publish_xhci_bar0(device: &Device, address: u64, size: u64) {
+    let mut devices = PCI_DEVICES.lock();
+    if let Some(dev) = devices.as_mut().and_then(|devices| {
+        devices.iter_mut().find(|dev| {
+            (dev.bus, dev.device, dev.function) == (device.bus, device.device, device.function)
+        })
+    }) {
+        dev.bars[0].address = address;
+        dev.bars[0].size = size;
+    }
+    drop(devices);
+    dump_enumerated_functions();
+}
+
+#[cfg(target_arch = "x86_64")]
+fn dump_function(dev: &Device) {
+    let bar0 = &dev.bars[0];
+    crate::serial_println!(
             "PCI_FN {:02x}:{:02x}.{} {:04x}:{:04x} class={:02x}/{:02x} bar0={:#x}/{:#x} irq={:#04x}",
             dev.bus,
             dev.device,
@@ -1360,8 +1405,5 @@ pub fn dump_enumerated_functions() {
             bar0.address,
             bar0.size,
             dev.interrupt_line
-        );
-    }
-
-    crate::serial_println!("PCI_FN_TOTAL {}", devices.len());
+    );
 }
