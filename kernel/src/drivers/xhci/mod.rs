@@ -266,6 +266,8 @@ struct Controller {
     protocols: Vec<Protocol>,
     devices: Vec<Device>,
     console: crate::drivers::hid_boot::Console,
+    /// Absolute console lock state, shared across keyboard pipes and reattach.
+    keyboard_leds: u8,
 }
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
@@ -424,6 +426,7 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         protocols,
         devices: Vec::new(),
         console: crate::drivers::hid_boot::Console::new(),
+        keyboard_leds: 0,
     };
     let result = controller.run(scratchpads);
     if result.is_err() {

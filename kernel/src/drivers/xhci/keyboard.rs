@@ -296,7 +296,7 @@ impl Controller {
         let Some(pipe) = self.devices[index].keyboard.as_ref() else {
             return "none";
         };
-        let (setup, leds) = (interface::set_led_report(pipe.interface), pipe.state.leds());
+        let (setup, leds) = (interface::set_led_report(pipe.interface), self.keyboard_leds);
         match self.control(index, setup, Some(leds)) {
             Ok(1) => "accepted",
             Ok(_) => "refused",
@@ -334,11 +334,11 @@ impl Controller {
                     Vec::new()
                 };
                 let now = now();
-                let Controller { devices, console, .. } = self;
+                let Controller { devices, console, keyboard_leds, .. } = self;
                 let Some(pipe) = devices[index].keyboard.as_mut() else {
                     return;
                 };
-                let leds_changed = match pipe.state.report(&report, now, &mut |o| console.output(o)) {
+                let leds_changed = match pipe.state.report(&report, now, keyboard_leds, &mut |o| console.output(o)) {
                     Ok(summary) => {
                         console.note_report(&summary);
                         summary.leds_changed
@@ -353,7 +353,12 @@ impl Controller {
                 };
                 self.console.flush();
                 if leds_changed {
-                    self.send_leds(index);
+                    // Every device displays the console's absolute lock state.
+                    for keyboard in 0..self.devices.len() {
+                        if self.devices[keyboard].keyboard.is_some() {
+                            self.send_leds(keyboard);
+                        }
+                    }
                 }
                 if let Err(error) = self.queue_report(index) {
                     log::error!("[usb] port {port}: cannot post the next report: {error}");
@@ -381,10 +386,10 @@ impl Controller {
 
     fn tick_keyboards(&mut self) {
         let now = now();
-        let Controller { devices, console, .. } = self;
+        let Controller { devices, console, keyboard_leds, .. } = self;
         for device in devices.iter_mut() {
             if let Some(pipe) = device.keyboard.as_mut() {
-                pipe.state.tick(now, &mut |o| console.output(o));
+                pipe.state.tick(now, *keyboard_leds, &mut |o| console.output(o));
             }
         }
         self.console.flush();
