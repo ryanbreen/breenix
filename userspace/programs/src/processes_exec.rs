@@ -8,6 +8,8 @@
 //! - `state FD [N...]`: write `key=value` lines describing the process image exec kept,
 //!   including whether each descriptor N is open and at what offset.
 //! - `hold FD`: read FD until end of file, then exit 0.
+//! - `threads FD TID...`: write `pid=` and `ppid=` lines to FD, and for each thread ID TID a
+//!   `tidTID=` line with what tgkill(pid, TID, 0) returns: 0, or `E` and the errno.
 //! - `saved REAL SAVED`: switch the effective user ID to REAL and back to SAVED with
 //!   setuid, keeping the real user ID REAL; exit 0 if both succeed, else the step that
 //!   failed (10-15).
@@ -24,6 +26,7 @@ mod nr {
     pub const FCNTL: u64 = 72;
     pub const LSEEK: u64 = 8;
     pub const GETPPID: u64 = 110;
+    pub const TGKILL: u64 = 234;
     pub const GETPGID: u64 = 121;
     pub const GETSID: u64 = 124;
     pub const GETUID: u64 = 102;
@@ -47,6 +50,7 @@ mod nr {
     pub const FCNTL: u64 = 25;
     pub const LSEEK: u64 = 62;
     pub const GETPPID: u64 = 173;
+    pub const TGKILL: u64 = 131;
     pub const GETPGID: u64 = 155;
     pub const GETSID: u64 = 156;
     pub const GETUID: u64 = 174;
@@ -214,6 +218,20 @@ fn state(fd: Fd, fds: &[String]) -> ! {
     process::exit(0)
 }
 
+fn threads(fd: Fd, tids: &[String]) -> ! {
+    let mut out = String::new();
+    let pid = process::getpid().map(|p| p.raw() as i64).unwrap_or(-1);
+    let _ = writeln!(out, "pid={pid}");
+    let _ = writeln!(out, "ppid={}", sys(nr::GETPPID, [0; 4]));
+    for tid in tids {
+        let Ok(tid) = tid.parse::<u64>() else { process::exit(2) };
+        let r = sys(nr::TGKILL, [pid as u64, tid, 0, 0]);
+        let _ = writeln!(out, "tid{tid}={}", if r < 0 { format!("E{}", -r) } else { r.to_string() });
+    }
+    write_all(fd, out.as_bytes());
+    process::exit(0)
+}
+
 /// Set the effective ID to REAL and then to SAVED with `set`, checking after each step that
 /// the effective ID took the value and the real ID stayed REAL. Exits `base` plus the step
 /// that failed, or 0.
@@ -289,6 +307,7 @@ fn main() {
         Some("script") => report(fd_arg(args.get(3)), &args),
         Some(path) if path.starts_with('/') => report(fd_arg(args.get(2)), &args),
         Some("state") => state(fd_arg(args.get(2)), &args[3..]),
+        Some("threads") => threads(fd_arg(args.get(2)), &args[3..]),
         Some("hold") => {
             let fd = fd_arg(args.get(2));
             let mut buf = [0u8; 16];
