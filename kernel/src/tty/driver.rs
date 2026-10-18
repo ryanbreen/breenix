@@ -1221,11 +1221,8 @@ pub fn push_reply(number: usize, byte: u8) -> bool {
     }
 }
 
-/// Push a character to the console TTY
-///
-/// This is the main entry point for keyboard input.
-/// It processes the character through the line discipline.
-#[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
+/// Push a character to the console TTY, through its line discipline.
+#[allow(dead_code)] // Used by the TTY tests (conditionally compiled)
 pub fn push_char(c: u8) {
     push_char_from(c, super::InputSource::Other);
 }

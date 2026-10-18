@@ -258,16 +258,6 @@ pub(crate) fn report_userspace_completion() {
         // No more userspace threads remaining
         report_line!(info, "No more userspace threads remaining");
 
-        // Wake the keyboard task to ensure it can process any pending input
-        #[cfg(target_arch = "x86_64")]
-        {
-            crate::keyboard::stream::wake_keyboard_task();
-            report_line!(
-                info,
-                "Woke keyboard task to ensure input processing continues"
-            );
-        }
-
         // Signal that userspace testing is complete with clear markers
         report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
         let (exited, nonzero) = crate::task::exit_tally::totals();

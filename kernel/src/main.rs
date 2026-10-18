@@ -349,7 +349,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("SWAPGS support enabled");
     }
 
-    // Initialize keyboard queue
+    // Reset the PS/2 keyboard's decoder before its interrupt is enabled
     keyboard::init();
     log::info!("Keyboard queue initialized");
 
@@ -2561,7 +2561,6 @@ fn kernel_main_continue() -> ! {
     ))]
     let mut executor = {
         let mut executor = task::executor::Executor::new();
-        executor.spawn(task::Task::new(keyboard::keyboard_task()));
         executor.spawn(task::Task::new(serial::command::serial_command_task()));
         executor
     };
@@ -2654,7 +2653,6 @@ fn kernel_main_continue() -> ! {
                 );
 
                 let mut executor = task::executor::Executor::new();
-                executor.spawn(task::Task::new(keyboard::keyboard_task()));
                 executor.spawn(task::Task::new(serial::command::serial_command_task()));
                 executor.run()
             },
@@ -2771,16 +2769,6 @@ fn idle_thread_fn() {
             if has_work {
                 // Yield to let scheduler pick a ready thread
                 task::scheduler::yield_current();
-            }
-        }
-
-        // Periodically wake keyboard task to ensure responsiveness
-        // This helps when returning from userspace execution
-        static mut WAKE_COUNTER: u64 = 0;
-        unsafe {
-            WAKE_COUNTER += 1;
-            if WAKE_COUNTER % 100 == 0 {
-                keyboard::stream::wake_keyboard_task();
             }
         }
     }
