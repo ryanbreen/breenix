@@ -5745,14 +5745,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // The old thread's kernel stack stays in use by this CPU until the return
     // path leaves it: the exception frame the return path reads lives there.
     // When the dispatched frame can be staged off that stack (step 10), the
-    // old thread is marked as still being saved and requeued now, so another
-    // CPU can select it at once and waits only for the mark, which the return
-    // path clears without a lock as soon as SP has left the stack (#1785).
-    let staged_frame = staged_frame_slot();
+    // old thread is marked as still being saved and requeued now, with no
+    // reschedule IPI. Another CPU finds it at its next tick or scheduling
+    // point and skips it while the mark is set; the return path clears the
+    // mark without a lock as soon as SP has left the stack (#1785). A thread
+    // that cannot be queued without an IPI keeps the deferred requeue.
+    let staged_frame =
+        staged_frame_slot().filter(|_| is_old_idle || sched.requeues_without_ipi(old_id));
     if staged_frame.is_some() {
         if !is_old_idle {
             super::switch_save::mark(cpu_id, old_id);
-            sched.requeue_thread_after_save(old_id);
+            sched.requeue_switched_out(old_id);
         }
     } else if !is_old_idle {
         // Mark the old thread as "switching out". This prevents wakeup paths
