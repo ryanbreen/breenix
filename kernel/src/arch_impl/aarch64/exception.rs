@@ -2700,15 +2700,9 @@ fn check_need_resched_on_irq_exit() {
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
-    // Read all available bytes from the UART FIFO
-    while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Push to stdin buffer for kernel shell or userspace read() syscall
-        // This wakes any blocked readers waiting for input
-        crate::ipc::stdin::push_byte_from_irq(byte);
-    }
-
-    // Clear the interrupt
-    serial_aarch64::clear_rx_interrupt();
+    // Do not consume a UART byte until stdin owns space for it. Contention
+    // defers RX until the ring holder releases it; the IRQ does not wait.
+    crate::ipc::stdin::receive_serial_from_irq(serial_aarch64::get_received_byte);
 }
 
 /// Get exception class name for debugging

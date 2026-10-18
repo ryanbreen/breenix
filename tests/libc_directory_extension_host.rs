@@ -17,6 +17,7 @@ mod block {
         OutOfMemory,
     }
     pub trait BlockDevice: Send + Sync {
+        fn is_read_only(&self) -> bool;
         fn identity(&self) -> usize {
             self as *const Self as *const () as usize
         }
@@ -45,8 +46,12 @@ struct Disk {
     trace: Mutex<Vec<u64>>,
     fail: usize,
     restore_fail: bool,
+    read_only: bool,
 }
 impl BlockDevice for Disk {
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
     fn block_size(&self) -> usize {
         512
     }
@@ -85,6 +90,7 @@ fn partial_inode_or_pointer_failure_restores_before_recycling() {
             trace: Mutex::new(Vec::new()),
             fail,
             restore_fail: false,
+            read_only: true,
         };
         let transaction = directory_extension::Extension::new(
             &disk,
@@ -93,6 +99,7 @@ fn partial_inode_or_pointer_failure_restores_before_recycling() {
         )
         .unwrap();
         assert_eq!(transaction.identity(), disk.identity());
+        assert!(transaction.is_read_only());
         assert_eq!(transaction.num_blocks(), 5);
         transaction.flush().unwrap();
         transaction.write_block(0, &[1; 512]).unwrap();
@@ -111,6 +118,7 @@ fn failed_reference_restore_retains_allocation() {
         trace: Mutex::new(Vec::new()),
         fail: 2,
         restore_fail: true,
+        read_only: false,
     };
     let transaction = directory_extension::Extension::new(
         &disk,
@@ -132,6 +140,7 @@ fn publish_initializes_double_indirect_children_before_references() {
         trace: Mutex::new(Vec::new()),
         fail: usize::MAX,
         restore_fail: false,
+        read_only: false,
     };
     let transaction = directory_extension::Extension::new(
         &disk,

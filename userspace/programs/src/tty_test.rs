@@ -8,6 +8,7 @@
 //! - TCGETS/TCSETS round-trip preserves termios
 //! - tcgetpgrp()/tcsetpgrp()
 
+use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::process;
 use libbreenix::termios::{self, Termios, TCSANOW};
@@ -231,11 +232,22 @@ fn main() {
         }
     }
 
+    // The foreground cases use a real group: our own, with us as its member.
+    // A session leader is already the leader of its group and may not move
+    // (EPERM); its group is its PID either way.
+    if let Err(e) = process::setpgid(0, 0) {
+        println!("  setpgid(0, 0) returned error: {:#010x}", errno_code(&e));
+    }
+    match process::getpgrp() {
+        Ok(pgrp) if pgrp.raw() as i32 == my_pid_i32 => pass("our PID names our own process group"),
+        _ => fail("setpgid(0, 0) should leave us in the group our PID names"),
+    }
+
     match termios::tcsetpgrp(Fd::STDIN, my_pid_i32) {
-        Ok(()) => pass("tcsetpgrp(0, our_pid) succeeded"),
+        Ok(()) => pass("tcsetpgrp(0, our_pgrp) succeeded"),
         Err(e) => {
             println!("  tcsetpgrp returned error: {:#010x}", errno_code(&e));
-            fail("tcsetpgrp should succeed with our PID");
+            fail("tcsetpgrp should succeed with our process group");
         }
     }
 
@@ -255,32 +267,35 @@ fn main() {
         }
     }
 
+    // A group with no member in our session: POSIX tcsetpgrp fails with
+    // EPERM and the foreground group stays as it was.
     let test_pgrp = 12345;
+    match libbreenix::signal::kill(-test_pgrp, 0) {
+        Err(Error::Os(Errno::ESRCH)) => {}
+        _ => fail("process group 12345 should have no member for the EPERM case"),
+    }
     match termios::tcsetpgrp(Fd::STDIN, test_pgrp) {
-        Ok(()) => pass("tcsetpgrp(0, 12345) succeeded"),
+        Err(Error::Os(Errno::EPERM)) => pass("tcsetpgrp(0, 12345) failed with EPERM"),
+        Ok(()) => fail("tcsetpgrp should refuse a group with no member in our session"),
         Err(e) => {
             println!("  tcsetpgrp returned error: {:#010x}", errno_code(&e));
-            fail("tcsetpgrp should succeed with arbitrary pgrp");
+            fail("tcsetpgrp should fail with EPERM for a group with no member");
         }
     }
 
     match termios::tcgetpgrp(Fd::STDIN) {
         Ok(verify_pgrp) => {
-            if verify_pgrp == test_pgrp {
-                pass("tcgetpgrp returns arbitrary pgrp value");
+            if verify_pgrp == my_pid_i32 {
+                pass("tcgetpgrp still returns our pgrp after the refusal");
             } else {
-                fail("tcgetpgrp should return the arbitrary pgrp we set");
+                println!("  Expected: {:#010x}, got: {:#010x}", my_pid_i32, verify_pgrp);
+                fail("a refused tcsetpgrp should leave the foreground pgrp unchanged");
             }
         }
         Err(_) => {
-            fail("tcgetpgrp failed after setting arbitrary pgrp");
+            fail("tcgetpgrp failed after the refused tcsetpgrp");
         }
     }
-
-    if termios::tcsetpgrp(Fd::STDIN, my_pid_i32).is_err() {
-        fail("tcsetpgrp failed to restore our pgrp");
-    }
-    pass("Restored our process as foreground pgrp");
 
     // All tests passed
     println!("\n=== TTY Test Results ===");
