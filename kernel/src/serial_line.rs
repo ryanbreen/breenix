@@ -117,7 +117,7 @@ impl Port for Uart {
 
 /// Write one record from `writer` to the UART while owning it, on a fresh
 /// line if another writer's line is open.
-fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
+fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], level: log::Level) {
     if bytes.is_empty() {
         return;
     }
@@ -132,7 +132,7 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
     uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
     // The kernel log, as the log rings keep it, also goes to the screen console.
     if TEE && writer == Writer::Kernel {
-        crate::console::log_bytes(bytes);
+        crate::console::log_bytes_at(level, bytes);
     }
 }
 
@@ -145,7 +145,7 @@ pub fn write_notices() {
         let mut ownership = Ownership::acquire();
         crate::log_notice::take(|line| {
             uart_owner::write::<Uart, true>(Writer::Kernel, line, Kind::Line, &mut ownership);
-            crate::console::log_bytes(line);
+            crate::console::log_bytes_at(log::Level::Warn, line);
         });
     }
 }
@@ -188,6 +188,7 @@ pub struct Buffer<const TEE: bool> {
     bytes: [MaybeUninit<u8>; CAPACITY],
     len: usize,
     writer: Writer,
+    level: log::Level,
 }
 
 impl<const TEE: bool> Buffer<TEE> {
@@ -201,7 +202,15 @@ impl<const TEE: bool> Buffer<TEE> {
             bytes: [MaybeUninit::uninit(); CAPACITY],
             len: 0,
             writer,
+            level: log::Level::Info,
         }
+    }
+
+    /// Carry a structured kernel record's severity through UART chunking.
+    pub fn with_level(level: log::Level) -> Self {
+        let mut line = Self::new();
+        line.level = level;
+        line
     }
 
     pub fn char(&mut self, byte: u8) {
@@ -277,7 +286,7 @@ impl<const TEE: bool> Buffer<TEE> {
         // `char` initializes every byte below `len`.
         let record =
             unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.len) };
-        emit::<TEE>(self.writer, record);
+        emit::<TEE>(self.writer, record, self.level);
         self.len = 0;
     }
 }

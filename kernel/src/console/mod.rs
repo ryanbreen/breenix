@@ -23,8 +23,8 @@
 //! keep the `[fbcon]` and `fbcon` text the x86-metal boot path measures.
 //! **ARM64** keeps the kernel log from the moment the display exists, and takes
 //! the screen from the boot screen when the first process starts (`take_screen`).
-//! ARM64 has no levelled logger: its kernel log is the kernel's serial output
-//! (`log_bytes`, fed from `serial_line`), drawn as INFO.
+//! ARM64 carries structured log severity through `serial_line`; unlevelled
+//! serial records (`log_bytes`) are drawn as INFO.
 //!
 //! The console starts in init's session. While it is there, or in no session,
 //! kernel log records of INFO and above are drawn; while another session has
@@ -56,8 +56,7 @@ const TAG: &str = "[fbcon]";
 #[cfg(target_arch = "aarch64")]
 const TAG: &str = "[console]";
 
-/// A console log line. ARM64 kernels have no `log` backend, so their lines go
-/// to serial, which feeds the kernel log.
+/// A console log line, using each architecture's levelled serial logger.
 #[cfg(target_arch = "x86_64")]
 macro_rules! say {
     (warn, $($arg:tt)*) => { log::warn!($($arg)*) };
@@ -66,7 +65,9 @@ macro_rules! say {
 }
 #[cfg(target_arch = "aarch64")]
 macro_rules! say {
-    ($level:ident, $($arg:tt)*) => { crate::serial_println!($($arg)*) };
+    (warn, $($arg:tt)*) => { log::warn!($($arg)*) };
+    (error, $($arg:tt)*) => { log::error!($($arg)*) };
+    (info, $($arg:tt)*) => { log::info!($($arg)*) };
 }
 
 static DISPLAY: OnceCell<Display> = OnceCell::uninit();
@@ -85,9 +86,6 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// A session other than init's has the console as its controlling terminal.
 static SESSION: AtomicBool = AtomicBool::new(false);
-/// Only warnings and errors are drawn. The render thread follows `SESSION`
-/// here, saying so on the screen as it changes.
-static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// The console has the screen: on x86 once attached, on ARM64 once the boot
 /// screen gave way.
@@ -104,6 +102,9 @@ struct Attached {
 
 static ATTACHED: Mutex<Option<Attached>> = Mutex::new(None);
 static RUNNING: AtomicBool = AtomicBool::new(false);
+// Covers the entire render pass, including GPU completion and read-back.
+static PRESENTING: AtomicBool = AtomicBool::new(false);
+static REDRAW: AtomicBool = AtomicBool::new(false);
 
 /// The idle read-back has been asked for.
 static IDLE_CHECK: AtomicBool = AtomicBool::new(false);
@@ -200,7 +201,7 @@ impl Write for Line {
 /// Put a kernel log record on the console, as its own line.
 #[cfg(target_arch = "x86_64")]
 pub fn log_record(level: log::Level, args: &fmt::Arguments) {
-    if DISPLAY_TAKEN.load(Ordering::Acquire) || (QUIET.load(Ordering::Acquire) && level > log::Level::Warn) {
+    if SESSION.load(Ordering::Acquire) && level > log::Level::Warn {
         return;
     }
     let mut line = Line { bytes: [0; 256], len: 0 };
@@ -220,7 +221,14 @@ pub fn log_record(level: log::Level, args: &fmt::Arguments) {
 /// drawn as INFO.
 #[cfg(target_arch = "aarch64")]
 pub fn log_bytes(bytes: &[u8]) {
-    if bytes.is_empty() || DISPLAY_TAKEN.load(Ordering::Acquire) || QUIET.load(Ordering::Acquire) {
+    log_bytes_at(log::Level::Info, bytes);
+}
+
+/// A serial record with a known severity, retained even during a quiet session
+/// when it is a warning or error. Untyped serial output is INFO.
+#[cfg(target_arch = "aarch64")]
+pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
+    if bytes.is_empty() || (SESSION.load(Ordering::Acquire) && level > log::Level::Warn) {
         return;
     }
     with_grid(|console| {
@@ -242,9 +250,6 @@ pub fn log_bytes(bytes: &[u8]) {
 
 /// Put console TTY output on the console.
 pub fn write_tty(bytes: &[u8]) {
-    if DISPLAY_TAKEN.load(Ordering::Acquire) {
-        return;
-    }
     with_grid(|console| {
         if console.kernel_line_open {
             console.grid.begin_line();
@@ -263,8 +268,23 @@ pub fn console_session(held: bool) {
 /// A process has the display: stop drawing on it. Returns once no row of the
 /// console's is being written, so the new owner's first draw is not overwritten.
 pub fn take_display() {
-    DISPLAY_TAKEN.store(true, Ordering::Release);
+    DISPLAY_TAKEN.store(true, Ordering::SeqCst);
+    while PRESENTING.load(Ordering::SeqCst) {
+        sleep_ms(1);
+    }
     display::wait_until_idle();
+    // A timed-out fenced command still belongs to the device. Do not give a
+    // new owner authority to draw until that DMA has actually stopped.
+    #[cfg(target_arch = "aarch64")]
+    while crate::drivers::virtio::gpu_pci::presentation_pending() {
+        sleep_ms(1);
+    }
+}
+
+/// Return the display to the retained terminal, repainting even unchanged rows.
+pub fn give_back_display() {
+    REDRAW.store(true, Ordering::Release);
+    DISPLAY_TAKEN.store(false, Ordering::SeqCst);
 }
 
 /// Whether the console has the screen and no process has taken it.
@@ -385,6 +405,24 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
         _ => return None,
     };
     Some((u32::from(r) << 16) | (u32::from(c1) << 8) | u32::from(b))
+}
+
+/// Read the active ARM64 scanout memory or its attached guest backing without
+/// presenting it (a display owner may have replaced the console's pixels).
+#[cfg(target_arch = "aarch64")]
+pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
+    let display = DISPLAY.get()?;
+    let layout = display.layout();
+    if x >= layout.width || y >= layout.height {
+        return None;
+    }
+    let mut line = alloc::vec![0; layout.width * layout.bytes_per_pixel];
+    display.read_line(y, &mut line);
+    let offset = x * layout.bytes_per_pixel;
+    let [a, g, b] = [line[offset], line[offset + 1], line[offset + 2]];
+    let bgr = crate::graphics::arm64_fb::FB_INFO_CACHE.get()?.is_bgr;
+    let (r, b) = if bgr { (b, a) } else { (a, b) };
+    Some((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
 }
 
 // ---------------------------------------------------------------------------
@@ -558,16 +596,26 @@ fn render_thread(display: &'static Display, attached: Attached) {
     };
 
     let mut announced = false;
+    let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
         if !SCREEN.load(Ordering::Acquire) {
             answer_checks(Err(Absent::NotYet));
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
+        // Publish before checking ownership. A taker either observes this
+        // pass and waits, or this pass observes the take and submits nothing.
+        PRESENTING.store(true, Ordering::SeqCst);
         if !may_draw() {
+            PRESENTING.store(false, Ordering::SeqCst);
             answer_checks(Err(Absent::Taken));
             sleep_ms(PASS_INTERVAL_MS * 10);
             continue;
+        }
+        if REDRAW.swap(false, Ordering::AcqRel) {
+            screen.cleared = false;
+            screen.complete = false;
+            screen.shown.fill(None);
         }
         let changed = snapshot.refresh();
         if changed || !screen.complete {
@@ -593,18 +641,18 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         }
         let session = SESSION.load(Ordering::Acquire);
-        if session != QUIET.load(Ordering::Acquire) {
+        if session != last_session {
             if session {
                 say!(info, "{} the console has a session: only kernel warnings and errors are drawn", TAG);
-                QUIET.store(true, Ordering::Release);
             } else {
-                QUIET.store(false, Ordering::Release);
                 say!(info, "{} the console's session ended: the kernel log is drawn again", TAG);
             }
+            last_session = session;
         }
         if announced {
             answer_checks(Ok(&screen));
         }
+        PRESENTING.store(false, Ordering::SeqCst);
         sleep_ms(PASS_INTERVAL_MS);
     }
 }
@@ -654,6 +702,7 @@ impl Screen {
         if !self.cleared {
             raster::clear(&mut self.shadow, &self.layout);
             self.cleared = self.display.write(&self.shadow, 0..self.layout.height, may_draw)
+                && may_draw()
                 && self.display.flush(0..self.layout.height).is_ok();
             if !self.cleared {
                 self.complete = false;
@@ -687,7 +736,7 @@ impl Screen {
             }
         }
         if let Some(lines) = dirty {
-            if self.display.flush(lines.clone()).is_err() {
+            if !may_draw() || self.display.flush(lines.clone()).is_err() {
                 // The rows are drawn and flushed again on the next pass.
                 let line_height = self.layout.font.line_height();
                 for shown in &mut self.shown[lines.start / line_height..lines.end.div_ceil(line_height)] {
@@ -709,7 +758,7 @@ impl Screen {
         let layout = self.layout;
         let bpp = layout.bytes_per_pixel;
         let font = layout.font;
-        let source = self.display.settle();
+        let source = if may_draw() { self.display.settle() } else { Err("display ownership changed") };
         let mut line = alloc::vec![0u8; layout.width * bpp];
         let mut differing_lines = 0;
         let mut first_difference = None;
