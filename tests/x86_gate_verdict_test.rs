@@ -1063,7 +1063,7 @@ fn full_accounting_requires_a_publication_count() {
 /// A 100 ms kick window on a 2.4 GHz counter with 5 ms ticks, opened at guest
 /// TSC 24e9, that only the host's record can call starved.
 fn starved_sigkill_log() -> &'static str {
-    "SIGKILL_TEARDOWN_TEST: pid=17 defer=1 reclaim=1 kick_cpu=1 sender_cpu=0 counter_interval=240000000 tick_period=12000000 counter_ticks_per_ms=2400000 interval_us=100000 tick_us=5000 observer_ticks=0 all_ticks=0 online_cpus=4 observer_ms_per_tick=unbounded all_ms_per_tick=unbounded starved_ms_per_tick=60 kick_at=24000000000 observer_vcpu=1 sender_vcpu=0 masked_cpus=0 starvation_check=host verdict=STARVED\nSIGKILL_TEARDOWN_TEST: STARVED windows=1: host-starved, not evidence; rerun the boot\n"
+    "SIGKILL_TEARDOWN_TEST: pid=17 defer=1 reclaim=1 kick_cpu=1 sender_cpu=0 counter_interval=240000000 tick_period=12000000 counter_ticks_per_ms=2400000 interval_us=100000 tick_us=5000 observer_ticks=0 all_ticks=0 online_cpus=4 observer_ms_per_tick=unbounded all_ms_per_tick=unbounded starved_ms_per_tick=60 kick_at=24000000000 observer_vcpu=1 sender_vcpu=0 masked_cpus=0 held=0 held_cpu=0 held_needed=228000001 starved_by=ticks starvation_check=host verdict=STARVED\nSIGKILL_TEARDOWN_TEST: STARVED windows=1: host-starved, not evidence; rerun the boot\n"
 }
 
 /// The host sampler's record of that window: vCPU 1 waited 150 ms to run.

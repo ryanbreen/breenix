@@ -2620,7 +2620,9 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             && interrupted_context_had_irqs_unmasked(frame)
             && !gic::is_spi_level_triggered(irq_id);
         if reopen_nested_irq_window {
-            super::irq_mask_account::closing();
+            // This interrupt stays active until `deactivate_irq`, so when it is
+            // the timer's it holds the next tick off with interrupts enabled.
+            super::irq_mask_account::closing_nested();
             unsafe {
                 core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
             }
