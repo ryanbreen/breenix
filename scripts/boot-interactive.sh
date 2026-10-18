@@ -28,6 +28,7 @@
 #   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
 #                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
+#   --cpu MODEL          QEMU CPU model (default max; cortex-a72 selects the strict TCG profile)
 #   --gpu-gl             also attach virtio-gpu-gl-pci, on the GL QEMU that scripts/build-qemu-gl.sh installs
 #                        (VirGL on ANGLE's Metal backend): the window is -display cocoa,gl=es, a run without
 #                        one has SPICE GL on a local socket. After the VM stops, scripts/check-host-renderer.py
@@ -50,6 +51,7 @@ GATE_TIMEOUT=1800
 DISPLAY_MODE=
 BUILD=1
 CPUS=4
+CPU=max
 MODE=tests
 PROGRAM=
 SUITE=
@@ -61,12 +63,13 @@ GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus)
+        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
         --mode) MODE="$2"; shift 2 ;;
         --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
+        --cpu) CPU="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
@@ -237,14 +240,23 @@ mkdir -p "$(dirname "$SERIAL_LOG")"
 : > "$SERIAL_LOG"
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 cp "$DISK" "$WRITABLE"
+ROOT_DRIVE="if=none,id=ext2,format=raw,file=$WRITABLE"
+FIXTURE_ARGS=()
+if [ "$MODE" = tests ]; then
+    echo "==> Preparing the read-only ext2 fixture"
+    FIXTURE="$(dirname "$SERIAL_LOG")/ext2-readonly.img"
+    run_build bash "$ROOT/scripts/create-readonly-ext2-fixture.sh" "$DISK" "$FIXTURE"
+    # The driver scans MMIO buses upward; QEMU allocates them downward.
+    # Add /home first so the writable root is still device zero.
+    FIXTURE_ARGS=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,readonly=on,file=$FIXTURE")
+else
+    # Interactive suites inspect the disposable raw image without a host crash.
+    ROOT_DRIVE+=",cache=unsafe,aio=threads"
+fi
 if [ "$GPU_GL" -eq 1 ]; then
     export BREENIX_HOST_RENDERER_JSON="$(dirname "$SERIAL_LOG")/host-renderer.json"
     rm -f "$BREENIX_HOST_RENDERER_JSON"
 fi
-# This disposable image is checked as a raw host file after the suite. Keep
-# writes to that file, but do not make each guest barrier wait for APFS's
-# power-loss durability. The test never crashes or restarts the host.
-
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
@@ -258,7 +270,7 @@ else
 fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
 # A one-case run is not registered: Vigil would score it as a suite boot.
-QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu max)
+QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu "$CPU")
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
 VIGIL_ID=
 # A boot with other than the default 4 processors is recorded with its count, so it never stands for main.
@@ -305,8 +317,9 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
+    ${FIXTURE_ARGS[@]+"${FIXTURE_ARGS[@]}"} \
     -device virtio-blk-device,drive=ext2 \
-    -drive if=none,id=ext2,format=raw,cache=unsafe,aio=threads,file="$WRITABLE" \
+    -drive "$ROOT_DRIVE" \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \

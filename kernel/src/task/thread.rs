@@ -614,9 +614,11 @@ impl SchedPolicy {
     pub const RR: u8 = 2;
     pub const BATCH: u8 = 3;
     pub const IDLE: u8 = 5;
-    /// The kernel thread that ends processes killed by a fatal signal: it
-    /// ranks above every real-time thread, so runnable SCHED_FIFO threads on
-    /// every CPU cannot keep a group's deaths from being carried out.
+    /// The kernel threads that end processes killed by a fatal signal and
+    /// drain deferred reclamation: they rank above the real-time priorities
+    /// (rank 101 against at most 100), so runnable SCHED_FIFO threads on each
+    /// CPU cannot keep a group's deaths from being carried out or dead address
+    /// spaces from being freed.
     pub const KERNEL: u8 = 0x80;
     /// A thread's policy until it is changed: SCHED_OTHER.
     pub const DEFAULT: Self = Self {
@@ -633,7 +635,7 @@ impl SchedPolicy {
     };
     /// A SCHED_RR quantum, in timer ticks (`sched_rr_get_interval`).
     pub const RR_QUANTUM_TICKS: u64 = 10;
-    /// The policy of the kernel's fatal-exit thread (`KERNEL`).
+    /// The policy of the kernel's fatal-exit and reclaim threads (`KERNEL`).
     pub const KERNEL_EXIT: Self = Self {
         policy: Self::KERNEL,
         ..Self::DEFAULT

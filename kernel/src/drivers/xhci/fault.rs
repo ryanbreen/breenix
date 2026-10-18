@@ -1,4 +1,5 @@
-//! Opt-in, per-boot recovery exercise. Its boot records are evidence-ineligible.
+//! Opt-in, per-boot recovery exercise, compiled only with the
+//! `xhci_fault_inject` feature. Its boot records are evidence-ineligible.
 //! Configuration failure is injected at the driver boundary. USB 2.0
 //! 9.4.3 covers short Get Descriptor replies; 9.6.1 defines the 18-byte
 //! device descriptor, even if wLength requests more.
@@ -59,17 +60,34 @@ pub(super) fn requested() -> Result<Option<Mode>, &'static str> {
 
 #[cfg(not(test))]
 impl super::Controller {
-    pub(super) fn recovery_exercise(&mut self, mode: Mode) -> Result<(), &'static str> {
-        use super::{delay, now, SECOND};
+    /// Run the staged exercise, if one is requested. An unusable request is
+    /// reported and the console starts as it would without one.
+    pub(super) fn fault_exercise(&mut self) -> Result<bool, &'static str> {
+        match requested() {
+            Ok(Some(mode)) => self.recovery_exercise(mode).map(|()| true),
+            Ok(None) => Ok(false),
+            Err(error) => {
+                log::error!("[xhci-fault] request unusable: {error}; no exercise runs");
+                Ok(false)
+            }
+        }
+    }
+
+    /// The event ring is read only after the MSI handler published work, the
+    /// driver's rule (`service`), so a PASS also shows interrupt delivery.
+    fn recovery_exercise(&mut self, mode: Mode) -> Result<(), &'static str> {
+        use super::{now, INTERRUPTS, SECOND};
+        use core::sync::atomic::Ordering;
         use crate::drivers::hid_boot::interface;
         let index = self.devices.iter().position(|d| d.keyboard.is_some())
             .ok_or("fault test needs a boot keyboard")?;
         let port = self.devices[index].port;
         self.fault.arm(mode, port);
+        let began = INTERRUPTS.load(Ordering::Acquire);
         log::info!("[xhci-fault] {} BEGIN", mode.name());
         if mode == Mode::ResetDevice {
             self.teardown(index, "fault-test reattach");
-            self.attach(port, 0);
+            self.attach(port);
             if self.fault.refusals != 2 { return Err("configuration faults did not run"); }
         }
         let index = self.devices.iter().position(|d| d.port == port && d.keyboard.is_some())
@@ -93,8 +111,9 @@ impl super::Controller {
                 || self.devices[index].ep0_retries != retries + 1 || self.fault.shorts != 1 {
                 return Err("short descriptor was not resent completely");
             }
-            // A real interrupt-IN completion must have survived EP0's waits.
-            self.service()?;
+            // Since `dispatch`, only the EP0 waits read the event ring, each
+            // after an MSI. A periodic report completes within the 50 ms
+            // resend delay, so its completion was queued there and kept.
             let device = &self.devices[index];
             let pipe = device.keyboard.as_ref().ok_or("no keyboard")?;
             if !self.completions.iter().any(|e| e.kind() == 32 && e.slot() == device.slot
@@ -105,21 +124,20 @@ impl super::Controller {
         }
         let deadline = now().saturating_add(SECOND);
         loop {
-            self.service()?;
             self.dispatch();
             let pipe = self.devices.iter().find(|d| d.port == port).and_then(|d| d.keyboard.as_ref())
                 .ok_or("keyboard lost after recovery")?;
             if pipe.reports > before && pipe.outstanding.is_some() { break; }
-            if now() >= deadline { return Err("no input report after recovery"); }
-            delay(1_000_000);
+            if !self.wait_work(Some(deadline), false)? { return Err("no input report after recovery"); }
+            self.service()?;
         }
         let index = self.devices.iter().position(|d| d.port == port).ok_or("keyboard left")?;
         if self.control(index, interface::set_idle_indefinite(interface), None)? != 1 {
             return Err("could not restore change-only reports");
         }
-        log::info!("[xhci-fault] {} PASS: refusals={} shorts={} input-report-decoded-and-requeued",
-                   mode.name(), self.fault.refusals, self.fault.shorts);
-        // Use the separate fault-test completion marker.
+        log::info!("[xhci-fault] {} PASS: refusals={} shorts={} interrupts={} input-report-decoded-and-requeued",
+                   mode.name(), self.fault.refusals, self.fault.shorts,
+                   INTERRUPTS.load(Ordering::Acquire) - began);
         Ok(())
     }
 }

@@ -6,8 +6,10 @@
 //! DMA is coherent on x86. One worker owns the rings and device contexts;
 //! the MSI handler accesses only published MMIO addresses and atomic work.
 //! `keyboard` adds HID boot keyboards, hot-plug and slot reclamation.
+//! `fault` is the recovery exercise, built only into fault-test kernels.
 mod keyboard;
 mod recovery;
+#[cfg(feature = "xhci_fault_inject")]
 mod fault;
 mod spec;
 
@@ -288,6 +290,7 @@ struct Controller {
     console: crate::drivers::hid_boot::Console,
     /// Absolute console lock state, shared across keyboard pipes and reattach.
     keyboard_leds: u8,
+    #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
 }
 
@@ -453,6 +456,7 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         devices: Vec::new(),
         console: crate::drivers::hid_boot::Console::new(),
         keyboard_leds: 0,
+        #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
     };
     let result = controller.run(scratchpads);
@@ -1025,13 +1029,15 @@ impl Controller {
         index: u8,
         len: u16,
     ) -> Result<Vec<u8>, &'static str> {
+        // Fault-test only: the device descriptor is 18 bytes. Requesting 19
+        // produces a real Short Packet; the resend asks for 18 again.
+        #[cfg(feature = "xhci_fault_inject")]
         let short = core::cell::Cell::new(self.fault.short_descriptor(device.port, kind, len));
         let request = spec::get_descriptor(kind, index, len).parameter;
         let event = self.ep0_transfer(device, request, &|device: &mut Device| {
             // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
             // The DMA allocation need not itself be 64 KiB aligned, so split there.
-            // Fault-test only: the device descriptor is 18 bytes. Requesting
-            // 19 produces a real Short Packet; the resend asks for 18 again.
+            #[cfg(feature = "xhci_fault_inject")]
             let len = if short.replace(false) { len + 1 } else { len };
             let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
             let mut offset = 0usize;
