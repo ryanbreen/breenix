@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -42,7 +43,7 @@ class CacheTests(unittest.TestCase):
         # tree's own rust-fork, so the override is cleared (patch.dict restores it).
         os.environ.pop('BREENIX_RUST_FORK_LIBRARY', None)
 
-    def build(self, repo, logs, label):
+    def build(self, repo, logs, label, targets=None):
         for name, data in {'userspace/programs/example.elf': b'ELF bytes',
                            'userspace/programs/libc-busybox.links': b'cat\nsh\n',
                            'target/test_binaries.img': b'test bytes',
@@ -54,7 +55,9 @@ class CacheTests(unittest.TestCase):
         (repo / 'userspace/programs/target/stale').write_text('not a clean build')
 
     def call(self, *flags):
-        with patch.object(artifacts, 'checked'), patch.object(artifacts, 'key', return_value='a' * 64), patch.object(artifacts.sys, 'argv',
+        with patch.object(artifacts, 'checked'), patch.object(artifacts, 'key', return_value='a' * 64), \
+                patch.object(artifacts, 'metal_toolchain_key', return_value='b' * 64), \
+                patch.object(artifacts, 'metal_source_times'), patch.object(artifacts.sys, 'argv',
                 ['gate-artifacts.py', *flags, str(self.repo), str(self.logs)]):
             artifacts.main()
 
@@ -249,6 +252,63 @@ class CacheTests(unittest.TestCase):
             self.call('--metal')
             self.assertEqual(build.call_count, 2)
             self.assertEqual(len(list((self.cache / 'metal-artifacts').glob('*/built-once.json'))), 2)
+
+    def test_metal_input_miss_reuses_targets_under_exclusive_lease_and_failure_releases_it(self):
+        targets = self.cache / 'metal-targets' / ('b' * 64)
+        lock = 'metal-targets-' + targets.name
+        def build(repo, logs, label, *, targets):
+            self.assertIsNone(trees.lease(self.cache, lock, blocking=False))
+            marker = targets / 'programs/compiled'
+            if marker.exists():
+                self.assertEqual(marker.read_text(), 'previous build')
+                raise RuntimeError('compiler rejected changed source')
+            marker.write_text('previous build')
+            self.build(repo, logs, label)
+        with patch.object(artifacts, 'build', side_effect=build):
+            self.call('--metal')
+            # A different exact input key misses, but retains the same compiler pool.
+            with patch.object(artifacts, 'metal_cache_key', return_value='c' * 64):
+                with self.assertRaisesRegex(RuntimeError, 'compiler rejected'):
+                    self.call('--metal')
+        self.assertFalse((self.cache / 'metal-artifacts' / ('c' * 64) / 'built-once.json').exists())
+        with trees.lease(self.cache, lock, blocking=False) as lease:
+            self.assertIsNotNone(lease)
+
+    def test_metal_source_times_compare_bytes_and_changed_inputs_are_newer_than_waiting_clone(self):
+        subprocess.run(['git', 'init', '--quiet', str(self.repo)], check=True)
+        source = self.repo / 'userspace/programs/src/main.rs'
+        source.parent.mkdir(parents=True)
+        source.write_text('first version')
+        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
+        fork = self.repo / 'gate-rust-fork/library/std/src/lib.rs'
+        fork.parent.mkdir(parents=True)
+        fork.write_text('std input')
+        (self.repo / 'rust-fork').symlink_to('gate-rust-fork')
+        targets = self.cache / 'metal-targets/compiler'
+        targets.mkdir(parents=True)
+        with patch.object(artifacts.time, 'time_ns', return_value=10000000000):
+            artifacts.metal_source_times(self.repo, targets)
+        os.utime(source, ns=(1, 1))  # a new clone's timestamps are irrelevant
+        with patch.object(artifacts.time, 'time_ns', return_value=20000000000):
+            artifacts.metal_source_times(self.repo, targets)
+        self.assertEqual(source.stat().st_mtime_ns, 10000000000)
+        self.assertEqual(fork.stat().st_mtime_ns, 10000000000)
+        source.write_text('other version')  # same length, older checkout timestamp
+        os.utime(source, ns=(1, 1))
+        with patch.object(artifacts.time, 'time_ns', return_value=30000000000):
+            artifacts.metal_source_times(self.repo, targets)
+        self.assertEqual(source.stat().st_mtime_ns, 30000000000)
+        self.assertEqual(fork.stat().st_mtime_ns, 10000000000)
+
+    def test_metal_targets_are_evicted_after_failure_when_over_budget(self):
+        def failed(repo, logs, label, *, targets):
+            (targets / 'programs/partial').write_bytes(b'partial build')
+            raise RuntimeError('compile failed')
+        with patch.dict(os.environ, BREENIX_GATE_CACHE_GB='0'), \
+                patch.object(artifacts, 'build', side_effect=failed):
+            with self.assertRaisesRegex(RuntimeError, 'compile failed'):
+                self.call('--metal')
+        self.assertFalse((self.cache / 'metal-targets' / ('b' * 64)).exists())
 
     def test_fresh_without_verified_entry_fails_explicitly(self):
         with patch.object(artifacts, 'build', side_effect=self.build), patch.dict(os.environ, BREENIX_GATE_FRESH='1'):

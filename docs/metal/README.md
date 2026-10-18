@@ -323,9 +323,18 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
    production kernel (no features) and its UEFI image, and the delivery stub from the deployed tools, each refused on
-   any warning. The metal mode builds userspace once: the clone is fresh, so that build is already a clean one. It is
+   any warning. The metal mode builds userspace once on an exact artifact miss, using persistent Cargo targets. It is
    content-keyed, including the deployed artifact builder's contents, in the container's own cache under
-   `metal-artifacts/` with `built-once.json`; the x86 gate reads
+   `metal-artifacts/` with `built-once.json`. On a miss, `metal-targets/<toolchain-key>/` holds separate
+   programs and libc targets, mounted into the build's private namespace at the usual workspace paths.
+   Compiler identities, the Rust library pin and target specifications select the pool. A directory lease
+   covers timestamp reconciliation and the build, so concurrent builds sharing a pool serialize there.
+   Byte-identical source inputs retain their recorded timestamps across clones; changed inputs receive
+   the current time after the lease is acquired. Cargo decides which binaries need rebuilding. Archive
+   cleaning preserves libc.a's timestamp only when its bytes are unchanged. Targets and artifacts share
+   the cache's LRU eviction budget (`BREENIX_GATE_CACHE_GB`, default 12 GiB) and free-space floor
+   (`BREENIX_GATE_FREE_GB`, default 15 GiB). Active leases can temporarily exceed the budget; pruning
+   before and after builds, including failures, removes idle entries. The x86 gate reads
    only its own `artifacts/<key>/verified.json`, which it publishes after its second, comparing build, so it does not
    take a metal build as verified. The slot and artifact helpers are the deployed tools' copies, so a
    commit builds the same way whatever its own copies say. `build.json` records the phase timings (`slot_wait`,
