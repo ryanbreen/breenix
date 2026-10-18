@@ -12051,7 +12051,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         &sources,
         "kernel/src/memory/process_memory.rs",
         process_memory.replacen(
-            "                            _ => {\n                                crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);\n                            },",
+            "                        _ => {\n                            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);\n                        },",
             "                            _ => { frame_decref(PhysFrame::containing_address(entry.addr())); },",
             1,
         ),
