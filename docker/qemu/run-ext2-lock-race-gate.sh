@@ -393,7 +393,7 @@ if [ "$ARCH" = "aarch64" ]; then
     timeout "${AARCH64_BOOT_TIMEOUT:-90}" python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
-        -display none -no-reboot \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
@@ -427,7 +427,7 @@ else
         -drive "if=none,id=homedisk,format=raw,readonly=on,file=$EXT2_HOME_DISK" \
         -device virtio-blk-pci,drive=homedisk,disable-modern=on,disable-legacy=off \
         -machine "pc,accel=${BREENIX_QEMU_ACCEL:-tcg}" -cpu "${BREENIX_QEMU_CPU:-qemu64}" -smp 1 -m 512 \
-        -display none -no-reboot -no-shutdown \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot -no-shutdown \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -serial "file:$OUTPUT_DIR/serial_user.txt" \
         -serial "file:$OUTPUT_DIR/serial_kernel.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &
