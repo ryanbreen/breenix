@@ -584,12 +584,10 @@ impl TtyDevice {
     /// Set the session leader
     pub fn set_session(&self, session: Option<ProcessId>) {
         *self.session.lock() = session;
-        // From the first session on, the screen console draws only kernel
-        // warnings and errors among the console's own output.
+        // While a session has the console, the screen console draws only
+        // kernel warnings and errors among the console's own output.
         #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        if session.is_some() {
-            crate::fbcon::console_session_started();
-        }
+        crate::fbcon::console_session(session.is_some());
     }
 
     /// Detach the console foreground group while keeping its IRQ snapshot current.

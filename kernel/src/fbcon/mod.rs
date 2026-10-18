@@ -14,10 +14,10 @@
 //! compares it with the shadow and with pixels worked out from the font and the
 //! text alone (`raster::expected_intensity`).
 //!
-//! Until a session takes the console as its controlling terminal (a getty, or
-//! the shell init starts there), kernel log records of INFO and above are
-//! drawn; from then on only warnings and errors are, so the console's user is
-//! not shown the per-second census lines. Serial keeps each record. Once a
+//! While no session has the console as its controlling terminal, kernel log
+//! records of INFO and above are drawn; while one does (a getty and the login
+//! it starts, or the shell init starts there), only warnings and errors are, so
+//! the console's user is not shown the per-second census lines. Serial keeps each record. Once a
 //! process takes the display (`sys_take_over_display`) the console stops drawing.
 
 pub mod grid;
@@ -54,10 +54,10 @@ static GRID: Mutex<Grid> = Mutex::new(Grid::new());
 /// Grid writes given up because its lock stayed held (a holder that faulted).
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
-/// A session took the console as its controlling terminal.
+/// A session has the console as its controlling terminal.
 static SESSION: AtomicBool = AtomicBool::new(false);
-/// The render thread has said so on the screen; from then on only warnings
-/// and errors are drawn.
+/// Only warnings and errors are drawn. The render thread follows `SESSION`
+/// here, saying so on the screen as it changes.
 static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// A process has the display.
@@ -163,9 +163,10 @@ pub fn write_tty(bytes: &[u8]) {
     }
 }
 
-/// A session took the console as its controlling terminal.
-pub fn console_session_started() {
-    SESSION.store(true, Ordering::Release);
+/// A session took the console as its controlling terminal (`true`), or the
+/// console's session ended (`false`).
+pub fn console_session(held: bool) {
+    SESSION.store(held, Ordering::Release);
 }
 
 /// A process has the display: stop drawing on it.
@@ -520,9 +521,15 @@ fn render_thread(attached: Attached, layout: Layout) {
                 );
             }
         }
-        if SESSION.load(Ordering::Acquire) && !QUIET.load(Ordering::Acquire) {
-            log::info!("[fbcon] the console has a session: only kernel warnings and errors are drawn from here");
-            QUIET.store(true, Ordering::Release);
+        let session = SESSION.load(Ordering::Acquire);
+        if session != QUIET.load(Ordering::Acquire) {
+            if session {
+                log::info!("[fbcon] the console has a session: only kernel warnings and errors are drawn");
+                QUIET.store(true, Ordering::Release);
+            } else {
+                QUIET.store(false, Ordering::Release);
+                log::info!("[fbcon] the console's session ended: the kernel log is drawn again");
+            }
         }
         if announced {
             answer_checks(Some(&screen));
