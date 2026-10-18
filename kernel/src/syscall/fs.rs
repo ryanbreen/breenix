@@ -2843,7 +2843,7 @@ fn handle_devfs_open(
     }
 
     // Look up the device in static devfs
-    let device = match devfs::lookup(device_name) {
+    let mut device = match devfs::lookup(device_name) {
         Some(d) => d,
         None => {
             log::debug!("handle_devfs_open: device not found: {}", device_name);
@@ -2856,6 +2856,10 @@ fn handle_devfs_open(
     }
     if device.device_type == devfs::DeviceType::Ptmx {
         return open_ptmx(flags, native_inode, reserved);
+    }
+    if let devfs::DeviceType::Vcs(n) | devfs::DeviceType::Vcsa(n) = device.device_type {
+        let attributes = matches!(device.device_type, devfs::DeviceType::Vcsa(_));
+        return open_vcs(usize::from(n), attributes, flags, native_inode, reserved);
     }
 
     // Get current process and allocate fd
@@ -2900,7 +2904,10 @@ fn handle_devfs_open(
                 drop(manager_guard);
                 return open_tty_slave(&pair, flags, native_inode, reserved);
             }
-            (TtyId::Console, TtyRef::Console(_)) => {
+            // A virtual terminal: its own device, so reads, writes and the
+            // open count are that terminal's (`docs/console/contract.md` 1.1).
+            (TtyId::Vt(number), TtyRef::Vt(_)) => {
+                device.device_type = devfs::DeviceType::Vt(number);
                 let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
                     Ok(entry) => entry.with_inode(native_inode),
                     Err(e) => return SyscallResult::Err(e),
@@ -3094,6 +3101,39 @@ fn open_ptmx(
             crate::tty::pty::close_master_ref(&pair);
             SyscallResult::Err(e as u64)
         }
+    }
+}
+
+/// Open a virtual terminal's screen, `/dev/vcs*` (`attributes` false) or
+/// `/dev/vcsa*`, for terminal `vt` (1-based; 0 the foreground at each read).
+/// Root only: the screens are owned by root with mode 0600.
+fn open_vcs(
+    vt: usize,
+    attributes: bool,
+    flags: u32,
+    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    reserved: Option<ReservedSlot>,
+) -> SyscallResult {
+    use super::errno::EACCES;
+    use crate::ipc::fd::FileDescriptor;
+    if current_file_credentials().euid != 0 {
+        return SyscallResult::Err(EACCES as u64);
+    }
+    let object = alloc::sync::Arc::new(crate::console::vcs::VcsFile::new(vt, attributes));
+    let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
+        Ok(entry) => entry.with_inode(native_inode),
+        Err(e) => return SyscallResult::Err(e),
+    };
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let mut manager_guard = crate::process::manager();
+    match manager_guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(thread_id)) {
+        Some((_, process)) => match install_descriptor(&mut process.fd_table, reserved, entry) {
+            Ok(fd) => SyscallResult::Ok(fd as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        None => SyscallResult::Err(3), // ESRCH
     }
 }
 

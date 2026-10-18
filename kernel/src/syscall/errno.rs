@@ -23,6 +23,9 @@ pub const ERESTARTSYS: i32 = 512;
 /// I/O error
 pub const EIO: i32 = 5;
 
+/// No such device or address
+pub const ENXIO: i32 = 6;
+
 /// Argument and environment list exceeds ARG_MAX.
 pub const E2BIG: i32 = 7;
 

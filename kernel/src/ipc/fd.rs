@@ -955,6 +955,11 @@ impl FdTableInner {
         self.fds.iter().filter(|slot| slot.is_some()).count()
     }
 
+    /// The kinds of the open descriptors.
+    pub fn kinds(&self) -> impl Iterator<Item = &FdKind> {
+        self.fds.iter().flatten().map(|entry| &entry.kind)
+    }
+
     /// Close all file descriptors marked with FD_CLOEXEC.
     /// Called during exec() per POSIX semantics.
     /// Properly decrements pipe/fifo reference counts.

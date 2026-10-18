@@ -2410,6 +2410,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         return handle_virgl_op(&cmd);
     }
 
+    // A display owner whose terminal is not in the foreground keeps drawing
+    // successfully, but what it draws or flushes does not reach the screen
+    // (`docs/console/contract.md` section 4.2).
+    let Some(_presenting) = crate::console::vt::Presentation::begin(caller_owns_display) else {
+        return SyscallResult::Ok(0);
+    };
+
     // A whole-screen mapping was made by a display owner. Once another process
     // has taken the display, drawing through it would overwrite the new owner's
     // frames, so the caller is told with EPERM (unlike the transient EBUSY below).
@@ -2972,6 +2979,11 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     }
     let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    };
+    // A display owner whose terminal is not in the foreground flushes
+    // successfully, but its pane does not reach the screen (contract 4.2).
+    let Some(_presenting) = crate::console::vt::Presentation::begin(cmd.op == 6) else {
+        return SyscallResult::Ok(0);
     };
     if cmd.op == 32 {
         if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= pane.width || cmd.p2 as usize >= pane.height {
