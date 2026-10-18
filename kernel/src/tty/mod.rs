@@ -9,6 +9,8 @@
 pub mod ctty;
 pub mod driver;
 pub mod ioctl;
+mod input_activity;
+pub mod input_clock;
 pub mod jobctl;
 pub mod line_discipline;
 pub mod pty;

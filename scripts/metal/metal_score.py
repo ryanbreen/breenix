@@ -15,6 +15,9 @@ def measures(milestone, shape):
 def score(directory):
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
+    run = read('run.json')
+    if run.get('kind') == 'console-session':
+        raise ValueError('operator console sessions are never scored')
     definition = read('definition/docs/metal/boot-path.json')
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}

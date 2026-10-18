@@ -326,7 +326,7 @@
         "suite": [
           {
             "name": "Suite finished",
-            "marker": "SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE gpu DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE utilities DONE"
+            "marker": "SUITE console DONE|SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE gpu DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE utilities DONE"
           }
         ]
       },
@@ -421,8 +421,7 @@
     {
       "id": "fb-console",
       "title": "Framebuffer console",
-      "summary": "Not yet measured: the producing lane has not landed.",
-      "stub": true,
+      "summary": "The firmware framebuffer lies in a display function's BAR, which every CPU's PAT and every kernel mapping make write-combining; one render thread draws the kernel log and the console TTY from a retained text grid, and at idle the screen read back matches the RAM shadow and the font's pixels for the text drawn.",
       "bootShapes": [
         "ramdisk",
         "install",

@@ -85,13 +85,15 @@ def console_shadow(site, hasher):
     return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
 
 
-def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None):
+def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None):
     if mode not in ('default', 'shell', 'probe', 'suite', 'console'):
         raise ValueError('unsupported RAM-disk boot mode')
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
     if mode != 'suite' and suite:
         raise ValueError('a suite needs suite mode')
+    if idle_minutes is not None and (mode != 'console' or not 1 <= idle_minutes <= 240):
+        raise ValueError('console idle must be 1 through 240 minutes')
     # Only explicitly guest-designated values cross from the host's site file.
     lines = []
     for key, value in sorted(site.items()):
@@ -120,7 +122,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None)
     target = suite if mode == 'suite' else '--' + mode
     try:
         subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
-                       env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1'))
+                       env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
+                                BREENIX_CONSOLE_IDLE_MINUTES='' if idle_minutes is None else str(idle_minutes)))
     except subprocess.CalledProcessError as error:
         raise ValueError('RAM-disk boot-target staging failed') from error
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
@@ -144,6 +147,13 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None)
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)
+        expected_target = ('suite ' + suite if mode == 'suite' else mode)
+        if idle_minutes is not None:
+            expected_target += f' idle={idle_minutes}'
+        actual_target = subprocess.run([debugfs, '-R', 'cat /etc/breenix/boot-target', str(image)],
+                                       check=True, capture_output=True).stdout
+        if actual_target != (expected_target + '\n').encode():
+            raise ValueError('RAM-disk boot target readback differs')
         for name, text in files.items():
             result = subprocess.run([debugfs, '-R', f'cat /etc/breenix/{name}', str(image)],
                                     check=True, capture_output=True)

@@ -284,16 +284,22 @@ pub struct Suite {
     pub title: &'static str,
     pub categories: &'static [Category],
     pub case_limit_ms: u64,
+    defer_display: bool,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, defer_display: false }
 }
 
 impl Suite {
     /// The same suite with a different per-case time limit.
     pub const fn case_limit_ms(self, ms: u64) -> Suite {
         Suite { case_limit_ms: ms, ..self }
+    }
+
+    /// Leave the console available to cases; take the display only for the final panel.
+    pub const fn defer_display(self) -> Suite {
+        Suite { defer_display: true, ..self }
     }
 
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
@@ -324,7 +330,11 @@ impl Suite {
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
-        let mut screen = Screen::open();
+        let mut screen = if self.defer_display {
+            Screen { fb: None, live: false, area: None }
+        } else {
+            Screen::open()
+        };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
             Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
@@ -338,6 +348,7 @@ impl Suite {
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
+            if self.defer_display { screen = Screen::open(); }
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
@@ -381,6 +392,7 @@ impl Suite {
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
+        if self.defer_display { screen = Screen::open(); }
         screen.draw(self, &title, &subtitle, &states, verdict, &feed, only);
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }

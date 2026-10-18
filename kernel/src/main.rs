@@ -488,6 +488,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     kernel::arch_impl::x86_64::cpu_init::init_cpu(0);
     log::info!("System call infrastructure initialized");
 
+    // The screen console's display BAR, its write-combining mapping and shadow:
+    // after PCI enumeration and the boot CPU's PAT, before the other CPUs run.
+    #[cfg(not(feature = "interactive"))]
+    kernel::fbcon::attach();
+
     // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
 
@@ -832,6 +837,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     if let Err(e) = graphics::render_task::spawn_render_thread() {
         log::error!("Failed to spawn render thread: {}", e);
     }
+    // Without `interactive`, the screen console's render thread.
+    #[cfg(not(feature = "interactive"))]
+    kernel::fbcon::start();
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -1291,7 +1299,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console)) => None,
+            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(None) => None,
             Err(why) => {
@@ -1342,7 +1350,10 @@ fn x86_console_mode() -> Option<&'static str> {
         Some("console") => Some("console"),
         None | Some("") => match kernel::boot::target::read() {
             Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
-            Ok(Some(kernel::boot::target::Target::Console)) => Some("console"),
+            Ok(Some(kernel::boot::target::Target::Console { idle_minutes })) => {
+                kernel::tty::input_clock::start(idle_minutes);
+                Some("console")
+            },
             _ => None,
         },
         _ => None,
@@ -2706,6 +2717,8 @@ fn kernel_main_continue() -> ! {
             kernel::arch_impl::x86_64::tick_census::start();
             log::info!("[metal] kernel idle");
         }
+        // The screen console reads the screen back once boot is idle.
+        kernel::fbcon::request_idle_check();
 
         kernel::per_cpu::preempt_enable();
 
