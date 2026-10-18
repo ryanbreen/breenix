@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_lib as m  # noqa: E402
 
 from metal_probe import PROBE_PATH, PROBE_BODY
+import metal_disk
 
 CHUNK = 1 << 20
 RANGE = re.compile(r'bytes=(\d*)-(\d*)')
@@ -46,6 +47,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+    def do_PUT(self):
+        metal_disk.receive(self)
 
     def not_found(self, staged_id):
         log(event='404', method=self.command, route=urlsplit(self.path).path.startswith(self.server.prefix),

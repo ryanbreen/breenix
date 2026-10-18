@@ -245,9 +245,49 @@ def inner(args):
         shutil.rmtree(home, ignore_errors=True)
 
 
+def stub_only(args):
+    """Build the deployed readback firmware under a metal-build slot, without a kernel or userspace build."""
+    out, tmp = paths(args)[1:]
+    if not args.inner:
+        environment = dict(os.environ, CARGO_BUILD_JOBS='4', BREENIX_SLOT_WORKTREE=args.stub,
+                           BREENIX_SLOT_COMMIT=args.sha)
+        try:
+            return subprocess.call([sys.executable, str(HELPER), 'supervise', '--', sys.executable,
+                                    str(Path(__file__).resolve()), '--inner', *sys.argv[1:]], env=environment)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+    logs = tmp / 'logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    home = subprocess.run([sys.executable, str(HELPER), 'cargo-home', str(Path.home() / '.cargo'),
+                           str(tmp / 'stub-target')], check=True, capture_output=True, text=True).stdout.strip()
+    os.environ['CARGO_HOME'] = home
+    subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
+    try:
+        log = logs / 'stub-build.log'
+        with log.open('w') as output:
+            status = subprocess.call(['cargo', 'build', '--release', '--locked', '--target', STUB_TARGET,
+                                      '-Zbuild-std=core,compiler_builtins',
+                                      '-Zbuild-std-features=compiler-builtins-mem',
+                                      '--target-dir', str(tmp / 'stub-target')], cwd=args.stub,
+                                     stdout=output, stderr=subprocess.STDOUT)
+        if not clean_build(status, log, 'readback stub', logs, out):
+            return 1
+        shutil.copyfile(tmp / 'stub-target' / STUB_TARGET / 'release/metal-efi-stub.efi', out / 'stub.efi')
+        m = {'commit': args.sha, 'profile': 'disk-readback',
+             'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')}}
+        (out / 'build.json').write_text(json.dumps(m, indent=2) + '\n')
+        shutil.copytree(logs, out / 'logs', dirs_exist_ok=True)
+        return 0
+    finally:
+        subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--stub-only', action='store_true', help='build only the deployed cold-readback firmware')
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
     parser.add_argument('--features', choices=('', 'xhci_fault_inject'), default='',
                         help='build a fault-test kernel; never set for a production boot')
@@ -260,6 +300,8 @@ def main():
         parser.error('--id must be a metal boot id and --sha a full commit id')
     if args.suite and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', args.suite):
         parser.error('--suite must be a suite id or ids joined by commas')
+    if args.stub_only:
+        return stub_only(args)
     return inner(args) if args.inner else outer(args)
 
 

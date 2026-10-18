@@ -172,6 +172,8 @@ pub use executor::{
     advance_stage_marker_only, advance_to_stage, current_stage, emit_exec_lock_order_counters,
     run_all_tests,
 };
+#[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
+pub use executor::{advance_to_process_context, process_context_created};
 #[cfg(feature = "boot_tests")]
 pub use progress::get_overall_progress;
 #[cfg(feature = "boot_tests")]

@@ -229,6 +229,7 @@ pub fn process_rx_budgeted(_: usize) {
         ipv4::handle_ipv4(&eth, &ip);
     }
 }
+pub fn between_rx_polls() {}
 fn setup() -> MutexGuard<'static, ()> {
     static SERIAL: Mutex<()> = Mutex::new(());
     let guard = SERIAL.lock().unwrap();
