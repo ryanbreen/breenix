@@ -102,6 +102,8 @@ def boot(args):
         raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
     if args.payload == 'image' and not args.disk and args.inject not in XHCI_FAULTS:
         args.disk = 'root'
+    if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
+        raise SystemExit('disk-before-mount needs a disk-root image boot')
     env = host_env()
     payload = args.payload
     sha = target = ''
@@ -257,7 +259,7 @@ def main():
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
-    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read'))
+    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))

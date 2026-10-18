@@ -44,8 +44,8 @@ serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-s
 
 - **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
   `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and
-  a console intent payload as `ramdisk` only for console boots. Other disk-root modes omit
-  `ramdisk`; their target is written into the fresh physical ext2 root before boot.
+  a `BREENIX-BOOT 1` target payload as `ramdisk` for disk-root boots. The same
+  target is written into the fresh physical ext2 root before boot.
 - **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
   builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
   image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
@@ -777,6 +777,11 @@ python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-iso [--serve-
 python3 ~/.local/share/breenix-metal/metal-run follow ID | stop ID | status
 ```
 
+`--inject disk-before-mount` installs and verifies a fresh root, then fails firmware
+loading by replacing the delivered bootloader with an invalid EFI image. No kernel
+or filesystem mount runs; the next disk-root boot must use the retained ownership
+record and install another fresh root.
+
 `--inject forceoff-fail` makes the driver skip its own ForceOff and report it failed, which quarantines the lease
 with the machine on; the reaper's retry then powers it off and lifts the quarantine. The default, shell and suite
 modes deliver their boot targets as described under "Physical-disk userspace"; probe mode stages `probe`, and its storage
@@ -986,7 +991,7 @@ The driver and retained `milestone-verdict.json` score only milestones that the 
 An install measures the RAM-disk root and disk copy; a disk-root boot measures the installed filesystem.
 Missing stages of a measured milestone still fail the boot. The RAM-disk root contract remains three stages.
 
-A disk-root boot reuses the verified installed userspace digest or installs the changed build before kernel entry.
+A disk-root boot installs a fresh staged root before kernel entry.
 The driver rejects an install size or digest mismatch and a root record that differs from that verified install.
 A reinstall invalidates and flushes the previous root record before replacing data, then writes the new record last.
 Physical boots keep the global write refusal, granting only the selected backend device permission to write;

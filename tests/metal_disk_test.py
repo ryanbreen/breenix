@@ -59,7 +59,7 @@ class DiskTest(existing.StateTest):
         self.assertNotEqual(changed['buildDigest'], previous['buildDigest'])
         self.assertIn('suite-root.img', files)
 
-    def test_default_disk_boot_omits_the_new_ramdisk_format(self):
+    def test_default_disk_boot_carries_current_boot_intent(self):
         fixture = existing.DriverTest()
         fixture.setUp()
         try:
@@ -75,8 +75,31 @@ class DiskTest(existing.StateTest):
                  patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')) as assemble:
                 with self.assertRaisesRegex(RuntimeError, 'captured'):
                     d.prepare_payload()
-            self.assertNotIn('ramdisk', assemble.call_args.args[1])
+            self.assertEqual(assemble.call_args.args[1]['ramdisk'].read_bytes(), b'BREENIX-BOOT 1\ndefault\n')
             self.assertEqual(stage.call_args.kwargs['mode'], 'default')
+        finally:
+            fixture.tearDown()
+
+    def test_pre_mount_fault_replaces_only_the_delivered_bootloader(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit = 'default', 'root', 'b' * 40
+            d.args.inject = 'disk-before-mount'
+            d.args.ramdisk = True
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            loader = inputs / 'loader.efi'
+            loader.write_bytes(b'original EFI image')
+            existing.m.write_json(inputs / 'build.json', dict(commit=d.args.commit, profile='production', features=[]))
+            with patch.object(existing.boot.metal_disk, 'stage', return_value=({}, {})), \
+                 patch.object(existing.boot.metal_image, 'extract_esp', return_value={'efi/boot/bootx64.efi': loader}), \
+                 patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')):
+                with self.assertRaisesRegex(RuntimeError, 'captured'):
+                    d.prepare_payload()
+            self.assertEqual(loader.read_bytes(), b'injected invalid EFI image\n')
         finally:
             fixture.tearDown()
 

@@ -21,8 +21,5 @@ pub mod init_image;
 // suite as PID 1. Read by both architectures' production init launch.
 pub mod target;
 
-// Per-boot measurement/session intent for an installed console target.
-pub mod console_intent;
-
 #[cfg(target_arch = "x86_64")]
 pub mod console_start;

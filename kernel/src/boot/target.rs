@@ -112,6 +112,11 @@ pub fn capture(bytes: &[u8]) -> bool {
     true
 }
 
+/// Whether PID 1's target came from this boot's payload.
+pub fn has_intent() -> bool {
+    BOOT_INTENT.get().is_some()
+}
+
 /// Read the boot target from the mounted ext2 root. `Ok(None)` when there is no
 /// file (or no root filesystem); `Err` when the file exists but cannot be used.
 pub fn read() -> Result<Option<Target>, String> {

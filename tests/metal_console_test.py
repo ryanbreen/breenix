@@ -160,7 +160,7 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].kwargs['input'], (secret + '\r').encode())
         self.assertNotIn(secret, existing.m.Redactor(driver.site)('Password: ' + secret))
 
-    def test_disk_root_console_carries_compatible_console_intent(self):
+    def test_disk_root_console_carries_current_boot_intent(self):
         fixture = existing.DriverTest()
         fixture.setUp()
         try:
@@ -175,8 +175,8 @@ class ConsoleTest(unittest.TestCase):
                                   'profile': 'production', 'features': []})
             existing.m.write_json(existing.m.STATE / 'disk.json', {'commit': d.args.commit,
                                   'mode': 'console', 'consoleIdentity': metal_root.console_identity(d.site)})
-            for is_session, expected in [(True, b'BREENIX-CONSOLE 1\nsession\n'),
-                                         (False, b'BREENIX-CONSOLE 1\nmeasure\n')]:
+            for is_session, expected in [(True, b'BREENIX-BOOT 1\nconsole idle=30\n'),
+                                         (False, b'BREENIX-BOOT 1\nconsole replug\n')]:
                 d.args.session = is_session
                 d.args.idle_minutes = 30
                 with patch.object(boot.metal_disk, 'stage', return_value=({}, {})), \

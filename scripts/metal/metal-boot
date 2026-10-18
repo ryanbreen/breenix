@@ -383,13 +383,21 @@ class Driver:
         root_ramdisk = self.args.ramdisk and disk != 'root'
         if root_ramdisk:
             files['ramdisk'] = inputs / 'ext2.img'
-        if disk == 'root' and self.args.mode == 'console':
-            self.console_intent = 'session' if session(self.args) else 'measure'
-            self.delivery['consoleIntent'] = self.console_intent
-            # This format is supported by kernels preceding disk suite delivery.
+        if disk == 'root':
+            target = self.args.mode
+            if target == 'suite':
+                target += ' ' + self.args.suite
+            elif target == 'console':
+                self.console_intent = 'session' if session(self.args) else 'measure'
+                self.delivery['consoleIntent'] = self.console_intent
+                target += (' idle=' + str(self.args.idle_minutes)) if session(self.args) else ' replug'
             intent = self.stage / 'boot-intent'
-            intent.write_bytes(b'BREENIX-CONSOLE 1\n' + self.console_intent.encode() + b'\n')
+            intent.write_bytes(('BREENIX-BOOT 1\n' + target + '\n').encode('ascii'))
             files['ramdisk'] = intent
+        if self.args.inject == 'disk-before-mount':
+            # The stub installs and verifies the root before loading this file.
+            # An invalid EFI image fails delivery without executing a kernel.
+            files['efi/boot/bootx64.efi'].write_bytes(b'injected invalid EFI image\n')
         disk = self.stage / 'boot-disk.img'
         facts = metal_image.assemble(disk, files)
         shutil.rmtree(extracted, ignore_errors=True)
@@ -1424,7 +1432,7 @@ def main():
         p.add_argument('--target', default='main')
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
-        p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read'))
+        p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
         p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
@@ -1473,6 +1481,8 @@ def main():
             parser.error('--input needs console mode')
     if args.command in ('launch', 'run') and args.payload == 'image' and not args.disk and not xhci_fault(args):
         args.disk = 'root'
+    if args.command in ('launch', 'run') and args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
+        parser.error('disk-before-mount needs a disk-root image boot')
     if args.command == 'launch':
         extra = sys.argv[2:]
         if args.disk and '--disk' not in extra:

@@ -131,7 +131,9 @@ fn read_parses_the_file_on_the_root() {
 
     // Disk-root boots choose a fresh mode without modifying their installed target.
     assert!(!target::capture(b"filesystem bytes"));
+    assert!(!target::has_intent());
     assert!(target::capture(b"BREENIX-BOOT 1\nsuite signals\n"));
+    assert!(target::has_intent());
     *fs::ext2::FILE.lock().unwrap() = Some(b"console\n".to_vec());
     match target::read() {
         Ok(Some(Target::Suite(suite))) => assert_eq!(suite.id, "signals"),
