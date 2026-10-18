@@ -229,6 +229,7 @@ while [[ $# -gt 0 ]]; do
             echo "                             instead of the legacy display driver; implied by --parallels --suite gpu"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
+            echo "  BREENIX_PARALLELS_3D=off   Parallels: create the VM with 3D acceleration off (attestation control)"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -899,8 +900,14 @@ if [ "$PARALLELS" = true ]; then
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
 
-    # VirtIO GPU with 3D acceleration (required for VirGL)
-    prlctl set "$PARALLELS_VM" --3d-accelerate highest
+    # VirtIO GPU with 3D acceleration (required for VirGL). BREENIX_PARALLELS_3D=off is the
+    # host GPU time attestation's negative control (docs/gui/gpu.md section 1.6.5).
+    PARALLELS_3D="${BREENIX_PARALLELS_3D:-highest}"
+    case "$PARALLELS_3D" in
+        highest|off) ;;
+        *) echo "BREENIX_PARALLELS_3D must be highest or off, got '$PARALLELS_3D'"; exit 2 ;;
+    esac
+    prlctl set "$PARALLELS_VM" --3d-accelerate "$PARALLELS_3D"
     prlctl set "$PARALLELS_VM" --videosize 2048
     # The GPU core presents 2560x1600 scanouts (docs/gui/gpu.md section 1.7): with the
     # high-resolution policy they fill a 1280x800-point window at full resolution, as the
