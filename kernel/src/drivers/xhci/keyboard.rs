@@ -353,7 +353,7 @@ impl Controller {
                 };
                 self.console.flush();
                 if leds_changed {
-                    // Every device displays the console's absolute lock state.
+                    // Send the console's absolute lock state to attached keyboards.
                     for keyboard in 0..self.devices.len() {
                         if self.devices[keyboard].keyboard.is_some() {
                             self.send_leds(keyboard);

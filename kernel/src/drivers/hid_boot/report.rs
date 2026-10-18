@@ -120,7 +120,7 @@ impl Keyboard {
     }
 
     /// Decode one interrupt-IN report received at `now` (monotonic ns).
-    /// `leds` belongs to the console, shared by every attached keyboard.
+    /// `leds` belongs to the console, shared by the attached keyboard pipes.
     pub fn report(
         &mut self,
         report: &[u8],
