@@ -350,15 +350,16 @@ if ! timer_wake_oracle_sample 9 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATT
 fi
 
 # Ruling S26: a CLONE_VM-only child's reclaim receipt is retired by the reclaim
-# daemon while a pinned CPU-bound thread holds each of the 4 CPUs and the
-# other drains refuse. The kernel decides PASS (latency within bound_ms, 4 of 4
-# spinners progressed, retired by the daemon, both rows cleaned up); the pattern
+# daemon while the other drains refuse and each of the 4 CPUs is busy: CPU 0
+# runs the boot thread, which holds it with preemption disabled until init
+# (held_cpus=1), and CPUs 1-3 each run a pinned CPU-bound thread. The kernel
+# decides PASS (latency within bound_ms, 3 of 3 spinners progressed, retired by the daemon, both rows cleaned up); the pattern
 # pins the profile's constants and that verdict. mechanism_ms is 100 ms of
 # idle sleep plus a dispatch (10 ms quantum + 1 ms tick), a 10 ms retry and
 # another dispatch.
-RECLAIM_BUSY_CPU_ORACLE_PATTERN='\[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:spinners=4:started=4:spinning=4:progressed=4:retired_by=daemon:latency_ms=[0-9]+:bound_ms=1000:mechanism_ms=132:daemon_passes=[1-9][0-9]*:cleaned=1:backstops=0:PASS\]'
+RECLAIM_BUSY_CPU_ORACLE_PATTERN='\[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=[0-9]+:bound_ms=1000:mechanism_ms=132:daemon_passes=[1-9][0-9]*:cleaned=1:backstops=0:PASS\]'
 reclaim_busy_oracle_sample() {
-    printf '[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:spinners=4:started=4:spinning=4:progressed=4:retired_by=%s:latency_ms=%s:bound_ms=1000:mechanism_ms=132:daemon_passes=3:cleaned=1:backstops=0:%s]\n' "$1" "$2" "$3"
+    printf '[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=%s:latency_ms=%s:bound_ms=1000:mechanism_ms=132:daemon_passes=3:cleaned=1:backstops=0:%s]\n' "$1" "$2" "$3"
 }
 if reclaim_busy_oracle_sample none 30000 FAIL | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
     echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts a receipt nothing retired, so this gate would score green on the strand it exists to catch"

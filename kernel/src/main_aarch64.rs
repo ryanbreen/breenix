@@ -1869,7 +1869,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::timer_wake_oracle::run();
 
     // Ruling S26: deferred reclamation retires a CLONE_VM-only child's receipt
-    // while a spinning thread holds each CPU. After the censuses above, so its two rows do
+    // while each CPU runs a spinning thread or this boot thread. After the censuses above, so its two rows do
     // not move what they report.
     #[cfg(feature = "boot_tests")]
     kernel::task::reclaim_busy_oracle::run();

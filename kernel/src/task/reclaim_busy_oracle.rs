@@ -17,7 +17,11 @@
 //!
 //! * One CPU-bound kernel thread is pinned to each online CPU and spins
 //!   without yielding for the whole window, so no CPU's run queue empties and
-//!   no idle thread is selected.
+//!   no idle thread is selected. The one exception is a CPU the caller holds
+//!   with preemption disabled: on aarch64 the boot thread keeps CPU 0 pinned
+//!   until init runs and waits for the coordinator in `kthread_join`'s halt
+//!   loop, so that CPU runs no other thread, no idle housekeeping and no drain
+//!   for the whole leg. The marker reports it as `held_cpus`.
 //! * While the window is open, drains other than the daemon's refuse their
 //!   passes (`boot_set_reclaim_daemon_only`). That stands in for the absence of
 //!   process lifecycle events deterministically: with it, a kernel without
@@ -93,6 +97,8 @@ static RUN: AtomicBool = AtomicBool::new(false);
 static STARTED: AtomicU32 = AtomicU32::new(0);
 static SPINNING: AtomicU32 = AtomicU32::new(0);
 static EXITED: AtomicU32 = AtomicU32::new(0);
+/// The CPU `run`'s caller holds with preemption disabled, or `u64::MAX`.
+static HELD_CPU: AtomicU64 = AtomicU64::new(u64::MAX);
 static BACKSTOPS: AtomicU32 = AtomicU32::new(0);
 /// The last step the coordinator reached, for the detail line.
 static STAGE: AtomicU32 = AtomicU32::new(0);
@@ -221,6 +227,7 @@ fn insert_clone_vm_member(
 
 struct Verdict {
     cpus: u32,
+    held: u32,
     spawned: usize,
     progressed: u32,
     retired_by: BootReclaimWatch,
@@ -251,12 +258,15 @@ fn emit(verdict: &Verdict, detail: &Detail) {
     let spinning = SPINNING.load(Ordering::Acquire);
     let backstops = BACKSTOPS.load(Ordering::Relaxed);
     let cpus = verdict.cpus;
+    // Each online CPU is either held by the caller or runs a spinner.
+    let spun = cpus.saturating_sub(verdict.held);
     let pass = verdict.reason.is_empty()
         && cpus >= 1
-        && verdict.spawned == cpus as usize
-        && started == cpus
-        && spinning == cpus
-        && verdict.progressed == cpus
+        && verdict.held <= 1
+        && verdict.spawned == spun as usize
+        && started == spun
+        && spinning == spun
+        && verdict.progressed == spun
         && verdict.retired_by == BootReclaimWatch::ByDaemon
         && verdict.latency_ms <= BOUND_MS
         && verdict.cleaned
@@ -286,9 +296,10 @@ fn emit(verdict: &Verdict, detail: &Detail) {
         );
     }
     serial_println!(
-        "[RECLAIM_BUSY_CPU_ORACLE:{}:cpus={}:spinners={}:started={}:spinning={}:progressed={}:retired_by={}:latency_ms={}:bound_ms={}:mechanism_ms={}:daemon_passes={}:cleaned={}:backstops={}:{}{}]",
+        "[RECLAIM_BUSY_CPU_ORACLE:{}:cpus={}:held_cpus={}:spinners={}:started={}:spinning={}:progressed={}:retired_by={}:latency_ms={}:bound_ms={}:mechanism_ms={}:daemon_passes={}:cleaned={}:backstops={}:{}{}]",
         ARCH_TAG,
         cpus,
+        verdict.held,
         verdict.spawned,
         started,
         spinning,
@@ -318,9 +329,31 @@ fn reclaim_counters() -> [u64; 6] {
     ]
 }
 
+/// The CPU the caller runs on, if it holds it with preemption disabled: no
+/// other thread can be dispatched there until the caller lets it go.
+fn caller_held_cpu() -> Option<usize> {
+    #[cfg(target_arch = "x86_64")]
+    use crate::arch_impl::PerCpuOps;
+    #[cfg(target_arch = "aarch64")]
+    let (count, cpu) = (
+        crate::per_cpu_aarch64::preempt_count(),
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id(),
+    );
+    #[cfg(target_arch = "x86_64")]
+    let (count, cpu) = (
+        crate::per_cpu::preempt_count(),
+        crate::arch_impl::x86_64::percpu::X86PerCpu::cpu_id(),
+    );
+    (count != 0).then_some(cpu as usize)
+}
+
 /// Run the leg once and print `[RECLAIM_BUSY_CPU_ORACLE:...]`. Restores the
 /// interrupt flag it found.
 pub fn run() {
+    HELD_CPU.store(
+        caller_held_cpu().map_or(u64::MAX, |cpu| cpu as u64),
+        Ordering::Release,
+    );
     let interrupts_were_enabled = crate::arch_interrupts_enabled();
     if !interrupts_were_enabled {
         unsafe { arch_enable_interrupts() };
@@ -360,8 +393,17 @@ fn run_coordinator() {
     }
 
     let online_mask = scheduler::RetirementSnapshot::capture().online_mask;
+    let held_cpu = HELD_CPU.load(Ordering::Acquire);
+    let held_mask = if held_cpu < scheduler::MAX_CPUS as u64 {
+        online_mask & (1 << held_cpu)
+    } else {
+        0
+    };
+    // The CPUs that get a spinner: online, and not held by the caller.
+    let spin_mask = online_mask & !held_mask;
     let mut verdict = Verdict {
         cpus: online_mask.count_ones(),
+        held: held_mask.count_ones(),
         spawned: 0,
         progressed: 0,
         retired_by: BootReclaimWatch::Pending,
@@ -407,11 +449,12 @@ fn run_coordinator() {
     };
     STAGE.store(1, Ordering::Release);
 
-    // One spinner per online CPU, parked until each has started so the
-    // creations are not slowed by spinners already holding CPUs.
+    // One spinner per CPU the caller does not hold, parked until each has
+    // started so the creations are not slowed by spinners already holding
+    // CPUs.
     let mut spinners = Vec::new();
     for cpu in 0..scheduler::MAX_CPUS {
-        if online_mask & (1 << cpu) == 0 {
+        if spin_mask & (1 << cpu) == 0 {
             continue;
         }
         match kthread_run_on_cpu(move || spinner_body(cpu), "s26_spin", cpu) {
@@ -463,7 +506,7 @@ fn run_coordinator() {
     verdict.latency_ms = retired_at.saturating_sub(retired_at_start) / 1_000_000;
     verdict.daemon_passes = process_task::boot_reclaim_daemon_passes().wrapping_sub(passes_before);
     verdict.progressed = (0..scheduler::MAX_CPUS)
-        .filter(|&cpu| online_mask & (1 << cpu) != 0)
+        .filter(|&cpu| spin_mask & (1 << cpu) != 0)
         .filter(|&cpu| SPINS[cpu].load(Ordering::Relaxed) > spins_before[cpu])
         .count() as u32;
     let counters_after = reclaim_counters();

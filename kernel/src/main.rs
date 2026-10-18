@@ -974,7 +974,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     kernel::task::timer_wake_oracle::run();
 
     // Ruling S26: deferred reclamation retires a CLONE_VM-only child's receipt
-    // while a spinning thread holds each CPU. Placed beside the leg above for the same
+    // while each CPU runs a spinning thread or this boot thread. Placed beside the leg above for the same
     // reasons; it leaves the reclaim queues empty for the boot tests below.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     kernel::task::reclaim_busy_oracle::run();
