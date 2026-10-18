@@ -86,7 +86,6 @@ struct Field {
 
 /// The pointer fields of one report descriptor (HID 1.11 6.2.2; Usage Tables
 /// Generic Desktop X 0x30, Y 0x31, Wheel 0x38, Button page 9).
-#[derive(Default)]
 struct Layout {
     x: Option<Field>,
     y: Option<Field>,
@@ -108,7 +107,14 @@ impl Layout {
             count: usize,
             id: u8,
         }
-        let mut layout = Layout::default();
+        let mut layout = Layout {
+            x: None,
+            y: None,
+            wheel: None,
+            buttons: Vec::new(),
+            ids: false,
+            bits: [0; 256],
+        };
         let mut globals = Globals::default();
         let mut stack = Vec::new();
         let mut usages: Vec<u32> = Vec::new();
