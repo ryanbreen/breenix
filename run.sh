@@ -902,6 +902,10 @@ if [ "$PARALLELS" = true ]; then
     # VirtIO GPU with 3D acceleration (required for VirGL)
     prlctl set "$PARALLELS_VM" --3d-accelerate highest
     prlctl set "$PARALLELS_VM" --videosize 2048
+    # The GPU core presents 2560x1600 scanouts (docs/gui/gpu.md section 1.7): with the
+    # high-resolution policy they fill a 1280x800-point window at full resolution, as the
+    # GL QEMU's window shows them.
+    [ "$GPU_CORE" = true ] && RETINA=true
     # Select host and guest Retina policy explicitly before starting the VM. A new VM
     # defaults to high-resolution-in-guest=on, which makes Parallels show the guest at
     # one guest pixel per Retina pixel even with host high resolution off: the 1280x960
