@@ -99,10 +99,12 @@ mod accounting {
         counter.max(1)
     }
 
-    /// How long ago, in counter ticks, this CPU's timer fell due, if it is
-    /// enabled, unmasked at the timer and due.
+    /// The due deadline on CNTVCT, if the timer is enabled and unmasked.
+    /// For a physical timer, sample CNTVCT after CNTPCT so a pause between
+    /// the reads can only move the deadline forward, never backdate it.
+    /// claim-lint:ok: tests/irq_mask_account_host.py simulates a late read.
     #[inline(always)]
-    fn tick_overdue() -> Option<u64> {
+    fn tick_deadline() -> Option<u64> {
         let (ctl, cval, count): (u64, u64, u64);
         // SAFETY: reading the CPU's own timer registers has no side effects.
         unsafe {
@@ -117,7 +119,14 @@ mod accounting {
             }
         }
         // ENABLE set, IMASK clear.
-        (ctl & 0b11 == 0b01 && count > cval).then(|| count - cval)
+        if ctl & 0b11 != 0b01 || count <= cval {
+            return None;
+        }
+        Some(if crate::platform_config::use_physical_timer() {
+            now().saturating_sub(count - cval)
+        } else {
+            cval
+        })
     }
 
     #[inline(always)]
@@ -134,7 +143,15 @@ mod accounting {
     pub fn closing() {
         if let Some(cpu) = cpu() {
             MASKED_SINCE[cpu].store(0, Ordering::Relaxed);
-            ENABLED_SINCE[cpu].store(now(), Ordering::Release);
+            // A nested exception can return with DAIF.I clear while the
+            // outer IRQ still holds the timer active. Restores within that
+            // handler must not publish host-starvation evidence either.
+            let since = if crate::per_cpu_aarch64::in_interrupt() {
+                0
+            } else {
+                now()
+            };
+            ENABLED_SINCE[cpu].store(since, Ordering::Release);
         }
     }
 
@@ -155,14 +172,14 @@ mod accounting {
             if since == 0 {
                 return;
             }
-            let Some(overdue) = tick_overdue() else {
+            let Some(deadline) = tick_deadline() else {
                 return;
             };
-            let start = since.max(now.saturating_sub(overdue));
+            let start = since.max(deadline);
             let half_tick = crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT
                 .load(Ordering::Relaxed)
                 / 2;
-            if now - start < half_tick.max(1) {
+            if now.saturating_sub(start) < half_tick.max(1) {
                 return;
             }
             HELD_END[cpu].store(0, Ordering::Relaxed);
