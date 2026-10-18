@@ -89,6 +89,8 @@ static DOORBELL: AtomicU64 = AtomicU64::new(0);
 static KICK: AtomicBool = AtomicBool::new(false);
 /// The ISR's configuration-change bit was seen: the device may have set DEVICE_NEEDS_RESET.
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
+/// The level interrupt is masked until normal GPU work reads its ISR byte.
+static IRQ_PENDING: AtomicBool = AtomicBool::new(false);
 static INTID: AtomicU32 = AtomicU32::new(0);
 static REAPER: AtomicU64 = AtomicU64::new(0);
 static REAPER_STARTING: AtomicBool = AtomicBool::new(false);
@@ -397,7 +399,6 @@ pub fn init_qemu() {
             DOORBELL.store(dev.doorbell(), Ordering::Release);
             INTID.store(dev.intid, Ordering::Release);
             crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
-            crate::arch_impl::aarch64::gic::enable_spi(dev.intid);
             core.queue_size = dev.queue_size();
             core.dev = Some(dev);
         }
@@ -1486,26 +1487,41 @@ pub fn irq() -> Option<u32> {
     }
 }
 
-/// The GPU interrupt: acknowledge it through the ISR byte, count it and wake whoever
-/// waits. No lock, no allocation, no output.
+/// Mask the level interrupt and wake consumers. Reading the PCI ISR byte can wait
+/// on the device model, so acknowledgement belongs to the IRQ-enabled GPU worker.
 pub fn handle_interrupt() {
     // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
     let start = crate::tracing::providers::gpu::interrupt_begin();
-    let isr = ISR.load(Ordering::Acquire);
-    let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
-    if status != 0 {
-        // Bit 1 is a configuration change (VirtIO 1.3 section 4.1.4.5).
-        if status & 2 != 0 {
-            CONFIG_CHANGED.store(true, Ordering::Release);
-        }
-        EVENTS.fetch_add(1, Ordering::AcqRel);
-        WAITERS.wake_up();
-        let tid = REAPER.load(Ordering::Acquire);
-        if tid != 0 {
-            crate::task::scheduler::wake_thread_any_context(tid);
-        }
+    if let Some(id) = irq() {
+        crate::arch_impl::aarch64::gic::disable_spi(id);
+    }
+    IRQ_PENDING.store(true, Ordering::Release);
+    EVENTS.fetch_add(1, Ordering::AcqRel);
+    // Preserve direct wakes for synchronous requests, with a bounded, nonblocking
+    // queue acquisition. Completion publication wakes any remaining waiters.
+    WAITERS.try_wake_up_n_from_irq(limits::IN_FLIGHT as u32);
+    let tid = REAPER.load(Ordering::Acquire);
+    if tid != 0 {
+        crate::task::scheduler::wake_thread_any_context(tid);
     }
     crate::tracing::providers::gpu::interrupt_end(start);
+}
+
+fn acknowledge_interrupt() {
+    if !IRQ_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let _access = panic::Access::enter();
+    let isr = ISR.load(Ordering::Acquire);
+    let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
+    // Reading the ISR deasserts INTx; bit 1 reports a configuration change
+    // (VirtIO 1.3 section 4.1.4.5). Preserve the interrupt's existing affinity.
+    if status & 2 != 0 {
+        CONFIG_CHANGED.store(true, Ordering::Release);
+    }
+    if let Some(id) = irq() {
+        crate::arch_impl::aarch64::gic::unmask_spi(id);
+    }
 }
 
 /// Start `kgpu` if it is not running; false when it cannot be started.
@@ -1518,6 +1534,9 @@ fn ensure_reaper() -> bool {
             let started = match crate::task::kthread::kthread_run(reaper, "kgpu") {
                 Ok(handle) => {
                     REAPER.store(handle.tid(), Ordering::Release);
+                    if let Some(id) = irq() {
+                        crate::arch_impl::aarch64::gic::enable_spi(id);
+                    }
                     true
                 }
                 Err(_) => false,
@@ -1560,6 +1579,7 @@ fn reaper() {
     let mut next_sweep = now_ns();
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
+        acknowledge_interrupt();
         let now = now_ns();
         let (deadline, busy, reset) = with_core(|c| {
             c.pump();

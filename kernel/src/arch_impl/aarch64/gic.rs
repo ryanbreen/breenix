@@ -1214,6 +1214,18 @@ pub fn disable_spi(irq: u32) {
     }
 }
 
+/// Unmask an SPI without changing its routing or clearing a pending level.
+pub fn unmask_spi(irq: u32) {
+    if irq < 32 {
+        return;
+    }
+    gicd_write(GICD_ISENABLER + (irq as usize / 32 * 4), 1 << (irq % 32));
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+}
+
 /// Clear any pending state for an SPI (write-1-to-clear via GICD_ICPENDR).
 pub fn clear_spi_pending(irq: u32) {
     if irq < 32 {
