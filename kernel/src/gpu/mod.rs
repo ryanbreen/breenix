@@ -41,6 +41,7 @@ use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
 pub mod virgl;
+pub mod svga;
 
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::Arc;
@@ -411,6 +412,31 @@ pub fn init_qemu() {
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
 }
+
+/// Initialize the independent SVGA3 command path. DX rendering is connected separately;
+/// until then admission stays refused rather than advertising an unusable catalogue.
+pub fn init_vmware() {
+    let mut core = Core::empty();
+    match svga::Device::probe() {
+        Ok(device) => {
+            crate::serial_println!("[gpu] SVGA3 command path ready: {:?}", device.profile);
+            *SVGA_DEVICE.lock() = Some(device);
+            core.status = abi::status::DEVICE_FAILED;
+            core.reason = "SVGA3 command path ready; DX catalogue not connected";
+        }
+        Err(error) => {
+            crate::serial_println!("[gpu] SVGA3 initialization refused: {:?}", error);
+            core.status = abi::status::DEVICE_FAILED;
+            core.reason = match error {
+                svga::Error::Missing(reason) => reason,
+                _ => "SVGA3 command path initialization failed",
+            };
+        }
+    }
+    *CORE.lock() = Some(core);
+}
+
+static SVGA_DEVICE: spin::Mutex<Option<svga::Device>> = spin::Mutex::new(None);
 
 impl Core {
     fn empty() -> Core {

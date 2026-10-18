@@ -966,3 +966,56 @@ The facts these establish, for this host and renderer:
   directly.
 - A full 2560x1600 readback measured 79,999 µs before and 73,989 µs after, against the 100 ms bound.
 
+
+## SVGA3 command path (VMware catch-up)
+
+The new `kernel/src/gpu/svga/` device layer uses VMware-authored interface headers for
+numbers and packed field layouts, with Breenix allocation and ownership policy. It does
+not read or reuse the legacy graphics drivers. Header revisions below are source pins,
+not references to surrounding driver implementations.
+
+| Source | Pin and published header |
+|---|---|
+| S | Linux v6.12, `adc218676eef25575469234709c2d87185ca223a`, [`svga_reg.h`](https://github.com/torvalds/linux/blob/adc218676eef25575469234709c2d87185ca223a/drivers/gpu/drm/vmwgfx/device_include/svga_reg.h) |
+| C | Same pin, `device_include/svga3d_cmd.h` |
+| D | Same pin, `device_include/svga3d_dx.h` |
+| T | Same pin, `device_include/svga3d_types.h` |
+| A | Same pin, `device_include/svga3d_devcaps.h` |
+| L | Same pin, `device_include/svga3d_limits.h` |
+| S4 | Linux v4.19, `84df9525b0c27f3ebc2ebb1864fa62a97fdedb7d`, [`svga_reg.h`](https://github.com/torvalds/linux/blob/84df9525b0c27f3ebc2ebb1864fa62a97fdedb7d/drivers/gpu/drm/vmwgfx/device_include/svga_reg.h), retained explanatory comments |
+
+| Wire fact used | Header and lines |
+|---|---|
+| Device version `0x90000003`; register indices ID, ENABLE, dimensions, capabilities, CONFIG_DONE, IRQMASK, COMMAND_LOW/HIGH, DEV_CAP, screen-target limits, IRQ_STATUS | S:79–208 (`SVGA_MAKE_ID`, register enum) |
+| Register command-buffer and guest-backed-object capability bits | S:419–422 |
+| 64-byte command-buffer header: status/error offset, u64 id, flags, byte length, u64 device address, offset, DX context, six reserved words | S:251–303; S4:347–519 explains address alignment, low-six-bit queue selector, ownership and terminal statuses |
+| Queue 0; device queue 63; NO_IRQ/DX_CONTEXT flags; 32 queued buffers; START_STOP_CONTEXT payload | S:251–338; S4:525–540 |
+| DX-context entry 95; BGRA 240, RGBA 167, R8 192; supported/sample/render bits 0/1/2; texture limits 19/20; context/surface limits 77/78 | A:78–79,143–145,171,248,273,321,356–358 |
+| Surface formats BUFFER 37, RGBA 68, R8 93, BGRA 141; screen/vertex/constant/sample/render bind bits | T:196,234,259,310,347–363 |
+| PT64_1/2 encodings 5/6; object-table indices MOB/surface/context/shader/screen/DX-context 0–5 | T:1470–1524 |
+| Global table entry widths MOB 16, surface 64, context 8, shader 16, screen 64, DX-context 8 bytes | C:940–997; D:132–136. Widths are sums of packed fields, not inherited allocation sizes |
+| SET_OTABLE_BASE64: type, u64 base page number, byte size, valid byte size, page-tree depth | C:1097–1104; command id C:128 |
+| DEFINE_GB_MOB64: id, depth, u64 base page number, byte size; DESTROY_GB_MOB | C:1124–1144; ids C:103,155 |
+| Version-1 DEFINE_GB_SURFACE, BIND/DESTROY/UPDATE/READBACK_GB_SURFACE | C:1163–1171,1220–1229,1260–1274; ids C:105–115 |
+| DX_DEFINE/BIND/DESTROY_CONTEXT; DX_SET_COTABLE | D:139–157,1555–1560; ids C:163–166,230 |
+| Screen definition, binding and update; SURFACE_COPY image ids and copy box | C:1416–1446, surface-copy structure; T:78–88; ids C:48,143–146 |
+| DX_MOB_FENCE_64 u64 value, MOB id, byte offset | D:1547–1551; id C:239 |
+| Header bounds of 256 contexts and 32,768 surfaces | L:38–39 |
+
+Breenix policy: table capacities are bounded by the device's reported context and surface
+limits and L's bounds. The MOB table budgets one MOB per surface and, per context,
+one state MOB, seven cotables, 34 catalogue shader MOBs and three vertex/constant/fence
+MOBs. Backing comes from frame-allocated `Pages`; explicit 64-bit page-number trees
+address it through `kernel_va_to_ipa`. Control packets are limited to one page; shader
+code belongs in MOBs. The device owns published allocations until a terminal completion
+or a separately confirmed end of device access. Failed initialization retains ambiguous
+DMA allocations. Admission remains refused while the DX rendering catalogue is absent.
+
+DX context backing uses D:1632–1707 (`SVGADXContextMobFormat`), 8192 bytes.
+The seven cotable kinds come from T:1492–1504. Packed entry widths are D:879–885
+(SRV, 32),932–935 (RTV, 32),1131–1136 (layout, 1024),1171–1177
+(blend, 128),1200–1216 (depth/stencil, 16),1249–1269 (rasterizer, 32),
+and 1427–1433 (shader, 32). View capacities are Breenix resource quota 256 plus
+three backend scratch views; shader capacity is the 17-pipeline catalogue times
+two stages. Single fixed-state objects each have one slot. Context and surface
+objects keep their MOB trees independently of command-buffer storage.
