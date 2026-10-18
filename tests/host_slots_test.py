@@ -4,6 +4,7 @@ import importlib.util
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import selectors
 import signal
@@ -29,7 +30,7 @@ class HostSlotsTest(unittest.TestCase):
         source = (HELPER.parents[1] / 'run.sh').read_text()
         name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
         script = (f'source {HELPER.with_suffix(".sh")}; '
-                  'host_slot_acquire mac-boot; ' + name + '; '
+                  + self.vmware_name_function(source) + '; host_slot_acquire mac-boot; ' + name + '; '
                   'echo READY:$VM_NAME; read -r release')
         first = self.launch(script, prelude="m.RESOURCES['mac-boot'] = 2")
         self.assertIn('READY:breenix-mac-boot-1', self.line_matching(first, 'READY:'))
@@ -42,6 +43,25 @@ class HostSlotsTest(unittest.TestCase):
         for process in (second, again):
             process.communicate(input=b'finish\n', timeout=15)
             self.assertEqual(process.returncode, 0)
+
+    def vmware_name_function(self, source):
+        body = re.search(r'(?ms)^vmware_boot_name\(\) \{\n(.*?)^\}', source)[1]
+        return 'vmware_boot_name() {\n' + body + '\n}'
+
+    def test_unqueued_vmware_names_do_not_require_or_reuse_a_slot(self):
+        source = (HELPER.parents[1] / 'run.sh').read_text()
+        name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
+        script = (f'source {HELPER.with_suffix(".sh")}; '
+                  + self.vmware_name_function(source) + '; set -e; '
+                  'host_slot_acquire mac-boot; ' + name + '; echo NAME:$VM_NAME; '
+                  + name + '; echo NAME:$VM_NAME')
+        process = self.launch(script, bypass=True)
+        output = process.communicate(timeout=15)[0].decode()
+        self.assertEqual(process.returncode, 0, output)
+        names = [line for line in output.splitlines() if line.startswith('NAME:')]
+        self.assertEqual(len(names), 2, output)
+        self.assertTrue(all(n.startswith('NAME:breenix-unqueued-') for n in names), output)
+        self.assertNotEqual(names[0], names[1], output)
 
     def test_slot_number_requires_a_held_lease(self):
         script = (self.request('number', 'mac-boot') + '; test $? != 0; '

@@ -685,7 +685,7 @@ def supervise_worker(argv, parent):
             # Run Inspector supervises a gate with its own helper, which can predate the
             # tested checkout's: name the operations newer than the first supervisor.
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record,
-                       BREENIX_SLOT_OPERATIONS='quiet')
+                       BREENIX_SLOT_OPERATIONS='quiet,number')
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             deferred = []
             try:

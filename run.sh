@@ -532,6 +532,18 @@ delete_vmware_bundle() {
     rm -rf "$scratch"
 }
 
+vmware_boot_name() {
+    local identity
+    if [ "${BREENIX_BOOT_NO_QUEUE:-0}" = 1 ]; then
+        # An unqueued boot owns no slot identity and must not reuse its bundle.
+        identity=$(uuidgen) || return $?
+        printf 'breenix-unqueued-%s\n' "$identity"
+    else
+        identity=$(host_slot_number mac-boot) || return $?
+        printf 'breenix-mac-boot-%s\n' "$identity"
+    fi
+}
+
 prune_vmware_inventory() {
     python3 "$BREENIX_ROOT/scripts/vmware-inventory.py" \
         || echo "WARNING: could not prune VMware library"
@@ -1191,7 +1203,7 @@ if [ "$VMWARE" = true ]; then
 
     # One library identity per leased slot, including after a crashed run.
     # The supervisor refuses a slot number unless this session holds its lease.
-    VM_NAME="breenix-mac-boot-$(host_slot_number mac-boot)"
+    VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
     if [ -d "$VM_BUNDLE" ] && [ ! -L "$VM_BUNDLE" ] \
@@ -1202,7 +1214,7 @@ if [ "$VMWARE" = true ]; then
         VM_BUNDLE_OWNED=false
     fi
     # Exclusive creation fails if a running, unowned or unknown-content bundle
-    # survived deletion; never acquire cleanup ownership of that bundle.
+    # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
