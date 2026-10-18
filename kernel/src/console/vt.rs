@@ -155,11 +155,13 @@ pub(super) struct Switching {
     pub(super) epoch: u64,
     /// The process holding the display (`sys_take_over_display`) and its terminal.
     display_owner: Option<(u64, usize)>,
+    /// When the last acquisition began (monotonic seconds and nanoseconds).
+    switched: (u64, u64),
 }
 
 impl Switching {
     pub(super) const fn new() -> Self {
-        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None }
+        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None, switched: (0, 0) }
     }
 }
 
@@ -344,6 +346,7 @@ impl Terminals<'_> {
     /// drawn by the render thread unless it is in `KD_GRAPHICS`, and its
     /// `VT_PROCESS` owner is told with `acqsig`.
     fn acquire(&mut self, from: usize, to: usize, source: Source, effects: &mut Effects) {
+        self.sw.switched = crate::time::get_monotonic_time_ns();
         self.sw.acquired = false;
         self.sw.epoch = self.sw.epoch.wrapping_add(1);
         let text = self.vts[to].graphics.is_none();
@@ -789,6 +792,11 @@ pub(super) fn drawn(epoch: u64) {
 
 pub(super) fn readback_pending() -> Option<usize> {
     with_terminals(|terminals, _| terminals.sw.check)
+}
+
+/// When the last acquisition began, for its read-back's report.
+pub(super) fn switched_at() -> (u64, u64) {
+    with_terminals(|terminals, _| terminals.sw.switched)
 }
 
 pub(super) fn checked(vt: usize) {

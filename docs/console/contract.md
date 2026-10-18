@@ -93,6 +93,10 @@ the VT's own size succeeds without effect; with any other size it fails with EIN
   their history when their screens are initialized, before keyboard input can reach them; allocation
   runs in thread context. If allocation fails, the VT runs without scrollback and the kernel
   logs `[console] ttyN scrollback unavailable` once.
+- Once tty2 to tty6 have their screens and scrollback, the kernel logs what they took from the heap,
+  measured, beside the size they add up to, and the heap's high-water mark (plan Q10): `[console]
+  terminals: tty2 to tty6 took <n> KiB of the kernel heap, measured (calculated: ...); heap high-water <n>
+  KiB of <heap size> KiB`. `/proc/meminfo`'s `KernelHeapPeak` gives the high-water mark at any later time.
 - Lines enter the scrollback when they scroll off the top of the main screen: full-screen scrolling, or a
   scroll region whose top is the screen's first row. Erasing the screen does not move lines into it.
 - **Shift+PageUp** and **Shift+PageDown** move the foreground VT's view back and forward by half a screen
@@ -645,7 +649,9 @@ the backstop does not pass.
 - **A switch logs** `[console] foreground ttyN (<source>)` (`key alt-f2`, `key ctrl-alt-f2`, `ioctl`, or
   `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
   then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
-  the shadow's SHA-256>` or `[console] ttyN shown: read back differs: <first mismatch>` (fatal). **A switch
+  the shadow's SHA-256>; <ms> ms after the switch` or `[console] ttyN shown: read back differs: <first
+  mismatch>; <ms> ms after the switch` (fatal). The time runs from the moment ttyN became the foreground
+  to the verdict (plan Q25); `vt-switch/switch-readback` requires it under that case's 2000 ms. **A switch
   does not log screen contents:** terminals can show secrets, and serial and boot logs are retained.
 - **`/proc/console/check`** (root only, mode 0400) is how a case or a metal script reads the screen. Reading it
   runs the check on the foreground VT and returns:

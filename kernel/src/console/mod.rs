@@ -200,6 +200,7 @@ fn set_display(display: Display) {
 /// reach them. tty1 already retains boot output in static storage.
 fn size_terminals(layout: &Layout) {
     let size = layout.cols() * layout.rows();
+    let free_before = crate::memory::heap::free_bytes();
     for index in 1..vt::VT_COUNT {
         let mut cells = Vec::new();
         let mut alternate = Vec::new();
@@ -218,6 +219,18 @@ fn size_terminals(layout: &Layout) {
         // Reserve before this terminal can receive interrupt-generated echo.
         vt::ensure_history(index);
     }
+    // Plan Q10: what the heap gave, measured, beside what the sizes add up to.
+    let cell = core::mem::size_of::<grid::Cell>();
+    let calculated = (vt::VT_COUNT - 1) * (2 * size + grid::HISTORY_LINES * layout.cols()) * cell;
+    say!(
+        info,
+        "[console] terminals: tty2 to tty6 took {} KiB of the kernel heap, measured (calculated: {} KiB for two screens and {} scrollback lines each; tty1's are static); heap high-water {} KiB of {} KiB",
+        free_before.saturating_sub(crate::memory::heap::free_bytes()) / 1024,
+        calculated / 1024,
+        grid::HISTORY_LINES,
+        crate::memory::heap::high_water_bytes() / 1024,
+        crate::memory::heap::HEAP_SIZE / 1024
+    );
 }
 
 /// Allocate the shadow, say what the console draws on, and draw the splash.
@@ -1380,19 +1393,31 @@ fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
 /// the terminal number and a digest of the shadow, not the screen's text
 /// (contract section 8).
 fn report_switch(number: usize, check: &Check) {
+    // Plan Q25: from the moment the terminal became the foreground to this verdict.
+    let after = Ms(elapsed_us(vt::switched_at()));
     if check.identical() {
-        log::info!("[console] tty{} shown: read back identical; digest {}", number, Hex(&check.sha256[..8]));
+        log::info!("[console] tty{} shown: read back identical; digest {}; {} after the switch", number, Hex(&check.sha256[..8]), after);
         return;
     }
     match (&check.source, check.first_difference) {
-        (Err(reason), _) => log::warn!("[console] tty{} shown: read back differs: not read from the scanout: {}", number, reason),
-        (Ok(_), Some((x, y))) => log::warn!("[console] tty{} shown: read back differs: x={} y={}", number, x, y),
-        (Ok(_), None) if !check.complete => log::warn!("[console] tty{} shown: read back differs: frame incomplete", number),
+        (Err(reason), _) => log::warn!("[console] tty{} shown: read back differs: not read from the scanout: {}; {} after the switch", number, reason, after),
+        (Ok(_), Some((x, y))) => log::warn!("[console] tty{} shown: read back differs: x={} y={}; {} after the switch", number, x, y, after),
+        (Ok(_), None) if !check.complete => log::warn!("[console] tty{} shown: read back differs: frame incomplete; {} after the switch", number, after),
         (Ok(_), None) => log::warn!(
-            "[console] tty{} shown: read back differs: {} pixels from the font",
+            "[console] tty{} shown: read back differs: {} pixels from the font; {} after the switch",
             number,
-            check.font_mismatches
+            check.font_mismatches,
+            after
         ),
+    }
+}
+
+/// Microseconds shown as milliseconds with three decimals: `12.345 ms`.
+struct Ms(u64);
+
+impl fmt::Display for Ms {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{:03} ms", self.0 / 1000, self.0 % 1000)
     }
 }
 

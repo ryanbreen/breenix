@@ -1,6 +1,7 @@
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use linked_list_allocator::LockedHeap;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
@@ -64,9 +65,18 @@ impl IrqSafeLockedHeap {
     }
 }
 
+/// The most heap bytes in use at once since boot, counted as the allocator
+/// counts them (each allocation's size after alignment).
+static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
 unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.with_inner(|inner| unsafe { GlobalAlloc::alloc(inner, layout) })
+        self.with_inner(|inner| {
+            let mut heap = inner.lock();
+            let ptr = heap.allocate_first_fit(layout).ok().map_or(core::ptr::null_mut(), |allocation| allocation.as_ptr());
+            HIGH_WATER.fetch_max(heap.used(), Ordering::Relaxed);
+            ptr
+        })
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -177,6 +187,11 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 /// counted by the frame allocator instead.
 pub fn free_bytes() -> usize {
     ALLOCATOR.with_inner(|inner| inner.lock().free())
+}
+
+/// The most bytes the kernel heap has had in use at once since boot.
+pub fn high_water_bytes() -> usize {
+    HIGH_WATER.load(Ordering::Relaxed)
 }
 
 /// Handle allocation errors

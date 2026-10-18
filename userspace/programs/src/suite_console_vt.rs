@@ -1149,7 +1149,19 @@ pub fn vt_switch_eperm_unprivileged() -> CaseResult {
 /// The 16 hex digits a switch line gives for terminal `n`, the last one logged.
 fn switch_digest(log: &str, n: usize) -> Option<String> {
     let prefix = format!("[console] tty{n} shown: read back identical; digest ");
-    log.lines().rev().find_map(|line| line.split_once(&prefix).map(|(_, digest)| digest.trim().to_string()))
+    log.lines().rev().find_map(|line| {
+        line.split_once(&prefix).map(|(_, rest)| rest.split(';').next().unwrap_or("").trim().to_string())
+    })
+}
+
+/// How long after the switch the last read-back line for terminal `n` was
+/// logged, in milliseconds (`; <ms> ms after the switch`).
+fn switch_ms(log: &str, n: usize) -> Option<f64> {
+    let prefix = format!("[console] tty{n} shown: read back identical; digest ");
+    log.lines().rev().find_map(|line| {
+        let (_, rest) = line.split_once(&prefix)?;
+        rest.split("; ").nth(1)?.strip_suffix(" ms after the switch")?.trim().parse().ok()
+    })
 }
 
 pub fn vt_switch_switch_readback() -> CaseResult {
@@ -1162,7 +1174,11 @@ pub fn vt_switch_switch_readback() -> CaseResult {
         switch_to(2)?;
         shows(2, &label)?;
         require(within(2000, || count(&kmsg().unwrap_or_default(), shown_line) == before + 1), "the switch was not read back identical")?;
-        require(!kmsg()?.contains("[console] tty2 shown: read back differs"), "a read-back differed")
+        let log = kmsg()?;
+        require(!log.contains("[console] tty2 shown: read back differs"), "a read-back differed")?;
+        // Plan Q25: the switch is read back within this case's 2000 ms.
+        let ms = switch_ms(&log, 2).ok_or("the read-back line gives no time after the switch")?;
+        require(ms < 2000.0, &format!("read back {ms} ms after the switch, over 2000 ms"))
     })
 }
 
