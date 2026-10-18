@@ -1,5 +1,5 @@
 //! Opt-in, per-boot recovery exercise. This is never milestone evidence.
-//! USB 2.0 9.4.7: an unknown configuration causes Request Error. USB 2.0
+//! Configuration failure is injected at the driver boundary. USB 2.0
 //! 9.4.3: a device descriptor has 18 bytes, even if wLength requests more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mode { ResetDevice, ShortRead }

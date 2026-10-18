@@ -998,10 +998,12 @@ The boot still uses the machine lease, normal capture and power-off cleanup.
 
 The driver reads the staged `xhci-fault` intent only when console startup asks
 it to run. An ordinary boot replaces that file with an empty, disarmed intent.
-Reset-device sends an invalid SET_CONFIGURATION on two attach attempts. Each
-refusal must exhaust the existing three EP0 attempts, recover the halted
-endpoint, reclaim the slot and reset/re-enumerate the connected device; the
-third attach uses the valid configuration. The reset budget stays two.
+Reset-device injects a configuration failure after the real configuration
+requests complete on two attach attempts. Each refusal takes the ordinary
+slot reclamation and device reset/re-enumeration path; the third attach
+succeeds. The reset budget stays two and the EP0 attempt budget stays three.
+The driver injects the refusal itself because a keyboard can accept an invalid
+configuration value, making that on-wire stimulus unsuitable as a deterministic fault.
 Short-read requests 19 bytes of the 18-byte device descriptor once, waits for
 the real Short Packet and Status completions, then resends for 18 bytes.
 

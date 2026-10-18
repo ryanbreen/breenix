@@ -229,15 +229,8 @@ impl Controller {
         });
         // USB 2.0 9.4.7, then HID 1.11 F.5: boot protocol after configuration;
         // Set_Idle(0) so reports come only on change (7.2.4, F.4).
-        // Test boots refuse two configurations on the wire, retaining the
-        // existing three-attempt EP0 and two-reset attach budgets.
-        let configuration = if self.fault.refuse_configuration(port) {
-            if boot.configuration == 255 { return Err("fault configuration is in use"); }
-            log::info!("[xhci-fault] refusing configuration: reset-attempt={resets}");
-            255
-        } else { boot.configuration };
         for (setup, what) in [
-            (spec::set_configuration(configuration), "SET_CONFIGURATION"),
+            (spec::set_configuration(boot.configuration), "SET_CONFIGURATION"),
             (interface::set_boot_protocol(boot.interface), "Set_Protocol(Boot)"),
             (interface::set_idle_indefinite(boot.interface), "Set_Idle"),
         ] {
@@ -246,6 +239,13 @@ impl Controller {
                 log::error!("[usb] port {port}: {what} completion code={code}");
                 return Err("boot keyboard request refused");
             }
+        }
+        // A deterministic driver fault: some keyboards accept even invalid
+        // configuration values. Fail at the configuration boundary after the
+        // real requests completed, then use the ordinary reclaim/reset path.
+        if self.fault.refuse_configuration(port) {
+            log::info!("[xhci-fault] configuration refusal injected: reset-attempt={resets}");
+            return Err("fault-test configuration refusal");
         }
         let leds = self.send_leds(index);
         self.queue_report(index)?;
