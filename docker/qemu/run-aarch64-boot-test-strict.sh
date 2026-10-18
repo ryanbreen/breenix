@@ -700,7 +700,7 @@ score_serial() {
     fi
     # #822, pinned as the same pair for the same reason.
     if grep -qF "[TTY_IRQ_FG_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
-        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
+        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[^]]*)?\]" "$serial_file" 2>/dev/null; then
         echo "TTY input IRQ foreground-pgrp oracle reported failure ($(grep -aoE '\[TTY_IRQ_FG_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
         return 1
     fi
