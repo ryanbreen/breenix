@@ -21,12 +21,12 @@ kernel's announcement lines) is never a request.
 
 Backends, one per way the target takes keys:
 
-    qmp:<socket>          QEMU's QMP send-key (ARM64 QEMU on the Mac, x86-64 QEMU on beast)
+    qmp:<socket>          QEMU's QMP send-key (ARM64 and x86-64 QEMU)
     prlctl:<vm>           prlctl send-key-event with PS/2 set-1 scancodes (Parallels)
     vnc:<host>:<port>     RFB key events (VMware Fusion's built-in VNC server)
     none                  nothing: every request is answered "no host key path"
 
-Parallels (27.0.3): basic scancodes work. Alt+Fn, Ctrl+Alt+Fn and letters reached the
+Earlier Parallels (27.0.3) probe: basic scancodes worked. Alt+Fn, Ctrl+Alt+Fn and letters reached the
 guest and the shell showed the typed letters. Arrows, Home/End and Page Up/Down do not:
 `prlctl` refuses a bare extended code ("Invalid scan code sequence"), and the encodings
 it does accept (a 224 prefix event, the 16-bit code 0xE04B, `--key` with several
@@ -34,7 +34,7 @@ values) left the shell's line editor, which moves its cursor on Left, where it w
 while QMP's `left` moved it. So Alt+Left, Alt+Right and Shift+PageUp cases have no host
 key path on Parallels; they run on QEMU, and the Alt+Fn cases run on both.
 
-VMware Fusion: add `RemoteDisplay.vnc.enabled = "TRUE"` and `RemoteDisplay.vnc.port`
+Earlier VMware Fusion probe (see contract section 10 for limits): add `RemoteDisplay.vnc.enabled = "TRUE"` and `RemoteDisplay.vnc.port`
 to a boot VM's vmx (run.sh does so when BREENIX_VMWARE_VNC_PORT names a port). Fusion
 on Apple Silicon starts the VNC server (no password with `useKey 0`), the RFB handshake
 and framebuffer updates work and the key events are accepted. That a key reached the
@@ -108,7 +108,7 @@ class QMPKeys:
         # One connection per chord: QEMU serves one QMP client at a time, and Vigil or a screen
         # grab may want the socket between chords.
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(10)
+        sock.settimeout(0.8)
         try:
             sock.connect(self.path)
             stream = sock.makefile('rw')
@@ -274,13 +274,17 @@ class Watcher:
             self.line(line)
 
     def line(self, line):
+        start = re.fullmatch(r'SUITE ([a-z0-9-]+) START .*\r?', line)
+        if start:
+            self.seen = {key for key in self.seen if key[0] != start.group(1)}
         match = REQUEST.match(line)
         if not match or (self.suite and match.group(1) != self.suite):
             return
-        _, case, seq, chords = match.groups()
-        if seq in self.seen:
+        suite, case, seq, chords = match.groups()
+        identity = (suite, case, seq)
+        if identity in self.seen:
             return
-        self.seen.add(seq)
+        self.seen.add(identity)
         done = []
         try:
             for chord in chords.split(','):
@@ -356,6 +360,11 @@ def selftest_parse():
            'SUITE console HOSTKEY vt/b seq')
     w.feed('=2 keys=ctrl-alt-f3\n')
     assert sent == [(('alt',), 'f2'), (('alt',), 'left'), (('ctrl', 'alt'), 'f3')], sent
+    sent.clear()
+    w.feed('SUITE other HOSTKEY vt/a seq=1 keys=z\n'
+           'SUITE console START cases=1\n'
+           'SUITE console HOSTKEY vt/a seq=1 keys=x\n')
+    assert sent == [((), 'z'), ((), 'x')], sent
     sent.clear()
     log = []
     p = Watcher(PrlctlKeys('none'), 'prlctl', log.append)

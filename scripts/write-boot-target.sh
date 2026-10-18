@@ -50,6 +50,10 @@ if [ -n "$ONLY" ]; then
     fi
     BOOT_TARGET+=" case $ONLY"
 fi
+if [ -n "${BREENIX_HOSTKEYS:-}" ] && [[ "$SUITE" != --* ]]; then
+    [[ "$BREENIX_HOSTKEYS" =~ ^[a-z0-9=\;,\-]+$ ]] || { echo "invalid hostkeys declaration" >&2; exit 2; }
+    BOOT_TARGET+=" hostkeys $BREENIX_HOSTKEYS"
+fi
 [ -f "$IMAGE" ] || { echo "write-boot-target: no disk image at $IMAGE" >&2; exit 1; }
 if [ -n "$SUITE_ELF" ] && [ ! -f "$SUITE_ELF" ]; then
     echo "write-boot-target: no PID 1 binary at $SUITE_ELF" >&2; exit 1

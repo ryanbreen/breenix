@@ -284,15 +284,17 @@ fi
 # A suite or shell boot takes host keys (scripts/hostkeys.py): it needs a QMP socket even if Vigil
 # registered no socket and the caller named no socket.
 HOSTKEYS_SOCKET=
-if [ -z "$QMP_SOCKET" ] && { [ "$MODE" = suite ] || [ "$MODE" = shell ]; }; then
+if [ "$MODE" = suite ] || [ "$MODE" = shell ]; then
     HOSTKEYS_SOCKET="${TMPDIR:-/tmp}/breenix-hk-$$.sock"
     [ "$(printf '%s' "$HOSTKEYS_SOCKET" | wc -c)" -le 103 ] || HOSTKEYS_SOCKET="/tmp/breenix-hk-$$.sock"
-    QMP_SOCKET="$HOSTKEYS_SOCKET"
 fi
 QMP_ARGS=()
 if [ -n "$QMP_SOCKET" ]; then
     rm -f "$QMP_SOCKET"
     QMP_ARGS=(-qmp "unix:$QMP_SOCKET,server=on,wait=off")
+fi
+if [ -n "$HOSTKEYS_SOCKET" ]; then
+    QMP_ARGS+=(-qmp "unix:$HOSTKEYS_SOCKET,server=on,wait=off")
 fi
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $(printf '%q' "$QMP_SOCKET") out.png)"
@@ -304,8 +306,8 @@ trap 'exit 130' INT
 exec 3<&0
 set +e
 HOSTKEYS_PID=
-if [ -n "$QMP_SOCKET" ] && { [ "$MODE" = suite ] || [ "$MODE" = shell ]; }; then
-    python3 "$ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "qmp:$QMP_SOCKET" \
+if [ -n "$HOSTKEYS_SOCKET" ]; then
+    python3 "$ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "qmp:$HOSTKEYS_SOCKET" \
         --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
     HOSTKEYS_PID=$!
 fi

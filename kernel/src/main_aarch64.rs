@@ -300,10 +300,18 @@ impl InitLaunch {
             ),
             BootMode::Suite => {
                 let path = kernel::boot::target::suite_path(arg.unwrap_or(""));
-                match only {
-                    Some(case) => InitLaunch::new(&path, &[path.as_bytes(), b"--case", case.as_bytes()]),
-                    None => InitLaunch::new(&path, &[path.as_bytes()]),
-                }
+                let hostkeys = if kernel::platform_config::is_qemu() {
+                    kernel::drivers::fw_cfg::read_string("opt/breenix/hostkeys")
+                } else { None }.or_else(|| {
+                    match kernel::boot::target::read() {
+                        Ok(Some(kernel::boot::target::Target::Suite(suite))) => suite.hostkeys,
+                        _ => None,
+                    }
+                });
+                let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+                if let Some(case) = only { argv.extend_from_slice(&[b"--case", case.as_bytes()]); }
+                if let Some(value) = &hostkeys { argv.extend_from_slice(&[b"--hostkeys", value.as_bytes()]); }
+                InitLaunch::new(&path, &argv)
             }
         }
     }

@@ -11,7 +11,7 @@
 #
 # QEMU's virtio keyboard has no such counter. Its self-test is the shell mode: boot
 # `scripts/boot-interactive.sh --mode shell` with stdin from a fifo, write
-# `echo SUITE selftest HOSTKEY k1 z` into it, and the watcher boot-interactive.sh starts
+# `echo SUITE selftest HOSTKEY keys/letter seq=0 keys=z` into it, and the watcher boot-interactive.sh starts
 # presses z; the shell then shows `bsh /> z` after its prompt.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,7 +19,10 @@ BACKEND="${1:?backend (prlctl:<vm> or vnc:<host>:<port>)}"
 SERIAL="${2:?serial log}"
 shift 2
 CHORDS=("$@")
-[ "${#CHORDS[@]}" -gt 0 ] || CHORDS=(a alt-f3 ctrl-alt-f2 alt-f7 left alt-left alt-right)
+if [ "${#CHORDS[@]}" -eq 0 ]; then
+    CHORDS=(a alt-f3 ctrl-alt-f2 alt-f7)
+    [[ "$BACKEND" = prlctl:* ]] || CHORDS+=(left alt-left alt-right)
+fi
 
 count() { grep -aoE 'kbd_nonzero=[0-9]+' "$SERIAL" | tail -1 | cut -d= -f2; }
 

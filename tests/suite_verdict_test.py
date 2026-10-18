@@ -55,6 +55,20 @@ class SuiteVerdictTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0 if expected else 1, result.stdout + result.stderr)
                 self.assertIn(("PASS: " if expected else "FAIL: ") + detail, result.stdout)
 
+    def test_hostkey_live_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            serial = Path(temporary) / "serial"
+            original = (FIXTURES / "all-pass.txt").read_text()
+            request = "SUITE fixture HOSTKEY first/one seq=0 keys=alt-f2,alt-left\n"
+            lines = original.splitlines(keepends=True)
+            serial.write_text(lines[0] + request + ''.join(lines[1:]))
+            ok, detail = SCORER.verdict(MANIFEST, serial, [serial])
+            self.assertTrue(ok, detail)
+            serial.write_text(original + request)
+            ok, detail = SCORER.verdict(MANIFEST, serial, [serial])
+            self.assertFalse(ok)
+            self.assertIn("outside START..DONE", detail)
+
     def test_one_case_requires_explicit_selection_and_exact_records(self):
         with tempfile.TemporaryDirectory() as temporary:
             serial = Path(temporary) / "serial"

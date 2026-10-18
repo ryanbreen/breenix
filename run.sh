@@ -412,6 +412,13 @@ stage_boot_ext2_disk() {
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
+        local hostkeys_backend=none
+        if [ "$PARALLELS" = true ]; then
+            hostkeys_backend=prlctl:declaration
+        elif [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
+            hostkeys_backend="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
+        fi
+        BREENIX_HOSTKEYS="$(python3 "$BREENIX_ROOT/scripts/hostkeys.py" declare --backend "$hostkeys_backend")" \
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
             "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
