@@ -4871,7 +4871,7 @@ impl Scheduler {
     /// to prevent other CPUs from dispatching it with stale state.
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
-        self.requeue_thread_after_save_onto(thread_id, Self::current_cpu_id());
+        self.requeue_thread_after_save_onto(thread_id, true, Self::current_cpu_id());
     }
 
     /// The CPU that owns the per-CPU stack slot a ready thread's saved kernel
@@ -4940,15 +4940,7 @@ impl Scheduler {
         if cpu >= MAX_CPUS {
             return;
         }
-        self.requeue_thread_after_save_onto(thread_id, cpu);
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn requeue_thread_after_save_onto(&mut self, thread_id: u64, target_cpu: usize) {
-        if self.enqueue_after_save(thread_id, target_cpu) {
-            // Send IPI to wake an idle CPU to pick up the requeued thread
-            self.send_resched_ipi();
-        }
+        self.requeue_thread_after_save_onto(thread_id, true, cpu);
     }
 
     /// Whether `requeue_switched_out` can queue `thread_id` here without a
@@ -4971,16 +4963,21 @@ impl Scheduler {
     /// clear. The caller has checked `requeues_without_ipi`.
     #[cfg(target_arch = "aarch64")]
     pub fn requeue_switched_out(&mut self, thread_id: u64) {
-        self.enqueue_after_save(thread_id, Self::current_cpu_id());
+        self.requeue_thread_after_save_onto(thread_id, false, Self::current_cpu_id());
     }
 
-    /// The requeue after context save, without the IPI: true when it put the
-    /// thread on a queue.
+    /// The requeue after context save. With `wake_idle`, a thread it puts on
+    /// a queue is announced to the idle CPUs by a reschedule IPI.
     #[cfg(target_arch = "aarch64")]
-    fn enqueue_after_save(&mut self, thread_id: u64, target_cpu: usize) -> bool {
+    fn requeue_thread_after_save_onto(
+        &mut self,
+        thread_id: u64,
+        wake_idle: bool,
+        target_cpu: usize,
+    ) {
         // Don't requeue idle threads (they are never in the ready queue)
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
-            return false;
+            return;
         }
         let cpu = Self::current_cpu_id();
         let same_cpu_marker_present =
@@ -4996,13 +4993,13 @@ impl Scheduler {
         // CPU simultaneously — sharing the same kernel stack and Thread context,
         // leading to register/stack corruption (DATA_ABORT, INSTRUCTION_ABORT, etc.).
         if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].current_thread == Some(thread_id)) {
-            return false;
+            return;
         }
         // Don't requeue threads still pending deferred requeue on another CPU.
         // This is a defense-in-depth check — the primary protection is in
         // the wakeup paths (unblock, wake_expired_timers, etc.).
         if self.is_in_deferred_requeue(thread_id) {
-            return false;
+            return;
         }
         // Safety checks: only requeue if the thread is runnable and not already queued.
         // Also handle the deferred-window race: if unblock_for_io() fired while the thread
@@ -5018,14 +5015,14 @@ impl Scheduler {
                         .iter()
                         .any(|state| state.pending_next == Some(thread_id))
                     {
-                        return false;
+                        return;
                     }
                     true
                 }
-                _ => return false, // Thread state changed (terminated/blocked) - don't requeue
+                _ => return, // Thread state changed (terminated/blocked) - don't requeue
             }
         } else {
-            return false;
+            return;
         };
         let in_any_queue = self.per_cpu_queues.iter().any(|q| q.contains(&thread_id));
         if !in_any_queue {
@@ -5053,10 +5050,12 @@ impl Scheduler {
                 }
             }
             ENQUEUE_DEFERRED_DRAINED_OK.fetch_add(1, Ordering::Relaxed);
-            true
+            if wake_idle {
+                // Send IPI to wake an idle CPU to pick up the requeued thread
+                self.send_resched_ipi();
+            }
         } else {
             ENQUEUE_ALREADY_QUEUED_OK.fetch_add(1, Ordering::Relaxed);
-            false
         }
     }
 
@@ -7279,7 +7278,7 @@ impl Scheduler {
 
         // Leg 2 -- census site 7: a requeue after context save, named onto this
         // CPU by its caller.
-        self.requeue_thread_after_save_onto(tid, here);
+        self.requeue_thread_after_save_onto(tid, true, here);
         let requeue = self.pin_guard_oracle_where(tid);
         self.remove_from_ready_queue(tid);
 
