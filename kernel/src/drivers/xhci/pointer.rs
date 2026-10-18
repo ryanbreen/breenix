@@ -289,30 +289,28 @@ impl Controller {
         Ok(true)
     }
 
-    /// Replay one report through `deliver_pointer` on the first attached
-    /// pointer interface that decodes it, as if its interrupt-IN request had
-    /// completed with it. The interface's real request stays outstanding.
+    /// Replay one report through `deliver_pointer` on the pointer interface
+    /// whose interrupt-IN endpoint is `endpoint` on root port `port`, as if its
+    /// request had completed with it. The real request stays outstanding.
     /// Returns bit 0 delivered, bit 1 that interface is still armed.
     #[cfg(feature = "usb_pointer_replay")]
-    pub(super) fn replay_pointer(&mut self, port: u8, data: &[u8]) -> Result<u64, &'static str> {
-        let mut decodable = None;
-        for (index, device) in self.devices.iter().enumerate() {
-            if port != 0 && device.port != port {
-                continue;
-            }
-            for (pipe_index, pipe) in device.pointers.iter().enumerate() {
-                if let Some(layout) = pipe.layout.as_ref() {
-                    if matches!(layout.decode(data), Ok(Some(_))) {
-                        decodable = Some((index, pipe_index));
-                        break;
-                    }
-                }
-            }
-            if decodable.is_some() {
-                break;
-            }
-        }
-        let (index, pipe_index) = decodable.ok_or("no attached pointer decodes the report")?;
+    pub(super) fn replay_pointer(
+        &mut self,
+        port: u8,
+        endpoint: u8,
+        data: &[u8],
+    ) -> Result<u64, &'static str> {
+        let (index, pipe_index) = self
+            .devices
+            .iter()
+            .enumerate()
+            .find_map(|(index, device)| {
+                (device.port == port)
+                    .then(|| device.pointers.iter().position(|p| p.endpoint == endpoint))
+                    .flatten()
+                    .map(|pipe_index| (index, pipe_index))
+            })
+            .ok_or("no attached pointer interface on that port and endpoint")?;
         let delivered = self.deliver_pointer(index, pipe_index, data)?;
         let armed = self.devices[index].pointers[pipe_index].outstanding.is_some();
         Ok(delivered as u64 | (armed as u64) << 1)
@@ -342,17 +340,19 @@ pub mod replay {
     pub const POINTER_REPLAY: u64 = 0xB813_0006;
     const REPORT_MAX: usize = 64;
 
-    /// The ioctl argument: a root port (0 for any) and one report.
+    /// The ioctl argument: the interface's root port and interrupt-IN endpoint
+    /// address (as `/proc/xhci/pointers` lists them) and one report.
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub struct ReplayRequest {
         port: u32,
+        endpoint: u32,
         len: u32,
         report: [u8; REPORT_MAX],
     }
 
-    /// The pending request, taken by the worker.
-    pub(in super::super) static PENDING: Mutex<Option<(u64, u8, Vec<u8>)>> = Mutex::new(None);
+    /// The pending request, taken by the worker: sequence, port, endpoint, report.
+    pub(in super::super) static PENDING: Mutex<Option<(u64, u8, u8, Vec<u8>)>> = Mutex::new(None);
     static ASKED: AtomicU64 = AtomicU64::new(0);
     static DONE: AtomicU64 = AtomicU64::new(0);
     /// The last answer: bits 0-1 the worker's result, bit 2 refused.
@@ -363,11 +363,16 @@ pub mod replay {
             Ok(asked) => asked,
             Err(error) => return SyscallResult::Err(error),
         };
-        if asked.len == 0 || asked.len as usize > REPORT_MAX || asked.port > 255 {
+        if asked.len == 0 || asked.len as usize > REPORT_MAX || asked.port > 255 || asked.endpoint > 255 {
             return SyscallResult::Err(errno::EINVAL as u64);
         }
         let seq = ASKED.fetch_add(1, Ordering::AcqRel) + 1;
-        *PENDING.lock() = Some((seq, asked.port as u8, asked.report[..asked.len as usize].to_vec()));
+        *PENDING.lock() = Some((
+            seq,
+            asked.port as u8,
+            asked.endpoint as u8,
+            asked.report[..asked.len as usize].to_vec(),
+        ));
         request(&REPLAY);
         let (s, ns) = crate::time::get_monotonic_time_ns();
         let end = s * 1_000_000_000 + ns + 1_000_000_000;

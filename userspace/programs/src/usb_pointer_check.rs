@@ -13,9 +13,10 @@
 //! - `replay`: for a target with no host pointer path (Parallels). For each
 //!   attached pointer interface, reports are encoded from the report descriptor
 //!   the device itself returned (`/proc/xhci/pointers`) and handed to the kernel's
-//!   replay control, which runs them through the xHCI pointer completion path
-//!   (decode, button merge, input report, compositor wake). That control exists
-//!   only in a kernel built with the `usb_pointer_replay` feature.
+//!   replay control with that interface's port and endpoint, which runs them
+//!   through the xHCI pointer completion path (decode, button merge, input report,
+//!   compositor wake). That control exists only in a kernel built with the
+//!   `usb_pointer_replay` feature.
 //!
 //! `both` runs `host` and then `replay`.
 use libbreenix::graphics;
@@ -29,6 +30,7 @@ const REPORT_MAX: usize = 64;
 #[repr(C)]
 struct ReplayRequest {
     port: u32,
+    endpoint: u32,
     len: u32,
     report: [u8; REPORT_MAX],
 }
@@ -37,6 +39,7 @@ struct ReplayRequest {
 struct Pointer {
     port: u32,
     interface: u32,
+    endpoint: u32,
     descriptor: Vec<u8>,
 }
 
@@ -70,10 +73,13 @@ fn pointers() -> Result<Vec<Pointer>, String> {
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
             .collect::<Result<Vec<u8>, _>>()
             .map_err(|_| format!("bad descriptor hex in {line:?}"))?;
-        match (number("port="), number("interface=")) {
-            (Some(port), Some(interface)) => found.push(Pointer {
+        let endpoint = field("endpoint=")
+            .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok());
+        match (number("port="), number("interface="), endpoint) {
+            (Some(port), Some(interface), Some(endpoint)) => found.push(Pointer {
                 port,
                 interface,
+                endpoint,
                 descriptor,
             }),
             _ => return Err(format!("unreadable pointer line {line:?}")),
@@ -360,9 +366,10 @@ fn host(width: u32, height: u32, tally: &mut Tally) {
     }
 }
 
-fn replay_one(port: u32, report: &[u8]) -> Result<u64, i64> {
+fn replay_one(pointer: &Pointer, report: &[u8]) -> Result<u64, i64> {
     let mut request = ReplayRequest {
-        port,
+        port: pointer.port,
+        endpoint: pointer.endpoint,
         len: report.len() as u32,
         report: [0; REPORT_MAX],
     };
@@ -431,7 +438,7 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) {
     };
     let send = |tally: &mut Tally, name: &str, data: Vec<u8>, accept: &dyn Fn((u32, u32, u32, i32)) -> bool| {
         let _ = observe(); // drain press and wheel latches from earlier cases
-        match replay_one(pointer.port, &data) {
+        match replay_one(pointer, &data) {
             Ok(answer) => {
                 let (state, passed) = wait_for(accept);
                 let passed = passed && answer & 1 != 0 && answer & 2 != 0;

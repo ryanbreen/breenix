@@ -242,13 +242,20 @@ class VNCKeys:
     def pointer(self, x, y, buttons, wheel):
         if not (0 <= x <= 65535 and 0 <= y <= 65535):
             raise ValueError("RFB pointer coordinate exceeds 16 bits")
-        if not hasattr(self, '_pointer_socket'):
+        fresh = not hasattr(self, '_pointer_socket')
+        if fresh:
             self._pointer_socket = self.connect()
         # HID and RFB order middle/right differently. RFB wheel-up/down are
         # momentary buttons 4/5 (RFB 3.8 section 7.5.5).
         mask = (buttons & 1) | ((buttons & 4) >> 1) | ((buttons & 2) << 1)
         def send(value):
             self._pointer_socket.sendall(struct.pack('>BBHH', 5, value, x, y))
+        if fresh:
+            # Fusion's VNC server did not deliver the first pointer event of a new
+            # connection to the guest (one VMware run, seq=0); later events arrived.
+            # Send the position and buttons once more before the requested event.
+            send(mask)
+            time.sleep(0.05)
         send(mask | (8 if wheel > 0 else 16 if wheel < 0 else 0))
         if wheel:
             time.sleep(0.05)
@@ -421,6 +428,12 @@ def selftest_parse():
         vnc.pointer(123, 456, 2, wheel)
         assert wire.packets == [(5, rfb | 4, 123, 456), (5, 4, 123, 456)]
         wire.packets.clear()
+    # A new connection sends the state once before the requested event.
+    fresh = VNCKeys('', 0)
+    fresh.connect = lambda: wire
+    fresh.pointer(10, 20, 1, 1)
+    assert wire.packets == [(5, 1, 10, 20), (5, 9, 10, 20), (5, 1, 10, 20)], wire.packets
+    wire.packets.clear()
     print('hostkeys parse and RFB pointer wire ok')
 
 

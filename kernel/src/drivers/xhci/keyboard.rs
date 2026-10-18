@@ -78,8 +78,8 @@ impl Controller {
             #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if super::REPLAY.swap(false, Ordering::SeqCst) {
                 let pending = super::pointer::replay::PENDING.lock().take();
-                if let Some((seq, port, report)) = pending {
-                    let result = self.replay_pointer(port, &report);
+                if let Some((seq, port, endpoint, report)) = pending {
+                    let result = self.replay_pointer(port, endpoint, &report);
                     super::pointer::replay::answer(seq, result);
                 }
             }
