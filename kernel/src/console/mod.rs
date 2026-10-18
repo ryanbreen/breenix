@@ -215,7 +215,9 @@ pub fn log_record(level: log::Level, args: &fmt::Arguments) {
 
 /// Put kernel serial output on the console: a record from `serial_line`, a
 /// line or part of one. It starts a fresh row unless it continues the kernel's
-/// own open line. Kernel output carries no level, so it is drawn as INFO.
+/// own open line, and each line it ends returns to the first column (kernel
+/// records end lines with LF alone). Kernel output carries no level, so it is
+/// drawn as INFO.
 #[cfg(target_arch = "aarch64")]
 pub fn log_bytes(bytes: &[u8]) {
     if bytes.is_empty() || DISPLAY_TAKEN.load(Ordering::Acquire) || QUIET.load(Ordering::Acquire) {
@@ -225,7 +227,15 @@ pub fn log_bytes(bytes: &[u8]) {
         if !console.kernel_line_open {
             console.grid.begin_line();
         }
-        console.grid.write(bytes);
+        for piece in bytes.split_inclusive(|&byte| byte == b'\n') {
+            match piece.strip_suffix(b"\n") {
+                Some(line) => {
+                    console.grid.write(line);
+                    console.grid.write(b"\r\n");
+                }
+                None => console.grid.write(piece),
+            }
+        }
         console.kernel_line_open = !bytes.ends_with(b"\n");
     });
 }
