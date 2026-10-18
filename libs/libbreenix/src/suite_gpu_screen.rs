@@ -1,7 +1,7 @@
 //! The GPU effort's runner view: a solid tile per case, rendered by syscall 416.
 //! This display helper takes case states, rather than expectations or judged pixels.
 use super::{State, Outcome};
-use crate::{gpu::{self, abi::{self, stream::encode}}, graphics};
+use crate::{gpu::{self, abi::{self, stream::encode}}, graphics, time};
 use std::string::String;
 use std::vec::Vec;
 
@@ -21,7 +21,8 @@ impl GpuScreen {
         let _ = gpu::tc_disarm_all();
         if self.context != 0 {
             let (r, c) = gpu::counters(self.context);
-            if r != 0 || c.state != abi::context_state::LIVE {
+            // A context still warming (state 3) accepts the same work as a warmed one.
+            if r != 0 || !matches!(c.state, abi::context_state::LIVE | abi::context_state::WARMING) {
                 let _ = gpu::resource_destroy(self.target);
                 let _ = gpu::context_destroy(self.context);
                 self.context = 0;
@@ -38,6 +39,7 @@ impl GpuScreen {
                     return Err(std::format!("target: errno {}", -e));
                 }
             }
+            self.settle();
         }
         let mut stream = Vec::new();
         encode::begin(&mut stream, self.target);
@@ -63,9 +65,34 @@ impl GpuScreen {
         if r != 0 { return Err(std::format!("wait: errno {}, status {}", -r, w.status)); }
         graphics::take_over_display().map_err(|e| std::format!("display ownership: {e:?}"))?;
         let (r, p) = gpu::present(self.context, self.target);
-        if r != 0 || p.answer != 0x1100 {
+        // The device's native success answer (gpu.md section 1.8, ruling 47).
+        let success = if gpu::caps().1.backend == abi::backend::SVGA3D_DX { 1 } else { 0x1100 };
+        if r != 0 || p.answer != success {
             return Err(std::format!("present: errno {}, answer {:#x}", -r, p.answer));
         }
         Ok(())
     }
+
+    /// Wait, bounded, for a new context's catalogue warm-up. The runner draws before it
+    /// starts a case, and the device warms one context at a time, lowest handle first, so
+    /// a view context still warming would hold the next case's contexts behind it inside
+    /// that case's limit.
+    fn settle(&self) {
+        let start = super::monotonic_ns();
+        loop {
+            let (r, c) = gpu::counters(self.context);
+            if r != 0 || c.state != abi::context_state::WARMING {
+                return;
+            }
+            let now = super::monotonic_ns();
+            if start.zip(now).is_none_or(|(start, now)| now - start >= SETTLE_LIMIT_NS) {
+                return;
+            }
+            let _ = time::sleep_ms(5);
+        }
+    }
 }
+
+/// How long the view waits for its context's warm-up: several times the slowest
+/// target's catalogue warm-up, and well inside the host's progress supervision.
+const SETTLE_LIMIT_NS: i128 = 10_000_000_000;
