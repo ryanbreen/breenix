@@ -5,6 +5,7 @@ use core::fmt;
 /// Block sizes are device-specific (typically 512 bytes for raw sectors,
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 pub trait BlockDevice: Send + Sync {
+    fn is_read_only(&self) -> bool { false }
     fn hardware_disk(&self) -> Option<HardwareDisk> { None }
 
     /// Stable allocation-quarantine identity, retained by operation-local wrappers.
