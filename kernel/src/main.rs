@@ -860,7 +860,20 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // which has the same code but different build configuration. The stress test
     // focuses on kthread lifecycle, not workqueue functionality.
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
-    kernel::task::workqueue_tests::test_workqueue();
+    {
+        // Boot is the idle task: a runnable worker waiting for the test's
+        // release flag would prevent a preempted coordinator from resuming.
+        // Give the coordinator an ordinary scheduling identity instead.
+        x86_64::instructions::interrupts::enable();
+        let tests = task::kthread::kthread_run(
+            kernel::task::workqueue_tests::test_workqueue,
+            "workqueue-tests",
+        )
+        .expect("spawn workqueue test coordinator");
+        let result = task::kthread::kthread_join(&tests).expect("join workqueue test coordinator");
+        assert_eq!(result, 0, "workqueue test coordinator failed");
+        x86_64::instructions::interrupts::disable();
+    }
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
     kernel::task::softirq_tests::test_softirq();
 
