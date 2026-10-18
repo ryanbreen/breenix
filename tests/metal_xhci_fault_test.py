@@ -97,7 +97,7 @@ class FaultBuildTest(unittest.TestCase):
             root = Path(temporary)
             args = SimpleNamespace(id='20261018T000020Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
-                                   guard_target='x86-metal', features='xhci_fault_inject')
+                                   guard_target='x86-metal', features='xhci_fault_inject', suite='')
             clone, out, tmp = build.paths(args)
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
