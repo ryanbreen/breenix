@@ -1038,7 +1038,7 @@ pub fn bitmap_text() -> CaseResult {
     pass()
 }
 use libfont::outline::LineSegment;
-fn edges(points: &[(f32, f32)]) -> Vec<LineSegment> {
+pub(super) fn edges(points: &[(f32, f32)]) -> Vec<LineSegment> {
     (0..points.len())
         .map(|i| {
             let a = points[i];
@@ -1054,7 +1054,7 @@ fn edges(points: &[(f32, f32)]) -> Vec<LineSegment> {
 }
 /// Geometry only: published crossing formula and stable x sort. No pixels or
 /// expected coverage enter the submission's data buffer.
-fn crossings(segments: &[LineSegment], height: usize) -> Vec<u8> {
+pub(super) fn crossings(segments: &[LineSegment], height: usize) -> Vec<u8> {
     let mut offsets = vec![0u32];
     let mut data: Vec<(u32, u32)> = Vec::new();
     for row in 0..height {
