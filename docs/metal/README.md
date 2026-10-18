@@ -103,6 +103,97 @@ arrival time and byte offset. A dropped session is reopened within two seconds a
 boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_console` and `heal_console` in
 `scripts/metal/metal-boot`; the cleaner's rules are five tests in `tests/metal_tools_test.py`.
 
+## Starting and ending an operator session
+
+Ask an agent to start a console session with the boot host command below. Vigil's Boot control does not yet
+offer Console sessions; that application control remains to be built.
+
+```sh
+metal-run boot --mode console --session
+metal-run follow ID
+metal-run stop ID
+```
+
+Keep the returned boot ID: `follow` shows the driver's progress log and `stop` ends that session immediately,
+then powers off through the normal driver cleanup. `follow` is read-only; the repository does not yet offer
+operator typing over SOL while the driver owns it. At the machine, use the monitor and USB keyboard
+once their console support has landed. The login credentials are in the operator's private credential store;
+ask an agent to locate them. A session leaves the login prompt and typing to the operator. It never types the
+automated login challenge. SOL and the local keyboard feed the same console TTY.
+claim-lint:ok: `tests/metal_session_test.py` checks that the session driver sends no challenge.
+
+**The power button boots nothing.** An agent or Vigil must stage and start the boot through the machine lease.
+A stray power-on has no image to fetch and the reaper turns it off. Do not use the power button to start a session.
+claim-lint:ok: the unstaged image-server contract in "Delivery" and the stray-power-on cases in `tests/metal_tools_test.py`.
+
+A session ends after **30 minutes without console input**, **four hours from power-on**, or `metal-run stop ID`.
+An observed power-off also closes the session at the next running-machine poll (30 seconds).
+The kernel timestamps input on TTY 0, including editing and control characters from either source. Output does
+not reset the clock: kernel census lines, a busy program and SOL traffic cannot keep a session alive. At expiry,
+the kernel emits the one-shot line `[console] input idle 30 min`; the driver powers the machine off and releases
+the lease. The reaper honours the same four-hour ceiling even if the driver fails; a dead driver is still reaped
+promptly. The boot record has kind `console-session`, is evidence-ineligible, and is never scored because its
+capture holds the operator's typing. Captures remain in the private boot store.
+claim-lint:ok: `tests/metal_session_test.py` checks the deadline, record kind, scoring refusal and reaper;
+`tests/console_input_activity.rs` includes the kernel input clock's expiry-boundary and one-shot tests.
+
+The input-clock worker emits a serial-only `[console] input clock alive` pulse each 30 seconds until expiry.
+If that pulse disappears for more than 120 seconds after handoff or the last pulse, the driver ends the boot as
+hung through its normal power-off cleanup, even if other serial output continues. This bounds a stopped clock
+or an idle line lost during SOL recovery without treating a quiet login prompt as a hang.
+claim-lint:ok: the worker in `kernel/src/tty/input_clock.rs` produces the pulse; `tests/metal_session_test.py`
+checks the missing-pulse boundary and powered-off reading.
+
+Sessions use a fresh RAM-disk root by default; files disappear at power-off. `--disk root` uses a console image
+previously installed by the storage lane, with the existing commit and credential checks. A session cannot install
+or rewrite that disk. To exercise input expiry quickly on a RAM-disk session:
+
+```sh
+metal-run boot --mode console --session --idle-minutes 2
+```
+
+Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
+the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
+
+## The screen console
+
+The x86 kernel without `interactive` (`kernel/src/fbcon`) draws a text console on the firmware's framebuffer, the
+display on the server's VGA port. It runs on x86 kernels built without `interactive`, QEMU's included.
+
+- **One grid, any writer.** Kernel log records (INFO and above) and the console TTY's output, echo included, are
+  written as text into a retained character grid: one byte per cell, rows in a ring so scrolling moves no text, the
+  cursor, and a generation. Writers take its lock with interrupts masked for one record or one write, so log records
+  from interrupt context reach the screen too; a write is dropped, and counted, only if the lock stays held for
+  milliseconds. A log line starts its own row, as it does on the UART. TTY output is interpreted as a terminal
+  does: CR, LF, BS, HT, autowrap, and the CSI cursor and erase sequences.
+- **One screen writer.** The `fbcon` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
+  changed into a RAM shadow of the framebuffer, and copies only those rows' pixels to video memory, one text row with
+  interrupts masked at a time. Drawing does not read video memory. A display owner's `fbdraw` flush and pixel
+  read take the same row token, so they do not interleave with the console's rows. When a process takes the display
+  (`sys_take_over_display`) the console stops drawing.
+- **The log on the screen.** The console starts in init's session. While it is there, or in no session, records of
+  INFO and above are drawn; while another session has it as its controlling terminal (a getty and its login), only
+  warnings and errors are, so the per-second census does not scroll the user's session away. When that session ends
+  the full log comes back. Serial keeps each record.
+- **Write-combining.** Each CPU programs the same page attribute table in its per-CPU init, before it is online:
+  entry 1, power-up write-through and unused by the kernel, becomes write-combining (Intel SDM Vol. 3A, "Page
+  Attribute Table (PAT)"), following the SDM's cache-disable and flush sequence. Before the other CPUs start, the
+  boot CPU finds the PCI display function whose memory BAR holds the framebuffer (it must be prefetchable) and walks
+  the present page-table entries: each leaf mapping part of that BAR, wherever it is mapped, selects entry 1, and a
+  large page that maps it only in part is split first so memory beside it keeps its type. The SDM does not support
+  one physical page mapped with different types, so the physical memory map's alias is changed too.
+- **Read back.** At kernel idle, and for each root-only read of `/proc/fbcon/check`, the render thread reads video memory back
+  and compares it with the shadow and with the pixels the font gives for the text each row was drawn with
+  (`raster::expected_intensity`, which shares only the font with the drawing code). `/proc/fbcon/check` prints
+  `fbcon check: shadow and screen identical, <n> glyph cells match the font` (or how many pixel rows and pixels
+  differ), the shadow's SHA-256, and `fbcon row: <text>` for each non-blank row on the screen.
+
+The `fb-console` milestone's stages are the console's lines: `[fbcon] framebuffer in display BAR:` (geometry, format,
+the function and its BAR), `[fbcon] aperture mapped write-combining:` (the PAT entry, the CPUs holding the layout,
+and the mappings changed), `[fbcon] console tty and kernel log on the screen:` (after the first full redraw, with its
+time) and `[fbcon] screen read back identical:` (pixel rows, glyph cells checked against the font, the shadow's
+SHA-256).
+
 ## Interrupts, time and processors
 
 The kernel takes one path on each firmware it boots on, QEMU's included (`kernel/src/arch_impl/x86_64/irq.rs`):
@@ -487,8 +578,9 @@ operator resolves that difference. No restore step writes storage.
 ### Local console definition
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
-Their proposed stage lists cover RAM-disk, install and disk-root shapes. Each is `stub: true` (not yet measured)
-until its producing lane lands; existing modes keep their measured stages and completion markers.
+Their stage lists cover RAM-disk, install and disk-root shapes. `fb-console` is measured ("The screen console");
+the other milestones stay stubbed until their producing lanes land; existing modes keep their measured stages
+and completion markers.
 Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
 which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
 Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,

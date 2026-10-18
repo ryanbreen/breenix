@@ -1934,7 +1934,7 @@ or misbehave, on every target."*
 - `two-readers` — Two readers of the event stream each receive every event.
 - `syn-dropped` — A reader that falls behind receives SYN_DROPPED, and each dropped serial is recorded as lost.
 - `poll` — The event device reports POLLIN through poll when events are queued.
-- `grab` — While the compositor holds the grab, the console sees no key events.
+- `grab` — While the compositor holds the grab, the console sees no key events except the reserved console chords, Ctrl+Alt+F1 to F12 (`docs/console/contract.md` section 9), which go to the console and which the grab holder sees neither pressed nor released.
 - `grab-select` — Events from a device outside the session's selection reach no client and are recorded as not-selected.
 - `grab-drain` — Taking the grab drains queued events and resets pressed state.
 - `device-removal` — Closing a device with keys and buttons held delivers their releases.

@@ -7797,6 +7797,46 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if PUBLISHER_A_CPU >= online_cpus || PUBLISHER_B_CPU >= online_cpus {
         return TestResult::Fail("exit-kick reservation-loss publisher CPU is not online");
     }
+
+    // Publisher A's hold keeps CPU 1 masked until this coordinator releases
+    // it, and an aarch64 CPU queues the thread it switched away from only at
+    // its next exception. A coordinator that CPU 1 switched away from to run
+    // A therefore waits for A, which waits for it (#1765). Keep the
+    // coordinator on B's CPU for this arm: B does not hold, so it only takes
+    // that CPU for a moment.
+    struct CoordinatorPin(u64);
+    impl Drop for CoordinatorPin {
+        fn drop(&mut self) {
+            crate::task::scheduler::set_user_affinity(self.0, None);
+        }
+    }
+    let Some(coordinator_tid) = crate::task::scheduler::current_thread_id() else {
+        return TestResult::Fail("exit-kick reservation-loss coordinator has no thread");
+    };
+    if !crate::task::scheduler::set_user_affinity(
+        coordinator_tid,
+        Some(crate::task::thread::CpuPin::per_cpu_worker(PUBLISHER_B_CPU)),
+    ) {
+        return TestResult::Fail("exit-kick reservation-loss coordinator could not be pinned");
+    }
+    let coordinator_pin = CoordinatorPin(coordinator_tid);
+    if let Err(failure) = spin_with_resched(
+        "coordinator_placement",
+        || crate::task::scheduler::current_cpu() as u64,
+        |cpu| cpu == PUBLISHER_B_CPU as u64,
+        PUBLISHER_B_CPU as u64,
+        || WaitProgress::work(0),
+        &[PUBLISHER_B_CPU],
+        test_phase_started_at,
+        gate_started_at,
+    ) {
+        return TestResult::Fail(
+            failure.message(
+                "exit_kick_gate: coordinator placement on CPU 2 stuck, CPU 2 unresponsive",
+            ),
+        );
+    }
+
     let payload_before = (
         reservation_slot.pid.load(Ordering::Relaxed),
         reservation_slot.at.load(Ordering::Relaxed),
@@ -7943,6 +7983,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         );
     }
     core::mem::drop(hook);
+    core::mem::drop(coordinator_pin);
 
     if publisher_a_done.load(Ordering::Acquire) != 1
         || publisher_a_cpu == u64::MAX

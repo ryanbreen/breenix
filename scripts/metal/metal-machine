@@ -268,11 +268,13 @@ class Machine:
             stale = m.now() - float(lease.get('heartbeat', 0)) > m.STALE_HEARTBEAT_SECONDS
             gone = not m.holder_alive(lease)
             ceiling = lease.get('ceilingAt')
-            over = ceiling is not None and m.now() > float(ceiling)
+            over = ceiling is not None and m.now() >= float(ceiling)
             if stale or gone:
                 return self.end_boot(lease, m.EXIT_INCOMPLETE, 'stale heartbeat' if stale else 'driver gone')
             if over:
-                return self.end_boot(lease, m.EXIT_HUNG, 'attempt ceiling')
+                is_session = lease.get('kind') == 'console-session'
+                return self.end_boot(lease, m.EXIT_DONE if is_session else m.EXIT_HUNG,
+                                     'console session ceiling' if is_session else 'attempt ceiling')
             if lease.get('state') != 'claimed':
                 return None
         if m.now() - self.last_power_check >= IDLE_POWER_CHECK_SECONDS:
