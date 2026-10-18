@@ -203,7 +203,13 @@ unsafe fn find_disk(
         {
             continue;
         }
-        let buffer = Buffer::new(boot, SECTOR, media.io_align as usize)?;
+        let buffer = match Buffer::new(boot, SECTOR, media.io_align as usize) {
+            Ok(buffer) => buffer,
+            Err(status) => {
+                (boot.free_pool)(handles.cast());
+                return Err(status);
+            }
+        };
         if ((*disk).read_blocks)(disk, media.media_id, 0, SECTOR, buffer.data.cast()) == SUCCESS
             && core::slice::from_raw_parts(buffer.data, SECTOR) == expected
         {
@@ -438,7 +444,7 @@ unsafe fn boot_http_binding(
     let device = (*loaded.cast::<LoadedImage>()).device;
     let mut path = null_mut();
     ok((boot.handle_protocol)(device, &DEVICE_PATH, &mut path))?;
-    // UEFI 2.10 §10.3.4.11: reuse this boot's DHCP/static source address.
+    // UEFI 2.10 §10, IPv4 Device Path: reuse this boot's DHCP/static source address.
     // HTTP boot need not leave a default mapping for a newly created TCP child.
     let bytes = core::slice::from_raw_parts(
         path.cast::<u8>(),
@@ -447,7 +453,13 @@ unsafe fn boot_http_binding(
     let mut at = 0;
     let mut access = None;
     while at < bytes.len() {
+        if bytes.len() - at < 4 {
+            return Err(INVALID_PARAMETER);
+        }
         let len = u16::from_le_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        if len < 4 || len > bytes.len() - at {
+            return Err(INVALID_PARAMETER);
+        }
         let node = &bytes[at..at + len];
         if node[0] == 3 && node[1] == 12 && len >= 27 {
             let address: [u8; 4] = node[4..8].try_into().unwrap();
