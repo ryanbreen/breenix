@@ -497,9 +497,16 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         if !top_is_dir {
             return Err(ENOTDIR as u64);
         }
-        // Searching any component, including . and .., requires permission
-        // on the directory it is looked up in. Keep the inode under its guard.
-        let searched_inode = if let Node::Ext2(mount, dir) = top(&stack) {
+        // Root may always search a directory. Entering a virtual mount from
+        // the namespace root needs no ext2 inode lookup in that case: taking
+        // the whole root filesystem lock here makes even /proc/net/pnp wait
+        // behind unrelated file writes. Other callers still check the real
+        // directory's search permissions below.
+        let entering_virtual_mount = top(&stack) == ROOT
+            && matches!(name.as_slice(), b"dev" | b"proc");
+        let searched_inode = if entering_virtual_mount && cred.euid == 0 {
+            None
+        } else if let Node::Ext2(mount, dir) = top(&stack) {
             let inode = read_dir_inode(held.fs(mount)?, dir)?;
             if !cred.permits(&inode, 1) {
                 return Err(crate::syscall::errno::EACCES as u64);
