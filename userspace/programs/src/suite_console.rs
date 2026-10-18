@@ -125,8 +125,6 @@ static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
 /// How the suite asks the kernel whether a layer is there.
 #[derive(Clone, Copy)]
 enum Probe {
-    /// Open `/proc/console/check`, the console core's read-back (contract section 8).
-    ConsoleCheck,
     /// `VT_GETSTATE` on `/dev/console` (contract section 4.1).
     VtGetstate,
 }
@@ -137,7 +135,6 @@ struct Layer {
     probe: Probe,
 }
 
-const EMULATION: Layer = Layer { name: "the terminal emulation (V3)", probe: Probe::ConsoleCheck };
 const VT: Layer = Layer { name: "the six virtual terminals (V4)", probe: Probe::VtGetstate };
 const USER: Layer = Layer { name: "chvt and a getty on each terminal (V4u)", probe: Probe::VtGetstate };
 const KEYS: Layer = Layer { name: "the input core and the console keys (V5)", probe: Probe::VtGetstate };
@@ -150,12 +147,6 @@ const O_NOCTTY: u32 = 0o400;
 /// Ask the kernel for a layer: Ok when it answers, else what it answered.
 fn probe(probe: Probe) -> Result<(), String> {
     match probe {
-        Probe::ConsoleCheck => {
-            let fd = fs::open("/proc/console/check", fs::O_RDONLY)
-                .map_err(|error| format!("opening /proc/console/check failed with {error}"))?;
-            let _ = io::close(fd);
-            Ok(())
-        }
         Probe::VtGetstate => {
             let fd = fs::open("/dev/console", fs::O_RDONLY | O_NOCTTY)
                 .map_err(|error| format!("opening /dev/console failed with {error}"))?;
@@ -437,6 +428,279 @@ fn screen_display_released_redraws() -> CaseResult {
     })
 }
 
+
+// Emulation cases hold a console session, so routine INFO records cannot move
+// their cursor. They inspect the displayed pixels and the render-thread check.
+struct Terminal {
+    fd: libbreenix::types::Fd,
+    original: libbreenix::termios::Termios,
+    cols: usize,
+    cw: usize,
+    ch: usize,
+}
+
+impl Terminal {
+    fn open() -> Verdict<Self> {
+        use libbreenix::termios as t;
+        libbreenix::process::setsid().map_err(|e| format!("setsid: {e}"))?;
+        let fd = fs::open("/dev/console", fs::O_RDWR | O_NOCTTY | 0o4000)
+            .map_err(|e| format!("open console: {e}"))?;
+        let acquired = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), t::request::TIOCSCTTY, 1) };
+        Error::from_syscall(acquired as i64).map_err(|e| format!("console session: {e}"))?;
+        let mut original = t::Termios::default();
+        t::tcgetattr(fd, &mut original).map_err(|e| format!("tcgetattr: {e}"))?;
+        let mut raw = original;
+        raw.c_lflag &= !(t::lflag::ICANON | t::lflag::ECHO);
+        raw.c_oflag = 0;
+        raw.c_cc[t::cc::VMIN] = 0;
+        raw.c_cc[t::cc::VTIME] = 0;
+        t::tcsetattr(fd, t::TCSANOW, &raw).map_err(|e| format!("tcsetattr: {e}"))?;
+        let check = screen_check()?;
+        let line = check.lines().find_map(|l| l.strip_prefix("console display: ")).ok_or("missing display")?;
+        let (_, rest) = line.split_once(" (").ok_or("missing cell size")?;
+        let (cell, grid) = rest.split_once(" pixel cells), grid ").ok_or("missing grid size")?;
+        let (cw, ch) = pair(cell)?;
+        let (cols, _) = pair(grid)?;
+        let terminal = Self { fd, original, cols, cw, ch };
+        terminal.write(b"\x1bc")?;
+        Ok(terminal)
+    }
+
+    fn write(&self, mut bytes: &[u8]) -> Verdict {
+        while !bytes.is_empty() {
+            let n = io::write(self.fd, bytes).map_err(|e| format!("console write: {e}"))?;
+            require(n > 0, "console write made no progress")?;
+            bytes = &bytes[n..];
+        }
+        Ok(())
+    }
+
+    fn check(&self) -> Verdict<String> {
+        pause()?;
+        let check = screen_check()?;
+        identical(&check)?;
+        require(check.lines().any(|l| l.starts_with("console oracle: ") && l.ends_with(" mismatches=0")), &check)?;
+        Ok(check)
+    }
+
+    fn rows(&self, expected: &[&str]) -> Verdict {
+        let check = self.check()?;
+        let rows: Vec<_> = check.lines().filter_map(|l| l.strip_prefix("console row: ")).collect();
+        require(rows == expected, &format!("rows {rows:?}, expected {expected:?}"))
+    }
+
+    fn pixel(&self, col: usize, row: usize, x: usize, y: usize, rgb: u32) -> Verdict {
+        let actual = libbreenix::graphics::fb_read_pixel((col * self.cw + x) as i32, (row * self.ch + y) as i32)
+            .map_err(|e| format!("pixel read: {e}"))?;
+        require(actual == rgb, &format!("cell {row},{col} pixel {x},{y}: {actual:06x}, expected {rgb:06x}"))
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let _ = self.write(b"\x1bc");
+        let _ = libbreenix::termios::tcsetattr(self.fd, libbreenix::termios::TCSANOW, &self.original);
+        let _ = io::close(self.fd);
+    }
+}
+
+const COLOURS: [u32; 16] = [
+    0x0f1423, 0xcd4646, 0x46c878, 0xd7b446, 0x4678d7, 0xaf5fc8, 0x3cafb9, 0xcdd7eb,
+    0x5a647d, 0xf56e6e, 0x78e6a0, 0xf5d76e, 0x78a5f5, 0xd78cf0, 0x6ed7e1, 0xf5f8ff,
+];
+
+fn emulation_sgr_colours() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        for i in 0..16 {
+            let bg = if i < 8 { 40 + i } else { 100 + i - 8 };
+            let fg = if i < 8 { 30 + i } else { 90 + i - 8 };
+            t.write(format!("\x1b[{bg}m \x1b[0;{fg};4m ").as_bytes())?;
+        }
+        t.write(b"\x1b[0mX\x1b[?25l")?;
+        t.check()?;
+        for (i, colour) in COLOURS.iter().enumerate() {
+            t.pixel(2*i, 0, 0, 0, *colour)?;
+            t.pixel(2*i+1, 0, 0, t.ch-2, *colour)?;
+        }
+        Ok(())
+    })
+}
+
+fn emulation_sgr_256_mapped() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"\x1b[48;5;196m \x1b[48;5;46m \x1b[48;5;232m \x1b[48;2;120;165;245m \x1b[48;5;15m \x1b[0mX\x1b[?25l")?;
+        t.check()?;
+        // Nearest squared RGB distance, from the contract palette.
+        for (col, index) in [1, 2, 0, 12, 15].into_iter().enumerate() {
+            t.pixel(col, 0, 0, 0, COLOURS[index])?;
+        }
+        Ok(())
+    })
+}
+
+fn emulation_bold_reverse_underline() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"\x1b[?25lW")?;
+        let regular = t.check()?;
+        t.write(b"\x1b[H\x1b[1mW")?;
+        let bold = t.check()?;
+        let digest = |s: &str| s.lines().find(|l| l.starts_with("console sha256:")).unwrap_or("").to_string();
+        require(digest(&regular) != digest(&bold), "bold did not change the glyph")?;
+        t.write(b"\x1b[H\x1b[0;31;44;7m \x1b[0;32;4m \x1b[0;33;45;8mW")?;
+        t.check()?;
+        t.pixel(0, 0, 0, 0, COLOURS[1])?;
+        t.pixel(1, 0, 0, t.ch-2, COLOURS[2])?;
+        for y in 0..t.ch { for x in 0..t.cw { t.pixel(2, 0, x, y, COLOURS[5])?; } }
+        Ok(())
+    })
+}
+
+fn emulation_utf8_latin1() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write("Àéÿ ĀŁſ".as_bytes())?;
+        t.rows(&["Àéÿ ĀŁſ"])
+    })
+}
+
+fn emulation_utf8_replacement() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"a\xe2\x82b\xc0\xaf")?;
+        t.write("🙂!".as_bytes())?;
+        t.rows(&["a?b???!"])
+    })
+}
+
+fn emulation_box_drawing() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        let repertoire: String = (0x2500..=0x257f).map(|c| char::from_u32(c).unwrap()).collect();
+        t.write(repertoire.as_bytes())?;
+        t.rows(&[&repertoire])?;
+        t.write("\x1b[H\x1b[?25l┌─┐\r\n│ │\r\n└─┘".as_bytes())?;
+        t.check()?;
+        // Shared horizontal and vertical seams must meet at cell boundaries.
+        for col in 0..3 {
+            t.pixel(col, 0, if col == 0 { t.cw-1 } else { 0 }, t.ch/2, COLOURS[7])?;
+        }
+        t.pixel(0, 1, t.cw/2, 0, COLOURS[7])?;
+        t.pixel(0, 1, t.cw/2, t.ch-1, COLOURS[7])
+    })
+}
+
+fn emulation_scroll_region() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"A\r\nB\r\nC\r\nD\r\nE\x1b[2;4r\x1b[4;1H\nX")?;
+        t.rows(&["A", "C", "D", "X", "E"])?;
+        t.write(b"\x1b[T\x1b[2;1HY\x1bMZ")?;
+        t.rows(&["A", " Z", "Y", "C", "E"])
+    })
+}
+
+fn emulation_insert_delete_line() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"A\r\nB\r\nC\r\nD\r\nE\x1b[2;4r\x1b[3;1H\x1b[LX")?;
+        t.rows(&["A", "B", "X", "C", "E"])?;
+        t.write(b"\x1b[2;1H\x1b[MY")?;
+        t.rows(&["A", "Y", "C", "E"])
+    })
+}
+
+fn emulation_insert_delete_char() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"abcdef\x1b[3G\x1b[2@XY\x1b[2P\x1b[1G\x1b[2X")?;
+        t.rows(&["  XYef"])
+    })
+}
+
+fn emulation_save_restore_cursor() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"\x1b[31mA\x1b7\x1b[3;5H\x1b[32mB\x1b8\x1b[4m \x1b[s\x1b[H\x1b[uC\x1b[?25l")?;
+        t.rows(&["A C", "    B"])?;
+        t.pixel(1, 0, 0, t.ch-2, COLOURS[1])
+    })
+}
+
+fn emulation_cursor_hidden() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"X\x1b[?25l")?;
+        t.check()?;
+        t.pixel(1, 0, 0, t.ch-1, COLOURS[0])?;
+        t.write(b"\x1b[?25h")?;
+        t.check()?;
+        t.pixel(1, 0, 0, t.ch-1, COLOURS[7])
+    })
+}
+
+fn emulation_autowrap_off() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(format!("\x1b[?7l\x1b[{}GXYZ", t.cols).as_bytes())?;
+        t.rows(&[&format!("{}Z", " ".repeat(t.cols-1))])
+    })
+}
+
+fn emulation_tab_stops() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"A\tB\x1b[3g\x1b[5G\x1bH\x1b[1G\tC\x1b[5G\x1b[g\x1b[1G\tD")?;
+        t.rows(&[&format!("A   C   B{}D", " ".repeat(t.cols-10))])
+    })
+}
+
+fn emulation_alt_screen() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"main\x1b[31m\x1b[?1049h")?;
+        t.rows(&[])?;
+        t.write(b"other\x1b[?1049h")?;
+        t.rows(&["other"])?;
+        t.write(b"\x1b[?1049l\x1b[4m \x1b[?25l")?;
+        t.rows(&["main"])?;
+        t.pixel(4, 0, 0, t.ch-2, COLOURS[1])
+    })
+}
+
+fn emulation_full_reset() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        t.write(b"old\x1b[3g\x1b[31;44;1m\x1b[?7l\x1b[?25l\x1b[2;4r\x1b[?1049hother\x1bcA\tB")?;
+        t.rows(&["A       B"])?;
+        t.pixel(9, 0, 0, t.ch-1, COLOURS[7])?;
+        t.write(format!("\x1b[{}Gxy\x1b[?1049l", t.cols).as_bytes())?;
+        t.rows(&[&format!("A       B{}x", " ".repeat(t.cols-10)), "y"])
+    })
+}
+
+fn emulation_cursor_report() -> CaseResult {
+    measured(|| {
+        let t = Terminal::open()?;
+        libbreenix::termios::tcflush(t.fd, libbreenix::termios::TCIFLUSH).map_err(|e| e.to_string())?;
+        t.write(b"\x1b[4;9H\x1b[6n\x1b[5n")?;
+        let mut reply = Vec::new();
+        for _ in 0..20 {
+            let mut bytes = [0; 32];
+            match io::read(t.fd, &mut bytes) {
+                Ok(n) => reply.extend_from_slice(&bytes[..n]),
+                Err(Error::Os(libbreenix::errno::Errno::EAGAIN)) => {},
+                Err(e) => return Err(format!("reply read: {e}")),
+            }
+            if reply.len() >= b"\x1b[4;9R\x1b[0n".len() { break; }
+            pause()?;
+        }
+        require(reply == b"\x1b[4;9R\x1b[0n", &format!("reply {reply:?}"))
+    })
+}
+
 /// One function per case that has no check yet, each failing with the layer it needs.
 macro_rules! needs {
     ($($name:ident => $layer:ident;)*) => {
@@ -445,22 +709,6 @@ macro_rules! needs {
 }
 
 needs! {
-    emulation_sgr_colours => EMULATION;
-    emulation_sgr_256_mapped => EMULATION;
-    emulation_bold_reverse_underline => EMULATION;
-    emulation_utf8_latin1 => EMULATION;
-    emulation_utf8_replacement => EMULATION;
-    emulation_box_drawing => EMULATION;
-    emulation_scroll_region => EMULATION;
-    emulation_insert_delete_line => EMULATION;
-    emulation_insert_delete_char => EMULATION;
-    emulation_save_restore_cursor => EMULATION;
-    emulation_cursor_hidden => EMULATION;
-    emulation_autowrap_off => EMULATION;
-    emulation_tab_stops => EMULATION;
-    emulation_alt_screen => EMULATION;
-    emulation_full_reset => EMULATION;
-    emulation_cursor_report => EMULATION;
     vt_devices_six_terminals => VT;
     vt_devices_tty1_is_console => VT;
     vt_devices_tty0_is_foreground => VT;

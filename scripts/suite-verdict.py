@@ -42,9 +42,10 @@ def verdict(manifest, records_log, logs, only=None):
     suite = manifest["id"]
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"] for case in category["cases"]]
     if only:
-        if only not in cases:
+        selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
+        if not selected:
             return False, f"unknown case {only}; valid ids: {', '.join(cases)}"
-        cases = [only]
+        cases = selected
     suffix = rf" only={re.escape(only)}" if only else ""
     fatal = json.loads((REPO / "docs/boot-path.json").read_text())["fatal"] + [r"KERNEL PANIC:"]
     for log in logs:

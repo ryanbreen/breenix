@@ -40,6 +40,21 @@ EXPECTATIONS = {
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_category_selection_requires_its_complete_case_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            complete = ("SUITE fixture START cases=2 only=first\n"
+                        "SUITE fixture CASE first/one PASS ms=1\n"
+                        "SUITE fixture CASE first/two PASS ms=1\n"
+                        "SUITE fixture DONE passed=2 failed=0 skipped=0 total=2 only=first\n")
+            serial.write_text(complete)
+            self.assertTrue(SCORER.verdict(MANIFEST, serial, [serial], only="first")[0])
+            self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial])[0])
+            for broken in (complete.replace("SUITE fixture CASE first/two PASS ms=1\n", ""),
+                           complete.replace("first/two PASS", "second/three PASS")):
+                serial.write_text(broken)
+                self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial], only="first")[0])
+
     def test_fixture_verdicts_and_cli_status(self):
         for name, (expected, reason) in EXPECTATIONS.items():
             with self.subTest(fixture=name):
