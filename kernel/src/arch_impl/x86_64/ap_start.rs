@@ -398,7 +398,6 @@ fn register_idle_thread(cpu: usize) {
     idle.has_started = true;
     idle.kernel_stack_top = Some(stack_top);
     idle.context.rip = crate::interrupts::context_switch::idle_loop as *const () as u64;
-    idle.context.rsp = stack_top.as_u64();
     idle.context.rflags = 0x202;
 
     let idle_ptr = &mut *idle as *mut Thread;
