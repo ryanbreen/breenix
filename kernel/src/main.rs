@@ -1226,6 +1226,9 @@ fn launch_x86_production_init(
     if console_mode.is_some() {
         serial::command::use_tty_input();
     }
+    if console_mode == Some("console") {
+        kernel::drivers::xhci::console_session_starting();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1299,7 +1302,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console)) => None,
+            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(None) => None,
             Err(why) => {
@@ -1350,7 +1353,10 @@ fn x86_console_mode() -> Option<&'static str> {
         Some("console") => Some("console"),
         None | Some("") => match kernel::boot::target::read() {
             Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
-            Ok(Some(kernel::boot::target::Target::Console)) => Some("console"),
+            Ok(Some(kernel::boot::target::Target::Console { idle_minutes })) => {
+                kernel::tty::input_clock::start(idle_minutes);
+                Some("console")
+            },
             _ => None,
         },
         _ => None,

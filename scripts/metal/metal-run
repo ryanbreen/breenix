@@ -3,7 +3,7 @@
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
   metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
-                 [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root]
+                 [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
   metal-run stop ID
   metal-run status
   metal-run follow ID
@@ -79,7 +79,13 @@ def verify_target(env, sha, branch):
 
 
 def boot(args):
-    if (args.mode == 'console') != (args.input == 'sol'):
+    is_session = bool(getattr(args, 'session', False))
+    idle = getattr(args, 'idle_minutes', 30)
+    if is_session and (args.mode != 'console' or args.input or getattr(args, 'disk', None) == 'install'):
+        raise SystemExit('--session needs console mode, operator input and no disk install')
+    if not 1 <= idle <= 240 or (idle != 30 and (not is_session or getattr(args, 'disk', None) == 'root')):
+        raise SystemExit('--idle-minutes needs a RAM-disk session and 1 through 240 minutes')
+    if not is_session and (args.mode == 'console') != (args.input == 'sol'):
         raise SystemExit('console mode requires --input sol; --input requires console mode')
     env = host_env()
     payload = args.payload
@@ -95,7 +101,9 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode]
-    if args.mode == 'console':
+    if is_session:
+        command += ['--session', '--idle-minutes', str(idle)]
+    elif args.mode == 'console':
         command += ['--input', args.input]
     if args.suite:
         command += ['--suite', args.suite]
@@ -212,6 +220,8 @@ def main():
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console'), default='default')
     p.add_argument('--input', choices=('sol',))
+    p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
+    p.add_argument('--idle-minutes', type=int, default=30, help='RAM-disk session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),
                    help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
     p.add_argument('--suite')
