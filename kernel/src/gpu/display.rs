@@ -488,7 +488,7 @@ impl Transition {
     pub(super) fn for_observation(group: u64) -> Result<Self, i64> {
         let guard = Self::acquire()?;
         if !owner(group) {
-            return Err(EINVAL);
+            return Err(EPERM);
         }
         Ok(guard)
     }

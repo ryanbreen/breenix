@@ -3334,7 +3334,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let tgid = caller()?;
     let _scanout = if a.target == 0 {
         if !display::owner(tgid) {
-            return Err(EINVAL);
+            return Err(abi::errno::EPERM);
         }
         wait_for(None, true, |c| {
             (!console::restoring()).then_some(c.display.known)
@@ -3354,7 +3354,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
         let id = if a.target == 0 {
             if !display::owner(tgid) {
-                return Err(EINVAL);
+                return Err(abi::errno::EPERM);
             }
             c.display.binding.ok_or(EIO)?.id
         } else {
@@ -3411,13 +3411,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     match with_core(|c| display::readable(c, tgid, id)).ok_or(ENODEV)? {
         Ok(()) => {}
         Err(EIO) => return refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0),
-        Err(e) => {
-            return Err(if a.target == 0 && e == abi::errno::EPERM {
-                EINVAL
-            } else {
-                e
-            })
-        }
+        Err(e) => return Err(e),
     }
     let staging = Staging::new(tgid, (row * h) as usize)?;
     // Wait for the target's accepted writes to complete, then take it for reading.
@@ -3504,11 +3498,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
             return if e == EIO {
                 refuse(&mut a, readback_reason::BINDING_UNKNOWN, 0)
             } else {
-                Err(if a.target == 0 && e == abi::errno::EPERM {
-                    EINVAL
-                } else {
-                    e
-                })
+                Err(e)
             };
         }
     };
