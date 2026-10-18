@@ -1018,3 +1018,37 @@ Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specific
 9.4.3 and 9.4.7, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
 7.2.4, and [xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
 4.6.8 and 4.10.1.1. No other implementation is a reference.
+
+### Recovery validation
+
+The following boots ran kernel commit `f5209138`. Each ended with exit 0,
+a complete capture and confirmed power Off. Raw captures and machine facts
+remain in the private boot store.
+
+| Boot | Kind | Result |
+|---|---|---|
+| `20261018T163435Z-metal` | Reset-device fault test | Two injected configuration refusals, both failed slots reclaimed, resets 1 and 2, successful re-enumeration with `device-resets=2`, then a real HID report decoded and requeued |
+| `20261018T163951Z-metal` | Short-read fault test | Real completion code 13, Status retired, full descriptor resend, retained HID completion decoded and requeued |
+| `20261018T164449Z-metal` | Ordinary SOL console | Replug and refusal/login/computation/screen/logout challenge completed; every RAM-disk console milestone scored |
+
+Both fault records are evidence-ineligible and have no milestone verdict.
+The ordinary SOL record is also evidence-ineligible for physical-keyboard
+firsts. Its retained verdict has delivery 7/7, first-light 11/11,
+interrupts-time 4/4, smp 3/3, ramdisk-root 3/3, nic 6/6,
+dhcp-gateway 4/4, fb-console 4/4 and xhci 5/5. USB-keyboard is 3/5
+with two input-unmeasured stages; console-login is 6/7 with one
+input-unmeasured stage. Their stage lists and attended challenge remain intact.
+Other modes and disk shapes remain outside this console boot's measurement.
+
+An earlier reset stimulus (`20261018T162709Z-metal`, commit `37833158`)
+did not produce a configuration refusal: the keyboard accepted the invalid
+value. The oracle reported the missing fault, and that run was stopped
+(exit 143, power Off confirmed). It is retained as a failed fault test,
+not counted as recovery or milestone evidence. The deterministic driver
+refusal above replaced that stimulus.
+
+Scoped host validation passed: the 12 Rust recovery/spec tests, the metal
+stream definition contract, the console staging/protocol tests, the affected
+metal-tool scoring/driver tests and the fault-record tests. Production image
+builds added no warnings. No kernel boot was repeated after a documentation-only
+change, commit or push.
