@@ -962,7 +962,7 @@ bssh: authenticated as 'root'
 bssh: smoke success
 [syscall] exit(0) pid=111 name=bssh
 [TTBR0_ASID_CENSUS:untagged=0:tagged=588:kernel=11475:cleared=12029]
-bsshd: channel setup failed: 
+bsshd: channel setup failed:
 [spawn] path='/bin/bssh'
 Io
 [syscall] exit(0) pid=112 name=bsshd
