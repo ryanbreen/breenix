@@ -54,7 +54,7 @@ class SessionTest(existing.StateTest):
                 d.check_deadlines()
         self.assertEqual(result.exception.status, m.EXIT_HUNG)
         self.assertTrue(result.exception.hung)
-        d.on_line('[console] input clock alive', observed_at=231)
+        d.on_line('Breenix login: unfinished-input[console] input clock alive', observed_at=231)
         with patch.object(m, 'now', return_value=351):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=352):

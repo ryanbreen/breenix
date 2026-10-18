@@ -675,7 +675,8 @@ class Driver:
         if '[init] shell ready' in line:
             self.shell_ready = True
         if session(self.args) and self.kernel_started and self.fatal_at is None:
-            if line == '[console] input clock alive':
+            # The login prompt and echoed input need not end with a newline.
+            if line.endswith('[console] input clock alive'):
                 self.input_clock_alive = observed_at
             idle = getattr(self.args, 'idle_minutes', 30)
             if line == f'[console] input idle {idle} min':
