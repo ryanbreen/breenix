@@ -164,7 +164,9 @@ carries `scripts/x86-gate-build.py`, `scripts/gate-tree.py` runs the gate's buil
 configuration or a commit without that builder fails before building; there is no VM build
 fallback. A direct `docker/qemu/run-x86-gate.sh N MODE` in a clean private clone of the VM's
 canonical repository hands the whole gate to `scripts/gate-tree.py` for the clone's commit,
-in one cached tree shared by direct calls, with the same `BREENIX_GATE_TMP`; a gate-cache
+in one cached tree shared by direct calls, with a unique run directory beneath
+`BREENIX_GATE_TMP`. Before handoff, the target guard checks the private clone's local effort
+refs against the project's remote heads and forwards the checked commit stamp. A gate-cache
 tree asking for both phases comes from an older launcher and is refused. Each tree's `origin`
 is the canonical repository's own remote, so the boot's effort target guard reads the
 project's branches rather than the canonical cache's stale local ones. The container keeps its lane checkout leased until its outputs finish streaming. The
