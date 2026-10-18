@@ -8,8 +8,9 @@ stream or older program is a source for any row.
 
 The core is `kernel/src/gpu/` and the `gpu-abi` crate (`libs/gpu-abi`), whose layouts the kernel and
 libbreenix share. The VirtIO PCI transport it drives (`kernel/src/drivers/virtio/pci_transport.rs`) is
-Breenix's existing driver for every modern VirtIO PCI device and is outside this record; the core adds one
-accessor to it, the ISR byte's address (V §4.1.4.5).
+Breenix's existing driver for modern VirtIO PCI devices and is outside this record; the core adds two
+accessors to it, the ISR byte's address (V §4.1.4.5) and the control queue's cached notification address
+(V §4.1.4.4).
 
 ## Sources
 
@@ -63,7 +64,9 @@ supplies.
 | Feature VIRTIO_GPU_F_VIRGL bit 0; VIRTIO_F_VERSION_1 bit 32 | V §5.7.3; V §6 |
 | Control queue index 0 | V §5.7.2 |
 | Device configuration: num_scanouts at byte 8, num_capsets at 12 (four le32 fields) | V §5.7.4 |
-| ISR status byte: reading it acknowledges and deasserts INTx; bit 0 queue interrupt | V §4.1.4.5 |
+| ISR status byte: reading it acknowledges and deasserts INTx; bit 0 queue interrupt, bit 1 device configuration change | V §4.1.4.5 |
+| A device that sets DEVICE_NEEDS_RESET after DRIVER_OK sends a configuration change notification, so the core reads the status register only after an interrupt whose ISR byte has bit 1 set; a device that stops answering meets the watchdog | V §2.1.2; the policy is O §1.4.1 |
+| Notifying the device: after the available index is written, a 16-bit write of the queue index (0) to the queue's notification address, `queue_notify_off` times `notify_off_multiplier` past the notification capability | V §2.7.13.4, §4.1.4.4 |
 | Queue size: a power of two no larger than the device's maximum (the core takes at most 256) | V §2.7; O, sizing |
 | Descriptor: 16 bytes, addr le64 at 0, len le32 at 8, flags le16 at 12, next le16 at 14; NEXT 1, WRITE 2 | V §2.7.5 |
 | Available ring: flags le16 at 0, idx le16 at 2, ring le16 entries from 4; idx written after the entries | V §2.7.6, §2.7.13.3 |
@@ -930,3 +933,36 @@ It produced `SUITE gpu VALUE isolation/handle-guess guesses=615`,
 `SUITE gpu DONE passed=1 failed=0 skipped=0 total=1 only=isolation/handle-guess`.
 The host renderer attestation was accepted. This was a focused check of the changed errno;
 the two inherited pre-G7 expectations above remain unchanged and need a ruling.
+
+## G8 Breenix values
+
+| Value or design | Source |
+|---|---|
+| Readback bands of 8 MiB of the target's backing: a 2560x1600 B8G8R8A8 readback is two bands, each transferred under both poisons | O: `docs/gui/gpu.md` section 1.8's sequence, unchanged; the band size is a sizing choice |
+| The poison fill stores eight bytes at a time once at a pattern boundary; the first observation is read into the staging frames through `observation::read` and the second compared with them eight bytes at a time; pixels go to the caller straight from the staging frames | O: section 1.8; copy granularity is core bookkeeping |
+| The control queue's doorbell is written after the core's lock is released, by the thread whose call queued requests; a waiter takes the device's answers but leaves queued requests to `kgpu`; the interrupt wakes the waiters and `kgpu`, and a returned chunk of a submission still in progress notifies no one further | O: section 1.4.1 and the `performance` bounds of section 1.10; scheduling is core bookkeeping |
+
+## B17: G8 performance measurements
+
+The three runs below used the section 1.6.1 GL QEMU with its pinned renderer, built ARM64 userspace, the
+production kernel and the disk first with `CARGO_BUILD_JOBS=4 BREENIX_BUILD_BACKGROUND=1`, and kept
+`host-renderer.json` beside the serial; the runner accepted the ANGLE Metal hardware renderer each time.
+CHECKOUT and RUN denote absolute checkout and private run directories. Each excerpt is the producer's
+`SUITE gpu VALUE` or `CASE` line, without its `expect=` suffix.
+
+| Run | Commit, Vigil run and invocation | Producer output excerpt |
+|---|---|---|
+| Before G8's changes | `d9c7b5dd5b3199bace16fb91b791f2f7a5caa129` (the checks alone), `20261018T012257Z-qemu`; `"$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --gpu-gl --serial-log "$RUN/serial.log" < /dev/null` | `clears-per-second=379`, `submission-us=3595us`, `median-us=67us`, `max-us=1297us`, `slowest-us=2381us`, `readback-us=79999us`, `upload-us=32033us`, `coverage-us=2769us`, `presents-per-second=746`; `wait-us=52061us`, `cpu-us=49933us`, `CASE performance/wait-no-spin FAIL`; `DONE passed=169 failed=1` |
+| Waiters woken only through `kgpu` | `95769078b414a89a5eab4a3ca840b98f7b72015d`, `20261018T030905Z-qemu`; as below | `CASE pipelines/coverage-spans-corpus FAIL ms=10000 msg=timed out after 10000 ms` (4709 ms before); `CASE isolation/quota-handles PASS ms=5414` (925 ms before); `CASE performance/first-draw-latency FAIL ms=1209 msg=pipeline 8's first draw in a warmed context took 12134 us`; `DONE passed=168 failed=2` |
+| G8 | `63431ee9f3fc4f5e454425d230d4b83ee528eacf`, `20261018T041021Z-qemu`; `"$CHECKOUT/scripts/boot-interactive.sh" --mode suite --suite gpu --gpu-gl --display --serial-log "$RUN/serial.log" < /dev/null` | `clears-per-second=327`, `submission-us=4745us`, `median-us=79us`, `max-us=1352us`, `slowest-us=2744us`, `readback-us=73989us`, `upload-us=39545us`, `coverage-us=2799us`, `presents-per-second=728`; `wait-us=24720us`, `cpu-us=313us`; `CASE pipelines/coverage-spans-corpus PASS ms=4962`; `CASE isolation/quota-handles PASS ms=1142`; `DONE passed=170 failed=0 skipped=0 total=170` |
+
+The facts these establish, for this host and renderer:
+
+- A GPU wait whose loop read the device's status register and rang the queue's doorbell used 49,933 µs of
+  CPU time in a 52,061 µs wait; with neither access in the wait path, 313 µs in a 24,720 µs wait. The
+  waiter's CPU time followed those MMIO accesses, not the length of the wait.
+- Delivering each device answer to a waiter through `kgpu` instead of from the interrupt made
+  synchronous-request-heavy cases several times slower (the second row), so the interrupt wakes waiters
+  directly.
+- A full 2560x1600 readback measured 79,999 µs before and 73,989 µs after, against the 100 ms bound.
+
