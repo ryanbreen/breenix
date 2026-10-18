@@ -32,13 +32,13 @@ class Challenge:
             self.refused = True
         checks = (
             line == '[init] getty on the console',
-            line.endswith('Breenix login: '),
+            line.startswith('Breenix login: '),
             line == 'Login incorrect' and self.refused,
             line == '[console] login accepted input=keyboard',
             line == 'metal-console-ok 42',
             line == '[console] session ended input=keyboard' and self.ended,
             line == '[getty] console acquired',
-            line.endswith('Breenix login: '),
+            line.startswith('Breenix login: '),
         )
         if self.reached == 5 and line == '[init] console session ended; restarting getty':
             self.ended = True

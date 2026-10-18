@@ -40,6 +40,21 @@ class ScorerTest(unittest.TestCase):
             self.assertFalse(self.score(TRANSCRIPT[:index] + TRANSCRIPT[index + 1:]).done, index)
         self.assertFalse(self.score([TRANSCRIPT[10]] + TRANSCRIPT[:10] + TRANSCRIPT[11:]).done)
 
+    def test_captured_prompt_includes_username_echo_and_live_partial_prompt_is_idempotent(self):
+        lines = TRANSCRIPT.copy()
+        lines[2] = 'Breenix login: root'
+        lines[7] = 'Breenix login: root'
+        self.assertTrue(self.score(lines).done)
+        # SOL may deliver the prompt and typed name together or in fragments.
+        challenge = metal_attended.Challenge()
+        for line in lines[:2]:
+            challenge.feed(line)
+        challenge.feed('Breenix login: ')
+        challenge.feed('Breenix login: ro')
+        for line in lines[2:]:
+            challenge.feed(line)
+        self.assertTrue(challenge.done)
+
     def test_mixed_or_sol_input_and_repeated_refusal_cannot_pass(self):
         for marker in (4, 8, 12):
             lines = TRANSCRIPT.copy()

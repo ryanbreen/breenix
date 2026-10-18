@@ -603,7 +603,7 @@ class Driver:
         if self.args.mode != 'console' or session(self.args) or self.fatal_at is not None:
             return
         if attended(self.args):
-            if not complete and not text.endswith('Breenix login: '):
+            if not complete and not text.startswith('Breenix login: '):
                 return
             self.console_done = self.attended_challenge.feed(text)
             if (self.console_done and self.final_seen and not any(self.required_stages)
