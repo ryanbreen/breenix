@@ -516,6 +516,49 @@ then ride the verified image copy. A subsequent `--disk root` console request re
 commit, console mode and credential identity to match. It does not restage or change credentials on the SSD.
 A changed credential requires the storage lane to install again. This lane uses a RAM-disk hardware boot.
 
+### The USB keyboard
+
+`kernel/src/drivers/hid_boot/` and `kernel/src/drivers/xhci/keyboard.rs` drive a USB HID boot keyboard on a
+root port of the clean-room xHCI controller. They are written only from xHCI 1.2, USB 2.0 chapter 9, HID 1.11
+and the HID Usage Tables; their comments cite the sections.
+
+- **Attach.** After the port census, and for each connection a Port Status Change Event reports later, the
+  driver looks in the device's first configuration for interface class 03, subclass 01, protocol 01 at
+  alternate setting 0 and its interrupt-IN endpoint. It issues Configure Endpoint for that endpoint (the
+  interval converted as xHCI 6.2.3.6 gives it), and only after that command succeeds sends SET_CONFIGURATION
+  (xHCI 4.3.5), then Set_Protocol(Boot) and Set_Idle with an indefinite duration to that interface number,
+  then the LED state with Set_Report(Output). It prints `[usb] boot keyboard attached:` with the port, speed,
+  interface, endpoint and whether the keyboard accepted the LED report. Set_Report is optional for a boot
+  keyboard, so a refusal is reported and EP0 is recovered (Reset Endpoint, then Set TR Dequeue Pointer).
+- **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
+  ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
+  leaves the previous keys standing. The US layout follows the Keyboard/Keypad page's usage names; Shift,
+  Ctrl (control codes, so Ctrl-C reaches the line discipline as from SOL), Alt (ESC before the key) and Caps,
+  Num and Scroll Lock, whose LEDs the host sets. Arrows, Home, End, Insert, Delete, PageUp and PageDown send
+  `ESC [ A`-`D`, `ESC [ H`, `ESC [ F` and `ESC [ 2~`, `3~`, `5~`, `6~`. Typematic is the host's: 500 ms, then
+  one repeat each 33.3 ms. Alt+F1 to Alt+F6, Alt+Left and Alt+Right decode as distinct chord events for the
+  virtual-terminal layer and send no bytes yet.
+- **Into TTY 0.** Bytes wait in a 4096-byte queue until `tty::push_char_nonblock` accepts them; a byte the
+  TTY refuses (its lock is held) stays at the head and is offered again 5 ms later. A key event is queued whole
+  or refused whole. `[hid] first key report` and `[hid] typed into the console tty: <n> bytes` print once each;
+  no key value is logged.
+- **Detach.** A disconnect, a disabled port or a new connection on a keyboard's port tears the device down:
+  Stop Endpoint for EP0 and the keyboard endpoint, the slot's transfer events discarded once those commands
+  complete, Disable Slot, its DCBAA entry cleared, and then its contexts, rings and buffers returned to the
+  frame allocator. Key state, modifiers and the repeat go with it. `[usb] boot keyboard detached:` gives the
+  page count. When the controller does not complete Disable Slot, the memory stays pinned.
+- **The replug exercise.** On a `console` boot, as init starts the console target, the driver detaches and
+  reattaches each boot keyboard once, so both paths run on the machine: with port power control
+  (HCCPARAMS1.PPC) it powers the port off and on, and the reattach comes through the controller's own
+  connect event; without it, it disables the port and resets it. The `usb-keyboard` milestone's stages are
+  the attach, the detach and the second attach; its typed-key stages are `input: keyboard` and wait for the
+  injector (ruling M2), which a SOL boot's `input: sol` record does not meet.
+- **Hubs.** The machine's census found its keyboard device on a root port, so there is no hub class driver;
+  a keyboard behind a hub is not attached.
+
+The pure parts have host tests in their own files, run with `rustc --edition=2021 --test` on
+`kernel/src/drivers/hid_boot/{report,queue,interface}.rs` and `kernel/src/drivers/xhci/spec.rs`.
+
 ## Files
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
