@@ -978,6 +978,16 @@ fn probe_device(bus: u8, device: u8, function: u8) -> Option<Device> {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if class_code == 0x0c
+        && subclass == 3
+        && prog_if == 0x30
+        && !crate::drivers::fw_cfg::present()
+    {
+        // Unknown until the metal xHCI driver measures it during attachment.
+        bars[0].size = 0;
+    }
+
     Some(Device {
         bus,
         device,
@@ -1337,8 +1347,7 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 /// grep across `serial_*.txt`, so both read this stream.
 ///
 /// Called from `drivers::init()` immediately after `pci::enumerate()`. Metal
-/// xHCI defers its function line until the driver publishes the measured BAR0;
-/// its function is still included in PCI_FN_TOTAL. There
+/// xHCI defers the census until the driver publishes the measured BAR0. There
 /// is no `assign_bars()` step to sequence after on this arch:
 /// `pci::assign_bars()` is `#[cfg(target_arch = "aarch64")]` and its only
 /// call site is the aarch64 arm of `drivers::init()`, so on x86-64 "after
@@ -1348,16 +1357,17 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 pub fn dump_enumerated_functions() {
     let devices = get_devices().unwrap_or_default();
 
+    // Keep enumeration order and the terminal total line even when metal
+    // xHCI has not yet measured its firmware-owned BAR.
+    if !crate::drivers::fw_cfg::present()
+        && devices
+            .iter()
+            .find(|dev| dev.raw_class == 0x0c && dev.subclass == 3 && dev.prog_if == 0x30)
+            .is_some_and(|dev| dev.bars[0].size == 0)
+    {
+        return;
+    }
     for dev in &devices {
-        // Metal xHCI measures BAR0 when attaching; its firmware-owned BAR
-        // has deliberately not been sized by the generic PCI probe.
-        if !crate::drivers::fw_cfg::present()
-            && dev.raw_class == 0x0c
-            && dev.subclass == 3
-            && dev.prog_if == 0x30
-        {
-            continue;
-        }
         dump_function(dev);
     }
 
@@ -1375,8 +1385,9 @@ pub fn publish_xhci_bar0(device: &Device, address: u64, size: u64) {
     }) {
         dev.bars[0].address = address;
         dev.bars[0].size = size;
-        dump_function(dev);
     }
+    drop(devices);
+    dump_enumerated_functions();
 }
 
 #[cfg(target_arch = "x86_64")]
