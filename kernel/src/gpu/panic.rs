@@ -96,6 +96,16 @@ impl Access {
         Self(Some(cpu))
     }
 }
+/// Exception recovery abandons the current stack, so its Access guards cannot drop.
+/// Called with IRQs masked before switching to the idle stack.
+pub(crate) fn abandon_accesses() {
+    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let count = USERS[cpu].swap(0, Ordering::SeqCst);
+    for _ in 0..count {
+        crate::per_cpu::preempt_enable();
+    }
+}
+
 impl Drop for Access {
     fn drop(&mut self) {
         if let Some(cpu) = self.0 {
@@ -414,6 +424,9 @@ impl Screen {
             }
             self.backing.maintain(0, bytes, true);
             for offset in (0..bytes).step_by(PAGE) {
+                if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+                    return None;
+                }
                 let n = (bytes - offset).min(PAGE);
                 self.backing.read(offset, &mut a[..n]);
                 if pass == 0 {
@@ -429,6 +442,9 @@ impl Screen {
         let mut mismatches = 0;
         let mut first = None;
         for offset in (0..bytes).step_by(PAGE) {
+            if crate::arch_impl::aarch64::timer::rdtsc() >= deadline {
+                return None;
+            }
             let n = (bytes - offset).min(PAGE);
             self.first.read(offset, &mut a[..n]);
             for (i, px) in a[..n].chunks_exact(4).enumerate() {
@@ -445,7 +461,7 @@ impl Screen {
                 }
             }
         }
-        Some((mismatches, first))
+        (crate::arch_impl::aarch64::timer::rdtsc() < deadline).then_some((mismatches, first))
     }
 }
 struct Line {

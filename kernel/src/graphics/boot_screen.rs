@@ -709,12 +709,22 @@ pub fn show_panic(info: &core::panic::PanicInfo) {
         what.as_str(),
         &[("Location", place.as_str())],
         RecentLog::AtPanic,
+        true,
     );
 }
 
 /// Draw the diagnostics screen for a fatal EL1 exception, described in words
 /// from its syndrome (`esr`), fault address (`far`) and PC (`elr`). Does not block.
 pub fn show_fault(esr: u64, far: u64, elr: u64) {
+    fault_diagnostics(esr, far, elr, true);
+}
+
+/// Preserve firmware diagnostics for recoverable faults without terminal takeover.
+pub fn show_recoverable_fault(esr: u64, far: u64, elr: u64) {
+    fault_diagnostics(esr, far, elr, false);
+}
+
+fn fault_diagnostics(esr: u64, far: u64, elr: u64, terminal: bool) {
     let ec = ((esr >> 26) & 0x3f) as u8;
     let iss = esr & 0x01ff_ffff;
     let mut what = Text::new();
@@ -758,6 +768,7 @@ pub fn show_fault(esr: u64, far: u64, elr: u64) {
             ("Exception", exception.as_str()),
         ],
         RecentLog::Live,
+        terminal,
     );
 }
 
@@ -815,11 +826,18 @@ fn write_fault_status(out: &mut Text, status: u8) {
 
 /// Draw the red diagnostics screen: `title`, a large `headline` saying what
 /// failed, labelled `details`, the boot stage and the recent kernel log.
-fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recent: RecentLog) {
+fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recent: RecentLog, terminal: bool) {
+    if !terminal && crate::gpu::console::active() {
+        return;
+    }
     if DIAG_CLAIMED.swap(true, Ordering::AcqRel) {
         return;
     }
     if crate::gpu::console::active() {
+        // Handoff can race the earlier recovery check.
+        if !terminal {
+            return;
+        }
         let mut tail = [0u8; DIAG_LOG_BYTES];
         let n = recent.copy(&mut tail);
         crate::gpu::panic::show(title, headline, details, current_stage_name(), &tail[..n]);
