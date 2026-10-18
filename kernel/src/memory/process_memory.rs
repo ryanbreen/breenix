@@ -28,10 +28,6 @@ use x86_64::{
 mod leaf_audit;
 use leaf_audit::LeafAudit;
 
-/// Actual descriptor/custody cursor steps, observed by the boot-owned gate.
-#[cfg(feature = "boot_tests")]
-pub(crate) static LEAF_AUDIT_ENTRIES: AtomicU64 = AtomicU64::new(0);
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -387,8 +383,6 @@ impl LeafDrain for LeafChunk {
             return false;
         }
         *budget -= 1;
-        #[cfg(feature = "boot_tests")]
-        LEAF_AUDIT_ENTRIES.fetch_add(1, Ordering::Relaxed);
         true
     }
 }
@@ -409,8 +403,6 @@ impl<T: LeafDrain> LeafDrain for LeafNode<T> {
             }
             self.next += 1;
             *budget -= 1;
-            #[cfg(feature = "boot_tests")]
-            LEAF_AUDIT_ENTRIES.fetch_add(1, Ordering::Relaxed);
         }
         self.next == LEAF_FANOUT
     }
@@ -516,7 +508,7 @@ impl OwnedLeafFrames {
         self.root = None;
     }
 
-    /// Audit and free the record tree under the same budget as descriptors.
+    /// Audit and free the record tree under the descriptor audit budget.
     fn clear_bounded(&mut self, budget: &mut u32) -> bool {
         if let Some(root) = self.root.as_deref_mut() {
             if !root.drain_bounded(budget) {
@@ -526,7 +518,6 @@ impl OwnedLeafFrames {
         }
         true
     }
-
 }
 
 struct OwnedTableFrames {
@@ -574,6 +565,13 @@ pub(crate) enum RetireProgress {
 }
 
 pub(crate) const RETIRE_FRAME_BUDGET: u32 = 64;
+
+/// Descriptor and custody-slot work has its own bound: absent entries must not
+/// consume the budget reserved for releasing leaves and returning table frames.
+/// A bounded call audits at most this many entries per remaining frame unit,
+/// capped at the boot/exec budget. The production caller supplies sixteen frame
+/// units, so its descriptor work is capped independently of receipt size.
+const AUDIT_ENTRIES_PER_FRAME: u32 = 1024;
 
 /// Owns an address space until exec publishes it in a Process row.
 /// Failure drops release leaves first, then tables and the root. This needs no
@@ -2215,23 +2213,25 @@ impl ProcessPageTable {
     /// Walk mapped leaves resumably, including descriptors with no custody
     /// record. Such descriptors are counted as refusals: freeing their frames
     /// without allocator authority would risk returning somebody else's frame.
-    /// Tables remain owned until this scan completes. Each descriptor is visited
-    /// once and charged, including absent entries; custody-tree cleanup shares
-    /// that budget. Releasing a leaf is part of auditing its descriptor.
+    /// Tables remain owned until this scan completes. Descriptor and custody
+    /// slots consume an independent audit budget; user-leaf releases consume
+    /// the caller's frame budget, which is also used by table retirement.
     pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {
         self.assert_unclaimed();
         if self.leaves.released {
             return RetireProgress::Complete;
         }
+        let frame_budget = budget;
+        let mut audit_budget = (*frame_budget).min(RETIRE_FRAME_BUDGET)
+            * AUDIT_ENTRIES_PER_FRAME;
+        let budget = &mut audit_budget;
         let offset = crate::memory::physical_memory_offset();
         let root = self.level_4_frame.start_address().as_u64();
-        while *budget > 0 {
+        while *budget > 0 && *frame_budget > 0 {
             let Some((table_phys, index, address, shift)) = self.leaves.audit.next_entry(root) else {
                 break;
             };
             *budget -= 1;
-            #[cfg(feature = "boot_tests")]
-            LEAF_AUDIT_ENTRIES.fetch_add(1, Ordering::Relaxed);
             let table_virt = offset + table_phys;
             // SAFETY: the root and each descended table remain owned until
             // the whole audit completes, including across budgeted passes.
@@ -2241,20 +2241,15 @@ impl ProcessPageTable {
             if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
                 continue;
             }
-            // Inherited x86 root slots contain the shared kernel hierarchy,
-            // not this process's leaves or table leases.
-            #[cfg(target_arch = "x86_64")]
-            if shift == 39 && !self.owned_root_slots.contains(index) {
-                continue;
-            }
             if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
                 if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    *frame_budget -= 1;
                     match self.leaves.search(address) {
                         Some(record) if shift == 12 => Self::release_leaf_record(
                             record, PhysFrame::containing_address(entry.addr()),
                         ),
-                        // No huge-leaf custody exists: never treat one 4 KiB
-                        // record as authority to return an entire huge page.
+                        // Only a matching 4 KiB custody record authorizes
+                        // release; huge descriptors are counted as refusals.
                         _ => {
                             crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
                         },
@@ -2265,7 +2260,7 @@ impl ProcessPageTable {
             }
         }
         // Finish ascending even when the last entry used the last unit;
-        // no descriptor is read here and no budget is borrowed from retirement.
+        // no descriptor is read here and retirement retains its own budget.
         if self.leaves.audit.finished() && self.leaves.clear_bounded(budget) {
             self.leaves.released = true;
             RetireProgress::Complete
