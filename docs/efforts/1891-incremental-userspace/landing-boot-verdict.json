@@ -1,0 +1,56 @@
+{
+ "bootShape": "ramdisk",
+ "captureComplete": true,
+ "milestones": {
+  "delivery": {
+   "passed": true,
+   "reached": 7,
+   "total": 7
+  },
+  "dhcp-gateway": {
+   "passed": true,
+   "reached": 4,
+   "total": 4
+  },
+  "fb-console": {
+   "passed": true,
+   "reached": 4,
+   "total": 4
+  },
+  "first-light": {
+   "passed": true,
+   "reached": 11,
+   "total": 11
+  },
+  "first-userspace": {
+   "passed": true,
+   "reached": 2,
+   "total": 2
+  },
+  "interrupts-time": {
+   "passed": true,
+   "reached": 4,
+   "total": 4
+  },
+  "nic": {
+   "passed": true,
+   "reached": 6,
+   "total": 6
+  },
+  "ramdisk-root": {
+   "passed": true,
+   "reached": 3,
+   "total": 3
+  },
+  "smp": {
+   "passed": true,
+   "reached": 3,
+   "total": 3
+  },
+  "xhci": {
+   "passed": true,
+   "reached": 5,
+   "total": 5
+  }
+ }
+}
