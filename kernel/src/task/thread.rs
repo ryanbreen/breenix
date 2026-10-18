@@ -165,7 +165,7 @@ impl CpuContext {
             // IRETQ enters kernel Rust without CALL pushing a return address.
             // Reserve its slot so the SysV callee starts with RSP % 16 == 8.
             rsp: match privilege {
-                ThreadPrivilege::Kernel => (stack_pointer.as_u64() & !0xF) - 8,
+                ThreadPrivilege::Kernel => (stack_pointer.as_u64() & !0xF).saturating_sub(8),
                 ThreadPrivilege::User => stack_pointer.as_u64(),
             },
             r8: 0,
