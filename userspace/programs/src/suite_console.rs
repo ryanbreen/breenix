@@ -118,6 +118,7 @@ static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
         case("ctrl-c-foreground-only", "Ctrl+C signals only the foreground terminal's foreground process group", keys_ctrl_c_foreground_only),
         case("caps-per-vt", "Caps Lock state is kept per terminal", keys_caps_per_vt),
         case("shift-pageup", "Shift+PageUp and Shift+PageDown move the view by half a screen", keys_shift_pageup),
+        case("report-joins-typed-line", "A cursor report joins the partly typed canonical line, after its keys", keys_report_joins_typed_line),
     ]),
 ]).defer_display();
 
