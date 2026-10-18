@@ -78,6 +78,13 @@ pub(super) fn enable_interrupt(device: &pci::Device, _handler: fn()) -> Result<u
         log::error!("[xhci] interrupt routing unavailable: MSI={msi:?} MSI-X={msix:?} INTx-pin={} line={} GICD_TYPER={typer:#x}", device.interrupt_pin, device.interrupt_line);
         return Err("xHCI MSI has no platform interrupt translator");
     }
+    // Validate routing before consuming an SPI. configure_msi writes a
+    // 32-bit destination; use MSI-X for frames outside that address space.
+    let destination = frame.checked_add(0x40).ok_or("GICv2m address overflow")?;
+    let msi = msi.filter(|_| u32::try_from(destination).is_ok());
+    if msi.is_none() && msix.is_none() {
+        return Err("xHCI has no usable MSI destination");
+    }
     let irq = config::allocate_msi_spi();
     if irq == 0 {
         return Err("no GICv2m SPI available for xHCI");
@@ -90,9 +97,10 @@ pub(super) fn enable_interrupt(device: &pci::Device, _handler: fn()) -> Result<u
         if let Some(msix) = msix {
             device.disable_msix(msix);
         }
-        device.configure_msi(cap, (frame + 0x40) as u32, irq as u16);
+        device.configure_msi(cap, destination as u32, irq as u16);
     } else if let Some(cap) = msix {
-        device.configure_msix_entry(cap, 0, frame + 0x40, irq);
+        device.disable_msi();
+        device.configure_msix_entry(cap, 0, destination, irq);
         device.enable_msix(cap);
         device.disable_intx();
     } else {
