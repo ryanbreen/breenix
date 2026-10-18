@@ -779,6 +779,7 @@ class RootStagingTest(unittest.TestCase):
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            (tree / 'sbin/suite-time').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
@@ -815,6 +816,15 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'suite', 'absent', site)
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+            # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
+            metal_root.stage_root(image, 'suite', 'smoke,time', site)
+            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('suite-sequence'), 'smoke,time\n')
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'smoke,absent', site)
+            metal_root.stage_root(image, 'suite', 'time', site)
+            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root

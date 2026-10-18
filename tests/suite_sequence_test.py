@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """scripts/suite-sequence.py: which suites a boot runs, and how each is scored from one shared serial."""
 import json
-import os
 from pathlib import Path
 import runpy
 import shutil
-import subprocess
 import tempfile
 import unittest
 
@@ -95,32 +93,6 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(boundaries("SUITE a START cases=2\nSUITE a CASE case/one PASS ms=1\n"), 1)
         self.assertEqual(boundaries("SUITE a START cases=2\nSUITE_SEQUENCE STALLED a cases=0/2\nSUITE b START cases=2\n"), 3)
         self.assertEqual(boundaries("SUITE a START cases=2"), 0)
-
-
-class StagingTests(unittest.TestCase):
-    def test_metal_staging_checks_each_sequence_binary_is_an_elf(self):
-        bindir = Path("/opt/homebrew/opt/e2fsprogs/sbin")
-        path = str(bindir) + ":" + os.environ["PATH"]
-        mkfs, debugfs = shutil.which("mke2fs", path=path), shutil.which("debugfs", path=path)
-        if not mkfs or not debugfs:
-            self.skipTest("requires e2fsprogs")
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            image = root / "disk.img"
-            image.write_bytes(bytes(8 * 1024 * 1024))
-            subprocess.run([mkfs, "-t", "ext2", "-F", str(image)], check=True, capture_output=True)
-            (root / "elf").write_bytes(b"\x7fELF" + bytes(60))
-            (root / "commands").write_text(f"mkdir /etc\nmkdir /sbin\nwrite {root}/elf /sbin/suite-first\nwrite {root}/elf /sbin/suite-second\n")
-            subprocess.run([debugfs, "-w", "-f", str(root / "commands"), str(image)], check=True, capture_output=True)
-            script = str(ROOT / "scripts/write-boot-target.sh")
-            env = dict(os.environ, PATH=path)
-            staged = subprocess.run([script, str(image), "first", "", "first,second"], env=env, capture_output=True)
-            self.assertEqual(staged.returncode, 0, staged.stderr)
-            listed = subprocess.run([debugfs, "-R", "cat /etc/breenix/suite-sequence", str(image)], capture_output=True)
-            self.assertEqual(listed.stdout, b"first,second\n")
-            missing = subprocess.run([script, str(image), "first", "", "first,third"], env=env, capture_output=True)
-            self.assertNotEqual(missing.returncode, 0)
-            self.assertIn(b"no /sbin/suite-third", missing.stderr)
 
 
 if __name__ == "__main__":

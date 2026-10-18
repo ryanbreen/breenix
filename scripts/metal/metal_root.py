@@ -140,9 +140,9 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     writer = Path(writer) if writer else (packaged if packaged.is_file() else
                                          Path(__file__).resolve().parents[1] / 'write-boot-target.sh')
     writer_hash = hashlib.sha256(writer.read_bytes()).hexdigest()
-    target = [first, '', suite] if mode == 'suite' and ',' in suite else [first if mode == 'suite' else '--' + mode]
+    target = first if mode == 'suite' else '--' + mode
     try:
-        subprocess.run(['bash', str(writer), str(image), *target], check=True, capture_output=True,
+        subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
                        env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
                                 BREENIX_CONSOLE_IDLE_MINUTES='' if idle_minutes is None else str(idle_minutes),
                                 BREENIX_CONSOLE_REPLUG='1' if replug else '0'))
@@ -153,6 +153,10 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         files = {'site.env': ''.join(lines)}
         # Replace this file so ordinary staging disarms a prior fault.
         files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
+        # Several suites: the list beside the boot target (the writer removed any earlier one). Written here, by the
+        # driver's own staging code, so tools deployed while a boot builds cannot change how it is staged.
+        if mode == 'suite' and ',' in suite:
+            files['suite-sequence'] = suite + '\n'
         commands = []
         for name, text in files.items():
             source = scratch / name
@@ -204,12 +208,15 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                                   check=True, capture_output=True).stdout
         if b'Type: symlink' not in resolver or b'"/proc/net/pnp"' not in resolver:
             raise ValueError('RAM-disk resolver does not name the live DHCP configuration')
-        binary = {'suite': f'/sbin/suite-{first}', 'probe': '/sbin/probe'}.get(mode, '/sbin/init')
-        installed = scratch / 'pid1'
-        subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
-                       check=True, capture_output=True)
-        if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
-            raise ValueError('RAM disk has no selected PID 1 ELF')
+        binaries = [f'/sbin/suite-{each}' for each in suite.split(',')] if mode == 'suite' else \
+            [{'probe': '/sbin/probe'}.get(mode, '/sbin/init')]
+        for binary in binaries:
+            installed = scratch / 'pid1'
+            installed.unlink(missing_ok=True)
+            subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
+                           check=True, capture_output=True)
+            if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
+                raise ValueError('RAM disk has no selected PID 1 ELF')
     facts = {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
     if mode == 'console':
         facts['consoleIdentity'] = console_identity(site)
