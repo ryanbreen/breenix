@@ -860,11 +860,15 @@ fn chvt_chvt_waits() -> CaseResult {
 
 // C4 accepts the staged root account. Give it fresh random credentials and a
 // session-checking shell for this case, restoring both files on the private disk.
-struct LoginAccount { passwd: Vec<u8>, shadow: Vec<u8>, password: String }
+struct LoginAccount { passwd: Vec<u8>, shadow: Option<Vec<u8>>, password: String }
 impl LoginAccount {
     fn create() -> Verdict<Self> {
         let passwd = std::fs::read("/etc/passwd").map_err(|e| e.to_string())?;
-        let shadow = std::fs::read("/etc/shadow").map_err(|e| e.to_string())?;
+        let shadow = match std::fs::read("/etc/shadow") {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("read shadow: {error}")),
+        };
         let mut random = [0; 16];
         let mut at = 0;
         while at < random.len() {
@@ -878,16 +882,28 @@ impl LoginAccount {
         let n = libbreenix::crypto::sha512_crypt::sha512_crypt(password.as_bytes(), &format!("$6${salt}"), &mut hash)
             .map_err(String::from)?;
         let account = Self { passwd, shadow, password };
-        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/root:/sbin/suite-console\n").map_err(|e| e.to_string())?;
+        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/sbin/suite-console\n").map_err(|e| e.to_string())?;
         std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", std::str::from_utf8(&hash[..n]).map_err(|e| e.to_string())?))
             .map_err(|e| e.to_string())?;
         Ok(account)
     }
     fn restore(&self) -> Verdict {
-        std::fs::write("/etc/shadow", &self.shadow).map_err(|e| e.to_string())?;
+        match &self.shadow {
+            Some(bytes) => std::fs::write("/etc/shadow", bytes).map_err(|e| e.to_string())?,
+            None => match std::fs::remove_file("/etc/shadow") {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(format!("remove test shadow: {error}")),
+            },
+        }
         std::fs::write("/etc/passwd", &self.passwd).map_err(|e| e.to_string())?;
-        require(std::fs::read("/etc/shadow").map_err(|e| e.to_string())? == self.shadow
-            && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd, "account files were not restored")
+        let shadow_restored = match (std::fs::read("/etc/shadow"), &self.shadow) {
+            (Ok(actual), Some(expected)) => actual == *expected,
+            (Err(error), None) => error.kind() == std::io::ErrorKind::NotFound,
+            _ => false,
+        };
+        require(shadow_restored && std::fs::read("/etc/passwd").map_err(|e| e.to_string())? == self.passwd,
+            "account files were not restored")
     }
 }
 impl Drop for LoginAccount { fn drop(&mut self) { let _ = self.restore(); } }
