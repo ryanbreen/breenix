@@ -330,11 +330,14 @@ fn validate_logger_source(logger: &str, fbcon: &str) -> Result<(), &'static str>
     if identifier_offsets(record_writer, &record_mask, "with_grid").is_empty() {
         return Err("log_record does not write through with_grid");
     }
-    if has_whole_framebuffer_clear(log_body) || has_whole_framebuffer_clear(record_writer) {
+    if has_whole_framebuffer_clear(log_body) {
         return Err("logger hot path clears the whole framebuffer");
     }
-    for writer in ["log_record", "write_tty"] {
+    for writer in ["with_grid", "log_record", "write_tty"] {
         let body = function_body(fbcon, writer).ok_or("missing console writer")?;
+        if has_whole_framebuffer_clear(body) {
+            return Err("logger hot path clears the whole framebuffer");
+        }
         let mask = code_mask(body);
         if !identifier_offsets(body, &mask, "DISPLAY").is_empty()
             || !identifier_offsets(body, &mask, "copy_lines").is_empty()
@@ -413,6 +416,19 @@ fn logger_validator_rejects_blocking_framebuffer_lock() {
         }
     "#;
     assert!(validate_logger_source(logger, drawing).is_err());
+}
+
+#[test]
+fn logger_validator_rejects_framebuffer_clear_in_shared_grid_writer() {
+    let logger = repo_text("kernel/src/logger.rs");
+    let fbcon = repo_text("kernel/src/fbcon/mod.rs");
+    let anchor = "fn with_grid<R>(f: impl FnOnce(&mut Grid) -> R) -> Option<R> {";
+    for clear in ["framebuffer.fill(0);", "core::ptr::write_bytes(buffer, 0, buffer_len);"] {
+        let mutated = fbcon.replacen(anchor, &format!("{anchor}\n    {clear}"), 1);
+        assert_ne!(mutated, fbcon, "mutation must reach with_grid");
+        assert_eq!(validate_logger_source(&logger, &mutated),
+            Err("logger hot path clears the whole framebuffer"));
+    }
 }
 
 #[test]
