@@ -3,8 +3,8 @@ use super::*;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight};
 
-const WIDTH: u32 = 2560;
-const HEIGHT: u32 = 1600;
+pub(super) const WIDTH: u32 = 2560;
+pub(super) const HEIGHT: u32 = 1600;
 const BG: u32 = 0xff181512;
 const FG: u32 = 0xffe8edf2;
 const LINES: usize = 16;
@@ -33,6 +33,8 @@ pub(super) struct Console {
     lines: [[u8; COLUMNS]; LINES],
     row: usize,
     column: usize,
+    counted: bool,
+    panic_attempted: bool,
 }
 
 pub fn active() -> bool {
@@ -211,7 +213,7 @@ impl Drop for Console {
 }
 
 impl Console {
-    pub(super) fn new() -> Result<Self, i64> {
+    pub(super) fn new(counted: bool) -> Result<Self, i64> {
         let (handle, _) = create_context(0)?;
         let mut build = Building {
             ids: Vec::new(),
@@ -233,7 +235,7 @@ impl Console {
             WIDTH,
             HEIGHT,
             true,
-            true,
+            counted || cfg!(feature = "capture_panic_oracle"),
         )?;
         build.ids.push(target);
         let atlas = resource(ctx, kind::TEXTURE, format::R8, gw * 95, 16, false, true)?;
@@ -288,7 +290,9 @@ impl Console {
         if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
             return Err(EIO);
         }
-        FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
+        if counted {
+            FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
+        }
         build.armed = false;
         Ok(Self {
             epoch,
@@ -302,6 +306,8 @@ impl Console {
             lines: [[b' '; COLUMNS]; LINES],
             row: 0,
             column: 0,
+            counted,
+            panic_attempted: false,
         })
     }
     fn live(&self) -> bool {
@@ -425,7 +431,9 @@ impl Console {
             })?;
             handoff();
         }
-        DRAWN.fetch_add(draws, Ordering::Release);
+        if self.counted {
+            DRAWN.fetch_add(draws, Ordering::Release);
+        }
         Ok(())
     }
     fn bind(&self, mut b: display::Binding) -> Result<(), i64> {
@@ -524,10 +532,9 @@ impl ConsoleLease {
     fn ensure(&mut self) -> Result<&mut Console, i64> {
         if self.0.as_ref().is_none_or(|c| !c.live()) {
             self.0 = None;
-            let mut console = Console::new()?;
+            let mut console = Console::new(true)?;
             // Preparing a replacement must not change a live owner's scanout.
             console.draw(false)?;
-            super::panic::prepare()?;
             RESOURCE.store(console.target as u64, Ordering::Release);
             self.0 = Some(console);
         }
@@ -580,11 +587,23 @@ pub fn pump() {
         c.bytes(&bytes[..n]);
         let _ = c.draw(true);
     }
+    // Diagnostic preparation is best-effort after the ordinary console's handoff.
+    // Try once per console epoch, after that console is already visible.
+    if HANDOFF.load(Ordering::Acquire) && !c.panic_attempted {
+        c.panic_attempted = true;
+        let _ = super::panic::prepare();
+        #[cfg(feature = "capture_panic_oracle")]
+        super::panic::preparation_finished();
+    }
 }
 
 #[cfg(feature = "capture_panic_oracle")]
 pub(super) fn panic_with_lock(f: impl FnOnce()) {
-    if !HANDOFF.load(Ordering::Acquire) { return; }
-    let Some(_console) = CONSOLE.try_lock() else { return; };
+    if !HANDOFF.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(_console) = CONSOLE.try_lock() else {
+        return;
+    };
     f();
 }

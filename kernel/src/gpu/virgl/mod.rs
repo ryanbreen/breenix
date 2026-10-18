@@ -355,7 +355,7 @@ impl Device {
 
     /// The control queue's size in descriptors.
     pub fn queue_size(&self) -> usize {
-        self.queue.size() as usize
+        self.queue.normal_capacity() as usize
     }
 
     pub(crate) fn terminal_queue(&self) -> emergency::Queue {

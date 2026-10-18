@@ -1,6 +1,7 @@
 //! Terminal GPU diagnostics for ruling 40 (#1749). Preparation uses the normal
 //! core; presentation uses preallocated requests outside that core.
 //! Pixels are rendered by bitmap_text, not by a CPU framebuffer copy.
+use super::console::{HEIGHT, WIDTH};
 use super::*;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
@@ -11,6 +12,8 @@ const ROWS: usize = 32;
 const CELLS: usize = COLS * ROWS;
 #[cfg(feature = "capture_panic_oracle")]
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "capture_panic_oracle")]
+static PREPARATION_FINISHED: AtomicBool = AtomicBool::new(false);
 static TERMINAL: AtomicBool = AtomicBool::new(false);
 static VALID: AtomicBool = AtomicBool::new(false);
 static STATE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
@@ -86,6 +89,7 @@ pub(super) fn invalidate() {
 }
 
 struct Screen {
+    #[cfg(feature = "capture_panic_oracle")]
     observed: AtomicBool,
     console: console::Console,
     queue: Queue,
@@ -94,27 +98,35 @@ struct Screen {
     glyphs: Vec<(usize, usize)>,
     bind: Command,
     flush: Command,
+    #[cfg(feature = "capture_panic_oracle")]
     reads: [Command; 2],
+    #[cfg(feature = "capture_panic_oracle")]
     backing: Arc<Pages>,
+    #[cfg(feature = "capture_panic_oracle")]
     first: Pages,
+    #[cfg(feature = "capture_panic_oracle")]
     pitch: usize,
 }
 
-/// Called before firmware display retirement, again when the console recovers from
-/// a reset. A private context keeps ordinary console draws out of the panic state.
+/// Called after console handoff, again when the console recovers from a reset. A private context keeps ordinary console draws out of the panic state.
 pub(super) fn prepare() -> Result<(), i64> {
     if VALID.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut c = console::Console::new()?;
+    let mut c = console::Console::new(false)?;
     c.draw(false)?;
-    let (mut objects, backing, pitch, queue) = with_core(|core| {
+    let (mut objects, queue) = with_core(|core| {
         Some((
             core.contexts.get(&c.context)?.objects.clone(),
-            core.resources.get(&c.target)?.backing.clone(),
-            core.resources.get(&c.target)?.pitch as usize,
             core.dev.as_ref()?.terminal_queue(),
         ))
+    })
+    .flatten()
+    .ok_or(EIO)?;
+    #[cfg(feature = "capture_panic_oracle")]
+    let (backing, pitch) = with_core(|core| {
+        let r = core.resources.get(&c.target)?;
+        Some((r.backing.clone(), r.pitch as usize))
     })
     .flatten()
     .ok_or(EIO)?;
@@ -202,17 +214,18 @@ pub(super) fn prepare() -> Result<(), i64> {
         Tag::Background,
         c.context,
         c.target,
-        2560,
-        1600,
+        WIDTH,
+        HEIGHT,
     ));
     let flush = Command::new(virgl::flush_resource(
         Tag::Background,
         c.context,
         fences[0],
         c.target,
-        2560,
-        1600,
+        WIDTH,
+        HEIGHT,
     ));
+    #[cfg(feature = "capture_panic_oracle")]
     let reads = [1, 2].map(|i| {
         Command::new(virgl::transfer_from_host(
             Tag::Background,
@@ -222,14 +235,16 @@ pub(super) fn prepare() -> Result<(), i64> {
             backing.clone(),
             0,
             0,
-            2560,
-            1600,
+            WIDTH,
+            HEIGHT,
             0,
             pitch as u32,
         ))
     });
+    #[cfg(feature = "capture_panic_oracle")]
     let first = Pages::new(backing.count()).ok_or(ENOMEM)?;
     let screen = Box::into_raw(Box::new(Screen {
+        #[cfg(feature = "capture_panic_oracle")]
         observed: AtomicBool::new(false),
         console: c,
         queue,
@@ -237,9 +252,13 @@ pub(super) fn prepare() -> Result<(), i64> {
         glyphs,
         bind,
         flush,
+        #[cfg(feature = "capture_panic_oracle")]
         reads,
+        #[cfg(feature = "capture_panic_oracle")]
         backing,
+        #[cfg(feature = "capture_panic_oracle")]
         first,
+        #[cfg(feature = "capture_panic_oracle")]
         pitch,
     }));
     let old = with_core(|core| {
@@ -271,8 +290,8 @@ pub(super) fn prepare() -> Result<(), i64> {
 
 /// The red screen's text layout. Input bytes are text, not pixel data.
 impl Screen {
-    fn line(&self, row: usize, text: &str) {
-        for (column, byte) in text.bytes().take(COLS).enumerate() {
+    fn line(&self, row: usize, text: &[u8]) {
+        for (column, &byte) in text.iter().take(COLS).enumerate() {
             let glyph = if (32..=126).contains(&byte) {
                 byte
             } else {
@@ -291,17 +310,17 @@ impl Screen {
         log: &[u8],
         deadline: u64,
     ) -> bool {
-        self.line(0, title);
+        self.line(0, title.as_bytes());
         for (i, chunk) in headline.as_bytes().chunks(COLS).take(3).enumerate() {
-            self.line(2 + i, core::str::from_utf8(chunk).unwrap_or("?"));
+            self.line(2 + i, chunk);
         }
         for (i, (label, value)) in details.iter().take(3).enumerate() {
             let mut line = Line::new();
             let _ = core::fmt::write(&mut line, format_args!("{label}: {value}"));
-            self.line(6 + i, line.as_str());
+            self.line(6 + i, line.as_str().as_bytes());
         }
-        self.line(10, stage);
-        self.line(11, "Recent kernel log (serial is the panic record):");
+        self.line(10, stage.as_bytes());
+        self.line(11, b"Recent kernel log (serial is the panic record):");
         // Match the diagnostics screen's tail selection without allocating strings.
         let mut end = log.len();
         while end > 0 && matches!(log[end - 1], b'\n' | b'\r') {
@@ -320,14 +339,15 @@ impl Screen {
             }
         }
         for (i, line) in log[start..end].split(|b| *b == b'\n').take(20).enumerate() {
-            self.line(12 + i, core::str::from_utf8(line).unwrap_or("?"));
+            self.line(12 + i, line);
         }
         self.draws.iter().all(|c| self.queue.exec(c, deadline))
             && self.queue.exec(&self.bind, deadline)
             && self.queue.exec(&self.flush, deadline)
     }
+    #[cfg(feature = "capture_panic_oracle")]
     fn observe(&self, deadline: u64) -> bool {
-        let bytes = self.pitch * 1600;
+        let bytes = self.pitch * HEIGHT as usize;
         let mut a = [0u8; PAGE];
         let mut b = [0u8; PAGE];
         for pass in 0..2 {
@@ -410,15 +430,17 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     let s = unsafe { &*screen };
     let deadline = crate::arch_impl::aarch64::timer::rdtsc() + frequency * 2;
     if s.queue.drain(deadline) && s.show(title, headline, details, stage, log, deadline) {
+        #[cfg(feature = "capture_panic_oracle")]
         s.observed.store(s.observe(deadline), Ordering::Release);
     }
 }
 
 #[cfg(feature = "capture_panic_oracle")]
 pub fn test_ready() -> bool {
-    INITIALIZED.load(Ordering::Acquire)
-        && (DOORBELL.load(Ordering::Acquire) == 0
-            || (console::active() && VALID.load(Ordering::Acquire)))
+    !crate::platform_config::is_qemu()
+        || (INITIALIZED.load(Ordering::Acquire)
+            && (DOORBELL.load(Ordering::Acquire) == 0
+                || (console::active() && PREPARATION_FINISHED.load(Ordering::Acquire))))
 }
 
 #[cfg(feature = "capture_panic_oracle")]
@@ -435,4 +457,9 @@ pub fn test_with_locks(f: impl FnOnce()) {
         };
         f();
     });
+}
+
+#[cfg(feature = "capture_panic_oracle")]
+pub(super) fn preparation_finished() {
+    PREPARATION_FINISHED.store(true, Ordering::Release);
 }

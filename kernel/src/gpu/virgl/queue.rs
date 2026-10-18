@@ -80,6 +80,10 @@ impl Queue {
         self.size
     }
 
+    pub fn normal_capacity(&self) -> u16 {
+        self.size - PANIC_DESCRIPTORS
+    }
+
     pub fn free_count(&self) -> usize {
         self.free.len()
     }
@@ -98,8 +102,11 @@ impl Queue {
 
     pub(super) fn terminal(&self, doorbell: u64) -> super::emergency::Queue {
         super::emergency::Queue::new(
-            self.size, self.desc.page_va(0), self.avail.page_va(0),
-            self.used.page_va(0), doorbell,
+            self.size,
+            self.desc.page_va(0),
+            self.avail.page_va(0),
+            self.used.page_va(0),
+            doorbell,
         )
     }
 
@@ -109,7 +116,9 @@ impl Queue {
         if segs.is_empty() || segs.len() > self.free.len() {
             return None;
         }
-        let ids: Vec<u16> = (0..segs.len()).map(|_| self.free.pop().unwrap_or(0)).collect();
+        let ids: Vec<u16> = (0..segs.len())
+            .map(|_| self.free.pop().unwrap_or(0))
+            .collect();
         let _access = crate::gpu::panic::Access::enter();
         let base = self.desc.page_va(0);
         for (i, seg) in segs.iter().enumerate() {
@@ -188,7 +197,10 @@ impl Queue {
             let d = base + (id as usize * DESC_SIZE) as u64;
             // SAFETY: owned descriptor table.
             let (flags, next) = unsafe {
-                (core::ptr::read_volatile((d + 12) as *const u16), core::ptr::read_volatile((d + 14) as *const u16))
+                (
+                    core::ptr::read_volatile((d + 12) as *const u16),
+                    core::ptr::read_volatile((d + 14) as *const u16),
+                )
             };
             if flags & DESC_F_NEXT == 0 {
                 break;
