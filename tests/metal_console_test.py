@@ -160,27 +160,6 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(run.call_args_list[0].kwargs['input'], (secret + '\r').encode())
         self.assertNotIn(secret, existing.m.Redactor(driver.site)('Password: ' + secret))
 
-    def test_disk_root_refuses_an_install_with_a_different_target_or_credential(self):
-        fixture = existing.DriverTest()
-        fixture.setUp()
-        try:
-            driver = fixture.driver
-            driver.args.mode, driver.args.disk, driver.args.commit = 'console', 'root', 'a' * 40
-            driver.site = self.driver().site
-            inputs = driver.stage / 'inputs'
-            inputs.mkdir(parents=True)
-            (inputs / 'ready').touch()
-            existing.m.write_json(inputs / 'build.json', {'commit': driver.args.commit, 'profile': 'production', 'features': []})
-            for mode, identity in [('probe', metal_root.console_identity(driver.site)), ('console', 'wrong-identity')]:
-                existing.m.write_json(existing.m.STATE / 'disk.json', {'commit': driver.args.commit,
-                                      'mode': mode, 'consoleIdentity': identity})
-                with self.assertRaises(boot.Finish) as result:
-                    driver.prepare_payload()
-                self.assertEqual(result.exception.status, existing.m.EXIT_CANCELLED)
-                self.assertNotIn('diskRoot', driver.delivery)
-        finally:
-            fixture.tearDown()
-
     def test_disk_root_console_carries_per_boot_intent_without_restaging_root(self):
         fixture = existing.DriverTest()
         fixture.setUp()
@@ -196,10 +175,12 @@ class ConsoleTest(unittest.TestCase):
                                   'profile': 'production', 'features': []})
             existing.m.write_json(existing.m.STATE / 'disk.json', {'commit': d.args.commit,
                                   'mode': 'console', 'consoleIdentity': metal_root.console_identity(d.site)})
-            for is_session, expected in [(True, b'BREENIX-CONSOLE 1\nsession\n'),
-                                         (False, b'BREENIX-CONSOLE 1\nmeasure\n')]:
+            for is_session, expected in [(True, b'BREENIX-BOOT 1\nconsole idle=30\n'),
+                                         (False, b'BREENIX-BOOT 1\nconsole replug\n')]:
                 d.args.session = is_session
-                with patch.object(boot.metal_root, 'stage_root') as stage, \
+                d.args.idle_minutes = 30
+                with patch.object(boot.metal_disk, 'stage', return_value=({}, {})), \
+                     patch.object(boot.metal_root, 'stage_root') as stage, \
                      patch.object(boot.metal_image, 'extract_esp', return_value={}), \
                      patch.object(boot.metal_image, 'assemble', side_effect=RuntimeError('assembly captured')) as assemble:
                     with self.assertRaisesRegex(RuntimeError, 'assembly captured'):
@@ -207,9 +188,10 @@ class ConsoleTest(unittest.TestCase):
                 stage.assert_not_called()
                 files = assemble.call_args.args[1]
                 self.assertEqual(files['ramdisk'].read_bytes(), expected)
-                self.assertEqual(d.delivery['consoleIntent'], expected.split(b'\n')[1].decode())
+                self.assertEqual(d.delivery['consoleIntent'], 'session' if is_session else 'measure')
             # The assembled image records the intent, not a RAM-disk root.
-            with patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+            with patch.object(boot.metal_disk, 'stage', return_value=({}, {})), \
+                 patch.object(boot.metal_image, 'extract_esp', return_value={}), \
                  patch.object(boot.metal_image, 'assemble', side_effect=lambda path, files: (
                      path.write_bytes(b''), {'size': 1, 'sha256': '0' * 64, 'components': []})[1]), \
                  patch.object(boot.metal_image, 'stub_efi', return_value={'size': 1, 'sha256': '0' * 64, 'stub': {}}), \
