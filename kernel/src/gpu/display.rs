@@ -544,8 +544,8 @@ pub(super) fn back(group: u64) -> Result<(), i64> {
             with_core(|c| {
                 c.display.stack.push(removed);
                 c.display.known = false;
+                super::console::request_restore(c.display.owner_sequence);
             });
-            super::console::request_restore();
             Err(e)
         }
     }
@@ -562,7 +562,7 @@ pub(super) fn ended(c: &mut Core, group: u64) {
         if was_top {
             publish_owner(c);
             c.display.known = false;
-            super::console::request_restore();
+            super::console::request_restore(c.display.owner_sequence);
         }
     }
 }
@@ -603,6 +603,11 @@ pub(super) fn restored(b: Binding) {
 pub(super) fn restore_pending() -> Result<(), i64> {
     let _transition = Transition::acquire()?;
     let seq = with_core(|c| c.display.owner_sequence).ok_or(ENODEV)?;
+    if !super::console::restoring(seq) {
+        // Requested for an owner stack that has changed since: obsolete.
+        super::console::restored_pending();
+        return Ok(());
+    }
     let outcome = restore();
     with_core(|c| {
         if outcome.is_ok() && c.display.owner_sequence == seq {

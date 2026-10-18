@@ -3589,7 +3589,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
             return Err(abi::errno::EPERM);
         }
         wait_for(None, true, |c| {
-            (!console::restoring()).then_some(c.display.known)
+            (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         })
         .map_err(|_| EINTR)?;
         Some(display::Transition::for_observation(tgid)?)

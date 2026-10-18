@@ -12,6 +12,8 @@ const COLUMNS: usize = 96;
 const VB_BYTES: u32 = 128 * 1024;
 static CONSOLE: spin::Mutex<Option<Console>> = spin::Mutex::new(None);
 static RESTORE: AtomicBool = AtomicBool::new(false);
+/// The owner sequence a pending restore was requested for.
+static RESTORE_SEQ: AtomicU64 = AtomicU64::new(0);
 static RETIRED: AtomicBool = AtomicBool::new(false);
 static HANDOFF: AtomicBool = AtomicBool::new(false);
 static HASH: AtomicU64 = AtomicU64::new(0);
@@ -38,11 +40,17 @@ struct Console {
 pub fn active() -> bool {
     RETIRED.load(Ordering::Acquire)
 }
-pub(super) fn request_restore() {
+/// Ask the render thread to restore the frame of the owner stack as it is at owner sequence
+/// `seq`.
+pub(super) fn request_restore(seq: u64) {
+    RESTORE_SEQ.store(seq, Ordering::Release);
     RESTORE.store(true, Ordering::Release);
 }
-pub(super) fn restoring() -> bool {
-    RESTORE.load(Ordering::Acquire)
+/// Whether a restore is pending for owner sequence `seq`. A request made for an earlier
+/// sequence is obsolete: a later change of owner (a take, a give-back, another ended owner)
+/// decides what the display shows itself.
+pub(super) fn restoring(seq: u64) -> bool {
+    RESTORE.load(Ordering::Acquire) && RESTORE_SEQ.load(Ordering::Acquire) == seq
 }
 pub(super) fn restored_pending() {
     RESTORE.store(false, Ordering::Release);
