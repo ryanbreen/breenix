@@ -3515,12 +3515,12 @@ pub fn sys_take_over_display() -> SyscallResult {
 
         // Tell the render thread to stop flushing the framebuffer.
         // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+        #[cfg(target_arch = "aarch64")]
         crate::graphics::render_task::set_display_taken();
 
         // The x86_64 screen console stops drawing.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::take_display();
+        #[cfg(target_arch = "x86_64")]
+        crate::console::take_display();
     }
     SyscallResult::Ok(0)
 }
