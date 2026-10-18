@@ -184,9 +184,9 @@ fn queue_foreground_signal_nonblock(pgrp: u64, sig: u32) {
 }
 
 /// Send each queued foreground-group signal, in thread context, where the
-/// process table can be waited for. Sleep on a timer between drains: input
-/// interrupts never acquire the scheduler, and a queued signal needs no wake
-/// handshake that could race the worker going to sleep.
+/// process table can be waited for. Sleep on a timer between drains: the
+/// interrupt publishes into the atomic queue, and a queued signal needs no
+/// wake handshake that could race the worker going to sleep.
 fn foreground_signal_thread() {
     use crate::task::{scheduler, thread::ThreadState};
 
