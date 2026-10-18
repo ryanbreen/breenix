@@ -802,6 +802,59 @@ fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
     SyscallResult::Ok(bytes_written as u64)
 }
 
+/// Testing-only pipe-wake handshake (pipe_test): 0 queries state, 1 arms
+/// this reader, and 2 releases it after the writer requests a reschedule.
+/// States: 0 idle, 1 armed, 2 committed to waiting, 3 held, 4 released,
+/// 5 watchdog expired. Preemption remains disabled while held.
+#[cfg(feature = "testing")]
+pub(super) const PIPE_WAKE_HOLD: u64 = 0xB813_0005;
+#[cfg(feature = "testing")]
+static PIPE_WAKE_HOLD_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "testing")]
+static PIPE_WAKE_STATE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "testing")]
+pub(super) fn arm_pipe_wake_hold(command: u64) -> SyscallResult {
+    match command {
+        0 => SyscallResult::Ok(PIPE_WAKE_STATE.load(Ordering::Acquire)),
+        1 => {
+            let Some(tid) = crate::task::scheduler::current_thread_id() else {
+                return SyscallResult::Err(3); // ESRCH
+            };
+            PIPE_WAKE_STATE.store(1, Ordering::Relaxed);
+            PIPE_WAKE_HOLD_TID.store(tid, Ordering::Release);
+            SyscallResult::Ok(0)
+        }
+        2 => match PIPE_WAKE_STATE.compare_exchange(3, 4, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => SyscallResult::Ok(0),
+            Err(_) => SyscallResult::Err(16), // EBUSY: reader was not held
+        },
+        _ => SyscallResult::Err(22), // EINVAL
+    }
+}
+
+#[cfg(feature = "testing")]
+fn hold_pipe_wake(thread_id: u64) {
+    if PIPE_WAKE_HOLD_TID.load(Ordering::Acquire) != thread_id {
+        return;
+    }
+    PIPE_WAKE_STATE.store(3, Ordering::Release);
+    let now = || {
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        secs * 1_000_000_000 + nanos
+    };
+    let end = now() + 30_000_000_000;
+    while PIPE_WAKE_STATE.load(Ordering::Acquire) == 3 {
+        if now() >= end {
+            // A timeout is observable and cannot count as a released hold.
+            let _ = PIPE_WAKE_STATE.compare_exchange(3, 5, Ordering::AcqRel, Ordering::Acquire);
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    PIPE_WAKE_HOLD_TID.store(0, Ordering::Release);
+}
+
 /// sys_read - Read from a file descriptor
 ///
 /// Supports stdin (with blocking), stdout/stderr (error), and pipe read ends.
@@ -882,6 +935,13 @@ fn read_pipe(
                     continue; // Retry read
                 }
 
+                #[cfg(feature = "testing")]
+                if PIPE_WAKE_HOLD_TID.load(Ordering::Acquire) == thread_id {
+                    // Published after the setup race check, so a writer that
+                    // sees 2 makes this reader pass through hold_pipe_wake.
+                    PIPE_WAKE_STATE.store(2, Ordering::Release);
+                }
+
                 // Preemption stays disabled until the signal check below has run (#1230):
                 // see `blocking_io::wait_prepared`.
 
@@ -929,6 +989,8 @@ fn read_pipe(
                         break;
                     }
                 }
+                #[cfg(feature = "testing")]
+                hold_pipe_wake(thread_id);
 
                 // Clear blocked state
                 crate::task::scheduler::with_current(|sched| {
@@ -936,8 +998,9 @@ fn read_pipe(
                         thread.blocked_in_syscall = false;
                     }
                 });
+                // A reschedule requested since the wake stays pending for the
+                // syscall return (#1753).
                 reset_quantum();
-                crate::task::scheduler::check_and_clear_need_resched();
 
                 // Continue loop to retry read
                 continue;
@@ -1366,8 +1429,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                 thread.blocked_in_syscall = false;
                             }
                         });
+                        // A reschedule requested since the wake stays pending
+                        // for the syscall return (#1753).
                         reset_quantum();
-                        crate::task::scheduler::check_and_clear_need_resched();
 
                         // Continue loop to retry read
                         continue;
