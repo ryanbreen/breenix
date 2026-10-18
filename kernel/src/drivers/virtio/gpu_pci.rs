@@ -882,43 +882,53 @@ const RESOURCE_WIN_TEX_BASE: u32 = 10;
 /// Maximum number of per-window texture slots.
 const MAX_WIN_TEX_SLOTS: usize = 8;
 
-/// Per-slot backing buffer pointer and length.
-static mut WIN_TEX_BACKING: [(*mut u8, usize); MAX_WIN_TEX_SLOTS] =
-    [(core::ptr::null_mut(), 0); MAX_WIN_TEX_SLOTS];
+/// Per-slot physical page addresses and backing length.
+static mut WIN_TEX_BACKING: [(alloc::vec::Vec<u64>, usize); MAX_WIN_TEX_SLOTS] =
+    [const { (alloc::vec::Vec::new(), 0) }; MAX_WIN_TEX_SLOTS];
 /// Width/height of each slot's texture.
 static mut WIN_TEX_DIMS: [(u32, u32); MAX_WIN_TEX_SLOTS] = [(0, 0); MAX_WIN_TEX_SLOTS];
 /// Whether each slot has been initialized.
 static mut WIN_TEX_INITIALIZED: [bool; MAX_WIN_TEX_SLOTS] = [false; MAX_WIN_TEX_SLOTS];
 
-/// A zeroed window texture backing of `size` bytes in physically contiguous
-/// page frames, reached through the direct map. Window textures are up to a
-/// screen each and eight are made at init, so they come from the frame
-/// allocator rather than the kernel heap, which they would otherwise mostly
-/// fill (eight 1280x960 slots are 39 MB of its 64 MiB).
-fn alloc_window_texture_backing(size: usize) -> Result<*mut u8, &'static str> {
+/// Allocate zeroed texture pages outside the kernel heap. Individual frames
+/// reuse the allocator's free list; DMA attachment accepts scattered pages.
+fn alloc_window_texture_backing(size: usize) -> Result<alloc::vec::Vec<u64>, &'static str> {
     use crate::memory::frame_allocator;
     let pages = size.div_ceil(4096);
     let mut frames = alloc::vec::Vec::new();
     frames
         .try_reserve_exact(pages)
         .map_err(|_| "no heap for a window texture's frame list")?;
-    frames.resize(pages, None);
-    let base = frame_allocator::allocate_contiguous_frames(pages, &mut frames)
-        .ok_or("no contiguous frames for a window texture backing")?;
-    let ptr = phys_to_kern_virt(base.start_address().as_u64()) as *mut u8;
-    // SAFETY: the frames were just claimed for this backing and are direct-mapped.
-    unsafe { core::ptr::write_bytes(ptr, 0, pages * 4096) };
-    Ok(ptr)
+    for _ in 0..pages {
+        let Some(frame) = frame_allocator::allocate_frame() else {
+            free_window_texture_backing(&frames);
+            return Err("no frames for a window texture backing");
+        };
+        let phys = frame.start_address().as_u64();
+        // SAFETY: this frame was just claimed and is direct-mapped.
+        unsafe { core::ptr::write_bytes(phys_to_kern_virt(phys) as *mut u8, 0, 4096) };
+        frames.push(phys);
+    }
+    Ok(frames)
 }
 
-/// Return a backing from `alloc_window_texture_backing` to the frame allocator.
-fn free_window_texture_backing(ptr: *mut u8, size: usize) {
+/// Return backing pages, including a partial allocation on failure.
+fn free_window_texture_backing(pages: &[u64]) {
     use crate::memory::arch_stub::{PhysAddr, PhysFrame};
-    let base = virt_to_phys(ptr as u64);
-    for page in 0..size.div_ceil(4096) as u64 {
+    for &phys in pages {
         crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
-            PhysAddr::new(base + page * 4096),
+            PhysAddr::new(phys),
         ));
+    }
+}
+
+fn clean_window_texture_backing(pages: &[u64], len: usize) {
+    for (page, &phys) in pages.iter().enumerate() {
+        let remaining = len.saturating_sub(page * 4096);
+        if remaining == 0 {
+            break;
+        }
+        dma_cache_clean(phys_to_kern_virt(phys) as *const u8, remaining.min(4096));
     }
 }
 
@@ -943,7 +953,11 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
         if width <= old_w && height <= old_h {
             return Ok(res_id);
         }
-        // Window grew beyond existing texture — destroy and recreate at new size
+    }
+    // Recreate a grown texture or a slot whose previous window was destroyed.
+    // clear_window_texture_slot defers this work out of process cleanup.
+    if unsafe { !WIN_TEX_BACKING[slot].0.is_empty() } {
+        let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
         crate::serial_println!(
             "[virgl-win-tex] Resize: slot={} {}x{} -> {}x{}",
             slot,
@@ -952,21 +966,19 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
             width,
             height
         );
-        with_device_state(|state| virgl_detach_backing_cmd(state, res_id)).ok();
-        with_device_state(|state| virgl_resource_unref_cmd(state, res_id)).ok();
-        let (old_ptr, old_size) = unsafe { WIN_TEX_BACKING[slot] };
-        if !old_ptr.is_null() && old_size > 0 {
-            free_window_texture_backing(old_ptr, old_size);
-        }
+        with_device_state(|state| virgl_detach_backing_cmd(state, res_id))?;
+        with_device_state(|state| virgl_resource_unref_cmd(state, res_id))?;
+        let (old_pages, _) = unsafe { &WIN_TEX_BACKING[slot] };
+        free_window_texture_backing(old_pages);
         unsafe {
             WIN_TEX_INITIALIZED[slot] = false;
-            WIN_TEX_BACKING[slot] = (core::ptr::null_mut(), 0);
+            WIN_TEX_BACKING[slot] = (alloc::vec::Vec::new(), 0);
             WIN_TEX_DIMS[slot] = (0, 0);
         }
     }
 
     let tex_size = (width as usize) * (height as usize) * 4;
-    let ptr = alloc_window_texture_backing(tex_size)?;
+    let pages = alloc_window_texture_backing(tex_size)?;
 
     // RESOURCE_CREATE_3D — same bind flags as COMPOSITE_TEX
     with_device_state(|state| {
@@ -984,17 +996,17 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
     })?;
 
     // ATTACH_BACKING (paged scatter-gather)
-    with_device_state(|state| virgl_attach_backing_paged(state, res_id, ptr, tex_size))?;
+    with_device_state(|state| virgl_attach_backing_from_pages(state, res_id, &pages, tex_size))?;
 
     // CTX_ATTACH_RESOURCE
     with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
 
     // Prime with TRANSFER_TO_HOST_3D
-    dma_cache_clean(ptr, tex_size);
+    clean_window_texture_backing(&pages, tex_size);
     with_device_state(|state| transfer_to_host_3d(state, res_id, 0, 0, width, height, width * 4))?;
 
     unsafe {
-        WIN_TEX_BACKING[slot] = (ptr, tex_size);
+        WIN_TEX_BACKING[slot] = (pages, tex_size);
         WIN_TEX_DIMS[slot] = (width, height);
         WIN_TEX_INITIALIZED[slot] = true;
     }
@@ -1014,11 +1026,8 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
 /// This prevents stale texture data from bleeding into new windows
 /// that reuse the same slot index.
 ///
-/// NOTE: Does NOT zero the backing buffer here. This function is called from
-/// remove_for_pid() which runs in the process cleanup path (including from
-/// context_switch.rs). Zeroing a large buffer (e.g. 750×550×4 = 1.6MB) in
-/// that path corrupts other threads' contexts due to timing/memory issues.
-/// The backing buffer is zeroed lazily in create_window_texture's reuse path.
+/// Called from process cleanup (including context_switch.rs). Defer backing
+/// release and replacement to create_window_texture to keep that path short.
 pub fn clear_window_texture_slot(slot: usize) {
     if slot >= MAX_WIN_TEX_SLOTS {
         return;
@@ -1030,7 +1039,7 @@ pub fn clear_window_texture_slot(slot: usize) {
 }
 
 /// Upload dirty window pixels to GPU texture via TRANSFER_TO_HOST_3D.
-/// Copies scattered MAP_SHARED pages to contiguous backing, then uploads.
+/// Copies MAP_SHARED pages to scattered texture backing, then uploads.
 fn upload_window_texture(
     slot: usize,
     width: u32,
@@ -1041,8 +1050,9 @@ fn upload_window_texture(
     if slot >= MAX_WIN_TEX_SLOTS {
         return Err("slot out of range");
     }
-    let (backing_ptr, backing_len) = unsafe { WIN_TEX_BACKING[slot] };
-    if backing_ptr.is_null() {
+    let (backing_pages, backing_len) = unsafe { &WIN_TEX_BACKING[slot] };
+    let backing_len = *backing_len;
+    if backing_pages.is_empty() {
         return Err("backing not allocated");
     }
 
@@ -1070,12 +1080,17 @@ fn upload_window_texture(
                 break;
             }
             let page_off = src_off % 4096;
-            let chunk = (4096 - page_off).min(row_bytes - copied_in_row);
+            let dst_off = row * dst_stride + copied_in_row;
+            let dst_page_off = dst_off % 4096;
+            let dst = phys_to_kern_virt(backing_pages[dst_off / 4096]) as *mut u8;
+            let chunk = (4096 - page_off)
+                .min(4096 - dst_page_off)
+                .min(row_bytes - copied_in_row);
             let virt = phys_to_kern_virt(page_phys_addrs[page_idx]);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     (virt as *const u8).add(page_off),
-                    backing_ptr.add(row * dst_stride + copied_in_row),
+                    dst.add(dst_page_off),
                     chunk,
                 );
             }
@@ -1090,7 +1105,7 @@ fn upload_window_texture(
         .saturating_add(row_bytes)
         .min(backing_len);
     if clean_len > 0 {
-        dma_cache_clean(backing_ptr, clean_len);
+        clean_window_texture_backing(backing_pages, clean_len);
     }
     with_device_state(|state| {
         transfer_to_host_3d(state, res_id, 0, 0, width, height, tex_width * 4)
@@ -1190,7 +1205,7 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         let tex_size = (max_w as usize) * (max_h as usize) * 4;
         let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
-        let ptr = alloc_window_texture_backing(tex_size)?;
+        let pages = alloc_window_texture_backing(tex_size)?;
 
         with_device_state(|state| {
             virgl_resource_create_3d_cmd(
@@ -1205,15 +1220,15 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
                 1,
             )
         })?;
-        with_device_state(|state| virgl_attach_backing_paged(state, res_id, ptr, tex_size))?;
+        with_device_state(|state| virgl_attach_backing_from_pages(state, res_id, &pages, tex_size))?;
         with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
-        dma_cache_clean(ptr, tex_size);
+        clean_window_texture_backing(&pages, tex_size);
         with_device_state(|state| {
             transfer_to_host_3d(state, res_id, 0, 0, max_w, max_h, max_w * 4)
         })?;
 
         unsafe {
-            WIN_TEX_BACKING[slot] = (ptr, tex_size);
+            WIN_TEX_BACKING[slot] = (pages, tex_size);
             WIN_TEX_DIMS[slot] = (max_w, max_h);
             WIN_TEX_INITIALIZED[slot] = true;
         }
@@ -3877,7 +3892,6 @@ fn attach_backing_simple(
 /// Unlike `virgl_attach_backing_paged` which computes sequential physical addresses
 /// from a contiguous kernel allocation, this takes a list of arbitrary physical page
 /// addresses — used for MAP_SHARED window buffers where pages may not be contiguous.
-#[allow(dead_code)]
 fn virgl_attach_backing_from_pages(
     state: &mut GpuPciDeviceState,
     resource_id: u32,
