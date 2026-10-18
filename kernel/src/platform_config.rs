@@ -786,17 +786,27 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         let runtime = config.runtime_regions[..runtime_count]
             .iter()
             .map(|r| PhysRange::from_base_size(r.base, r.pages.saturating_mul(4096)));
-        let ranges = phys_memory::frame_pool(
+        let mut ranges = phys_memory::frame_pool(
             config.ram_regions[..region_count]
                 .iter()
                 .map(|r| PhysRange::from_base_size(r.base, r.size)),
-            kernel_fixed_ranges(offset).chain(runtime),
+            runtime,
             direct_map_ram_window(offset),
         );
-        FRAME_POOL.call_once(|| FramePool {
-            ranges,
-            source: FramePoolSource::UefiMemoryMap,
-        });
+        // Heap and stack storage is written directly, outside the frame allocator.
+        // Admit it only from conventional RAM too, before excluding it from frames.
+        use crate::arch_impl::aarch64::constants::HHDM_BASE;
+        let heap_start = crate::memory::heap::HEAP_START - HHDM_BASE + offset;
+        let stacks_end = crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE + offset;
+        let pool = if ranges.as_slice().iter().any(|r| r.start <= heap_start && r.end >= stacks_end) {
+            for fixed in kernel_fixed_ranges(offset) {
+                ranges.subtract(fixed);
+            }
+            FramePool { ranges, source: FramePoolSource::UefiMemoryMap }
+        } else {
+            unavailable_pool("heap and stack storage is not conventional RAM")
+        };
+        FRAME_POOL.call_once(|| pool);
     } else {
         FRAME_POOL.call_once(|| {
             unavailable_pool("the loader passed no conventional RAM regions")
