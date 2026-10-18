@@ -85,8 +85,6 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
     slot.store(next, Ordering::Relaxed);
     if !Modifiers(previous).meta() && Modifiers(next).meta() {
         SUPER_TAPS.fetch_add(1, Ordering::Release);
-        #[cfg(target_arch = "aarch64")]
-        crate::syscall::graphics::wake_compositor_if_waiting();
     }
     let modifiers = Modifiers(
         HELD.iter()
