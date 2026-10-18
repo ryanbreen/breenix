@@ -4,10 +4,11 @@
 //! takes the serial port's or the log ring's lock. A notice lets such a path
 //! compose its line where the event happens, with no lock, no allocation and
 //! no formatting machinery, and post it to a lock-free list. The list is
-//! written out from thread context only, never from an interrupt path: on x86
+//! written out by thread-context drain points: on x86
 //! by the next log line a thread writes and by the idle loop's log drain
-//! (`serial`), on aarch64 by the next record a thread writes to the UART and
-//! by the idle loop (`serial_line`). Each line goes out whole, newline
+//! (`serial`), on aarch64 by the next logged record a thread writes to the UART
+//! and by the idle loop (`serial_line`). Raw records do not drain notices.
+//! Each line goes out whole, newline
 //! included, on a line of its own.
 //!
 //! The list links [`Node`]s, which never move while posted. A static node is

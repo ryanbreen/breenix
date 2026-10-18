@@ -135,6 +135,13 @@ def checkout(canonical, tree, sha, lane):
         shutil.rmtree(tree)
         clone()
         run(['git', '-C', str(tree), 'checkout', '--detach', '--force', sha])
+    # The boot's effort target guard reads origin's branches from this tree. A shared clone's
+    # origin is the canonical cache, whose local branches the gate does not update: a stale local
+    # main there makes main's own history look like unmerged effort work. The guard must see
+    # the project's origin instead.
+    url = subprocess.run(['git', '-C', str(canonical), 'remote', 'get-url', 'origin'], check=True,
+                         text=True, stdout=subprocess.PIPE).stdout.strip()
+    run(['git', '-C', str(tree), 'remote', 'set-url', 'origin', url])
     run(['git', '-C', str(tree), 'clean', '-fd', '-e', 'rust-fork-real'])
 
 
