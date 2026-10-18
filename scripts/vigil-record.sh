@@ -4,6 +4,7 @@
 #
 #   scripts/vigil-record.sh start PLATFORM MODE SUITE SERIAL [USER_SERIAL] [PROFILE] [ID] [COMMIT]   prints the boot id
 #   scripts/vigil-record.sh finish ID EXIT_STATUS
+# BREENIX_VIGIL_ARCH is the launcher's explicit guest architecture: aarch64 or x86_64.
 #
 # PLATFORM is qemu, parallels, vmware, beast or metal; MODE is a boot mode (suite when SUITE is set); empty arguments are
 # omitted; COMMIT defaults to this checkout's HEAD. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
@@ -14,6 +15,11 @@ set -u
 [ "$(uname -s)" = Darwin ] || exit 0
 [ -z "${VIGIL_BOOT_ID:-}" ] || exit 0
 
+# Each launcher declares its guest; the platform alone cannot distinguish local ARM64 and x86 QEMU.
+arch=${BREENIX_VIGIL_ARCH:-}
+if [ -z "$arch" ]; then
+    case "${2:-}" in beast|metal) arch=x86_64 ;; *) arch=aarch64 ;; esac
+fi
 CLI=
 for candidate in "${VIGIL_CLI:-}" "$HOME/.local/bin/vigil-cli" /usr/local/bin/vigil-cli "$HOME/fun/code/vigil/.build/release/vigil-cli"; do
     [ -n "$candidate" ] && [ -x "$candidate" ] || continue
@@ -21,18 +27,33 @@ for candidate in "${VIGIL_CLI:-}" "$HOME/.local/bin/vigil-cli" /usr/local/bin/vi
     printf '%s' "$usage" | grep -q 'breenix start' || continue
     # A boot with a processor count needs a vigil-cli that records it; an older one is skipped, never used untagged.
     [ -z "${BREENIX_VIGIL_CPUS:-}" ] || printf '%s' "$usage" | grep -q -- '--cpus' || continue
+    # Never file local x86 as ARM64 through an older recorder.
+    [ "$arch" != x86_64 ] || [ "${2:-}" != qemu ] || printf '%s' "$usage" | grep -q -- '--arch' || continue
     CLI=$candidate; break
 done
 [ -n "$CLI" ] || exit 0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Capture tracked changes before the boot, with the same retained stash rule Vigil's own Run uses.
+provenance() {
+    dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null) || return 1
+    dirty=$(printf '%s' "$dirty" | awk 'NF { n++ } END { print n+0 }')
+    snapshot=${BREENIX_VIGIL_SNAPSHOT:-}
+    if [ "$dirty" -gt 0 ] && [ -z "$snapshot" ]; then
+        snapshot=$(git -C "$ROOT" stash create 2>/dev/null) || return 1
+        [ -n "$snapshot" ] || return 1
+        git -C "$ROOT" update-ref "refs/vigil/boots/$id" "$snapshot" || return 1
+    fi
+}
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
-        dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d ' ')
-        args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
+        [ -n "$id" ] || id=$(date -u +%Y%m%dT%H%M%SZ)-$platform
+        provenance || exit 0
+        args=(breenix start --arch "$arch" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
+        [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
         elif [ -n "$mode" ] && [ "$mode" != default ]; then
@@ -51,7 +72,12 @@ case "${1:-}" in
     record)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
         started=${10:-}; ended=${11:-}; status=${12:-1}
-        args=(breenix record --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --serial-user "$user" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
+        [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 1
+        provenance || exit 1
+        args=(breenix record --arch "$arch" --dirty "$dirty" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
+        [ -z "$user" ] || args+=(--serial-user "$user")
+        [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
+        [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it

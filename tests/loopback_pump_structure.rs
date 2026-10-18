@@ -1039,8 +1039,8 @@ fn validate_x86_gate_requires_the_loopback_regression_tests(source: &str) -> Res
 }
 
 fn validate_x86_direct_loopback_gates(main: &str, registry: &str) -> Result<(), String> {
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack")
-        .ok_or_else(|| "missing kernel_main_on_kernel_stack".to_string())?;
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked")
+        .ok_or_else(|| "missing kernel_main_on_kernel_stack_checked".to_string())?;
     let cohort_call = kernel_main
         .find("teardown::run_x86_retire_cohort_gate();")
         .ok_or_else(|| "missing direct x86 retire-cohort gate call".to_string())?;

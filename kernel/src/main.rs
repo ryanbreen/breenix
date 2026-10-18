@@ -1169,9 +1169,6 @@ fn launch_x86_production_init(
             }
         })
     } else { None };
-    if console_mode == Some("console") {
-        kernel::drivers::xhci::console_session_starting();
-    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1209,7 +1206,29 @@ fn launch_x86_production_init(
         reserved_collisions
     );
 
-    task::scheduler::spawn(thread);
+    if console_mode == Some("console") {
+        // Boot holds a scheduling brake here. Wait on an ordinary thread so
+        // the xHCI worker can finish before init can start getty.
+        // Keep ownership outside the closure until its creation succeeds: a
+        // failed kthread_run drops the closure, but init still needs to run.
+        let pending = alloc::sync::Arc::new(spin::Mutex::new(Some(thread)));
+        let startup = pending.clone();
+        if task::kthread::kthread_run(move || {
+            let thread = startup.lock().take().expect("console init thread missing");
+            if kernel::drivers::xhci::wait_console_ready() {
+                task::scheduler::spawn(thread);
+            } else {
+                log::error!("[console] keyboard preparation failed; starting init for serial login");
+                task::scheduler::spawn(thread);
+            }
+        }, "console-start").is_err() {
+            let thread = pending.lock().take().expect("console init thread missing");
+            log::error!("[console] cannot create startup thread; starting init for serial login");
+            task::scheduler::spawn(thread);
+        }
+    } else {
+        task::scheduler::spawn(thread);
+    }
 
     Ok(())
 }
@@ -1296,11 +1315,17 @@ fn x86_boot_target() -> Option<X86BootTarget> {
 fn x86_console_mode() -> Option<&'static str> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
         Some("shell") => Some("shell"),
-        Some("console") => Some("console"),
+        Some("console") => {
+            kernel::drivers::xhci::console_session_starting(false);
+            Some("console")
+        },
         None | Some("") => match kernel::boot::target::read() {
             Ok(Some(kernel::boot::target::Target::Shell)) => Some("shell"),
-            Ok(Some(kernel::boot::target::Target::Console { idle_minutes })) => {
+            Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 kernel::tty::input_clock::start(idle_minutes);
+                kernel::drivers::xhci::console_session_starting(
+                    kernel::boot::console_intent::replug_or(replug),
+                );
                 Some("console")
             },
             _ => None,
@@ -1474,11 +1499,10 @@ fn kernel_main_continue() -> ! {
 
         let mut failures = test_framework::run_all_tests();
 
-        // ProcessContext is the last stage with registered x86 tests, and this
-        // is the only x86 context that can dispatch it: the stage's tests need
-        // preemption (they run in a joined kthread like every other stage), and
-        // the boot thread has none left after the `preempt_disable()` below.
-        // Its precondition holds here - `kernel_main_on_kernel_stack` has
+        // Dispatch ProcessContext while the boot thread is preemptible: the
+        // staged executor joins its kthreads, which requires preemption. The
+        // `preempt_disable()` below prevents those joins later in boot.
+        // Its precondition holds here - `kernel_main_on_kernel_stack_checked` has
         // already created and retired user processes by this point, so the
         // process manager is populated and the boot thread is a live scheduler
         // thread. The Userspace stage stays marker-only on both architectures:

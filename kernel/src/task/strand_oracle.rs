@@ -80,6 +80,50 @@ static INJECT_ARMED: AtomicU64 = AtomicU64::new(INJECT_IDLE);
 static INJECT_DEADLINE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static INJECT_REPORT_EMITTED: AtomicBool = AtomicBool::new(false);
+/// Per leg (A, B), while it is armed: selections that passed over the Ready
+/// victim because they were not an idle CPU's inline schedule, and idle
+/// inline schedules. A leg that is not exercised is reported with these.
+#[cfg(target_arch = "aarch64")]
+static WITHHELD: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+#[cfg(target_arch = "aarch64")]
+static IDLE_INLINE_SELECTS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+/// The armed leg's counter index. Before arming, while a leg is scored and
+/// once the marker is out, no leg is armed and the victim schedules normally.
+#[cfg(target_arch = "aarch64")]
+fn armed_leg() -> Option<usize> {
+    if INJECT_REPORT_EMITTED.load(Ordering::Relaxed) {
+        return None;
+    }
+    match INJECT_ARMED.load(Ordering::Relaxed) {
+        INJECT_A_ARMED => Some(0),
+        INJECT_B_ARMED => Some(1),
+        _ => None,
+    }
+}
+
+/// Withhold an armed victim from selections outside the profile's injection
+/// handoff: idle inline selection by default, the dedicated live driver for
+/// `strand_inject_live_outgoing`. The victim remains queued until selected.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn withhold_victim(tid: u64, injection_handoff: bool) -> bool {
+    let victim = VICTIM_TID.load(Ordering::Relaxed);
+    if victim == 0 || tid != victim || injection_handoff {
+        return false;
+    }
+    let Some(leg) = armed_leg() else {
+        return false;
+    };
+    WITHHELD[leg].fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn note_idle_inline_select() {
+    if let Some(leg) = armed_leg() {
+        IDLE_INLINE_SELECTS[leg].fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -562,6 +606,33 @@ fn report_injection() {
         u64::from(leg_b_recovered),
         stranded,
     );
+
+    // A leg left armed at the deadline was not exercised: say which and why.
+    let missed = match state {
+        INJECT_A_ARMED => Some((0, 'A')),
+        INJECT_B_ARMED => Some((1, 'B')),
+        _ => None,
+    };
+    if let Some((leg, name)) = missed {
+        let withheld = WITHHELD[leg].load(Ordering::Relaxed);
+        let idle_inline = IDLE_INLINE_SELECTS[leg].load(Ordering::Relaxed);
+        let reason = if withheld == 0 {
+            "victim_never_ready"
+        } else if cfg!(feature = "strand_inject_live_outgoing") {
+            "live_driver_did_not_inject"
+        } else if idle_inline == 0 {
+            "no_idle_inline_schedule"
+        } else {
+            "idle_inline_schedules_missed_victim"
+        };
+        crate::serial_println!(
+            "[STRAND_INJECT_MISSED:aarch64:leg={}:reason={}:withheld={}:idle_inline_selects={}]",
+            name,
+            reason,
+            withheld,
+            idle_inline,
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -570,10 +641,7 @@ fn strand_victim() {
         return;
     };
     VICTIM_TID.store(tid, Ordering::Release);
-    let start = monotonic_now_ms();
-    let deadline = start.saturating_add(INJECT_DEADLINE_MS);
-    let report_cap_ms = start.saturating_add(INJECT_REPORT_CAP_MS);
-    INJECT_DEADLINE.store(deadline, Ordering::Release);
+    let report_cap_ms = monotonic_now_ms().saturating_add(INJECT_REPORT_CAP_MS);
 
     // The old yield_current() + schedule_from_kernel() +
     // arch_halt_with_interrupts() body drove the inline schedule path at roughly
@@ -705,6 +773,13 @@ pub fn start() {
             // the first dispatch is the event being tested.
             VICTIM_TID.store(victim.tid(), Ordering::Release);
             VICTIM_PROGRESS.store(0, Ordering::Release);
+            // The firing deadline runs from arming, not from the victim's
+            // first dispatch, which is withheld for the leg, so a victim that
+            // does not run before the deadline is still reported.
+            INJECT_DEADLINE.store(
+                monotonic_now_ms().saturating_add(INJECT_DEADLINE_MS),
+                Ordering::Release,
+            );
             INJECT_ARMED.store(INJECT_A_ARMED, Ordering::Release);
             #[cfg(feature = "strand_inject_live_outgoing")]
             crate::task::ret_zero_pc_oracle::note_live_outgoing_armed();

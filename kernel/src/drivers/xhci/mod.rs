@@ -35,19 +35,37 @@ static OP: AtomicUsize = AtomicUsize::new(0);
 static IR: AtomicUsize = AtomicUsize::new(0);
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 static WORK: Work = Work::new();
-/// A thread-context request for the worker (the console session's replug
-/// exercise). It wakes the worker without claiming hardware work.
+/// A thread-context console request, serviced after initial keyboard attach.
+static CONSOLE_START: AtomicBool = AtomicBool::new(false);
 static REPLUG: AtomicBool = AtomicBool::new(false);
+static AVAILABLE: AtomicBool = AtomicBool::new(false);
+static FAILED: AtomicBool = AtomicBool::new(false);
+static CONSOLE_READY: crate::task::completion::Completion = crate::task::completion::Completion::new();
 
-/// Init is starting the console target: exercise detach and reattach of each
-/// boot keyboard once, before anyone types (`keyboard::replug_exercise`).
-pub fn console_session_starting() {
+/// Prepare input before init starts getty. Only measured boot targets request
+/// the destructive replug exercise; ordinary sessions only arm input markers.
+pub fn console_session_starting(replug: bool) {
+    if !AVAILABLE.load(Ordering::Acquire) {
+        CONSOLE_READY.complete(1);
+        return;
+    }
+    REPLUG.store(replug, Ordering::Relaxed);
     // Store, then read the waiter: the worker publishes, then checks the flag.
-    REPLUG.store(true, Ordering::SeqCst);
+    CONSOLE_START.store(true, Ordering::SeqCst);
     let tid = WORK.waiter();
     if tid != 0 {
         scheduler::wake_waitqueue_thread(tid);
     }
+}
+
+/// Wait from the startup kthread with preemption disabled so Completion uses
+/// its sleeping path. Report failure or timeout so the caller can retain
+/// serial login when USB input is unavailable.
+pub fn wait_console_ready() -> bool {
+    crate::per_cpu::preempt_disable();
+    let completed = CONSOLE_READY.wait_timeout_uninterruptible(1, 60 * SECOND);
+    crate::per_cpu::preempt_enable();
+    matches!(completed, Ok(true)) && !FAILED.load(Ordering::Acquire)
 }
 
 fn rd(base: usize, offset: usize) -> u32 {
@@ -280,14 +298,19 @@ pub fn init() {
             crate::task::softirqd::SoftirqType::IrqPoll,
             deferred_wake,
         );
+        AVAILABLE.store(true, Ordering::Release);
         if let Err(error) = kthread::kthread_run(
             move || {
                 if let Err(error) = start(device) {
+                    FAILED.store(true, Ordering::Release);
+                    CONSOLE_READY.complete(1);
                     log::error!("[xhci] FAILED: {error}");
                 }
             },
             "xhci",
         ) {
+            FAILED.store(true, Ordering::Release);
+            CONSOLE_READY.complete(1);
             log::error!("[xhci] FAILED: cannot create worker: {error:?}");
         }
     } else {
@@ -701,7 +724,7 @@ impl Controller {
     /// `requests` is set, a thread-context request arrives (false).
     fn wait_work(&self, deadline: Option<u64>, requests: bool) -> Result<bool, &'static str> {
         let tid = scheduler::current_thread_id().ok_or("worker has no thread identity")?;
-        let requested = || requests && REPLUG.load(Ordering::SeqCst);
+        let requested = || requests && CONSOLE_START.load(Ordering::SeqCst);
         loop {
             WORK.publish(tid);
             if WORK.take() {

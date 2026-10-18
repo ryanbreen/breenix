@@ -761,7 +761,7 @@ fn main() {
             // Color based on state
             if state_bytes == b"Running" {
                 emit_str("\x1b[32m"); // Green
-            } else if state_bytes == b"Blocked" {
+            } else if state_bytes == b"Blocked" || state_bytes == b"Disk sleep" {
                 emit_str("\x1b[33m"); // Yellow
             }
 

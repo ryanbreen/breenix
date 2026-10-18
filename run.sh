@@ -525,7 +525,9 @@ delete_vmware_bundle() {
             echo "WARNING: vmrun deleteVM kept $bundle: $output"
         fi
     else
-        mv "$bundle" "$scratch/" || true
+        # An interrupted setup may have copied disks without writing a VMX.
+        # Leave any other contents in place so reuse fails safely.
+        rm -f "$bundle/boot.vmdk" "$bundle/ext2-data.vmdk"
     fi
     # Fusion removes its known VM files but preserves our ownership marker.
     # Remove only that marker, the window frame we wrote and an empty
@@ -535,6 +537,28 @@ delete_vmware_bundle() {
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
+}
+
+vmware_boot_name() {
+    local identity
+    if [ "${BREENIX_BOOT_NO_QUEUE:-0}" = 1 ]; then
+        # An unqueued boot owns no slot identity and must not reuse its bundle.
+        identity=$(uuidgen) || return $?
+        printf 'breenix-unqueued-%s\n' "$identity"
+    else
+        identity=$(host_slot_number mac-boot) || return $?
+        printf 'breenix-mac-boot-%s\n' "$identity"
+    fi
+}
+
+prune_vmware_inventory() {
+    python3 "$BREENIX_ROOT/scripts/vmware-inventory.py" \
+        || echo "WARNING: could not prune VMware library"
+}
+
+cleanup_vmware_bundle() {
+    delete_vmware_bundle "$VM_BUNDLE"
+    prune_vmware_inventory
 }
 
 # Fusion opens a VM's window at the frame saved in <name>.plist in its bundle and, unless
@@ -594,12 +618,12 @@ finish_vm_boot() {
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
     if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
-        # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
-        # vmware.log stays beside the serial log.
+        # Delete and prune while the slot is still ours. The supervisor keeps
+        # the lease through its final VM stop, so it cannot stop the next boot.
         cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
-        host_slot_release mac-boot
         delete_vmware_bundle "$VM_BUNDLE"
     fi
+    [ "$PARALLELS" = true ] || prune_vmware_inventory
     exit "$status"
 }
 
@@ -1054,6 +1078,7 @@ if [ "$VMWARE" = true ]; then
         echo "ERROR: vmrun not found. Is VMware Fusion installed?"
         exit 1
     fi
+    prune_vmware_inventory
 
     # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
     # disconnected, even when the VMX requests a connected adapter.
@@ -1188,16 +1213,25 @@ if [ "$VMWARE" = true ]; then
     echo ""
     echo "--- Configuring VMware VM ---"
 
-    # Exclusive creation prevents clock rollback or name collisions from
-    # granting cleanup ownership of another VM. Never sweep unowned bundles.
-    VM_NAME="breenix-$(date +%s)-$(uuidgen)"
+    # One library identity per leased slot, including after a crashed run.
+    # The supervisor refuses a slot number unless this session holds its lease.
+    VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
+    if [ -d "$VM_BUNDLE" ] && [ ! -L "$VM_BUNDLE" ] \
+        && [ -f "$VM_BUNDLE/.breenix-run-owner" ] \
+        && [ "$(cat "$VM_BUNDLE/.breenix-run-owner")" = "$VM_NAME" ]; then
+        VM_BUNDLE_OWNED=true
+        delete_vmware_bundle "$VM_BUNDLE"
+        VM_BUNDLE_OWNED=false
+    fi
+    # Exclusive creation fails if a running, unowned or unknown-content bundle
+    # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
     echo "VM name: $VM_NAME"
-    trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
+    trap cleanup_vmware_bundle EXIT
     trap 'exit 130' INT
     trap 'exit 129' HUP
     trap 'exit 143' TERM
