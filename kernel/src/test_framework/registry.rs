@@ -9281,7 +9281,8 @@ fn test_tty_foreground_pgrp() -> TestResult {
         tty.set_foreground_pgrp(live_pid.as_u64());
         let sigint = crate::signal::constants::SIGINT;
         let pending = |pid| {
-            crate::process::manager()
+            let manager = crate::process::manager();
+            manager
                 .as_ref()
                 .and_then(|manager| manager.get_process(pid))
                 .is_some_and(|row| row.signals.is_pending(sigint))
