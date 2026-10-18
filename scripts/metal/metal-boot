@@ -1144,12 +1144,12 @@ def marker_matches(spec, line, input_kind=None):
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
     """Track each measured milestone in its own print order, including delayed kernel producers. Milestones in
-    the definition select which boot shapes can measure them. A stage tagged with an input (the USB keyboard)
+    the definition select which boot shapes and modes can measure them. A stage tagged with an input (the USB keyboard)
     is required only of a boot whose input is that one; the scorer still counts it, unreached, for any other."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
     groups = []
     for milestone in metal.get('milestones', []):
-        if milestone.get('stub') or not metal_score.measures(milestone, shape):
+        if milestone.get('stub') or not metal_score.measures(milestone, shape, mode):
             continue
         lists = milestone.get('stages', {})
         listed = lists.get(mode, lists.get(metal['gateArch'], []) if milestone.get('kernel') else [])
@@ -1172,10 +1172,10 @@ def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
 def final_marker(metal, mode, catalog, shape='ramdisk', input_kind=None):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
     proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
-    milestone excluded by `bootShapes` cannot be measured by this boot."""
+    milestone excluded by `bootShapes` or `bootModes` cannot be measured by this boot."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
     milestones = [milestone for milestone in reversed(metal.get('milestones', []))
-                  if not milestone.get('stub') and metal_score.measures(milestone, shape)]
+                  if not milestone.get('stub') and metal_score.measures(milestone, shape, mode)]
     scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
     scoped = [listed for listed in scoped if listed]
     if not scoped:
