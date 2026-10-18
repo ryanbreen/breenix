@@ -83,13 +83,14 @@ fn run() -> Result<(), String> {
     let mut envp: Vec<*const u8> = environment.iter().map(|s| s.as_ptr().cast()).collect();
     envp.push(core::ptr::null());
     for sig in [signal::SIGINT, signal::SIGQUIT, signal::SIGTSTP] { check(signal::sigaction(sig, Some(&signal::Sigaction::default()), None))?; }
+    // The input-provenance report is root-only: make it before dropping privilege.
+    check(termios::console_input_proof(Fd::STDIN, 2))?;
     if unsafe { setgroups(0, core::ptr::null()) } != 0 { return Err("setgroups failed".into()); }
     if unsafe { setgid(gid) } != 0 { return Err("setgid failed".into()); }
     if unsafe { setuid(uid) } != 0 { return Err("setuid failed".into()); }
     check(process::chdir(home.as_bytes_with_nul()))?;
     let arg0 = check(CString::new(format!("-{}", fields[6].rsplit('/').next().ok_or("invalid shell")?)))?;
     let argv = [arg0.as_ptr().cast(), core::ptr::null()];
-    check(termios::console_input_proof(Fd::STDIN, 2))?;
     check(process::execve(shell.as_bytes_with_nul(), argv.as_ptr(), envp.as_ptr()))?;
     Ok(())
 }
