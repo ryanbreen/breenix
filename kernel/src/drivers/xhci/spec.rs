@@ -54,6 +54,59 @@ impl Producer {
             false
         }
     }
+    /// Where the next TRB goes, and its cycle bit, in a ring at `base`: the
+    /// Set TR Dequeue Pointer target that skips the TDs already queued.
+    pub fn next(&self, base: u64) -> (u64, bool) {
+        (base + (self.index * 16) as u64, self.cycle)
+    }
+}
+
+/// USB 2.0 9.2.6.3: after SET_ADDRESS's Status stage the device has 2 ms
+/// before it must accept requests at its new address. xHCI 4.6.5 leaves timing
+/// that interval, after Address Device completes, to software.
+pub const SET_ADDRESS_RECOVERY_NS: u64 = 2_000_000;
+/// Attempts at one EP0 request, the first included.
+pub const EP0_ATTEMPTS: u32 = 3;
+/// The wait before resending a request that halted EP0: the time a device has
+/// to complete a request with no Data stage (USB 2.0 9.2.6.4).
+pub const EP0_RETRY_NS: u64 = 50_000_000;
+
+/// What follows an EP0 control transfer's completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ep0Next {
+    /// Success: the request completed.
+    Done,
+    /// EP0 halted (4.8.3): Reset Endpoint, then Set TR Dequeue Pointer onto
+    /// the next Setup TD (4.6.8), then send the request again after
+    /// `after_ns`. The device clears a protocol stall on that SETUP (USB 2.0
+    /// 8.5.3.4, xHCI 4.10.2.1.2).
+    Retry { after_ns: u64 },
+    /// EP0 halted on the last attempt: recover it, then report the failure.
+    /// The device needs a reset (4.10.2.1.2), which is the caller's.
+    RecoverAndFail,
+    /// The endpoint did not halt; report the completion as it is.
+    Fail,
+}
+
+/// Stall, Babble Detected, USB Transaction Error and Split Transaction Error
+/// halt a running endpoint (4.8.3, completion codes in table 6-90).
+pub fn halts_endpoint(code: u8) -> bool {
+    matches!(code, 3 | 4 | 6 | 36)
+}
+
+/// The step after attempt `attempt` (from 1) of an EP0 request completed with `code`.
+pub fn ep0_next(code: u8, attempt: u32) -> Ep0Next {
+    if code == 1 {
+        Ep0Next::Done
+    } else if !halts_endpoint(code) {
+        Ep0Next::Fail
+    } else if attempt < EP0_ATTEMPTS {
+        Ep0Next::Retry {
+            after_ns: EP0_RETRY_NS,
+        }
+    } else {
+        Ep0Next::RecoverAndFail
+    }
 }
 
 pub struct Consumer {
@@ -334,6 +387,52 @@ mod tests {
         assert_eq!(set_dequeue(5, 1, 0x5010, true).parameter, 0x5011);
         assert_eq!(set_dequeue(5, 1, 0x5010, false).control, (16 << 10) | (1 << 16) | (5 << 24));
         assert_eq!(port_power_off(u32::MAX), 0x0e00_c000);
+    }
+    #[test]
+    fn a_halted_ep0_is_recovered_and_its_request_sent_again() {
+        // A stalled request is resent until the last attempt, which still
+        // recovers EP0 before reporting, so the next request starts clean.
+        assert_eq!(ep0_next(6, 1), Ep0Next::Retry { after_ns: EP0_RETRY_NS });
+        assert_eq!(ep0_next(6, EP0_ATTEMPTS - 1), Ep0Next::Retry { after_ns: EP0_RETRY_NS });
+        assert_eq!(ep0_next(6, EP0_ATTEMPTS), Ep0Next::RecoverAndFail);
+        for code in [3, 4, 36] {
+            assert_eq!(ep0_next(code, 1), Ep0Next::Retry { after_ns: EP0_RETRY_NS });
+        }
+        assert_eq!(ep0_next(1, 1), Ep0Next::Done);
+        assert_eq!(ep0_next(1, EP0_ATTEMPTS), Ep0Next::Done);
+        // A short packet or a TRB error does not halt the endpoint: no
+        // Reset Endpoint, which would fail with Context State Error.
+        assert_eq!(ep0_next(13, 1), Ep0Next::Fail);
+        assert_eq!(ep0_next(5, 1), Ep0Next::Fail);
+        // The recovery interval is USB 2.0's 2 ms, the retry its 50 ms bound.
+        assert_eq!((SET_ADDRESS_RECOVERY_NS, EP0_RETRY_NS), (2_000_000, 50_000_000));
+    }
+    #[test]
+    fn set_dequeue_after_a_stall_skips_the_failed_td_across_the_link() {
+        // A stalled no-data request (Setup, Status) as the last two TRBs
+        // before the Link TRB: the dequeue goes to the ring's start with the
+        // cycle the producer writes there next, so the stale TRBs (old cycle)
+        // are not executed again and the resent Setup TD is.
+        let base = 0x8000;
+        let mut p = Producer::new();
+        while p.index != TRBS - 3 {
+            p.advance();
+        }
+        assert_eq!(p.next(base), (base + (TRBS as u64 - 3) * 16, true));
+        p.advance(); // Setup Stage
+        assert!(p.advance()); // Status Stage, then the Link TRB toggles the cycle
+        let (pointer, cycle) = p.next(base);
+        assert_eq!((pointer, cycle), (base, false));
+        let command = set_dequeue(1, 1, pointer, cycle);
+        assert_eq!(command.parameter, base);
+        assert_eq!(command.control, (16 << 10) | (1 << 16) | (1 << 24));
+        // Mid-ring: the TRB after the failed TD, with DCS set.
+        let mut p = Producer::new();
+        p.advance();
+        p.advance();
+        let (pointer, cycle) = p.next(base);
+        assert_eq!(set_dequeue(3, 1, pointer, cycle).parameter, base + 32 + 1);
+        assert_eq!(reset_endpoint(3, 1).control, (14 << 10) | (1 << 16) | (3 << 24));
     }
     #[test]
     fn work_arriving_at_each_wait_boundary_is_retained() {

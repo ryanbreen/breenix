@@ -6,7 +6,8 @@
 //! interval), 4.6.4 and 4.6.9 (Stop Endpoint, then Disable Slot, then free
 //! the device's structures), 4.6.8, 4.6.10 and 4.10.2.1 (halt recovery),
 //! 4.19 and 5.4.8 (port changes and port power); USB 2.0 9.4; HID 1.11 7.2
-//! and Appendices B and F. Devices behind hubs are not driven: the machine's
+//! and Appendices B and F. A refused configuration is retried on a reset
+//! device (4.10.2.1.2). Devices behind hubs are not driven: the machine's
 //! port census found its keyboard on a root port.
 use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, PORT_CHANGES, REPLUG, SECOND};
 use crate::drivers::hid_boot::{interface, report, RETRY_NS};
@@ -15,6 +16,11 @@ use core::sync::atomic::{fence, Ordering};
 
 /// Interrupt-IN errors in a row after which the keyboard is torn down.
 const ERRORS_BEFORE_TEARDOWN: u32 = 3;
+/// Device resets one attach may use when configuration is still refused
+/// after EP0 recovery.
+const DEVICE_RESETS: u32 = 2;
+/// Detach and reattach rounds in a console boot's replug exercise.
+const REPLUG_ROUNDS: u32 = 10;
 const CCS: u32 = 1;
 const PED: u32 = 1 << 1;
 const PP: u32 = 1 << 9;
@@ -38,8 +44,12 @@ impl Controller {
     /// Configure the keyboards the census enumerated, then serve the
     /// controller: events, port changes, typematic and console delivery.
     pub(super) fn serve(&mut self) -> Result<(), &'static str> {
-        for index in 0..self.devices.len() {
-            self.attach_keyboard(index);
+        // A refused configuration replaces its device, so go by port.
+        let ports: Vec<u8> = self.devices.iter().map(|d| d.port).collect();
+        for port in ports {
+            if let Some(index) = self.devices.iter().position(|d| d.port == port) {
+                self.attach_keyboard(index, 0);
+            }
         }
         loop {
             let deadline = self.next_deadline();
@@ -96,16 +106,39 @@ impl Controller {
         }
     }
 
-    fn attach_keyboard(&mut self, index: usize) {
+    /// Configure an enumerated device's boot keyboard, if it has one. A
+    /// device that still refuses after EP0 recovery has a control endpoint
+    /// the next SETUP did not clear, so it is reset and enumerated again
+    /// (4.10.2.1.2); `resets` counts the resets this attach has used.
+    fn attach_keyboard(&mut self, index: usize, resets: u32) {
         let port = self.devices[index].port;
-        match interface::find(&self.devices[index].config) {
-            Ok(Some(boot)) => {
-                if let Err(error) = self.configure_keyboard(index, boot) {
-                    log::error!("[usb] port {port}: boot keyboard configuration FAILED: {error}");
-                }
+        let boot = match interface::find(&self.devices[index].config) {
+            Ok(Some(boot)) => boot,
+            Ok(None) => return,
+            Err(error) => {
+                log::error!("[usb] port {port}: configuration descriptor unusable: {error}");
+                return;
             }
-            Ok(None) => {}
-            Err(error) => log::error!("[usb] port {port}: configuration descriptor unusable: {error}"),
+        };
+        let Err(error) = self.configure_keyboard(index, boot, resets) else {
+            return;
+        };
+        log::error!("[usb] port {port}: boot keyboard configuration FAILED: {error}");
+        // Give the slot back; the device is not driven in this state.
+        let device = self.devices.remove(index);
+        let slot = device.slot;
+        match self.reclaim(device) {
+            Some(pages) => log::info!(
+                "[usb] port {port}: unconfigured keyboard's slot {slot} disabled, {pages} pages returned"
+            ),
+            None => {
+                log::error!("[usb] port {port}: slot {slot} not reclaimed; its memory stays with the controller");
+                return;
+            }
+        }
+        if resets < DEVICE_RESETS && self.portsc(port) & CCS != 0 {
+            log::warn!("[usb] port {port}: resetting the device ({} of {DEVICE_RESETS})", resets + 1);
+            self.attach(port, resets + 1);
         }
     }
 
@@ -113,6 +146,7 @@ impl Controller {
         &mut self,
         index: usize,
         boot: interface::BootKeyboard,
+        resets: u32,
     ) -> Result<(), &'static str> {
         let (slot, port, speed) = {
             let d = &self.devices[index];
@@ -195,61 +229,55 @@ impl Controller {
         self.queue_report(index)?;
         log::info!(
             "[usb] boot keyboard attached: port={port} path=root speed={speed} bit/s slot={slot} \
-             interface={} endpoint={:#04x} max-packet={} bInterval={} interval={interval} leds={leds}",
+             interface={} endpoint={:#04x} max-packet={} bInterval={} interval={interval} leds={leds} \
+             ep0-recoveries={} device-resets={resets}",
             boot.interface,
             boot.endpoint,
             boot.max_packet,
-            boot.interval
+            boot.interval,
+            self.devices[index].ep0_recoveries
         );
         Ok(())
     }
 
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
-    /// its completion code; a halted EP0 is recovered first (4.10.2.1.2).
+    /// its completion code; a halted EP0 is recovered and the request resent
+    /// (`Controller::ep0_transfer`).
     fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
-        let device = &mut self.devices[index];
-        let slot = device.slot;
-        let mut pointers = Vec::new();
-        match out {
-            None => pointers.push(device.ep0.push(spec::setup_no_data(setup))),
-            Some(byte) => {
-                device.data.put8(0, byte);
-                pointers.push(device.ep0.push(spec::setup_data_out(setup)));
-                pointers.push(device.ep0.push(spec::data_out(device.data.phys, 1)));
+        // The device leaves the list for the transfer so the controller can
+        // wait for it. The list is read by `dispatch`, between transfers.
+        let mut device = self.devices.remove(index);
+        let result = self.ep0_transfer(&mut device, &|device: &mut Device| {
+            let mut pointers = Vec::new();
+            match out {
+                None => pointers.push(device.ep0.push(spec::setup_no_data(setup))),
+                Some(byte) => {
+                    device.data.put8(0, byte);
+                    pointers.push(device.ep0.push(spec::setup_data_out(setup)));
+                    pointers.push(device.ep0.push(spec::data_out(device.data.phys, 1)));
+                }
             }
-        }
-        pointers.push(device.ep0.push(spec::status_in()));
-        self.ring_doorbell(slot, 1);
-        let event = self.event_any(&pointers, 32)?;
-        if event.slot() != slot || (event.control >> 16) & 31 != 1 {
-            return Err("EP0 transfer identity mismatch");
-        }
-        if event.code() != 1 {
-            self.reset_pipe(index, 1, None)?;
-        }
-        Ok(event.code())
+            pointers.push(device.ep0.push(spec::status_in()));
+            pointers
+        });
+        self.devices.insert(index, device);
+        Ok(result?.code())
     }
 
-    /// Recover a halted endpoint: Reset Endpoint (TSP 0), CLEAR_FEATURE
-    /// (ENDPOINT_HALT) for a non-control endpoint, then point its dequeue at
-    /// the next free TRB, past the failed TD (4.6.8, 4.6.10, 4.10.2.1).
-    fn reset_pipe(&mut self, index: usize, dci: u8, endpoint: Option<u8>) -> Result<(), &'static str> {
+    /// Recover a halted interrupt-IN endpoint: Reset Endpoint (TSP 0),
+    /// CLEAR_FEATURE(ENDPOINT_HALT), then point its dequeue at the next free
+    /// TRB, past the failed TD (4.6.8, 4.6.10, 4.10.2.1.1).
+    fn reset_pipe(&mut self, index: usize, dci: u8, endpoint: u8) -> Result<(), &'static str> {
         let slot = self.devices[index].slot;
-        let code = self.command_code(spec::reset_endpoint(slot, dci))?;
-        if code != 1 {
-            log::error!("[usb] slot {slot}: Reset Endpoint {dci} code={code}");
-            return Err("Reset Endpoint failed");
-        }
-        if let Some(endpoint) = endpoint {
-            self.control(index, spec::clear_endpoint_halt(endpoint), None)?;
-        }
-        let device = &self.devices[index];
-        let (pointer, cycle) = match &device.keyboard {
-            Some(pipe) if pipe.dci == dci => pipe.ring.enqueue(),
-            _ => device.ep0.enqueue(),
-        };
-        self.command(spec::set_dequeue(slot, dci, pointer, cycle))?;
-        Ok(())
+        self.reset_endpoint(slot, dci)?;
+        self.control(index, spec::clear_endpoint_halt(endpoint), None)?;
+        let next = self.devices[index]
+            .keyboard
+            .as_ref()
+            .ok_or("device has no keyboard pipe")?
+            .ring
+            .enqueue();
+        self.set_dequeue(slot, dci, next)
     }
 
     /// Send the absolute LED state with Set_Report(Output) (HID 1.11 7.2.2,
@@ -332,7 +360,7 @@ impl Controller {
                     return;
                 }
                 let recovered = self
-                    .reset_pipe(index, dci, Some(endpoint))
+                    .reset_pipe(index, dci, endpoint)
                     .and_then(|()| self.queue_report(index));
                 if let Err(error) = recovered {
                     log::error!("[usb] port {port}: interrupt-IN recovery after code={code} FAILED: {error}");
@@ -378,15 +406,15 @@ impl Controller {
         // Only a connect change attaches: our own port resets also post
         // events, and a device that failed enumeration is not retried.
         if connected && status & CSC != 0 {
-            self.attach(port);
+            self.attach(port, 0);
         }
     }
 
-    fn attach(&mut self, port: u8) {
+    fn attach(&mut self, port: u8, resets: u32) {
         match self.enumerate(port) {
             Ok(()) => {
                 let index = self.devices.len() - 1;
-                self.attach_keyboard(index);
+                self.attach_keyboard(index, resets);
             }
             Err(error) => log::error!("[usb] port {port}: attach FAILED: {error}"),
         }
@@ -453,12 +481,13 @@ impl Controller {
         Some(pages)
     }
 
-    /// Once per console boot: detach and reattach each boot keyboard so the
-    /// teardown and attach paths run on the machine. With port power control
-    /// (HCCPARAMS1.PPC, 5.3.6) the port is powered off and on, and the attach
-    /// arrives as a Port Status Change Event (4.19.3); a powered-off port
-    /// reports no detach (5.4.8), so the teardown is taken here. Without it,
-    /// the port is disabled (PED written 1), torn down and attached again.
+    /// Once per console boot: detach and reattach each boot keyboard
+    /// `REPLUG_ROUNDS` times so the teardown and attach paths run on the
+    /// machine, repeatedly. With port power control (HCCPARAMS1.PPC, 5.3.6)
+    /// the port is powered off and on; a powered-off port reports no detach
+    /// (5.4.8), so the teardown is taken here, and the attach follows the
+    /// connection the port reports once powered (4.19.3). Without it, the
+    /// port is disabled (PED written 1), torn down and attached again.
     fn replug_exercise(&mut self) {
         let ports: Vec<u8> = self
             .devices
@@ -472,32 +501,54 @@ impl Controller {
         }
         let power = self.hcc & (1 << 3) != 0;
         for port in ports {
-            let register = 0x400 + (port as usize - 1) * 16;
-            if power {
-                log::info!("[usb] replug exercise: port {port}: port power off, then on");
-                wr(self.op, register, spec::port_power_off(self.portsc(port)));
-                // 5.4.8: confirm PP before writing it again.
-                if super::until(self.op, register, PP, 0, SECOND).is_err() {
-                    log::error!("[usb] replug exercise: port {port}: PP did not clear");
-                    continue;
+            let mut reattached = 0;
+            for round in 1..=REPLUG_ROUNDS {
+                if !self.devices.iter().any(|d| d.port == port && d.keyboard.is_some()) {
+                    break;
                 }
-                self.port_changed(port);
-                delay(100_000_000);
-                self.port_action(port, PP);
-                if super::until(self.op, register, PP, PP, SECOND).is_err() {
-                    log::error!("[usb] replug exercise: port {port}: PP did not set");
+                self.replug(port, power, round);
+                if self.devices.iter().any(|d| d.port == port && d.keyboard.is_some()) {
+                    reattached += 1;
                 }
-            } else {
-                log::info!("[usb] replug exercise: port {port}: port disable, then reset and attach");
-                self.port_action(port, PED);
-                if super::until(self.op, register, PED, 0, SECOND).is_err() {
-                    log::error!("[usb] replug exercise: port {port}: PED did not clear");
-                    continue;
-                }
-                self.port_changed(port);
-                if self.portsc(port) & CCS != 0 {
-                    self.attach(port);
-                }
+            }
+            log::info!("[usb] replug exercise: port {port}: reattached {reattached} of {REPLUG_ROUNDS} rounds");
+        }
+    }
+
+    fn replug(&mut self, port: u8, power: bool, round: u32) {
+        let register = 0x400 + (port as usize - 1) * 16;
+        if power {
+            log::info!("[usb] replug exercise: port {port}: round {round}: port power off, then on");
+            wr(self.op, register, spec::port_power_off(self.portsc(port)));
+            // 5.4.8: confirm PP before writing it again.
+            if super::until(self.op, register, PP, 0, SECOND).is_err() {
+                log::error!("[usb] replug exercise: port {port}: PP did not clear");
+                return;
+            }
+            self.port_changed(port);
+            delay(100_000_000);
+            self.port_action(port, PP);
+            if super::until(self.op, register, PP, PP, SECOND).is_err() {
+                log::error!("[usb] replug exercise: port {port}: PP did not set");
+                return;
+            }
+            // The device connects once powered; attach it now (CSC), so the
+            // next round finds it. Its queued event then reports no change.
+            if super::until(self.op, register, CCS, CCS, SECOND).is_err() {
+                log::error!("[usb] replug exercise: port {port}: no connection after power on");
+                return;
+            }
+            self.port_changed(port);
+        } else {
+            log::info!("[usb] replug exercise: port {port}: round {round}: port disable, then reset and attach");
+            self.port_action(port, PED);
+            if super::until(self.op, register, PED, 0, SECOND).is_err() {
+                log::error!("[usb] replug exercise: port {port}: PED did not clear");
+                return;
+            }
+            self.port_changed(port);
+            if self.portsc(port) & CCS != 0 {
+                self.attach(port, 0);
             }
         }
     }

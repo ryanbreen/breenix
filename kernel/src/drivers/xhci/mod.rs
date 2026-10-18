@@ -213,10 +213,7 @@ impl Ring {
     }
     /// Where the next TRB goes and its cycle bit, for Set TR Dequeue Pointer.
     fn enqueue(&self) -> (u64, bool) {
-        (
-            self.memory.phys + (self.producer.index * 16) as u64,
-            self.producer.cycle,
-        )
+        self.producer.next(self.memory.phys)
     }
     fn store(&self, index: usize, trb: Trb) {
         let at = index * 16;
@@ -245,6 +242,8 @@ struct Device {
     /// The first configuration's full descriptor, for class drivers.
     config: Vec<u8>,
     keyboard: Option<keyboard::Pipe>,
+    /// EP0 halts recovered since Address Device.
+    ep0_recoveries: u32,
 }
 struct Controller {
     pci: pci::Device,
@@ -895,6 +894,7 @@ impl Controller {
                 speed,
                 config: Vec::new(),
                 keyboard: None,
+                ep0_recoveries: 0,
             })
         })();
         let mut device = match allocated {
@@ -936,6 +936,8 @@ impl Controller {
         self.dcbaa.put64(slot as usize * 8, device.output.phys);
         fence(Ordering::Release);
         self.command(Trb::new(11, device.input.phys, 0, (slot as u32) << 24))?;
+        // The SetAddress() recovery interval is software's to time (4.6.5).
+        delay(spec::SET_ADDRESS_RECOVERY_NS);
         // Read the first eight bytes; FS needs Evaluate Context before
         // the full descriptor if firmware/device chose a different packet size.
         let first = self.descriptor(device, 1, 0, 8)?;
@@ -993,41 +995,97 @@ impl Controller {
         index: u8,
         len: u16,
     ) -> Result<Vec<u8>, &'static str> {
-        // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
-        // The DMA allocation need not itself be 64 KiB aligned, so split there.
-        let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
-        let mut offset = 0usize;
-        while offset < len as usize {
-            let phys = device.data.phys + offset as u64;
-            let count = (len as usize - offset).min(65536 - (phys as usize & 65535));
-            let remaining = len as usize - offset - count;
-            let packets = remaining.div_ceil(device.packet as usize).min(31) as u32;
-            // First is Data Stage; following fragments are Normal TRBs (4.11.2.2).
-            let kind = if offset == 0 { 3 } else { 1 };
-            // ISP reports a short packet at its Data/Normal TRB. Reject it
-            // rather than parsing unwritten bytes from an earlier descriptor.
-            let flags = (1 << 2)
-                | (if remaining != 0 { 1 << 4 } else { 0 })
-                | if offset == 0 { 1 << 16 } else { 0 };
-            pointers.push(device.ep0.push(Trb::new(
-                kind,
-                phys,
-                count as u32 | (packets << 17),
-                flags,
-            )));
-            offset += count;
+        let event = self.ep0_transfer(device, &|device: &mut Device| {
+            // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
+            // The DMA allocation need not itself be 64 KiB aligned, so split there.
+            let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
+            let mut offset = 0usize;
+            while offset < len as usize {
+                let phys = device.data.phys + offset as u64;
+                let count = (len as usize - offset).min(65536 - (phys as usize & 65535));
+                let remaining = len as usize - offset - count;
+                let packets = remaining.div_ceil(device.packet as usize).min(31) as u32;
+                // First is Data Stage; following fragments are Normal TRBs (4.11.2.2).
+                let kind = if offset == 0 { 3 } else { 1 };
+                // ISP reports a short packet at its Data/Normal TRB. Reject it
+                // rather than parsing unwritten bytes from an earlier descriptor.
+                let flags = (1 << 2)
+                    | (if remaining != 0 { 1 << 4 } else { 0 })
+                    | if offset == 0 { 1 << 16 } else { 0 };
+                pointers.push(device.ep0.push(Trb::new(
+                    kind,
+                    phys,
+                    count as u32 | (packets << 17),
+                    flags,
+                )));
+                offset += count;
+            }
+            pointers.push(device.ep0.push(Trb::new(4, 0, 0, 1 << 5))); // OUT status + IOC
+            pointers
+        })?;
+        if event.code() != 1 {
+            log::error!(
+                "[xhci] slot {}: GET_DESCRIPTOR type={kind} completion code={}",
+                device.slot,
+                event.code()
+            );
+            return Err("command/transfer completion failed");
         }
-        let status = device.ep0.push(Trb::new(4, 0, 0, 1 << 5)); // OUT status + IOC
-        pointers.push(status);
-        self.ring_doorbell(device.slot, 1);
-        let event = self.event(&pointers, 32)?;
-        if event.slot() != device.slot
-            || (event.control >> 16) & 31 != 1
-            || event.status & 0x00ff_ffff != 0
-        {
+        if event.status & 0x00ff_ffff != 0 {
             return Err("EP0 transfer identity or length mismatch");
         }
         Ok(device.data.copy(0, len as usize))
+    }
+    /// One control transfer on EP0, its TDs queued by `queue` (which returns
+    /// their TRB addresses). A transfer that halts EP0 is recovered and sent
+    /// again (`spec::ep0_next`); the completion returned is the last attempt's.
+    fn ep0_transfer(
+        &mut self,
+        device: &mut Device,
+        queue: &dyn Fn(&mut Device) -> Vec<u64>,
+    ) -> Result<Trb, &'static str> {
+        let mut attempt = 1;
+        loop {
+            let pointers = queue(device);
+            self.ring_doorbell(device.slot, 1);
+            let event = self.event_any(&pointers, 32)?;
+            if event.slot() != device.slot || (event.control >> 16) & 31 != 1 {
+                return Err("EP0 transfer identity mismatch");
+            }
+            let next = spec::ep0_next(event.code(), attempt);
+            if matches!(next, spec::Ep0Next::Done | spec::Ep0Next::Fail) {
+                return Ok(event);
+            }
+            // 4.6.8: Reset Endpoint, then a Set TR Dequeue Pointer onto the
+            // next Setup TD, past the halted TD's remaining stages.
+            self.reset_endpoint(device.slot, 1)?;
+            self.set_dequeue(device.slot, 1, device.ep0.enqueue())?;
+            device.ep0_recoveries += 1;
+            let spec::Ep0Next::Retry { after_ns } = next else {
+                return Ok(event);
+            };
+            log::warn!(
+                "[usb] slot {}: EP0 halted with code={} on attempt {attempt}; recovered, sending the request again",
+                device.slot,
+                event.code()
+            );
+            delay(after_ns);
+            attempt += 1;
+        }
+    }
+    /// Reset Endpoint with TSP 0, for a halted endpoint (4.6.8).
+    fn reset_endpoint(&mut self, slot: u8, dci: u8) -> Result<(), &'static str> {
+        let code = self.command_code(spec::reset_endpoint(slot, dci))?;
+        if code != 1 {
+            log::error!("[usb] slot {slot}: Reset Endpoint {dci} code={code}");
+            return Err("Reset Endpoint failed");
+        }
+        Ok(())
+    }
+    /// Point a stopped endpoint's dequeue at `next`, a ring's next free TRB (4.6.10).
+    fn set_dequeue(&mut self, slot: u8, dci: u8, next: (u64, bool)) -> Result<(), &'static str> {
+        self.command(spec::set_dequeue(slot, dci, next.0, next.1))?;
+        Ok(())
     }
     fn report_configuration(&self, port: u8, config: &[u8]) -> Result<(), &'static str> {
         let mut offset = 0;

@@ -568,8 +568,15 @@ and the HID Usage Tables; their comments cite the sections.
   interval converted as xHCI 6.2.3.6 gives it), and only after that command succeeds sends SET_CONFIGURATION
   (xHCI 4.3.5), then Set_Protocol(Boot) and Set_Idle with an indefinite duration to that interface number,
   then the LED state with Set_Report(Output). It prints `[usb] boot keyboard attached:` with the port, speed,
-  interface, endpoint and whether the keyboard accepted the LED report. Set_Report is optional for a boot
-  keyboard, so a refusal is reported and EP0 is recovered (Reset Endpoint, then Set TR Dequeue Pointer).
+  interface, endpoint, whether the keyboard accepted the LED report, and the EP0 recoveries and device resets
+  the attach took. Set_Report is optional for a boot keyboard, so a refusal is reported, not fatal.
+- **Address and EP0 recovery.** After Address Device the driver waits the 2 ms SetAddress() recovery interval
+  (USB 2.0 9.2.6.3), which xHCI 4.6.5 leaves to software, before the first request to the new address. A
+  control transfer that halts EP0 (Stall, Transaction Error, Babble or Split Transaction Error) is recovered
+  with Reset Endpoint and a Set TR Dequeue Pointer onto the next Setup TD (xHCI 4.6.8, 4.8.3), then sent again
+  50 ms later (the USB 2.0 9.2.6.4 bound), up to three attempts; the device clears a protocol stall on that
+  SETUP. When the keyboard still refuses its configuration, its slot is disabled and returned, and the device
+  is reset and enumerated again (xHCI 4.10.2.1.2), at most twice.
 - **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
   ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
   leaves the previous keys standing. The US layout follows the Keyboard/Keypad page's usage names; Shift,
@@ -588,9 +595,10 @@ and the HID Usage Tables; their comments cite the sections.
   frame allocator. Key state, modifiers and the repeat go with it. `[usb] boot keyboard detached:` gives the
   page count. When the controller does not complete Disable Slot, the memory stays pinned.
 - **The replug exercise.** On a `console` boot, as init starts the console target, the driver detaches and
-  reattaches each boot keyboard once, so both paths run on the machine: with port power control
-  (HCCPARAMS1.PPC) it powers the port off and on, and the reattach comes through the controller's own
-  connect event; without it, it disables the port and resets it. The `usb-keyboard` milestone's stages are
+  reattaches each boot keyboard ten times, so both paths run on the machine and an intermittent reattach shows:
+  with port power control (HCCPARAMS1.PPC) it powers the port off and on and attaches the connection the port
+  then reports; without it, it disables the port and resets it. `[usb] replug exercise: port <n>: reattached
+  <k> of 10 rounds` closes the exercise. The `usb-keyboard` milestone's stages are
   the attach, the detach and the second attach; its typed-key stages are `input: keyboard` and wait for the
   injector (ruling M2), which a SOL boot's `input: sol` record does not meet.
 - **Hubs.** The machine's census found its keyboard device on a root port, so there is no hub class driver;
