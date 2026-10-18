@@ -282,14 +282,14 @@ fn snapshot(deferred: bool) {
     let tid_overflow = stranded.saturating_sub(stranded_tid_count as u64);
     let seq = SNAPSHOT_SEQ.fetch_add(1, Ordering::Release) + 1;
 
-    let emit = |args| {
+    fn emit(deferred: bool, args: fmt::Arguments) {
         if deferred {
             crate::serial::enqueue_log(args);
         } else {
             crate::serial::_log_print(args);
         }
-    };
-    emit(format_args!(
+    }
+    emit(deferred, format_args!(
         concat!("[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}:waiting={}]", "\n"),
         seq,
         crate::time::get_ticks(),
@@ -302,6 +302,23 @@ fn snapshot(deferred: bool) {
         FactFields(fact_counts()),
         waiting,
     ));
+    let mut cpus = [super::scheduler::DiagCpu::default(); 4];
+    super::scheduler::diag_cpu_snapshot(&mut cpus);
+    for (cpu, d) in cpus.iter().enumerate() {
+        let len = d.name.iter().position(|&b| b == 0).unwrap_or(16);
+        let name = core::str::from_utf8(&d.name[..len]).unwrap_or("?");
+        let shown = d.queue_len.min(8);
+        emit(deferred, format_args!(
+            "[DIAG1974:ms={}:cpu={}:cur={}:{}:since={}:qlen={}:q={:?}]\n",
+            now_ns / 1_000_000,
+            cpu,
+            d.current as i64,
+            name,
+            d.since_schedule,
+            d.queue_len,
+            &d.queued[..shown],
+        ));
+    }
 }
 
 fn monotonic_now_ns() -> u64 {

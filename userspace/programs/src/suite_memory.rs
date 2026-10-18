@@ -1035,6 +1035,11 @@ static T_WRONG: AtomicU64 = AtomicU64::new(0);
 /// signal, si_code, si_addr and the address it touched.
 static T_BAD: AtomicU64 = AtomicU64::new(0);
 static T_BAD_FIRST: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+/// #1974 diagnostic: sweeps begun after the change returned, faults taken in the round,
+/// and the monotonic ms at each worker's last finished sweep.
+static T_DIAG_SWEEPS: [AtomicU64; MAX_WORKERS] = [const { AtomicU64::new(0) }; MAX_WORKERS];
+static T_DIAG_FAULTS: [AtomicU64; MAX_WORKERS] = [const { AtomicU64::new(0) }; MAX_WORKERS];
+static T_DIAG_LAST_MS: [AtomicU64; MAX_WORKERS] = [const { AtomicU64::new(0) }; MAX_WORKERS];
 
 /// Rounds of the cross-processor cases, and how many accesses each worker makes in a
 /// round before the page is changed.
@@ -1072,6 +1077,7 @@ fn page_worker(i: usize, write: bool, code: i32) {
                 }
                 Err(f) if T_CHANGING.load(SeqCst) == round && fault_is(f, SIGSEGV, &[code], p) => {
                     all_loaded = false;
+                    T_DIAG_FAULTS[i].fetch_add(1, SeqCst);
                 }
                 Err(f) => {
                     if T_BAD.fetch_add(1, SeqCst) == 0 {
@@ -1082,6 +1088,8 @@ fn page_worker(i: usize, write: bool, code: i32) {
             }
         }
         if all_loaded { T_OK[i].fetch_add(1, SeqCst); }
+        if changed { T_DIAG_SWEEPS[i].fetch_add(1, SeqCst); }
+        if T_CHANGING.load(SeqCst) == round { T_DIAG_LAST_MS[i].store(now_ms(), SeqCst); }
         // Only a complete sweep begun after the syscall returned is acceptance.
         if all_faulted {
             T_FAULTED[i].store(round, SeqCst);
@@ -1111,6 +1119,7 @@ fn page_range_rounds(n: usize, pages: usize, rounds: u32, mut prepare: impl FnMu
     for round in 1..=rounds {
         let page = prepare(round)?;
         for ok in T_OK.iter().take(n) { ok.store(0, SeqCst); }
+        for i in 0..n { T_DIAG_SWEEPS[i].store(0, SeqCst); T_DIAG_FAULTS[i].store(0, SeqCst); T_DIAG_LAST_MS[i].store(0, SeqCst); }
         T_PAGE.store(page as u64, SeqCst);
         T_ROUND.store(round, SeqCst);
         let warm = spin_until(1000, || T_BAD.load(SeqCst) != 0 || T_TIMEOUT.iter().take(n).any(|t| t.load(SeqCst) != 0) || T_OK.iter().take(n).all(|ok| ok.load(SeqCst) >= warm_sweeps));
@@ -1135,7 +1144,9 @@ fn page_range_rounds(n: usize, pages: usize, rounds: u32, mut prepare: impl FnMu
         if T_BAD.load(SeqCst) != 0 { return err(format!("round {round}: {}", bad_fault_text())); }
         if !faulted {
             let late: Vec<usize> = (0..n).filter(|&i| T_FAULTED[i].load(SeqCst) != round).collect();
-            return err(format!("round {round}: worker(s) {late:?} kept accessing the page for a second after {what} returned, with no fault ({} stale accesses so far)", T_STALE.load(SeqCst)));
+            let now = now_ms();
+            let diag: Vec<String> = (0..n).map(|i| format!("w{i}:tid={}:cpu={}:sweeps={}:faults={}:last={}ms-ago", FAULT_TID[i + 1].load(SeqCst), WHERE[i].load(SeqCst), T_DIAG_SWEEPS[i].load(SeqCst), T_DIAG_FAULTS[i].load(SeqCst), now.saturating_sub(T_DIAG_LAST_MS[i].load(SeqCst)))).collect();
+            return err(format!("round {round}: worker(s) {late:?} kept accessing the page for a second after {what} returned, with no fault ({} stale accesses so far) [diag1974 change={}us now={}ms {}]", T_STALE.load(SeqCst), took / 1000, now, diag.join(" ")));
         }
     }
     Ok(longest)

@@ -10705,3 +10705,34 @@ pub fn nudge_retirement_grace_for_test() {
     }
     set_need_resched();
 }
+
+/// #1974 diagnostic (scratch): per-CPU current thread, its name, ticks since
+/// the CPU last scheduled, and up to eight queued tids.
+#[derive(Clone, Copy, Default)]
+pub struct DiagCpu {
+    pub current: u64,
+    pub name: [u8; 16],
+    pub since_schedule: u64,
+    pub queued: [u64; 8],
+    pub queue_len: usize,
+}
+
+pub fn diag_cpu_snapshot(out: &mut [DiagCpu; 4]) {
+    let now = crate::time::get_ticks();
+    with_scheduler(|scheduler| {
+        for (cpu, slot) in out.iter_mut().enumerate() {
+            let state = &scheduler.cpu_state[cpu];
+            slot.current = state.current_thread.unwrap_or(u64::MAX);
+            slot.since_schedule = now.wrapping_sub(state.last_schedule_ticks);
+            if let Some(thread) = state.current_thread.and_then(|tid| scheduler.get_thread(tid)) {
+                let bytes = thread.name.as_bytes();
+                let n = bytes.len().min(16);
+                slot.name[..n].copy_from_slice(&bytes[..n]);
+            }
+            slot.queue_len = scheduler.per_cpu_queues[cpu].len();
+            for (q, &tid) in slot.queued.iter_mut().zip(scheduler.per_cpu_queues[cpu].iter()) {
+                *q = tid;
+            }
+        }
+    });
+}
