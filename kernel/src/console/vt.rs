@@ -305,6 +305,9 @@ impl Terminals<'_> {
             self.sw.next = Some((to, source));
             return Ok(());
         }
+        // This request supersedes one held during acquisition, including when
+        // it starts a release before the previous frame's read-back finishes.
+        self.sw.next = None;
         match self.sw.pending.as_mut() {
             Some(pending) => match pending.phase {
                 Phase::Releasing { .. } if to == pending.from => {

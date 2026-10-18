@@ -1790,6 +1790,7 @@ else
         $GDB_OPTS \
         -fw_cfg name=opt/breenix/mode,string=shell \
         -serial mon:stdio \
+        -serial "file:$OUTPUT_DIR/serial.txt" \
         &
 fi
 
