@@ -689,7 +689,7 @@ const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
 
 /// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
 /// `TARGETS` order without repeats; a note is one line of text and only sits beside a list.
-/// S23 retains profile definitions even when x86 is absent and they are not measured.
+/// Vigil BreenixPath.swift:168,232-234 treats profiles without x86 as outOfScope.
 fn effort_target_errors(path: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     for effort in path["efforts"].as_array().into_iter().flatten() {
@@ -723,7 +723,6 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
             Some(Value::String(text)) if !text.trim().is_empty() && !text.contains('\n') => {}
             Some(_) => errors.push(format!("{id}: \"targetsNote\" must be non-empty text on one line")),
         }
-
     }
     errors
 }

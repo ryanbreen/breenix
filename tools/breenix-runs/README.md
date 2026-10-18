@@ -1,7 +1,6 @@
 # Breenix Runs
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
-As of 2026-10-18 (S23), x86-64 is proved on the R240 through the metal boot loop.
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
 The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
 and landing requirements below are superseded by [the execution policy](../../docs/x86-execution-policy.md);
 legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.

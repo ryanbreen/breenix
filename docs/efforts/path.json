@@ -5,7 +5,7 @@
     {
       "id": "kernel-bring-up",
       "title": "Kernel bring-up",
-      "outcome": "The main-path targets boot to their first userspace process through the boot path's first six milestones. x86-64 bring-up is proved separately on the R240 metal path.",
+      "outcome": "The main-path targets boot to their first userspace process through the boot path's first six milestones. x86-64 bring-up is proved separately on the x86-metal path.",
       "subsystems": [
         1,
         2,
@@ -72,7 +72,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "files-io",
@@ -198,7 +198,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "directories",
@@ -310,7 +310,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "processes",
@@ -413,7 +413,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "signals",
@@ -525,7 +525,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "time",
@@ -590,7 +590,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "memory",
@@ -665,7 +665,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "threads",
@@ -760,7 +760,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "ipc",
@@ -835,7 +835,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "terminals",
@@ -912,7 +912,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "networking",
@@ -1006,7 +1006,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "libc",
@@ -1103,7 +1103,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "rust-std",
@@ -1177,7 +1177,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "utilities",
@@ -1244,7 +1244,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "sdk",
@@ -1312,7 +1312,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "gpu",
@@ -1323,7 +1323,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "gpu",
       "subsystems": [
         17,
@@ -1500,7 +1500,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "breengel",
@@ -1511,7 +1511,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "breengel",
       "subsystems": [
         17,
@@ -1672,7 +1672,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "window-manager",
       "subsystems": [
         17,
@@ -1821,7 +1821,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "ui-testing",
       "subsystems": [
         18,
@@ -1930,7 +1930,7 @@
         "parallels",
         "vmware"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the metal path, R240), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "gui-apps",
       "subsystems": [
         24,

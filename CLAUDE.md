@@ -33,8 +33,7 @@ docs/              # boot-path, efforts, suites, gui, sdk, user guide, historica
 
 ## Build & Run
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
-As of 2026-10-18 (S23), x86-64 is proved on the R240 through the metal boot loop,
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop,
 not x86 QEMU. The main-path targets are ARM64 QEMU, Parallels and VMware.
 [The execution policy](docs/x86-execution-policy.md) supersedes earlier x86 QEMU
 landing and gate requirements. x86 builds and metal builds remain available; only
@@ -45,7 +44,7 @@ landing and gate requirements. x86 builds and metal builds remain available; onl
 Effort lanes (`<effort id>/<lane>` from `docs/efforts/path.json`) build and race on ARM64 QEMU only; Parallels and VMware are backported in the catch-up once that effort is green on ARM64 QEMU (operator, 2026-10-15). Only regression fixes for finished efforts and the catch-up itself use other targets.
 
 <!-- claim-lint:ok: tests/effort_target_guard_test.py exercises the target table and published metal ancestry. -->
-`scripts/effort-target-guard.py` applies this restriction on x86, Parallels and VMware to main-path lanes only; metal lanes may use them for landing gates. On `x86-metal`, main-path lane history is refused even with catch-up, and every commit outside `origin/main` must be first-parent reachable from a pushed `metal-*` branch (including `metal-stream/definition`). For main-path lanes on x86, Parallels and VMware, it refuses a commit when any commit in its history that origin/main lacks is also in an effort lane's history, on origin or in a local branch; a `fix/*` or `scratch/*` name exempts nothing, and it refuses when origin cannot be read. `run.sh` (`--x86`, `--btrt --x86`, `--parallels`, `--vmware`, and `--dry-run` to check only) and `breenix-runs run x86` run it before building; every x86-64 QEMU boot runs it again in `qemu_host_lock_acquire` and in `qemu-uefi`. For the catch-up pass `breenix-runs run x86 --catchup` or `BREENIX_CATCHUP=1`: the launch line prints it, the x86 run manifest records it, and Parallels and VMware runs record it in `<serial log>.launch.json`. Vigil has no catch-up field.
+`scripts/effort-target-guard.py` applies this restriction on x86, Parallels and VMware to main-path lanes only; metal lanes may use them for landing gates. On `x86-metal`, main-path lane history is refused even with catch-up, and every commit outside `origin/main` must be first-parent reachable from a pushed `metal-*` branch (including `metal-stream/definition`). For main-path lanes on x86, Parallels and VMware, it refuses a commit when any commit in its history that origin/main lacks is also in an effort lane's history, on origin or in a local branch; a `fix/*` or `scratch/*` name exempts nothing, and it refuses when origin cannot be read. `run.sh` (`--x86`, `--btrt --x86`, `--parallels`, `--vmware`, and `--dry-run` to check only) and `breenix-runs run x86` run it before building; every x86-64 QEMU boot runs it again in `qemu_host_lock_acquire` and in `qemu-uefi`. For an operator-authorized exceptional x86 QEMU catch-up pass `BREENIX_ALLOW_X86_QEMU=1 breenix-runs run x86 --catchup` or `BREENIX_CATCHUP=1`: the launch line prints it, the x86 run manifest records it, and Parallels and VMware runs record it in `<serial log>.launch.json`. Vigil has no catch-up field.
 
 ### Interactive Mode
 
@@ -58,13 +57,13 @@ Use `./run.sh` for interactive development with graphical display:
 
 **Display:**
 - ARM64: Native window (cocoa) - no VNC needed
-- x86-64: physical display through the R240 metal boot loop
+- x86-64: physical display through the x86-metal boot loop
 
 ### Test Scripts
 
 Test scripts are located in `docker/qemu/`:
 
-**x86-64:** Use `scripts/metal/metal-run` for the R240 metal boot loop.
+**x86-64:** Use `scripts/metal/metal-run` for the x86-metal boot loop.
 Legacy x86 QEMU scripts are refused by default under S23.
 
 **ARM64:**
@@ -122,7 +121,7 @@ agent context). Ask the user to run this if the VM is stuck.
 # Build the kernel first (x86-64)
 cargo build --release --features testing,external_test_bins --bin qemu-uefi
 
-# Prove x86-64 through the R240 metal boot loop (see docs/metal/README.md)
+# Prove x86-64 through the x86-metal boot loop (see docs/metal/README.md)
 
 # Build ARM64 kernel for the native/strict boot-test gates below
 # Kernel code must use the soft-float target; userspace keeps aarch64-breenix.json.
@@ -180,7 +179,7 @@ Never add a workflow file.
 ```
 # DON'T run kernel directly - ALWAYS use GDB
 cargo run --release --bin qemu-uefi
-cargo run -p xtask -- boot-stages
+cargo run -p xtask -- arm64-boot-stages
 # DON'T grep through large outputs in main session
 cat target/output.txt | grep ...
 ```
@@ -691,7 +690,7 @@ Before approving changes to interrupt/syscall code:
 
 **ALL kernel execution and debugging MUST be done through GDB.** This is non-negotiable.
 
-Running the kernel directly (`cargo run`, `cargo test`, `cargo run -p xtask -- boot-stages`) without GDB:
+Running the kernel directly (`cargo run`, `cargo test`, `cargo run -p xtask -- arm64-boot-stages`) without GDB:
 - Provides only serial output, which is insufficient for timing-sensitive bugs
 - Cannot inspect register state, memory, or call stacks
 - Cannot set breakpoints to catch issues before they cascade
@@ -866,7 +865,7 @@ info address kernel::kernel_main
 
 ### When to Use GDB vs Boot Stages
 
-**Use boot stages** (`cargo run -p xtask -- boot-stages`) for:
+**Use boot stages** (`cargo run -p xtask -- arm64-boot-stages`) for:
 - Verifying a fix works
 - Checking that all subsystems initialize
 - CI/continuous testing
@@ -906,9 +905,8 @@ log::debug!("clock_gettime called");  # This changes timing!
 
 ## QEMU Process Cleanup
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
 Stop only a process this run started, by the PID recorded when it started.
-Never use `pkill`, `killall`, or kill by process name or pattern.
+Do not use `pkill`, `killall`, or kill by process name or pattern.
 
 ## Work Tracking
 

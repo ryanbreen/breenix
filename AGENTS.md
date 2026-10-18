@@ -544,15 +544,13 @@ log::debug!("clock_gettime called");  # This changes timing!
 
 ## Execution and process cleanup policy
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
 As of 2026-10-18 (S23), the main path measures ARM64 QEMU, Parallels and VMware.
-x86-64 is proved on the R240 through the [metal boot loop](docs/metal/README.md).
+x86-64 requires evidence from x86-metal using the [metal boot loop](docs/metal/README.md).
 Earlier x86 QEMU landing or gate requirements are superseded by
 [the execution policy](docs/x86-execution-policy.md). x86 builds remain available;
 an exceptional x86 QEMU boot requires the operator's `BREENIX_ALLOW_X86_QEMU=1`.
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
-Stop only processes this run started, by their recorded PIDs. Never use `pkill`,
+Stop only processes this run started, by their recorded PIDs. Do not use `pkill`,
 `killall`, or a kill by process name or pattern.
 
 ## Work Tracking

@@ -16,15 +16,13 @@ file from main and shows each milestone's state from live evidence; nothing in i
 
 ## Targets
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
 As of 2026-10-18 (S23), the main-path targets are `arm64-qemu` (ARM64 QEMU),
 `parallels` and `vmware`. Each effort lists its targets explicitly; an already
 narrower effort retains its narrower list without x86. A target left out does not
 count toward or block the effort. `interfaces` is measured on ARM64 on this path.
-x86 hardware-profile milestones remain defined but are measured nowhere on the main path.
+x86 hardware-profile milestones remain defined but are outside measurement on the main path.
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
-x86-64 is proved on the R240 through the [metal boot loop](../metal/README.md),
+x86-64 requires evidence from x86-metal using the [metal boot loop](../metal/README.md),
 measured by `metal.json`. Vigil's platform is `metal` ("x86-64 metal").
 The main and metal paths advance independently. [S23's execution policy](../x86-execution-policy.md)
 supersedes earlier x86 QEMU gate and landing requirements.
@@ -74,17 +72,16 @@ must list merge parents and files outside metal paths for review of that boundar
 
 A milestone has exactly one measure:
 
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
-- `{"bootPath": "<milestone id>"}`: the docs/boot-path.json milestone passes in the newest boot on every target
+- `{"bootPath": "<milestone id>"}`: the docs/boot-path.json milestone passes in the newest boot on the targets
   listed by the effort (ARM64 QEMU, Parallels and VMware).
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
 - `{"profiles": "<milestone id>"}`: a retained x86 hardware-profile definition from docs/x86-profiles.json,
-  measured nowhere on the main path under S23.
-<!-- claim-lint:ok: docs/x86-execution-policy.md records S23 (operator, 2026-10-18); this paragraph prescribes policy, not a measured result. -->
-- `{"suite": "<id>", "categories": ["<category id>", ...]}`: every case in those categories of that suite
-  passes. It is done when it passes on every target listed by the effort (ARM64 QEMU, Parallels and VMware); until the suite
+  outside measurement on the main path under S23.
+- `{"suite": "<id>", "categories": ["<category id>", ...]}`: the cases in those categories of that suite
+  must pass. It is done when it passes on the targets listed by the effort (ARM64 QEMU, Parallels and VMware); until the suite
   has those categories the milestone is shown as not measured yet, which is the work of writing its cases.
 - `{"interfaces": "<area>"}` or `{"interfaces": ["name", ...]}`: those POSIX system interfaces are backed by a
   dispatched syscall on the architectures in the effort's target list.
 
 Ids are lowercase words joined by `-`. Add an effort or milestone by editing this file; Vigil picks it up.
+
+Profile milestones on efforts without x86 are retained as out of scope: Vigil's existing `BreenixPath.swift` defines `outOfScope` as excluded from progress and non-blocking, and excludes those milestones from the effort count. See `BreenixPath.swift:56-59,168-170,232-234`.
