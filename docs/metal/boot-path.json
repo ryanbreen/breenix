@@ -487,7 +487,7 @@
     {
       "id": "usb-keyboard",
       "title": "USB keyboard into the console",
-      "summary": "Clean-room HID boot keyboard; attended boots measure typed stages from kernel USB input provenance (M8).",
+      "summary": "Clean-room HID boot keyboard; its typed stages are measured only by attended boots, from kernel USB input provenance (M8).",
       "stub": false,
       "bootShapes": [
         "ramdisk",
@@ -526,7 +526,7 @@
     {
       "id": "console-login",
       "title": "Login at the machine's own console",
-      "summary": "Attended boots require the ordered USB-only authentication, computation and logout challenge (M8); SOL remains development input.",
+      "summary": "Attended boots require the ordered USB-only refusal, login, computation, screen check and logout challenge (M8); SOL boots exercise the same path as development input.",
       "bootShapes": [
         "ramdisk",
         "install",
@@ -585,13 +585,31 @@
           "match": "line"
         },
         {
+          "name": "Login reported the refusal",
+          "marker": "Login incorrect",
+          "match": "line"
+        },
+        {
           "name": "USB keyboard login accepted",
           "marker": "[console] login accepted input=keyboard",
           "match": "line"
         },
         {
           "name": "Logged-in computation answered",
-          "marker": "metal-console-ok 42",
+          "marker": "metal-login-ok 42",
+          "match": "line"
+        },
+        {
+          "name": "The session is on the screen",
+          "marker": "fbcon check: shadow and screen identical"
+        },
+        {
+          "name": "The answer is on the screen",
+          "marker": "fbcon row: metal-login-ok 42"
+        },
+        {
+          "name": "Logout ended the session",
+          "marker": "[init] console session ended; restarting getty",
           "match": "line"
         },
         {

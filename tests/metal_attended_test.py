@@ -15,53 +15,74 @@ run = existing.load_script('metal-run')
 
 boot, m = existing.boot, existing.m
 
+DEFINITION = json.loads((existing.TOOLS.parents[1] / 'docs/metal/boot-path.json').read_text())
+STAGES = metal_attended.stages(DEFINITION)
+
+# One wrong attempt, then the real one; every line below the first prompt is one the challenge needs.
 TRANSCRIPT = [
-    '[init] getty on the console', '[getty] console acquired', 'Breenix login: ',
+    '[init] getty on the console', '[getty] console acquired', 'Breenix login: root',
     '[console] first input byte input=keyboard',
     '[console] login refused input=keyboard', 'Login incorrect',
-    '[getty] console acquired', 'Breenix login: ',
+    '[init] getty on the console', '[getty] console acquired', 'Breenix login: root',
     '[console] login accepted input=keyboard',
-    'print("metal-console-ok", 6*7)', 'metal-console-ok 42',
+    'print("metal-login-ok", 6*7)', 'metal-login-ok 42',
+    'fbcon check: shadow and screen identical, 412 glyph cells match the font',
+    'fbcon row: bsh /root> print("metal-login-ok", 6*7)', 'fbcon row: metal-login-ok 42',
     '[init] console session ended; restarting getty',
     '[console] session ended input=keyboard', '[getty] console acquired', 'Breenix login: ',
 ]
+NEEDED = (4, 5, 9, 11, 12, 14, 15, 16, 17, 18)
 
 
 class ScorerTest(unittest.TestCase):
     def score(self, lines):
-        challenge = metal_attended.Challenge()
+        challenge = metal_attended.Challenge(STAGES)
         for line in lines:
             challenge.feed(line)
         return challenge
 
-    def test_usb_provenance_and_the_entire_ordered_challenge_are_required(self):
+    def test_usb_provenance_screen_check_and_the_entire_ordered_challenge_are_required(self):
         self.assertTrue(self.score(TRANSCRIPT).done)
-        for index in (4, 5, 8, 10, 11, 12, 13, 14):
+        for index in NEEDED:
             self.assertFalse(self.score(TRANSCRIPT[:index] + TRANSCRIPT[index + 1:]).done, index)
-        self.assertFalse(self.score([TRANSCRIPT[10]] + TRANSCRIPT[:10] + TRANSCRIPT[11:]).done)
+        # The answer before the accepted login cannot count.
+        self.assertFalse(self.score(TRANSCRIPT[:9] + [TRANSCRIPT[11]] + TRANSCRIPT[9:11] + TRANSCRIPT[12:]).done)
 
-    def test_captured_prompt_includes_username_echo_and_live_partial_prompt_is_idempotent(self):
-        lines = TRANSCRIPT.copy()
-        lines[2] = 'Breenix login: root'
-        lines[7] = 'Breenix login: root'
-        self.assertTrue(self.score(lines).done)
-        # SOL may deliver the prompt and typed name together or in fragments.
-        challenge = metal_attended.Challenge()
-        for line in lines[:2]:
+    def test_any_number_of_refusals_may_precede_the_login_and_one_must(self):
+        refused = TRANSCRIPT[4:9]
+        self.assertTrue(self.score(TRANSCRIPT[:4] + refused * 3 + TRANSCRIPT[9:]).done)
+        accepted_first = TRANSCRIPT[:4] + TRANSCRIPT[9:]
+        self.assertFalse(self.score(accepted_first).done)
+        # A first session without a refusal before it is not the proof; a later refusal and login are.
+        self.assertTrue(self.score(accepted_first[:-1] + TRANSCRIPT[4:]).done)
+
+    def test_prompt_with_echo_and_live_partial_prompt_are_idempotent(self):
+        challenge = metal_attended.Challenge(STAGES)
+        for line in TRANSCRIPT[:2]:
             challenge.feed(line)
-        challenge.feed('Breenix login: ')
-        challenge.feed('Breenix login: ro')
-        for line in lines[2:]:
+        for text in ('Breenix login: ', 'Breenix login: ', 'Breenix login: ro', 'Breenix login: root'):
+            challenge.feed(text)
+        for line in TRANSCRIPT[3:]:
             challenge.feed(line)
         self.assertTrue(challenge.done)
 
-    def test_mixed_or_sol_input_and_repeated_refusal_cannot_pass(self):
-        for marker in (4, 8, 12):
+    def test_non_keyboard_input_invalidates_the_challenge(self):
+        for index in (4, 9, 16):
             lines = TRANSCRIPT.copy()
-            lines[marker] = lines[marker].replace('input=keyboard', 'input=other')
-            self.assertFalse(self.score(lines).done)
-        self.assertFalse(self.score(TRANSCRIPT[:8] + TRANSCRIPT[4:6] + TRANSCRIPT[8:]).done)
-        self.assertFalse(self.score(['Login incorrect', 'metal-console-ok 42', 'Breenix login: ']).done)
+            lines[index] = lines[index].replace('input=keyboard', 'input=other')
+            self.assertFalse(self.score(lines).done, index)
+        lines = TRANSCRIPT[:4] + ['[console] login refused input=other'] + TRANSCRIPT[4:]
+        verdict = self.score(lines).verdict()
+        self.assertEqual((verdict['reached'], verdict['passed']), (0, False))
+        self.assertIn('invalid', verdict)
+
+    def test_the_first_local_login_names_the_attended_computation(self):
+        first = next(f for f in DEFINITION['firsts'] if f['id'] == 'first-local-login')
+        stage = next(s for s in STAGES if s['name'] == first['stage'])
+        self.assertEqual(stage['marker'], 'metal-login-ok 42')
+        login = next(m for m in DEFINITION['milestones'] if m['id'] == 'console-login')
+        sol = next(s for s in login['stages']['console'] if s['name'] == first['stage'])
+        self.assertEqual(sol['marker'], stage['marker'])
 
 
 class AttendedTest(existing.StateTest):
@@ -76,6 +97,7 @@ class AttendedTest(existing.StateTest):
         self.driver.dir.mkdir(parents=True)
         self.driver.t0 = 100
         self.driver.kernel_started = 110
+        self.driver.attended_challenge = metal_attended.Challenge(STAGES)
 
     def test_deadline_boundary_is_clean_not_a_hang_and_driver_never_types(self):
         d = self.driver
@@ -120,7 +142,7 @@ class AttendedTest(existing.StateTest):
         definition = d.dir / 'definition/docs/metal/boot-path.json'
         definition.parent.mkdir(parents=True)
         definition.write_text(json.dumps({'gateArch': 'x86_64', 'milestones': [
-            {'id': 'console-login', 'stages': {'console': []}}]}))
+            {'id': 'console-login', 'stages': {'console': []}, 'attendedStages': STAGES}]}))
         catalog = d.dir / 'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'
         catalog.parent.mkdir(parents=True)
         catalog.write_text('{"stages": []}')
@@ -132,7 +154,38 @@ class AttendedTest(existing.StateTest):
             self.assertEqual(d.run(), m.EXIT_SHORT)
         d.power_off.assert_called_once_with(False)
         verdict = json.loads((d.dir / 'milestone-verdict.json').read_text())
-        self.assertEqual(verdict['milestones']['console-login'], {'reached': 2, 'total': 8, 'passed': False})
+        self.assertEqual(verdict['milestones']['console-login'],
+                         {'reached': 2, 'total': len(STAGES), 'passed': False,
+                          'missing': [stage['name'] for stage in STAGES[2:]]})
+
+    def test_attended_keeps_hang_detection_and_ends_on_non_keyboard_input_or_idle(self):
+        d = self.driver
+        d.args.wait = 30
+        d.request_at = d.first_byte_at = d.complete_at = 105
+        d.required_stages = [[('[usb] boot keyboard attached: ', 'contains')]]
+        d.last_serial = 110
+        with patch.object(m, 'now', return_value=110 + boot.SILENCE_SECONDS + 1):
+            with self.assertRaises(boot.Finish) as result:
+                d.check_deadlines()
+        self.assertTrue(result.exception.hung)
+        d.last_serial = 110 + boot.MODE_DEADLINE_SECONDS['console']
+        with patch.object(m, 'now', return_value=111 + boot.MODE_DEADLINE_SECONDS['console']):
+            with self.assertRaises(boot.Finish) as result:
+                d.check_deadlines()
+        self.assertEqual(result.exception.status, m.EXIT_SHORT)
+        self.assertIn('mode deadline', result.exception.reason)
+        # Only typed stages left and the prompt reached: the operator's wait governs.
+        d.required_stages = [[('[hid] first key report', 'contains', 'keyboard')]]
+        for line in TRANSCRIPT[:3]:
+            d.attended_challenge.feed(line)
+        with patch.object(m, 'now', return_value=111 + boot.MODE_DEADLINE_SECONDS['console']):
+            d.check_deadlines()
+        with self.assertRaises(boot.Finish) as result:
+            d.on_line('[console] input idle 30 min')
+        self.assertEqual(result.exception.status, m.EXIT_SHORT)
+        with self.assertRaises(boot.Finish) as result:
+            d.challenge_console('[console] login refused input=other', complete=True)
+        self.assertEqual(result.exception.status, m.EXIT_SHORT)
 
     def test_keyboard_final_marker_and_required_stages_allow_completion(self):
         d = self.driver
@@ -160,16 +213,6 @@ class AttendedTest(existing.StateTest):
             args.wait = invalid
             with self.assertRaises(SystemExit):
                 run.boot(args)
-
-    def test_tty_stage_needs_kernel_source_marker_even_when_record_says_keyboard(self):
-        definition = {'milestones': [{'id': 'usb-keyboard', 'stages': {'console': [
-            {'name': 'Keys reached the console TTY', 'marker': '[hid] typed into the console tty: '}]}}]}
-        selected = metal_score.attended_definition(definition)
-        spec = selected['milestones'][0]['stages']['console'][0]
-        self.assertEqual(spec['marker'], '[console] first input byte input=keyboard')
-        self.assertEqual(spec['match'], 'line')
-        self.assertEqual(spec['input'], 'keyboard')
-        self.assertEqual(definition['milestones'][0]['stages']['console'][0]['marker'], '[hid] typed into the console tty: ')
 
 
 if __name__ == '__main__':

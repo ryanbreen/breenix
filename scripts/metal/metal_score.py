@@ -15,15 +15,12 @@ def measures(milestone, shape):
 
 
 def attended_definition(definition):
-    """Online waits cover kernel/USB producers; Challenge covers console order."""
+    """Stage lists wait for kernel and USB producers; console-login is the attended Challenge's, which also reads
+    a prompt still waiting for its newline."""
     definition = copy.deepcopy(definition)
     for milestone in definition['milestones']:
         if milestone['id'] == 'console-login':
             milestone['stages']['console'] = []
-        elif milestone['id'] == 'usb-keyboard':
-            for stage in milestone['stages']['console']:
-                if stage['name'] == 'Keys reached the console TTY':
-                    stage.update(marker='[console] first input byte input=keyboard', match='line', input='keyboard')
     return definition
 
 
@@ -39,7 +36,6 @@ def score(directory):
         definition = attended_definition(definition)
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
-    run = read('run.json')
     shape = boot_shape(run.get('disk'))
     lines = (directory / 'serial.txt').read_text().splitlines()
     events = {json.loads(line)['event'] for line in (directory / 'events.jsonl').read_text().splitlines()}
@@ -50,7 +46,7 @@ def score(directory):
         if milestone.get('stub') or not measures(milestone, shape):
             continue
         if attended and milestone['id'] == 'console-login':
-            challenge = metal_attended.Challenge()
+            challenge = metal_attended.Challenge(metal_attended.stages(definition))
             for line in lines:
                 challenge.feed(line)
             results[milestone['id']] = challenge.verdict()

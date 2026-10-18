@@ -1,51 +1,52 @@
-"""The fixed, human-typed console challenge. This module never sends input."""
+"""The fixed, human-typed console challenge. This module never sends input.
 
-LOGIN_STAGES = (
-    'Getty on the console', 'Login prompt', 'Wrong password refused',
-    'USB keyboard login accepted', 'Logged-in computation answered',
-    'USB keyboard session ended', 'Getty reacquired the console after logout',
-    'Login prompt after logout',
-)
+The stages are console-login's `attendedStages` in docs/metal/boot-path.json, matched in order, so the driver and
+the scorer read one list. Any number of refused attempts may come before the accepted one; at least one refusal
+must. A provenance line naming input other than the USB keyboard invalidates the challenge.
+"""
+import re
+
+# claim-lint:ok: source mutation cases in tests/metal_attended_test.py.
+# These come from the kernel's TTY provenance report, not from echoed commands or run.json's input transport.
+OTHER_INPUT = re.compile(r'\[console\] (login refused|login accepted|session ended) input=other')
+
+
+def stages(definition):
+    for milestone in definition['milestones']:
+        if milestone['id'] == 'console-login':
+            return milestone['attendedStages']
+    raise ValueError('the definition has no console-login milestone')
+
+
+def matches(stage, line):
+    alternatives = stage['marker'].split('|')
+    if stage.get('match') == 'line':
+        return line in alternatives
+    return any(marker in line for marker in alternatives)
 
 
 class Challenge:
-    def __init__(self):
+    def __init__(self, stages):
+        self.stages = stages
         self.reached = 0
-        self.refused = False
-        self.ended = False
         self.invalid = False
 
     @property
     def done(self):
-        return self.reached == len(LOGIN_STAGES) and not self.invalid
+        return self.reached == len(self.stages) and not self.invalid
 
     def feed(self, line):
-        # claim-lint:ok: source mutation cases in tests/metal_attended_test.py.
-        # These markers come from TTY provenance, not from echoed commands or
-        # the input transport selected in run.json. Mixed input invalidates proof.
-        if line in ('[console] login refused input=other', '[console] login accepted input=other',
-                    '[console] session ended input=other'):
+        """Feed complete lines, or a prompt still waiting for its newline; a repeat cannot advance twice."""
+        if OTHER_INPUT.search(line):
             self.invalid = True
-        if line == '[console] login refused input=keyboard':
-            if self.refused or self.reached != 2:
-                self.invalid = True
-            self.refused = True
-        checks = (
-            line == '[init] getty on the console',
-            line.startswith('Breenix login: '),
-            line == 'Login incorrect' and self.refused,
-            line == '[console] login accepted input=keyboard',
-            line == 'metal-console-ok 42',
-            line == '[console] session ended input=keyboard' and self.ended,
-            line == '[getty] console acquired',
-            line.startswith('Breenix login: '),
-        )
-        if self.reached == 5 and line == '[init] console session ended; restarting getty':
-            self.ended = True
-        if not self.invalid and self.reached < len(checks) and checks[self.reached]:
+        if not self.invalid and self.reached < len(self.stages) and matches(self.stages[self.reached], line):
             self.reached += 1
         return self.done
 
     def verdict(self):
         reached = 0 if self.invalid else self.reached
-        return {'reached': reached, 'total': len(LOGIN_STAGES), 'passed': self.done}
+        result = {'reached': reached, 'total': len(self.stages), 'passed': self.done}
+        result['missing'] = [stage['name'] for stage in self.stages[reached:]]
+        if self.invalid:
+            result['invalid'] = 'input other than the USB keyboard reached the console'
+        return result
