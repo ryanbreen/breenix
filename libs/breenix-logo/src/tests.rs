@@ -26,9 +26,9 @@ fn bowls_join_spines_without_a_background_seam() {
         for (seam, row, color) in [
             (78, 15, WHITE),
             (78, 48, WHITE),
-            (12, 81, WORDMARK),
-            (12, 102, WORDMARK),
-            (31, 81, WORDMARK),
+            (27, 81, WORDMARK),
+            (27, 102, WORDMARK),
+            (50, 81, WORDMARK),
         ] {
             for x in seam * k - 2..seam * k + 2 {
                 assert_eq!(pixel(&pixels, WIDTH as usize * k, x, row * k), color);
@@ -40,7 +40,7 @@ fn bowls_join_spines_without_a_background_seam() {
             badge_color((23 * k) as i32, k as u16)
         );
         assert_eq!(
-            pixel(&pixels, WIDTH as usize * k, 13 * k, 86 * k),
+            pixel(&pixels, WIDTH as usize * k, 28 * k, 86 * k),
             BACKGROUND
         );
     }

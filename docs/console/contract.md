@@ -450,21 +450,26 @@ integers in thirds of a design unit.
 | B lower bowl | `half_annulus(22, 39, 11, 5)` | B |
 | Cursor | `rect(38, 45, 13, 5)` | Cursor block |
 
-**The wordmark "BREENIX"** has ink bounds x=8..167, y=80..104 in the composition: 159 by 24 units.
-Its ink centre is x=87.5, half a unit left of the badge/bar axis at x=88. Most straight strokes are
-4 units wide. The B is the badge B scaled by exactly two-thirds, giving a 4-unit spine and bowl
-thicknesses 10/3 and 4; R retains its own bowl. Letters below use local coordinates relative to their
-listed left edge and y=80, in table order:
+**The wordmark "BREENIX"** has ink bounds x=19..157, y=80..104 in the composition: 138 by 24 units.
+Its ink centre is x=88, on the badge/bar axis. B, R, E and N are 16 units wide; the I is 10 and
+X is 18. Straight stems are 4 units wide. B and R share one upper bowl, using the badge's upper
+bowl radii at two-thirds scale; B's lower bowl likewise uses the scaled badge radii. Straight
+shoulders extend the bowls to the wordmark's proportions. The badge itself retains its geometry.
+Letters below use local coordinates relative to their listed left edge and y=80, in table order:
 
 | Letter | Left | Shapes |
 |---|---|---|
-| B | 8 | `rect(0, 0, 4, 24)`, `half_annulus(4, 6, 6, 8/3)`, `half_annulus(4, 50/3, 22/3, 10/3)` |
-| R | 27 | `rect(0, 0, 4, 24)`, `half_annulus(4, 7, 7, 3)`, `quad((4, 11), (9, 11), (20, 24), (15, 24))` |
-| E | 53 | `rect(0, 0, 4, 24)`, `rect(0, 0, 18, 4)`, `rect(0, 10, 15, 4)`, `rect(0, 20, 18, 4)` |
-| E | 79 | as above |
-| N | 105 | `rect(0, 0, 4, 24)`, `quad((0, 0), (4, 0), (18, 24), (14, 24))`, `rect(14, 0, 4, 24)` |
-| I | 129 | `rect(4, 0, 4, 24)`, `rect(0, 0, 12, 4)`, `rect(0, 20, 12, 4)` |
-| X | 147 | `quad((0, 0), (5, 0), (20, 24), (15, 24))`, `quad((15, 0), (20, 0), (5, 24), (0, 24))` |
+| B | 19 | `rect(0, 0, 4, 24)`, `rect(0, 0, 26/3, 10/3)`, `half_annulus(26/3, 6, 6, 8/3)`, `rect(0, 26/3, 26/3, 14/3)`, `half_annulus(26/3, 50/3, 22/3, 10/3)`, `rect(0, 20, 26/3, 4)` |
+| R | 42 | `rect(0, 0, 4, 24)`, `rect(0, 0, 26/3, 10/3)`, `half_annulus(26/3, 6, 6, 8/3)`, `rect(0, 26/3, 26/3, 10/3)`, `quad((4, 11), (9, 11), (16, 24), (11, 24))` |
+| E | 64 | `rect(0, 0, 4, 24)`, `rect(0, 0, 16, 4)`, `rect(0, 10, 13, 4)`, `rect(0, 20, 16, 4)` |
+| E | 84 | as above |
+| N | 104 | `rect(0, 0, 4, 24)`, `quad((0, 0), (4, 0), (16, 24), (12, 24))`, `rect(12, 0, 4, 24)` |
+| I | 126 | `rect(3, 0, 4, 24)`, `rect(0, 0, 10, 4)`, `rect(0, 20, 10, 4)` |
+| X | 139 | `quad((0, 0), (5, 0), (18, 24), (13, 24))`, `quad((13, 0), (18, 0), (5, 24), (0, 24))` |
+
+The bounding-box gaps B-R, R-E, E-E, E-N, N-I and I-X are 7, 6, 4, 4, 6 and 3 units.
+These are optical gaps: the bowls recede, E has open sides, I's stem is inset, and X's diagonals
+recede toward its waist. The spacing is judged from the rendered contours rather than a fixed pitch.
 
 ### 6.2 Layout on the screen
 

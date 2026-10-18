@@ -1,5 +1,5 @@
 //! The logo's authored geometry, independent of a font or third-party outline.
-//! Coordinates are thirds of a design unit, preserving an exact 2/3-size B.
+//! Coordinates are thirds of a design unit, preserving the scaled badge bowls.
 //! Shapes are closed sets; table order is back to front. Adjacent shapes with
 //! the same paint form one coverage layer (their sample masks are unioned).
 use crate::{Color, Frame, Milestone, AMBER, GREEN, PENDING, TRACK, WHITE, WORDMARK};
@@ -99,7 +99,7 @@ const fn design(primitive: Primitive) -> Primitive {
     }
 }
 
-// The badge and wordmark use one B, at size 3/3 and 2/3 respectively.
+// The badge B uses the original 36-unit-high construction.
 const fn letter_b(x: i32, y: i32, size: i32, color: Color) -> [Shape; 3] {
     [
         Shape {
@@ -132,22 +132,34 @@ const fn letter_b(x: i32, y: i32, size: i32, color: Color) -> [Shape; 3] {
     ]
 }
 const BADGE_B: [Shape; 3] = letter_b(72, 14, 3, WHITE);
-const WORD_B: [Shape; 3] = letter_b(8, 80, 2, WORDMARK);
+// Wordmark bowls retain the badge radii at 2/3 scale. Straight shoulders
+// extend them to the wider wordmark proportions; B and R share the upper bowl.
+const fn word_upper_bowl(x: i32) -> Shape {
+    Shape {
+        primitive: Primitive::HalfAnnulus {
+            cx: x * 3 + 26,
+            cy: 86 * 3,
+            outer: 18,
+            inner: 8,
+        },
+        paint: Paint::Solid(WORDMARK),
+    }
+}
+const fn word_shoulder(x: i32, y: i32, h: i32) -> Shape {
+    Shape {
+        primitive: Primitive::Rect {
+            x: x * 3,
+            y,
+            w: 26,
+            h,
+        },
+        paint: Paint::Solid(WORDMARK),
+    }
+}
 
 const fn rect(x: i32, y: i32, w: i32, h: i32, color: Color) -> Shape {
     Shape {
         primitive: design(Primitive::Rect { x, y, w, h }),
-        paint: Paint::Solid(color),
-    }
-}
-const fn bowl(cx: i32, cy: i32, outer: i32, inner: i32, color: Color) -> Shape {
-    Shape {
-        primitive: design(Primitive::HalfAnnulus {
-            cx,
-            cy,
-            outer,
-            inner,
-        }),
         paint: Paint::Solid(color),
     }
 }
@@ -178,45 +190,58 @@ pub const ART: &[Shape] = &[
     BADGE_B[0],
     BADGE_B[1],
     BADGE_B[2],
-    // Optical spacing: compact round-to-straight pairs; bring I and X in.
-    // Ink bounds: B 8..19 1/3, R 27..47, E 53..71, E 79..97,
-    // N 105..123, I 129..141, X 147..167.
-    WORD_B[0],
-    WORD_B[1],
-    WORD_B[2],
-    rect(27, 80, 4, 24, WORDMARK),
-    bowl(31, 87, 7, 3, WORDMARK),
-    polygon([Point(31, 91), Point(36, 91), Point(47, 104), Point(42, 104)]),
-    rect(53, 80, 4, 24, WORDMARK),
-    rect(53, 80, 18, 4, WORDMARK),
-    rect(53, 90, 15, 4, WORDMARK),
-    rect(53, 100, 18, 4, WORDMARK),
-    rect(79, 80, 4, 24, WORDMARK),
-    rect(79, 80, 18, 4, WORDMARK),
-    rect(79, 90, 15, 4, WORDMARK),
-    rect(79, 100, 18, 4, WORDMARK),
-    rect(105, 80, 4, 24, WORDMARK),
+    // Optical spacing follows the contours, especially around I's inset stem.
+    // Ink bounds: B 19..35, R 42..58, E 64..80, E 84..100,
+    // N 104..120, I 126..136, X 139..157. Centre: badge/bar axis x=88.
+    rect(19, 80, 4, 24, WORDMARK),
+    word_shoulder(19, 240, 10),
+    word_upper_bowl(19),
+    word_shoulder(19, 266, 14),
+    Shape {
+        primitive: Primitive::HalfAnnulus {
+            cx: 83,
+            cy: 290,
+            outer: 22,
+            inner: 10,
+        },
+        paint: Paint::Solid(WORDMARK),
+    },
+    word_shoulder(19, 300, 12),
+    rect(42, 80, 4, 24, WORDMARK),
+    word_shoulder(42, 240, 10),
+    word_upper_bowl(42),
+    word_shoulder(42, 266, 10),
+    polygon([Point(46, 91), Point(51, 91), Point(58, 104), Point(53, 104)]),
+    rect(64, 80, 4, 24, WORDMARK),
+    rect(64, 80, 16, 4, WORDMARK),
+    rect(64, 90, 13, 4, WORDMARK),
+    rect(64, 100, 16, 4, WORDMARK),
+    rect(84, 80, 4, 24, WORDMARK),
+    rect(84, 80, 16, 4, WORDMARK),
+    rect(84, 90, 13, 4, WORDMARK),
+    rect(84, 100, 16, 4, WORDMARK),
+    rect(104, 80, 4, 24, WORDMARK),
     polygon([
-        Point(105, 80),
-        Point(109, 80),
-        Point(123, 104),
-        Point(119, 104),
+        Point(104, 80),
+        Point(108, 80),
+        Point(120, 104),
+        Point(116, 104),
     ]),
-    rect(119, 80, 4, 24, WORDMARK),
-    rect(133, 80, 4, 24, WORDMARK),
-    rect(129, 80, 12, 4, WORDMARK),
-    rect(129, 100, 12, 4, WORDMARK),
+    rect(116, 80, 4, 24, WORDMARK),
+    rect(129, 80, 4, 24, WORDMARK),
+    rect(126, 80, 10, 4, WORDMARK),
+    rect(126, 100, 10, 4, WORDMARK),
     polygon([
-        Point(147, 80),
-        Point(152, 80),
-        Point(167, 104),
-        Point(162, 104),
-    ]),
-    polygon([
-        Point(162, 80),
-        Point(167, 80),
+        Point(139, 80),
+        Point(144, 80),
+        Point(157, 104),
         Point(152, 104),
-        Point(147, 104),
+    ]),
+    polygon([
+        Point(152, 80),
+        Point(157, 80),
+        Point(144, 104),
+        Point(139, 104),
     ]),
 ];
 
