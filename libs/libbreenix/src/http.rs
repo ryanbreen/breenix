@@ -778,6 +778,10 @@ pub fn http_request(
         close_fd(fd);
         return Err(HttpError::ConnectError);
     }
+    if crate::socket::start_recv_deadline().is_err() {
+        close_fd(fd);
+        return Err(HttpError::RecvError);
+    }
     #[cfg(feature = "std")]
     eprint!("[http] TCP connected ({}ms)\n", http_elapsed_ms(&connect_start));
 
