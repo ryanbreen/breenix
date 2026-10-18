@@ -1029,3 +1029,29 @@ and `probe_int`) had a normal binary32 bit pattern among those literals (`0x0080
 other 9 used only 0 and small integers there and passed. The generator now gives no instruction only immediate sources. Attributing
 the deviation to the host compiler's constant folding is an inference from these observations, as B12's
 was for ARM64 QEMU's renderer.
+
+## B20: Parallels virtio-gpu BAR0 memory
+
+On Parallels the UEFI framebuffer that `present/firmware-handoff` hashes is BAR0 of the virtio-gpu
+device itself (`1af4:1050`, 128 MiB at `0x10000000`; the GOP mode used its first 3 MiB). In a one-case run
+of that case (`run.sh --parallels --suite gpu --case present/firmware-handoff` at `9d8cebd1` with
+diagnostic prints not committed), the hash at the console's handoff was `0x7319e2a2077647ed`, and after
+the GPU console's first present the whole region read 0 (hash `0x3fe01b4acfe22325`, also read after
+a device reset in another run), with no device reset between.
+
+A Linux guest on the same configuration ran `tools/gpu-experiments/parallels-vram-scanout.py`
+(commit `74b9252e`) as root, first with the command `true` (no change of scanout), then with
+`scripts/parallels/egl_green_test.c`. Its output:
+
+```text
+written: first=kept last=kept first-16=030a11181f262d343b424950575e656c
+after 1 s: first=changed last=changed first-16=01010100010101000101010001010100
+command exit 0
+after the 3D scanout: first=changed last=changed first-16=01010100010101000101010001010100
+```
+
+The second run printed the same three lines and `command exit 1` (the program did not take the
+display). The pattern written into BAR0 from the guest CPU was replaced within one second without any
+guest action: while the virtio-gpu drives the display, the device rewrites its BAR0 memory. A hash of
+that memory changes without any guest write, so on Parallels it cannot show whether the kernel wrote
+the firmware framebuffer after the handoff.
