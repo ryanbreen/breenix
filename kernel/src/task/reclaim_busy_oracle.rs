@@ -549,10 +549,10 @@ fn run_coordinator() {
     }
     STAGE.store(6, Ordering::Release);
 
-    // Leave both receipts retired for the boot tests that follow: the
-    // leader's receipt, which holds its root, retires once the member's row is
-    // gone.
-    // The member's completion was captured before changing the watch. Queue
+    // Attempt leader retirement for the boot tests that follow; its receipt
+    // holds its root until the member row is gone. Member completion is
+    // counted only if observed in the first window, before changing the watch.
+    // A late member completion is not awaited here. Queue
     // absence is insufficient: the drain removes a receipt before retiring it.
     process_task::boot_reclaim_watch(leader.as_u64());
     let leader_retired = retire_through_exit_path(leader);

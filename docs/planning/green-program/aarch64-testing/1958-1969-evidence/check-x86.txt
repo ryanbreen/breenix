@@ -1,3 +1,4 @@
+# claim-lint:ok: This is retained compiler output; zero is a dependency crate name, not a measured count. PR #1971.
     Blocking waiting for file lock on build directory
    Compiling compiler_builtins v0.1.160 (<toolchain>/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
    Compiling core v0.0.0 (<toolchain>/lib/rustlib/src/rust/library/core)

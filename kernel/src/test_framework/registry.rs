@@ -8408,8 +8408,8 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
             Ok(pair) => pair,
             Err(_) => return TestResult::Fail("pty allocate failed"),
         };
-        // This row lends the kernel test an fd table; its user thread is never
-        // scheduled. Withdraw exactly the PID creation returned on every path.
+        // This row lends the kernel test an fd table without scheduling its user
+        // thread. Withdraw the PID returned by creation after the ioctl check.
         let created = {
             let mut manager_guard = crate::process::manager();
             manager_guard.as_mut().map(|manager| {
