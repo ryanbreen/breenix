@@ -51,13 +51,16 @@ A spawn QoS clamp survives fork and exec. When the launcher cannot attain
 the boot priority, `qemu-unclamp.py` uses a temporary Interactive launchd job
 and application spawn policy to start an unclamped task. It transfers the
 original console descriptors and environment over a private Unix socket,
-returns the payload's exit status, and stops QEMU and removes the job when
-the caller exits or dies. Ordinary backgrounded launches still exec in place.
+returns the payload's exit status, and requests QEMU termination and job removal when
+the caller exits or dies. After supervisor SIGKILL, QEMU termination can take
+up to five seconds; job removal in that path is not asserted by the host test.
+Ordinary backgrounded launches still exec in place.
 Launcher build or priority-restoration failures stop the boot.
 `BREENIX_QEMU_UI=0` explicitly bypasses this policy for diagnostics; it does
-not change the accelerator. The Mac boot slot covers the full VM lifetime,
-and boots do not wait for host load to fall. Keep the VM window open on a Mac
-(`--display`); background only builds, never an entire landing-gate command.
+not change the accelerator. The Mac boot slot serializes supervised boots;
+the SIGKILL cleanup delay above can outlive the supervisor's slot lease.
+Boots start without waiting for host load to fall. Keep the VM window open on a Mac
+(`--display`); apply background policy to builds rather than an entire landing-gate command.
 
 Parallels VMs get the same class: `run.sh` creates each one with the system flag
 `vm.vcpuprio=6`, so `prl_vm_app` starts its vCPU threads at user-interactive QoS
