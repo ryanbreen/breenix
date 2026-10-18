@@ -453,8 +453,7 @@
     {
       "id": "xhci",
       "title": "USB controller by MSI",
-      "summary": "Not yet measured: the producing lane has not landed.",
-      "stub": true,
+      "summary": "Clean-room x86 controller handoff, reset, repeated MSI completions across event-ring wraps, and root-port descriptor enumeration.",
       "bootShapes": [
         "ramdisk",
         "install",
@@ -477,7 +476,7 @@
           },
           {
             "name": "Command completed by MSI",
-            "marker": "[xhci] no-op completed by MSI"
+            "marker": "[xhci] no-op completed by MSI: "
           },
           {
             "name": "Port census",

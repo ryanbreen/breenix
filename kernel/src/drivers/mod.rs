@@ -12,6 +12,8 @@ pub mod fw_cfg;
 pub mod nvme;
 pub mod pci;
 #[cfg(target_arch = "x86_64")]
+pub mod xhci;
+#[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
 #[cfg(target_arch = "aarch64")]
 pub mod usb;
@@ -183,6 +185,9 @@ pub fn run_post_init_self_tests() {
 
     // BCM5720 bring-up probes wait for link and take frames by MSI.
     bcm5720::start_networking();
+
+    // The independent bare-metal USB worker uses MSI; ARM USB is unchanged.
+    xhci::init();
 }
 
 /// Initialize the driver subsystem (ARM64 version)
