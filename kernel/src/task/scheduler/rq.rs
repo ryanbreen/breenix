@@ -1658,11 +1658,19 @@ fn pop_local(local: &mut Held, stack_waits: &mut u64) -> Option<u64> {
     None
 }
 
+/// One quantum in ticks (`interrupts::timer::TIME_QUANTUM`): how long a CPU's
+/// idle thread waits for the CPU while it carries boot work.
+const BOOT_IDLE_WAIT_TICKS: u64 = 10;
+
+/// The tick at which each CPU last switched away from its idle thread.
+static IDLE_LEFT_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
 /// `Scheduler::schedule` on x86_64 under this CPU's run-queue lock alone
 /// (#1649). Returns the outgoing and the incoming thread, both owned here.
 pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
     let cpu = local.cpu;
-    local.state().last_schedule_ticks = crate::time::get_ticks();
+    let now = crate::time::get_ticks();
+    local.state().last_schedule_ticks = now;
     reclaim_stalled(local);
     apply_isr_wakeups(local);
     if crate::net::loopback_queue_has_work() {
@@ -1720,8 +1728,23 @@ pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
         }
     }
 
+    // Until a thread reaches user mode, a CPU's idle thread resumes its saved
+    // context when dispatched (`switch_to_thread`), and on the boot CPU that
+    // context is the boot coordinator, which the boot tests' kernel threads
+    // wait on. Idle is kept out of the run queues, so the picks below reach
+    // it only when every queue is empty or through the lone-thread handoff
+    // further down. A worker spinning for the coordinator's flag while
+    // fbcon's render thread woke every 20 ms kept one or the other queued at
+    // every pass, each switch began a fresh quantum, and the coordinator was
+    // not picked again until something else set the flag (#1848: 5 of 5
+    // forced preemptions). Here it gets the CPU once it has waited a quantum,
+    // until its next tick.
+    let idle_thread = local.state().idle_thread;
+    let boot_idle_due = local.state().current_thread.is_some_and(|tid| tid != idle_thread)
+        && !crate::syscall::handler::is_ring3_confirmed()
+        && now.wrapping_sub(IDLE_LEFT_TICK[cpu].load(Ordering::Relaxed)) >= BOOT_IDLE_WAIT_TICKS;
     let mut stack_waits = 0u64;
-    let stolen = if POLICIES_IN_USE.load(Ordering::Acquire) {
+    let stolen = if !boot_idle_due && POLICIES_IN_USE.load(Ordering::Acquire) {
         let floor = best_queued_rank(local, None);
         steal_higher_ranked(local, floor, &mut stack_waits)
     } else {
@@ -1729,12 +1752,13 @@ pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
     };
     let mut next = match stolen {
         Some(tid) => tid,
+        None if boot_idle_due => idle_thread,
         None => match pop_local(local, &mut stack_waits) {
             Some(tid) => tid,
             None => (0..MAX_CPUS)
                 .filter(|&other| other != cpu)
                 .find_map(|other| steal_from(local, other, &mut stack_waits, false))
-                .unwrap_or(local.state().idle_thread),
+                .unwrap_or(idle_thread),
         },
     };
     super::wait_for_stacks_x86(core::mem::take(&mut stack_waits), cpu);
@@ -1784,6 +1808,9 @@ pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
     }
 
     let old = current.unwrap_or(idle);
+    if old == idle {
+        IDLE_LEFT_TICK[cpu].store(now, Ordering::Relaxed);
+    }
     local.state().current_thread = Some(next);
     set_owner(next, cpu);
     LEAVING_STACK[cpu].store(old, Ordering::Release);
