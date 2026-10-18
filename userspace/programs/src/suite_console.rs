@@ -788,10 +788,15 @@ impl Drop for VtChild {
 
 fn chvt_chvt_switches() -> CaseResult {
     measured(|| {
+        let tty3 = VtFd::open(3)?;
+        io::write(tty3.0, b"\x1bcchvt-switch-witness\r\n").map_err(|e| e.to_string())?;
         let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
         require(child.wait()? == 0, "chvt 3 failed")?;
         require(foreground()? == 3, "chvt did not select tty3")?;
-        identical(&screen_check()?)?;
+        let check = screen_check()?;
+        require(check.lines().any(|l| l == "console foreground: tty3"), "read-back is not tty3")?;
+        require(check.lines().any(|l| l == "console row: chvt-switch-witness"), "tty3 witness missing")?;
+        identical(&check)?;
         activate(1)
     })
 }
@@ -871,8 +876,8 @@ fn login_credentials() -> Verdict<LoginCredentials> {
         require(n > 0, "getrandom made no progress")?;
         at += n;
     }
-    // Encode the 64 random bits in 13 unmodified keyboard chords. Two logins
-    // plus logout and respawn must fit the suite's ten-second case limit.
+    // Encode the 64 random bits in 13 unmodified keyboard chords. The two-login
+    // cases have named allowances for host injection, verification and respawn.
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
     let mut password = String::new();
@@ -1054,6 +1059,12 @@ fn getty_independent_sessions() -> CaseResult {
         let second = login_vt(5, &account.password)?;
         let session = |line: &str| line.split_whitespace().find(|part| part.starts_with("sid=")).unwrap_or("").to_string();
         require(session(&first) != session(&second), "two VTs shared a session")?;
+        for proof in [&first, &second] {
+            let sid: i32 = session(proof).strip_prefix("sid=").ok_or("missing session")?
+                .parse().map_err(|e| format!("invalid session: {e}"))?;
+            let actual = libbreenix::process::getsid(sid).map_err(|e| format!("login session exited: {e}"))?;
+            require(actual.raw() as i32 == sid, "login process changed session")?;
+        }
         // TIOCGSID is queried by the login shell on its own controlling
         // terminal; an outside session correctly receives ENOTTY for that query.
         require(vt_text(2)?.contains(&first) && vt_text(5)?.contains(&second),

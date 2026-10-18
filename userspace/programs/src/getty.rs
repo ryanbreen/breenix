@@ -2,6 +2,8 @@
 use libbreenix::{io, process, signal, termios, types::Fd};
 use std::io::Write;
 
+const O_NOCTTY: u32 = 0o400;
+
 fn check<T, E: std::fmt::Display>(result: Result<T, E>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
 }
@@ -16,7 +18,7 @@ fn run() -> Result<(), String> {
     // Init detached its session before spawning us. Repeating this on a
     // respawn also acquires the terminal after the previous session leader exits.
     let sid = check(process::setsid())?;
-    let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | 0o400))?;
+    let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | O_NOCTTY))?;
     check(termios::set_controlling_terminal(fd))?;
     for target in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] { check(io::dup2(fd, target))?; }
     if fd.raw() > 2 { check(io::close(fd))?; }
