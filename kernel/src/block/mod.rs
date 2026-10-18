@@ -177,6 +177,9 @@ pub fn disk(index: usize) -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 /// but filesystems may use 1024, 2048, or 4096 byte blocks).
 #[allow(dead_code)] // Part of public block device API, will be used by ext2 filesystem
 pub trait BlockDevice: Send + Sync {
+    /// Whether the backing device refuses writes.
+    fn is_read_only(&self) -> bool { false }
+
     /// Hardware backend used for a device-specific write grant.
     fn hardware_disk(&self) -> Option<HardwareDisk> { None }
 

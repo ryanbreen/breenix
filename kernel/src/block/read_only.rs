@@ -10,6 +10,7 @@ pub(super) fn device(device: Box<dyn BlockDevice>) -> Box<dyn BlockDevice> {
 }
 
 impl BlockDevice for ReadOnly {
+    fn is_read_only(&self) -> bool { true }
     fn hardware_disk(&self) -> Option<super::HardwareDisk> { self.0.hardware_disk() }
 
     fn identity(&self) -> usize { self.0.identity() }
@@ -61,6 +62,7 @@ mod tests {
         let identity = backend.identity();
         let disk = device(backend);
         assert_eq!(disk.identity(), identity);
+        assert!(disk.is_read_only());
         let mut bytes = [0; 1024];
         disk.read_blocks(0, 2, &mut bytes).unwrap();
         assert_eq!(bytes, [0x5a; 1024]);
