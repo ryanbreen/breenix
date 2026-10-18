@@ -818,6 +818,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut announced = false;
     let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
+        // A read-back requested during this pass waits for the next snapshot.
+        let proc_token = PROC_CHECK.load(Ordering::Acquire);
         // Replies are input, independent of which owner currently draws. Retry
         // on a busy/full input ring instead of losing a CPR byte to contention.
         // Each terminal's replies go to its own input queue.
@@ -833,13 +835,13 @@ fn render_thread(display: &'static Display, attached: Attached) {
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
             splash_run.pass(display, &mut screen.shadow);
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, proc_token);
             end_pass();
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
         if !SCREEN.load(Ordering::Acquire) {
-            answer_checks(Err(Absent::NotYet), false);
+            answer_checks(Err(Absent::NotYet), false, proc_token);
             sleep_ms(PASS_INTERVAL_MS);
             continue;
         }
@@ -854,7 +856,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 vt::checked(shown);
             }
             end_pass();
-            answer_checks(Err(Absent::Taken), true);
+            answer_checks(Err(Absent::Taken), true, proc_token);
             // A switch waits on these passes: look again soon while one does.
             sleep_ms(if vt::switching() { PASS_INTERVAL_MS } else { PASS_INTERVAL_MS * 10 });
             continue;
@@ -913,7 +915,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
             }
         }
         if announced {
-            answer_checks(Ok((&screen, snapshot.fg)), true);
+            answer_checks(Ok((&screen, snapshot.fg)), true, proc_token);
         }
         end_pass();
         sleep_ms(PASS_INTERVAL_MS);
@@ -1288,9 +1290,9 @@ impl fmt::Display for Hex<'_> {
 /// Answer the checks asked for: on the render thread, after a pass, so the
 /// screen is what `shown` says it is. The idle read-back waits for a pass that
 /// may answer it (`idle_allowed`): it reads the console's text, not the splash.
-fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
+fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, proc_token: u32) {
     let idle = idle_allowed && IDLE_CHECK.swap(false, Ordering::AcqRel);
-    let token = PROC_CHECK.swap(0, Ordering::AcqRel);
+    let token = PROC_CHECK.compare_exchange(proc_token, 0, Ordering::AcqRel, Ordering::Acquire).unwrap_or(0);
     if !idle && token == 0 {
         return;
     }
