@@ -182,12 +182,61 @@ fn check(index: usize) -> Result<(), &'static str> {
         15 => {
             let info = graphics::fbinfo().map_err(|_| "fbinfo failed")?;
             if info.width == 0 || info.height == 0 { return Err("empty framebuffer"); }
+            #[cfg(target_arch = "x86_64")]
+            framebuffer_check(&info)?;
+            #[cfg(target_arch = "aarch64")]
             graphics::fb_fill_rect(0, 0, 1, 1, graphics::rgb(36, 48, 70))
                 .map_err(|_| "framebuffer draw failed")?;
             Ok(())
         }
         16 => probe_metal::fetch(),
         _ => Err("unknown check"),
+    }
+}
+
+/// Exercise the production x86 drawing contract and read back the device pixels.
+#[cfg(target_arch = "x86_64")]
+fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
+    if !(3..=4).contains(&info.bytes_per_pixel) || info.pixel_format > 1 {
+        return Err("unsupported framebuffer format");
+    }
+    graphics::take_over_display().map_err(|_| "display takeover failed")?;
+    let (ptr, width) = graphics::fb_mmap_pane().map_err(|_| "framebuffer mmap failed")?;
+    if width != info.width { return Err("framebuffer pane is not whole screen"); }
+    // SAFETY: fb_mmap_pane provides height rows of width * bytes_per_pixel bytes.
+    let mut fb = unsafe { FrameBuf::from_raw(ptr, width as usize, info.height as usize,
+        (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()) };
+    let w = fb.width.min(2);
+    let h = fb.height.min(2);
+    let x = fb.width - w;
+    let y = fb.height - h;
+    // Complement the 2x2 pattern for the second flush to detect stale contents.
+    for mask in [0, 0x00ff_ffff] {
+        for row in 0..h {
+            for col in 0..w {
+                let rgb = (0x0024_3046u32 + (row as u32 * 2 + col as u32) * 0x0011_2317) ^ mask;
+                fb.put_pixel(x + col, y + row,
+                    libgfx::color::Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+            }
+        }
+        graphics::fb_flush_rect(x as i32, y as i32, w as i32, h as i32)
+            .map_err(|_| "framebuffer flush failed")?;
+        for row in 0..h {
+            for col in 0..w {
+                let expected = (0x0024_3046u32 + (row as u32 * 2 + col as u32) * 0x0011_2317) ^ mask;
+                let actual = graphics::fb_read_pixel((x + col) as i32, (y + row) as i32)
+                    .map_err(|_| "framebuffer readback failed")?;
+                if actual != expected { return Err("framebuffer pixels did not reach display"); }
+            }
+        }
+    }
+    // This supervised child still owns the display and its pane after dropping root.
+    // Readback must refuse it even though those ownership checks still pass.
+    extern "C" { fn setuid(uid: u32) -> i32; }
+    if unsafe { setuid(65534) } != 0 { return Err("readback privilege drop failed"); }
+    match graphics::fb_read_pixel(x as i32, y as i32) {
+        Err(libbreenix::error::Error::Os(libbreenix::Errno::EPERM)) => Ok(()),
+        _ => Err("unprivileged framebuffer readback was not denied"),
     }
 }
 
@@ -212,7 +261,7 @@ fn exec_check(path: &[u8], argv: Option<&[*const u8; 3]>) -> Result<(), &'static
 /// and without a supervising child nothing could stop them hanging the probe.
 const INLINE_SAFE: [bool; 16] = [
     true, true, false, true, true, false, false, false,
-    false, false, true, false, false, true, false, true,
+    false, false, true, false, false, true, false, cfg!(target_arch = "aarch64"),
 ];
 const LIMIT_NS: i128 = 2_000_000_000;
 const REAP_LIMIT_NS: i128 = 500_000_000;
@@ -436,6 +485,12 @@ fn probe() {
     let mut passed = 0;
     for index in 0..IDS.len() {
         let (result, inline) = supervised_check(index);
+        #[cfg(target_arch = "x86_64")]
+        if index == 15 {
+            // The framebuffer check child took ownership to flush its own pane.
+            if let Some(screen) = fb.as_mut() { screen.lost = true; }
+            reclaim_screen(&mut fb);
+        }
         states[index] = Some(result.is_ok());
         match result {
             Ok(()) => {
