@@ -24,7 +24,12 @@ if arch=='x86':
     for source,name in [('code.fd','OVMF_CODE.fd'),('vars.fd','OVMF_VARS.fd')]:
         override='BREENIX_OVMF_CODE_PATH' if source=='code.fd' else 'BREENIX_OVMF_VARS_PATH'
         shutil.copyfile(os.environ.get(override, root/'target/ovmf/x64'/source),out/name)
-    uefi=max((root/'target/release/build').glob('breenix-*/out/breenix-uefi.img'), key=lambda p:p.stat().st_mtime)
+    launcher_env=dict(os.environ, BREENIX_PRINT_UEFI_IMAGE='1')
+    launcher_env.setdefault('BREENIX_OVMF_CODE_PATH', str(root/'target/ovmf/x64/code.fd'))
+    launcher_env.setdefault('BREENIX_OVMF_VARS_PATH', str(root/'target/ovmf/x64/vars.fd'))
+    output=subprocess.check_output([str(root/'target/release/qemu-uefi')], env=launcher_env, text=True)
+    uefi=pathlib.Path(next(line.removeprefix('UEFI_IMAGE=') for line in output.splitlines() if line.startswith('UEFI_IMAGE=')))
+
     shutil.copyfile(uefi,out/'breenix-uefi.img'); uefi=out/'breenix-uefi.img'
     cmd+=['-drive',f'if=pflash,format=raw,readonly=on,file={out}/OVMF_CODE.fd','-drive',f'if=pflash,format=raw,file={out}/OVMF_VARS.fd']
     for name,path,ro in [('hd',uefi,True),('testdisk',root/'target/test_binaries.img',True),('ext2disk',out/'root.img',readonly),('homedisk',out/'home.img',True)]:
