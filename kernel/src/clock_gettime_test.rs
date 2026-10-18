@@ -73,10 +73,10 @@ pub fn test_clock_gettime() {
     let freq_ghz = freq_hz as f64 / 1_000_000_000.0;
     log::info!("  TSC frequency: {} Hz ({:.2} GHz)", freq_hz, freq_ghz);
 
-    // S19: plausibility is separate from agreement with an independent rate.
+    // Keep the supported 1-5 GHz bound as well as independent rate agreement.
     assert!(
-        (100_000_000..=10_000_000_000).contains(&freq_hz),
-        "TSC frequency {} Hz outside plausible range (100 MHz-10 GHz)",
+        (1_000_000_000..=5_000_000_000).contains(&freq_hz),
+        "TSC frequency {} Hz outside plausible range (1-5 GHz)",
         freq_hz
     );
     let (reference_hz, source) = independent_tsc_frequency();
