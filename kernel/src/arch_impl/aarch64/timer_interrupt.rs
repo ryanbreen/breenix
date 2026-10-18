@@ -1013,6 +1013,11 @@ fn dump_gic_state() {
 /// waiting and reports a refusal as `[BXCAP:NOTE sched_lock_held]` after the
 /// lock-independent sections are already on the wire.
 fn check_soft_lockup(cpu0_tick: u64) {
+    // A fatal GPU takeover parks its users with IRQs masked. Remaining timer
+    // ticks do not turn that intentional terminal stop into a scheduler lockup.
+    if crate::gpu::panic::terminal() {
+        return;
+    }
     let ctx_count = crate::task::scheduler::context_switch_count();
     let last_ctx = WATCHDOG_LAST_CTX_SWITCH.load(Ordering::Relaxed);
 
