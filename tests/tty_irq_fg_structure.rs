@@ -933,8 +933,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     // Leg G -- the interrupt-side signal path stops reading the snapshot.
     let reader_dropped = replace_once(
         &driver,
-        "        if let Some(pgrp) = self.foreground_pgrp_snapshot() {\n            let pid = ProcessId::new(pgrp);",
-        "        if let Some(pgrp) = None::<u64> {\n            let pid = ProcessId::new(pgrp);",
+        "        let Some(pgrp) = self.foreground_pgrp_snapshot() else {\n",
+        "        let Some(pgrp) = None::<u64> else {\n",
     );
     assert_ne!(reader_dropped, driver, "leg G's mutation must apply");
     let error = validate_irq_readers_use_the_snapshot(&reader_dropped)

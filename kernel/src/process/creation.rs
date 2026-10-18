@@ -110,7 +110,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         Err(error) => return Err(error),
     };
 
-    // Creation adopts only a missing or dead foreground group (S21).
+    // Creation adopts the new process's group only when the console's
+    // foreground group is missing or dead; a live one belongs to whoever set
+    // it with tcsetpgrp (S21, S25).
     if let Some(tty) = crate::tty::console() {
         tty.initialize_foreground_pgrp(pid);
     }
@@ -243,7 +245,7 @@ pub fn create_user_process_before_run(
 
     before_run(pid);
 
-    // Same foreground liveness rule as x86_64 (S21).
+    // Same foreground liveness rule as x86_64 (S21, S25).
     if let Some(tty) = crate::tty::console() {
         tty.initialize_foreground_pgrp(pid);
     }

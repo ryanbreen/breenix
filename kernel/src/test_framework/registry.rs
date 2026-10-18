@@ -9133,22 +9133,22 @@ fn test_future_basics() -> TestResult {
 // System Subsystem Tests (Phase 4e)
 // =============================================================================
 
-/// Test that create_user_process() sets the TTY foreground process group.
+/// Test how create_user_process() treats the TTY foreground process group.
 ///
-/// Creation preserves a live foreground job and replaces a dead group (S21).
+/// Creation adopts a missing or dead group and preserves a live one (S21).
+/// A group is live while an unreaped process has it as its pgid, or while it
+/// is the PID of such a process (S25). Ctrl+C goes to the group's members,
+/// not to a process whose PID merely equals the group number (S25).
 fn test_tty_foreground_pgrp() -> TestResult {
     use alloc::string::String;
     let Some(tty) = crate::tty::console() else {
         return TestResult::Fail("console TTY missing");
     };
-    #[cfg(all(target_arch = "x86_64", feature = "testing"))]
-    let elf = crate::userspace_test::get_test_binary("hello_time");
-    #[cfg(all(target_arch = "x86_64", not(feature = "testing")))]
-    let elf = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../userspace/programs/hello_time.elf"
-    ))
-    .to_vec();
+    #[cfg(target_arch = "x86_64")]
+    let elf = match crate::userspace_test::load_test_binary_from_disk("hello_time") {
+        Ok(elf) => elf,
+        Err(_) => return TestResult::Fail("hello_time unavailable from the test disk"),
+    };
     #[cfg(target_arch = "aarch64")]
     let elf = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -9156,66 +9156,182 @@ fn test_tty_foreground_pgrp() -> TestResult {
     ))
     .to_vec();
 
+    // A kernel-created process starts in init's group (process.rs), so that
+    // is the group creation adopts. The created process may already have
+    // exited on a peer CPU by the time creation returns, so the expectation
+    // does not depend on its process-table row surviving this observation.
+    let adopted = Some(crate::process::RESERVED_INIT_PID);
+    let found = tty.get_foreground_pgrp();
+
+    // Leg 1: no foreground group at all.
+    tty.set_foreground_pgrp_raw_for_test(None);
+    if crate::process::creation::create_user_process(String::from("tty_pgrp_none"), &elf).is_err() {
+        return TestResult::Fail("missing-group process creation failed");
+    }
+    if tty.get_foreground_pgrp() != adopted {
+        return TestResult::Fail("creation did not adopt a missing foreground group");
+    }
+
+    // Leg 2: a group with no member and no process of that PID.
     const DEAD: u64 = 0xDEAD_BEEF;
     {
         let manager = crate::process::manager();
         let Some(ref manager) = *manager else {
             return TestResult::Fail("process manager missing");
         };
-        if manager
-            .iter_processes()
-            .any(|(_, row)| !row.is_terminated() && row.pgid.as_u64() == DEAD)
-        {
+        if manager.iter_processes().any(|(pid, row)| {
+            !row.is_tombstone() && (row.pgid.as_u64() == DEAD || pid.as_u64() == DEAD)
+        }) {
             return TestResult::Fail("dead-group fixture has a live member");
         }
     }
     tty.set_foreground_pgrp(DEAD);
-    if crate::process::creation::create_user_process(String::from("tty_pgrp_test"), &elf).is_err() {
+    if crate::process::creation::create_user_process(String::from("tty_pgrp_dead"), &elf).is_err() {
         return TestResult::Fail("dead-group process creation failed");
     }
-    // A kernel-created process inherits init's group. It may already have
-    // exited on a peer CPU by the time creation returns, so do not depend on
-    // its process-table row surviving this observation.
-    let expected = Some(crate::process::RESERVED_INIT_PID);
-    if tty.get_foreground_pgrp() != expected {
+    if tty.get_foreground_pgrp() != adopted {
         return TestResult::Fail("creation did not replace dead foreground group");
     }
 
-    // A real, unpublished-to-scheduler process cannot exit during this leg.
-    // Give it a different group so unconditional adoption would be detected.
-    let (live_pid, live_thread) = {
+    // Legs 3 to 5 use real processes not yet handed to the scheduler, so they
+    // cannot exit while the legs assert.
+    let mut fixtures = alloc::vec::Vec::new();
+    {
         let mut manager = crate::process::manager();
         let Some(ref mut manager) = *manager else {
             return TestResult::Fail("process manager missing");
         };
         let root = crate::process::credentials::ProcessCredentials::root();
-        let live_pid = match manager.create_process_with_argv(
-            String::from("tty_pgrp_live"),
-            &elf,
-            &[b"tty_pgrp_live\0"],
-            &root,
-            None,
-        ) {
-            Ok(pid) => pid,
-            Err(_) => return TestResult::Fail("live-group fixture creation failed"),
-        };
-        let row = manager.get_process_mut(live_pid).unwrap();
-        row.pgid = live_pid;
-        let thread =
-            alloc::boxed::Box::new(row.main_thread.as_mut().unwrap().publish_to_scheduler());
-        (live_pid, thread)
-    };
+        for _ in 0..2 {
+            let pid = match manager.create_process_with_argv(
+                String::from("tty_pgrp_live"),
+                &elf,
+                &[b"tty_pgrp_live\0"],
+                &root,
+                None,
+            ) {
+                Ok(pid) => pid,
+                Err(_) => break,
+            };
+            let row = manager.get_process_mut(pid).unwrap();
+            let thread =
+                alloc::boxed::Box::new(row.main_thread.as_mut().unwrap().publish_to_scheduler());
+            fixtures.push((pid, thread));
+        }
+    }
+    if fixtures.len() != 2 {
+        for (_, thread) in fixtures {
+            crate::task::scheduler::spawn(thread);
+        }
+        return TestResult::Fail("live-group fixture creation failed");
+    }
+    let live_pid = fixtures[0].0;
+    let member_pid = fixtures[1].0;
+
+    // Leg 3: the group number is a live process's PID while that process is
+    // in another group, as after tty_test's tcsetpgrp to its own PID.
     tty.set_foreground_pgrp(live_pid.as_u64());
-    let created =
-        crate::process::creation::create_user_process(String::from("tty_pgrp_preserve"), &elf);
-    let preserved = tty.get_foreground_pgrp() == Some(live_pid.as_u64());
-    // Release the fixture to normal execution and exit even on a failed assertion.
-    crate::task::scheduler::spawn(live_thread);
-    if created.is_err() {
+    let created_pid_leg =
+        crate::process::creation::create_user_process(String::from("tty_pgrp_pid"), &elf);
+    let preserved_pid_leg = tty.get_foreground_pgrp() == Some(live_pid.as_u64());
+
+    // Leg 4: the group has a live member and is no process's PID, as after
+    // its leader has been reaped.
+    const MEMBER_ONLY: u64 = 0xBEEF_0822;
+    let member_only_free = {
+        let mut manager = crate::process::manager();
+        match *manager {
+            Some(ref mut manager) => {
+                let free = manager.get_process(crate::process::ProcessId::new(MEMBER_ONLY)).is_none();
+                if let Some(row) = manager.get_process_mut(live_pid) {
+                    row.pgid = crate::process::ProcessId::new(MEMBER_ONLY);
+                }
+                free
+            }
+            None => false,
+        }
+    };
+    tty.set_foreground_pgrp(MEMBER_ONLY);
+    let created_member_leg =
+        crate::process::creation::create_user_process(String::from("tty_pgrp_member"), &elf);
+    let preserved_member_leg = tty.get_foreground_pgrp() == Some(MEMBER_ONLY);
+
+    // Leg 5: Ctrl+C through the console's interrupt-side entry reaches the
+    // foreground group's member, and not the process whose PID merely equals
+    // the group number (S25). The member's signal shows the group walk ran,
+    // so the other's absence is not vacuous. A busy console or process table
+    // drops an interrupt-side Ctrl+C, so the injection repeats, bounded.
+    let (member_signalled, pid_holder_signalled) = {
+        {
+            let mut manager = crate::process::manager();
+            if let Some(ref mut manager) = *manager {
+                if let Some(row) = manager.get_process_mut(live_pid) {
+                    row.pgid = crate::process::ProcessId::new(crate::process::RESERVED_INIT_PID);
+                }
+                if let Some(row) = manager.get_process_mut(member_pid) {
+                    row.pgid = live_pid;
+                }
+            }
+        }
+        let termios = tty.get_termios();
+        let mut quiet = termios;
+        quiet.c_lflag &= !crate::tty::termios::ECHO;
+        quiet.c_lflag |= crate::tty::termios::ISIG;
+        tty.set_termios(&quiet);
+        tty.set_foreground_pgrp(live_pid.as_u64());
+        let sigint = crate::signal::constants::SIGINT;
+        let pending = |pid| {
+            crate::process::manager()
+                .as_ref()
+                .and_then(|manager| manager.get_process(pid))
+                .is_some_and(|row| row.signals.is_pending(sigint))
+        };
+        for _ in 0..200 {
+            let _ = crate::tty::push_char_nonblock(0x03);
+            if pending(member_pid) {
+                break;
+            }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
+        }
+        let signalled = (pending(member_pid), pending(live_pid));
+        tty.flush_input();
+        tty.set_termios(&termios);
+        let mut manager = crate::process::manager();
+        if let Some(ref mut manager) = *manager {
+            for pid in [live_pid, member_pid] {
+                if let Some(row) = manager.get_process_mut(pid) {
+                    row.signals.clear_pending(sigint);
+                }
+            }
+        }
+        signalled
+    };
+
+    // Release the fixtures to normal execution and exit even on a failed
+    // assertion, and give the console back the group it had.
+    for (_, thread) in fixtures {
+        crate::task::scheduler::spawn(thread);
+    }
+    tty.set_foreground_pgrp_raw_for_test(found);
+    if created_pid_leg.is_err() || created_member_leg.is_err() {
         return TestResult::Fail("live-group process creation failed");
     }
-    if !preserved {
-        return TestResult::Fail("creation stole live foreground group");
+    if !preserved_pid_leg {
+        return TestResult::Fail("creation stole a group named by a live PID");
+    }
+    if !member_only_free {
+        return TestResult::Fail("member-only group number names a process");
+    }
+    if !preserved_member_leg {
+        return TestResult::Fail("creation stole a group with a live member");
+    }
+    if !member_signalled {
+        return TestResult::Fail("Ctrl+C did not reach the foreground group's member");
+    }
+    if pid_holder_signalled {
+        return TestResult::Fail("Ctrl+C reached a process outside the group by its PID");
     }
     TestResult::Pass
 }
@@ -10710,7 +10826,7 @@ static SCHEDULER_TESTS: &[TestDef] = &[
 /// - boot_sequence: Verify boot completed and essential subsystems initialized
 /// - system_stability: Verify no panics or errors - reached test point
 /// - kernel_heap: Verify kernel heap functional with various allocation patterns
-/// - tty_foreground_pgrp: Integration test verifying create_user_process() sets TTY foreground pgrp
+/// - tty_foreground_pgrp: Integration test of create_user_process()'s foreground-group rule (S21, S25)
 static SYSTEM_TESTS: &[TestDef] = &[
     #[cfg(target_arch = "aarch64")]
     TestDef {
