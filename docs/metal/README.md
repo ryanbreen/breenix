@@ -985,3 +985,34 @@ claim-lint:ok: 2 of 2 retained host build logs report acquired metal-build waite
 For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PATH`, compile
 `scripts/metal/sha512-crypt.rs` with `rustc --edition=2021 -O` to a temporary helper, then set
 `CONSOLE_HASH_HELPER` to that helper and run `python3 tests/metal_console_test.py`.
+
+
+## xHCI recovery fault boots
+
+A recovery exercise uses `--mode console --input sol --inject xhci-reset-device`
+or `--inject xhci-short-read` through `metal-run boot`, with the target branch.
+It requires a RAM-disk image and cannot be combined with a session, attended
+input or a disk action. The boot record is `fault-test`, evidence-ineligible;
+the milestone scorer refuses it and no milestone verdict is written.
+The boot still uses the machine lease, normal capture and power-off cleanup.
+
+The driver reads the staged `xhci-fault` intent only when console startup asks
+it to run. An ordinary boot replaces that file with an empty, disarmed intent.
+Reset-device sends an invalid SET_CONFIGURATION on two attach attempts. Each
+refusal must exhaust the existing three EP0 attempts, recover the halted
+endpoint, reclaim the slot and reset/re-enumerate the connected device; the
+third attach uses the valid configuration. The reset budget stays two.
+Short-read requests 19 bytes of the 18-byte device descriptor once, waits for
+the real Short Packet and Status completions, then resends for 18 bytes.
+
+HID Set_Idle requests periodic reports during the exercise. The short-read
+check requires a real interrupt-IN completion retained across the EP0 waits;
+both exercises require a valid report decoded and the next input TD queued,
+then restore change-only reports. These unchanged reports exercise delivery
+without manufacturing key presses or claiming a human login. A distinct
+`[xhci-fault] <path> PASS:` line ends the boot only after those checks succeed.
+
+Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specification)
+9.4.3 and 9.4.7, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
+7.2.4, and [xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
+4.6.8 and 4.10.1.1. No other implementation is a reference.

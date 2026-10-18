@@ -224,6 +224,14 @@ class ConsoleTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'measured console'):
                 metal_root.stage_root(image, 'console', None, site, hasher=hasher, idle_minutes=2, replug=True)
 
+            for fault in ('reset-device', 'short-read', None):
+                metal_root.stage_root(image, 'console', None, site, hasher=hasher, xhci_fault=fault)
+                self.assertEqual(read('cat /etc/breenix/xhci-fault'),
+                                 b'' if fault is None else (fault + '\n').encode())
+            with self.assertRaisesRegex(ValueError, 'fault-test'):
+                metal_root.stage_root(image, 'console', None, site, hasher=hasher,
+                                      xhci_fault='short-read', replug=True)
+
             shadow = read('cat /etc/shadow')
             self.assertRegex(shadow, rb'^root:\$6\$[./A-Za-z0-9]{16}\$[./A-Za-z0-9]{86}:')
             self.assertNotIn(site['CONSOLE_PASSWORD'].encode(), shadow)

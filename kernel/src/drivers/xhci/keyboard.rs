@@ -28,16 +28,17 @@ const CSC: u32 = 1 << 17;
 
 /// A configured boot keyboard's interrupt-IN pipe and key state.
 pub(super) struct Pipe {
-    interface: u8,
+    pub(super) interface: u8,
     endpoint: u8,
-    dci: u8,
+    pub(super) dci: u8,
     ring: Ring,
     buffer: Dma,
     request: u32,
-    outstanding: Option<u64>,
+    pub(super) outstanding: Option<u64>,
     state: report::Keyboard,
     errors: u32,
     bad_reports: u64,
+    pub(super) reports: u64,
 }
 
 impl Controller {
@@ -59,7 +60,9 @@ impl Controller {
             self.dispatch();
             self.tick_keyboards();
             if CONSOLE_START.swap(false, Ordering::SeqCst) {
-                if REPLUG.swap(false, Ordering::Relaxed) {
+                if let Some(mode) = super::fault::requested()? {
+                    self.recovery_exercise(mode)?;
+                } else if REPLUG.swap(false, Ordering::Relaxed) {
                     self.replug_exercise();
                 }
                 self.console.arm();
@@ -86,7 +89,7 @@ impl Controller {
         }
     }
 
-    fn dispatch(&mut self) {
+    pub(super) fn dispatch(&mut self) {
         while let Some(port) = self.port_events.pop_front() {
             self.port_changed(port);
         }
@@ -222,11 +225,19 @@ impl Controller {
             state: report::Keyboard::new(),
             errors: 0,
             bad_reports: 0,
+            reports: 0,
         });
         // USB 2.0 9.4.7, then HID 1.11 F.5: boot protocol after configuration;
         // Set_Idle(0) so reports come only on change (7.2.4, F.4).
+        // Test boots refuse two configurations on the wire, retaining the
+        // existing three-attempt EP0 and two-reset attach budgets.
+        let configuration = if self.fault.refuse_configuration(port) {
+            if boot.configuration == 255 { return Err("fault configuration is in use"); }
+            log::info!("[xhci-fault] refusing configuration: reset-attempt={resets}");
+            255
+        } else { boot.configuration };
         for (setup, what) in [
-            (spec::set_configuration(boot.configuration), "SET_CONFIGURATION"),
+            (spec::set_configuration(configuration), "SET_CONFIGURATION"),
             (interface::set_boot_protocol(boot.interface), "Set_Protocol(Boot)"),
             (interface::set_idle_indefinite(boot.interface), "Set_Idle"),
         ] {
@@ -254,7 +265,7 @@ impl Controller {
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
     /// its completion code; a request that halted EP0 is recovered and resent
     /// (`Controller::ep0_transfer`).
-    fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
+    pub(super) fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
         // The device leaves the list for the transfer so the controller can
         // wait for it. The list is read by `dispatch`, between transfers.
         let mut device = self.devices.remove(index);
@@ -344,6 +355,7 @@ impl Controller {
                 };
                 let leds_changed = match pipe.state.report(&report, now, keyboard_leds, &mut |o| console.output(o)) {
                     Ok(summary) => {
+                        pipe.reports += 1;
                         console.note_report(&summary);
                         summary.leds_changed
                     }
@@ -428,7 +440,7 @@ impl Controller {
         }
     }
 
-    fn attach(&mut self, port: u8, resets: u32) {
+    pub(super) fn attach(&mut self, port: u8, resets: u32) {
         match self.enumerate(port) {
             Ok(()) => {
                 let index = self.devices.len() - 1;
@@ -442,7 +454,7 @@ impl Controller {
         }
     }
 
-    fn teardown(&mut self, index: usize, why: &str) {
+    pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let device = self.devices.remove(index);
         let (port, slot, keyboard) = (device.port, device.slot, device.keyboard.is_some());
         let reclaimed = self.reclaim(device);
