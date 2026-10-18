@@ -2490,16 +2490,23 @@ fn each_of_pid(pid: u64, mut f: impl FnMut(u64, bool)) {
     }
 }
 
-/// Sample a wait without spinning, including when this CPU owns the thread.
-/// Recheck ownership under the lock before dereferencing the thread.
+/// Sample a wait with the scheduler's bounded owner-lock retry budget.
+/// A single try can collide with an ordinary timer pass and misclassify a
+/// parked thread as stranded. Use `OWNER_TRIES` as the other owner lookups
+/// do, but try the lock even for the local CPU: `local()` waits unboundedly.
+/// Ownership is rechecked under the lock before dereferencing the thread.
 pub(super) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
-    let owner = owner(tid)?;
-    let mut held = try_remote(owner)?;
-    if self::owner(tid) != Some(owner) {
-        return None;
+    for _ in 0..OWNER_TRIES {
+        let owner = owner(tid)?;
+        if let Some(mut held) = try_remote(owner) {
+            if self::owner(tid) == Some(owner) {
+                let thread = held.thread(tid)?;
+                return Some((thread.state, thread.wake_time_ns));
+            }
+        }
+        core::hint::spin_loop();
     }
-    let thread = held.thread(tid)?;
-    Some((thread.state, thread.wake_time_ns))
+    None
 }
 
 /// `f` on `tid` under its owner's lock, tried `OWNER_TRIES` times: None when
