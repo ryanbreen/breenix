@@ -57,11 +57,16 @@ impl Console {
             crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
         // The USB worker may wake the compositor's waitqueue; the shared input
         // path also runs in interrupt context and must not take that lock.
+        // Ctrl counts as Super for the launcher gesture (`input::report_key`),
+        // so its press wakes the compositor too.
         #[cfg(target_arch = "aarch64")]
         if value == report::PRESS
             && matches!(
                 code,
-                crate::input::event::KEY_LEFTMETA | crate::input::event::KEY_RIGHTMETA
+                crate::input::event::KEY_LEFTMETA
+                    | crate::input::event::KEY_RIGHTMETA
+                    | crate::input::event::KEY_LEFTCTRL
+                    | crate::input::event::KEY_RIGHTCTRL
             )
             && crate::input::has_pending_super_tap()
         {
