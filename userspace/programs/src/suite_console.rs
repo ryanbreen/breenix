@@ -519,6 +519,8 @@ fn emulation_sgr_colours() -> CaseResult {
         }
         t.write(b"\x1b[0mX\x1b[?25l")?;
         t.check()?;
+        // Taking ownership quiesces drawing and preserves the completed frame.
+        let _owner = DisplayOwner::take()?;
         for (i, colour) in COLOURS.iter().enumerate() {
             t.pixel(2*i, 0, 0, 0, *colour)?;
             t.pixel(2*i+1, 0, 0, t.ch-2, *colour)?;
@@ -532,6 +534,8 @@ fn emulation_sgr_256_mapped() -> CaseResult {
         let t = Terminal::open()?;
         t.write(b"\x1b[48;5;196m \x1b[48;5;46m \x1b[48;5;232m \x1b[48;2;120;165;245m \x1b[48;5;15m \x1b[0mX\x1b[?25l")?;
         t.check()?;
+        // Taking ownership quiesces drawing and preserves the completed frame.
+        let _owner = DisplayOwner::take()?;
         // Nearest squared RGB distance, from the contract palette.
         for (col, index) in [1, 2, 0, 12, 15].into_iter().enumerate() {
             t.pixel(col, 0, 0, 0, COLOURS[index])?;
@@ -551,6 +555,8 @@ fn emulation_bold_reverse_underline() -> CaseResult {
         require(digest(&regular) != digest(&bold), "bold did not change the glyph")?;
         t.write(b"\x1b[H\x1b[0;31;44;7m \x1b[0;32;4m \x1b[0;33;45;8mW")?;
         t.check()?;
+        // Taking ownership quiesces drawing and preserves the completed frame.
+        let _owner = DisplayOwner::take()?;
         t.pixel(0, 0, 0, 0, COLOURS[1])?;
         t.pixel(1, 0, 0, t.ch-2, COLOURS[2])?;
         for y in 0..t.ch { for x in 0..t.cw { t.pixel(2, 0, x, y, COLOURS[5])?; } }
@@ -583,6 +589,8 @@ fn emulation_box_drawing() -> CaseResult {
         t.rows(&[&repertoire])?;
         t.write("\x1b[H\x1b[?25l┌─┐\r\n│ │\r\n└─┘".as_bytes())?;
         t.check()?;
+        // Taking ownership quiesces drawing and preserves the completed frame.
+        let _owner = DisplayOwner::take()?;
         // Shared horizontal and vertical seams must meet at cell boundaries.
         for col in 0..3 {
             t.pixel(col, 0, if col == 0 { t.cw-1 } else { 0 }, t.ch/2, COLOURS[7])?;
@@ -625,6 +633,7 @@ fn emulation_save_restore_cursor() -> CaseResult {
         let t = Terminal::open()?;
         t.write(b"\x1b[31mA\x1b7\x1b[3;5H\x1b[32mB\x1b8\x1b[4m \x1b[s\x1b[H\x1b[uC\x1b[?25l")?;
         t.rows(&["A C", "    B"])?;
+        let _owner = DisplayOwner::take()?;
         t.pixel(1, 0, 0, t.ch-2, COLOURS[1])
     })
 }
@@ -634,9 +643,13 @@ fn emulation_cursor_hidden() -> CaseResult {
         let t = Terminal::open()?;
         t.write(b"X\x1b[?25l")?;
         t.check()?;
-        t.pixel(1, 0, 0, t.ch-1, COLOURS[0])?;
+        {
+            let _owner = DisplayOwner::take()?;
+            t.pixel(1, 0, 0, t.ch-1, COLOURS[0])?;
+        }
         t.write(b"\x1b[?25h")?;
         t.check()?;
+        let _owner = DisplayOwner::take()?;
         t.pixel(1, 0, 0, t.ch-1, COLOURS[7])
     })
 }
@@ -666,6 +679,7 @@ fn emulation_alt_screen() -> CaseResult {
         t.rows(&["other"])?;
         t.write(b"\x1b[?1049l\x1b[4m \x1b[?25l")?;
         t.rows(&["main"])?;
+        let _owner = DisplayOwner::take()?;
         t.pixel(4, 0, 0, t.ch-2, COLOURS[1])
     })
 }
@@ -675,7 +689,10 @@ fn emulation_full_reset() -> CaseResult {
         let t = Terminal::open()?;
         t.write(b"old\x1b[3g\x1b[31;44;1m\x1b[?7l\x1b[?25l\x1b[2;4r\x1b[?1049hother\x1bcA\tB")?;
         t.rows(&["A       B"])?;
-        t.pixel(9, 0, 0, t.ch-1, COLOURS[7])?;
+        {
+            let _owner = DisplayOwner::take()?;
+            t.pixel(9, 0, 0, t.ch-1, COLOURS[7])?;
+        }
         t.write(format!("\x1b[{}Gxy\x1b[?1049l", t.cols).as_bytes())?;
         t.rows(&[&format!("A       B{}x", " ".repeat(t.cols-10)), "y"])
     })
