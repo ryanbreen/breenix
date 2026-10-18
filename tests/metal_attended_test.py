@@ -18,7 +18,7 @@ boot, m = existing.boot, existing.m
 DEFINITION = json.loads((existing.TOOLS.parents[1] / 'docs/metal/boot-path.json').read_text())
 STAGES = metal_attended.stages(DEFINITION)
 
-# One wrong attempt, then the real one; every line below the first prompt is one the challenge needs.
+# One wrong attempt, then the real one. NEEDED indexes the lines the challenge cannot pass without.
 TRANSCRIPT = [
     '[init] getty on the console', '[getty] console acquired', 'Breenix login: root',
     '[console] first input byte input=keyboard',
@@ -53,7 +53,7 @@ class ScorerTest(unittest.TestCase):
         self.assertTrue(self.score(TRANSCRIPT[:4] + refused * 3 + TRANSCRIPT[9:]).done)
         accepted_first = TRANSCRIPT[:4] + TRANSCRIPT[9:]
         self.assertFalse(self.score(accepted_first).done)
-        # A first session without a refusal before it is not the proof; a later refusal and login are.
+        # A first session without a refusal before it does not count; a later refusal and login do.
         self.assertTrue(self.score(accepted_first[:-1] + TRANSCRIPT[4:]).done)
 
     def test_prompt_with_echo_and_live_partial_prompt_are_idempotent(self):

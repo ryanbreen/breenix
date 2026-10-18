@@ -58,6 +58,7 @@ def attended(args):
     return bool(getattr(args, 'attended', False))
 
 
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 def input_kind(args):
     """Who types: the operator on the USB keyboard (attended), SOL, or nobody."""
     return 'keyboard' if attended(args) else getattr(args, 'input', None)

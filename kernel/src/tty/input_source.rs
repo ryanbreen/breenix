@@ -1,12 +1,12 @@
 //! Source of each byte admitted to the console line discipline. No byte values
 //! or counts are retained here, including while terminal echo is disabled.
 //! The USB keyboard worker tags its bytes `UsbKeyboard` and the PS/2 keyboard
-//! task tags its bytes `Ps2`; every other entry, including the x86 PS/2
-//! interrupt handler and virtio input, records `Other`.
+//! task tags its bytes `Ps2`; the other entries, including the x86 PS/2
+//! interrupt handler and virtio input, record `Other`.
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// `first_usb` states: the first-USB-byte report is armed once the console
-/// target has started, so a key pressed earlier is never reported as first.
+/// target has started, so a key pressed earlier is not reported as first.
 const DISARMED: u8 = 0;
 const ARMED: u8 = 1;
 const SEEN: u8 = 2;
