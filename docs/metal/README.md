@@ -722,8 +722,11 @@ Start an attended boot on the configured boot host (ask the agent to run it, or 
 this command there). The power button alone does not stage a boot image.
 
 ```sh
-python3 ~/.local/share/breenix-metal/metal-run boot --mode console --attended
+python3 ~/.local/share/breenix-metal/metal-run boot --branch metal-console/attended --mode console --attended
 ```
+
+Use the branch argument while this change is awaiting merge; after it lands,
+omit `--branch metal-console/attended` to use main.
 
 The driver builds the image, acquires the machine lease, starts SOL capture and
 powers on. It sends **no keystrokes**. Use the monitor connected to the machine's
