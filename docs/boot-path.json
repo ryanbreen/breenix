@@ -413,7 +413,7 @@
             "marker": "[init] Breenix init starting (PID 1)"
           },
           {
-            "name": "init boot script completed",
+            "name": "init boot script completed (ARM64: services and KD_TEXT, before bwm spawn)",
             "marker": "[init] Boot script completed"
           }
         ],

@@ -815,10 +815,10 @@ impl Snapshot {
     }
 
     /// Copy the foreground terminal's view if it, or which terminal is in
-    /// the foreground, changed since the last copy. False when neither did or
-    /// the lock stayed held. A different terminal sets `REDRAW`, so each of
-    /// its rows is drawn.
-    fn refresh(&mut self) -> bool {
+    /// the foreground, changed since the last copy. Report whether it changed
+    /// or whether a current snapshot was unavailable. A different terminal
+    /// sets `REDRAW`, so each of its rows is drawn.
+    fn refresh(&mut self) -> Option<bool> {
         let (generation, fg, epoch) = (self.generation, self.fg, self.epoch);
         let cells = &mut self.cells;
         let copied = with_grid(|console| {
@@ -837,7 +837,7 @@ impl Snapshot {
             let visible = grid.cursor_visible() && grid.view() == 0;
             Some((grid.generation(), grid.cursor(), visible, frame))
         });
-        match copied.flatten() {
+        match copied? {
             Some((generation, cursor, visible, frame)) => {
                 if frame.fg != self.fg || frame.epoch != self.epoch {
                     REDRAW.store(true, Ordering::Release);
@@ -847,9 +847,9 @@ impl Snapshot {
                 self.cursor_visible = visible;
                 self.fg = frame.fg;
                 self.epoch = frame.epoch;
-                true
+                Some(true)
             }
-            None => false,
+            None => Some(false),
         }
     }
 }
@@ -929,7 +929,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
             sleep_ms(1);
             continue;
         }
-        let changed = snapshot.refresh();
+        let Some(changed) = snapshot.refresh() else {
+            // Keep a requested read-back pending until a pass observes the grid.
+            end_pass();
+            sleep_ms(PASS_INTERVAL_MS);
+            continue;
+        };
         if REDRAW.swap(false, Ordering::AcqRel) {
             screen.cleared = false;
             screen.complete = false;
