@@ -63,9 +63,6 @@ impl VirglBacking {
     }
 
     pub fn flush(&self, lines: Range<usize>) -> Result<(), &'static str> {
-        if lines.is_empty() {
-            return Ok(());
-        }
         self.present(lines).map(drop)
     }
 

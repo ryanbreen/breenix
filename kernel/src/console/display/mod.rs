@@ -172,6 +172,9 @@ impl Display {
 
     /// Show pixel rows `lines` written since the last flush.
     pub fn flush(&self, lines: Range<usize>) -> Result<(), &'static str> {
+        if lines.is_empty() {
+            return Ok(());
+        }
         match self {
             Display::Linear(_) => Ok(()),
             #[cfg(target_arch = "aarch64")]

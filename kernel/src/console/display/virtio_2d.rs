@@ -50,9 +50,6 @@ impl Virtio2d {
     }
 
     pub fn flush(&self, lines: Range<usize>) -> Result<(), &'static str> {
-        if lines.is_empty() {
-            return Ok(());
-        }
         gpu_mmio::flush_rect(0, lines.start as u32, self.layout.width as u32, lines.len() as u32)
     }
 
