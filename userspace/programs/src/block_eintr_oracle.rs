@@ -6,8 +6,8 @@
 //! oracle — the trigger rate is build-timing sensitive — so this program
 //! forces the race in real process context with no driver hook and no fake
 //! completion. Both stages fork a child that sleeps briefly and exits without
-//! being reaped, read one large file across the child's exit, then read a
-//! second large file as the leaked-gate probe:
+//! being reaped during the reads, read one large file across the child's exit,
+//! then read a second large file as the leaked-gate probe:
 //!
 //!   stage 1  leaves SIGCHLD at its default Ignore disposition. This reproduces
 //!            the original #575 trigger, where either the signal-disposition
@@ -29,6 +29,7 @@ use libbreenix::io;
 use libbreenix::process::{self, ForkResult};
 use libbreenix::signal::SIGCHLD;
 use libbreenix::time;
+use libbreenix::types::Pid;
 use libbreenix::{sigaction, Sigaction};
 
 /// First large file: the ELF whose load is where #575 was originally observed.
@@ -41,6 +42,8 @@ const MIN_BYTES: u64 = 256 * 1024;
 /// Child sleep before exit. Short enough that the signal lands well inside
 /// the first read, long enough that the read is already inside the driver.
 const CHILD_SLEEP_MS: u64 = 120;
+/// Stage 2 waits at most 5,000 one-millisecond sleeps for exit and delivery.
+const CHILD_WAIT_POLLS: usize = 5_000;
 /// Read chunk. Small enough that many read syscalls span the child's exit.
 const CHUNK: usize = 32 * 1024;
 /// In-process bound for each leaked-gate probe. A leaked gate parks forever and
@@ -123,15 +126,15 @@ fn emit(line: &str) {
     print!("{}\n", line);
 }
 
-fn run_race(stages: &RaceStages) -> Result<(), Failure> {
-    match process::fork() {
+fn run_race(stages: &RaceStages) -> Result<Pid, Failure> {
+    let child = match process::fork() {
         Ok(ForkResult::Child) => {
             let _ = time::sleep_ms(CHILD_SLEEP_MS);
             process::exit(0);
         }
-        Ok(ForkResult::Parent(_pid)) => {}
+        Ok(ForkResult::Parent(pid)) => pid,
         Err(e) => return Err(fail(stages.fork, format!("{}", e))),
-    }
+    };
 
     let (got_a, size_a) = read_whole(FILE_A, &stages.first)?;
     if size_a < MIN_BYTES {
@@ -154,7 +157,7 @@ fn run_race(stages: &RaceStages) -> Result<(), Failure> {
         return Err(fail(stages.slow2, format!("{}ms", elapsed_ms)));
     }
 
-    Ok(())
+    Ok(child)
 }
 
 fn run() -> Result<(), Failure> {
@@ -185,7 +188,7 @@ fn run() -> Result<(), Failure> {
     }
     SIGCHLD_HANDLED.store(false, Ordering::SeqCst);
 
-    run_race(&RaceStages {
+    let child = run_race(&RaceStages {
         fork: "sig_fork",
         first: ReadStages {
             open: "sig_open1",
@@ -204,6 +207,26 @@ fn run() -> Result<(), Failure> {
         slow2: "sig_slow2",
     })?;
 
+    // Fast reads need not outlast the child's sleep. Establish both
+    // preconditions before judging delivery, without an unbounded waitpid.
+    let mut child_exited = false;
+    for _ in 0..CHILD_WAIT_POLLS {
+        if !child_exited {
+            let mut status = 0;
+            match process::waitpid(child.raw() as i32, &mut status, process::WNOHANG) {
+                Ok(pid) => child_exited = pid == child,
+                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => {}
+                Err(e) => return Err(fail("sig_waitpid", format!("{}", e))),
+            }
+        }
+        if child_exited && SIGCHLD_HANDLED.load(Ordering::SeqCst) {
+            break;
+        }
+        let _ = time::sleep_ms(1);
+    }
+    if !child_exited {
+        return Err(fail("sig_child_exit_timeout", "alive=1".to_string()));
+    }
     if !SIGCHLD_HANDLED.load(Ordering::SeqCst) {
         return Err(fail("sig_handler_never_ran", "flag=0".to_string()));
     }
