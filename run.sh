@@ -852,6 +852,8 @@ if [ "$PARALLELS" = true ]; then
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
+    # Forward modifier transitions for console chords (Parallels KB 119070).
+    prlctl set "$PARALLELS_VM" --keyboard-optimize on
     # Run the vCPU threads in macOS's user-interactive QoS class, as the ARM64 QEMU launcher
     # does (scripts/qemu-ui-launch.sh). Parallels otherwise starts them in the default class,
     # priority 31, below the host's interactive work, and on a loaded Mac guest timer ticks

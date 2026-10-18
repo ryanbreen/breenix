@@ -4,6 +4,30 @@ use libbreenix::graphics;
 use std::time::{Duration, Instant};
 
 fn main() {
+    // A disposable PID 1 boot also runs V6's keyboard transport self-test.
+    // Its existing heartbeat reads the production USB report counter.
+    let mut heartbeat = if std::process::id() == 1 {
+        match std::process::Command::new("/bin/heartbeat").spawn() {
+            Ok(child) => Some(child),
+            Err(error) => {
+                println!("USB POINTER FAIL starting heartbeat: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    if heartbeat.is_some() {
+        println!("USB POINTER READY press Enter to begin");
+        let mut ready = String::new();
+        match std::io::stdin().read_line(&mut ready) {
+            Ok(bytes) if bytes != 0 => {}
+            result => {
+                println!("USB POINTER FAIL readiness input: {result:?}");
+                std::process::exit(1);
+            }
+        }
+    }
     let info = match graphics::fbinfo() {
         Ok(info) => info,
         Err(error) => {
@@ -89,8 +113,15 @@ fn main() {
     // A disposable native-VM image may run this program as PID 1. Keep its
     // final result available until the host stops that owned VM; a probe-run
     // child exits normally so probe can score its exit status.
-    if std::process::id() == 1 {
+    if let Some(child) = heartbeat.as_mut() {
         loop {
+            match child.try_wait() {
+                Ok(None) => {}
+                result => {
+                    println!("USB POINTER FAIL heartbeat stopped: {result:?}");
+                    std::process::exit(1);
+                }
+            }
             std::thread::sleep(Duration::from_secs(1));
         }
     }

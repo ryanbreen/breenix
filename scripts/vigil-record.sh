@@ -35,8 +35,11 @@ case "${1:-}" in
         args=(breenix start --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
-        elif [ -n "$mode" ] && [ "$mode" != default ]; then
-            args+=(--mode "$mode")
+        elif [ -n "$mode" ]; then
+            # The CLI defaults an omitted mode to tests. Native production
+            # boots are the program profile, not a testing-kernel boot.
+            if [ "$mode" = default ]; then args+=(--mode program);
+            else args+=(--mode "$mode"); fi
         fi
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$profile" ] || [ "$profile" = default ] || args+=(--profile "$profile")
@@ -52,7 +55,9 @@ case "${1:-}" in
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
         started=${10:-}; ended=${11:-}; status=${12:-1}
         args=(breenix record --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --serial-user "$user" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
-        if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
+        if [ -n "$suite" ]; then args+=(--suite "$suite");
+        elif [ "$mode" = default ]; then args+=(--mode program);
+        else args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it
         # instead of creating a second record or letting the importer assign zero. vigil-cli keeps boots under the
