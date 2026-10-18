@@ -601,6 +601,7 @@ fn run_boot_script() {
             }
         }
         console_text_mode();
+        // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
         // A graphical child may take the display after init's text-mode request.
         if let Err(e) = spawn(b"/bin/bwm\0") {
