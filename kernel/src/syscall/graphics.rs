@@ -2949,9 +2949,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 /// # Returns
 /// * 0 on Flush success, or the RGB pixel for ReadPixel
 /// * -EFAULT if cmd_ptr is invalid
-/// * -EINVAL for an unsupported op, invalid pixel coordinate, or no fb_mmap pane
+/// * -EINVAL for an unsupported op, invalid pixel coordinate, or Flush without a fb_mmap pane
 /// * -EPERM if the caller does not own the display, or ReadPixel is not privileged
-/// * -EBUSY if the screen console is writing a row (flush or read again)
+/// * -EBUSY if the screen console is writing a row, or ReadPixel cannot read the display
 #[cfg(target_arch = "x86_64")]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     use crate::syscall::memory_common::get_current_thread_id;
@@ -2977,16 +2977,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     if !caller_owns_display || (cmd.op == 32 && !is_root) {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
-    let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
-        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-    };
-    // A display owner whose terminal is not in the foreground flushes
-    // successfully, but its pane does not reach the screen (contract 4.2).
-    let Some(_presenting) = crate::console::vt::Presentation::begin(cmd.op == 6) else {
-        return SyscallResult::Ok(0);
-    };
+    // ReadPixel reads the screen itself, so it needs no pane: an owner that
+    // only quiesced the console reads what the console drew.
     if cmd.op == 32 {
-        if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= pane.width || cmd.p2 as usize >= pane.height {
+        let Some((width, height, ..)) = crate::console::display_geometry() else {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        };
+        if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= width || cmd.p2 as usize >= height {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         }
         return match crate::console::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
@@ -2994,6 +2991,14 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
             None => SyscallResult::Err(super::ErrorCode::Busy as u64),
         };
     }
+    let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    };
+    // A display owner whose terminal is not in the foreground flushes
+    // successfully, but its pane does not reach the screen (contract 4.2).
+    let Some(_presenting) = crate::console::vt::Presentation::begin(true) else {
+        return SyscallResult::Ok(0);
+    };
     let (rows, columns) = if cmd.p3 > 0 && cmd.p4 > 0 {
         let (x, y) = (cmd.p1.max(0) as usize, cmd.p2.max(0) as usize);
         (
