@@ -46,7 +46,7 @@ fn find_inode_in_dir(dir_path: &str, target_name: &[u8]) -> Option<u64> {
 // Acceptance boots attach an ext2 copy read-only at /home, alongside the
 // writable root used by the ordinary mutation cases below.
 fn readonly_fixture() -> bool {
-    use libbreenix::{Error, errno::Errno};
+    use libbreenix::{error::Error, errno::Errno};
     let fd = match fs::open("/home/.breenix-readonly-fixture", O_RDONLY) {
         Ok(fd) => fd,
         Err(Error::Os(Errno::ENOENT)) => return true,
