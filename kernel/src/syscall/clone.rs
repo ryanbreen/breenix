@@ -241,6 +241,15 @@ pub fn sys_clone_thread(
         Some(id) => id,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
+
+    // A joined thread's kernel stack stays scheduler-owned until its retirement
+    // grace elapses. Drain before consuming another finite stack slot: busy CPUs
+    // need not enter idle housekeeping between clones (#1975). As in fork, no
+    // process-manager guard may be held across the scheduler harvest and release.
+    // ARM64 retains its existing schedule-context drain.
+    #[cfg(target_arch = "x86_64")]
+    crate::task::scheduler::reclaim_terminated_threads();
+
     // The new thread's thread-index slot, held until it is published.
     let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
         return SyscallResult::Err(super::errno::EAGAIN as u64);

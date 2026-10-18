@@ -1165,6 +1165,23 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
     }
 }
 
+/// Wait between two receive polls of a client awaiting a reply (DHCP).
+///
+/// On x86 that client runs on the BCM5720's network worker, whose receive
+/// interrupt also delivers replies through the NetRx softirq, so it sleeps.
+/// Spinning there held a CPU for the seconds an exchange and the address probe
+/// last. The loop is mostly the receive drain, which runs with bottom halves
+/// off, and a timer tick that lands there does not preempt it: that CPU went
+/// up to 25 ticks without scheduling, and a thread pinned to it barely ran
+/// (#1974). ARM64 takes its lease during network initialization and keeps
+/// polling.
+pub(crate) fn between_rx_polls() {
+    #[cfg(target_arch = "x86_64")]
+    crate::drivers::bcm5720::sleep_ms(1);
+    #[cfg(target_arch = "aarch64")]
+    core::hint::spin_loop();
+}
+
 /// Process incoming packets (ARM64 - polling or interrupt driven)
 ///
 /// Protected by RX_PROCESSING atomic to prevent re-entrancy. When MSI-X is
