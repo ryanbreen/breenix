@@ -890,6 +890,38 @@ static mut WIN_TEX_DIMS: [(u32, u32); MAX_WIN_TEX_SLOTS] = [(0, 0); MAX_WIN_TEX_
 /// Whether each slot has been initialized.
 static mut WIN_TEX_INITIALIZED: [bool; MAX_WIN_TEX_SLOTS] = [false; MAX_WIN_TEX_SLOTS];
 
+/// A zeroed window texture backing of `size` bytes in physically contiguous
+/// page frames, reached through the direct map. Window textures are up to a
+/// screen each and eight are made at init, so they come from the frame
+/// allocator rather than the kernel heap, which they would otherwise mostly
+/// fill (eight 1280x960 slots are 39 MB of its 64 MiB).
+fn alloc_window_texture_backing(size: usize) -> Result<*mut u8, &'static str> {
+    use crate::memory::frame_allocator;
+    let pages = size.div_ceil(4096);
+    let mut frames = alloc::vec::Vec::new();
+    frames
+        .try_reserve_exact(pages)
+        .map_err(|_| "no heap for a window texture's frame list")?;
+    frames.resize(pages, None);
+    let base = frame_allocator::allocate_contiguous_frames(pages, &mut frames)
+        .ok_or("no contiguous frames for a window texture backing")?;
+    let ptr = phys_to_kern_virt(base.start_address().as_u64()) as *mut u8;
+    // SAFETY: the frames were just claimed for this backing and are direct-mapped.
+    unsafe { core::ptr::write_bytes(ptr, 0, pages * 4096) };
+    Ok(ptr)
+}
+
+/// Return a backing from `alloc_window_texture_backing` to the frame allocator.
+fn free_window_texture_backing(ptr: *mut u8, size: usize) {
+    use crate::memory::arch_stub::{PhysAddr, PhysFrame};
+    let base = virt_to_phys(ptr as u64);
+    for page in 0..size.div_ceil(4096) as u64 {
+        crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+            PhysAddr::new(base + page * 4096),
+        ));
+    }
+}
+
 /// Create a per-window VirGL texture for GPU compositing.
 ///
 /// Same resource creation pattern as COMPOSITE_TEX (proven working):
@@ -924,10 +956,7 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
         with_device_state(|state| virgl_resource_unref_cmd(state, res_id)).ok();
         let (old_ptr, old_size) = unsafe { WIN_TEX_BACKING[slot] };
         if !old_ptr.is_null() && old_size > 0 {
-            let old_layout = alloc::alloc::Layout::from_size_align(old_size, 4096).unwrap();
-            unsafe {
-                alloc::alloc::dealloc(old_ptr, old_layout);
-            }
+            free_window_texture_backing(old_ptr, old_size);
         }
         unsafe {
             WIN_TEX_INITIALIZED[slot] = false;
@@ -937,12 +966,7 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
     }
 
     let tex_size = (width as usize) * (height as usize) * 4;
-    let layout = alloc::alloc::Layout::from_size_align(tex_size, 4096)
-        .map_err(|_| "invalid window texture layout")?;
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if ptr.is_null() {
-        return Err("failed to allocate window texture backing");
-    }
+    let ptr = alloc_window_texture_backing(tex_size)?;
 
     // RESOURCE_CREATE_3D — same bind flags as COMPOSITE_TEX
     with_device_state(|state| {
@@ -1166,12 +1190,7 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         let tex_size = (max_w as usize) * (max_h as usize) * 4;
         let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
-        let layout = alloc::alloc::Layout::from_size_align(tex_size, 4096)
-            .map_err(|_| "invalid pre-alloc texture layout")?;
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            return Err("failed to allocate pre-alloc texture backing");
-        }
+        let ptr = alloc_window_texture_backing(tex_size)?;
 
         with_device_state(|state| {
             virgl_resource_create_3d_cmd(
