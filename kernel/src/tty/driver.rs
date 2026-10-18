@@ -590,6 +590,13 @@ impl TtyDevice {
     /// Set the session leader
     pub fn set_session(&self, session: Option<ProcessId>) {
         *self.session.lock() = session;
+        // While a session other than init's has the console (a getty and its
+        // login), the screen console draws only kernel warnings and errors
+        // among the console's own output.
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::console_session(
+            session.is_some_and(|sid| sid.as_u64() != crate::process::RESERVED_INIT_PID),
+        );
     }
 
     /// Detach the console foreground group while keeping its IRQ snapshot current.
@@ -653,6 +660,8 @@ impl TtyDevice {
         crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
         #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
         for &byte in unit { let _ = crate::graphics::render_queue::queue_byte(byte); }
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::write_tty(unit);
     }
 
     fn drain_echo(&self) {
@@ -666,6 +675,8 @@ impl TtyDevice {
             crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
             #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
             for &byte in &scratch[..n] { let _ = crate::graphics::render_queue::queue_byte(byte); }
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            crate::fbcon::write_tty(&scratch[..n]);
         }
     }
 
@@ -689,6 +700,8 @@ impl TtyDevice {
         for &byte in unit {
             let _ = crate::graphics::render_queue::queue_byte(byte);
         }
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::write_tty(unit);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -727,6 +740,8 @@ impl TtyDevice {
                             crate::serial::Writer::Tty,
                             &expanded[..expanded_len],
                         );
+                        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+                        crate::fbcon::write_tty(&expanded[..expanded_len]);
                         expanded_len = 0;
                     }
                     if output_len == 2 {
@@ -743,6 +758,8 @@ impl TtyDevice {
                         crate::serial::Writer::Tty,
                         &expanded[..expanded_len],
                     );
+                    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+                    crate::fbcon::write_tty(&expanded[..expanded_len]);
                 }
 
                 // Both architectures use the render queue — it's lock-free on the
@@ -797,6 +814,8 @@ impl TtyDevice {
         for &byte in unit {
             let _ = crate::graphics::render_queue::queue_byte(byte);
         }
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::write_tty(unit);
     }
 
     /// Send a signal to the foreground process group

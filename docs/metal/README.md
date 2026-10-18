@@ -155,6 +155,45 @@ metal-run boot --mode console --session --idle-minutes 2
 Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
 the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
 
+## The screen console
+
+The x86 kernel without `interactive` (`kernel/src/fbcon`) draws a text console on the firmware's framebuffer, the
+display on the server's VGA port. It runs on x86 kernels built without `interactive`, QEMU's included.
+
+- **One grid, any writer.** Kernel log records (INFO and above) and the console TTY's output, echo included, are
+  written as text into a retained character grid: one byte per cell, rows in a ring so scrolling moves no text, the
+  cursor, and a generation. Writers take its lock with interrupts masked for one record or one write, so log records
+  from interrupt context reach the screen too; a write is dropped, and counted, only if the lock stays held for
+  milliseconds. A log line starts its own row, as it does on the UART. TTY output is interpreted as a terminal
+  does: CR, LF, BS, HT, autowrap, and the CSI cursor and erase sequences.
+- **One screen writer.** The `fbcon` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
+  changed into a RAM shadow of the framebuffer, and copies only those rows' pixels to video memory, one text row with
+  interrupts masked at a time. Drawing does not read video memory. A display owner's `fbdraw` flush and pixel
+  read take the same row token, so they do not interleave with the console's rows. When a process takes the display
+  (`sys_take_over_display`) the console stops drawing.
+- **The log on the screen.** The console starts in init's session. While it is there, or in no session, records of
+  INFO and above are drawn; while another session has it as its controlling terminal (a getty and its login), only
+  warnings and errors are, so the per-second census does not scroll the user's session away. When that session ends
+  the full log comes back. Serial keeps each record.
+- **Write-combining.** Each CPU programs the same page attribute table in its per-CPU init, before it is online:
+  entry 1, power-up write-through and unused by the kernel, becomes write-combining (Intel SDM Vol. 3A, "Page
+  Attribute Table (PAT)"), following the SDM's cache-disable and flush sequence. Before the other CPUs start, the
+  boot CPU finds the PCI display function whose memory BAR holds the framebuffer (it must be prefetchable) and walks
+  the present page-table entries: each leaf mapping part of that BAR, wherever it is mapped, selects entry 1, and a
+  large page that maps it only in part is split first so memory beside it keeps its type. The SDM does not support
+  one physical page mapped with different types, so the physical memory map's alias is changed too.
+- **Read back.** At kernel idle, and for each root-only read of `/proc/fbcon/check`, the render thread reads video memory back
+  and compares it with the shadow and with the pixels the font gives for the text each row was drawn with
+  (`raster::expected_intensity`, which shares only the font with the drawing code). `/proc/fbcon/check` prints
+  `fbcon check: shadow and screen identical, <n> glyph cells match the font` (or how many pixel rows and pixels
+  differ), the shadow's SHA-256, and `fbcon row: <text>` for each non-blank row on the screen.
+
+The `fb-console` milestone's stages are the console's lines: `[fbcon] framebuffer in display BAR:` (geometry, format,
+the function and its BAR), `[fbcon] aperture mapped write-combining:` (the PAT entry, the CPUs holding the layout,
+and the mappings changed), `[fbcon] console tty and kernel log on the screen:` (after the first full redraw, with its
+time) and `[fbcon] screen read back identical:` (pixel rows, glyph cells checked against the font, the shadow's
+SHA-256).
+
 ## Interrupts, time and processors
 
 The kernel takes one path on each firmware it boots on, QEMU's included (`kernel/src/arch_impl/x86_64/irq.rs`):
@@ -539,8 +578,9 @@ operator resolves that difference. No restore step writes storage.
 ### Local console definition
 
 The `metal-console` effort follows storage with `fb-console`, `xhci`, `usb-keyboard` and `console-login`.
-Their proposed stage lists cover RAM-disk, install and disk-root shapes. Each is `stub: true` (not yet measured)
-until its producing lane lands; existing modes keep their measured stages and completion markers.
+Their stage lists cover RAM-disk, install and disk-root shapes. `fb-console` is measured ("The screen console");
+the other milestones stay stubbed until their producing lanes land; existing modes keep their measured stages
+and completion markers.
 Console development boots use `--mode console --input sol`. Staging selects `/sbin/init console`,
 which detaches init's controlling terminal and respawns `/bin/getty` with the shell mode's one-second rate limit.
 Getty creates a session, opens the console, acquires it as the controlling terminal, installs descriptors 0–2,
