@@ -667,20 +667,20 @@ score_serial() {
         echo "Scheduler strand injection oracle marker missing or failed"
         return 1
     fi
-    local live_outgoing_lines
-    live_outgoing_lines=$(grep -acF '[STRAND_LIVE_OUTGOING_ORACLE:' "$serial_file" 2>/dev/null || true)
-    if [ "${live_outgoing_lines:-0}" -gt 0 ] && [ "$KERNEL_PROFILE_KNOWN" = "1" ] \
+    local live_outgoing_reports
+    live_outgoing_reports=$(grep -aoF '[STRAND_LIVE_OUTGOING_ORACLE:' "$serial_file" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${live_outgoing_reports:-0}" -gt 0 ] && [ "$KERNEL_PROFILE_KNOWN" = "1" ] \
         && [ "$KERNEL_HAS_LIVE_OUTGOING" = "0" ]; then
         echo "Live-outgoing strand oracle line from a kernel without its print site; the serial is not this kernel's"
         return 1
     fi
-    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ] || [ "${live_outgoing_lines:-0}" -gt 0 ]; then
+    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ] || [ "${live_outgoing_reports:-0}" -gt 0 ]; then
         if grep -aqE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
             echo "Live-outgoing strand oracle reported failure ($(grep -aoE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
             return 1
         fi
-        if [ "${live_outgoing_lines:-0}" -gt 1 ]; then
-            echo "Live-outgoing strand oracle reported $live_outgoing_lines times; it reports once per boot"
+        if [ "${live_outgoing_reports:-0}" -gt 1 ]; then
+            echo "Live-outgoing strand oracle reported $live_outgoing_reports times; it reports once per boot"
             return 1
         fi
         if ! grep -aqE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then

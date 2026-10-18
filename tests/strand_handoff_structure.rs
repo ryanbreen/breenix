@@ -3230,6 +3230,7 @@ fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
         ("live-with-fail", Some(&live), format!("{fixture}\n{pass}\n{fail}\n"), false),
         ("missing-kernel", Some(&missing), format!("{fixture}\n{pass}\n"), false),
         ("no-kernel-with-pass", None, format!("{fixture}\n{pass}\n"), true),
+        ("same-line-duplicate", Some(&live), format!("{fixture}\n{pass}{pass}\n"), false),
         ("no-kernel-with-fail", None, format!("{fixture}\n{fail}\n"), false),
         ("plain-with-live-line", Some(&plain), format!("{fixture}\n{pass}\n"), false),
         ("live-with-two-passes", Some(&live), format!("{fixture}\n{pass}\n{pass}\n"), false),
