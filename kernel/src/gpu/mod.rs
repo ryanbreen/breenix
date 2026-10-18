@@ -811,7 +811,7 @@ impl Core {
     // -----------------------------------------------------------------------------------
     // The device's answers.
 
-    /// `kgpu`'s turn: take every completion the device has returned and the watchdog's
+    /// `kgpu`'s turn: take the completions the device has returned and the watchdog's
     /// decisions, and send the queued requests that now fit.
     fn pump(&mut self) {
         self.reap_all();
@@ -820,8 +820,8 @@ impl Core {
     }
 
     /// A waiter's turn: take the device's completions and the watchdog's decisions. Queued
-    /// requests are left to `kgpu`, which sends them (`pump`), so a waiter never notifies
-    /// the device; before `kgpu` starts, the waiter sends them.
+    /// requests are left to `kgpu`, which sends them (`pump`) and notifies the device; only
+    /// before `kgpu` starts does a waiter send them.
     fn poll(&mut self) {
         self.reap_all();
         self.watchdog(now_ns());
