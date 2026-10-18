@@ -943,6 +943,13 @@ pub struct CpuPin {
     /// affinity sched_setaffinity set is inherited, as on Linux; a per-CPU
     /// worker's or a hold pen's is not.
     pub inherited: bool,
+    /// Whether the pin was set while its thread stood on another CPU -- running
+    /// there, or named there by a handoff record or a held wake -- so that
+    /// the thread's next placement is the pin's own move to `cpu`, not a
+    /// migration of a thread already at home. 3 of 3 constructors below leave
+    /// it false; `set_user_affinity` sets it, and the migration guard clears
+    /// it once it places the thread on `cpu`.
+    pub relocating: bool,
 }
 
 /// `CpuPin` values minted since boot, by any of its constructors.
@@ -968,7 +975,11 @@ pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
 impl CpuPin {
     /// The pin a child of a thread holding `pin` starts with.
     pub fn for_child(pin: Option<CpuPin>) -> Option<CpuPin> {
-        pin.filter(|pin| pin.inherited)
+        // A child starts on its pin's CPU, so it has no move to make.
+        pin.filter(|pin| pin.inherited).map(|mut pin| {
+            pin.relocating = false;
+            pin
+        })
     }
 
     /// A pin whose work lives in `cpu`'s per-CPU state.
@@ -979,6 +990,7 @@ impl CpuPin {
             per_cpu_worker: true,
             allowed: 1 << cpu,
             inherited: false,
+            relocating: false,
         }
     }
 
@@ -994,6 +1006,7 @@ impl CpuPin {
             per_cpu_worker: true,
             allowed,
             inherited: true,
+            relocating: false,
         }
     }
 
@@ -1011,6 +1024,7 @@ impl CpuPin {
             per_cpu_worker: false,
             allowed: 1 << cpu,
             inherited: false,
+            relocating: false,
         }
     }
 }
