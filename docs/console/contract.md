@@ -641,6 +641,11 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   SUITE console HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...]
   ```
 
+  `libbreenix::suite::hostkeys(chords)` emits the record and returns its sequence;
+  `hostkey_method()` exposes the declaration. The helper rejects an absent method
+  or a chord containing a declared missing key. Sequence ranges are reserved in
+  the parent before each case forks, and `--hostkeys` is retained across a suite sequence.
+
   `seq` increases across the run, so a launcher that sees a line twice (a serial replay) injects it once. A
   chord is modifiers and one key joined by `-`: modifiers `ctrl`, `alt`, `shift`, `super` (left keys) and
   `rctrl`, `ralt` (right keys); keys `a`-`z`, `0`-`9`, `f1`-`f12`, `left`, `right`, `up`, `down`, `pageup`,
@@ -661,6 +666,29 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   `no host key path for <chord> on <method>` when a key it needs is missing, and with
   `host key seq=<n> not received within <ms> ms (<method>)` when the effect does not arrive in time. A case
   waits on its effect (usually `VT_WAITACTIVE` in a child bounded by `case_ms_left()`), then reads back.
+
+### V6 backend findings
+
+Parallels 27.0.3 accepts the basic `prlctl send-key-event` codes. The earlier
+probe reported letters and Alt+Fn reaching the guest, but those boots predate
+V6's final HOSTKEY record format and do not validate the final watcher.
+Extended codes remain declared in `missing=`; a case requiring one fails.
+The VNC fallback was tried on a disposable VM configuration: `prlctl set`
+with `--vnc-mode manual --vnc-address 127.0.0.1 --vnc-port 5997` returned
+`Unrecognized option: --vnc-mode`. The configuration was deleted without booting.
+This does not establish a Parallels VNC key path; #1791 tracks the missing
+extended-key route without changing target expectations.
+
+**VMware spike (Q5):** the earlier Fusion probe reported an RFB handshake,
+framebuffer updates and accepted key events after enabling the built-in VNC
+server, but no observed guest key effect. The guest reported
+`XHCI command IRQ unavailable`. This is transport evidence only, predates the
+final HOSTKEY format, and is not a successful VMware keyboard self-test.
+V7 must repair the guest keyboard and rerun the host-key self-test during the
+catch-up before VMware key coverage can pass. Without the opt-in VNC port,
+the launcher declares no path and cases fail `no host key path`.
+The VNC server is unauthenticated; its exposure must be resolved before using
+it outside an isolated test environment.
 
 ---
 
@@ -690,6 +718,11 @@ milestone's measure, built by the lane named here:
 | `vt-devices`, `vt-switch`, `scrollback` | `virtual-terminals` | V4 (the scrollback view keys with V5) |
 | `chvt`, `getty` | `chvt-getty` | V4u |
 | `keys` | `keyboard` | V5, with V6's host keys and, on Parallels and VMware, V7's USB keyboard |
+
+`keys/alt-left-right-wrap` and `keys/shift-pageup` remain scored on Parallels and
+fail while its extended-key host path is absent (#1791). Resolving that path or
+obtaining an explicit target-scope ruling is required; V6 does not reduce these
+expectations to make this target green.
 
 - **Until its layer exists, a case fails naming it:** `missing <layer> (<lane>): <what the kernel answered>`.
   The suite asks the kernel each time: `/proc/console/check` for the screen layers, and `VT_GETSTATE` on
