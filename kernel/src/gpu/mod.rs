@@ -40,6 +40,7 @@ mod staging;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 pub mod dma;
+pub mod dev;
 pub mod virgl;
 pub mod svga;
 
@@ -58,7 +59,8 @@ use crate::tracing::providers::gpu::{gauge, GpuPath, GPU_CONTEXTS, GPU_RESOURCES
 use crate::task::thread::ThreadState;
 use crate::task::waitqueue::WaitQueueHead;
 use dma::{Pages, WordBuf, PAGE};
-use virgl::{encode, wire, Device, Done, Reap, Request, Tag};
+use dev::{Device, Done, Reap, Request, Tag};
+use virgl::{encode, wire};
 
 /// The guest backing one process's resources may hold.
 const MEMORY_QUOTA: u64 = 192 << 20;
@@ -77,6 +79,8 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
+/// How often kgpu looks for an SVGA3 device's answers while it holds requests.
+const POLL_NS: u64 = 250_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
@@ -193,6 +197,8 @@ struct Ctx {
     inflight: VecDeque<u64>,
     totals: Totals,
     objects: encode::Objects,
+    /// The SVGA3D DX backend's objects of this context.
+    dx: svga::encode::Objects,
     vb: u32,
     scratch: u32,
     /// The 1x1 texture the warm-up's sampling draws read.
@@ -215,7 +221,8 @@ impl Ctx {
     /// Programs whose warm-up completed: two per warmed rendering pipeline, and
     /// `probe_int`'s pair from its first PROBE.
     fn warmed(&self) -> u32 {
-        2 * self.warm.count_ones() + if self.objects.has_probe() { encode::PROBE_PROGRAMS } else { 0 }
+        let probe = if dev::is_svga() { self.dx.has_probe() } else { self.objects.has_probe() };
+        2 * self.warm.count_ones() + if probe { encode::PROBE_PROGRAMS } else { 0 }
     }
 }
 
@@ -369,7 +376,7 @@ struct Core {
 /// a core that refuses every op naming why.
 pub fn init_qemu() {
     let mut core = Core::empty();
-    match Device::probe() {
+    match virgl::Device::probe() {
         Ok(dev) => {
             core.profile(&dev);
             crate::serial_println!(
@@ -398,7 +405,7 @@ pub fn init_qemu() {
             crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
             crate::arch_impl::aarch64::gic::enable_spi(dev.intid);
             core.queue_size = dev.queue_size();
-            core.dev = Some(dev);
+            core.dev = Some(Device::Virgl(dev));
         }
         Err(e) => {
             core.status = abi::status::NO_DEVICE;
@@ -413,16 +420,24 @@ pub fn init_qemu() {
     *CORE.lock() = Some(core);
 }
 
-/// Initialize the independent SVGA3 command path. DX rendering is connected separately;
-/// until then admission stays refused rather than advertising an unusable catalogue.
+/// Find and initialise VMware's SVGA3 device for the SVGA3D DX backend, read its profile
+/// from the device-capability entries, and take its programs. The device raises no
+/// interrupt this kernel can take, so `kgpu` polls it while work is outstanding. An absent
+/// or failing device leaves a core that refuses its ops, naming why.
 pub fn init_vmware() {
     let mut core = Core::empty();
+    dev::select_svga();
     match svga::Device::probe() {
         Ok(device) => {
-            crate::serial_println!("[gpu] SVGA3 command path ready: {:?}", device.profile);
-            *SVGA_DEVICE.lock() = Some(device);
-            core.status = abi::status::DEVICE_FAILED;
-            core.reason = "SVGA3 command path ready; DX catalogue not connected";
+            core.profile_svga(&device);
+            crate::serial_println!(
+                "[gpu] SVGA3D DX: dx={:#x} bgra={:#x} rgba={:#x} r8={:#x} max={}x{} screen={}x{} contexts={} surfaces={} status={} {}",
+                device.profile.dx, device.profile.bgra, device.profile.rgba, device.profile.r8,
+                device.profile.width, device.profile.height, device.profile.screen_width, device.profile.screen_height,
+                device.profile.contexts, device.profile.surfaces, core.status, core.reason
+            );
+            core.queue_size = device.queue_size();
+            core.dev = Some(Device::Svga(device));
         }
         Err(error) => {
             crate::serial_println!("[gpu] SVGA3 initialization refused: {:?}", error);
@@ -436,17 +451,23 @@ pub fn init_vmware() {
                     core.caps.missing = id;
                     core.reason = capability::name(id);
                 }
+                svga::Error::Unsupported(what) => {
+                    core.status = abi::status::DEVICE_FAILED;
+                    core.reason = what;
+                }
                 _ => {
                     core.status = abi::status::DEVICE_FAILED;
-                    core.reason = "SVGA3 command path initialization failed";
+                    core.reason = "SVGA3 initialization failed";
                 }
             }
         }
     }
+    let counter: u64;
+    // SAFETY: the virtual counter is readable at EL1.
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
+    core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
 }
-
-static SVGA_DEVICE: spin::Mutex<Option<svga::Device>> = spin::Mutex::new(None);
 
 impl Core {
     fn empty() -> Core {
@@ -490,7 +511,7 @@ impl Core {
 
     /// Read the profile from the device's capability set (`docs/gui/gpu.md` section 1.5,
     /// item 8) into the CAPS record and the capability table.
-    fn profile(&mut self, dev: &Device) {
+    fn profile(&mut self, dev: &virgl::Device) {
         let c = &mut self.caps;
         c.backend = abi::backend::VIRGL;
         if dev.info.features & wire::F_VIRGL != 0 {
@@ -569,6 +590,68 @@ impl Core {
                 c.renderer[nul..].fill(0);
             }
         }
+        self.status = abi::status::ADMITTED;
+        self.reason = "";
+        if let Some(missing) = self.first_missing(None) {
+            self.status = abi::status::MISSING_CAPABILITY;
+            self.reason = capability::name(missing);
+        }
+    }
+
+    /// Read the profile from the SVGA3 device-capability entries (section 1.6.3, item 1)
+    /// into the CAPS record and the capability table. The device has no capability set of
+    /// VirGL's kind: its capability entries are the set the profile is read from, recorded
+    /// as set 1 version 1, and its renderer string is empty.
+    fn profile_svga(&mut self, dev: &svga::Device) {
+        use svga::wire::cap::{RENDER, SAMPLE, SUPPORTED};
+        let p = dev.profile;
+        let c = &mut self.caps;
+        c.backend = abi::backend::SVGA3D_DX;
+        if p.dx != 0 {
+            c.features |= abi::feature::DX_CONTEXT;
+        }
+        c.capset_id = 1;
+        c.capset_version = 1;
+        c.capset_count = 1;
+        c.capset_ids[0] = 1;
+        c.scanout_count = 1;
+        c.scanouts[0] = abi::ScanoutInfo { enabled: 1, width: p.screen_width.min(limits::SIDE), height: p.screen_height.min(limits::SIDE), reserved: 0 };
+        c.pipelines = (1 << abi::pipeline::COUNT) - 1;
+        let flags = |v: u32| {
+            let mut f = 0;
+            if v & (SUPPORTED | SAMPLE) == SUPPORTED | SAMPLE {
+                f |= abi::format_flag::SAMPLE;
+            }
+            if v & (SUPPORTED | RENDER) == SUPPORTED | RENDER {
+                f |= abi::format_flag::RENDER;
+            }
+            f
+        };
+        c.formats = [
+            abi::FormatCaps { format: format::B8G8R8A8, flags: flags(p.bgra) },
+            abi::FormatCaps { format: format::R8G8B8A8, flags: flags(p.rgba) },
+            abi::FormatCaps { format: format::R8, flags: flags(p.r8) },
+        ];
+        // DX contexts run shader model 4 programs, whose integer instructions, integer texel
+        // load (`ld`) and region copies (`DX_PRED_COPY_REGION`) the profile uses; the level
+        // reported is the shader model, 40.
+        c.profile = abi::profile::INTEGER_OPS | abi::profile::TEXEL_FETCH | abi::profile::REGION_COPY;
+        c.shading_level = 40;
+        let side = p.width.min(p.height).min(limits::SIDE);
+        c.max_width = side;
+        c.max_height = side;
+        let f = |i: usize, flag: u32| c.formats[i].flags & flag != 0;
+        self.have[capability::FEATURE_3D as usize] = p.dx != 0;
+        self.have[capability::CAPABILITY_SET as usize] = true;
+        self.have[capability::BGRA_RENDER as usize] = f(0, abi::format_flag::RENDER);
+        self.have[capability::BGRA_SAMPLE as usize] = f(0, abi::format_flag::SAMPLE);
+        self.have[capability::RGBA_RENDER as usize] = f(1, abi::format_flag::RENDER);
+        self.have[capability::RGBA_SAMPLE as usize] = f(1, abi::format_flag::SAMPLE);
+        self.have[capability::R8_SAMPLE as usize] = f(2, abi::format_flag::SAMPLE);
+        self.have[capability::INTEGER_OPS as usize] = true;
+        self.have[capability::TEXEL_FETCH as usize] = true;
+        self.have[capability::REGION_COPY as usize] = true;
+        self.have[capability::TARGET_SIZE as usize] = side >= 2560;
         self.status = abi::status::ADMITTED;
         self.reason = "";
         if let Some(missing) = self.first_missing(None) {
@@ -716,7 +799,7 @@ impl Core {
                 break;
             }
             let Some((epoch, req)) = self.backlog.pop_front() else { break };
-            let tag = req.tag;
+            let tag = req.tag();
             if let Err(req) = dev.send(req) {
                 self.backlog.push_front((epoch, req));
                 break;
@@ -758,7 +841,7 @@ impl Core {
             return None;
         }
         let serial = self.serial();
-        req.tag = Tag::Sync(serial);
+        req.set_tag(Tag::Sync(serial));
         self.syncs.insert(serial, SyncReq {
             ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0, warm: None,
@@ -791,8 +874,7 @@ impl Core {
                 r.holds += 1;
             }
         }
-        let upload = (req.command_type() == wire::cmd::TRANSFER_TO_HOST_3D)
-            .then(|| holds.first().copied().zip(req.fence)).flatten();
+        let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
             upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
             warm: None,
@@ -922,7 +1004,7 @@ impl Core {
             Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
             Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
             Tag::Background => {
-                if !virgl::ok(d.answer) {
+                if !dev::ok(d.answer) {
                     self.fault();
                 }
             }
@@ -932,7 +1014,7 @@ impl Core {
     /// A request the device will never answer: never sent before a confirmed reset, or
     /// held by the device across one.
     fn ended(&mut self, req: Request) {
-        match req.tag {
+        match req.tag() {
             Tag::Sync(serial) => self.sync_ended(serial, None),
             Tag::Submit { serial, .. } => {
                 if let Some(s) = self.subs.get_mut(&serial) {
@@ -950,17 +1032,16 @@ impl Core {
     /// after a confirmed reset.
     fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
         let Some(s) = self.syncs.remove(&serial) else { return };
-        if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
+        if s.ctx == 0 && d.as_ref().is_some_and(|d| !dev::ok(d.answer)) {
             self.fault();
         }
         if let Some(fence) = s.warm {
-            self.warm_returned(d.as_ref().map(|d| virgl::ok(d.answer) && d.echoed == fence));
+            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.echoed == fence));
         }
         if let Some((id, fence)) = s.upload {
             if let Some(d) = &d {
-                let device_error = !virgl::ok(d.answer);
-                let ok = !device_error && d.echoed == fence
-                    && d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE != 0;
+                let device_error = !dev::ok(d.answer);
+                let ok = !device_error && d.echoed == fence && d.fenced;
                 if !ok {
                     if let Some(r) = self.resources.get_mut(&id) {
                         completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
@@ -995,7 +1076,7 @@ impl Core {
                 }
             }
         } else {
-            let d = d.unwrap_or_else(|| Done { tag: Tag::Sync(serial), fence: None, answer: 0, echoed: 0, resp: dma::DmaBox::new(wire::HDR) });
+            let d = d.unwrap_or_else(|| Done::none(Tag::Sync(serial)));
             self.done.insert(serial, d);
         }
         if s.upload.is_some() {
@@ -1008,7 +1089,7 @@ impl Core {
     fn submit_returned(&mut self, serial: u64, last: bool, answer: u32, echoed: u64) {
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
-        if !virgl::ok(answer) {
+        if !dev::ok(answer) {
             sub.error.get_or_insert(answer);
         }
         if last {
@@ -1108,7 +1189,7 @@ impl Core {
                 completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, whole.contains(id));
                 if ok {
                     r.generation += 1;
-                    r.last = Some(LastWrite { ctx: ctx_id, fence, serial, answer, kind: wire::cmd::SUBMIT_3D });
+                    r.last = Some(LastWrite { ctx: ctx_id, fence, serial, answer, kind: dev::draw_kind() });
                 }
             }
         }
@@ -1177,7 +1258,7 @@ impl Core {
         }
         // The device may use the backing until it answers the unref, which keeps it.
         let epoch = r.epoch;
-        let req = virgl::resource_unref(Tag::Background, id, Some(r.backing));
+        let req = dev::resource_unref(Tag::Background, id, Some(r.backing));
         self.background_in(epoch, req)
     }
 
@@ -1194,7 +1275,7 @@ impl Core {
         }
         let dropped = c.dropped;
         if destroy {
-            let req = virgl::ctx_destroy(Tag::Background, id);
+            let req = dev::ctx_destroy(Tag::Background, id);
             self.background(req);
         }
         if dropped {
@@ -1285,8 +1366,16 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        let at = hangs.chain(waits).chain(progress).min()?;
-        Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS))
+        // The SVGA3 device raises no interrupt here: while it holds requests, kgpu looks
+        // for their answers at POLL_NS intervals.
+        let poll = (dev::is_svga() && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
+            .then(|| now + POLL_NS);
+        let at = hangs.chain(waits).chain(progress).min();
+        match (at, poll) {
+            (Some(at), Some(p)) => Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS).min(p)),
+            (Some(at), None) => Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS)),
+            (None, p) => p,
+        }
     }
 
     /// The reset decision, on `kgpu`: every context fails with `DEVICE_RESET` and every
@@ -1299,6 +1388,9 @@ impl Core {
         self.stalled = false;
         self.resetting = true;
         self.epoch += 1;
+        if dev::is_svga() {
+            svga::reset_decided();
+        }
         for c in self.contexts.values_mut() {
             c.state = CtxState::Reset;
             c.device_alive = false;
@@ -1485,7 +1577,7 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
     let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
     let req = build(Tag::Sync(serial)).ok_or(ENOMEM)?;
     let d = exec_req(serial, req, ctx, holds, &[])?;
-    if virgl::ok(d.answer) {
+    if dev::ok(d.answer) {
         Ok(d)
     } else {
         Err(EIO)
@@ -1652,31 +1744,58 @@ fn warm_next() {
         let ctx = c.contexts.values_mut().find(|x| warming(x) && !x.busy)?;
         ctx.busy = true;
         let pipeline = (!ctx.warm).trailing_zeros();
-        Some((ctx.id, pipeline, ctx.objects.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
+        Some((ctx.id, pipeline, ctx.objects.clone(), ctx.dx.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
-    let Some((id, pipeline, mut objects, internal)) = picked else { return };
+    let Some((id, pipeline, mut objects, mut dx_objects, internal)) = picked else { return };
     let [vb, scratch, scratch_texture] = internal;
-    let mut enc = encode::Enc::new();
-    encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
     // After an allocation failure no request is sent; the step is tried again later.
-    let chunks = enc.finish().filter(|v| !v.is_empty());
+    let chunks = if dev::is_svga() {
+        let target = encode::TargetRes {
+            id: scratch,
+            format: wire::format::B8G8R8A8_UNORM,
+            info: TargetInfo { width: 1, height: 1, invalid: false, format: format::B8G8R8A8 },
+        };
+        let texel = encode::SourceRes { id: scratch_texture, format: wire::format::B8G8R8A8_UNORM, width: 1, height: 1 };
+        svga::encode::warm_pipeline(&mut dx_objects, &target, &texel, pipeline).map(Chunks::Svga)
+    } else {
+        let mut enc = encode::Enc::new();
+        encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
+        enc.finish().filter(|v| !v.is_empty()).map(Chunks::Virgl)
+    };
     with_core(|c| {
         let live = c.contexts.get(&id).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped);
         if let Some(chunks) = chunks.filter(|_| live && ready(c)) {
-            if chunks.iter().any(|w| w.page_count() + 2 > c.queue_size) {
+            let too_big = matches!(&chunks, Chunks::Virgl(v) if v.iter().any(|w| w.page_count() + 2 > c.queue_size));
+            if too_big {
                 // A step the queue cannot carry is refused like one the device refuses.
                 c.warm_step = Some(WarmStep { ctx: id, pipeline, left: 1, refused: true, lost: false });
                 c.warm_returned(Some(false));
             } else {
                 if let Some(ctx) = c.contexts.get_mut(&id) {
                     ctx.objects = objects;
+                    ctx.dx = dx_objects;
                 }
-                c.warm_step = Some(WarmStep { ctx: id, pipeline, left: chunks.len() as u32, refused: false, lost: false });
-                for words in chunks {
-                    let serial = c.serial();
-                    let fence = c.device_fence();
-                    let req = virgl::submit(Tag::Sync(serial), id, Some(fence), words);
+                let count = match &chunks {
+                    Chunks::Virgl(v) => v.len(),
+                    Chunks::Svga(v) => v.len(),
+                };
+                c.warm_step = Some(WarmStep { ctx: id, pipeline, left: count as u32, refused: false, lost: false });
+                let reqs: Vec<(u64, u64, Option<Request>)> = match chunks {
+                    Chunks::Virgl(v) => v.into_iter().map(|words| {
+                        let (serial, fence) = (c.serial(), c.device_fence());
+                        (serial, fence, Some(dev::submit_virgl(Tag::Sync(serial), id, Some(fence), words)))
+                    }).collect(),
+                    Chunks::Svga(v) => v.into_iter().map(|chunk| {
+                        let (serial, fence) = (c.serial(), c.device_fence());
+                        (serial, fence, dev::submit_svga(Tag::Sync(serial), id, Some(fence), chunk))
+                    }).collect(),
+                };
+                for (serial, fence, req) in reqs {
+                    let Some(req) = req else {
+                        c.warm_returned(None);
+                        continue;
+                    };
                     if c.start_sync(serial, req, id, &internal, &[]).is_err() {
                         c.warm_returned(None);
                         continue;
@@ -1995,6 +2114,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 inflight: VecDeque::new(),
                 totals: Totals::default(),
                 objects: encode::Objects::new(),
+                dx: svga::encode::Objects::new(0),
                 vb,
                 scratch,
                 scratch_texture,
@@ -2065,57 +2185,23 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
             ctx.device_alive = true;
         }
     });
-    exec_ok(|t| Some(virgl::ctx_create(t, id)), id, &[])?;
-    exec_ok(
-        |t| {
-            Some(virgl::resource_create(
-                t,
-                vb,
-                wire::target::BUFFER,
-                wire::format::R8_UNORM,
-                wire::bind::VERTEX_BUFFER,
-                encode::VERTEX_BUFFER_BYTES,
-                1,
-            ))
-        },
-        0,
-        &[],
-    )?;
-    exec_ok(|t| virgl::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
-    exec_ok(|t| Some(virgl::ctx_attach(t, id, vb)), id, &[])?;
-    exec_ok(
-        |t| {
-            Some(virgl::resource_create(
-                t,
-                scratch,
-                wire::target::TEXTURE_2D,
-                wire::format::B8G8R8A8_UNORM,
-                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW,
-                1,
-                1,
-            ))
-        },
-        0,
-        &[],
-    )?;
-    exec_ok(|t| virgl::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
-    exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch)), id, &[])?;
-    exec_ok(
-        |t| {
-            Some(virgl::resource_create(
-                t,
-                scratch_texture,
-                wire::target::TEXTURE_2D,
-                wire::format::B8G8R8A8_UNORM,
-                wire::bind::SAMPLER_VIEW,
-                1,
-                1,
-            ))
-        },
-        0,
-        &[],
-    )?;
-    exec_ok(|t| Some(virgl::ctx_attach(t, id, scratch_texture)), id, &[])?;
+    exec_ok(|t| dev::ctx_create(t, id), id, &[])?;
+    if dev::is_svga() {
+        let cid = svga::cid_of(id).ok_or(EIO)?;
+        with_core(|c| {
+            if let Some(ctx) = c.contexts.get_mut(&id) {
+                ctx.dx = svga::encode::Objects::new(cid);
+            }
+        });
+    }
+    exec_ok(|t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false), 0, &[])?;
+    exec_ok(|t| dev::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
+    exec_ok(|t| Some(dev::ctx_attach(t, id, vb)), id, &[])?;
+    exec_ok(|t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false), 0, &[])?;
+    exec_ok(|t| dev::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
+    exec_ok(|t| Some(dev::ctx_attach(t, id, scratch)), id, &[])?;
+    exec_ok(|t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false), 0, &[])?;
+    exec_ok(|t| Some(dev::ctx_attach(t, id, scratch_texture)), id, &[])?;
     // The process's live resources, held so none is freed before it is attached.
     let theirs: Vec<u32> = with_core(|c| {
         let ids: Vec<u32> = c
@@ -2140,7 +2226,7 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     let mut attached = Ok(());
     for &rid in &theirs {
         if attached.is_ok() {
-            attached = exec_ok(|t| Some(virgl::ctx_attach(t, id, rid)), id, &[]).map(drop);
+            attached = exec_ok(|t| Some(dev::ctx_attach(t, id, rid)), id, &[]).map(drop);
         }
     }
     with_core(|c| {
@@ -2149,26 +2235,37 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         }
     });
     attached?;
-    let mut objects = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.objects.clone())).flatten().ok_or(EIO)?;
-    let mut enc = encode::Enc::new();
-    encode::warm_base(&mut enc, &mut objects, vb, scratch, wire::format::B8G8R8A8_UNORM);
-    let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
-    with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects; });
-    for chunk in chunks {
-        let (serial, fence) = with_core(|c| {
-            if !c
-                .contexts
+    let chunks: Vec<Request> = if dev::is_svga() {
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+        let chunk = svga::encode::chunk(svga::encode::warm_base()).ok_or(ENOMEM)?;
+        alloc::vec![dev::submit_svga(Tag::Sync(serial), id, Some(fence), chunk).ok_or(EIO)?]
+    } else {
+        let mut objects = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.objects.clone())).flatten().ok_or(EIO)?;
+        let mut enc = encode::Enc::new();
+        encode::warm_base(&mut enc, &mut objects, vb, scratch, wire::format::B8G8R8A8_UNORM);
+        let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
+        with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects; });
+        let mut reqs = Vec::new();
+        for words in chunks {
+            let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+            reqs.push(dev::submit_virgl(Tag::Sync(serial), id, Some(fence), words));
+        }
+        reqs
+    };
+    for req in chunks {
+        let Tag::Sync(serial) = req.tag() else { return Err(EIO) };
+        let fence = req.fence();
+        let live = with_core(|c| {
+            c.contexts
                 .get(&id)
                 .is_some_and(|ctx| ctx.state == CtxState::Creating && ctx.device_alive)
-            {
-                return Err(EIO);
-            }
-            Ok((c.serial(), c.device_fence()))
         })
-        .ok_or(ENODEV)??;
-        let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
+        .ok_or(ENODEV)?;
+        if !live {
+            return Err(EIO);
+        }
         let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
-        if !virgl::ok(d.answer) || d.echoed != fence {
+        if !dev::ok(d.answer) || Some(d.echoed) != fence {
             return Err(EIO);
         }
     }
@@ -2211,32 +2308,26 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     let tgid = caller()?;
     let _creation = CreationGuard::acquire(tgid)?;
     let max = with_core(|c| c.caps.max_width).unwrap_or(0);
-    let (vtarget, vformat, bind, bytes, pitch) = match a.kind {
+    let (bytes, pitch) = match a.kind {
         kind::TARGET | kind::TEXTURE => {
-            let vformat = match (a.kind, a.format) {
-                (_, format::B8G8R8A8) => wire::format::B8G8R8A8_UNORM,
-                (_, format::R8G8B8A8) => wire::format::R8G8B8A8_UNORM,
-                (kind::TEXTURE, format::R8) => wire::format::R8_UNORM,
+            match (a.kind, a.format) {
+                (_, format::B8G8R8A8) | (_, format::R8G8B8A8) | (kind::TEXTURE, format::R8) => {}
                 _ => return Err(EINVAL),
-            };
+            }
             if a.width == 0 || a.height == 0 || a.width > max || a.height > max || a.size != 0 {
                 return Err(EINVAL);
             }
-            // Transfers use rows aligned to 256 bytes (section 1.3, backing and row pitch).
-            let pitch = (a.width * format::bytes(a.format)).next_multiple_of(256);
-            let bind = if a.kind == kind::TARGET {
-                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW
-                    | if a.flags & abi::resource_flag::SCANOUT != 0 { wire::bind::SCANOUT } else { 0 }
-            } else {
-                wire::bind::SAMPLER_VIEW
-            };
-            (wire::target::TEXTURE_2D, vformat, bind, pitch as u64 * a.height as u64, pitch)
+            // VirGL transfers use rows aligned to 256 bytes; VMware's version 1 surfaces keep
+            // packed rows (section 1.3, backing and row pitch).
+            let packed = a.width * format::bytes(a.format);
+            let pitch = if dev::is_svga() { packed } else { packed.next_multiple_of(256) };
+            (pitch as u64 * a.height as u64, pitch)
         }
         kind::BUFFER => {
             if a.format != 0 || a.width != 0 || a.height != 0 || a.size == 0 || a.size > BUFFER_MAX {
                 return Err(EINVAL);
             }
-            (wire::target::BUFFER, wire::format::R8_UNORM, wire::bind::VERTEX_BUFFER, a.size, 0)
+            (a.size, 0)
         }
         _ => return Err(EINVAL),
     };
@@ -2279,10 +2370,11 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         r.holds = 1;
         c.insert_res(id, r);
     });
-    let mut outcome = exec_ok(|t| Some(virgl::resource_create(t, id, vtarget, vformat, bind, width, height)), 0, &[])
+    let scanout = a.flags & abi::resource_flag::SCANOUT != 0;
+    let mut outcome = exec_ok(|t| dev::resource_create(t, id, a.kind, a.format, width, height, scanout), 0, &[])
         .map(drop);
     if outcome.is_ok() {
-        outcome = exec_ok(|t| virgl::attach_backing(t, id, pages.clone()), 0, &[]).map(drop);
+        outcome = exec_ok(|t| dev::attach_backing(t, id, pages.clone()), 0, &[]).map(drop);
     }
     let ctxs: Vec<u32> = with_core(|c| {
         c.procs.get(&tgid).map(|p| p.contexts.values().copied().collect()).unwrap_or_default()
@@ -2290,7 +2382,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
     .unwrap_or_default();
     for ctx in ctxs {
         if outcome.is_ok() {
-            if let Err(e) = exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]) {
+            if let Err(e) = exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[]) {
                 // A context that ended meanwhile needs no attachment.
                 let ended = with_core(|c| !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped))
                     .unwrap_or(true);
@@ -2537,6 +2629,12 @@ impl Snapshot {
         let w = r.first + ((offset - r.offset) / 4) as usize;
         [0, 1, 2, 3].map(|k| self.words.word(w + k) as i32)
     }
+}
+
+/// A translated submission's command buffers, in its backend's form.
+enum Chunks {
+    Virgl(Vec<WordBuf>),
+    Svga(Vec<svga::encode::Chunk>),
 }
 
 /// The view's handles with the snapshot's buffer contents.
@@ -2855,7 +2953,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
             corruption.is_some()
         });
-    let vertex_buffer = match vertex_buffer_for(tgid, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) {
+    let svga = dev::is_svga();
+    // The SVGA3D DX translation makes its own vertex, constant, data and scratch surfaces.
+    let vertex_buffer = match if svga { Ok(None) } else { vertex_buffer_for(tgid, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some()))) } {
         Ok(vb) => vb,
         Err(e) => {
             release_slot(false);
@@ -2866,7 +2966,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     // (`docs/gui/gpu.md` section 1.3), one per target format, sized for its largest.
     let mut copy_scratch = [0u32; 2];
     for (slot, [w, h]) in plan.scratch.into_iter().enumerate() {
-        if w == 0 || h == 0 {
+        if w == 0 || h == 0 || svga {
             continue;
         }
         match scratch_for(w, h) {
@@ -2884,7 +2984,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     }
     let data_width = with_core(|c| c.caps.max_width).unwrap_or(0).min(16384);
     let data_width = 1u32 << (31-data_width.leading_zeros());
-    let data_texture = if plan.data_bytes > 0 {
+    let data_texture = if plan.data_bytes > 0 && !svga {
         match scratch_for(data_width, (plan.data_bytes/4).div_ceil(data_width)) {
             Ok(rid)=>rid,
             Err(e)=>{
@@ -2907,6 +3007,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         c.contexts.get(&id).map(|ctx| {
             (
                 ctx.objects.clone(),
+                ctx.dx.clone(),
                 ctx.vb,
                 ctx.scratch,
                 ctx.scratch_texture,
@@ -2914,12 +3015,17 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         })
     })
     .flatten();
-    let Some((mut objects, default_vb, scratch, scratch_texture)) = state else {
+    let Some((mut objects, mut dx_objects, default_vb, scratch, scratch_texture)) = state else {
         drop_vertex_buffer();
         release_slot(false);
         return Err(EIO);
     };
-    let stale: Vec<u32> = objects.resources().filter(|&rid| rid != scratch && rid != scratch_texture && !view.has_id(rid)).collect();
+    let keeps = |rid: &u32| *rid != scratch && *rid != scratch_texture && !view.has_id(*rid);
+    let stale: Vec<u32> = if svga {
+        dx_objects.resources().filter(keeps).collect()
+    } else {
+        objects.resources().filter(keeps).collect()
+    };
     let mut suppression = None;
     let mut suppress = None;
     let mut swapping = None;
@@ -2970,29 +3076,57 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             swap,
         });
     };
-    let mut sizing = encode::Enc::size_only();
-    translate(&mut sizing, &mut objects.clone());
-    let chunk_charge = match sizing.backing_bytes().ok_or(ENOMEM)
-        .and_then(|bytes| Charge::new(tgid, bytes, true)) {
-        Ok(charge) => Some(charge),
-        Err(e) => {
-            drop_vertex_buffer();
-            release_slot(false);
-            return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
-        }
-    };
-    // Command frames and device requests come only after the quota reservation.
-    let mut enc = encode::Enc::new();
-    translate(&mut enc, &mut objects);
-    let chunks = match enc.finish() {
-        Some(chunks) => Some(chunks),
-        None => {
-            drop_vertex_buffer();
+    let dx_extras = || svga::encode::Extras { scratch: plan.scratch, data_width, corrupt, suppress, swap };
+    // The first pass sizes the command frames and surface bytes; the charge for them is
+    // made before the second pass allocates anything.
+    let (chunk_charge, chunks) = if svga {
+        let sized = svga::encode::translate(&mut dx_objects.clone(), &stale, &words, &resolved, dx_extras(), None);
+        let Some((sized, _)) = sized else {
             release_slot(false);
             return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+        };
+        let charge = match Charge::new(tgid, sized.sizes.bytes(), true) {
+            Ok(charge) => charge,
+            Err(e) => {
+                release_slot(false);
+                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+            }
+        };
+        let translated = svga::encode::Backing::allocate(&sized.sizes)
+            .and_then(|backing| svga::encode::translate(&mut dx_objects, &stale, &words, &resolved, dx_extras(), Some(backing)));
+        let Some((out, _)) = translated else {
+            release_slot(false);
+            return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+        };
+        (Some(charge), Some(Chunks::Svga(out.chunks)))
+    } else {
+        let mut sizing = encode::Enc::size_only();
+        translate(&mut sizing, &mut objects.clone());
+        let chunk_charge = match sizing.backing_bytes().ok_or(ENOMEM)
+            .and_then(|bytes| Charge::new(tgid, bytes, true)) {
+            Ok(charge) => Some(charge),
+            Err(e) => {
+                drop_vertex_buffer();
+                release_slot(false);
+                return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
+            }
+        };
+        // Command frames and device requests come only after the quota reservation.
+        let mut enc = encode::Enc::new();
+        translate(&mut enc, &mut objects);
+        match enc.finish() {
+            Some(chunks) => (chunk_charge, Some(Chunks::Virgl(chunks))),
+            None => {
+                drop_vertex_buffer();
+                release_slot(false);
+                return refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM);
+            }
         }
     };
     let made = (|| {
+        if svga {
+            return Ok(());
+        }
         if let Some(rid) = vertex_buffer {
             create_private(id, rid, wire::target::BUFFER, wire::format::R8_UNORM,
                 wire::bind::VERTEX_BUFFER, encode::vertex_bytes(plan.drawn + u64::from(corrupt.is_some())) as u32, 1)?;
@@ -3038,8 +3172,10 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         }
         let chunks = chunks.ok_or(ENOMEM)?;
         // Every chunk's chain, and test point 27's two-buffer command, fits the queue.
-        if chunks.iter().any(|w| w.page_count() + 2 > c.queue_size) || c.queue_size < 2 {
-            return Err(ENOMEM);
+        if let Chunks::Virgl(chunks) = &chunks {
+            if chunks.iter().any(|w| w.page_count() + 2 > c.queue_size) || c.queue_size < 2 {
+                return Err(ENOMEM);
+            }
         }
         // Test point 27, `device-error`: the chunks are followed by a fenced command of a
         // type VirtIO does not define, which the device can only refuse, and that command
@@ -3065,7 +3201,36 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             }
             _ => false,
         };
-        ctx.objects = objects;
+        let mut reqs: Vec<Request> = Vec::new();
+        match chunks {
+            Chunks::Virgl(chunks) => {
+                let count = chunks.len();
+                for (i, words) in chunks.into_iter().enumerate() {
+                    let last = i + 1 == count && !forced;
+                    reqs.push(dev::submit_virgl(Tag::Submit { ctx: id, serial, last }, id, last.then_some(fence), words));
+                }
+                if reqs.is_empty() && !forced {
+                    // An empty translation still needs a fenced command to complete in order.
+                    reqs.push(dev::submit_virgl(Tag::Submit { ctx: id, serial, last: true }, id, Some(fence), WordBuf::new()));
+                }
+            }
+            Chunks::Svga(chunks) => {
+                let count = chunks.len();
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let last = i + 1 == count && !forced;
+                    reqs.push(dev::submit_svga(Tag::Submit { ctx: id, serial, last }, id, last.then_some(fence), chunk).ok_or(EIO)?);
+                }
+            }
+        }
+        if forced {
+            reqs.push(dev::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence).ok_or(EIO)?);
+        }
+        let ctx = c.contexts.get_mut(&id).ok_or(EINVAL)?;
+        if svga {
+            ctx.dx = dx_objects;
+        } else {
+            ctx.objects = objects;
+        }
         ctx.issued += 1;
         let n = ctx.issued;
         let ns = ctx.ns;
@@ -3082,19 +3247,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         };
         count_in(&mut ctx.totals);
         count_in(&mut c.proc_mut(tgid).totals);
-        let mut reqs: Vec<Request> = Vec::new();
-        let count = chunks.len();
-        for (i, words) in chunks.into_iter().enumerate() {
-            let last = i + 1 == count && !forced;
-            reqs.push(virgl::submit(Tag::Submit { ctx: id, serial, last }, id, last.then_some(fence), words));
-        }
-        if reqs.is_empty() && !forced {
-            // An empty translation still needs a fenced command to complete in order.
-            reqs.push(virgl::submit(Tag::Submit { ctx: id, serial, last: true }, id, Some(fence), WordBuf::new()));
-        }
-        if forced {
-            reqs.push(virgl::undefined_command(Tag::Submit { ctx: id, serial, last: true }, id, fence));
-        }
         for rid in &named_ids {
             if let Some(r) = c.resources.get_mut(rid) {
                 r.holds += 1;
@@ -3188,8 +3340,8 @@ fn scratch_for(w: u32, h: u32) -> Result<u32, i64> {
 /// Start a private resource only after the submission's full quota is reserved.
 fn create_private(ctx: u32, id: u32, target: u32, vformat: u32, bind: u32, w: u32, h: u32) -> Result<(), i64> {
     with_core(|c| { if let Some(r) = c.resources.get_mut(&id) { r.lost = false; } });
-    exec_ok(|t| Some(virgl::resource_create(t, id, target, vformat, bind, w, h)), 0, &[id])?;
-    exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[id])?;
+    exec_ok(|t| Some(dev::Request::Virgl(virgl::resource_create(t, id, target, vformat, bind, w, h))), 0, &[id])?;
+    exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[id])?;
     Ok(())
 }
 
@@ -3375,19 +3527,21 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
     // as a completed one.
     let skip = crate::test_control::take(test_point::SKIP_UPLOAD_VISIBILITY, a.resource).is_some();
     let sent = if skip {
-        with_core(|c| (c.serial(), 0, wire::resp::OK_NODATA)).ok_or((ENODEV, 0))
+        with_core(|c| (c.serial(), 0, dev::success())).ok_or((ENODEV, 0))
     } else {
         match with_core(|c| (c.serial(), c.device_fence())) {
             None => Err((ENODEV, 0)),
             Some((serial, fence)) => {
-                let req = virgl::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32);
-                match exec_req_why(serial, req, ctx, &[id], &[id]) {
-                    Ok(d) if virgl::ok(d.answer) && d.echoed == fence && d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE != 0 => {
-                        Ok((serial, fence, d.answer))
-                    }
-                    Ok(_) => Err((EIO, serial)),
-                    Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
-                    Err((e, _)) => Err((e, 0)),
+                match dev::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32) {
+                    None => Err((EIO, 0)),
+                    Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
+                        Ok(d) if dev::ok(d.answer) && d.echoed == fence && d.fenced => {
+                            Ok((serial, fence, d.answer))
+                        }
+                        Ok(_) => Err((EIO, serial)),
+                        Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
+                        Err((e, _)) => Err((e, 0)),
+                    },
                 }
             }
         }
@@ -3401,7 +3555,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                 if let Some(r) = c.resources.get_mut(&id) {
                     completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, true, whole);
                     r.generation += 1;
-                    r.last = Some(LastWrite { ctx, fence, serial, answer, kind: wire::cmd::TRANSFER_TO_HOST_3D });
+                    r.last = Some(LastWrite { ctx, fence, serial, answer, kind: dev::upload_kind() });
                 }
                 count(c);
             });
@@ -3573,6 +3727,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     };
     let (unwritten, transfer_fence, transfer_answer) =
         (observation.unwritten, observation.fence, observation.answer);
+    let readback_surface = (observation.surface, observation.mob);
     let mut rec = [0u8; record::SIZE];
     let put32 = |rec: &mut [u8; record::SIZE], at: usize, v: u32| {
         rec[at..at + 4].copy_from_slice(&v.to_le_bytes())
@@ -3603,7 +3758,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     put32(&mut rec, record::VERSION_OFF, record::VERSION);
     put32(&mut rec, record::SIZE_OFF, record::SIZE as u32);
     put64(&mut rec, record::SERIAL, serial);
-    put32(&mut rec, record::BACKEND, abi::backend::VIRGL);
+    put32(&mut rec, record::BACKEND, dev::backend());
     put32(&mut rec, record::BOUNDARY, record::BOUNDARY_HOST);
     if let Some(b) = binding {
         put32(&mut rec, record::FLAGS, 1);
@@ -3633,11 +3788,17 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
     }
     put64(&mut rec, record::READBACK_FENCE, transfer_fence);
     put32(&mut rec, record::READBACK_STATUS, transfer_answer);
-    put32(
-        &mut rec,
-        record::READBACK_KIND,
-        wire::cmd::TRANSFER_FROM_HOST_3D,
-    );
+    if dev::is_svga() {
+        // The host copy into the readback surface answered as the readback did: both run
+        // in the same command buffer, whose status is the answer.
+        put32(&mut rec, record::READBACK_KIND, svga::wire::cmd::READBACK_SURFACE);
+        put64(&mut rec, record::READBACK_SURFACE, readback_surface.0);
+        put64(&mut rec, record::READBACK_MOB, readback_surface.1);
+        put32(&mut rec, record::COPY_KIND, svga::wire::cmd::SURFACE_COPY);
+        put32(&mut rec, record::COPY_STATUS, transfer_answer);
+    } else {
+        put32(&mut rec, record::READBACK_KIND, wire::cmd::TRANSFER_FROM_HOST_3D);
+    }
     put32(&mut rec, record::POISON, POISON);
     put32(&mut rec, record::UNWRITTEN, unwritten);
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
@@ -3724,6 +3885,20 @@ struct Observation {
     unwritten: u32,
     fence: u64,
     answer: u32,
+    /// SVGA3D DX: the first pass's dedicated readback surface and its MOB.
+    surface: u64,
+    mob: u64,
+}
+
+/// Frames a device writes for one call, such as a readback surface's MOB: charged like
+/// staging before they are allocated, and kept, with their charge, by each request that
+/// may still write them.
+fn device_frames(tgid: u64, bytes: usize) -> Result<Arc<Pages>, i64> {
+    let frames = bytes.div_ceil(PAGE);
+    let charge = Charge::new(tgid, (frames * PAGE) as u64, false)?;
+    let mut pages = Pages::new(frames).ok_or(ENOMEM)?;
+    pages.charge_copy(charge);
+    Ok(Arc::new(pages))
 }
 
 /// Test point 21's resource: another live target of the process, idle, with the same row
@@ -3750,8 +3925,11 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
 /// twice, into the poison and into its complement, and the bytes that differ between the
 /// two are counted as unwritten (section 1.8). A transfer is a synchronous request
 /// under the watchdog that holds the resource it names and the backing the device writes,
-/// until the device returns it. Returns that count and the first transfer's fence and
-/// answer. The reason of an EIO comes only from what the kernel observes.
+/// until the device returns it. On VirGL the device writes the band into the target's own
+/// backing; on SVGA3D DX each pass GPU-copies the band into a dedicated readback surface
+/// whose MOB is frames of this observation's own, charged to the process, and reads that
+/// surface back into them. Returns that count and the first transfer's fence and answer.
+/// The reason of an EIO comes only from what the kernel observes.
 #[allow(clippy::too_many_arguments)]
 fn observe(
     tgid: u64,
@@ -3787,9 +3965,22 @@ fn observe(
     })?;
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
-    let band_rows = (READBACK_BAND / pitch as usize)
+    let svga = dev::is_svga();
+    // The memory each band is observed in, and its row stride: the target's backing, or the
+    // readback surface's MOB, whose rows are the band's.
+    let band_rows = (READBACK_BAND / if svga { row } else { pitch as usize })
         .max(1)
         .min(a.height as usize);
+    let readback = if svga {
+        Some(device_frames(tgid, band_rows * row).map_err(|e| (e, readback_reason::NONE))?)
+    } else {
+        None
+    };
+    let (mem, stride): (&Pages, usize) = match readback.as_ref() {
+        Some(p) => (p, row),
+        None => (backing, pitch as usize),
+    };
+    let mut surface = (0u64, 0u64);
     let mut seen = [0u8; PAGE];
     let mut chunk = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
@@ -3798,12 +3989,12 @@ fn observe(
     while by < a.height as usize {
         let rows = band_rows.min(a.height as usize - by);
         let ty = a.y as usize + by;
-        let offset = ty * pitch as usize + a.x as usize * px;
+        let offset = if svga { 0 } else { ty * pitch as usize + a.x as usize * px };
         for (pass, pattern) in [POISON, !POISON].into_iter().enumerate() {
             for r in 0..rows {
-                backing.fill(offset + r * pitch as usize, row, pattern);
+                mem.fill(offset + r * stride, row, pattern);
             }
-            backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
+            mem.maintain(offset, (rows - 1) * stride + row, false);
             let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
             if !skip {
                 let other = wrong_resource(
@@ -3819,19 +4010,32 @@ fn observe(
                 let (named, written) = other.clone().unwrap_or((id, backing.clone()));
                 let (serial, fence) = with_core(|c| (c.serial(), c.device_fence()))
                     .ok_or((ENODEV, readback_reason::NONE))?;
-                let req = virgl::transfer_from_host(
-                    Tag::Sync(serial),
-                    ctx,
-                    fence,
-                    named,
-                    written,
-                    a.x,
-                    ty as u32,
-                    a.width,
-                    rows as u32,
-                    offset as u64,
-                    pitch,
-                );
+                let req = match readback.as_ref() {
+                    // Test point 21 on SVGA3D: the band is copied, and another target is
+                    // read back in place of the readback surface.
+                    Some(rb) => {
+                        let read = (named != id).then_some(named);
+                        let made = svga::readback(Tag::Sync(serial), ctx, fence, id, read, fmt, a.x, ty as u32, a.width, rows as u32, rb.clone());
+                        let (req, sid, mob) = made.ok_or((EIO, readback_reason::DEVICE_ERROR))?;
+                        if surface.0 == 0 {
+                            surface = (sid as u64, mob as u64);
+                        }
+                        dev::Request::Svga(req)
+                    }
+                    None => dev::Request::Virgl(virgl::transfer_from_host(
+                        Tag::Sync(serial),
+                        ctx,
+                        fence,
+                        named,
+                        written,
+                        a.x,
+                        ty as u32,
+                        a.width,
+                        rows as u32,
+                        offset as u64,
+                        pitch,
+                    )),
+                };
                 // The target, and the other resource when the transfer names one.
                 let both = [id, named];
                 let marks = if named == id { &both[..1] } else { &both[..] };
@@ -3857,10 +4061,10 @@ fn observe(
                 if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
                     d.echoed = d.echoed.wrapping_add(1);
                 }
-                if !virgl::ok(d.answer) {
+                if !dev::ok(d.answer) {
                     return Err((EIO, readback_reason::DEVICE_ERROR));
                 }
-                if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+                if d.echoed != fence || !d.fenced {
                     return Err((EIO, readback_reason::FENCE_MISMATCH));
                 }
                 first.get_or_insert((fence, d.answer));
@@ -3868,15 +4072,15 @@ fn observe(
             // The first observation lands straight in the staging; the second is compared
             // with it a frame at a time.
             for r in 0..rows {
-                let src = offset + r * pitch as usize;
+                let src = offset + r * stride;
                 let _ = staging.try_spans((by + r) * row, row, |done, ptr, n| {
                     // SAFETY: the span lies inside one of the staging's frames, which only
                     // this call uses.
                     let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
                     if pass == 0 {
-                        observation::read(backing.as_ref(), src + done, kept);
+                        observation::read(mem, src + done, kept);
                     } else {
-                        observation::read(backing.as_ref(), src + done, &mut seen[..n]);
+                        observation::read(mem, src + done, &mut seen[..n]);
                         unwritten += differing(&seen[..n], kept);
                     }
                     Ok::<(), ()>(())
@@ -3905,6 +4109,8 @@ fn observe(
         unwritten,
         fence,
         answer,
+        surface: surface.0,
+        mob: surface.1,
     })
 }
 

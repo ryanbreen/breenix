@@ -104,6 +104,8 @@ fn resource(
 ) -> Result<u32, i64> {
     let pitch = if kind_ == kind::BUFFER {
         w
+    } else if dev::is_svga() {
+        w * format::bytes(fmt)
     } else {
         (w * format::bytes(fmt)).next_multiple_of(256)
     };
@@ -123,42 +125,12 @@ fn resource(
         id
     })
     .ok_or(ENODEV)?;
-    let target = if kind_ == kind::BUFFER {
-        wire::target::BUFFER
-    } else {
-        wire::target::TEXTURE_2D
-    };
-    let bind = if kind_ == kind::BUFFER {
-        wire::bind::VERTEX_BUFFER
-    } else {
-        wire::bind::SAMPLER_VIEW
-            | if kind_ == kind::TARGET {
-                wire::bind::RENDER_TARGET
-            } else {
-                0
-            }
-            | if scanout { wire::bind::SCANOUT } else { 0 }
-    };
     let result = (|| {
-        exec_ok(
-            |t| {
-                Some(virgl::resource_create(
-                    t,
-                    id,
-                    target,
-                    virgl_format(fmt),
-                    bind,
-                    w,
-                    h,
-                ))
-            },
-            0,
-            &[id],
-        )?;
+        exec_ok(|t| dev::resource_create(t, id, kind_, fmt, w, h, scanout), 0, &[id])?;
         if backed {
-            exec_ok(|t| virgl::attach_backing(t, id, pages.clone()), 0, &[id])?;
+            exec_ok(|t| dev::attach_backing(t, id, pages.clone()), 0, &[id])?;
         }
-        exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[id])?;
+        exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[id])?;
         Ok(id)
     })();
     if result.is_err() {
@@ -267,25 +239,11 @@ impl Console {
         pages.maintain(0, pitch as usize * 16, false);
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let d = exec_ok(
-            |t| {
-                Some(virgl::transfer_to_host(
-                    t,
-                    ctx,
-                    fence,
-                    atlas,
-                    pages.clone(),
-                    0,
-                    0,
-                    gw * 95,
-                    16,
-                    0,
-                    pitch,
-                ))
-            },
+            |t| dev::transfer_to_host(t, ctx, fence, atlas, pages.clone(), 0, 0, gw * 95, 16, 0, pitch),
             ctx,
             &[atlas],
         )?;
-        if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+        if d.echoed != fence || !d.fenced {
             return Err(EIO);
         }
         FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
@@ -360,54 +318,85 @@ impl Console {
         for (i, line) in self.lines.iter().enumerate() {
             draws += self.text(&mut s, line, 48 + i as i32 * 18);
         }
-        let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.objects.clone()))
-            .flatten()
-            .ok_or(EIO)?;
-        let mut enc = encode::Enc::new();
-        encode::translate(
-            &mut enc,
-            &mut o,
-            s.as_slice(),
-            self,
-            encode::Extras {
-                vertex_buffer: self.vertices,
-                scratch: [self.scratch, 0],
-                data: 0,
-                data_width: 0,
-                flip_y: FLIP_Y,
+        let requests: Vec<Request> = if dev::is_svga() {
+            let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.dx.clone()))
+                .flatten()
+                .ok_or(EIO)?;
+            let extras = || svga::encode::Extras {
+                scratch: [[WIDTH, HEIGHT], [0, 0]],
+                data_width: 1,
                 corrupt: None,
                 suppress: None,
                 swap: None,
-            },
-        );
-        let chunks = enc.finish().ok_or(ENOMEM)?;
-        with_core(|c| {
-            if let Some(ctx) = c.contexts.get_mut(&self.context) {
-                ctx.objects = o;
+            };
+            let (sized, _) = svga::encode::translate(&mut o.clone(), &[], s.as_slice(), self, extras(), None).ok_or(ENOMEM)?;
+            let backing = svga::encode::Backing::allocate(&sized.sizes).ok_or(ENOMEM)?;
+            let (out, _) = svga::encode::translate(&mut o, &[], s.as_slice(), self, extras(), Some(backing)).ok_or(ENOMEM)?;
+            with_core(|c| {
+                if let Some(ctx) = c.contexts.get_mut(&self.context) {
+                    ctx.dx = o;
+                }
+            });
+            let mut reqs = Vec::new();
+            for chunk in out.chunks {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                reqs.push(dev::submit_svga(Tag::Sync(serial), self.context, Some(fence), chunk).ok_or(EIO)?);
             }
-        });
+            reqs
+        } else {
+            let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.objects.clone()))
+                .flatten()
+                .ok_or(EIO)?;
+            let mut enc = encode::Enc::new();
+            encode::translate(
+                &mut enc,
+                &mut o,
+                s.as_slice(),
+                self,
+                encode::Extras {
+                    vertex_buffer: self.vertices,
+                    scratch: [self.scratch, 0],
+                    data: 0,
+                    data_width: 0,
+                    flip_y: FLIP_Y,
+                    corrupt: None,
+                    suppress: None,
+                    swap: None,
+                },
+            );
+            let chunks = enc.finish().ok_or(ENOMEM)?;
+            with_core(|c| {
+                if let Some(ctx) = c.contexts.get_mut(&self.context) {
+                    ctx.objects = o;
+                }
+            });
+            let mut reqs = Vec::new();
+            for words in chunks {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                reqs.push(dev::submit_virgl(Tag::Sync(serial), self.context, Some(fence), words));
+            }
+            reqs
+        };
         let mut last = None;
-        for words in chunks {
-            let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+        for req in requests {
+            let Tag::Sync(serial) = req.tag() else { return Err(EIO) };
+            let fence = req.fence();
             let d = exec_req(
                 serial,
-                virgl::submit(Tag::Sync(serial), self.context, Some(fence), words),
+                req,
                 self.context,
                 &[self.target, self.atlas, self.scratch, self.vertices],
                 &[],
             )?;
-            if !virgl::ok(d.answer)
-                || d.echoed != fence
-                || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0
-            {
+            if !dev::ok(d.answer) || Some(d.echoed) != fence || !d.fenced {
                 return Err(EIO);
             }
             last = Some(LastWrite {
                 ctx: self.context,
-                fence,
+                fence: d.echoed,
                 serial,
                 answer: d.answer,
-                kind: wire::cmd::SUBMIT_3D,
+                kind: dev::draw_kind(),
             });
         }
         with_core(|c| {
@@ -447,17 +436,17 @@ impl Console {
             }
         });
         exec_ok(
-            |t| Some(virgl::set_scanout(t, self.context, b.id, w, h)),
+            |t| dev::set_scanout(t, self.context, b.id, w, h),
             self.context,
             &[b.id],
         )?;
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let d = exec_ok(
-            |t| Some(virgl::flush_resource(t, self.context, fence, b.id, w, h)),
+            |t| dev::flush_resource(t, self.context, fence, b.id, w, h),
             self.context,
             &[b.id],
         )?;
-        if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+        if d.echoed != fence || !d.fenced {
             return Err(EIO);
         }
         b.answer = d.answer;

@@ -25,6 +25,9 @@ mod pipelines;
 mod profile;
 #[path = "shader_chunks.rs"]
 mod shader_chunks;
+/// The catalogue's fragment programs and `probe_int`'s, which the SVGA backend translates.
+pub use pipelines::CATALOGUE as PIPELINE_PROGRAMS;
+pub use profile::FS as PROFILE_FS;
 use crate::gpu::dma::WordBuf;
 
 /// The most words one SUBMIT_3D carries: 16 frames.

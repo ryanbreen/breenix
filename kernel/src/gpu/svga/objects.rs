@@ -1,9 +1,9 @@
-//! Owned objects used by DX contexts and surfaces. Submission holds retain these trees
-//! until the device has ended its access; an errno alone cannot release them.
+//! DX contexts and the MOBs behind them. A context's MOBs stay allocated until the device
+//! has answered the buffer that destroys them; an errno alone cannot release them.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use super::{commands::Commands, memory::PageTree, Error};
+use super::{commands::Commands, memory::PageTree, wire, Error};
 use crate::gpu::dma::{Pages, PAGE};
 
 pub struct Mob {
@@ -25,9 +25,8 @@ impl Mob {
     pub fn define(&self, commands: &mut Commands) { commands.mob(self.id, &self.tree, self.bytes); }
 }
 
-/// DX state is 8192 bytes, the published SVGADXContextMobFormat. A cotable's capacity
-/// follows the resource-handle quota plus three backend scratch views, or the fixed
-/// catalogue/state object count; entry widths come from svga3d_dx.h's packed structs.
+/// A DX context: its 8,192-byte state (`SVGADXContextMobFormat`) and seven context object
+/// tables, each sized as entries times the published entry width (`svga3d_dx.h`).
 pub struct Context {
     pub id: u32,
     pub state: Mob,
@@ -35,16 +34,26 @@ pub struct Context {
 }
 
 impl Context {
-    /// `mobs` supplies eight reserved, distinct ids: state, RTV, SRV, layout, blend,
-    /// depth/stencil, rasterizer and shader table. Reserving ids is the backend's job.
-    pub fn new(id: u32, mobs: [u32; 8]) -> Result<Self, Error> {
+    /// `mobs` supplies eight reserved, distinct ids: state, render-target views,
+    /// shader-resource views, element layouts, blend, depth/stencil, rasterizer and shader
+    /// tables. `views` sizes both view tables and `shaders` the shader table; the fixed
+    /// states have one entry each.
+    pub fn new(id: u32, mobs: [u32; 8], views: u32, shaders: u32) -> Result<Self, Error> {
+        use wire::{cotable as t, entry as e};
         let state = Mob::allocate(mobs[0], 8192)?;
-        let tables = [(0, 32, 256 + 3), (2, 32, 256 + 3), (3, 1024, 1),
-            (4, 128, 1), (5, 16, 1), (6, 32, 1), (10, 32, 17 * 2)];
+        let tables = [
+            (t::RTVIEW, e::RTVIEW, views),
+            (t::SRVIEW, e::SRVIEW, views),
+            (t::ELEMENTLAYOUT, e::ELEMENTLAYOUT, 1),
+            (t::BLENDSTATE, e::BLENDSTATE, 1),
+            (t::DEPTHSTENCIL, e::DEPTHSTENCIL, 1),
+            (t::RASTERIZERSTATE, e::RASTERIZERSTATE, 1),
+            (t::DXSHADER, e::DXSHADER, shaders),
+        ];
         let mut cotables = Vec::new();
         cotables.try_reserve_exact(tables.len()).map_err(|_| Error::NoMemory)?;
         for (i, &(kind, width, count)) in tables.iter().enumerate() {
-            cotables.push((kind, Mob::allocate(mobs[i + 1], width * count)?));
+            cotables.push((kind, Mob::allocate(mobs[i + 1], width as u32 * count)?));
         }
         Ok(Self { id, state, cotables })
     }
@@ -58,33 +67,10 @@ impl Context {
         core::iter::once(self.state.tree.clone())
             .chain(self.cotables.iter().map(|(_, mob)| mob.tree.clone())).collect()
     }
-    /// Unbind and destroy the context before retiring its MOBs. The caller retains this
-    /// object through the command buffer's completion (including an error completion).
+    /// Unbind and destroy the context, then its MOBs.
     pub fn destroy(&self, commands: &mut Commands) {
         commands.destroy_context(self.id);
         for (_, mob) in &self.cotables { commands.destroy_mob(mob.id); }
         commands.destroy_mob(self.state.id);
-    }
-}
-
-pub struct Surface {
-    pub id: u32,
-    pub mob: Mob,
-    pub format: u32,
-    pub width: u32,
-    pub height: u32,
-    pub flags: u32,
-}
-
-impl Surface {
-    pub fn define(&self, commands: &mut Commands) {
-        self.mob.define(commands);
-        commands.surface(self.id, self.flags, self.format, self.width, self.height);
-        commands.bind_surface(self.id, self.mob.id);
-    }
-    pub fn destroy(&self, commands: &mut Commands) {
-        commands.bind_surface(self.id, super::wire::INVALID);
-        commands.destroy_surface(self.id);
-        commands.destroy_mob(self.mob.id);
     }
 }

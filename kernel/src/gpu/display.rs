@@ -265,17 +265,18 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             }
             c.display.known = false;
             c.display.latest_ok = false;
-            c.background(virgl::set_scanout(
-                Tag::Background,
-                ctx_id,
-                id,
-                width,
-                height,
-            ));
+            if let Some(req) = dev::set_scanout(Tag::Background, ctx_id, id, width, height) {
+                c.background(req);
+            }
             return Some(Err(EIO));
         }
         let serial = c.serial();
         let fence = c.device_fence();
+        let bind = dev::set_scanout(Tag::Submit { ctx: ctx_id, serial, last: false }, ctx_id, id, width, height);
+        let flush = dev::flush_resource(Tag::Submit { ctx: ctx_id, serial, last: true }, ctx_id, fence, id, width, height);
+        let (Some(bind), Some(flush)) = (bind, flush) else {
+            return Some(Err(EIO));
+        };
         c.display.sent += 1;
         c.display.outstanding += 1;
         c.display.known = false;
@@ -321,35 +322,8 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             },
         );
         let epoch = c.epoch;
-        c.backlog.push_back((
-            epoch,
-            virgl::set_scanout(
-                Tag::Submit {
-                    ctx: ctx_id,
-                    serial,
-                    last: false,
-                },
-                ctx_id,
-                id,
-                width,
-                height,
-            ),
-        ));
-        c.backlog.push_back((
-            epoch,
-            virgl::flush_resource(
-                Tag::Submit {
-                    ctx: ctx_id,
-                    serial,
-                    last: true,
-                },
-                ctx_id,
-                fence,
-                id,
-                width,
-                height,
-            ),
-        ));
+        c.backlog.push_back((epoch, bind));
+        c.backlog.push_back((epoch, flush));
         c.flush();
         Some(Ok((ctx_id, n, bgl_fence)))
     });
