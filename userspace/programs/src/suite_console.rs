@@ -871,14 +871,14 @@ fn login_credentials() -> Verdict<LoginCredentials> {
         require(n > 0, "getrandom made no progress")?;
         at += n;
     }
-    // Encode the same 64 random bits in 11 keyboard chords. Two logins
+    // Encode the 64 random bits in 13 unmodified keyboard chords. Two logins
     // plus logout and respawn must fit the suite's ten-second case limit.
-    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
     let mut password = String::new();
-    for _ in 0..11 {
-        password.push(ALPHABET[(bits % 62) as usize] as char);
-        bits /= 62;
+    for _ in 0..13 {
+        password.push(ALPHABET[(bits % 36) as usize] as char);
+        bits /= 36;
     }
     let salt: String = random[8..].iter().map(|b| format!("{b:02x}")).collect();
     let mut hash = [0; libbreenix::crypto::sha512_crypt::MAX_OUTPUT];
@@ -966,10 +966,8 @@ fn wait_vt(number: usize, needle: &str) -> Verdict<String> {
 }
 
 fn type_line(text: &str) -> Verdict {
-    require(text.bytes().all(|b| b.is_ascii_alphanumeric()), "unsupported keyboard text")?;
-    let mut keys: Vec<_> = text.chars().map(|c| {
-        if c.is_ascii_uppercase() { format!("shift-{}", c.to_ascii_lowercase()) } else { c.to_string() }
-    }).collect();
+    require(text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()), "unsupported keyboard text")?;
+    let mut keys: Vec<_> = text.chars().map(|c| c.to_string()).collect();
     keys.push("enter".into());
     libbreenix::suite::hostkeys(&keys.join(",")).map(|_| ())
 }
@@ -1037,7 +1035,9 @@ fn getty_logout_reacquires() -> CaseResult {
         // Remove the old prompt so it cannot be mistaken for a respawn.
         let fd = VtFd::open(4)?;
         io::write(fd.0, b"\x1bc").map_err(|e| e.to_string())?;
-        type_line("exit")?;
+        let sid = before.split_whitespace().find(|word| word.starts_with("sid=")).ok_or("missing session")?;
+        libbreenix::suite::hostkeys("ctrl-d")?;
+        wait_vt(4, &format!("VTLOGOUT tty4 {sid}"))?;
         wait_vt(4, "Breenix login: ")?;
         let proof = login_vt(4, &account.password)?;
         require(proof != before, "logout did not create a new tty4 session")?;
@@ -1088,8 +1088,10 @@ fn login_shell() -> Verdict {
         && std::env::var("USER").as_deref() == Ok("root"), "login environment differs")?;
     println!("VTLOGIN tty{number} sid={sid} pgid={pgid}");
     let mut line = String::new();
-    std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
-    require(line.trim() == "exit", "login shell expected exit")
+    let count = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    require(count == 0 && line.is_empty(), "login shell expected terminal EOF")?;
+    println!("VTLOGOUT tty{number} sid={sid}");
+    Ok(())
 }
 
 /// One function per case that has no check yet, each failing with the layer it needs.
