@@ -219,7 +219,26 @@ pub fn handle_tiocspgrp(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
         return Err(EINVAL);
     }
 
+    // POSIX tcsetpgrp: the group must be the process group of a process in
+    // the caller's session, or the call fails with EPERM (S29). A zombie is a
+    // process until it is reaped. The process table stays held through the
+    // store, so creation cannot find the group dead in between.
+    let tid = crate::task::scheduler::current_thread_id();
+    let manager = crate::process::manager();
+    let member_in_session = manager.as_ref().is_some_and(|pm| {
+        let Some((_, me)) = tid.and_then(|tid| pm.find_process_by_thread(tid)) else {
+            return false;
+        };
+        pm.iter_processes().any(|(_, p)| {
+            !p.is_tombstone() && p.pgid.as_u64() == pgrp as u64 && p.sid == me.sid
+        })
+    });
+    if !member_in_session {
+        return Err(EPERM);
+    }
+
     tty.set_foreground_pgrp(pgrp as u64);
+    drop(manager);
 
     log::debug!("TTY{}: Set foreground pgrp to {}", tty.num, pgrp);
 
