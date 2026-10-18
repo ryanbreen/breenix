@@ -157,15 +157,15 @@ static FG_SIGNAL_QUEUE: [AtomicU64; FG_SIGNAL_SLOTS] =
 /// 0 is a terminal signal that was not sent.
 static FG_SIGNAL_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
 
-/// The thread that sends queued foreground-group signals.
-static FG_SIGNAL_THREAD: spin::Once<crate::task::kthread::KthreadHandle> = spin::Once::new();
+/// Starts the timer-driven foreground signal worker exactly once.
+static FG_SIGNAL_THREAD: spin::Once<()> = spin::Once::new();
 
 /// Terminal signals the interrupt side could not queue for sending.
 pub fn foreground_signal_overflows() -> u64 {
     FG_SIGNAL_OVERFLOWS.load(Ordering::Relaxed)
 }
 
-/// Queue `sig` for the members of `pgrp` and wake the thread that sends it.
+/// Queue `sig` for the members of `pgrp`; the timer-driven worker drains it.
 /// Lock-free: called from the input interrupt.
 fn queue_foreground_signal_nonblock(pgrp: u64, sig: u32) {
     let entry = (pgrp << 8) | u64::from(sig);
@@ -181,16 +181,16 @@ fn queue_foreground_signal_nonblock(pgrp: u64, sig: u32) {
         FG_SIGNAL_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    // Before the thread is published, its first pass sends what is queued.
-    if let Some(thread) = FG_SIGNAL_THREAD.get() {
-        crate::task::kthread::kthread_unpark(thread);
-    }
 }
 
 /// Send each queued foreground-group signal, in thread context, where the
-/// process table can be waited for, then park until the interrupt side queues
-/// another.
+/// process table can be waited for. Sleep on a timer between drains: input
+/// interrupts never acquire the scheduler, and a queued signal needs no wake
+/// handshake that could race the worker going to sleep.
 fn foreground_signal_thread() {
+    use crate::task::{scheduler, thread::ThreadState};
+
+    let tid = scheduler::current_thread_id().expect("foreground signal worker identity");
     loop {
         for slot in &FG_SIGNAL_QUEUE {
             let entry = slot.swap(0, Ordering::AcqRel);
@@ -198,11 +198,20 @@ fn foreground_signal_thread() {
                 TtyDevice::send_signal_to_group(ProcessId::new(entry >> 8), (entry & 0xff) as u32);
             }
         }
-        crate::task::kthread::kthread_park_if(|| {
-            FG_SIGNAL_QUEUE
-                .iter()
-                .all(|slot| slot.load(Ordering::Acquire) == 0)
-        });
+        // A byte accepted just after a drain waits at most one 10 ms sleep,
+        // plus scheduling and group-delivery time. Only this thread takes the
+        // scheduler lock; the interrupt side only publishes into the queue.
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        let wake_at = seconds.saturating_mul(1_000_000_000)
+            .saturating_add(nanos).saturating_add(10_000_000);
+        scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
+        scheduler::yield_current();
+        loop {
+            crate::arch_halt_with_interrupts();
+            if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
+                break;
+            }
+        }
     }
 }
 
@@ -210,13 +219,10 @@ fn foreground_signal_thread() {
 /// threads can be created and before a terminal can generate a signal from
 /// user input.
 pub fn start_foreground_signal_thread() {
-    let thread = FG_SIGNAL_THREAD.call_once(|| {
+    FG_SIGNAL_THREAD.call_once(|| {
         crate::task::kthread::kthread_run(foreground_signal_thread, "kttysig")
-            .expect("could not spawn the foreground signal thread")
+            .expect("could not spawn the foreground signal thread");
     });
-    // The thread may have parked before its handle became visible to the
-    // interrupt side; wake it once for anything queued in between.
-    crate::task::kthread::kthread_unpark(thread);
 }
 
 /// Maximum UART bytes emitted while interrupts are masked for one TTY write.
