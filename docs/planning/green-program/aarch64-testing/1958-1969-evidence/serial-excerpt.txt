@@ -1,0 +1,19 @@
+  BUILD_ID: 006ad524c910cd
+[TEST:syscall:arm64_pty_ioctl_path:START]
+manager.create_process [ARM64]: ENTRY - name='pty_ioctl_test', elf_size=289064
+manager.create_process [ARM64]: Generated PID 2
+[TEST:syscall:arm64_pty_ioctl_path:PASS]
+[TEST:system:tty_foreground_pgrp:FAIL:create_user_process did not set foreground pgrp]
+[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=44:bound_ms=1000:mechanism_ms=132:daemon_passes=1:enqueued=2:completed=2:cleaned=1:backstops=0:PASS]
+[BOOT_TESTS:FAIL:1]
+READONLY_EXT2: PASS (ST_RDONLY, six EROFS operations, existing O_CREAT read)
+[test] Loaded 75/75 test binaries (0 failed, 0 not found)
+FSYNC_DURING_SHRINK: PASS
+TRUNCATE_10MIB: elapsed_ms=1772
+LOOKUP_DURING_SHRINK: uid=1001 config_ms=0 lookup_ms=0 remaining_blocks=20050
+BLOCK_ALLOC_TEST_PASSED
+TEST_TALLY: exited=357 nonzero=20 failed=[test_mmap_child_99:-139,signal_test_child_104:-15,sigchld_test_child_110:42,sigkill_teardown_test_child_112:-9,ctrl_c_test_child_141:-2,sigkill_teardown_test_child_240:-9,sigkill_teardown_test_child_241:-9,sigkill_teardown_test_child_243:-9,waitpid_test_child_245:42,wnohang_timing_test_child_247:99,/bin/false:1,/bin/false:1,/bin/which:1,/bin/head:1,/bin/cat:1,/bin/which:1,/bin/tail:1,/bin/cat:1,/bin/wc:1,/bin/ls:1] started=357 withdrawn=21
+USERSPACE TEST REPORT DONE
+TEST_EXITS: nonzero=20 expected=20 failures=0
+Testing watcher exit: 0
+Overall acceptance / retained Vigil exit: 1 (existing #1813, BOOT_TESTS:FAIL:1)

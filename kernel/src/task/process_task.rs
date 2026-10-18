@@ -763,7 +763,7 @@ fn boot_forces_reclaim_reserve_failure() -> bool {
     BOOT_RECLAIM_FORCE_RESERVE_FAILURE.load(Ordering::Acquire) != 0
 }
 
-fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
+fn push_pending_or_abandon(reclaim: PendingProcessReclaim) -> bool {
     let mut reclaim = Some(reclaim);
     let queued = crate::arch_without_interrupts(|| {
         #[cfg(feature = "force_reclaim_queue_contention")]
@@ -791,6 +791,7 @@ fn push_pending_or_abandon(reclaim: PendingProcessReclaim) {
         abandon_unqueued_reclaim(reclaim);
         settle_abandoned_retirement(pid);
     }
+    queued
 }
 
 /// P6a condition C2, path (c). An unqueued reclaim ends the row's retirement
@@ -818,13 +819,14 @@ fn settle_abandoned_retirement(pid: u64) {
     drop(evicted);
 }
 
-pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
+/// Returns whether the receipt was queued rather than abandoned.
+pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) -> bool {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ENQUEUE_UNDER_PM);
     }
     #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
     let forced = force_reclaim_queue_contention(&reclaim).then_some(reclaim.pid);
-    push_pending_or_abandon(reclaim);
+    let queued = push_pending_or_abandon(reclaim);
     #[cfg(all(target_arch = "aarch64", feature = "force_reclaim_queue_contention"))]
     if let Some(pid) = forced {
         if FORCED_CONTENTION_PROBE_FAILED.load(Ordering::Acquire) {
@@ -833,6 +835,7 @@ pub(crate) fn enqueue_process_reclaim(reclaim: PendingProcessReclaim) {
             );
         }
     }
+    queued
 }
 
 /// `force_reclaim_queue_contention`: the pid whose publication is forced, and

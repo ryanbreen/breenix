@@ -8404,75 +8404,94 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 None => return TestResult::Fail("scheduler not initialized"),
             };
 
-        let (pid, fd, pair, original_main_thread) = {
-            let mut manager_guard = crate::process::manager();
-            let manager = match manager_guard.as_mut() {
-                Some(m) => m,
-                None => return TestResult::Fail("process manager not initialized"),
-            };
-
-            const ELF: &[u8] = include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../userspace/programs/aarch64/simple_exit.elf"
-            ));
-
-            let pid = match manager.create_process(String::from("pty_ioctl_test"), ELF) {
-                Ok(pid) => pid,
-                Err(_) => return TestResult::Fail("create_process failed"),
-            };
-
-            let process = match manager.get_process_mut(pid) {
-                Some(process) => process,
-                None => return TestResult::Fail("process not found"),
-            };
-
-            let original_main_thread = process.main_thread.clone();
-            process.set_main_thread(current_thread.clone());
-
-            let pair = match pty::allocate() {
-                Ok(pair) => pair,
-                Err(_) => return TestResult::Fail("pty allocate failed"),
-            };
-
-            let fd = match process.fd_table.alloc(FdKind::PtyMaster(pair.clone())) {
-                Ok(fd) => fd,
-                Err(_) => return TestResult::Fail("pty fd alloc failed"),
-            };
-
-            (pid, fd, pair, original_main_thread)
+        let pair = match pty::allocate() {
+            Ok(pair) => pair,
+            Err(_) => return TestResult::Fail("pty allocate failed"),
         };
-
-        let mut pty_num_out: u32 = 0xFFFF_FFFF;
-        let arg = &mut pty_num_out as *mut u32 as u64;
-
-        let result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
-            SyscallResult::Err(e) if e == crate::syscall::errno::EFAULT as u64
-                && pty_num_out == 0xFFFF_FFFF => TestResult::Pass,
-            SyscallResult::Ok(_) => TestResult::Fail("pty ioctl accepted a kernel pointer"),
-            SyscallResult::Err(errno) => {
-                if errno == crate::syscall::ioctl::ENOTTY {
-                    TestResult::Fail("pty ioctl returned ENOTTY")
-                } else {
-                    TestResult::Fail("pty ioctl returned error")
-                }
+        // This row lends the kernel test an fd table without scheduling its user
+        // thread. Withdraw the PID returned by creation after the ioctl check.
+        let created = {
+            let mut manager_guard = crate::process::manager();
+            manager_guard.as_mut().map(|manager| {
+                const ELF: &[u8] = include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../userspace/programs/aarch64/simple_exit.elf"
+                ));
+                manager.create_process(String::from("pty_ioctl_test"), ELF)
+            })
+        };
+        let pid = match created {
+            Some(Ok(pid)) => pid,
+            _ => {
+                pty::close_master_ref(&pair);
+                return TestResult::Fail("pty process creation failed");
             }
         };
-
-        {
+        let fd = {
             let mut manager_guard = crate::process::manager();
-            if let Some(manager) = manager_guard.as_mut() {
-                if let Some(process) = manager.get_process_mut(pid) {
-                    if let Some(thread) = original_main_thread {
-                        process.set_main_thread(thread);
+            let manager = manager_guard.as_mut().expect("process manager initialized");
+            let process = manager.get_process_mut(pid).expect("created pty process");
+            process.fd_table.alloc(FdKind::PtyMaster(pair.clone()))
+        };
+        let result = fd
+            .map_err(|_| TestResult::Fail("pty fd alloc failed"))
+            .map(|fd| {
+                let original_main_thread = {
+                    let mut manager_guard = crate::process::manager();
+                    let process = manager_guard
+                        .as_mut()
+                        .unwrap()
+                        .get_process_mut(pid)
+                        .unwrap();
+                    let original = process.main_thread.take();
+                    process.set_main_thread(current_thread.clone());
+                    original
+                };
+                let mut pty_num_out: u32 = 0xFFFF_FFFF;
+                let arg = &mut pty_num_out as *mut u32 as u64;
+                let result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
+                    SyscallResult::Err(e)
+                        if e == crate::syscall::errno::EFAULT as u64
+                            && pty_num_out == 0xFFFF_FFFF =>
+                    {
+                        TestResult::Pass
                     }
-                    let _ = process.fd_table.close(fd);
-                }
-            }
-        }
+                    SyscallResult::Ok(_) => TestResult::Fail("pty ioctl accepted a kernel pointer"),
+                    SyscallResult::Err(errno) => {
+                        if errno == crate::syscall::ioctl::ENOTTY {
+                            TestResult::Fail("pty ioctl returned ENOTTY")
+                        } else {
+                            TestResult::Fail("pty ioctl returned error")
+                        }
+                    }
+                };
+                let mut manager_guard = crate::process::manager();
+                let process = manager_guard
+                    .as_mut()
+                    .unwrap()
+                    .get_process_mut(pid)
+                    .unwrap();
+                process.main_thread = original_main_thread;
+                let _ = process.fd_table.close(fd);
+                result
+            });
 
+        let (removed, reclaim) = {
+            let mut manager_guard = crate::process::manager();
+            let manager = manager_guard.as_mut().expect("process manager initialized");
+            let process = manager.get_process_mut(pid).expect("created pty process");
+            let reclaim = crate::task::process_task::defer_process_resources(process);
+            crate::task::process_task::release_process_resources(process);
+            manager.remove_from_ready_queue(pid);
+            (manager.remove_process(pid), reclaim)
+        };
+        drop(removed);
+        let queued = crate::task::process_task::enqueue_process_reclaim(reclaim);
         pty::close_master_ref(&pair);
-
-        result
+        if !queued {
+            return TestResult::Fail("pty receipt enqueue failed");
+        }
+        result.unwrap_or_else(|failure| failure)
     }
 }
 

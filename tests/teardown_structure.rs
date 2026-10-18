@@ -4136,6 +4136,9 @@ const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
 /// construction, and an added one is a `+` row here.
 #[rustfmt::skip]
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     // Class 2 — creation-failure retire. Never reaped, never retired.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
     // Class 2 — sys_spawn's Window-3 teardown arm: the child's main thread was
@@ -4186,6 +4189,9 @@ const JOIN_RETIRE_ARM_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
@@ -4576,6 +4582,8 @@ const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "block_ready", "prepa
 /// someone must look at it.
 #[rustfmt::skip]
 const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
+    // #1958 / S24: remove only the unscheduled PTY fixture creation returned.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 2),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn exit_schedule_trampoline", 1),
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn terminate_current_scheduler_thread", 1),
