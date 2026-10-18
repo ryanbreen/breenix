@@ -85,7 +85,10 @@ def console_shadow(site, hasher):
     return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
 
 
-def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False):
+def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None):
+    if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
+                                   or mode != 'console' or install or idle_minutes is not None or replug):
+        raise ValueError('invalid xHCI fault-test target')
     if mode not in ('default', 'shell', 'probe', 'suite', 'console'):
         raise ValueError('unsupported RAM-disk boot mode')
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
@@ -132,6 +135,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
         scratch = Path(scratch)
         files = {'site.env': ''.join(lines)}
+        # Replace this file so ordinary staging disarms a prior fault.
+        files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
         commands = []
         for name, text in files.items():
             source = scratch / name

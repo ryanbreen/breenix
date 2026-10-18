@@ -158,7 +158,11 @@ the kernel completes keyboard attachment and the exercise before starting init a
 Disk-root console boots carry a small per-boot intent payload through the bootloader's RAM-payload slot; the
 kernel consumes it as metadata, without registering a RAM block device or changing the installed root. A
 session intent suppresses an installed measurement flag; a test intent requests the exercise even on a plain
-installed console target.
+installed console target. Input preparation starts only after `/sbin/init` is read and published, so an init
+that cannot be read or launched leaves the keyboard alone. The kernel then prints
+`[console] input preparation: replug requested|not requested by intent|target|fw_cfg`. On a disk-root console
+boot the driver requires `by intent` with the staged choice (event `console-intent`; a test boot that disagrees
+ends short), and `image-assembled` records `consoleIntent` with `ramdisk` false, since no RAM-disk root is delivered.
 
 Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
 the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
@@ -519,7 +523,7 @@ padding to the end of the sector.
   compares that line with `disk-write.json` (event `disk-write-verified`) and, when they agree, records the disk's
   contents in the service's `disk.json`. Root then mounts from the RAM disk, the hardware disks are read-only
   again, and the `ramdisk-root` milestone's stages print as on any RAM-disk boot.
-- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload); the driver
+- **Disk-root boot** (`metal-run boot --mode probe --disk root`). The image carries no RAM-disk root (console boots carry a small intent payload, checked as event `console-intent`); the driver
   refuses to start one when `disk.json` records no verified install. The kernel reads the first sector of each
   attached hardware disk, needs exactly one root record, reports it, says whether the image after the record still has the
   recorded SHA-256 (true on the first boot after an install; later boots write the root, so this is a report, not a
@@ -987,3 +991,107 @@ claim-lint:ok: 2 of 2 retained host build logs report acquired metal-build waite
 For the scoped console host checks, put e2fsprogs `debugfs` and `mke2fs` on `PATH`, compile
 `scripts/metal/sha512-crypt.rs` with `rustc --edition=2021 -O` to a temporary helper, then set
 `CONSOLE_HASH_HELPER` to that helper and run `python3 tests/metal_console_test.py`.
+
+
+## xHCI recovery fault boots
+
+A recovery exercise uses `--mode console --input sol --inject xhci-reset-device`
+or `--inject xhci-short-read` through `metal-run boot`, with the target branch.
+It requires a RAM-disk image and cannot be combined with a session, attended
+input or a disk action. The boot record is `fault-test`, evidence-ineligible;
+the milestone scorer refuses it and no milestone verdict is written.
+The boot still uses the machine lease, normal capture and power-off cleanup.
+
+The driver reads the staged `xhci-fault` intent only when console startup asks
+it to run. An ordinary boot replaces that file with an empty, disarmed intent.
+Reset-device injects a configuration failure after the real configuration
+requests complete on two attach attempts. Each refusal takes the ordinary
+slot reclamation and device reset/re-enumeration path; the third attach
+succeeds. The reset budget stays two and the EP0 attempt budget stays three.
+The driver injects the refusal itself because a keyboard can accept an invalid
+configuration value, making that on-wire stimulus unsuitable as a deterministic fault.
+Short-read requests 19 bytes of the 18-byte device descriptor once, waits for
+the real Short Packet and Status completions, then resends for 18 bytes.
+
+HID Set_Idle requests periodic reports during the exercise. The short-read
+check looks for a real interrupt-IN completion after the EP0 waits;
+both exercises require a valid report decoded and the next input TD queued,
+then restore change-only reports. These unchanged reports exercise delivery
+without manufacturing key presses or claiming a human login. A distinct
+`[xhci-fault] <path> PASS:` line ends the boot only after those checks succeed.
+
+Source authority: [USB 2.0](https://www.usb.org/document-library/usb-20-specification)
+9.4.3, 9.4.7 and 9.6.1, [HID 1.11](https://www.usb.org/sites/default/files/hid1_11.pdf)
+7.2.4, and [xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)
+4.6.8 and 4.10.1.1. No other implementation is a reference.
+
+### Recovery validation
+
+The following boots ran kernel commit `f5209138`. Each ended with exit 0,
+a complete capture and confirmed power Off. Raw captures and machine facts
+remain in the private boot store.
+
+| Boot | Kind | Result |
+|---|---|---|
+| `20261018T163435Z-metal` | Reset-device fault test | Two injected configuration refusals, both failed slots reclaimed, resets 1 and 2, successful re-enumeration with `device-resets=2`, then a real HID report decoded and requeued |
+| `20261018T163951Z-metal` | Short-read fault test | Real completion code 13, Status retired, full descriptor resend, HID completion decoded and requeued |
+| `20261018T164449Z-metal` | Ordinary SOL console | Replug and refusal/login/computation/screen/logout challenge completed; 11/11 RAM-disk console milestones scored |
+
+Both fault records are evidence-ineligible and have no milestone verdict.
+The ordinary SOL record is also evidence-ineligible for physical-keyboard
+firsts. Its retained verdict has delivery 7/7, first-light 11/11,
+interrupts-time 4/4, smp 3/3, ramdisk-root 3/3, nic 6/6,
+dhcp-gateway 4/4, fb-console 4/4 and xhci 5/5. USB-keyboard is 3/5
+with two input-unmeasured stages; console-login is 6/7 with one
+input-unmeasured stage. Their stage lists and attended challenge remain intact.
+Other modes and disk shapes remain outside this console boot's measurement.
+
+An earlier reset stimulus (`20261018T162709Z-metal`, commit `37833158`)
+did not produce a configuration refusal: the keyboard accepted the invalid
+value. The oracle reported the missing fault, and that run was stopped
+(exit 143, power Off confirmed). It is retained as a failed fault test,
+not counted as recovery or milestone evidence. The deterministic driver
+refusal above replaced that stimulus.
+
+Scoped host validation passed: the 12 Rust recovery/spec tests, the metal
+stream definition contract, the console staging/protocol tests, the affected
+metal-tool scoring/driver tests and the fault-record tests. Production image
+builds added no warnings. No kernel boot was repeated after a documentation-only
+change, commit or push.
+
+Sanitized serial excerpts from those retained fault captures:
+
+```text
+20261018T163435Z-metal:
+device-resets=2
+[xhci-fault] reset-device PASS: refusals=2 shorts=0 input-report-decoded-and-requeued
+20261018T163951Z-metal:
+[xhci-fault] short-read PASS: refusals=0 shorts=1 input-report-decoded-and-requeued
+```
+
+The exercise calls `service()` directly after the control transfer and while
+waiting for input. These checks establish descriptor recovery and subsequent
+report decoding/requeueing, but do not establish interrupt delivery or whether
+the input completion was already queued during the EP0 waits.
+The reset exercise demonstrates two successful resets and re-enumeration;
+it does not test refusal of a third reset. Issue #1797 retains that coverage gap.
+
+A failed Status stage following a short read is recovered if halted, then
+returned immediately rather than retried, including transient completion code 4.
+That can abandon enumeration and consume a device reset. The existing host
+Status-failure test checks this terminal behavior.
+
+Fault injection currently ships in production metal kernels, enabled by a
+separate root-file intent alongside the replug intent. Retain that opt-in design
+for this landing; feature gating and intent unification need a separate change.
+An unreadable or malformed nonempty fault intent currently propagates an error
+out of the USB worker and can leave the boot without its USB keyboard. Ordinary
+staging writes an empty intent; handling bad intent without ending service remains
+follow-up work in issue #1931.
+
+Landing validation: `python3 tests/metal_xhci_fault_test.py FaultTest` passed
+3/3 fault-record checks after the conflict-free main merge. Runtime tests and
+boots were not repeated for the comment, usage-string and documentation edits.
+Claim-lint on the branch diff against `origin/main` checked 10 files with zero
+findings; it reported three unsupported extensions (the JSON definition and the
+two extensionless launchers). The revised PR body also had zero findings.

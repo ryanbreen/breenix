@@ -63,3 +63,15 @@ fn disk_root_intent_is_consumed_before_registering_a_ram_block_device() {
     let mode = body(&main, "fn x86_console_mode()");
     assert!(mode.contains("kernel::boot::console_intent::replug_or(replug)"));
 }
+
+#[test]
+fn keyboard_preparation_starts_only_after_init_is_published() {
+    let main = source("kernel/src/main.rs");
+    let mode = body(&main, "fn x86_console_mode()");
+    assert!(!mode.contains("console_session_starting") && !mode.contains("input_clock::start"));
+    let launch = body(&main, "fn launch_x86_production_init(");
+    let published = launch.find("manager.publish_init(publication)").unwrap();
+    for start in ["kernel::tty::input_clock::start(minutes)", "kernel::drivers::xhci::console_session_starting(replug)"] {
+        assert!(launch.find(start).unwrap() > published, "{start} precedes init publication");
+    }
+}

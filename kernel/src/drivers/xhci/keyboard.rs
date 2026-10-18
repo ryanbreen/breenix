@@ -28,16 +28,17 @@ const CSC: u32 = 1 << 17;
 
 /// A configured boot keyboard's interrupt-IN pipe and key state.
 pub(super) struct Pipe {
-    interface: u8,
+    pub(super) interface: u8,
     endpoint: u8,
-    dci: u8,
+    pub(super) dci: u8,
     ring: Ring,
     buffer: Dma,
     request: u32,
-    outstanding: Option<u64>,
+    pub(super) outstanding: Option<u64>,
     state: report::Keyboard,
     errors: u32,
     bad_reports: u64,
+    pub(super) reports: u64,
 }
 
 impl Controller {
@@ -59,7 +60,9 @@ impl Controller {
             self.dispatch();
             self.tick_keyboards();
             if CONSOLE_START.swap(false, Ordering::SeqCst) {
-                if REPLUG.swap(false, Ordering::Relaxed) {
+                if let Some(mode) = super::fault::requested()? {
+                    self.recovery_exercise(mode)?;
+                } else if REPLUG.swap(false, Ordering::Relaxed) {
                     self.replug_exercise();
                 }
                 self.console.arm();
@@ -96,7 +99,7 @@ impl Controller {
             .min()
     }
 
-    fn dispatch(&mut self) {
+    pub(super) fn dispatch(&mut self) {
         while let Some(port) = self.port_events.pop_front() {
             self.port_changed(port);
         }
@@ -232,6 +235,7 @@ impl Controller {
             state: report::Keyboard::new(),
             errors: 0,
             bad_reports: 0,
+            reports: 0,
         });
         // USB 2.0 9.4.7, then HID 1.11 F.5: boot protocol after configuration;
         // Set_Idle(0) so reports come only on change (7.2.4, F.4).
@@ -245,6 +249,13 @@ impl Controller {
                 log::error!("[usb] port {port}: {what} completion code={code}");
                 return Err("boot keyboard request refused");
             }
+        }
+        // A deterministic driver fault: some keyboards accept even invalid
+        // configuration values. Fail at the configuration boundary after the
+        // real requests completed, then use the ordinary reclaim/reset path.
+        if self.fault.refuse_configuration(port) {
+            log::info!("[xhci-fault] configuration refusal injected: reset-attempt={resets}");
+            return Err("fault-test configuration refusal");
         }
         let leds = self.send_leds(index);
         self.queue_report(index)?;
@@ -264,7 +275,7 @@ impl Controller {
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
     /// its completion code; a request that halted EP0 is recovered and resent
     /// (`Controller::ep0_transfer`).
-    fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
+    pub(super) fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
         // The device leaves the list for the transfer so the controller can
         // wait for it. The list is read by `dispatch`, between transfers.
         let mut device = self.devices.remove(index);
@@ -353,7 +364,10 @@ impl Controller {
                     return;
                 };
                 match pipe.state.report(&report, now, &mut |code, value| console.event(port, code, value)) {
-                    Ok(summary) => console.note_report(&summary),
+                    Ok(summary) => {
+                        pipe.reports += 1;
+                        console.note_report(&summary);
+                    }
                     Err(report::ReportError::Length(length)) => {
                         pipe.bad_reports += 1;
                         if pipe.bad_reports == 1 {
@@ -426,7 +440,7 @@ impl Controller {
         }
     }
 
-    fn attach(&mut self, port: u8, resets: u32) {
+    pub(super) fn attach(&mut self, port: u8, resets: u32) {
         match self.enumerate(port) {
             Ok(()) => {
                 let index = self.devices.len() - 1;
@@ -440,7 +454,7 @@ impl Controller {
         }
     }
 
-    fn teardown(&mut self, index: usize, why: &str) {
+    pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
         if let Some(pipe) = device.keyboard.as_mut() {
             pipe.state.release_all(&mut |code, value| self.console.event(device.port, code, value));

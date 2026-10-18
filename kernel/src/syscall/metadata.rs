@@ -127,7 +127,7 @@ fn fifo(
 ) -> SyscallResult {
     let Some(handle) = entry.lock().handle.clone() else { return SyscallResult::Err(EIO as u64); };
     let mut guard = match ext2::write_mount(handle.object.mount) {
-        Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64),
+        Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
     };
     let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
     let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
@@ -186,7 +186,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
     let cred = Credentials::current(false);
     let entry = match descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
     if let Some(handle) = &entry.native_inode {
-        let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64) };
+        let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
         let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
         return update(fs, ino, change, &cred);
@@ -204,7 +204,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             let handle = file.lock().handle.clone();
             let mut guard = match ext2::write_mount(handle.object.mount) {
                 Ok(g) => g,
-                Err(_) => return SyscallResult::Err(EIO as u64),
+                Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
             };
             let Some(fs) = guard.as_mut() else {
                 return SyscallResult::Err(EIO as u64);
@@ -219,7 +219,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             let handle = dir.lock().handle.clone();
             let mut guard = match ext2::write_mount(handle.object.mount) {
                 Ok(g) => g,
-                Err(_) => return SyscallResult::Err(EIO as u64),
+                Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
             };
             let Some(fs) = guard.as_mut() else {
                 return SyscallResult::Err(EIO as u64);

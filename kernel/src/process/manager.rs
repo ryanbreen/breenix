@@ -2080,6 +2080,12 @@ impl ProcessManager {
     #[must_use]
     fn take_row_unconditionally(&mut self, pid: ProcessId) -> Option<Process> {
         let row = self.processes.remove(&pid)?;
+        // Publishing the row counted a start (exit_tally::record_start beside
+        // each insert into the map). A terminated row recorded its exit in
+        // terminate or terminate_minimal; a row removed live reaches neither.
+        if !row.is_terminated() {
+            crate::task::exit_tally::withdraw_start();
+        }
         if self.designated_init == Some(pid) {
             self.designated_init = None;
             crate::tracing::providers::teardown::record_init_designation_retired();
