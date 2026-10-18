@@ -69,7 +69,7 @@ def prune(root, protected=(), reserve=0, required=True):
     free_floor = int(os.environ.get('BREENIX_GATE_FREE_GB', '15')) * GIB + reserve
     with lease(root, 'eviction'):
         entries = []
-        for kind in ('trees', 'artifacts', 'metal-artifacts', 'fresh'):
+        for kind in ('trees', 'artifacts', 'metal-artifacts', 'metal-targets', 'fresh'):
             parent = root / kind
             if parent.exists():
                 entries.extend(parent.iterdir())
