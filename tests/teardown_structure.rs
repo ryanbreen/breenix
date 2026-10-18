@@ -13291,7 +13291,7 @@ fn validate_x86_direct_teardown_gates(
     teardown: &str,
     harness: &str,
 ) -> Result<(), &'static str> {
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked");
     let retirement_call = kernel_main
         .find("process_task::run_x86_retirement_fence_gate();")
         .ok_or("missing direct x86 retirement-fence call")?;
@@ -13438,7 +13438,7 @@ fn x86_teardown_gates_are_direct_reachable_and_exactly_once() {
 #[test]
 fn direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass() {
     let main = r#"
-        fn kernel_main_on_kernel_stack() {
+        fn kernel_main_on_kernel_stack_checked() {
             process_task::run_x86_retirement_fence_gate();
             process_task::run_x86_reclaim_progress_gate();
             teardown::run_x86_retire_cohort_gate();
@@ -13629,7 +13629,7 @@ fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<
         if !entry.contains("arch: Arch::Aarch64")
             || entry.contains("arch: Arch::Any")
             || entry.contains("arch: Arch::X86_64")
-            || !function_body(main, "kernel_main_on_kernel_stack").contains(direct_call)
+            || !function_body(main, "kernel_main_on_kernel_stack_checked").contains(direct_call)
         {
             return Err(());
         }
@@ -13651,7 +13651,7 @@ fn direct_x86_teardown_gates_keep_only_aarch64_registry_producers() {
 #[test]
 fn gate_producer_validator_rejects_arch_any_double_registration() {
     let main = r#"
-        fn kernel_main_on_kernel_stack() {
+        fn kernel_main_on_kernel_stack_checked() {
             teardown::run_x86_retire_cohort_gate();
             process_task::run_x86_retirement_fence_gate();
             process_task::run_x86_reclaim_progress_gate();
@@ -14108,7 +14108,7 @@ fn validate_production_root_custody_summary(
     if body.matches("serial_println!").count() != 1
         || !function_body(procfs_trace, "generate_counters")
             .contains("emit_root_custody_summary();")
-        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_root_custody_summary();")
         || !function_body(arm_main, "kernel_main").contains("emit_root_custody_summary();")
     {
@@ -14142,7 +14142,7 @@ fn root_custody_summary_validator_rejects_a_boot_tests_only_emitter() {
         }
     "#;
     let caller = "fn generate_counters() { emit_root_custody_summary(); }";
-    let main = "fn kernel_main_on_kernel_stack() { emit_root_custody_summary(); }";
+    let main = "fn kernel_main_on_kernel_stack_checked() { emit_root_custody_summary(); }";
     assert!(validate_production_root_custody_summary(provider, caller, main, main).is_err());
 }
 
@@ -14300,9 +14300,9 @@ fn validate_kernel_stack_ownership_gate_launch(main: &str, registry: &str) -> Re
     if code_offsets(main, &main_mask, X86_CALL).len() != 1 {
         return Err("x86 kernel-stack ownership gate launch is not unique".to_owned());
     }
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked");
     if code_offsets(kernel_main, &code_mask(kernel_main), X86_CALL).len() != 1 {
-        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack".to_owned());
+        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack_checked".to_owned());
     }
 
     let registry_mask = code_mask(registry);
@@ -15545,7 +15545,7 @@ fn validate_production_tombstone_census(
     }
     if body.matches("serial_println!").count() != 1
         || !function_body(procfs_trace, "generate_counters").contains("emit_tombstone_census();")
-        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_tombstone_census();")
         || !function_body(arm_main, "kernel_main").contains("emit_tombstone_census();")
         || !function_body(strand_oracle, "report_strand").contains("emit_tombstone_census();")
