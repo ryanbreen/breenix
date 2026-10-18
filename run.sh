@@ -583,6 +583,11 @@ finish_vm_boot() {
         wait "$LOGMON_PID" 2>/dev/null || true
         LOGMON_PID=""
     fi
+    if [ -n "${GPU_TIME_PID:-}" ]; then
+        kill "$GPU_TIME_PID" 2>/dev/null || true
+        wait "$GPU_TIME_PID" 2>/dev/null || true
+        GPU_TIME_PID=""
+    fi
     if [ "$PARALLELS" = true ]; then
         prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || stopped=false
     else
@@ -962,6 +967,15 @@ if [ "$PARALLELS" = true ]; then
         { echo "ERROR: Parallels VM config does not carry system flags $PARALLELS_SYSTEM_FLAGS"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
+    # A full gpu suite's hardware claim rests on the VM process's host GPU time
+    # (docs/gui/gpu.md section 1.6.5): sample it beside the serial log.
+    GPU_TIME_RECORD=""
+    if [ "$SUITE" = gpu ] && [ -z "$ONLY" ]; then
+        GPU_TIME_RECORD="$SERIAL_LOG.gpu-time.jsonl"
+        python3 "$BREENIX_ROOT/scripts/parallels/gpu-time.py" sample --vm "$PARALLELS_VM" \
+            --serial "$SERIAL_LOG" --out "$GPU_TIME_RECORD" &
+        GPU_TIME_PID=$!
+    fi
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -973,6 +987,9 @@ if [ "$PARALLELS" = true ]; then
 
     if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
         wait_boot_done || exit $?
+        if [ -n "$GPU_TIME_RECORD" ]; then
+            python3 "$BREENIX_ROOT/scripts/parallels/gpu-time.py" judge "$GPU_TIME_RECORD" || exit 1
+        fi
         if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
         if [ "$PARALLELS_TEST" != true ]; then exit 0; fi
     fi
