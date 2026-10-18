@@ -11,6 +11,7 @@
 //! port census found its keyboard on a root port.
 use super::{
     delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, LEDS, PORT_CHANGES, REPLUG, SECOND,
+    STATE, STATE_READY,
 };
 use crate::drivers::hid_boot::{interface, report};
 use alloc::vec::Vec;
@@ -59,6 +60,7 @@ impl Controller {
                 }
             }
         }
+        STATE.store(STATE_READY, Ordering::Release);
         loop {
             let deadline = self.next_deadline();
             if self.wait_work(deadline, true)? {

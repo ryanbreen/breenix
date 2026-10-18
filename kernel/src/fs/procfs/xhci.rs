@@ -8,7 +8,8 @@ use alloc::string::String;
 /// Generate the content of /proc/xhci/trace by reading the clean-room controller.
 pub fn generate_xhci_trace() -> String {
     alloc::format!(
-        "xhci initialized={} interrupts={}\n",
+        "xhci state={} initialized={} interrupts={}\n",
+        crate::drivers::xhci::state(),
         crate::drivers::xhci::is_initialized(),
         crate::drivers::xhci::interrupt_count()
     )

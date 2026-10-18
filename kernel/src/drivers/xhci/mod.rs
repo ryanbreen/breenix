@@ -29,7 +29,7 @@ use crate::{
 use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::{
     ptr::{read_volatile, write_volatile},
-    sync::atomic::{fence, AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{fence, AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
 };
 use spec::{Consumer, Contexts, Producer, Trb, Work, EVENT_TRBS, PORT_CHANGES, TRBS};
 
@@ -51,6 +51,25 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// True after the controller has completed commands and device enumeration.
 pub fn is_initialized() -> bool {
     INITIALIZED.load(Ordering::Acquire)
+}
+
+/// The driver's progress for `/proc/xhci/trace`: no controller, enumerating the
+/// root ports and attaching their class drivers, attached, or stopped by a failure.
+/// PID 1 starts while the worker enumerates, so a program that needs a USB keyboard
+/// (a suite's host keys) waits for `ready` (`libbreenix::suite::hostkeys`).
+static STATE: AtomicU8 = AtomicU8::new(STATE_ABSENT);
+const STATE_ABSENT: u8 = 0;
+const STATE_ENUMERATING: u8 = 1;
+const STATE_READY: u8 = 2;
+const STATE_FAILED: u8 = 3;
+
+pub fn state() -> &'static str {
+    match STATE.load(Ordering::Acquire) {
+        STATE_ENUMERATING => "enumerating",
+        STATE_READY => "ready",
+        STATE_FAILED => "failed",
+        _ => "absent",
+    }
 }
 
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
@@ -345,14 +364,17 @@ pub fn init() {
             crate::task::softirqd::SoftirqType::IrqPoll,
             deferred_wake,
         );
+        STATE.store(STATE_ENUMERATING, Ordering::Release);
         if let Err(error) = kthread::kthread_run(
             move || {
                 if let Err(error) = start(device) {
+                    STATE.store(STATE_FAILED, Ordering::Release);
                     log::error!("[xhci] FAILED: {error}");
                 }
             },
             "xhci",
         ) {
+            STATE.store(STATE_FAILED, Ordering::Release);
             log::error!("[xhci] FAILED: cannot create worker: {error:?}");
         }
     } else {
