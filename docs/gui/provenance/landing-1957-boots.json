@@ -212,5 +212,25 @@
     "display": true,
     "metal_attestation": "accepted",
     "serial_sha256": "b9a5ea83415f8afb286eed8de628ff2fb658a7e8e09b38bc1f519deea4622f93"
+  },
+  "review_main_strict": {
+    "commit": "f79e590c",
+    "vigil_id": "20261018T213326Z-1957-main-strict",
+    "exit_status": 0,
+    "passed_boots": 1,
+    "total_boots": 1,
+    "boot_tests_passed": 121,
+    "boot_tests_total": 121,
+    "migration_refused": 0,
+    "other_pinned_fields_nonzero": 0,
+    "cpus": 4,
+    "memory_mib": 512,
+    "accel": "tcg",
+    "cpu": "cortex-a72",
+    "display": true,
+    "ended_by": "scored_pass",
+    "guest_uptime_ms": 14649,
+    "serial_sha256": "33513edb234cc4330db6a5866f001ffe1a97fc04c80ecd4e935ecf20b3e88d48",
+    "disposition": "Major unresolved: main passes; independence of the branch strict failure is unestablished"
   }
 }

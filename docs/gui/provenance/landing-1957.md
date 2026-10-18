@@ -1,9 +1,10 @@
 # GPU landing validation, PR #1957
 
-The final source cut is `53f900d9`, containing main `f79e590c` and gpu/integration
-`cac29713`. The PR remains draft: the unchanged ARM64 strict gate fails on #1873.
-The five review findings have implementation changes, disclosures and verification
-below; strict acceptance remains open.
+The prior validation source cut is `53f900d9`, containing main `f79e590c` and
+gpu/integration `cac29713`. The review follow-up merges main `3c67ba8e` without
+conflicts, then corrects comments and validation descriptions in `e85bf333`.
+The PR remains draft: its strict failure is not established as independent of
+the GPU changes. The main-only comparison below leaves this Major open.
 
 ## Review dispositions
 
@@ -123,5 +124,40 @@ changed by that main merge.
 
 The review scan against main `f79e590c` reports 149 claim-lint findings in
 122 files. These prose findings arrive on main with this PR; they are not
-inherited from main, and the branch is not reported clean. The landing repair files, repair/merge messages and PR body
-passed their scoped claim-lint checks.
+inherited from main, and the branch is not reported clean. The landing repair
+files, repair/merge messages and PR body passed their scoped claim-lint checks.
+
+
+## Review follow-up: main strict comparison
+
+The isolated main `f79e590c` strict baseline passes **1/1**, exit 0, with
+`TESTS_COMPLETE:121/121`, `BOOT_TESTS:PASS` and 0 in all six
+`PINNED_HOME_CPU_UNAVAILABLE` fields. The unchanged strict scorer ends the
+boot on `scored_pass` at guest uptime 14649 ms. Vigil:
+`20261018T213326Z-1957-main-strict`; serial SHA-256:
+`33513edb234cc4330db6a5866f001ffe1a97fc04c80ecd4e935ecf20b3e88d48`.
+
+This used TCG cortex-a72, four CPUs and 512 MiB, matching the retained branch
+strict profile, with a visible Cocoa window, normal boot priority and the
+mac-boot slot. The baseline uses the landing's built root image and simple-exit
+ELF; the dependency lock differs only by the GPU ABI crate absent from main.
+The initial fresh-checkout build stopped on that missing generated ELF; after
+supplying it, the build passes with only the exempt pinned-core notice #945.
+No guest launched during the failed build attempt. Vigil registration was
+corrected to mode `tests` and display metadata was set before the VM launched.
+
+The retained branch `0c55e0eb` strict run exits 1 with `migration_refused=1`.
+The main baseline therefore does not substantiate the earlier attribution to
+#1873. Matching scheduler producer/affinity code does not exclude the branch's
+IRQ-mask or serial timing changes. One main pass does not establish a
+deterministic regression either; the refusal's producing path remains to be
+identified. **The Major is unresolved and the landing remains blocked.** No
+scheduler repair, counter change or threshold change is justified by this
+comparison alone. The landing ledger records the blocker.
+
+The follow-up changes comments and evidence only. The clean main merge adds
+x86-only clone reclamation already landed in #1979; it changes no ARM64 source.
+Previously recorded executable suites were not rerun. Comment corrections pass
+scoped claim-lint and diff whitespace checks. The broader prose, heap admission,
+per-CPU storage admission, x86 output accounting, GPU exit cost, procfs task
+lookup and frozen-copy enforcement Minors are tracked in #1987.
