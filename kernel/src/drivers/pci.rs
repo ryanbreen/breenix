@@ -1336,7 +1336,9 @@ pub fn find_virtio_sound_devices() -> Vec<Device> {
 /// `$OUTPUT_DIR/serial_user.txt` and `$OUTPUT_DIR/serial_kernel.txt` and
 /// grep across `serial_*.txt`, so both read this stream.
 ///
-/// Called from `drivers::init()` immediately after `pci::enumerate()`. There
+/// Called from `drivers::init()` immediately after `pci::enumerate()`. Metal
+/// xHCI defers its function line until the driver publishes the measured BAR0;
+/// its function is still included in PCI_FN_TOTAL. There
 /// is no `assign_bars()` step to sequence after on this arch:
 /// `pci::assign_bars()` is `#[cfg(target_arch = "aarch64")]` and its only
 /// call site is the aarch64 arm of `drivers::init()`, so on x86-64 "after
@@ -1347,8 +1349,40 @@ pub fn dump_enumerated_functions() {
     let devices = get_devices().unwrap_or_default();
 
     for dev in &devices {
-        let bar0 = &dev.bars[0];
-        crate::serial_println!(
+        // Metal xHCI measures BAR0 when attaching; its firmware-owned BAR
+        // has deliberately not been sized by the generic PCI probe.
+        if !crate::drivers::fw_cfg::present()
+            && dev.raw_class == 0x0c
+            && dev.subclass == 3
+            && dev.prog_if == 0x30
+        {
+            continue;
+        }
+        dump_function(dev);
+    }
+
+    crate::serial_println!("PCI_FN_TOTAL {}", devices.len());
+}
+
+/// Publish the metal driver's measured BAR instead of the probe's placeholder.
+#[cfg(target_arch = "x86_64")]
+pub fn publish_xhci_bar0(device: &Device, address: u64, size: u64) {
+    let mut devices = PCI_DEVICES.lock();
+    if let Some(dev) = devices.as_mut().and_then(|devices| {
+        devices.iter_mut().find(|dev| {
+            (dev.bus, dev.device, dev.function) == (device.bus, device.device, device.function)
+        })
+    }) {
+        dev.bars[0].address = address;
+        dev.bars[0].size = size;
+        dump_function(dev);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn dump_function(dev: &Device) {
+    let bar0 = &dev.bars[0];
+    crate::serial_println!(
             "PCI_FN {:02x}:{:02x}.{} {:04x}:{:04x} class={:02x}/{:02x} bar0={:#x}/{:#x} irq={:#04x}",
             dev.bus,
             dev.device,
@@ -1360,8 +1394,5 @@ pub fn dump_enumerated_functions() {
             bar0.address,
             bar0.size,
             dev.interrupt_line
-        );
-    }
-
-    crate::serial_println!("PCI_FN_TOTAL {}", devices.len());
+    );
 }

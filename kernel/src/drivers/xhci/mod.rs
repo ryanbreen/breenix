@@ -101,8 +101,6 @@ fn deferred_wake(_: crate::task::softirqd::SoftirqType) {
 /// for this controller's lifetime, including failed commands: an unresponsive
 /// DMA engine must retain ownership of its pages. C2 keeps the controller
 /// attached. Device hot-unplug/reclamation belongs to the class-driver lane.
-/// claim-lint:ok: Dma has no Drop implementation; its frame allocations remain
-/// reserved for the boot, including when the stop after an error fails.
 struct Dma {
     phys: u64,
     virt: usize,
@@ -171,7 +169,12 @@ impl Ring {
             // TC toggles the controller's consumer cycle on following the link.
             self.store(
                 TRBS - 1,
-                Trb::new(6, self.memory.phys, 0, 2 | old_cycle as u32),
+                Trb::new(
+                    6,
+                    self.memory.phys,
+                    0,
+                    2 | (trb.control & (1 << 4)) | old_cycle as u32,
+                ),
             );
         }
         addr
@@ -291,6 +294,7 @@ fn size_bar(device: &pci::Device) -> Result<(u64, usize), &'static str> {
 
 fn start(device: pci::Device) -> Result<(), &'static str> {
     let (phys, size) = size_bar(&device)?;
+    pci::publish_xhci_bar0(&device, phys, size as u64);
     device.enable_memory_space();
     let base = crate::memory::map_mmio(phys, size)?;
     let cap = rd(base, 0);
@@ -692,13 +696,13 @@ impl Controller {
             }
         }
     }
-    fn event(&mut self, pointer: u64, kind: u32) -> Result<Trb, &'static str> {
+    fn event(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
         let deadline = now().saturating_add(3 * SECOND);
         loop {
             if let Some(i) = self
                 .completions
                 .iter()
-                .position(|e| e.kind() == kind && e.parameter & !15 == pointer)
+                .position(|e| e.kind() == kind && pointers.contains(&(e.parameter & !15)))
             {
                 let event = self
                     .completions
@@ -721,7 +725,7 @@ impl Controller {
     fn command(&mut self, trb: Trb) -> Result<Trb, &'static str> {
         let pointer = self.command.push(trb);
         self.ring_doorbell(0, 0);
-        self.event(pointer, 33)
+        self.event(&[pointer], 33)
     }
     fn portsc(&self, port: u8) -> u32 {
         rd(self.op, 0x400 + (port as usize - 1) * 16)
@@ -897,7 +901,7 @@ impl Controller {
     ) -> Result<Vec<u8>, &'static str> {
         // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
         // The DMA allocation need not itself be 64 KiB aligned, so split there.
-        device.ep0.push(spec::get_descriptor(kind, index, len));
+        let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
         let mut offset = 0usize;
         while offset < len as usize {
             let phys = device.data.phys + offset as u64;
@@ -906,16 +910,23 @@ impl Controller {
             let packets = remaining.div_ceil(device.packet as usize).min(31) as u32;
             // First is Data Stage; following fragments are Normal TRBs (4.11.2.2).
             let kind = if offset == 0 { 3 } else { 1 };
-            let flags =
-                (if remaining != 0 { 1 << 4 } else { 0 }) | if offset == 0 { 1 << 16 } else { 0 };
-            device
-                .ep0
-                .push(Trb::new(kind, phys, count as u32 | (packets << 17), flags));
+            // ISP reports a short packet at its Data/Normal TRB. Reject it
+            // rather than parsing unwritten bytes from an earlier descriptor.
+            let flags = (1 << 2)
+                | (if remaining != 0 { 1 << 4 } else { 0 })
+                | if offset == 0 { 1 << 16 } else { 0 };
+            pointers.push(device.ep0.push(Trb::new(
+                kind,
+                phys,
+                count as u32 | (packets << 17),
+                flags,
+            )));
             offset += count;
         }
         let status = device.ep0.push(Trb::new(4, 0, 0, 1 << 5)); // OUT status + IOC
+        pointers.push(status);
         self.ring_doorbell(device.slot, 1);
-        let event = self.event(status, 32)?;
+        let event = self.event(&pointers, 32)?;
         if event.slot() != device.slot
             || (event.control >> 16) & 31 != 1
             || event.status & 0x00ff_ffff != 0
