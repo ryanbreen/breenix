@@ -16,14 +16,14 @@
 //!            driver's uninterruptible wait is the only thing standing between
 //!            the test and a corrupted published request.
 //!
-//! Stage 2 does not rely on timing. Its child exits, sending the SIGCHLD, only
-//! once it has read the reader's scheduler state from `/proc/<pid>/stat` as
-//! blocked while the reader is inside its read loop. The handler records the
-//! sender's si_pid, so only that child's SIGCHLD counts, and it must have run
-//! before the read loop ended. An attempt where the reader was not seen
-//! parked, or where the signal was handled only after the reads, repeats with
-//! a longer hold (more passes over the file), up to a bound; if the last
-//! attempt is not exercised either, the oracle fails as race-not-exercised.
+//! Stage 2 attempts overlap by having its child observe the reader's scheduler
+//! state from `/proc/<pid>/stat` as blocked during the read loop, then exit.
+//! The handler records the sender's si_pid and must run before the reads end.
+//! This does not establish overlap with a published block request: `S` also
+//! describes lock and request-gate waits, and a completion can precede the
+//! child's exit. More passes increase the opportunity but do not establish
+//! the missing request-scoped witness. The PASS marker's `parked=1` records
+//! only this scheduler-state observation; issue #598 remains unresolved.
 //!
 //! Both outcomes are printed as a single pinned marker line. The line is
 //! emitted twice because console output interleaves at byte granularity, so a
@@ -241,9 +241,9 @@ fn stat_state(path: &str, buf: &mut [u8]) -> Option<u8> {
     line.get(close + 2).copied()
 }
 
-/// Stage 2's child: wait for the reader's go byte, then watch its scheduler
-/// state and exit the moment it is blocked while the read loop still runs
-/// (the reader closes `ctl` when its reads end).
+/// Stage 2's child: wait for the reader's go byte, then exit after observing
+/// a blocked scheduler state during the read loop. This snapshot does not
+/// identify the wait's cause or establish that it persists until the child's exit.
 fn watch_reader(reader: Pid, ctl: Fd) -> i32 {
     let mut byte = [0u8; 1];
     loop {
