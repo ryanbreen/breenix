@@ -560,8 +560,10 @@
         },
         {
           "name": "Keyboard-typed login answered",
-          "marker": "[hid] typed into the console tty: ",
-          "status": "waiting for injector"
+          "marker": "metal-login-ok 42",
+          "status": "waiting for injector",
+          "match": "line",
+          "input": "keyboard"
         }
       ]
     }
