@@ -157,9 +157,16 @@ pub struct Category {
     pub cases: &'static [Case],
     /// Milliseconds the full-suite run sits idle before the category's first case,
     /// between `SUITE_IDLE <suite> <category> begin ms=N` and `... end` lines, so a host
-    /// can measure the guest at rest just before the category (0: no idle window).
+    /// can measure the guest at rest just before the category (0: no idle window). The
+    /// runner settles for `IDLE_SETTLE_MS` on each side of the window, so neither the
+    /// idle notice's own display work nor the category's first case lands inside it
+    /// while the host reads the serial lines late.
     pub idle_before_ms: u64,
 }
+
+/// The quiet time on each side of an idle window: longer than a host's serial-read and
+/// GPU-time sampling intervals, and than the display's redraw interval.
+const IDLE_SETTLE_MS: u64 = 1000;
 
 pub const fn category(id: &'static str, title: &'static str, cases: &'static [Case]) -> Category {
     Category { id, title, cases, idle_before_ms: 0 }
@@ -376,9 +383,11 @@ impl Suite {
             if only.is_none() && category.idle_before_ms > 0 {
                 let progress = std::format!("Idle {} ms before {}", category.idle_before_ms, category.id);
                 screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
+                let _ = time::sleep_ms(IDLE_SETTLE_MS);
                 emit(&std::format!("SUITE_IDLE {} {} begin ms={}", self.id, category.id, category.idle_before_ms));
                 let _ = time::sleep_ms(category.idle_before_ms);
                 emit(&std::format!("SUITE_IDLE {} {} end", self.id, category.id));
+                let _ = time::sleep_ms(IDLE_SETTLE_MS);
             }
             for (k, case) in category.cases.iter().enumerate() {
                 let name = std::format!("{}/{}", category.id, case.id);
