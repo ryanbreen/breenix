@@ -1089,7 +1089,7 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             *flags_ptr = 0x202;
 
             // IRETQ does not push a return address; supply the SysV entry slot.
-            frame.stack_pointer = x86_64::VirtAddr::new((idle_stack & !0xF) - 8);
+            frame.stack_pointer = x86_64::VirtAddr::new((idle_stack & !0xF).saturating_sub(8));
         });
 
         // NOTE: We do NOT switch page tables here. The userspace process page table
