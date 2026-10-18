@@ -2701,7 +2701,7 @@ fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
     // Do not consume a UART byte until stdin owns space for it. Contention
-    // defers RX until the ring holder releases it; the IRQ never waits.
+    // defers RX until the ring holder releases it; the IRQ does not wait.
     crate::ipc::stdin::receive_serial_from_irq(serial_aarch64::get_received_byte);
 }
 

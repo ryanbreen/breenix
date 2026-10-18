@@ -1201,7 +1201,7 @@ fn validate_peer_hold_rendezvous(registry: &str) -> Result<(), String> {
         let predicates = if kind == "fg" {
             // #1790 derives both verdict and diagnostics from these lists.
             // Pin the same hold predicates in the architecture's list and
-            // require that the verdict actually conjoins every list entry.
+            // require that the verdict conjoins each list entry.
             let checks = driver
                 .split("let arch_checks = [")
                 .nth(1)

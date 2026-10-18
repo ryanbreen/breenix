@@ -300,12 +300,15 @@ pub(crate) fn resume_rx_interrupt() {
     }
 }
 
-/// Clear receive interrupt
+/// Acknowledge the receive interrupt once the FIFO has reported empty.
+///
+/// It does not read the receive register: a byte that arrived after the
+/// empty report would be consumed and lost (#1803).
 pub fn clear_rx_interrupt() {
-    if is_16550() {
-        // 16550: reading IIR/RBR clears the interrupt
-        let _ = read_reg8(reg16550::THR);
-    } else {
+    // The 16550's received-data and character-timeout interrupts are cleared
+    // by the reads that drained the FIFO, so an empty 16550 FIFO needs no
+    // acknowledgement.
+    if !is_16550() {
         write_reg(reg::ICR, int::RX | int::RT);
     }
 }
