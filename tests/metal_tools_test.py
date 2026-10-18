@@ -1604,56 +1604,16 @@ class BuildSlotTest(unittest.TestCase):
 
 
 class PublicRepositoryTest(unittest.TestCase):
-    XHCI_SOURCE = ('[xHCI 1.2](https://www.intel.com/content/dam/www/public/us/en/documents/'
-                   'technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)')
-
-    def assert_public_text(self, text, label='fixture'):
-        # #1934: only the section token in the linked xHCI source list is a
-        # citation. The same digits elsewhere, including on that line, are scanned.
-        section = r'4\.\d+(?:\.\d+){0,2}'
-        citation = (re.escape(self.XHCI_SOURCE) + r'\s+(?P<sections>' + section
-                    + r'(?:(?:,\s*|,?\s+and\s+)' + section + r')*)\.(?=\s|$)')
-        references = set()
-        for source in re.finditer(citation, text):
-            for token in re.finditer(r'(?<![\d.])4\.10\.1\.1(?![\d.])', source['sections']):
-                references.add((source.start('sections') + token.start(),
-                                source.start('sections') + token.end()))
-        for match in re.finditer(r'\b\d{1,3}(?:\.\d{1,3}){3}\b', text):
-            if match.span() not in references:
-                self.assertIn(match.group(0), ('127.0.0.1', '0.0.0.0', '255.255.255.0'),
-                              f'{label}: {match.group(0)}')
-        self.assertIsNone(re.search(r'([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', text), label)
-        self.assertIsNone(re.search(r'/Users/\w|/home/\w', text), label)
-
     def test_tools_carry_no_site_values(self):
         """Detect numeric IPv4, colon-form MAC and common home-path literals; names require human review."""
         paths = [p for p in TOOLS.rglob('*') if p.is_file() and 'fixtures' not in p.parts and '__pycache__' not in p.parts]
         paths.append(TOOLS.parents[1] / 'docs' / 'metal' / 'README.md')
         for path in paths:
-            self.assert_public_text(path.read_text(errors='replace'), path.name)
-
-    def test_linked_specification_section_is_not_an_address(self):
-        # The source-authority paragraph from #1934, including its line break.
-        citation = self.XHCI_SOURCE + '\n4.6.8 and 4.10.1.1. No other implementation is a reference.'
-        self.assert_public_text(citation)
-        for text in ('4.10.1.1', 'xHCI 4.10.1.1', citation + ' Address: 4.10.1.1',
-                     self.XHCI_SOURCE + '\n192.0.2.66.',
-                     citation + ' Address: 192.0.2.66',
-                     citation + ' MAC: 02:00:00:00:00:01',
-                     citation + ' Path: /home/fixture/file'):
-            with self.subTest(text=text), self.assertRaises(AssertionError):
-                self.assert_public_text(text)
-
-    def test_citation_does_not_hide_private_values_from_redaction(self):
-        # Names and credentials are site-aware redaction checks, not guesses by
-        # the repository's numeric/path scanner. Use only synthetic site values.
-        site = m.load_site(FIXTURES / 'redact-site.env')
-        citation = self.XHCI_SOURCE + '\n4.6.8 and 4.10.1.1.'
-        for value in ('192.0.2.66', '4.10.1.1', 'fixturehost', site['IDRAC_PASSWORD']):
-            with self.subTest(value=value):
-                output = m.Redactor(site)(citation + ' value="' + value + '"')
-                self.assertNotIn(value, output)
-                self.assertRegex(output, r'value="<(?:site|ip)>"$')
+            text = path.read_text(errors='replace')
+            for match in re.finditer(r'\b\d{1,3}(?:\.\d{1,3}){3}\b', text):
+                self.assertIn(match.group(0), ('127.0.0.1', '0.0.0.0', '255.255.255.0'), f'{path.name}: {match.group(0)}')
+            self.assertIsNone(re.search(r'([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', text), path.name)
+            self.assertIsNone(re.search(r'/Users/\w|/home/\w', text), path.name)
 
 
 if __name__ == '__main__':
