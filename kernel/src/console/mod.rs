@@ -883,13 +883,14 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 let elapsed = elapsed_us(started);
                 say!(
                     info,
-                    "{} console tty and kernel log on the screen: {}x{} cells, {} rows drawn in {}.{:03} ms",
+                    "{} console tty and kernel log on the screen: {}x{} cells, {} rows drawn in {}.{:03} ms (diag write {} us)",
                     TAG,
                     cols,
                     rows,
                     drawn,
                     elapsed / 1000,
-                    elapsed % 1000
+                    elapsed % 1000,
+                    DIAG_WRITE_US.load(Ordering::Relaxed)
                 );
                 // x86 reads the screen back at kernel idle; ARM64 once the
                 // console first fills it.
@@ -1067,6 +1068,9 @@ impl fmt::Display for ReadFrom<'_> {
     }
 }
 
+static DIAG_WRITE_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static DIAG_READ_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 fn elapsed_us((seconds, nanos): (u64, u64)) -> u64 {
     let (now_seconds, now_nanos) = crate::time::get_monotonic_time_ns();
     let start = seconds * 1_000_000_000 + nanos;
@@ -1133,7 +1137,10 @@ impl Screen {
             }
             raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
-            if self.display.write(&self.shadow, band.clone(), may_draw) {
+            let t0 = crate::time::get_monotonic_time_ns();
+            let wrote = self.display.write(&self.shadow, band.clone(), may_draw);
+            DIAG_WRITE_US.fetch_add(elapsed_us(t0), Ordering::Relaxed);
+            if wrote {
                 self.shown[row] = Some(wanted);
                 drawn += 1;
                 dirty = Some(match dirty {
@@ -1176,7 +1183,9 @@ impl Screen {
         if source.is_ok() {
             for y in 0..layout.height {
                 let bytes = layout.line(y);
+                let t0 = crate::time::get_monotonic_time_ns();
                 self.display.read_line(y, &mut line);
+                DIAG_READ_US.fetch_add(elapsed_us(t0), Ordering::Relaxed);
                 if line[..] != self.shadow[bytes.clone()] {
                     differing_lines += 1;
                     if first_difference.is_none() {
@@ -1294,8 +1303,11 @@ fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool) {
     if !idle && token == 0 {
         return;
     }
+    DIAG_READ_US.store(0, Ordering::Relaxed);
+    let t0 = crate::time::get_monotonic_time_ns();
     let answer = screen.map(|(screen, fg)| screen.check(fg));
     if idle {
+        log::info!("[console] diag check {} us, read {} us", elapsed_us(t0), DIAG_READ_US.load(Ordering::Relaxed));
         match &answer {
             Ok(check) if check.identical() => match &check.source {
                 #[cfg(target_arch = "aarch64")]
