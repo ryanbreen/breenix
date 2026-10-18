@@ -239,6 +239,28 @@ impl Layout {
         Ok(layout)
     }
 
+    /// The kinds of X/Y axes the descriptor declares: "absolute", "relative",
+    /// "absolute+relative", or "none" for buttons or a wheel alone.
+    /// claim-lint:ok: the match below, kernel/src/drivers/hid_boot/pointer.rs, whose tests check two of the names.
+    pub fn axes(&self) -> &'static str {
+        let (mut absolute, mut relative) = (false, false);
+        for field in &self.fields[..self.count] {
+            if field.page == 1 && matches!(field.usage, 0x30 | 0x31) {
+                if field.relative {
+                    relative = true;
+                } else {
+                    absolute = true;
+                }
+            }
+        }
+        match (absolute, relative) {
+            (true, true) => "absolute+relative",
+            (true, false) => "absolute",
+            (false, true) => "relative",
+            (false, false) => "none",
+        }
+    }
+
     pub fn decode(&self, report: &[u8]) -> Result<Option<Motion>, &'static str> {
         let (id, data) = if self.ids {
             let (&id, data) = report.split_first().ok_or("missing HID report ID")?;
@@ -308,6 +330,7 @@ mod tests {
     #[test]
     fn relative_buttons_wheel_and_clamping() {
         let layout = Layout::parse(MOUSE).unwrap();
+        assert_eq!(layout.axes(), "relative");
         let motion = layout.decode(&[5, 0xfe, 4, 0xff]).unwrap().unwrap();
         assert_eq!(motion.buttons, Some(5));
         assert_eq!(motion.x.unwrap().position(1, 1280), 0);
@@ -337,6 +360,7 @@ mod tests {
             0x81, 2,
         ];
         let layout = Layout::parse(&descriptor).unwrap();
+        assert_eq!(layout.axes(), "absolute");
         let motion = layout.decode(&[3, 0, 0, 0xff, 0x7f]).unwrap().unwrap();
         assert_eq!(motion.x.unwrap().position(50, 1280), 0);
         assert_eq!(motion.y.unwrap().position(50, 960), 959);

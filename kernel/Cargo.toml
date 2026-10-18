@@ -29,6 +29,8 @@ force_reclaim_queue_contention = ["testing"] # A peer holds the pending queue wh
 force_exit_report_reap_race = ["testing"] # Parent reaps a killed row before its exit report is claimed
 testing = []
 boot_tests = []  # Parallel boot test framework
+# ARM64 pointer measurement: replay a USB HID report through the xHCI pointer path (ioctl 0xB8130006)
+usb_pointer_replay = []
 force_eret_dispatch_596 = ["boot_tests"]  # #596 forced-repro knob
 ret_zero_pc_oracle = ["boot_tests"]
 ret_zero_pc_oracle_exec = ["boot_tests"]

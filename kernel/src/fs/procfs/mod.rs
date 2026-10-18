@@ -103,6 +103,8 @@ pub enum ProcEntryType {
     XhciTrace,
     /// /proc/xhci/counters - xHCI trace counters
     XhciCounters,
+    /// /proc/xhci/pointers - attached USB HID pointer interfaces
+    XhciPointers,
     /// /proc/net - network directory
     NetDir,
     /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
@@ -165,6 +167,7 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
+            ProcEntryType::XhciPointers => "pointers",
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::ConsoleDir => "console",
@@ -212,6 +215,7 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
+            ProcEntryType::XhciPointers => "/proc/xhci/pointers",
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::ConsoleDir => "/proc/console",
@@ -260,6 +264,7 @@ impl ProcEntryType {
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
+            ProcEntryType::XhciPointers => 303,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             #[cfg(target_arch = "x86_64")]
@@ -384,6 +389,9 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::XhciCounters));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::XhciPointers));
 
     // Register /proc/net directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
@@ -509,6 +517,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::BreenixTesting
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
+                    | ProcEntryType::XhciPointers
                     | ProcEntryType::NetPnp
             ) && !is_console_file(&e.entry_type)
         }) {
@@ -601,7 +610,9 @@ pub fn list_xhci_entries() -> Vec<String> {
         .filter(|e| {
             matches!(
                 e.entry_type,
-                ProcEntryType::XhciTrace | ProcEntryType::XhciCounters
+                ProcEntryType::XhciTrace
+                    | ProcEntryType::XhciCounters
+                    | ProcEntryType::XhciPointers
             )
         })
         .map(|e| String::from(e.entry_type.name()))
@@ -696,6 +707,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::XhciTrace => text(String::from("")),
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciCounters => text(String::from("")),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
+        #[cfg(not(target_arch = "aarch64"))]
+        ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();

@@ -73,6 +73,14 @@ impl Controller {
             if LEDS.swap(false, Ordering::SeqCst) {
                 self.sync_leds();
             }
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+            if super::REPLAY.swap(false, Ordering::SeqCst) {
+                let pending = super::pointer::replay::PENDING.lock().take();
+                if let Some((seq, port, report)) = pending {
+                    let result = self.replay_pointer(port, &report);
+                    super::pointer::replay::answer(seq, result);
+                }
+            }
         }
     }
 
@@ -498,7 +506,10 @@ impl Controller {
     pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
         #[cfg(target_arch = "aarch64")]
-        if !device.pointers.is_empty() { crate::input::pointer::release(device.port); }
+        if !device.pointers.is_empty() {
+            crate::input::pointer::release(device.port);
+            super::pointer::detached(device.port);
+        }
         if let Some(pipe) = device.keyboard.as_mut() {
             pipe.state
                 .release_all(&mut |code, value| self.console.event(device.port, code, value));

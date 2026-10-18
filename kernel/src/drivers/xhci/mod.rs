@@ -16,6 +16,10 @@ mod platform;
 mod pointer;
 #[cfg(target_arch = "aarch64")]
 pub use platform::get_irq;
+#[cfg(target_arch = "aarch64")]
+pub use pointer::describe as describe_pointers;
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+pub use pointer::replay;
 mod spec;
 
 use crate::{
@@ -63,6 +67,20 @@ static REPLUG: AtomicBool = AtomicBool::new(false);
 /// keyboard report (a switch to a terminal with other locks), so the worker
 /// sends attached keyboards their LEDs (`keyboard::sync_leds`).
 static LEDS: AtomicBool = AtomicBool::new(false);
+
+/// A thread-context request: the pointer replay control has a report for the
+/// worker (`pointer::replay`, measurement kernels only).
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+static REPLAY: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+fn replay_requested() -> bool {
+    REPLAY.load(Ordering::SeqCst)
+}
+#[cfg(not(all(target_arch = "aarch64", feature = "usb_pointer_replay")))]
+fn replay_requested() -> bool {
+    false
+}
 
 /// Init is starting the console target: exercise detach and reattach of each
 /// boot keyboard once, before anyone types (`keyboard::replug_exercise`).
@@ -752,7 +770,12 @@ impl Controller {
     /// `requests` is set, a thread-context request arrives (false).
     fn wait_work(&self, deadline: Option<u64>, requests: bool) -> Result<bool, &'static str> {
         let tid = scheduler::current_thread_id().ok_or("worker has no thread identity")?;
-        let requested = || requests && (REPLUG.load(Ordering::SeqCst) || LEDS.load(Ordering::SeqCst));
+        let requested = || {
+            requests
+                && (REPLUG.load(Ordering::SeqCst)
+                    || LEDS.load(Ordering::SeqCst)
+                    || replay_requested())
+        };
         loop {
             WORK.publish(tid);
             if WORK.take() {
