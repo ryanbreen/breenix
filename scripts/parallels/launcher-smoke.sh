@@ -535,40 +535,23 @@ fi
 export VM="$VM_NAME"
 
 # =============================================================================
-# (c.5) USB mouse-enumeration assertion.
-#
-# xHCI enumeration completes during kernel boot, well before BWM emits the
-# readiness marker, so start_hid_polling()'s summary line is already in the
-# serial log by now. Extract mouse=slotN from it: if N==0, the mouse's
-# EnableSlot/AddressDevice sequence never got a slot (even after the bounded
-# in-kernel retry added for exactly this failure mode) -- the pointer is dead
-# for the whole session. This is a real device-bring-up failure and must FAIL
-# honestly rather than let the run limp forward into the launcher/bterm
-# phases pretending input is healthy. Always copy the line into the evidence
-# dir regardless of outcome (pass or fail) for offline inspection.
+# (c.5) Require a configured, classified pointer with an interrupt-IN request.
 # =============================================================================
-HID_POLL_MARKER='[xhci] start_hid_polling:'
+HID_POLL_MARKER='[usb] HID pointer attached:'
 HID_POLL_LINE="$(grep -aF -- "$HID_POLL_MARKER" "$SERIAL_LOG" 2>/dev/null | tail -1 || true)"
 echo "$HID_POLL_LINE" > "$EVIDENCE_DIR/hid-poll-line.txt"
 
-# #482 review fix pass (X-2): the summary records start_hid_polling's result.
-# Preserve the raw port-scan/EnableSlot/descriptor-fetch trail too, from
-# the same authoritative SERIAL_LOG. SERIAL_EXCERPT starts at the launcher
-# trigger and omits early boot. Write this alongside hid-poll-line.txt before
-# checking the HID summary, so that check's failure also retains the trail.
-grep -aE '^\[xhci\]' "$SERIAL_LOG" > "$EVIDENCE_DIR/xhci-enum-excerpt.txt" 2>/dev/null || true
+# Preserve the early controller and HID attachment trail from the same
+# authoritative serial log, including failures before the launcher trigger.
+grep -aE '\[xhci\]|\[usb\]' "$SERIAL_LOG" > "$EVIDENCE_DIR/xhci-enum-excerpt.txt" 2>/dev/null || true
 
 if [[ -z "$HID_POLL_LINE" ]]; then
-    finish_fail "USB_MOUSE_ENUM: no '$HID_POLL_MARKER' line found in serial log (start_hid_polling never ran or was not reached)"
+    finish_fail "USB_MOUSE_ENUM: no '$HID_POLL_MARKER' line found in serial log (pointer attachment never completed)"
 fi
 
-MOUSE_SLOT="$(printf '%s\n' "$HID_POLL_LINE" | grep -oE 'mouse=slot[0-9]+' | grep -oE '[0-9]+' || true)"
+MOUSE_SLOT="$(printf '%s\n' "$HID_POLL_LINE" | grep -oE 'slot=[0-9]+' | grep -oE '[0-9]+' || true)"
 if [[ -z "$MOUSE_SLOT" || "$MOUSE_SLOT" -eq 0 ]]; then
-    # Pull any retry-exhaustion evidence from the kernel's own EnableSlot
-    # retry logging so the FAIL message is directly actionable.
-    ENUM_RETRY_EVIDENCE="$(grep -aE 'EnableSlot retry|EnableSlot failed|EnableSlot/AddressDevice failed after retries' "$SERIAL_LOG" 2>/dev/null | tail -5 || true)"
-    [[ -n "$ENUM_RETRY_EVIDENCE" ]] && echo "$ENUM_RETRY_EVIDENCE" >> "$EVIDENCE_DIR/hid-poll-line.txt"
-    finish_fail "USB_MOUSE_ENUM: mouse never enumerated a slot (mouse=slot${MOUSE_SLOT:-?}): $HID_POLL_LINE"
+    finish_fail "USB_MOUSE_ENUM: mouse never enumerated a slot (slot=${MOUSE_SLOT:-?}): $HID_POLL_LINE"
 fi
 log "USB mouse enumerated: slot $MOUSE_SLOT ($HID_POLL_LINE)"
 

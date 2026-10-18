@@ -404,7 +404,24 @@ def selftest_parse():
     p.feed('SUITE console HOSTKEY vt/c seq=7 keys=alt-left\n')
     assert 'no host key path for alt-left on prlctl' in log[0], log
     assert declaration('prlctl:x').startswith('prlctl;missing=left,right') and declaration('qmp:x') == 'qmp'
-    print('hostkeys parse ok')
+    # Exercise the production RFB encoder, including HID middle/right order
+    # and the wheel release packet, without opening a VM connection.
+    class Wire:
+        def __init__(self):
+            self.packets = []
+        def sendall(self, data):
+            self.packets.append(struct.unpack('>BBHH', data))
+    wire = Wire()
+    vnc = VNCKeys('', 0)
+    vnc._pointer_socket = wire
+    for buttons, rfb in ((0, 0), (1, 1), (2, 4), (4, 2), (7, 7)):
+        vnc.pointer(123, 456, buttons, 0)
+        assert wire.packets.pop() == (5, rfb, 123, 456)
+    for wheel, rfb in ((1, 8), (-1, 16)):
+        vnc.pointer(123, 456, 2, wheel)
+        assert wire.packets == [(5, rfb | 4, 123, 456), (5, 4, 123, 456)]
+        wire.packets.clear()
+    print('hostkeys parse and RFB pointer wire ok')
 
 
 def main():
