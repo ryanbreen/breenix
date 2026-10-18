@@ -29,6 +29,7 @@ pub mod percpu;
 pub mod percpu_custody;
 pub mod privilege;
 pub mod smp;
+pub mod switch_save;
 pub mod syscall_entry;
 pub mod timer;
 pub mod timer_interrupt;
