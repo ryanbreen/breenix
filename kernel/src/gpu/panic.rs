@@ -24,6 +24,11 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "capture_panic_oracle")]
 static PREPARATION_FINISHED: AtomicBool = AtomicBool::new(false);
 static TERMINAL: AtomicBool = AtomicBool::new(false);
+/// Fatal takeover intentionally ends scheduler progress for the rest of this boot.
+pub fn terminal() -> bool {
+    TERMINAL.load(Ordering::Acquire)
+}
+
 static VALID: AtomicBool = AtomicBool::new(false);
 static STATE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
 static USERS: [AtomicUsize; crate::arch_impl::aarch64::constants::MAX_CPUS] =
