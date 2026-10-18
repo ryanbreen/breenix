@@ -200,6 +200,8 @@ pub(super) struct Effects {
     wake: bool,
     /// The foreground terminal must be redrawn from its grid.
     pub(super) redraw: bool,
+    /// The foreground changed, and with it the lock state keyboards show.
+    leds: bool,
 }
 
 impl Effects {
@@ -242,6 +244,12 @@ impl Effects {
         }
         if self.wake {
             WAITACTIVE.wake_up();
+        }
+        // The keyboard driver sends the new LED state from its own thread
+        // (the x86 xHCI boot keyboard's; ARM64's USB keyboard is V7's).
+        if self.leds {
+            #[cfg(target_arch = "x86_64")]
+            crate::drivers::xhci::lock_state_changed();
         }
         for (pid, sig) in self.signals.into_iter().flatten() {
             crate::syscall::signal::signal_process_from_kernel(crate::process::ProcessId::new(pid), sig);
@@ -352,6 +360,7 @@ impl Terminals<'_> {
             },
         });
         self.sw.fg = to;
+        effects.leds = true;
         // The screen goes to `to`: a process drawing on it is no longer shown.
         if text {
             super::DISPLAY_TAKEN.store(false, Ordering::SeqCst);
