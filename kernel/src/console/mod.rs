@@ -441,15 +441,23 @@ pub fn write_vt(number: usize, bytes: &[u8]) {
 /// line discipline echoes into the grid. Replies are input, independent of
 /// which owner currently draws. A byte the input cannot take yet stays queued,
 /// with those behind it, for the next pass, so contention loses no CPR byte.
-fn deliver_replies() {
-    for index in 0..vt::VT_COUNT {
+fn deliver_replies(pending: &mut [usize; vt::VT_COUNT]) {
+    for (index, unacknowledged) in pending.iter_mut().enumerate() {
+        // Only this render thread consumes replies. A failed lock attempt
+        // must not make bytes already accepted by the input eligible again.
+        if *unacknowledged != 0 {
+            if with_grid(|console| console.vts[index].replies.consume(*unacknowledged)).is_none() {
+                continue;
+            }
+            *unacknowledged = 0;
+        }
         let mut bytes = [0u8; 64];
         let Some(n) = with_grid(|console| console.vts[index].replies.peek(&mut bytes)) else {
             continue;
         };
         let taken = bytes[..n].iter().take_while(|&&byte| crate::tty::driver::push_reply(index + 1, byte)).count();
-        if taken != 0 {
-            with_grid(|console| console.vts[index].replies.consume(taken));
+        if taken != 0 && with_grid(|console| console.vts[index].replies.consume(taken)).is_none() {
+            *unacknowledged = taken;
         }
     }
 }
@@ -874,8 +882,9 @@ fn render_thread(display: &'static Display, attached: Attached) {
 
     let mut announced = false;
     let mut last_session = false;
+    let mut pending_replies = [0; vt::VT_COUNT];
     while !crate::task::kthread::kthread_should_stop() {
-        deliver_replies();
+        deliver_replies(&mut pending_replies);
         crate::tty::driver::drain_keyboard_input();
         // A switch a key asked for, then switch deadlines, whichever owner draws.
         vt::take_key_switch();
