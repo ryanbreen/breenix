@@ -717,7 +717,10 @@ impl TtyDevice {
     }
 
     pub fn input_proof(&self, action: u64) -> Result<i32, i32> {
-        if self.num != 0 || action > 2 { return Err(22); }
+        if action > 2 { return Err(22); }
+        // tty2 to tty6 take keyboard input only: they keep no source window,
+        // so getty and login on them get success with no report.
+        if self.num != 0 { return Ok(0); }
         let mut ldisc = self.ldisc.lock();
         let (event, keyboard) = if action == 0 {
             ldisc.flush_input();
