@@ -11,6 +11,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+ARM64 testing accounting work (#1958, #1969) withdraws the PTY ioctl fixture
+and requires completed retirement of both busy-CPU reclaim receipts. Its
+[evidence record](green-program/aarch64-testing/1958-1969-ACCOUNTING-2026-10-18.md)
+also records verification of PR #1959's read-only fixture and truncate fixes.
+
 PR #1967 separates the ARM64 boot-test panel from the boot checklist and
 restores the display pixels under the moving cursor; its
 [retained evidence](green-program/gui/1967-evidence/README.md) includes the

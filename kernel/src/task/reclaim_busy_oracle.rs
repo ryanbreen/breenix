@@ -161,7 +161,9 @@ fn retire_through_exit_path(pid: crate::process::ProcessId) -> Result<(), &'stat
         reclaim
     };
     removed.clear();
-    process_task::enqueue_process_reclaim(reclaim);
+    if !process_task::enqueue_process_reclaim(reclaim) {
+        return Err("receipt enqueue failed");
+    }
     Ok(())
 }
 
@@ -230,6 +232,8 @@ struct Verdict {
     retired_by: BootReclaimWatch,
     latency_ms: u64,
     daemon_passes: u64,
+    enqueued: u8,
+    completed: u8,
     cleaned: bool,
     reason: &'static str,
 }
@@ -266,6 +270,8 @@ fn emit(verdict: &Verdict, detail: &Detail) {
         && verdict.progressed == spun
         && verdict.retired_by == BootReclaimWatch::ByDaemon
         && verdict.latency_ms <= BOUND_MS
+        && verdict.enqueued == 2
+        && verdict.completed == 2
         && verdict.cleaned
         && backstops == 0;
     let retired_by = match verdict.retired_by {
@@ -293,7 +299,7 @@ fn emit(verdict: &Verdict, detail: &Detail) {
         );
     }
     serial_println!(
-        "[RECLAIM_BUSY_CPU_ORACLE:{}:cpus={}:held_cpus={}:spinners={}:started={}:spinning={}:progressed={}:retired_by={}:latency_ms={}:bound_ms={}:mechanism_ms={}:daemon_passes={}:cleaned={}:backstops={}:{}{}]",
+        "[RECLAIM_BUSY_CPU_ORACLE:{}:cpus={}:held_cpus={}:spinners={}:started={}:spinning={}:progressed={}:retired_by={}:latency_ms={}:bound_ms={}:mechanism_ms={}:daemon_passes={}:enqueued={}:completed={}:cleaned={}:backstops={}:{}{}]",
         ARCH_TAG,
         cpus,
         verdict.held,
@@ -306,6 +312,8 @@ fn emit(verdict: &Verdict, detail: &Detail) {
         BOUND_MS,
         MECHANISM_MS,
         verdict.daemon_passes,
+        verdict.enqueued,
+        verdict.completed,
         u8::from(verdict.cleaned),
         backstops,
         if pass { "PASS" } else { "FAIL" },
@@ -406,6 +414,8 @@ fn run_coordinator() {
         retired_by: BootReclaimWatch::Pending,
         latency_ms: 0,
         daemon_passes: 0,
+        enqueued: 0,
+        completed: 0,
         cleaned: false,
         reason: "",
     };
@@ -493,6 +503,7 @@ fn run_coordinator() {
     let member_retired = retire_through_exit_path(member);
     STAGE.store(4, Ordering::Release);
     if member_retired.is_ok() {
+        verdict.enqueued += 1;
         wait_until(
             || process_task::boot_reclaim_watch_state() != BootReclaimWatch::Pending,
             RETIRE_BACKSTOP_MS,
@@ -500,6 +511,9 @@ fn run_coordinator() {
     }
     let retired_at = now_ns();
     verdict.retired_by = process_task::boot_reclaim_watch_state();
+    if verdict.retired_by != BootReclaimWatch::Pending {
+        verdict.completed += 1;
+    }
     verdict.latency_ms = retired_at.saturating_sub(retired_at_start) / 1_000_000;
     verdict.daemon_passes = process_task::boot_reclaim_daemon_passes().wrapping_sub(passes_before);
     verdict.progressed = (0..scheduler::MAX_CPUS)
@@ -538,19 +552,26 @@ fn run_coordinator() {
     // Leave both receipts retired for the boot tests that follow: the
     // leader's receipt, which holds its root, retires once the member's row is
     // gone.
+    // The member's completion was captured before changing the watch. Queue
+    // absence is insufficient: the drain removes a receipt before retiring it.
+    process_task::boot_reclaim_watch(leader.as_u64());
     let leader_retired = retire_through_exit_path(leader);
-    verdict.cleaned = member_retired.is_ok()
-        && leader_retired.is_ok()
-        && wait_until(
-            || {
-                process_task::boot_reclaim_locations(member.as_u64()) == (false, false)
-                    && process_task::boot_reclaim_locations(leader.as_u64()) == (false, false)
-            },
+    if leader_retired.is_ok() {
+        verdict.enqueued += 1;
+        if wait_until(
+            || process_task::boot_reclaim_watch_state() != BootReclaimWatch::Pending,
             CLEANUP_BACKSTOP_MS,
-        );
+        ) {
+            verdict.completed += 1;
+        }
+    }
+    process_task::boot_reclaim_watch(0);
+    verdict.cleaned = verdict.enqueued == 2 && verdict.completed == 2;
     STAGE.store(7, Ordering::Release);
     if member_retired.is_err() {
         verdict.reason = ":reason=member_retire_failed";
+    } else if leader_retired.is_err() {
+        verdict.reason = ":reason=leader_retire_failed";
     }
     emit(&verdict, &detail);
 }
