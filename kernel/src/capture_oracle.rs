@@ -61,11 +61,13 @@ pub fn observe(tick_count: u64) {
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if !crate::gpu::panic::test_ready() {
+    if elapsed_ms < 30_000 && !crate::gpu::panic::test_ready() {
         return;
     }
     #[cfg(target_arch = "aarch64")]
-    if crate::gpu::console::active() {
+    // Give handoff and preparation a bounded opportunity. If admission,
+    // takeover, preparation or lock acquisition fails, still exercise serial.
+    if elapsed_ms < 30_000 && crate::gpu::console::active() {
         crate::gpu::panic::test_with_locks(|| {
             if !FIRED.swap(true, Ordering::AcqRel) {
                 fire(elapsed_ms, tick_count);

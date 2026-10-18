@@ -488,18 +488,16 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     let deadline = crate::arch_impl::aarch64::timer::rdtsc() + frequency * 2;
     if !(s.queue.drain(deadline) && s.show(title, headline, details, stage, log, deadline)) {
         #[cfg(feature = "capture_panic_oracle")]
-        report(s, false);
+        report(s, false, deadline);
         return;
     }
     #[cfg(feature = "capture_panic_oracle")]
-    report(s, true);
+    report(s, true, deadline);
 }
 
 /// The capture build's screen check, on serial after the panic record.
 #[cfg(feature = "capture_panic_oracle")]
-fn report(s: &Screen, shown: bool) {
-    let deadline = crate::arch_impl::aarch64::timer::rdtsc()
-        + crate::arch_impl::aarch64::timer::frequency_hz() * 2;
+fn report(s: &Screen, shown: bool, deadline: u64) {
     let result = if shown { s.observe(deadline) } else { None };
     s.observed.store(result.is_some(), Ordering::Release);
     let mut line = crate::serial_line::Line::unattributed();
