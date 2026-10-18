@@ -2286,7 +2286,7 @@ fn builtin_wrap(line: &str) -> Option<String> {
             }
         }
         "pwd" => Some(String::from("print(pwd())")),
-        "exit" => {
+        "exit" | "logout" => {
             if args_str.is_empty() {
                 Some(String::from("exit(0)"))
             } else {

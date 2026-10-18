@@ -80,12 +80,18 @@ def verify_target(env, sha, branch):
 
 def boot(args):
     is_session = bool(getattr(args, 'session', False))
+    attended = bool(getattr(args, 'attended', False))
+    wait = getattr(args, 'wait', 30)
+    if attended and (is_session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk):
+        raise SystemExit('--attended needs a RAM-disk console boot, without --session or --input')
+    if not 0 < wait <= 240 or (wait != 30 and not attended):
+        raise SystemExit('--wait needs --attended and more than 0 through 240 minutes')
     idle = getattr(args, 'idle_minutes', 30)
     if is_session and (args.mode != 'console' or args.input or getattr(args, 'disk', None) == 'install'):
         raise SystemExit('--session needs console mode, operator input and no disk install')
     if not 1 <= idle <= 240 or (idle != 30 and (not is_session or getattr(args, 'disk', None) == 'root')):
         raise SystemExit('--idle-minutes needs a RAM-disk session and 1 through 240 minutes')
-    if not is_session and (args.mode == 'console') != (args.input == 'sol'):
+    if not is_session and not attended and (args.mode == 'console') != (args.input == 'sol'):
         raise SystemExit('console mode requires --input sol; --input requires console mode')
     env = host_env()
     payload = args.payload
@@ -101,7 +107,9 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode]
-    if is_session:
+    if attended:
+        command += ['--attended', '--wait', str(wait)]
+    elif is_session:
         command += ['--session', '--idle-minutes', str(idle)]
     elif args.mode == 'console':
         command += ['--input', args.input]
@@ -220,6 +228,8 @@ def main():
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console'), default='default')
     p.add_argument('--input', choices=('sol',))
+    p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
+    p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
     p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
     p.add_argument('--idle-minutes', type=int, default=30, help='RAM-disk session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),

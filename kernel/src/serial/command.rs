@@ -66,7 +66,7 @@ pub async fn serial_command_task() {
 
     while let Some(byte) = input.next().await {
         if tty_input {
-            crate::tty::push_char(byte);
+            crate::tty::push_char_from(byte, crate::tty::InputSource::Serial);
             continue;
         }
         match byte {
