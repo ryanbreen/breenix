@@ -77,7 +77,13 @@ pub unsafe fn init(addr: Option<u64>, len: u64) -> Result<(), &'static str> {
         return Err("Invalid RAM disk mapping");
     }
     if DISK.get().is_some() { return Err("RAM disk already installed"); }
-    let disk = RamDisk::new(core::slice::from_raw_parts_mut(addr as *mut u8, len))?;
+    // A disk-root console boot carries only its per-boot intent here. It
+    // must not become a root block device or change the installed filesystem.
+    let bytes = core::slice::from_raw_parts_mut(addr as *mut u8, len);
+    if crate::boot::console_intent::capture(bytes) {
+        return Ok(());
+    }
+    let disk = RamDisk::new(bytes)?;
     DISK.call_once(|| disk);
     log::info!("[block] ramdisk {} bytes", len);
     Ok(())

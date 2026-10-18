@@ -1,0 +1,80 @@
+{
+ "commit": "14944201ac7612546792b7a6020c612890c78e68",
+ "guardTarget": "x86-metal",
+ "profile": "production",
+ "features": [],
+ "timings": {
+  "slot_wait": 0,
+  "userspace": 172,
+  "kernel": 117,
+  "stub": 20
+ },
+ "definition": [
+  "docs/metal/boot-path.json",
+  "docs/boot-path.json",
+  "xtask/src/boot_stages.rs",
+  "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json",
+  "scripts/suite-verdict.py",
+  "docs/suites/console.json",
+  "docs/suites/crypto.json",
+  "docs/suites/directories.json",
+  "docs/suites/files-io.json",
+  "docs/suites/gpu.json",
+  "docs/suites/ipc.json",
+  "docs/suites/libc.json",
+  "docs/suites/memory.json",
+  "docs/suites/networking.json",
+  "docs/suites/processes.json",
+  "docs/suites/rust-std.json",
+  "docs/suites/sdk.json",
+  "docs/suites/signals.json",
+  "docs/suites/smoke.json",
+  "docs/suites/terminals.json",
+  "docs/suites/threads.json",
+  "docs/suites/time.json",
+  "docs/suites/utilities.json"
+ ],
+ "cpus": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  6,
+  8,
+  10,
+  12,
+  14,
+  16,
+  18,
+  20,
+  21,
+  22,
+  23,
+  24,
+  26,
+  28,
+  30,
+  32,
+  34,
+  36,
+  38
+ ],
+ "cargoJobs": 4,
+ "uefi": {
+  "size": 6356992,
+  "sha256": "7068b97dc490ab33e292a421ee600c666c9aed851567ea758ebae2c5e7605165"
+ },
+ "stub": {
+  "size": 13312,
+  "sha256": "6c5f76cfa06d12389863dc88973b9f340032daf14c09976d370d566a86a48d49"
+ },
+ "ext2": {
+  "size": 268435456,
+  "sha256": "cf83b64cfd7385aa79056245da088548a02ab5a16ae9edf0f1b722360b796b83"
+ },
+ "consoleHashHelper": {
+  "size": 3871960,
+  "sha256": "f7110e5dc58b88f98ebf6971f4c768ca416957effa937f2a8943c7d7262339a4"
+ }
+}

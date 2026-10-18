@@ -137,11 +137,20 @@ fn check_elf_refuses_a_non_elf() {
 
 #[test]
 fn console_idle_threshold_is_bounded_and_keeps_the_console_target() {
-    assert!(matches!(parse("console\n"), Ok(Target::Console { idle_minutes: 30 })));
-    assert!(matches!(parse("console idle=2\n"), Ok(Target::Console { idle_minutes: 2 })));
-    assert!(matches!(parse("console idle=240\n"), Ok(Target::Console { idle_minutes: 240 })));
+    assert!(matches!(parse("console\n"), Ok(Target::Console { idle_minutes: 30, replug: false })));
+    assert!(matches!(parse("console idle=2\n"), Ok(Target::Console { idle_minutes: 2, replug: false })));
+    assert!(matches!(parse("console idle=240\n"), Ok(Target::Console { idle_minutes: 240, replug: false })));
     for text in ["console idle=0", "console idle=241", "console idle=-1", "console idle=+2",
                  "console idle=", "console  idle=2", "console idle=2 extra", "shell idle=2"] {
+        assert!(parse(text).is_err(), "{text:?} was accepted");
+    }
+}
+
+#[test]
+fn only_an_explicit_measured_console_target_requests_replug() {
+    assert!(matches!(parse("console replug\n"),
+        Ok(Target::Console { idle_minutes: 30, replug: true })));
+    for text in ["console idle=2 replug", "console replug idle=2", "shell replug", "console  replug"] {
         assert!(parse(text).is_err(), "{text:?} was accepted");
     }
 }

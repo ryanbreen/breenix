@@ -1,0 +1,16 @@
+[gate-phase] phase=dependency-resolution started=1792329793.284
+[gate-phase] phase=dependency-resolution ended=1792329795.629 seconds=2.346 status=0
+[gate-phase] phase=userspace-input-key started=1792329795.629
+[gate-phase] phase=userspace-input-key ended=1792329806.213 seconds=10.583 status=0
+[gate-cache] MISS key=869f14e1536d12b48e62c1a7c7e1c7fe5a101df80f02a9ca64cf20e6a7f5d11f metal
+[gate-cache] incremental targets=24ac7d57b80b842b7c642de9498d1aadbc81a6e4a88074fad0dd37d518cefb58
+[gate-phase] phase=userspace-build started=1792329808.347 build=metal
+[gate-phase] phase=userspace-build ended=1792329931.840 seconds=123.494 status=0
+[gate-phase] phase=disk-repack started=1792329931.840 build=metal
+[gate-phase] phase=disk-repack ended=1792329951.663 seconds=19.822 status=0
+[gate-cache] BUILT-ONCE key=869f14e1536d12b48e62c1a7c7e1c7fe5a101df80f02a9ca64cf20e6a7f5d11f files=194
+[gate-phase] phase=userspace-build-once ended=1792329965.192 seconds=158.979 status=0
+[metal-build] inputs ready {"slot_wait": 0, "userspace": 172, "kernel": 117, "stub": 20}
+[metal-build] build exit=0 seconds=322
+[metal-run] build exit 0 after 324 s
+[metal-run] inputs delivered after 326 s
