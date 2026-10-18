@@ -600,8 +600,8 @@ Passwords reach the helper and SOL input over stdin, without command arguments o
 The SOL challenge requires a wrong password refusal before the successful authentication, a whole computation
 answer line, logout, checked controlling-terminal reacquisition and a new login prompt. Its run records
 `input: sol` and `evidenceEligible: false`. The console-login definition records these producing stages and
-retains the screen and keyboard stages in its active stage list, with the milestone stubbed until a local measurement. The `first-local-login` stage remains waiting for the injector
-under ruling M2. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
+retains the screen and keyboard stages for SOL development. M8 adds the attended challenge described
+in the run sheet; `first-local-login` awaits an attended measurement. Text over SOL is the observation path; no screenshot or framebuffer capture is used.
 
 Only the storage lane may run `--mode console --input sol --disk install`: the console target and shadow
 then ride the verified image copy. A subsequent `--disk root` console request requires that recorded install's
@@ -715,6 +715,53 @@ with the machine on; the reaper's retry then powers it off and lifts the quarant
 modes stage their boot targets as described under "RAM-disk userspace"; probe mode stages `probe`, and its storage
 boots are described under "The disks".
 Probe completion requires `PROBE DONE` and the measured kernel and fetch stages.
+
+## Attended console run sheet
+
+Start an attended boot on the configured boot host (ask the agent to run it, or run
+this command there). The power button alone does not stage a boot image.
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run boot --mode console --attended
+```
+
+The driver builds the image, acquires the machine lease, starts SOL capture and
+powers on. It sends **no keystrokes**. Use the monitor connected to the machine's
+VGA port and a plain USB boot keyboard plugged directly into a USB port. The
+monitor shows boot messages, then `Breenix login:`. Allow time for the build and
+firmware startup before expecting that prompt.
+
+Read `CONSOLE_USER` and `CONSOLE_PASSWORD` yourself from
+`~/agent-credentials/breenix-metal-console/.env` on your own computer. The staged
+account is `root`. Keep the password private; do not paste it into chat, commands
+on the boot host, or logs. It is not displayed while you type it.
+
+Type these keys **in this order**, waiting for each indicated response:
+
+1. At `login:`, type `root`, then **Enter**.
+2. At `Password:`, type `deliberately-wrong-password`, then **Enter**.
+   Wait for `Login incorrect` and a new `login:` prompt.
+3. Type `root`, then **Enter**. At `Password:`, type the real password from
+   the private file, then **Enter**. Wait for the `bsh` shell prompt.
+4. Type `print("metal-console-ok", 6*7)`, then **Enter**.
+   Look for the answer on its own line: `metal-console-ok 42`.
+5. Type `logout`, then **Enter**. Wait for a new `Breenix login:` prompt.
+
+<!-- claim-lint:ok: protocol requirements tested in tests/metal_attended_test.py. -->
+Success requires the refused password, a successful login whose input all came
+from the USB keyboard, the exact computed answer and return to getty after
+logout, with USB-only session input. SOL typing cannot prove these stages. The
+boot record retains source markers and the challenge result, with password echo
+disabled; it is scored evidence, not a long-lived session. No screenshot is taken.
+The driver powers off when the challenge and required boot stages finish.
+
+<!-- claim-lint:ok: wait boundary checked in tests/metal_attended_test.py. -->
+You have **30 minutes from kernel handoff** by default. `--wait MIN` changes this
+wait (positive minutes, up to 240; fractions allow short unattended timeout checks).
+If nobody types, or the challenge is incomplete, the driver records the missing
+stages and powers off at the deadline. To cancel sooner, run `metal-run stop ID`
+on the configured boot host, using the ID printed when the boot started. To stay
+logged in for ordinary use, request a separate `--session` boot after this proof.
 
 ## Redaction
 

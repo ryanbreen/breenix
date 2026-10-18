@@ -62,7 +62,13 @@ impl Console {
 
     /// Offer retained bytes to TTY 0. True while some remain queued.
     pub fn flush(&mut self) -> bool {
-        let taken = self.queue.drain(&mut crate::tty::push_char_nonblock);
+        let taken = self.queue.drain(&mut |byte| {
+            crate::tty::push_char_nonblock_from(byte, crate::tty::InputSource::UsbKeyboard)
+        });
+        // Report from the xHCI worker after TTY admission.
+        if taken != 0 {
+            if let Some(tty) = crate::tty::console() { tty.report_first_usb(); }
+        }
         if taken != 0 && !self.first_typed {
             self.first_typed = true;
             log::info!("[hid] typed into the console tty: {} bytes", taken);

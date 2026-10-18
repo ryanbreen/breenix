@@ -1,5 +1,7 @@
 """Score the milestones measurable by one boot shape, using that boot's definition."""
+import copy
 import json
+import metal_attended
 from pathlib import Path
 
 
@@ -12,6 +14,19 @@ def measures(milestone, shape):
     return shape in milestone.get('bootShapes', ['ramdisk'])
 
 
+def attended_definition(definition):
+    """Online waits cover kernel/USB producers; Challenge covers console order."""
+    definition = copy.deepcopy(definition)
+    for milestone in definition['milestones']:
+        if milestone['id'] == 'console-login':
+            milestone['stages']['console'] = []
+        elif milestone['id'] == 'usb-keyboard':
+            for stage in milestone['stages']['console']:
+                if stage['name'] == 'Keys reached the console TTY':
+                    stage.update(marker='[console] first input byte input=keyboard', match='line', input='keyboard')
+    return definition
+
+
 def score(directory):
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
@@ -19,6 +34,9 @@ def score(directory):
     if run.get('kind') == 'console-session':
         raise ValueError('operator console sessions are never scored')
     definition = read('definition/docs/metal/boot-path.json')
+    attended = run.get('attended', False)
+    if attended:
+        definition = attended_definition(definition)
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
     run = read('run.json')
@@ -30,6 +48,12 @@ def score(directory):
     results = {}
     for milestone in definition['milestones']:
         if milestone.get('stub') or not measures(milestone, shape):
+            continue
+        if attended and milestone['id'] == 'console-login':
+            challenge = metal_attended.Challenge()
+            for line in lines:
+                challenge.feed(line)
+            results[milestone['id']] = challenge.verdict()
             continue
         lists = milestone['stages']
         stages = lists.get(run['mode'], lists.get(definition['gateArch'], []) if milestone.get('kernel') else [])

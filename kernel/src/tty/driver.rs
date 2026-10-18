@@ -192,6 +192,7 @@ pub struct TtyDevice {
 
     /// Line discipline for input processing
     ldisc: Mutex<LineDiscipline>,
+    input_sources: super::input_source::InputSources,
 
     /// Foreground process group ID
     /// Signals (SIGINT, SIGQUIT, SIGTSTP) are sent to this group
@@ -237,6 +238,7 @@ impl TtyDevice {
         Self {
             num,
             ldisc: Mutex::new(LineDiscipline::new()),
+            input_sources: super::input_source::InputSources::new(),
             foreground_pgrp: Mutex::new(None),
             session: Mutex::new(None),
             adopt_pending: AtomicBool::new(false),
@@ -256,13 +258,13 @@ impl TtyDevice {
     /// - Echo it back to the terminal
     ///
     /// This method acquires locks and should not be called from interrupt context
-    /// without care. For interrupt context, use `input_char_nonblock`.
-    #[allow(dead_code)] // Used by push_char in keyboard_task (conditionally compiled)
-    pub fn input_char(&self, c: u8) {
+    /// without care. For interrupt context, use `input_char_nonblock_from`.
+    pub fn input_char_from(&self, c: u8, source: super::InputSource) {
         if self.num == 0 {
             super::input_clock::record_input();
         }
         let mut ldisc = self.ldisc.lock();
+        self.input_sources.record(source);
 
         // Process the character through the line discipline
         // The echo callback writes to serial output
@@ -323,8 +325,7 @@ impl TtyDevice {
     /// (`adopt_deferred_foreground_pgrp`, driven from the stdin read path),
     /// where the reader's own pid is already in hand. The scope below makes a
     /// reintroduction fail loudly rather than silently.
-    #[allow(dead_code)]
-    pub fn input_char_nonblock(&self, c: u8) -> bool {
+    pub fn input_char_nonblock_from(&self, c: u8, source: super::InputSource) -> bool {
         if self.num == 0 {
             super::input_clock::record_input();
         }
@@ -348,6 +349,8 @@ impl TtyDevice {
             Some(guard) => guard,
             None => return false,
         };
+
+        self.input_sources.record(source);
 
         // Process the character through line discipline (echo, signals, line editing)
         let attrs = *ldisc.termios();
@@ -620,6 +623,32 @@ impl TtyDevice {
     pub fn flush_input(&self) {
         self.ldisc.lock().flush_input();
         crate::ipc::stdin::flush_input();
+    }
+
+    /// Thread-context reporting; the IRQ input path only updates source bits.
+    pub fn report_first_usb(&self) {
+        if self.num == 0 && self.input_sources.take_first_usb() {
+            crate::serial_println!("\n[console] first input byte input=keyboard");
+        }
+    }
+
+    pub fn input_proof(&self, action: u64) -> Result<i32, i32> {
+        if self.num != 0 || action > 2 { return Err(22); }
+        let mut ldisc = self.ldisc.lock();
+        let (event, keyboard) = if action == 0 {
+            ldisc.flush_input();
+            crate::ipc::stdin::flush_input();
+            ("session ended", self.input_sources.begin())
+        } else {
+            (if action == 1 { "login refused" } else { "login accepted" },
+             Some(self.input_sources.authenticate(action == 2)))
+        };
+        drop(ldisc);
+        self.report_first_usb();
+        if let Some(keyboard) = keyboard {
+            crate::serial_println!("\n[console] {} input={}", event, if keyboard { "keyboard" } else { "other" });
+        }
+        Ok(0)
     }
 
     fn transmission_stopped(&self) -> bool {
@@ -1109,8 +1138,12 @@ pub fn console() -> Option<Arc<TtyDevice>> {
 /// It processes the character through the line discipline.
 #[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
 pub fn push_char(c: u8) {
+    push_char_from(c, super::InputSource::Other);
+}
+
+pub fn push_char_from(c: u8, source: super::InputSource) {
     if let Some(tty) = console() {
-        tty.input_char(c);
+        tty.input_char_from(c, source);
     }
 }
 
@@ -1161,12 +1194,16 @@ pub fn write_unprocessed(buf: &[u8]) {
 /// Used by keyboard interrupt handler when routing through TTY from ISR.
 #[allow(dead_code)]
 pub fn push_char_nonblock(c: u8) -> bool {
+    push_char_nonblock_from(c, super::InputSource::Other)
+}
+
+pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
     // Try to get console without blocking
     if let Some(guard) = CONSOLE_TTY.try_lock() {
         if let Some(ref tty) = *guard {
             let tty = Arc::clone(tty);
             drop(guard);
-            return tty.input_char_nonblock(c);
+            return tty.input_char_nonblock_from(c, source);
         }
     }
     false

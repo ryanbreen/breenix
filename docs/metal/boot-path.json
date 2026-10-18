@@ -487,8 +487,8 @@
     {
       "id": "usb-keyboard",
       "title": "USB keyboard into the console",
-      "summary": "Clean-room HID boot keyboard: configured, polled, detached and reattached on console boots; typed keys unmeasured.",
-      "stub": true,
+      "summary": "Clean-room HID boot keyboard; attended boots measure typed stages from kernel USB input provenance (M8).",
+      "stub": false,
       "bootShapes": [
         "ramdisk",
         "install",
@@ -515,17 +515,18 @@
           },
           {
             "name": "Keys reached the console TTY",
-            "marker": "[hid] typed into the console tty: ",
-            "input": "keyboard"
+            "marker": "[console] first input byte input=keyboard",
+            "input": "keyboard",
+            "match": "line"
           }
         ]
       },
-      "waitingFor": "Keystrokes through the USB keystroke injector (ruling M2)."
+      "waitingFor": "An attended USB keyboard challenge; no successful human-typed boot has been measured yet."
     },
     {
       "id": "console-login",
       "title": "Login at the machine's own console",
-      "summary": "SOL development exercises authentication and console reacquisition; local keyboard and screen proof remain unmeasured.",
+      "summary": "Attended boots require the ordered USB-only authentication, computation and logout challenge (M8); SOL remains development input.",
       "bootShapes": [
         "ramdisk",
         "install",
@@ -566,8 +567,48 @@
           }
         ]
       },
-      "waitingFor": "Keyboard typing through the injector (ruling M2) and screen readback from the framebuffer lane.",
-      "stub": true
+      "waitingFor": "An attended USB keyboard challenge; no successful human-typed boot has been measured yet.",
+      "stub": false,
+      "attendedStages": [
+        {
+          "name": "Getty on the console",
+          "marker": "[init] getty on the console",
+          "match": "line"
+        },
+        {
+          "name": "Login prompt",
+          "marker": "Breenix login: "
+        },
+        {
+          "name": "Wrong password refused",
+          "marker": "[console] login refused input=keyboard",
+          "match": "line"
+        },
+        {
+          "name": "USB keyboard login accepted",
+          "marker": "[console] login accepted input=keyboard",
+          "match": "line"
+        },
+        {
+          "name": "Logged-in computation answered",
+          "marker": "metal-console-ok 42",
+          "match": "line"
+        },
+        {
+          "name": "USB keyboard session ended",
+          "marker": "[console] session ended input=keyboard",
+          "match": "line"
+        },
+        {
+          "name": "Getty reacquired the console after logout",
+          "marker": "[getty] console acquired",
+          "match": "line"
+        },
+        {
+          "name": "Login prompt after logout",
+          "marker": "Breenix login: "
+        }
+      ]
     }
   ],
   "firsts": [

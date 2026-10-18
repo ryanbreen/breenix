@@ -17,6 +17,9 @@ use alloc::sync::Arc;
 // ioctl Request Codes (matching Linux/libbreenix values)
 // =============================================================================
 
+/// Breenix console source window: begin (0), authentication refused (1), accepted (2).
+pub const CONSOLE_INPUT_PROOF: u64 = 0x425201;
+
 /// Get termios structure
 pub const TCGETS: u64 = 0x5401;
 /// Drain output or transmit a break.
@@ -363,6 +366,7 @@ fn pty_termios_ioctl(
 /// * `Err(errno)` on failure
 pub fn tty_ioctl(tty: &Arc<TtyDevice>, request: u64, arg: u64) -> Result<i32, i32> {
     match request {
+        CONSOLE_INPUT_PROOF => tty.input_proof(arg),
         TCGETS => {
             handle_tcgets(tty, arg)?;
             Ok(0)

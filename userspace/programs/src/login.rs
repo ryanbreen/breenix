@@ -64,6 +64,7 @@ fn run() -> Result<(), String> {
     drop(secret);
     if !accepted {
         check(libbreenix::time::sleep_ms(2000))?;
+        check(termios::console_input_proof(Fd::STDIN, 1))?;
         check(std::io::stdout().write_all(b"Login incorrect\n"))?;
         return Ok(());
     }
@@ -88,6 +89,7 @@ fn run() -> Result<(), String> {
     check(process::chdir(home.as_bytes_with_nul()))?;
     let arg0 = check(CString::new(format!("-{}", fields[6].rsplit('/').next().ok_or("invalid shell")?)))?;
     let argv = [arg0.as_ptr().cast(), core::ptr::null()];
+    check(termios::console_input_proof(Fd::STDIN, 2))?;
     check(process::execve(shell.as_bytes_with_nul(), argv.as_ptr(), envp.as_ptr()))?;
     Ok(())
 }
