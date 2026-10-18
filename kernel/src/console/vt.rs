@@ -120,6 +120,9 @@ impl Vt {
 enum Phase {
     /// Waiting for the `VT_PROCESS` owner of `from` to release it.
     Releasing { deadline: u64 },
+    /// The owner of `from` released it while the previous switch's read-back
+    /// was pending: the acquiring step starts once that verdict is recorded.
+    Released,
     /// `to` is in the foreground; waiting for its frame (`drawn`) and its
     /// `VT_PROCESS` owner's acknowledgement (`answered`).
     Acquiring { epoch: u64, drawn: bool, answered: bool, deadline: u64 },
@@ -278,7 +281,10 @@ impl Terminals<'_> {
         if to >= VT_COUNT {
             return Err(ENXIO);
         }
-        if self.sw.check.is_some() {
+        // The previous switch's read-back holds the displayed frame. A release
+        // leaves the foreground as it is, so it is asked for at once; any
+        // other request waits for the verdict.
+        if self.sw.check.is_some() && !self.releases_first(to) {
             self.sw.next = Some((to, source));
             return Ok(());
         }
@@ -297,11 +303,19 @@ impl Terminals<'_> {
                     pending.to = to;
                     pending.source = source;
                 }
-                Phase::Acquiring { .. } => self.sw.next = Some((to, source)),
+                Phase::Acquiring { .. } | Phase::Released => self.sw.next = Some((to, source)),
             },
             None => self.start(to, source, effects)?,
         }
         Ok(())
+    }
+
+    /// A request that would start by asking the foreground terminal's
+    /// `VT_PROCESS` owner to release it, or that acts on a switch pending.
+    fn releases_first(&self, to: usize) -> bool {
+        let fg = self.sw.fg;
+        self.sw.pending.is_some()
+            || (to != fg && to < VT_COUNT && !self.display_owned_auto() && self.vts[fg].process.is_some())
     }
 
     /// A request with no switch pending.
@@ -329,6 +343,10 @@ impl Terminals<'_> {
     /// drawn by the render thread unless it is in `KD_GRAPHICS`, and its
     /// `VT_PROCESS` owner is told with `acqsig`.
     fn acquire(&mut self, from: usize, to: usize, source: Source, effects: &mut Effects) {
+        if self.sw.check.is_some() {
+            self.sw.pending = Some(Pending { from, to, source, phase: Phase::Released });
+            return;
+        }
         self.sw.acquired = false;
         self.sw.epoch = self.sw.epoch.wrapping_add(1);
         let text = self.vts[to].graphics.is_none();
@@ -514,6 +532,10 @@ impl Terminals<'_> {
             return;
         }
         self.sw.check = None;
+        if let Some(Pending { from, to, source, phase: Phase::Released }) = self.sw.pending {
+            self.acquire(from, to, source, effects);
+            return;
+        }
         if let Some((to, source)) = self.sw.next.take() {
             let _ = self.request(to, source, effects);
         }
