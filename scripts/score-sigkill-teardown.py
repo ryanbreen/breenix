@@ -23,6 +23,15 @@ stalled on a lock, so a candidate needs evidence the guest cannot fake:
   for at least the time by which the window exceeded one tick. No record, or
   one that does not cover the window, fails it.
 
+A host stall rarely leaves a guest-checked window tickless and unmasked: each
+CPU takes its overdue tick first when the stall ends, and a CPU stopped inside
+a masked section reads as masked. So a guest-checked window of a tick or more
+is also starved when one CPU spent `held` counter ticks of it with interrupts
+enabled and its tick due but not taken, at least `held_needed`: more than the
+window's excess over one tick and at least half a tick. The guest cannot hold
+an enabled, running CPU off a due tick. Any other window of a tick or more
+fails.
+
 Every printed verdict is recomputed from its own numbers, so a mislabeled
 line fails.
 """
@@ -42,26 +51,37 @@ WINDOW = re.compile(
     r" observer_ticks=(?P<observer_ticks>\d+) all_ticks=(?P<all_ticks>\d+) online_cpus=(?P<online_cpus>\d+)"
     r" observer_ms_per_tick=\S+ all_ms_per_tick=\S+ starved_ms_per_tick=(?P<limit>\d+)"
     r" kick_at=(?P<at>\d+) observer_vcpu=(?P<observer_vcpu>\d+) sender_vcpu=(?P<sender_vcpu>\d+)"
-    r" masked_cpus=(?P<masked_cpus>\d+) starvation_check=(?P<check>guest|host)"
-    r" verdict=(?P<verdict>pass|STARVED|fail)$"
+    r" masked_cpus=(?P<masked_cpus>\d+) held=(?P<held>\d+) held_cpu=(?P<held_cpu>\d+)"
+    r" held_needed=(?P<held_needed>\d+) starved_by=(?P<starved_by>ticks|held|none)"
+    r" starvation_check=(?P<check>guest|host) verdict=(?P<verdict>pass|STARVED|fail)$"
 )
 RUN_STARVED = re.compile(r"SIGKILL_TEARDOWN_TEST: STARVED windows=(\d+):")
 
 
-def verdict(interval, tick_period, rate, observer_ticks, all_ticks, online_cpus, check="host", masked_cpus=0):
-    """The test's own verdict for a window (kick_verdict in the test)."""
-    if interval == 0:
-        return "fail"
+def held_needed(interval, tick_period):
+    """The held time that makes a window of a tick or more starved
+    (held_needed in the test); 0 under one tick."""
     if interval < tick_period:
-        return "pass"
+        return 0
+    return max(interval - tick_period + 1, tick_period // 2)
+
+
+def verdict(interval, tick_period, rate, observer_ticks, all_ticks, online_cpus, check="host", masked_cpus=0,
+            held=0):
+    """The test's own verdict for a window and the evidence a STARVED one used,
+    `ticks`, `held` or `none` (kick_verdict in the test)."""
+    if interval == 0:
+        return "fail", "none"
+    if interval < tick_period:
+        return "pass", "none"
     interval_ns = interval * 1_000_000 // rate
     observer_starved = interval_ns > STARVED_NS_PER_TICK * observer_ticks
     all_starved = interval_ns * online_cpus > STARVED_NS_PER_TICK * all_ticks
-    if not (observer_starved and all_starved):
-        return "fail"
-    if check == "guest" and (all_ticks != 0 or masked_cpus != 0):
-        return "fail"
-    return "STARVED"
+    if observer_starved and all_starved and (check != "guest" or (all_ticks == 0 and masked_cpus == 0)):
+        return "STARVED", "ticks"
+    if check == "guest" and held >= held_needed(interval, tick_period):
+        return "STARVED", "held"
+    return "fail", "none"
 
 
 def load_host_record(path):
@@ -213,11 +233,15 @@ def score(text, host_record=None):
         if window["kick_cpu"] == window["sender_cpu"] or int(window["rate"]) == 0 \
                 or int(window["tick_period"]) == 0:
             return 1, f"sigkill teardown: FAIL: invalid window: {line.strip()}"
-        expected = verdict(int(window["interval"]), int(window["tick_period"]), int(window["rate"]),
-                           int(window["observer_ticks"]), int(window["all_ticks"]),
-                           int(window["online_cpus"]), window["check"], int(window["masked_cpus"]))
-        if window["verdict"] != expected:
-            return 1, f"sigkill teardown: FAIL: verdict {window['verdict']} does not match its numbers ({expected})"
+        expected, starved_by = verdict(int(window["interval"]), int(window["tick_period"]), int(window["rate"]),
+                                       int(window["observer_ticks"]), int(window["all_ticks"]),
+                                       int(window["online_cpus"]), window["check"], int(window["masked_cpus"]),
+                                       int(window["held"]))
+        if window["verdict"] != expected or window["starved_by"] != starved_by:
+            return 1, (f"sigkill teardown: FAIL: verdict {window['verdict']} by {window['starved_by']}"
+                       f" does not match its numbers ({expected} by {starved_by})")
+        if int(window["held_needed"]) != held_needed(int(window["interval"]), int(window["tick_period"])):
+            return 1, f"sigkill teardown: FAIL: held_needed does not match its numbers: {line.strip()}"
         if expected == "fail":
             return 1, f"sigkill teardown: FAIL: {line.strip()}"
         if expected == "STARVED" and window["check"] == "host":

@@ -281,7 +281,7 @@ pub fn generate_teardown_pid(pid: u64) -> String {
         #[cfg(target_arch = "aarch64")]
         let vcpu = |cpu: u64| cpu;
         return format!(
-            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\nkick_at: {}\nkick_ticks: {}\nkick_all_ticks: {}\nmasked_accounting: {}\nkick_masked_cpus: {}\nkick_cpu: {}\nkick_sender_cpu: {}\nkick_vcpu: {}\nkick_sender_vcpu: {}\ncounter_ticks_per_ms: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
+            "online_cpus: {}\npid: {}\ndefer: {}\nreclaim: {}\nquarantine: {}\nsgi_sent: {}\nkick_observed: {}\nkick_interval: {}\nkick_at: {}\nkick_ticks: {}\nkick_all_ticks: {}\nmasked_accounting: {}\nkick_masked_cpus: {}\nkick_held: {}\nkick_held_cpu: {}\nkick_cpu: {}\nkick_sender_cpu: {}\nkick_vcpu: {}\nkick_sender_vcpu: {}\ncounter_ticks_per_ms: {}\ntick_period: {}\nmasked_frames_walked: {}\nreport: {}\nbucket_published: {}\nbucket_observed: {}\nbucket_collision: {}\n",
             crate::task::scheduler::online_cpus(),
             pid,
             evidence.defer_count,
@@ -295,6 +295,8 @@ pub fn generate_teardown_pid(pid: u64) -> String {
             evidence.kick_observed_all_ticks,
             u64::from(crate::tracing::providers::teardown::MASKED_ACCOUNTING),
             evidence.kick_observed_masked_cpus,
+            evidence.kick_observed_held,
+            evidence.kick_observed_held_cpu,
             evidence.kick_observed_cpu,
             evidence.kick_sender_cpu,
             vcpu(evidence.kick_observed_cpu),
