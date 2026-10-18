@@ -38,6 +38,10 @@ pub mod scheduler;
 // the aarch64 dispatch path in every profile, and compile to empty inline
 // no-ops without `percpu_stack_custody_oracle`.
 pub mod percpu_stack_oracle;
+/// Ruling S26's busy-machine reclamation leg. Boot-tests only: it pins a
+/// CPU-bound thread to each online CPU and lets only the reclaim daemon drain.
+#[cfg(feature = "boot_tests")]
+pub mod reclaim_busy_oracle;
 #[cfg(feature = "boot_tests")]
 pub mod ret_zero_pc_oracle;
 #[cfg(feature = "boot_tests")]
@@ -46,10 +50,6 @@ pub mod strand_oracle;
 /// CPU-bound on purpose, which is not something a shipped kernel should do.
 #[cfg(feature = "boot_tests")]
 pub mod timer_wake_oracle;
-/// Ruling S26's busy-machine reclamation leg. Boot-tests only: it pins a
-/// CPU-bound thread to each online CPU and lets only the reclaim daemon drain.
-#[cfg(feature = "boot_tests")]
-pub mod reclaim_busy_oracle;
 
 // Kernel threads and workqueues - work on both x86_64 and aarch64
 // Uses architecture-independent types and conditional interrupt control

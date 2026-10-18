@@ -54,7 +54,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::serial_println;
-use crate::task::kthread::{kthread_join, kthread_park, kthread_run, kthread_run_on_cpu, kthread_unpark};
+use crate::task::kthread::{
+    kthread_join, kthread_park, kthread_run, kthread_run_on_cpu, kthread_unpark,
+};
 use crate::task::process_task::{self, BootReclaimWatch};
 use crate::task::scheduler;
 use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt_with_interrupts};
@@ -137,7 +139,7 @@ fn spinner_body(cpu: usize) {
 }
 
 /// Retire `pid`'s row the way an exit's defer arm does and queue its receipt.
-fn retire_row(pid: crate::process::ProcessId) -> Result<(), &'static str> {
+fn retire_through_exit_path(pid: crate::process::ProcessId) -> Result<(), &'static str> {
     // Removed rows are dropped after the process-manager guard.
     let mut removed = Vec::new();
     let reclaim = {
@@ -158,7 +160,10 @@ fn retire_row(pid: crate::process::ProcessId) -> Result<(), &'static str> {
 /// The leader's root and address-space lifetime.
 fn address_space_of(
     pid: crate::process::ProcessId,
-) -> Option<(u64, alloc::sync::Arc<crate::process::process::AddressSpaceLifetime>)> {
+) -> Option<(
+    u64,
+    alloc::sync::Arc<crate::process::process::AddressSpaceLifetime>,
+)> {
     let manager_guard = crate::process::manager();
     let row = manager_guard.as_ref()?.get_process(pid)?;
     Some((
@@ -188,8 +193,11 @@ fn insert_clone_vm_member(
     let manager = manager_guard.as_mut()?;
     let pid = manager.allocate_pid();
     let name = "reclaim_busy_member";
-    let mut process =
-        crate::process::Process::new(pid, alloc::string::String::from(name), VirtAddr::new(0x0040_0000));
+    let mut process = crate::process::Process::new(
+        pid,
+        alloc::string::String::from(name),
+        VirtAddr::new(0x0040_0000),
+    );
     let mut thread = crate::task::thread::Thread::new(
         alloc::string::String::from(name),
         member_entry,
@@ -339,7 +347,7 @@ fn run_coordinator() {
     let member = address_space_of(leader)
         .and_then(|(root, lifetime)| insert_clone_vm_member(root, &lifetime));
     let Some(member) = member else {
-        let _ = retire_row(leader);
+        let _ = retire_through_exit_path(leader);
         verdict.reason = ":reason=member_create_failed";
         emit(&verdict);
         return;
@@ -384,7 +392,7 @@ fn run_coordinator() {
         core::array::from_fn(|cpu| SPINS[cpu].load(Ordering::Relaxed));
     let passes_before = process_task::boot_reclaim_daemon_passes();
     let retired_at_start = now_ns();
-    let member_retired = retire_row(member);
+    let member_retired = retire_through_exit_path(member);
     if member_retired.is_ok() {
         wait_until(
             || process_task::boot_reclaim_watch_state() != BootReclaimWatch::Pending,
@@ -410,7 +418,7 @@ fn run_coordinator() {
     // Leave both receipts retired for the boot tests that follow: the
     // leader's receipt, which holds its root, retires once the member's row is
     // gone.
-    let leader_retired = retire_row(leader);
+    let leader_retired = retire_through_exit_path(leader);
     verdict.cleaned = member_retired.is_ok()
         && leader_retired.is_ok()
         && wait_until(
