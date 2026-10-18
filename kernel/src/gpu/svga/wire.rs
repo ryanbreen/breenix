@@ -85,7 +85,7 @@ pub mod cmd {
     pub const DESTROY_SCREEN: u32 = 1125;
     pub const BIND_SCREEN: u32 = 1126;
     pub const UPDATE_SCREEN: u32 = 1127;
-    pub const SCREEN_DMA: u32 = 1131;
+    pub const GB_SCREEN_DMA: u32 = 1131;
     pub const NOP_ERROR: u32 = 1137;
     pub const DEFINE_CONTEXT: u32 = 1143;
     pub const DESTROY_CONTEXT: u32 = 1144;

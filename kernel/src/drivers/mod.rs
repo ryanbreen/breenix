@@ -296,9 +296,23 @@ pub fn init() -> usize {
             }
         }
 
-        // The GPU effort owns VMware's device through its clean-room command path.
-        if crate::platform_config::is_vmware() {
+        // Device-layer experiments must not displace the working desktop by default.
+        if crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
             crate::gpu::init_vmware();
+        } else {
+            // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
+            match vmware::svga3::init() {
+                Ok(()) => {
+                    serial_println!("[drivers] VMware SVGA3 GPU initialized");
+                    // SVGA3 with VRAM traces provides GPU-level compositing:
+                    // BWM writes pixels to VRAM, device monitors and updates display.
+                    crate::graphics::set_compositor_backend(
+                        crate::graphics::CompositorBackend::Svga3Stdu,
+                    );
+                    serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
+                }
+                Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
+            }
         }
 
         // EHCI USB 2.0 controller — initialization is handled inside xhci::init()

@@ -35,7 +35,8 @@ pub struct Completion {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Error {
-    Missing(&'static str),
+    NoDevice,
+    Missing(u32),
     Refused(Completion),
     Timeout,
     InvalidCommand,
@@ -90,15 +91,16 @@ pub struct Profile {
 }
 
 impl Profile {
-    pub fn missing(&self) -> Option<&'static str> {
+    pub fn missing(&self) -> Option<u32> {
+        use gpu_abi::capability as abi;
         use wire::cap::*;
-        if self.dx == 0 { Some("missing dx-context") }
-        else if self.bgra & (SUPPORTED | RENDER) != SUPPORTED | RENDER { Some("missing b8g8r8a8-render") }
-        else if self.bgra & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some("missing b8g8r8a8-sample") }
-        else if self.rgba & (SUPPORTED | RENDER) != SUPPORTED | RENDER { Some("missing r8g8b8a8-render") }
-        else if self.rgba & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some("missing r8g8b8a8-sample") }
-        else if self.r8 & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some("missing r8-sample") }
-        else if self.width < 2560 || self.height < 2560 || self.screen_width < 2560 || self.screen_height < 1600 { Some("missing target-size") }
+        if self.dx == 0 { Some(abi::FEATURE_3D) }
+        else if self.bgra & (SUPPORTED | RENDER) != SUPPORTED | RENDER { Some(abi::BGRA_RENDER) }
+        else if self.bgra & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some(abi::BGRA_SAMPLE) }
+        else if self.rgba & (SUPPORTED | RENDER) != SUPPORTED | RENDER { Some(abi::RGBA_RENDER) }
+        else if self.rgba & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some(abi::RGBA_SAMPLE) }
+        else if self.r8 & (SUPPORTED | SAMPLE) != SUPPORTED | SAMPLE { Some(abi::R8_SAMPLE) }
+        else if self.width < 2560 || self.height < 2560 || self.screen_width < 2560 || self.screen_height < 1600 { Some(abi::TARGET_SIZE) }
         else { None }
     }
 }
@@ -116,10 +118,10 @@ pub struct Device {
 
 impl Device {
     pub fn probe() -> Result<Self, Error> {
-        if !crate::platform_config::is_vmware() { return Err(Error::Missing("not an SVGA3 platform")); }
-        let pci = pci::find_device(wire::VENDOR, wire::DEVICE).ok_or(Error::Missing("no SVGA3 PCI device"))?;
+        if !crate::platform_config::is_vmware() { return Err(Error::NoDevice); }
+        let pci = pci::find_device(wire::VENDOR, wire::DEVICE).ok_or(Error::NoDevice)?;
         let bar = pci.bars[0];
-        if bar.is_io || bar.address == 0 || bar.size < 4 * 85 { return Err(Error::Missing("no SVGA3 register BAR")); }
+        if bar.is_io || bar.address == 0 || bar.size < 4 * 85 { return Err(Error::DeviceFault); }
         pci.enable_memory_space();
         pci.enable_bus_master();
         let registers = crate::memory::physical_memory_offset().as_u64() + bar.address;
@@ -129,10 +131,10 @@ impl Device {
             pending: VecDeque::new(), tables: Vec::new(), next_id: 1, stopped: true,
         };
         dev.write(wire::reg::ID, wire::ID_3);
-        if dev.read(wire::reg::ID) != wire::ID_3 { return Err(Error::Missing("SVGA3 version refused")); }
+        if dev.read(wire::reg::ID) != wire::ID_3 { return Err(Error::DeviceFault); }
         let caps = dev.read(wire::reg::CAPABILITIES);
-        if caps & wire::COMMAND_BUFFERS == 0 { return Err(Error::Missing("missing command-buffers")); }
-        if caps & wire::GB_OBJECTS == 0 { return Err(Error::Missing("missing guest-backed-objects")); }
+        if caps & wire::COMMAND_BUFFERS == 0 { return Err(Error::Missing(gpu_abi::capability::CAPABILITY_SET)); }
+        if caps & wire::GB_OBJECTS == 0 { return Err(Error::Missing(gpu_abi::capability::CAPABILITY_SET)); }
         use wire::cap;
         dev.profile = Profile {
             dx: dev.cap(cap::DX_CONTEXT), bgra: dev.cap(cap::BGRA), rgba: dev.cap(cap::RGBA), r8: dev.cap(cap::R8),
@@ -170,6 +172,8 @@ impl Device {
     fn issue(&self, submission: &Submission, queue: u32) {
         submission.publish();
         let address = submission.header.addr();
+        assert_eq!(address & 63, 0, "SVGA command header alignment");
+        assert!(queue <= 63, "SVGA queue selector");
         self.write(wire::reg::COMMAND_HIGH, (address >> 32) as u32);
         self.write(wire::reg::COMMAND_LOW, address as u32 | queue);
     }
@@ -191,7 +195,7 @@ impl Device {
         // A surface needs its own MOB, as do context state, shaders and cotables.
         let contexts = self.profile.contexts.min(256) as usize;
         let surfaces = self.profile.surfaces.min(32 * 1024) as usize;
-        if contexts == 0 || surfaces < 256 { return Err(Error::Missing("missing object-table capacity")); }
+        if contexts == 0 || surfaces < 256 { return Err(Error::DeviceFault); }
         // Per DX context: state (1), cotables (7), catalogue shaders (17*2), and
         // vertex, constant and fence MOBs (3); one MOB per surface.
         let capacities = [surfaces + contexts * (1 + 7 + 17 * 2 + 3), surfaces, 1, 1, 1, contexts];
@@ -211,7 +215,8 @@ impl Device {
     }
 
     /// Initialization only. Runtime waits belong to the GPU worker and its watchdog.
-    pub fn exec_init(&mut self, context: Option<u32>, words: &[u32]) -> Result<Completion, Error> {
+    fn exec_init(&mut self, context: Option<u32>, words: &[u32]) -> Result<Completion, Error> {
+        if !self.pending.is_empty() { return Err(Error::InvalidCommand); }
         let submission = Submission::new(self.take_id(), context, words)?;
         self.send(submission).map_err(|_| Error::DeviceFault)?;
         let start = crate::signal::monotonic_nanos();

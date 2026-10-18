@@ -426,11 +426,21 @@ pub fn init_vmware() {
         }
         Err(error) => {
             crate::serial_println!("[gpu] SVGA3 initialization refused: {:?}", error);
-            core.status = abi::status::DEVICE_FAILED;
-            core.reason = match error {
-                svga::Error::Missing(reason) => reason,
-                _ => "SVGA3 command path initialization failed",
-            };
+            match error {
+                svga::Error::NoDevice => {
+                    core.status = abi::status::NO_DEVICE;
+                    core.reason = "no SVGA3 PCI device";
+                }
+                svga::Error::Missing(id) => {
+                    core.status = abi::status::MISSING_CAPABILITY;
+                    core.caps.missing = id;
+                    core.reason = capability::name(id);
+                }
+                _ => {
+                    core.status = abi::status::DEVICE_FAILED;
+                    core.reason = "SVGA3 command path initialization failed";
+                }
+            }
         }
     }
     *CORE.lock() = Some(core);

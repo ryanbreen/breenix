@@ -24,6 +24,8 @@ path = "src/lib.rs"
 test = false
 
 [features]
+# Explicit device-layer opt-in; displaces the legacy VMware desktop without DX rendering.
+gpu_svga_experimental = []
 force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
 testing = []
 boot_tests = []  # Parallel boot test framework

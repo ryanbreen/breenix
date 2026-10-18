@@ -997,8 +997,9 @@ not references to surrounding driver implementations.
 | SET_OTABLE_BASE64: type, u64 base page number, byte size, valid byte size, page-tree depth | C:1097–1104; command id C:128 |
 | DEFINE_GB_MOB64: id, depth, u64 base page number, byte size; DESTROY_GB_MOB | C:1124–1144; ids C:103,155 |
 | Version-1 DEFINE_GB_SURFACE, BIND/DESTROY/UPDATE/READBACK_GB_SURFACE | C:1163–1171,1220–1229,1260–1274; ids C:105–115 |
-| DX_DEFINE/BIND/DESTROY_CONTEXT; DX_SET_COTABLE | D:139–157,1555–1560; ids C:163–166,230 |
-| Screen definition, binding and update; SURFACE_COPY image ids and copy box | C:1416–1446, surface-copy structure; T:78–88; ids C:48,143–146 |
+| DX_DEFINE/BIND/DESTROY_CONTEXT; DX_SET_COTABLE | D:139–157,1555–1560; ids C:166–168,230 |
+| Screen definition, binding and update; SURFACE_COPY image ids and copy box | C:1416–1446, surface-copy structure; T:78–88; ids C:48,141–144 |
+| GB_SCREEN_DMA 1131; NOP_ERROR 1137; DX_DRAW 1152 | C:151,157,175 |
 | DX_MOB_FENCE_64 u64 value, MOB id, byte offset | D:1547–1551; id C:239 |
 | Header bounds of 256 contexts and 32,768 surfaces | L:38–39 |
 
@@ -1019,3 +1020,9 @@ and 1427–1433 (shader, 32). View capacities are Breenix resource quota 256 plu
 three backend scratch views; shader capacity is the 17-pipeline catalogue times
 two stages. Single fixed-state objects each have one slot. Context and surface
 objects keep their MOB trees independently of command-buffer storage.
+
+The device layer is selected only by the explicit `gpu_svga_experimental` kernel
+feature. Default boots retain the existing VMware compositor and allocate no
+SVGA core tables. The experimental path has no firmware hand-back on failed
+initialization; it retains ambiguous DMA allocations and must not be used as
+a desktop replacement (#1817). Hardware acceptance remains blocked by #1814.
