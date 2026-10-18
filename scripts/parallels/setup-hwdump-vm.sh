@@ -52,6 +52,9 @@ prlctl set "$VM_NAME" --memsize 2048
 # Ensure EFI boot is on (should be default for ARM64)
 prlctl set "$VM_NAME" --efi-boot on
 
+# Disable app sharing so the VM does not register a VM.app bundle with LaunchServices
+prlctl set "$VM_NAME" --sh-app-guest-to-host off --sh-app-host-to-guest off 2>/dev/null || true
+
 # Add a small disk for the OS install
 prlctl set "$VM_NAME" --device-add hdd --type plain --size 8192
 

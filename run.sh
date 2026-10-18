@@ -896,6 +896,9 @@ if [ "$PARALLELS" = true ]; then
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
     prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
+    # Disable app sharing: with it on, every fresh VM registers a VM.app bundle with
+    # LaunchServices, and each registration makes siriactionsd re-index App Intents.
+    prlctl set "$PARALLELS_VM" --sh-app-guest-to-host off --sh-app-host-to-guest off 2>/dev/null || true
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
