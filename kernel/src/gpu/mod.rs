@@ -13,7 +13,7 @@
 //!
 //! `CONTEXT_CREATE` sends only the context's fixed state; `kgpu` warms the fixed rendering
 //! catalogue afterwards, one pipeline per step and one step on the device at a time, and
-//! after a fixed initial grace per context, so creation and other requests wait behind
+//! after a process-local grace for successful creations, so other requests wait behind
 //! at most one step. A draw whose pipeline has not warmed creates its programs in its
 //! own submission and waits for no other pipeline (ruling 33, #1725).
 //!
@@ -76,8 +76,8 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
-/// Initial grace after a context becomes live. Later creations cannot extend it: a
-/// process creating resources must not starve another context's catalogue warm-up.
+/// Grace after a successful creation, applied only to that process's contexts. Failed
+/// requests and other processes cannot postpone a context's catalogue warm-up.
 const WARM_GRACE_NS: u64 = 20_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
@@ -205,7 +205,7 @@ struct Ctx {
     /// The rendering pipelines whose warm-up step completed, one bit each
     /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
     warm: u32,
-    /// Fixed deadline for the initial warm-up grace, set when the context becomes live.
+    /// Grace deadline, extended only by successful creations in this context's process.
     warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
@@ -1273,7 +1273,7 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        // The context's fixed grace deadline is independent of later creations.
+        // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
             .filter(|x| x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
             .map(|x| x.warm_after).filter(|&g| g > now).min();
@@ -1637,7 +1637,7 @@ fn reset_device(tid: u64) {
 
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
-/// device at a time, after the context's fixed initial grace and while the device is
+/// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
 /// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
@@ -1856,7 +1856,10 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// Serialize a process's context/resource creation through device attachment and
 /// handle publication, so their snapshots cannot both miss each other.
-struct CreationGuard(u64);
+struct CreationGuard {
+    owner: u64,
+    succeeded: bool,
+}
 
 impl CreationGuard {
     fn acquire(tgid: u64) -> Result<Self, i64> {
@@ -1868,15 +1871,21 @@ impl CreationGuard {
             p.creating = true;
             Some(())
         }).map_err(|_| EINTR)?;
-        Ok(Self(tgid))
+        Ok(Self { owner: tgid, succeeded: false })
     }
 }
 
 impl Drop for CreationGuard {
     fn drop(&mut self) {
         with_core(|c| {
-            if let Some(p) = c.procs.get_mut(&self.0) {
+            if let Some(p) = c.procs.get_mut(&self.owner) {
                 p.creating = false;
+            }
+            if self.succeeded {
+                let until = now_ns().saturating_add(WARM_GRACE_NS);
+                for ctx in c.contexts.values_mut().filter(|x| x.owner == self.owner) {
+                    ctx.warm_after = until;
+                }
             }
         });
         notify();
@@ -1926,7 +1935,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
-    let _creation = CreationGuard::acquire(tgid)?;
+    let mut creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
         return Err(ENOMEM);
@@ -2063,6 +2072,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
             return Err(e);
         }
     };
+    creation.succeeded = true;
     Ok((handle, warmed))
 }
 
@@ -2224,7 +2234,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    let _creation = CreationGuard::acquire(tgid)?;
+    let mut creation = CreationGuard::acquire(tgid)?;
     let max = with_core(|c| c.caps.max_width).unwrap_or(0);
     let (vtarget, vformat, bind, bytes, pitch) = match a.kind {
         kind::TARGET | kind::TEXTURE => {
@@ -2336,6 +2346,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         let _ = destroy_resource(tgid, a.handle);
         return Err(e);
     }
+    creation.succeeded = true;
     Ok(0)
 }
 
