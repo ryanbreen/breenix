@@ -252,7 +252,11 @@ specifications and IEEE 802.3 clauses 22, 28 and 40; its comments cite the guide
 - **Initialization.** The guide's initialization procedure, step by step, with one host send ring (64 entries), one
   standard receive producer ring (64) and receive return ring 0 (128), each ring, the status block and each
   buffer in a page of its own. Interrupts are MSI through the local APIC (`kernel/src/arch_impl/x86_64/msi.rs`).
-  The PHY is reset and autonegotiates 10, 100 and 1000 Mb/s.
+  A completed, operational autonegotiated PHY link survives the bootcode handshake
+  and is retained from firmware HTTP boot. Otherwise the PHY is reset and
+  advertises 10, 100 and 1000 Mb/s; the loopback step requires current link-down
+  (two reads of latch-low status) before restarting negotiation and fails if the
+  link has not dropped within 15 ms.
 - **Production rings.** A send-ring slot owns a separate DMA buffer until the
   controller's send consumer index retires it; a full ring returns backpressure.
   MSI acknowledges the device and raises NetRx. The bounded bottom half copies
