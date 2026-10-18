@@ -4,9 +4,9 @@
 It is a dependency-free `no_std` crate using integer arithmetic. The authored
 geometry is in `src/geometry.rs`; the badge is 64 design units square, within a
 176 by 136 unit composition containing the wordmark, progress bar and six dots.
-Coordinates are stored in thirds of a design unit so the wordmark B can use the
-badge B at exactly two-thirds size. Letter origins follow optical spacing rather
-than a fixed pitch. Pending outlines use a brighter blue-grey than the bar track.
+Coordinates are stored in thirds of a design unit so the wordmark B and R share
+the badge's scaled bowl radii, with wider straight shoulders. Letter origins follow
+optical spacing rather than a fixed pitch. Pending outlines use a brighter blue-grey than the bar track.
 
 `render` takes a checked `Surface`, a signed pixel origin, an integer scale and a
 `Frame`. RGB, BGR, RGBA and BGRA layouts support byte strides and clipped surfaces.
