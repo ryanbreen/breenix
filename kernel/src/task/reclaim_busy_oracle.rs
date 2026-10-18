@@ -81,17 +81,21 @@ const MECHANISM_MS: u64 = DAEMON_IDLE_MS + DISPATCH_MS + DAEMON_RETRY_MS + DISPA
 const BOUND_MS: u64 = 1_000;
 
 /// Backstops: "the boot is broken" budgets. Each that fires is counted on the
-/// marker.
-const QUIESCE_BACKSTOP_MS: u64 = 30_000;
-const START_BACKSTOP_MS: u64 = 60_000;
-const RETIRE_BACKSTOP_MS: u64 = 30_000;
-const SPIN_BACKSTOP_MS: u64 = 120_000;
+/// marker. Together they end the leg well inside a strict-gate boot's window,
+/// so a failing run still prints its verdict and the detail line.
+const START_BACKSTOP_MS: u64 = 5_000;
+const RETIRE_BACKSTOP_MS: u64 = 5 * BOUND_MS;
+const CLEANUP_BACKSTOP_MS: u64 = 5_000;
+const SPIN_BACKSTOP_MS: u64 = 30_000;
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 static RUN: AtomicBool = AtomicBool::new(false);
 static STARTED: AtomicU32 = AtomicU32::new(0);
 static SPINNING: AtomicU32 = AtomicU32::new(0);
+static EXITED: AtomicU32 = AtomicU32::new(0);
 static BACKSTOPS: AtomicU32 = AtomicU32::new(0);
+/// The last step the coordinator reached, for the detail line.
+static STAGE: AtomicU32 = AtomicU32::new(0);
 static SPINS: [AtomicU64; scheduler::MAX_CPUS] = [const { AtomicU64::new(0) }; scheduler::MAX_CPUS];
 
 fn now_ns() -> u64 {
@@ -136,6 +140,7 @@ fn spinner_body(cpu: usize) {
             core::hint::spin_loop();
         }
     }
+    EXITED.fetch_add(1, Ordering::AcqRel);
 }
 
 /// Retire `pid`'s row the way an exit's defer arm does and queue its receipt.
@@ -225,7 +230,23 @@ struct Verdict {
     reason: &'static str,
 }
 
-fn emit(verdict: &Verdict) {
+/// What the window saw besides the verdict: printed only when the leg fails,
+/// so a red run says where it stopped and what held the receipt.
+#[derive(Default)]
+struct Detail {
+    queues_before: (usize, usize),
+    queues_after: (usize, usize),
+    nested_refused: u64,
+    context_violations: u64,
+    blocked_epoch: u64,
+    blocked_cached: u64,
+    blocked_live_row: u64,
+    parked: u64,
+    admitted: u64,
+    exited: u32,
+}
+
+fn emit(verdict: &Verdict, detail: &Detail) {
     let started = STARTED.load(Ordering::Acquire);
     let spinning = SPINNING.load(Ordering::Acquire);
     let backstops = BACKSTOPS.load(Ordering::Relaxed);
@@ -245,6 +266,25 @@ fn emit(verdict: &Verdict) {
         BootReclaimWatch::ByOtherDrain => "other",
         BootReclaimWatch::Pending => "none",
     };
+    if !pass {
+        serial_println!(
+            "[RECLAIM_BUSY_CPU_ORACLE_DETAIL:{}:stage={}:pending_before={}:parked_before={}:pending_after={}:parked_after={}:nested_refused={}:context_violations={}:blocked_epoch={}:blocked_cached={}:blocked_live_row={}:parked={}:daemon_admitted={}:spinners_exited={}]",
+            ARCH_TAG,
+            STAGE.load(Ordering::Acquire),
+            detail.queues_before.0,
+            detail.queues_before.1,
+            detail.queues_after.0,
+            detail.queues_after.1,
+            detail.nested_refused,
+            detail.context_violations,
+            detail.blocked_epoch,
+            detail.blocked_cached,
+            detail.blocked_live_row,
+            detail.parked,
+            detail.admitted,
+            detail.exited,
+        );
+    }
     serial_println!(
         "[RECLAIM_BUSY_CPU_ORACLE:{}:cpus={}:spinners={}:started={}:spinning={}:progressed={}:retired_by={}:latency_ms={}:bound_ms={}:mechanism_ms={}:daemon_passes={}:cleaned={}:backstops={}:{}{}]",
         ARCH_TAG,
@@ -263,6 +303,19 @@ fn emit(verdict: &Verdict) {
         if pass { "PASS" } else { "FAIL" },
         verdict.reason,
     );
+}
+
+/// The window's reclaim counters, read together.
+fn reclaim_counters() -> [u64; 6] {
+    use crate::tracing::providers::teardown as trace;
+    [
+        trace::RECLAIM_DRAIN_NESTED_REFUSED.aggregate(),
+        trace::RECLAIM_CONTEXT_VIOLATIONS.aggregate(),
+        trace::ROOT_PROOF_BLOCKED_EPOCH.aggregate(),
+        trace::ROOT_PROOF_BLOCKED_CACHED.aggregate(),
+        trace::ROOT_PROOF_BLOCKED_LIVE_ROW.aggregate(),
+        trace::RECLAIM_PARKED.aggregate(),
+    ]
 }
 
 /// Run the leg once and print `[RECLAIM_BUSY_CPU_ORACLE:...]`. Restores the
@@ -299,7 +352,9 @@ fn run_coordinator() {
     RUN.store(true, Ordering::Release);
     STARTED.store(0, Ordering::Release);
     SPINNING.store(0, Ordering::Release);
+    EXITED.store(0, Ordering::Release);
     BACKSTOPS.store(0, Ordering::Release);
+    STAGE.store(0, Ordering::Release);
     for spins in &SPINS {
         spins.store(0, Ordering::Relaxed);
     }
@@ -315,17 +370,15 @@ fn run_coordinator() {
         cleaned: false,
         reason: "",
     };
+    let mut detail = Detail {
+        queues_before: process_task::boot_reclaim_queue_census(),
+        ..Detail::default()
+    };
     if !process_task::boot_reclaim_daemon_started() {
         verdict.reason = ":reason=no_daemon";
-        emit(&verdict);
+        emit(&verdict, &detail);
         return;
     }
-    // Earlier boot work may still have receipts in flight; the leg starts on
-    // empty queues so the watched receipt is the only one.
-    wait_until(
-        || process_task::boot_reclaim_queue_census() == (0, 0),
-        QUIESCE_BACKSTOP_MS,
-    );
 
     #[cfg(target_arch = "aarch64")]
     let image = crate::memory::process_memory::valid_executable_fixture();
@@ -341,7 +394,7 @@ fn run_coordinator() {
     };
     let Some(leader) = leader else {
         verdict.reason = ":reason=leader_create_failed";
-        emit(&verdict);
+        emit(&verdict, &detail);
         return;
     };
     let member = address_space_of(leader)
@@ -349,9 +402,10 @@ fn run_coordinator() {
     let Some(member) = member else {
         let _ = retire_through_exit_path(leader);
         verdict.reason = ":reason=member_create_failed";
-        emit(&verdict);
+        emit(&verdict, &detail);
         return;
     };
+    STAGE.store(1, Ordering::Release);
 
     // One spinner per online CPU, parked until each has started so the
     // creations are not slowed by spinners already holding CPUs.
@@ -370,6 +424,7 @@ fn run_coordinator() {
         || STARTED.load(Ordering::Acquire) as usize >= spinners.len(),
         START_BACKSTOP_MS,
     );
+    STAGE.store(2, Ordering::Release);
     OPEN.store(true, Ordering::Release);
     // Repeat the unparks until each spinner reports itself spinning: one that
     // parked after a single unpark would otherwise stay parked.
@@ -384,6 +439,7 @@ fn run_coordinator() {
         }
         arch_halt_with_interrupts();
     }
+    STAGE.store(3, Ordering::Release);
 
     // The window: a spinner on each CPU, only the daemon may drain.
     process_task::boot_set_reclaim_daemon_only(true);
@@ -391,8 +447,11 @@ fn run_coordinator() {
     let spins_before: [u64; scheduler::MAX_CPUS] =
         core::array::from_fn(|cpu| SPINS[cpu].load(Ordering::Relaxed));
     let passes_before = process_task::boot_reclaim_daemon_passes();
+    let admitted_before = process_task::boot_reclaim_daemon_admitted();
+    let counters_before = reclaim_counters();
     let retired_at_start = now_ns();
     let member_retired = retire_through_exit_path(member);
+    STAGE.store(4, Ordering::Release);
     if member_retired.is_ok() {
         wait_until(
             || process_task::boot_reclaim_watch_state() != BootReclaimWatch::Pending,
@@ -407,13 +466,34 @@ fn run_coordinator() {
         .filter(|&cpu| online_mask & (1 << cpu) != 0)
         .filter(|&cpu| SPINS[cpu].load(Ordering::Relaxed) > spins_before[cpu])
         .count() as u32;
+    let counters_after = reclaim_counters();
+    let delta = |index: usize| counters_after[index].wrapping_sub(counters_before[index]);
+    detail.nested_refused = delta(0);
+    detail.context_violations = delta(1);
+    detail.blocked_epoch = delta(2);
+    detail.blocked_cached = delta(3);
+    detail.blocked_live_row = delta(4);
+    detail.parked = delta(5);
+    detail.admitted = process_task::boot_reclaim_daemon_admitted().wrapping_sub(admitted_before);
+    detail.queues_after = process_task::boot_reclaim_queue_census();
     process_task::boot_set_reclaim_daemon_only(false);
     process_task::boot_reclaim_watch(0);
+    STAGE.store(5, Ordering::Release);
 
     RUN.store(false, Ordering::Release);
-    for handle in &spinners {
-        let _ = kthread_join(handle);
+    // Join the spinners only once the exit count matches the spawn count, so
+    // a spinner that did not run cannot hold the verdict back.
+    let all_exited = wait_until(
+        || EXITED.load(Ordering::Acquire) as usize >= spinners.len(),
+        START_BACKSTOP_MS,
+    );
+    detail.exited = EXITED.load(Ordering::Acquire);
+    if all_exited {
+        for handle in &spinners {
+            let _ = kthread_join(handle);
+        }
     }
+    STAGE.store(6, Ordering::Release);
 
     // Leave both receipts retired for the boot tests that follow: the
     // leader's receipt, which holds its root, retires once the member's row is
@@ -426,10 +506,11 @@ fn run_coordinator() {
                 process_task::boot_reclaim_locations(member.as_u64()) == (false, false)
                     && process_task::boot_reclaim_locations(leader.as_u64()) == (false, false)
             },
-            QUIESCE_BACKSTOP_MS,
+            CLEANUP_BACKSTOP_MS,
         );
+    STAGE.store(7, Ordering::Release);
     if member_retired.is_err() {
         verdict.reason = ":reason=member_retire_failed";
     }
-    emit(&verdict);
+    emit(&verdict, &detail);
 }

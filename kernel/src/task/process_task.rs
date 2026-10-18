@@ -1561,6 +1561,10 @@ static BOOT_RECLAIM_DAEMON_ONLY: AtomicBool = AtomicBool::new(false);
 /// boot_tests: passes the reclaim daemon has started.
 #[cfg(feature = "boot_tests")]
 static BOOT_RECLAIM_DAEMON_PASSES: AtomicU64 = AtomicU64::new(0);
+/// boot_tests: daemon passes that got past the drain's refusals into the
+/// selection loop, so a failing oracle can tell a refused daemon from a blocked receipt.
+#[cfg(feature = "boot_tests")]
+static BOOT_RECLAIM_DAEMON_ADMITTED: AtomicU64 = AtomicU64::new(0);
 /// boot_tests: the pid whose retirement `reclaim_busy_oracle` watches.
 #[cfg(feature = "boot_tests")]
 static BOOT_RECLAIM_WATCH_PID: AtomicU64 = AtomicU64::new(0);
@@ -1596,6 +1600,21 @@ pub(crate) fn boot_reclaim_daemon_started() -> bool {
 #[cfg(feature = "boot_tests")]
 pub(crate) fn boot_reclaim_daemon_passes() -> u64 {
     BOOT_RECLAIM_DAEMON_PASSES.load(Ordering::Relaxed)
+}
+
+/// boot_tests: daemon passes admitted into the selection loop.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn boot_reclaim_daemon_admitted() -> u64 {
+    BOOT_RECLAIM_DAEMON_ADMITTED.load(Ordering::Relaxed)
+}
+
+/// Count a daemon pass that reached the selection loop. Runs inside the
+/// drain's non-preemptible pass.
+fn boot_note_daemon_admitted() {
+    #[cfg(feature = "boot_tests")]
+    if current_thread_is_reclaim_daemon() {
+        BOOT_RECLAIM_DAEMON_ADMITTED.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// boot_tests: watch `pid`'s retirement (0 stops watching).
@@ -1904,6 +1923,7 @@ fn reclaim_deferred_process_resources_for_pass(my_pass: u32, boot_test_owned: bo
     if boot_daemon_only_refuses(boot_test_owned) {
         return;
     }
+    boot_note_daemon_admitted();
     unpark_sweep();
     boot_begin_reclaim_pass(boot_test_owned);
 
