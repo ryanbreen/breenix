@@ -93,8 +93,10 @@ impl Drop for ShrinkTicket {
     fn drop(&mut self) { writeback::request(); }
 }
 
+pub(crate) const EXT2_READ_ONLY: &str = "Read-only filesystem";
+
 /// Bitmap transitions suffix/orphan reclamation performs per write-guard hold.
-const RECLAIM_BUDGET: usize = 8;
+const RECLAIM_BUDGET: usize = 128;
 
 /// What a finalizer pass left behind.
 pub(super) enum Finalize {
@@ -174,7 +176,7 @@ impl Ext2Fs {
     pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
 
     pub fn ensure_writable(&self) -> Result<(), &'static str> {
-        if self.is_read_only() { Err("Read-only filesystem") } else { Ok(()) }
+        if self.is_read_only() { Err(EXT2_READ_ONLY) } else { Ok(()) }
     }
 
     /// Stop writing after a failure left the tree inconsistent: record the
@@ -251,7 +253,7 @@ impl Ext2Fs {
         }
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
         let evictions = self.live_inodes.evictions(self.eviction_cursor);
-        let mut write_budget = RECLAIM_BUDGET;
+        let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
         for object in &evictions {
             if write_budget != 0 && cache_budget != 0 {
                 self.eviction_cursor = object.key.inode;
@@ -2390,7 +2392,7 @@ fn ext2_acquire<T>(
     spin_fallback()
 }
 
-const EXT2_ACQUIRE_KILLED: &str = "ext2 acquisition interrupted by SIGKILL";
+pub(crate) const EXT2_ACQUIRE_KILLED: &str = "ext2 acquisition interrupted by SIGKILL";
 
 /// How long a thread a kill has claimed parks between checks of its claim.
 const EXT2_KILL_CLAIM_RECHECK_NS: u64 = 1_000_000;
@@ -2593,6 +2595,7 @@ impl Ext2WriteGuard {
             pending.failed |= result.is_err();
             fs.shrink_reclaims.insert(ticket.inode, pending);
             if result.is_err() { return Err("Failed to reclaim resized suffix"); }
+            if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
             drop(self);
             writeback::pause(1_000_000);
             self = fs_write_raw(home)?;
@@ -2870,7 +2873,7 @@ pub fn root_fs_write() -> Result<Ext2WriteGuard, &'static str> {
 }
 
 /// Acquire exclusive access without performing another inode's reclamation.
-fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+pub(super) fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     let (lock, waiters, name) = if home {
         (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
     } else {
@@ -2883,6 +2886,10 @@ fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
         waiters,
         _custody: custody,
     })
+}
+
+pub(crate) fn fs_sync_guard(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+    fs_write_raw(home)?.wait_for_shrink_writer()
 }
 
 fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
@@ -2962,6 +2969,10 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
 /// This changes only the inode's timestamp under the same exclusive guard;
 /// reclaim reloads the inode before each detachment batch.
 pub(crate) fn update_read_atime(inode: u32, home: bool) -> Result<(), &'static str> {
+    {
+        let guard = if home { home_fs_read()? } else { root_fs_read()? };
+        if guard.as_ref().ok_or("Missing ext2 mount")?.is_read_only() { return Ok(()); }
+    }
     let mut guard = fs_write_raw(home)?;
     guard.as_mut().ok_or("Missing ext2 mount")?.update_atime(inode)
 }

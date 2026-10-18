@@ -1495,7 +1495,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 };
                 match fs.read_file_range_coherent(inode_num, &inode, position, count as usize) {
-                    Ok(data) => (data, inode.needs_atime_update()),
+                    Ok(data) => (data, !fs.is_read_only() && inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
                         return SyscallResult::Err(super::errno::EIO as u64);
@@ -1521,7 +1521,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 };
                 match fs.read_file_range_coherent(inode_num, &inode, position, count as usize) {
-                    Ok(data) => (data, inode.needs_atime_update()),
+                    Ok(data) => (data, !fs.is_read_only() && inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
                         return SyscallResult::Err(super::errno::EIO as u64);
@@ -4063,7 +4063,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                 unsafe {
                     core::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr as *mut u8, actual);
                 }
-                update_atime = inode.needs_atime_update();
+                update_atime = !fs.is_read_only() && inode.needs_atime_update();
                 SyscallResult::Ok(actual as u64)
             }
             Err(_) => SyscallResult::Err(super::errno::EIO as u64),

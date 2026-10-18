@@ -226,9 +226,9 @@ fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
 }
 
 pub(crate) fn fs_errno(error: &'static str) -> u64 {
-    if error == "Read-only filesystem" {
+    if error == crate::fs::ext2::EXT2_READ_ONLY {
         crate::syscall::errno::EROFS as u64
-    } else if error == "ext2 acquisition interrupted by SIGKILL" {
+    } else if error == crate::fs::ext2::EXT2_ACQUIRE_KILLED {
         crate::syscall::errno::EINTR as u64
     } else if error.contains("memory") {
         12

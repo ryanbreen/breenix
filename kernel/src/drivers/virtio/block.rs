@@ -388,6 +388,7 @@ pub struct VirtioBlockDevice {
     /// Disk capacity in sectors
     capacity: u64,
     flush_supported: bool,
+    read_only: bool,
     max_transfer_bytes: usize,
     writes_pending: AtomicBool,
     /// Number of completed operations (for stats)
@@ -513,6 +514,10 @@ impl VirtioBlockDevice {
 
         log::info!("VirtIO block: Device initialization complete (with cached DMA buffers)");
 
+        let read_only = match &device {
+            BlockTransport::Legacy(d) => d.read_device_features() & features::RO != 0,
+            BlockTransport::Modern(d) => d.device_features() & features::RO as u64 != 0,
+        };
         Ok(VirtioBlockDevice {
             device,
             interrupt_line: pci_dev.interrupt_line,
@@ -525,6 +530,7 @@ impl VirtioBlockDevice {
             completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
             flush_supported,
+            read_only,
             max_transfer_bytes,
             writes_pending: AtomicBool::new(true),
             ops_completed: AtomicU64::new(0),
@@ -540,10 +546,7 @@ impl VirtioBlockDevice {
     }
 
     pub fn is_read_only(&self) -> bool {
-        (match &self.device {
-            BlockTransport::Legacy(d) => d.read_device_features() & features::RO != 0,
-            BlockTransport::Modern(d) => d.device_features() & features::RO as u64 != 0,
-        }) || crate::block::hardware_disk_read_only(
+        self.read_only || crate::block::hardware_disk_read_only(
             crate::block::HardwareDisk::Virtio(self as *const Self as usize),
         )
     }

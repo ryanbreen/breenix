@@ -4582,11 +4582,8 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
         };
     }
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    let guard = if is_home {
-        ext2::home_fs_read()
-    } else {
-        ext2::root_fs_read()
-    };
+    // Wait for a live shrink without requiring write permission on the mount.
+    let guard = ext2::fs_sync_guard(is_home);
     let guard = match guard { Ok(guard) => guard, Err(_) => return SyscallResult::Err(super::errno::EINTR as u64) };
     if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
         return SyscallResult::Err(super::errno::EIO as u64);
