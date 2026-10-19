@@ -312,10 +312,8 @@ pub fn readback_time_2560() -> CaseResult {
     let ctx = context()?;
     let t = target(format::B8G8R8A8, W, H)?;
     frame(ctx, &scene(t, FG, &[]))?;
-    // The caller's buffer exists before the timed window, which holds only the readback.
-    let mut px = vec![0u8; (W * H * 4) as usize];
     let start = now_ns();
-    read_into(t, [0, 0, W, H], &mut px)?;
+    let px = read_rect(t, [0, 0, W, H])?;
     let us = us_since(start);
     value("readback-us", us as i64, "us", Some((0, READBACK_US as i64)));
     ensure(us <= READBACK_US, || format!("a full 2560x1600 readback took {us} us"))?;
