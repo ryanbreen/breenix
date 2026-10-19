@@ -27,7 +27,7 @@ def dead(path):
         except PermissionError:
             return False
         current = started(pid)
-        # An unavailable process query is not proof that an owner died.
+        # Keep the VM when the process query is unavailable.
         return bool(current) and current != birth
     except (OSError, ValueError, KeyError, TypeError):
         return False

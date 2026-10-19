@@ -501,8 +501,8 @@ vm_run_owner() {
 delete_parallels_vm() {
     local vm="$1" info disk
     info=$(bounded_vm_command prlctl list -i "$vm") || return 1
-    # These disks are reusable artifacts outside the VM bundle. Detach every
-    # attached one before deleting either our own VM or a dead owner's VM.
+    # These disks are reusable artifacts outside the VM bundle. Detach hdd0
+    # and hdd1 when present before deleting our own VM or a dead owner's VM.
     for disk in hdd0 hdd1; do
         if grep -q "^[[:space:]]*$disk[[:space:]]" <<< "$info"; then
             bounded_vm_command prlctl set "$vm" --device-del "$disk" || return 1
