@@ -321,7 +321,7 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         }
         y += rows;
     }
-    Ok((target.id, flush))
+    Ok((dev::resource_id(target.id).ok_or("the screen has no device resource")?, flush))
 }
 
 /// A framebuffer owner has its own resource and backing: nested owners must not

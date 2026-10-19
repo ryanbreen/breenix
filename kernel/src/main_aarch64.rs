@@ -1146,12 +1146,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::console::attach();
     }
 
-    // SVGA interface version 3 changes the firmware framebuffer aperture.
-    // Verify the GOP splash before retiring its writers and entering DX mode.
-    if kernel::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
-        kernel::gpu::init_vmware();
-    }
-
     // Initialize input devices (capability-based detection)
     if kernel::platform_config::is_qemu() {
         // VirtIO keyboard/mouse MMIO (QEMU)

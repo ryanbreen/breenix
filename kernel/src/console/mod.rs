@@ -594,6 +594,22 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
 #[cfg(target_arch = "aarch64")]
 pub fn attach() {
     use crate::graphics::arm64_fb;
+    if crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
+        if let Some(display) = gop_display() {
+            let layout = display.layout();
+            let mut shadow = alloc::vec![0; layout.bytes()];
+            let mut run = SplashRun {
+                painter: splash::Painter::new(layout, layout.bgr),
+                shown: false,
+                first: None,
+                progress_checked: false,
+                failed: false,
+                wait_until: None,
+            };
+            run.pass(&display, &mut shadow);
+        }
+        crate::gpu::init_vmware();
+    }
     // When the GPU core owns the display the console draws through it, sized for
     // the mode the core shows the kernel's screen at (ruling F25); the GOP
     // framebuffer keeps the early splash only until the core shows that screen.

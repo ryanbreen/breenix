@@ -913,10 +913,17 @@ fn corrupt_pixel(tx: &mut Tx<'_>) {
 pub const WARM_SIZES: Sizes = Sizes { vertices: 48, constants: RECORD, data: 0, frames: 0, transport_bytes: 0 };
 
 /// One step of the catalogue's asynchronous warm-up: rendering pipeline `p`'s programs,
-/// defined unless a submission already did, and one draw with them into the 1x1 scratch
-/// target `scratch`, sampling slots 0 to 2 reading the 1x1 texture `scratch_texture`.
+/// defined unless a submission already did, and a draw into the 1x1 target `scratch`.
+/// BITMAP_TEXT draws both glyph modes with an uploaded R8 texel; the other sampled slots
+/// read the 1x1 texture `scratch_texture`. The step's fence covers the draws and uploads.
 pub fn warm_pipeline(o: &mut Objects, scratch: &TargetRes, scratch_texture: &SourceRes, p: u32) -> Option<Vec<Chunk>> {
-    let backing = Backing::allocate(&WARM_SIZES)?;
+    let bitmap = p == gpu_abi::pipeline::BITMAP_TEXT;
+    let mut sizes = WARM_SIZES;
+    if bitmap {
+        sizes.vertices *= 2;
+        sizes.constants *= 2;
+    }
+    let backing = Backing::allocate(&sizes)?;
     let mut tx = start(o, Some(backing), None, false)?;
     tx.prelude();
     fixed_state(&mut tx.b);
@@ -928,9 +935,28 @@ pub fn warm_pipeline(o: &mut Objects, scratch: &TargetRes, scratch_texture: &Sou
     // The slots the pipeline's draws bind: its texture, the destination copy of a blending
     // pipeline, and coverage_spans' data, each here the 1x1 texture.
     let v = tx.view(scratch_texture).unwrap_or(wire::INVALID);
+    // BITMAP_TEXT accepts R8 only. Warming with BGRA leaves the R8 shader variant
+    // and the packed-glyph path to the client's first draw.
+    let glyph = if bitmap {
+        let made = (|| {
+            let pages = Arc::new(Pages::new(1)?);
+            pages.write(0, &[255]);
+            let (sid, _) = super::transient(Some(pages))?;
+            tx.transient.push(sid);
+            super::define_transient(&mut tx.b, sid, wire::bind::SAMPLE, wire::format::R8, 1, 1);
+            tx.defined.push(sid);
+            tx.b.c.update_surface(sid);
+            tx.own_view(sid, wire::format::R8)
+        })();
+        let Some(view) = made else {
+            tx.abandon();
+            return None;
+        };
+        Some(view)
+    } else { None };
     let used = |on: bool| if on { v } else { wire::INVALID };
     let sampled = gpu_abi::draw::sampled(p) || p == gpu_abi::pipeline::COPY;
-    tx.sample([used(sampled), used(gpu_abi::draw::blended(p)), used(p == gpu_abi::pipeline::COVERAGE_SPANS)]);
+    tx.sample([glyph.unwrap_or(used(sampled)), used(gpu_abi::draw::blended(p)), used(p == gpu_abi::pipeline::COVERAGE_SPANS)]);
     let record = match p {
         gpu_abi::pipeline::SOLID => tx.constants(&rgba_floats(0xFF00_0000)),
         gpu_abi::pipeline::COPY => tx.constants(&[0, 0, 0, 0]),
@@ -950,11 +976,23 @@ pub fn warm_pipeline(o: &mut Objects, scratch: &TargetRes, scratch_texture: &Sou
                 _ => &[],
             };
             constants[..params.len()].copy_from_slice(params);
+            if bitmap { constants[20] = 0xffff_ffff; }
             constants[24] = 1;
             constants[25] = 1;
             tx.constants(&constants)
         }
     };
     tx.draw(&[[0, 0, 1, 1]], record);
+    if bitmap {
+        // Complete both the byte-mask and packed-bit draws before the warm bit is set.
+        let mut constants = [0u32; 32];
+        constants[..8].copy_from_slice(&[0, 0, 0, 0, 1, 1, 1, 0]);
+        constants[20] = 0xffff_ffff;
+        constants[24] = 1;
+        constants[25] = 1;
+        let record = tx.constants(&constants);
+        tx.draw(&[[0, 0, 1, 1]], record);
+    }
+    tx.sample([wire::INVALID; 3]);
     tx.finish().map(|o| o.chunks)
 }

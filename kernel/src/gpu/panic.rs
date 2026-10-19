@@ -167,14 +167,14 @@ pub(super) fn prepare() -> Result<(), i64> {
     if VALID.load(Ordering::Acquire) {
         return Ok(());
     }
+    let mut c = console::Console::new()?;
+    c.draw()?;
     let queue = with_core(|core| match core.dev.as_ref()? {
         dev::Device::Virgl(device) => Some(device.terminal_queue()),
         dev::Device::Svga(_) => None,
     })
     .flatten()
     .ok_or(EIO)?;
-    let mut c = console::Console::new()?;
-    c.draw()?;
     let mut objects = with_core(|core| Some(core.contexts.get(&c.context)?.objects.clone()))
         .flatten()
         .ok_or(EIO)?;

@@ -93,12 +93,12 @@ pub(super) fn retire_firmware() {
     } else {
         RETIRED.store(true, Ordering::Release);
     }
-    HASH.store(firmware_hash(), Ordering::Release);
 }
 
 /// The first frame of the kernel's screen completed: count firmware writes from here on.
 pub(super) fn handed_off() {
     if !HANDOFF.load(Ordering::Acquire) {
+        HASH.store(firmware_hash(), Ordering::Release);
         crate::graphics::firmware_writes::handoff();
         HANDOFF.store(true, Ordering::Release);
     }
