@@ -713,12 +713,7 @@ fn dispatch_syscall_enum(
             arg3,
             arg4 as u32,
         )),
-        SyscallNumber::Yield => {
-            // Behind the other threads of its priority, then to the scheduler.
-            crate::task::scheduler::note_sched_yield();
-            crate::task::scheduler::yield_current();
-            0
-        }
+        SyscallNumber::Yield => result_to_u64(crate::syscall::handlers::sys_yield()),
         SyscallNumber::GetTime => sys_get_time(),
         SyscallNumber::ClockGetTime => sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec),
         SyscallNumber::ClockGetRes => result_to_u64(crate::syscall::clocks::sys_clock_getres(arg1 as u32, arg2)),
