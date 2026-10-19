@@ -236,7 +236,7 @@ fn release_presented_window_frames(
 fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, u64) {
     use core::sync::atomic::Ordering;
 
-    let (mx, my, mb) = crate::drivers::usb::hid::mouse_state();
+    let (mx, my, mb) = crate::input::pointer::mouse_state();
     let mouse_packed = ((mx as u64) << 32) | ((my as u64) << 16) | (mb as u64);
     let cur_reg_gen = REGISTRY_GENERATION.load(Ordering::Relaxed);
 
@@ -245,8 +245,8 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
         ready |= 1;
     }
     if mouse_packed != prev_mouse
-        || crate::drivers::usb::hid::has_pending_press()
-        || crate::drivers::usb::hid::has_pending_scroll()
+        || crate::input::pointer::has_pending_press()
+        || crate::input::pointer::has_pending_scroll()
     {
         ready |= 2;
     }
@@ -256,7 +256,7 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
     // Keyboard readiness: a latched Super press-edge (captured at HID-report
     // time) means a hotkey tap may have completed between polls. Surface it so
     // compositor_wait returns and BWM drains the latch instead of re-blocking.
-    if crate::drivers::usb::hid::has_pending_super_tap() {
+    if crate::input::has_pending_super_tap() {
         ready |= 8;
     }
 
@@ -1171,7 +1171,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // Inject accumulated scroll wheel delta into mouse events.
             // MOUSE_MOVE=3, MOUSE_SCROLL=9 (exclude MOUSE_BUTTON=4: scroll_y carries press state)
             if event.event_type == 3 || event.event_type == 9 {
-                let wheel = crate::drivers::usb::hid::mouse_wheel_consume();
+                let wheel = crate::input::pointer::mouse_wheel_consume();
                 if wheel != 0 {
                     event.scroll_y = event
                         .scroll_y
@@ -1340,7 +1340,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
         26 => {
             // PollModifierState: returns current modifier key bitmask.
             // Bits: 0=Shift, 1=Ctrl, 2=Alt, 3=Super
-            let state = crate::drivers::usb::hid::poll_modifier_state();
+            let state = crate::input::poll_modifier_state();
             SyscallResult::Ok(state as u64)
         }
         27 => {
@@ -1366,7 +1366,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // press-edges captured at HID-report time. Lets BWM recover taps
             // that completed (press+release) between two compositor polls so
             // a correctly-delivered double-tap-Super is never dropped.
-            let count = crate::drivers::usb::hid::take_super_tap_count();
+            let count = crate::input::take_super_tap_count();
             SyscallResult::Ok(count as u64)
         }
         _ => {
@@ -3051,10 +3051,10 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
     let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
-        crate::drivers::usb::hid::mouse_state_consume()
+        crate::input::pointer::mouse_state_consume()
     };
 
-    let scroll = crate::drivers::usb::hid::mouse_wheel_consume() as u32;
+    let scroll = crate::input::pointer::mouse_wheel_consume() as u32;
 
     unsafe {
         let out = out_ptr as *mut [u32; 4];

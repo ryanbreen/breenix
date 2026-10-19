@@ -1087,7 +1087,7 @@ pub fn update_cursor() -> bool {
         return false;
     }
 
-    let (mx, my, _) = crate::drivers::usb::hid::mouse_state();
+    let (mx, my, _) = crate::input::pointer::mouse_state();
     let cur_x = mx as i32;
     let cur_y = my as i32;
 

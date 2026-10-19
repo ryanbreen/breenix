@@ -444,6 +444,7 @@ STD_BINARIES=(
 
     # Diagnostics
     "btrace"
+    "usb_pointer_check"
 
     # Log viewer
     "bless"

@@ -61,7 +61,7 @@ def completion(serial, mode, suite, only=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("serial", type=Path)
-    parser.add_argument("mode", choices=("probe", "suite", "tests"))
+    parser.add_argument("mode", choices=("probe", "suite", "tests", "program"))
     parser.add_argument("--suite", default="")
     parser.add_argument("--case", default="", dest="only")
     parser.add_argument("--timeout", type=int, default=1800)
