@@ -2,7 +2,7 @@
 
 pub const VENDOR: u16 = 0x15ad;
 pub const DEVICE: u16 = 0x0406;
-pub const ID_3: u32 = 0x9000_0003;
+pub const ID_2: u32 = 0x9000_0002;
 pub const INVALID: u32 = u32::MAX;
 
 pub mod reg {
@@ -13,7 +13,6 @@ pub mod reg {
     pub const CAPABILITIES: u32 = 17;
     pub const CONFIG_DONE: u32 = 20;
     pub const IRQMASK: u32 = 33;
-    pub const TRACES: u32 = 45;
     pub const COMMAND_LOW: u32 = 48;
     pub const COMMAND_HIGH: u32 = 49;
     pub const DEV_CAP: u32 = 52;

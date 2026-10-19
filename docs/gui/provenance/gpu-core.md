@@ -1011,7 +1011,7 @@ F was downloaded with the others and supplies no value the backend uses.
 
 | Wire fact used | Header and lines |
 |---|---|
-| Device version `0x90000003`; register indices ID, ENABLE, dimensions, capabilities, CONFIG_DONE, IRQMASK, TRACES, COMMAND_LOW/HIGH, DEV_CAP, screen-target maxima, MOB maximum, IRQ_STATUS | S:79–208 (`SVGA_MAKE_ID`, register enum) |
+| Device version `0x90000002`; register indices ID, ENABLE, dimensions, capabilities, CONFIG_DONE, IRQMASK, COMMAND_LOW/HIGH, DEV_CAP, screen-target maxima, MOB maximum, IRQ_STATUS | S:79–208 (`SVGA_MAKE_ID`, register enum) |
 | PCI vendor `0x15ad` and device `0x0406` | the PCI ID Repository, `pci.ids` version 2026.10.17 (SHA-256 `09212c8b854a9571e3d3c8e00f6707a17c289c65e1e25b3f218dd3f42791bc22`), line 23083 and the device lines after it (`15ad VMware`, `0406 SVGA II Adapter (Fusion)`); the registers are BAR0, which this device's PCI configuration header reports (A, PCI Local Bus) and the G0 spike drove |
 | Register command-buffer and guest-backed-object capability bits | S:419,422 |
 | 64-byte command-buffer header: status, error offset, u64 id, flags, byte length, u64 device address, offset, DX context, six reserved words | S:251–303 |
