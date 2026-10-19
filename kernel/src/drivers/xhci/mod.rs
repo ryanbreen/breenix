@@ -864,8 +864,10 @@ impl Controller {
                 {
                     #[cfg(target_arch = "x86_64")]
                     crate::task::waitqueue::halt_blocked_current();
+                    // The blocked handoff saves this continuation without the
+                    // deferred reclamation an ordinary reschedule runs first.
                     #[cfg(target_arch = "aarch64")]
-                    crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
+                    crate::arch_halt_while_blocked();
                 }
             }
             scheduler::with_current(|sched| {
