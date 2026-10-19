@@ -319,17 +319,32 @@ impl Tally {
 
 /// The host cases for interface kind `axes`, numbered from `seq`; returns the next seq.
 fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) -> usize {
-    let mut a = (width / 4, height / 3);
-    let mut b = (width * 3 / 4, height * 2 / 3);
     let start = observe();
-    if start.0.abs_diff(a.0) <= 1 && start.1.abs_diff(a.1) <= 1 {
-        std::mem::swap(&mut a, &mut b);
-    }
-    // The host's pointer position before the first request is unknown; for a
-    // relative device this request only sets the origin of the scored ones.
+    let (a, b) = if axes == "relative" {
+        // The guest moves by the requests' differences: a step of a quarter of
+        // the width and a sixth of the height away from the guest pointer's
+        // nearer edges, and back, which no edge clamps.
+        let b = (width / 2, height / 2);
+        let x = if start.0 < width / 2 { b.0 + width / 4 } else { b.0 - width / 4 };
+        let y = if start.1 < height / 2 { b.1 + height / 6 } else { b.1 - height / 6 };
+        ((x, y), b)
+    } else {
+        let (a, b) = ((width / 4, height / 3), (width * 3 / 4, height * 2 / 3));
+        // The first request goes to b, away from where the pointer starts.
+        if start.0.abs_diff(b.0) <= 1 && start.1.abs_diff(b.1) <= 1 { (b, a) } else { (a, b) }
+    };
+    let near = |s: (u32, u32, u32, i32), p: (u32, u32)| s.0.abs_diff(p.0) <= 1 && s.1.abs_diff(p.1) <= 1;
+    // The host's pointer position before the first request is unknown, so a
+    // relative device's motion from it is unknown too: it only sets the origin
+    // of the scored requests. An absolute device lands on it.
     println!("USB POINTER HOST seq={seq} axes={axes} x={} y={} buttons=0 wheel=0", b.0, b.1);
     seq += 1;
-    std::thread::sleep(Duration::from_millis(500));
+    let landed = if axes == "absolute" {
+        wait_for(&|s| near(s, b)).1
+    } else {
+        std::thread::sleep(Duration::from_millis(500));
+        false
+    };
     let cases = [
         ("move-a", a, 0, 0),
         ("left-press", a, 1, 0),
@@ -343,7 +358,10 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
         ("wheel-down", b, 0, -1),
     ];
     let mut previous = (b, observe());
-    let mut distinguished = false;
+    // Once an absolute device follows the host, a relative prediction from the
+    // last observed position gives the same place: an absolute move shows its
+    // kind only by the first request, which it lands on from elsewhere.
+    let mut distinguished = landed;
     for (name, (x, y), buttons, wheel) in cases {
         let before = observe();
         println!("USB POINTER HOST seq={seq} axes={axes} x={x} y={y} buttons={buttons} wheel={wheel}");
@@ -354,16 +372,19 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
             (observed.1 as i64 + y as i64 - py as i64).clamp(0, height as i64 - 1) as u32,
         );
         let target = if axes == "relative" { relative_target } else { (x, y) };
-        let other = if axes == "relative" { (x, y) } else { relative_target };
         let moved = name.starts_with("move");
-        let near = |s: (u32, u32, u32, i32), p: (u32, u32)| s.0.abs_diff(p.0) <= 1 && s.1.abs_diff(p.1) <= 1;
         let (state, passed) = wait_for(&|s| {
             // Button and wheel cases must not move the pointer.
             let position = if moved { near(s, target) } else { near(s, (before.0, before.1)) };
             position && s.2 == buttons && s.3 == wheel
         });
-        // A position both kinds predict does not show which kind moved.
-        distinguished |= moved && passed && !near(state, other);
+        // A relative move shows its kind when the pointer moved somewhere the
+        // requested position does not explain.
+        distinguished |= axes == "relative"
+            && moved
+            && passed
+            && !near(state, (before.0, before.1))
+            && !near(state, (x, y));
         tally.case(
             &format!("host/{axes}/{name}"),
             passed,
@@ -377,7 +398,11 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
     tally.case(
         &format!("host/{axes}/coverage"),
         distinguished,
-        &format!("requires {axes} host motion no other kind explains"),
+        if axes == "absolute" {
+            "requires the first request to move the pointer onto its position"
+        } else {
+            "requires a move to where the requested position does not explain"
+        },
     );
     seq
 }
