@@ -406,6 +406,7 @@ impl TtyDevice {
     /// This method acquires locks and should not be called from interrupt context
     /// without care. For interrupt context, use `input_char_from_nonblock`.
     pub fn input_char_from(&self, c: u8, source: super::InputSource) {
+        crate::random::add_event(crate::random::Event::TtyInput, u64::from(c));
         if self.num == 0 {
             super::input_clock::record_input();
         }
@@ -509,6 +510,7 @@ impl TtyDevice {
     }
 
     fn input_char_source_nonblock(&self, c: u8, source: super::InputSource) -> bool {
+        crate::random::add_event(crate::random::Event::TtyInput, u64::from(c));
         let mut ldisc = match self.ldisc.try_lock() {
             Some(guard) => guard,
             None => return false,
@@ -950,6 +952,10 @@ impl TtyDevice {
     /// * `buf` - Buffer of bytes to write
     pub fn write_bytes(&self, buf: &[u8]) {
         while self.transmission_stopped() { crate::arch_halt(); }
+        // Thread-side output orders suite records after older log evidence.
+        // IRQ echo uses to_sinks directly and does not wait on the log ring.
+        #[cfg(target_arch = "x86_64")]
+        if self.is_console() { crate::serial::sync_log_to_console(); }
         self.drain_echo();
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
@@ -1262,6 +1268,8 @@ pub fn write_output(buf: &[u8]) -> usize {
 /// processing, a line segment (at most one bounded chunk) per serial unit,
 /// holding `serial_writer::exclusive` for the whole write.
 pub fn write_unprocessed(buf: &[u8]) {
+    #[cfg(target_arch = "x86_64")]
+    crate::serial::sync_log_to_console();
     crate::serial_writer::exclusive(|| {
         for_each_line_segment(buf, |line| {
             for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {

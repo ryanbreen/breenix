@@ -154,7 +154,7 @@ impl UdpSock {
                 registry.prune();
                 let actual_port = if port == 0 {
                     // Randomized start and odd stride visit every ephemeral port once.
-                    let random = ephemeral_random();
+                    let random = crate::random::next_u64();
                     let start = random as u16 & 16383;
                     let stride = ((random >> 16) as u16 & 16383) | 1;
                     let mut found = None;
@@ -283,27 +283,6 @@ pub static SOCKET_REGISTRY: Mutex<SocketRegistry> = Mutex::new(SocketRegistry {
     ports: Vec::new(),
     used: [0; 1024],
 });
-/// Counter-seeded PRNG, matching the entropy available to getrandom today.
-/// This prevents sequential allocation; it is not cryptographic entropy.
-fn ephemeral_random() -> u64 {
-    static SEQUENCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-    #[cfg(target_arch = "x86_64")]
-    let clock = unsafe { core::arch::x86_64::_rdtsc() };
-    #[cfg(target_arch = "aarch64")]
-    let clock: u64 = {
-        let value;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value);
-        }
-        value
-    };
-    let mut x =
-        clock ^ SEQUENCE.fetch_add(0x9e3779b97f4a7c15, core::sync::atomic::Ordering::Relaxed);
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    x.wrapping_mul(0x2545f4914f6cdd1d)
-}
 /// Registry insertions and remove operations may allocate/deallocate; memory/heap.rs
 /// masks its allocator lock. The outer IRQ mask covers the entire map hold.
 fn with_registry<R>(f: impl FnOnce(&mut SocketRegistry) -> R) -> R {
