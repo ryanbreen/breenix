@@ -750,6 +750,8 @@ pub fn init() -> Result<(), &'static str> {
                 crate::serial_println!("[virtio-blk] Found block device {} at {:#x}", found, base);
                 init_device(&mut device, base, found, i)?;
                 found += 1;
+                DEVICE_COUNT.store(found, core::sync::atomic::Ordering::Release);
+                crate::drivers::device_class::storage_initialized("virtio-blk", found);
             }
         }
     }
