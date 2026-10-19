@@ -338,7 +338,7 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
     };
     let near = |s: (u32, u32, u32, i32), p: (u32, u32)| s.0.abs_diff(p.0) <= 1 && s.1.abs_diff(p.1) <= 1;
     // Snapshot native reports before the origin request. Position alone
-    // cannot distinguish absolute input when host and guest both start at zero.
+    // cannot distinguish absolute input when host and guest start at the same origin.
     let native_before = if axes == "absolute" { pointers().unwrap_or_default() } else { Vec::new() };
     println!("USB POINTER HOST seq={seq} axes={axes} x={} y={} buttons=0 wheel=0", b.0, b.1);
     seq += 1;
