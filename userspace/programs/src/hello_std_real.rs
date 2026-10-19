@@ -230,14 +230,14 @@ fn main() {
     }
 
     // Test 5: getrandom returns random bytes
-    // These bytes are a test fixture, so an unready entropy pool must not block it.
+    // Exercise the secure default: this must wait for credited entropy.
     unsafe {
         extern "C" {
             fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize;
         }
 
         let mut buf = [0u8; 16];
-        let result = getrandom(buf.as_mut_ptr(), buf.len(), libbreenix::syscall::GRND_INSECURE);
+        let result = getrandom(buf.as_mut_ptr(), buf.len(), 0);
 
         if result == 16 {
             // Verify we got some non-zero bytes (all zeros is astronomically unlikely)

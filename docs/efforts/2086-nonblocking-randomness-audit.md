@@ -14,8 +14,8 @@ it does not credit entropy or substitute a time/PID generator.
 | Rust std `DefaultRandomSource` / `fill_bytes` | General-purpose secure random API, retains `flags = 0`. No init call found apart from the separate HashMap path. |
 | libc getrandom and syscall forwarding | Preserve the caller's flags; do not globally downgrade a secure API. |
 | libbreenix `getrandom_bytes` / `Csprng::new` | Secure API, retains `flags = 0`. |
-| crypto suite CSPRNG seeds | Disposable fixture via `Csprng::from_entropy(getrandom_insecure_bytes)`; existing output assertions stay unchanged. |
-| hello_std_real random bytes | Disposable fixture, `GRND_INSECURE`; existing output assertions stay unchanged. |
+| crypto suite CSPRNG seeds | Exercise secure `Csprng::new` and default `getrandom_bytes`; retain blocking reads. |
+| hello_std_real random bytes | Required secure-default boot check, `flags = 0`; retain blocking reads. |
 | console getty password/salt | Already disposable fixtures using `GRND_INSECURE` under S41. |
 | SSH transport, packet RNG and key exchange | Session-key material and protocol randomness, keep secure `Csprng::new`. |
 | TLS handshake | Session-key material, keep secure `Csprng::new`; no automatic init TLS caller found. |

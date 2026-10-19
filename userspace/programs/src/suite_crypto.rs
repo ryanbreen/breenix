@@ -1,6 +1,6 @@
 //! libbreenix CSPRNG checks requiring Breenix's getrandom syscall.
 
-use libbreenix::crypto::rand::{getrandom_insecure_bytes, Csprng};
+use libbreenix::crypto::rand::Csprng;
 use libbreenix::suite::{case, category, check, suite, CaseResult, Suite};
 
 static SUITE: Suite = suite("crypto", "Cryptographic randomness", &[
@@ -12,14 +12,14 @@ static SUITE: Suite = suite("crypto", "Cryptographic randomness", &[
 ]);
 
 fn fill() -> CaseResult {
-    let mut rng = Csprng::from_entropy(getrandom_insecure_bytes);
+    let mut rng = Csprng::new();
     let mut bytes = [0u8; 64];
     rng.fill(&mut bytes);
     check(bytes.iter().any(|&b| b != 0), "fill produced all-zero output")
 }
 
 fn across_blocks() -> CaseResult {
-    let mut rng = Csprng::from_entropy(getrandom_insecure_bytes);
+    let mut rng = Csprng::new();
     let mut bytes = [0u8; 200];
     rng.fill(&mut bytes);
     // Check the final partial block as well as each complete ChaCha20 block.
@@ -28,8 +28,8 @@ fn across_blocks() -> CaseResult {
 }
 
 fn independent() -> CaseResult {
-    let mut first = Csprng::from_entropy(getrandom_insecure_bytes);
-    let mut second = Csprng::from_entropy(getrandom_insecure_bytes);
+    let mut first = Csprng::new();
+    let mut second = Csprng::new();
     check(first.random_u64() != second.random_u64(),
         "independent CSPRNG instances produced identical output")
 }
