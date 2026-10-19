@@ -415,7 +415,7 @@ pub fn release_cpu(cpu_id: usize) -> i64 {
     }
 
     // Get the physical address of the secondary entry point in boot.S.
-    // SECONDARY_CPU_ENTRY_PHYS holds the linker address (base 0x40080000).
+    // SECONDARY_CPU_ENTRY_PHYS holds the linker address (base 0x40200000).
     // On VMware, RAM starts at 0x80000000, so the actual physical address
     // is offset by ram_base_offset (0x40000000).
     let entry_phys = unsafe { core::ptr::read_volatile(&SECONDARY_CPU_ENTRY_PHYS) }

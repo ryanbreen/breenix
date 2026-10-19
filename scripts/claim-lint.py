@@ -101,6 +101,20 @@ def is_capture_file(rel: str) -> bool:
         return False
     return bool(CAPTURE_DIR_RE.search(rel))
 
+# Frozen reference copies are kept byte-identical to their source tag, so their
+# prose cannot be edited or annotated (ruling 30, #1719). Exactly the files the
+# manifest lists are skipped; scripts/check-frozen-copies.py checks their bytes.
+FROZEN_MANIFEST = os.path.join("scripts", "frozen-copies.json")
+
+
+def frozen_copies(repo_root: str) -> set:
+    """The repo-relative paths scripts/frozen-copies.json lists; empty without it."""
+    try:
+        with open(os.path.join(repo_root, FROZEN_MANIFEST), encoding="utf-8") as fh:
+            return {c["path"] for c in json.load(fh)["copies"]}
+    except FileNotFoundError:
+        return set()
+
 # A `claim-lint:ok` marker plus whatever the author wrote after it, to the end
 # of the paragraph. The marker on its own does not silence a finding: the text
 # that follows it has to carry a citation (see discharge_citation()).
@@ -1044,8 +1058,13 @@ def main(argv: list) -> int:
     all_findings = []
     suppressed = 0
     skipped = []
+    frozen = []
+    frozen_paths = frozen_copies(repo_root)
     for rel in targets:
         path = rel if os.path.isabs(rel) else os.path.join(repo_root, rel)
+        if os.path.relpath(path, repo_root) in frozen_paths:
+            frozen.append(rel)
+            continue
         found = lint_file(path, repo_root, assume_text=assume_text)
         if found is None:
             skipped.append(rel)
@@ -1058,7 +1077,7 @@ def main(argv: list) -> int:
             found = kept
         all_findings.extend(found)
 
-    checked = len(targets) - len(skipped)
+    checked = len(targets) - len(skipped) - len(frozen)
 
     if args.format == "json":
         print(format_json(all_findings))
@@ -1090,6 +1109,11 @@ def main(argv: list) -> int:
             print("claim-lint: %d pre-existing finding(s) outside this "
                   "branch's changed hunks not reported (--whole-file shows them)."
                   % suppressed)
+        if frozen:
+            print(
+                "claim-lint: %d frozen reference cop(ies) not linted (listed in %s): %s"
+                % (len(frozen), FROZEN_MANIFEST, ", ".join(frozen))
+            )
         if skipped:
             print(
                 "claim-lint: %d target(s) SKIPPED, not checked (extension "

@@ -386,6 +386,8 @@ fn launch_init_from_elf(
             let ticket =
                 manager.create_init_process_with_argv(String::from(proc_name), exe_path, &elf_data, argv)?;
             let publication = manager.designate_init(ticket)?;
+            // Decide suite controls after designation and before the init thread is published.
+            kernel::test_control::latch_init_program(exe_path);
             let pid = publication.pid();
             let init_thread = manager.publish_init(publication);
             let designated_pid_raw = manager
@@ -801,17 +803,35 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // the high half -- the ADRP relocation would be out of range (~281 TB).
     // Instead, read the current TTBR0_EL1 to get the physical address and
     // access it through the HHDM.
-    // Initialize memory management for ARM64
-    // ARM64 QEMU virt machine: RAM starts at 0x40000000
-    // Frame allocator range from platform_config (QEMU defaults or HardwareConfig)
-    let fa_start = kernel::platform_config::frame_alloc_start();
-    let fa_end = kernel::platform_config::frame_alloc_end();
+    // Initialize memory management for ARM64. The frame pool is the RAM the
+    // firmware describes (the loader's UEFI map, or QEMU's device tree) less
+    // the kernel's fixed ranges.
+    let frame_pool = kernel::platform_config::frame_pool();
+    match frame_pool.source {
+        kernel::platform_config::FramePoolSource::UefiMemoryMap => {
+            serial_println!("[boot] Frame pool from the UEFI memory map:")
+        }
+        kernel::platform_config::FramePoolSource::DeviceTree => {
+            serial_println!("[boot] Frame pool from the device tree:")
+        }
+        kernel::platform_config::FramePoolSource::Unavailable(reason) => {
+            panic!("No safe physical frame pool: {}", reason)
+        }
+    }
+    for range in frame_pool.ranges.as_slice() {
+        serial_println!("[boot]   {:#x}-{:#x}", range.start, range.end);
+    }
     serial_println!(
-        "[boot] Initializing memory management ({:#x}-{:#x})...",
-        fa_start,
-        fa_end
+        "[boot] Initializing memory management ({} MiB in {} ranges{})...",
+        frame_pool.ranges.total_bytes() >> 20,
+        frame_pool.ranges.as_slice().len(),
+        if frame_pool.ranges.truncated() {
+            ", firmware map truncated"
+        } else {
+            ""
+        }
     );
-    kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
+    kernel::memory::frame_allocator::init_aarch64(frame_pool.ranges.as_slice());
     kernel::memory::init_aarch64_heap();
     kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
@@ -2578,6 +2598,8 @@ fn panic(info: &PanicInfo) -> ! {
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
     kernel::arch_impl::aarch64::irq_mask_account::opened();
+    // Output from here on names no thread (docs/gui/breengel.md section 22).
+    kernel::output_accounting::panicking();
 
     serial_println!();
     serial_println!("========================================");
@@ -2619,9 +2641,9 @@ fn panic(info: &PanicInfo) -> ! {
     kernel::tracing::output::trace_dump_counters();
 
     // Show the panic on screen after the serial records above, so drawing and
-    // GPU commands cannot delay or lose them. It does not print or block on a
-    // lock: skipped if the framebuffer lock is held, and left for the render or
-    // presenter thread if the GPU lock stays held (possibly by this CPU).
+    // GPU commands cannot delay or lose them. After GPU handoff the terminal
+    // path uses preallocated commands and reserved descriptors, without taking
+    // the core, console or framebuffer locks.
     boot_screen::show_panic(info);
 
     loop {

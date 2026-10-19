@@ -561,6 +561,9 @@ fn trace_kernel_resume_timer_irq(frame: &Aarch64ExceptionFrame, kind: u16) {
 /// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
+    // Fatal takeover ends peer scheduling once their device accesses have drained.
+    crate::gpu::panic::stop_if_terminal();
+
     let resume_irq_kind = if frame.is_null() {
         None
     } else {
@@ -1015,6 +1018,11 @@ fn dump_gic_state() {
 /// waiting and reports a refusal as `[BXCAP:NOTE sched_lock_held]` after the
 /// lock-independent sections are already on the wire.
 fn check_soft_lockup(cpu0_tick: u64) {
+    // A fatal GPU takeover parks its users with IRQs masked. Remaining timer
+    // ticks do not turn that intentional terminal stop into a scheduler lockup.
+    if crate::gpu::panic::terminal() {
+        return;
+    }
     let ctx_count = crate::task::scheduler::context_switch_count();
     let last_ctx = WATCHDOG_LAST_CTX_SWITCH.load(Ordering::Relaxed);
 

@@ -69,7 +69,8 @@ members = [
     "kernel",
     "parallels-loader",
     "xtask",
-    "libs/arm64-boot-contract"
+    "libs/arm64-boot-contract",
+    "libs/gpu-abi"
 ]
 
 [dependencies]

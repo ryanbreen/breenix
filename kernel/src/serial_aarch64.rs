@@ -360,9 +360,28 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
-/// Print from a panic or fatal path. Same as `try_print` on aarch64.
+/// Print from a panic or fatal path: `try_print`'s record, counted as unattributed
+/// output (`output_accounting`).
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
-    try_print(args)
+    use core::fmt::Write;
+    crate::serial_line::TeeLine::unattributed()
+        .write_fmt(args)
+        .map_err(|_| ())
+}
+
+/// Write `s` as one record without waiting indefinitely on another CPU's output: up to 2^20
+/// tries to own the UART without waiting, then the line goes out whole with the posted notices
+/// (`log_notice::write_or_post`), half of whose nodes are kept for boot-path stage lines.
+pub fn write_str_bounded(s: &str) {
+    use crate::log_notice::Node;
+    const ATTEMPTS: u32 = 1 << 20;
+    static FALLBACK: [Node; 4] = [const { Node::new() }; 4];
+
+    let stage = crate::stage_lines::contains(crate::STAGE_MARKERS, s.as_bytes());
+    let line = s.strip_suffix('\n').unwrap_or(s);
+    crate::log_notice::write_or_post(&FALLBACK, line, stage, ATTEMPTS, || {
+        crate::serial_line::try_write(s.as_bytes())
+    });
 }
 
 /// Wait until the output written so far has left for the UART (TCSETSW,

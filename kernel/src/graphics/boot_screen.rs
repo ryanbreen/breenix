@@ -14,11 +14,11 @@
 //! If userspace does not draw, the boot screen stays up.
 //!
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
-//! screen with the failure, the boot stage and the last log lines. They do not
-//! block on a lock: if the framebuffer lock is held the screen is skipped and the
-//! report is on serial alone; if the GPU lock stays held for about 100 ms
-//! (possibly by the failing CPU) the screen is left marked dirty for the render
-//! thread, or on VirGL the presenter thread (`spawn_presenter`), to present.
+//! screen with the failure, the boot stage and the last log lines. Before GPU-core
+//! handoff, a held framebuffer lock skips drawing and a delayed legacy flush leaves
+//! the screen dirty for its presenter. After handoff, ruling 40 (#1749) uses the
+//! core's prepared terminal screen and reserved descriptors, outside those locks.
+//! Device waits are bounded and serial remains the panic record.
 
 #![cfg(target_arch = "aarch64")]
 
@@ -314,6 +314,8 @@ pub fn show() {
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
+    // The GPU console owns kernel output after handoff; the firmware canvas stops here.
+    if crate::gpu::console::active() { return; }
     let canvas = &mut *guard;
     let layout = Layout::of(canvas);
     cursor::hide(canvas);
@@ -361,6 +363,8 @@ fn refresh() {
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
+    // The GPU console owns kernel output after handoff; the firmware canvas stops here.
+    if crate::gpu::console::active() { return; }
     if HANDED_OVER.load(Ordering::Acquire) {
         return;
     }
@@ -750,12 +754,22 @@ pub fn show_panic(info: &core::panic::PanicInfo) {
         what.as_str(),
         &[("Location", place.as_str())],
         RecentLog::AtPanic,
+        true,
     );
 }
 
 /// Draw the diagnostics screen for a fatal EL1 exception, described in words
 /// from its syndrome (`esr`), fault address (`far`) and PC (`elr`). Does not block.
 pub fn show_fault(esr: u64, far: u64, elr: u64) {
+    fault_diagnostics(esr, far, elr, true);
+}
+
+/// Preserve firmware diagnostics for recoverable faults without terminal takeover.
+pub fn show_recoverable_fault(esr: u64, far: u64, elr: u64) {
+    fault_diagnostics(esr, far, elr, false);
+}
+
+fn fault_diagnostics(esr: u64, far: u64, elr: u64, terminal: bool) {
     let ec = ((esr >> 26) & 0x3f) as u8;
     let iss = esr & 0x01ff_ffff;
     let mut what = Text::new();
@@ -799,6 +813,7 @@ pub fn show_fault(esr: u64, far: u64, elr: u64) {
             ("Exception", exception.as_str()),
         ],
         RecentLog::Live,
+        terminal,
     );
 }
 
@@ -856,8 +871,21 @@ fn write_fault_status(out: &mut Text, status: u8) {
 
 /// Draw the red diagnostics screen: `title`, a large `headline` saying what
 /// failed, labelled `details`, the boot stage and the recent kernel log.
-fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recent: RecentLog) {
+fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recent: RecentLog, terminal: bool) {
+    if !terminal && crate::gpu::console::active() {
+        return;
+    }
     if DIAG_CLAIMED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if crate::gpu::console::active() {
+        // Handoff can race the earlier recovery check.
+        if !terminal {
+            return;
+        }
+        let mut tail = [0u8; DIAG_LOG_BYTES];
+        let n = recent.copy(&mut tail);
+        crate::gpu::panic::show(title, headline, details, current_stage_name(), &tail[..n]);
         return;
     }
     let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() else {
