@@ -4,6 +4,25 @@ use crate::process::creation::create_user_process;
 use alloc::string::String;
 use alloc::vec;
 
+/// Exec `elf` into process `pid` from kernel test code, through the legacy
+/// `ProcessManager::exec_process`, and install the exec in the thread's
+/// scheduler row, which dispatch reads (`scheduler::adopt_legacy_exec`).
+pub(crate) fn exec_legacy(
+    manager: &mut crate::process::ProcessManager,
+    pid: crate::process::ProcessId,
+    elf: &[u8],
+    name: Option<&str>,
+    closes: &mut crate::ipc::fd::DeferredFdCloses,
+) -> Result<u64, &'static str> {
+    let entry = manager.exec_process(pid, elf, name, closes)?;
+    if let Some(process) = manager.get_process(pid) {
+        if let (Some(thread), Some(root)) = (process.main_thread.as_ref(), process.cr3_value()) {
+            crate::task::scheduler::adopt_legacy_exec(thread, root);
+        }
+    }
+    Ok(entry)
+}
+
 /// Test multiple concurrent processes to validate page table isolation
 ///
 /// 🚨 CRITICAL CONCURRENCY TEST 🚨
@@ -143,7 +162,8 @@ pub fn test_fork_exec() {
                     let hello_time_elf = &create_minimal_elf_no_bss();
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(
+                        exec_legacy(
+                            manager,
                             child_pid,
                             hello_time_elf,
                             Some("hello_time"),
@@ -217,7 +237,7 @@ pub fn test_exec_directly() {
 
             // Use with_process_manager to properly disable interrupts
             match crate::process::with_process_manager(|manager| {
-                manager.exec_process(pid, hello_time_elf, Some("hello_time"), &mut closes)
+                exec_legacy(manager, pid, hello_time_elf, Some("hello_time"), &mut closes)
             }) {
                 Some(Ok(entry_point)) => {
                     log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);
@@ -271,7 +291,7 @@ pub fn test_exec_real_userspace() {
                 // Now exec hello_time.elf into this process
                 log::info!("Executing hello_time.elf into process {}", pid.as_u64());
                 match crate::process::with_process_manager(|manager| {
-                    manager.exec_process(pid, hello_time_elf, Some("hello_time"), &mut closes)
+                    exec_legacy(manager, pid, hello_time_elf, Some("hello_time"), &mut closes)
                 }) {
                     Some(Ok(entry_point)) => {
                         log::info!("✓ Real userspace exec succeeded! Entry: {:#x}", entry_point);
@@ -357,7 +377,7 @@ pub fn test_exec_minimal() {
             // Use with_process_manager to properly disable interrupts
             log::info!("Attempting exec with hello_time.elf...");
             match crate::process::with_process_manager(|manager| {
-                manager.exec_process(pid, hello_time_elf, Some("hello_time"), &mut closes)
+                exec_legacy(manager, pid, hello_time_elf, Some("hello_time"), &mut closes)
             }) {
                 Some(Ok(entry_point)) => {
                     log::info!("✓ Minimal exec test passed! Entry: {:#x}", entry_point);
@@ -428,7 +448,8 @@ pub fn test_shell_fork_exec() {
                     });
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(
+                        exec_legacy(
+                            manager,
                             child_pid,
                             command_elf,
                             Some("hello_time"),
@@ -585,7 +606,7 @@ pub fn test_exec_without_scheduling() {
         log::info!("Calling exec to load target program...");
 
         match crate::process::with_process_manager(|manager| {
-            manager.exec_process(pid, target_elf, Some("hello_time"), &mut closes)
+            exec_legacy(manager, pid, target_elf, Some("hello_time"), &mut closes)
         }) {
             Some(Ok(entry_point)) => {
                 log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);

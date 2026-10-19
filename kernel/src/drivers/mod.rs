@@ -4,11 +4,18 @@
 //! PCI enumeration and device-specific drivers.
 
 pub mod ahci;
+#[cfg(target_arch = "x86_64")]
+pub mod bcm5720;
+pub mod device_class;
 pub mod e1000;
 pub mod fw_cfg;
 #[cfg(target_arch = "x86_64")]
+pub mod hid_boot;
+#[cfg(target_arch = "x86_64")]
 pub mod nvme;
 pub mod pci;
+#[cfg(target_arch = "x86_64")]
+pub mod xhci;
 #[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
 #[cfg(target_arch = "aarch64")]
@@ -72,14 +79,38 @@ pub fn init() -> usize {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
 
-            // Enable E1000 IRQ now that driver is initialized
-            // E1000 uses IRQ 10 in QEMU's PCI configuration
-            crate::interrupts::enable_irq10();
+            // MSI where the function has it; otherwise IRQ 10, the line
+            // QEMU's PCI configuration gives the E1000.
+            match e1000::interrupt_by_msi() {
+                Ok(vector) => log::info!("E1000: interrupts by MSI vector {vector:#x}"),
+                Err(reason) => {
+                    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                        log::info!("E1000: interrupts on IRQ 10 ({reason})");
+                        crate::interrupts::enable_irq10();
+                    } else {
+                        log::info!("E1000: INTx remains masked: routing unknown ({reason})");
+                    }
+                }
+            }
         }
         Err(e) => {
             log::warn!("E1000 network driver initialization failed: {}", e);
             init_other_network_device();
         }
+    }
+
+    // Broadcom BCM5720 ports with link at handoff (bare-metal x86).
+    let bcm5720_ports = bcm5720::init();
+    if bcm5720_ports > 0 {
+        log::info!("BCM5720 driver attached {bcm5720_ports} port(s)");
+    }
+
+    if e1000::is_initialized()
+        || bcm5720::is_initialized()
+        || virtio::net_legacy::is_initialized()
+        || rtl8139::is_initialized()
+    {
+        log::info!("[devices] network initialized: driver attached");
     }
 
     // Initialize VirtIO sound driver
@@ -114,6 +145,10 @@ fn init_other_network_device() {
             }
         },
     };
+    if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        log::info!("Network INTx remains masked: routing unknown");
+        return;
+    }
     match line {
         Some(10) => crate::interrupts::enable_irq10(),
         Some(11) => crate::interrupts::enable_irq11(),
@@ -129,13 +164,18 @@ pub fn run_post_init_self_tests() {
     // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
     // lines after PIC setup and after the drivers exist. QEMU routes the boot
     // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
-    crate::interrupts::enable_irq10();
-    crate::interrupts::enable_virtio_irq();
+
+    // Where PCI INTx routing is unknown, what drives those two lines is
+    // unknown too, so they stay masked.
+    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        crate::interrupts::enable_irq10();
+        crate::interrupts::enable_virtio_irq();
+    }
 
     // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
     // This runs after time/PIC setup and before root mounting.
     if let Err(e) = ahci::init() {
-        log::debug!("AHCI initialization: {}", e);
+        log::info!("AHCI initialization: {e}");
     }
 
     if let Err(e) = virtio::block::test_read() {
@@ -148,11 +188,18 @@ pub fn run_post_init_self_tests() {
         }
     }
 
+
     if virtio::sound::is_initialized() {
         if let Err(e) = virtio::sound::test_silence() {
             log::warn!("VirtIO sound test failed: {}", e);
         }
     }
+
+    // BCM5720 bring-up probes wait for link and take frames by MSI.
+    bcm5720::start_networking();
+
+    // The independent bare-metal USB worker uses MSI; ARM USB is unchanged.
+    xhci::init();
 }
 
 /// Initialize the driver subsystem (ARM64 version)
@@ -407,6 +454,17 @@ fn init_virtio_mmio() -> usize {
             device.device_id(),
             device.version()
         );
+        let class = match device.device_id() {
+            virtio::mmio::device_id::BLOCK => Some(device_class::Class::Storage),
+            virtio::mmio::device_id::NETWORK => Some(device_class::Class::Network),
+            _ => None,
+        };
+        if let Some(class) = class {
+            device_class::found(
+                class,
+                format_args!("virtio-mmio {} (version {})", type_name, device.version()),
+            );
+        }
         device_count += 1;
     }
 

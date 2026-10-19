@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Content-keyed x86 userspace/disks, published only after byte-identical clean verification."""
+"""Content-keyed x86 userspace/disks, published only after byte-identical clean verification.
+
+  gate-artifacts.py REPO LOGS            the x86 gate: a miss builds twice and publishes verified.json
+  gate-artifacts.py --metal REPO LOGS    a metal boot: a miss builds once with leased incremental targets and
+                                         publishes built-once.json under metal-artifacts/, which the x86
+                                         gate never reads; the caller holds its metal-build lease
+"""
 import hashlib
 import json
 import os
@@ -159,7 +165,7 @@ def checked(command, repo, log, *, userspace_prebuilt=False):
         raise RuntimeError(f'build warnings/errors: {warnings[:5]}; see {log}')
 
 
-def build(repo, logs, label):
+def build(repo, logs, label, targets=None):
     with tree_cache.timing('userspace-build', f'build={label}'):
         # Cargo hashes compiler arguments before rustc remaps source paths.
         # Stable paths must therefore include -L/linker flags and CARGO_HOME,
@@ -172,8 +178,13 @@ mkdir -p /run/breenix-gate/source /run/breenix-gate/cargo
 mount --bind "$1" /run/breenix-gate/source
 mount --bind "$2" /run/breenix-gate/cargo
 export CARGO_HOME=/run/breenix-gate/cargo
+if [ -n "$3" ]; then
+    mkdir -p /run/breenix-gate/source/userspace/programs/target /run/breenix-gate/source/libs/libbreenix-libc/target
+    mount --bind "$3/programs" /run/breenix-gate/source/userspace/programs/target
+    mount --bind "$3/libc" /run/breenix-gate/source/libs/libbreenix-libc/target
+fi
 /run/breenix-gate/source/userspace/programs/build.sh
-''', 'gate-userspace', str(repo), os.environ['CARGO_HOME']]
+''', 'gate-userspace', str(repo), os.environ['CARGO_HOME'], str(targets) if targets else '']
         if sys.platform != 'linux' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
             command = [str(repo / 'userspace/programs/build.sh')]
         checked(command, repo, logs / f'{label}-userspace.log')
@@ -215,11 +226,163 @@ def build_slot(acquire):
         subprocess.run(['python3', helper, 'acquire' if acquire else 'release', 'x86-build'], check=True)
 
 
+def cached_manifest(entry, name, cache_key):
+    manifest = json.loads((entry / name).read_text())
+    if not isinstance(manifest, dict) or not {'target/test_binaries.img', 'testdata/ext2.img'} <= manifest.keys() or not any(name.startswith('userspace/programs/') and name.endswith('.elf') for name in manifest):
+        raise RuntimeError('invalid verified artifact inventory')
+    if any(Path(name).is_absolute() or '..' in Path(name).parts for name in manifest):
+        raise RuntimeError('invalid verified artifact path')
+    if any(not (entry / name).is_file() or digest(entry / name) != checksum for name, checksum in manifest.items()):
+        raise RuntimeError(f'corrupt artifact cache {cache_key}; refusing cached inputs')
+    return manifest
+
+
+def resolve_key(repo, logs):
+    # These workspaces historically ignore their lockfiles. Resolve as a clean
+    # checkout would, then include exact package versions/checksums in the key.
+    with tree_cache.timing('dependency-resolution'):
+        for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
+            checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
+                    repo, logs / (Path(manifest).parent.name + '-resolve.log'))
+    with tree_cache.timing('userspace-input-key'):
+        return key(repo)
+
+
+def metal_cache_key(input_key):
+    # Metal executes this deployed helper, which may differ from the checkout.
+    return hashlib.sha256((input_key + '\0' + digest(Path(__file__))).encode()).hexdigest()
+
+
+def metal_toolchain_key(repo):
+    """Separate compiler versions/pins; Cargo tracks sources and build flags within a pool."""
+    result = hashlib.sha256(b'breenix-metal-targets-v1\0')
+    for workspace in (repo, repo / 'userspace/programs', repo / 'libs/libbreenix-libc'):
+        result.update(subprocess.check_output(['rustc', '-Vv'], cwd=workspace))
+        compiler = Path(subprocess.check_output(['rustup', 'which', 'rustc'], cwd=workspace, text=True).strip())
+        result.update(digest(compiler).encode())
+        result.update(subprocess.check_output(['cargo', '-V'], cwd=workspace))
+    for name in ('rust-fork.toml', 'x86_64-breenix.json', 'x86_64-breenix-c.json'):
+        path = repo / name
+        result.update(name.encode() + b'\0')
+        result.update(path.read_bytes() if path.exists() else b'<absent>')
+    return result.hexdigest()
+
+
+def metal_source_times(repo, targets):
+    """Fresh clones get new mtimes even for unchanged files. Compare bytes before reusing times.
+
+    Changed inputs get a time *after* acquiring the target lease, not the clone's
+    earlier checkout time: another build may have finished while this one waited.
+    Save before compiling so a failed/cancelled build cannot associate old times
+    with different bytes on its next attempt. Cargo still owns all freshness decisions.
+    """
+    record = targets / 'source-times.json'
+    previous = json.loads(record.read_text()) if record.exists() else {}
+    names = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
+                                    'userspace', 'libs', '.cargo', 'Cargo.toml', 'Cargo.lock',
+                                    'rust-fork.toml', 'rust-toolchain.toml',
+                                    'x86_64-breenix.json', 'x86_64-breenix-c.json']).split(b'\0')
+    inputs = {repo / os.fsdecode(name) for name in names if name}
+    inputs.update(repo / name for name in ('userspace/programs/Cargo.lock', 'libs/libbreenix-libc/Cargo.lock'))
+    fork = repo / 'rust-fork'
+    inputs.update(path for path in fork.rglob('*') if 'target' not in path.relative_to(fork).parts)
+    current = {}
+    now = time.time_ns()
+    for path in sorted(inputs):
+        if not path.is_file() or path.is_symlink():
+            continue
+        name = str(path.relative_to(repo))
+        checksum = digest(path)
+        old = previous.get(name)
+        if name == 'userspace/programs/linker.ld' and (not old or old[0] != checksum):
+            # Historical commits may lack build.rs's linker dependency. Their
+            # stable -T path cannot make Cargo notice changed linker contents.
+            shutil.rmtree(targets / 'programs', ignore_errors=True)
+            (targets / 'programs').mkdir(parents=True)
+        timestamp = old[1] if old and old[0] == checksum else now
+        os.utime(path, ns=(timestamp, timestamp))
+        current[name] = [checksum, timestamp]
+    temporary = record.with_suffix('.tmp')
+    temporary.write_text(json.dumps(current, sort_keys=True) + '\n')
+    temporary.replace(record)
+
+
+def metal_retire_binaries(repo, targets):
+    """Older installers must not find executables for removed Cargo targets."""
+    workspace = repo / 'userspace/programs'
+    metadata = json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=workspace))
+    names = {target['name'] for package in metadata['packages']
+             if Path(package['manifest_path']).resolve() == (workspace / 'Cargo.toml').resolve()
+             for target in package['targets'] if 'bin' in target['kind']}
+    for path in (targets / 'programs/x86_64-breenix/release').glob('*'):
+        if path.is_file() and path.name not in names:
+            with path.open('rb') as handle:
+                executable = handle.read(4) == b'\x7fELF'
+            if executable:
+                path.unlink()
+
+
+def metal_incremental_build(repo, logs, root):
+    cache_key = metal_toolchain_key(repo)
+    targets = root / 'metal-targets' / cache_key
+    with tree_cache.lease(root, 'metal-targets-' + cache_key):
+        for name in ('programs', 'libc'):
+            (targets / name).mkdir(parents=True, exist_ok=True)
+        metal_source_times(repo, targets)
+        metal_retire_binaries(repo, targets)
+        print(f'[gate-cache] incremental targets={cache_key}', flush=True)
+        try:
+            build(repo, logs, 'metal', targets=targets)
+        finally:
+            os.utime(targets, None)
+
+
+def metal_build(repo, logs, root, input_key):
+    """Exact artifacts on a hit; leased incremental Cargo targets on a miss.
+
+    Metal entries never become the x86 gate's clean-verified entries.
+    """
+    cache_key = metal_cache_key(input_key)
+    entry = root / 'metal-artifacts' / cache_key
+    with tree_cache.lease(root, 'metal-artifacts-' + cache_key):
+        start = time.monotonic()
+        if (entry / 'built-once.json').exists():
+            manifest = cached_manifest(entry, 'built-once.json', cache_key)
+            install(entry, repo, manifest)
+            os.utime(entry, None)
+            print(f'[gate-cache] HIT key={cache_key} built-once=true', flush=True)
+            tree_cache.phase('userspace-cache', start)
+            return
+        print(f'[gate-cache] MISS key={cache_key} metal', flush=True)
+        tree_cache.prune(root, protected=(repo, entry), reserve=0)
+        if entry.exists():
+            shutil.rmtree(entry)
+        entry.mkdir(parents=True)
+        for elf in (repo / 'userspace/programs').glob('*.elf'):
+            elf.unlink()
+        metal_incremental_build(repo, logs, root)
+        manifest = inventory(repo)
+        for name in manifest:
+            target = entry / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repo / name, target)
+        if key(repo) != input_key:
+            raise RuntimeError('userspace inputs changed during build; refusing cache publication')
+        (entry / 'built-once.json').write_text(json.dumps(manifest, sort_keys=True) + '\n')
+        print(f'[gate-cache] BUILT-ONCE key={cache_key} files={len(manifest)}', flush=True)
+        tree_cache.phase('userspace-build-once', start)
+
+
 def main():
-    repo, logs = map(Path, sys.argv[1:])
+    arguments = sys.argv[1:]
+    metal = arguments[:1] == ['--metal']
+    repo, logs = map(Path, arguments[1:] if metal else arguments)
     if 'BREENIX_GATE_CACHE_DIR' in os.environ and sys.platform != 'linux':
         raise RuntimeError('artifact reuse requires Linux private mount namespaces')
-    if os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ:
+    if metal and 'BREENIX_GATE_CACHE_DIR' not in os.environ:
+        raise RuntimeError('a metal build needs its build container\'s cache directory')
+    if not metal and (os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ):
         build_slot(True)
         build(repo, logs, 'uncached')
         build_slot(False)
@@ -243,27 +406,24 @@ def main():
                         print(f'[gate-cache] FRESH key={cache_key} matches-verified=true', flush=True)
         return
     root = Path(os.environ['BREENIX_GATE_CACHE_DIR'])
-    # These workspaces historically ignore their lockfiles. Resolve as a clean
-    # checkout would, then include exact package versions/checksums in the key.
-    with tree_cache.timing('dependency-resolution'):
-        for manifest in ('Cargo.toml', 'userspace/programs/Cargo.toml'):
-            checked(['cargo', 'generate-lockfile', '--manifest-path', str(repo / manifest)],
-                    repo, logs / (Path(manifest).parent.name + '-resolve.log'))
-    with tree_cache.timing('userspace-input-key'):
-        cache_key = key(repo)
+    cache_key = resolve_key(repo, logs)
+    if metal:
+        try:
+            return metal_build(repo, logs, root, cache_key)
+        finally:
+            # Bound targets and artifacts even after failure. Active leases are
+            # retained; the last finisher evicts the temporary budget overrun.
+            try:
+                tree_cache.prune(root, protected=(repo,), reserve=0, required=False)
+            except Exception as error:
+                print(f'[gate-cache] cleanup prune failed: {error}', file=sys.stderr, flush=True)
     entry = root / 'artifacts' / cache_key
     wait = time.monotonic()
     with tree_cache.lease(root, 'artifacts-' + cache_key):
         tree_cache.phase('artifact-slot-wait', wait)
         start = time.monotonic()
         if (entry / 'verified.json').exists():
-            manifest = json.loads((entry / 'verified.json').read_text())
-            if not isinstance(manifest, dict) or not {'target/test_binaries.img', 'testdata/ext2.img'} <= manifest.keys() or not any(name.startswith('userspace/programs/') and name.endswith('.elf') for name in manifest):
-                raise RuntimeError('invalid verified artifact inventory')
-            if any(Path(name).is_absolute() or '..' in Path(name).parts for name in manifest):
-                raise RuntimeError('invalid verified artifact path')
-            if any(not (entry / name).is_file() or digest(entry / name) != checksum for name, checksum in manifest.items()):
-                raise RuntimeError(f'corrupt artifact cache {cache_key}; refusing cached inputs')
+            manifest = cached_manifest(entry, 'verified.json', cache_key)
             install(entry, repo, manifest)
             os.utime(entry, None)
             print(f'[gate-cache] HIT key={cache_key} clean-verified=true', flush=True)

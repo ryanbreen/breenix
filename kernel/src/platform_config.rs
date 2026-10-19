@@ -105,8 +105,8 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 // Loader stack:   0x41E0_0000 - 0x4200_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
-// Heap:           0x5020_0000 - 0x541F_FFFF (64 MB)
-// Kernel stacks:  0x5420_0000 - 0x561F_FFFF (32 MB)
+// Heap:           0x5020_0000 - 0x581F_FFFF (128 MB native, 64 MB QEMU)
+// Kernel stacks:  0x5820_0000 - 0x5A1F_FFFF (32 MB)
 // The rest of the RAM the firmware describes is the frame pool.
 
 /// The kernel's fixed physical ranges at a RAM base of 0x4000_0000: the DTB,
@@ -115,7 +115,7 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 const KERNEL_FIXED_RANGES: [PhysRange; 2] = [
     PhysRange::new(arm64_boot_contract::LINKED_RAM_START, 0x4400_0000),
-    PhysRange::new(0x5000_0000, 0x5620_0000),
+    PhysRange::new(0x5000_0000, 0x5A20_0000),
 ];
 
 #[cfg(target_arch = "aarch64")]
@@ -130,7 +130,10 @@ const _: () = {
             <= low.end
     );
     let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
-    assert!(heap >= high.start && heap + crate::memory::heap::HEAP_SIZE <= high.end);
+    assert!(crate::memory::heap::QEMU_HEAP_SIZE <= crate::memory::heap::HEAP_SIZE);
+    assert!(heap >= high.start);
+    assert!(heap + crate::memory::heap::HEAP_SIZE
+        <= crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE);
     assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE >= high.start);
     assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE <= high.end);
 };
@@ -212,12 +215,16 @@ fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
     }
     // SAFETY: as above; `size` lies inside the mapped block.
     let blob = unsafe { core::slice::from_raw_parts(base, size) };
-    frame_pool_from_fdt(
-        blob,
-        QEMU_DTB_PHYS,
-        kernel_fixed_ranges(0),
-        direct_map_ram_window(0),
-    )
+    // The native legacy VirGL buffers need the larger heap. QEMU's GPU core
+    // uses frames instead, so its unused heap tail stays in the frame pool.
+    let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
+    let stacks = crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE;
+    let fixed = [
+        KERNEL_FIXED_RANGES[0],
+        PhysRange::new(KERNEL_FIXED_RANGES[1].start, heap + crate::memory::heap::QEMU_HEAP_SIZE),
+        PhysRange::new(stacks, KERNEL_FIXED_RANGES[1].end),
+    ];
+    frame_pool_from_fdt(blob, QEMU_DTB_PHYS, fixed, direct_map_ram_window(0))
 }
 
 /// The frame allocator's free memory: the pages the firmware describes as
@@ -806,17 +813,27 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
         let runtime = config.runtime_regions[..runtime_count]
             .iter()
             .map(|r| PhysRange::from_base_size(r.base, r.pages.saturating_mul(4096)));
-        let ranges = phys_memory::frame_pool(
+        let mut ranges = phys_memory::frame_pool(
             config.ram_regions[..region_count]
                 .iter()
                 .map(|r| PhysRange::from_base_size(r.base, r.size)),
-            kernel_fixed_ranges(offset).chain(runtime),
+            runtime,
             direct_map_ram_window(offset),
         );
-        FRAME_POOL.call_once(|| FramePool {
-            ranges,
-            source: FramePoolSource::UefiMemoryMap,
-        });
+        // Heap and stack storage is written directly, outside the frame allocator.
+        // Admit it only from conventional RAM too, before excluding it from frames.
+        use crate::arch_impl::aarch64::constants::HHDM_BASE;
+        let heap_start = crate::memory::heap::HEAP_START - HHDM_BASE + offset;
+        let stacks_end = crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE + offset;
+        let pool = if ranges.as_slice().iter().any(|r| r.start <= heap_start && r.end >= stacks_end) {
+            for fixed in kernel_fixed_ranges(offset) {
+                ranges.subtract(fixed);
+            }
+            FramePool { ranges, source: FramePoolSource::UefiMemoryMap }
+        } else {
+            unavailable_pool("heap and stack storage is not conventional RAM")
+        };
+        FRAME_POOL.call_once(|| pool);
     } else {
         FRAME_POOL.call_once(|| {
             unavailable_pool("the loader passed no conventional RAM regions")

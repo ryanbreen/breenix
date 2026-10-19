@@ -50,8 +50,6 @@ RUN_ARGS=("$@")
 # QEMU process, and exit before reaching here. #834 extended this lock's
 # coverage from docker/qemu/*.sh (its original #826/R181 scope) to run.sh
 # as well; #865 closed the x86_64-leg gap this comment used to disclose.
-# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
-source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # Defaults: ARM64 with graphics
 ARCH="arm64"
@@ -225,6 +223,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --gpu-core                 Parallels: the GPU core (kernel/src/gpu/) owns the virtio-gpu device"
             echo "                             instead of the legacy display driver; implied by --parallels --suite gpu"
             echo "  --dry-run                  Check target policy and exit before building or booting"
@@ -261,6 +260,9 @@ if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
 if [ "$PARALLELS" = true ]; then TARGET=parallels
 elif [ "$VMWARE" = true ]; then TARGET=vmware
 fi
+if [ "$TARGET" = x86 ] && [ "$DRY_RUN" != true ]; then
+    source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
+fi
 if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
     case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
         ''|0|false|no) BREENIX_CATCHUP=0 ;;
@@ -282,6 +284,9 @@ if [ "$DRY_RUN" = true ]; then
     echo "Target policy accepted; no build or boot requested."
     exit 0
 fi
+# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
@@ -311,7 +316,7 @@ fi
 # Opt in for constrained build hosts; VM execution retains normal priority.
 run_build() {
     if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
-        taskpolicy -b "$@"
+        "$BREENIX_ROOT/scripts/build-background.sh" "$@"
     else
         "$@"
     fi
@@ -339,9 +344,11 @@ if [ -n "$SUITE" ]; then
         echo "--suite is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode suite --suite ID)"
         exit 1
     fi
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE"
-        exit 1
+    # A comma-separated list runs several suites in one boot (docs/suites/README.md, "Several suites in one boot").
+    if [ "$PARALLELS" = true ]; then SUITE_TARGET=parallels; else SUITE_TARGET=vmware; fi
+    SUITE=$(python3 "$BREENIX_ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target "$SUITE_TARGET") || exit 1
+    if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
+        echo "--case watches one case of one suite, not a list"; exit 2
     fi
 fi
 
@@ -364,6 +371,10 @@ if [ "$PROBE" = true ]; then
 elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
 fi
+# The manifests of the suites this boot runs, for the quiet-host check.
+SUITE_MANIFESTS=()
+IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
+for id in ${SUITE_IDS[@]+"${SUITE_IDS[@]}"}; do SUITE_MANIFESTS+=("$BREENIX_ROOT/docs/suites/$id.json"); done
 
 # --tests: the testing kernel (--features testing) and its test loader, as
 # scripts/boot-interactive.sh --mode tests runs it on ARM64 QEMU.
@@ -429,8 +440,10 @@ stage_boot_ext2_disk() {
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
     else
-        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
+        local sequence=
+        [[ "$SUITE" != *,* ]] || sequence=$SUITE
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "${SUITE%%,*}" \
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$sequence" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -483,13 +496,18 @@ bounded_vm_command() {
 
 # Read the VM's written disk only after stop has succeeded. VMware's deployed
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
+# A boot of several suites scores each of them here, the last with its disk checks.
 score_vm_suite_disk() {
     (
         # Whole-suite disk checks depend on other cases and are not one-case evidence.
         [ -z "${ONLY:-}" ] || exit 0
-        local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
+        local manifest="$BREENIX_ROOT/docs/suites/${SUITE##*,}.json" checks disk="" temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
-        [ "$checks" != 0 ] || exit 0
+        if [ "$checks" = 0 ]; then
+            [[ "$SUITE" == *,* ]] || exit 0
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG"
+            exit $?
+        fi
         if [ "$PARALLELS" = true ]; then
             disk=$(find "$EXT2_HDD_DIR" -name '*.hds' -type f) || exit $?
             if [ ! -f "$disk" ]; then
@@ -502,7 +520,11 @@ score_vm_suite_disk() {
             disk="$temporary/ext2.raw"
             bounded_vm_command qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
         fi
-        python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        if [[ "$SUITE" == *,* ]]; then
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --disk "$disk"
+        else
+            python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        fi
     )
 }
 
@@ -535,7 +557,9 @@ delete_vmware_bundle() {
             echo "WARNING: vmrun deleteVM kept $bundle: $output"
         fi
     else
-        mv "$bundle" "$scratch/" || true
+        # An interrupted setup may have copied disks without writing a VMX.
+        # Leave any other contents in place so reuse fails safely.
+        rm -f "$bundle/boot.vmdk" "$bundle/ext2-data.vmdk"
     fi
     # Fusion removes its known VM files but preserves our ownership marker.
     # Remove only that marker, the window frame we wrote and an empty
@@ -545,6 +569,28 @@ delete_vmware_bundle() {
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
+}
+
+vmware_boot_name() {
+    local identity
+    if [ "${BREENIX_BOOT_NO_QUEUE:-0}" = 1 ]; then
+        # An unqueued boot owns no slot identity and must not reuse its bundle.
+        identity=$(uuidgen) || return $?
+        printf 'breenix-unqueued-%s\n' "$identity"
+    else
+        identity=$(host_slot_number mac-boot) || return $?
+        printf 'breenix-mac-boot-%s\n' "$identity"
+    fi
+}
+
+prune_vmware_inventory() {
+    python3 "$BREENIX_ROOT/scripts/vmware-inventory.py" \
+        || echo "WARNING: could not prune VMware library"
+}
+
+cleanup_vmware_bundle() {
+    delete_vmware_bundle "$VM_BUNDLE"
+    prune_vmware_inventory
 }
 
 # Fusion opens a VM's window at the frame saved in <name>.plist in its bundle and, unless
@@ -598,23 +644,24 @@ finish_vm_boot() {
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
     fi
-    if [ "$status" = 0 ] && [ "${BOOT_MODE:-}" = suite ]; then
+    if [ "${BOOT_MODE:-}" = suite ] && { [ "$status" = 0 ] || [[ "$SUITE" == *,* ]]; }; then
+        # Each suite of a sequence is scored even when the boot was stopped part way.
         if [ "$stopped" != true ]; then
             echo "FAIL: could not stop VM for suite disk checks"
-            status=1
+            [ "$status" != 0 ] || status=1
         else
-            score_vm_suite_disk || status=$?
+            score_vm_suite_disk || { [ "$status" != 0 ] || status=1; }
         fi
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
     if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
-        # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
-        # vmware.log stays beside the serial log.
+        # Delete and prune while the slot is still ours. The supervisor keeps
+        # the lease through its final VM stop, so it cannot stop the next boot.
         cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
-        host_slot_release mac-boot
         delete_vmware_bundle "$VM_BUNDLE"
     fi
+    [ "$PARALLELS" = true ] || prune_vmware_inventory
     exit "$status"
 }
 
@@ -896,6 +943,10 @@ if [ "$PARALLELS" = true ]; then
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
     prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
+    # Disable app sharing; this is expected to reduce host app indexing activity.
+    if ! prlctl set "$PARALLELS_VM" --sh-app-guest-to-host off --sh-app-host-to-guest off; then
+        echo "WARNING: could not disable Parallels application sharing" >&2
+    fi
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
@@ -962,7 +1013,7 @@ if [ "$PARALLELS" = true ]; then
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
@@ -1098,6 +1149,7 @@ if [ "$VMWARE" = true ]; then
         echo "ERROR: vmrun not found. Is VMware Fusion installed?"
         exit 1
     fi
+    prune_vmware_inventory
 
     # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
     # disconnected, even when the VMX requests a connected adapter.
@@ -1232,16 +1284,25 @@ if [ "$VMWARE" = true ]; then
     echo ""
     echo "--- Configuring VMware VM ---"
 
-    # Exclusive creation prevents clock rollback or name collisions from
-    # granting cleanup ownership of another VM. Never sweep unowned bundles.
-    VM_NAME="breenix-$(date +%s)-$(uuidgen)"
+    # One library identity per leased slot, including after a crashed run.
+    # The supervisor refuses a slot number unless this session holds its lease.
+    VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
+    if [ -d "$VM_BUNDLE" ] && [ ! -L "$VM_BUNDLE" ] \
+        && [ -f "$VM_BUNDLE/.breenix-run-owner" ] \
+        && [ "$(cat "$VM_BUNDLE/.breenix-run-owner")" = "$VM_NAME" ]; then
+        VM_BUNDLE_OWNED=true
+        delete_vmware_bundle "$VM_BUNDLE"
+        VM_BUNDLE_OWNED=false
+    fi
+    # Exclusive creation fails if a running, unowned or unknown-content bundle
+    # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
     echo "VM name: $VM_NAME"
-    trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
+    trap cleanup_vmware_bundle EXIT
     trap 'exit 130' INT
     trap 'exit 129' HUP
     trap 'exit 143' TERM
@@ -1365,7 +1426,7 @@ VMXEOF
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     vmware_network_summary

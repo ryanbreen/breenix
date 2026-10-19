@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix="softirq-status-") as tmp:
     env = dict(os.environ, BREENIX_GATE_TMP=tmp, OUTPUT_DIR=tmp)
     serial = Path(tmp) / "serial.txt"
     oracle = "[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=2:wait_ns=15000000000:dispatches=0:iterations=10:verdict=starved]"
-    for contents, status, label in [(oracle, 2, "INCONCLUSIVE"),
+    for contents, status, label in [(oracle, 1, "FAIL"),
                                     (oracle.replace("15000000000", "0"), 1, "FAIL"),
                                     (oracle.replace("starved", "lost"), 1, "FAIL"),
                                     (oracle + "\nKERNEL PANIC", 1, "FAIL"),
@@ -62,10 +62,10 @@ if run_tail; then exit 0; else exit $?; fi
             assert "[INCONCLUSIVE]" in result.stdout, result.stdout
             assert "[FAIL]" not in result.stdout, result.stdout
 
-    # Run the real aggregation for mixed iterations; a kernel failure wins
-    # over starvation; starvation increments the inconclusive count.
+    # Run the real aggregation with replacement attempts. STARVED never
+    # consumes a required iteration; a real kernel failure still wins.
     summary = source.split("START_TIME=$(date +%s)\n", 1)[1]
-    for statuses, expected in [("0 0", 0), ("0 2", 2), ("2 2", 2), ("2 1", 1), ("1 2", 1)]:
+    for statuses, expected in [("0 0", 0), ("0 2 0", 0), ("2 2 0 0", 0), ("2 1 0", 1), ("1 2 0", 1)]:
         script = '''set -e
 START_TIME=$(date +%s)
 ITERATIONS=2
@@ -75,7 +75,7 @@ STARVATIONS=0
 FAILED_ITERATIONS=""
 STARVED_ITERATIONS=""
 statuses=(STATUSES)
-run_single_test() { return "${statuses[$1-1]}"; }
+run_single_test() { return "${statuses[$attempt-1]}"; }
 '''.replace("STATUSES", statuses) + summary
         result = run(script, env)
         assert result.returncode == expected, result.stdout

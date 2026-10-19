@@ -18,20 +18,10 @@
 
 use libbreenix::http::{self, HttpError, MAX_RESPONSE_SIZE};
 use libbreenix::socket;
-use libbreenix::time::now_monotonic;
 use std::process;
 
 // This in-process deadline bounds an unbounded receive stall, not a fetch SLA.
 const EXTERNAL_FETCH_DEADLINE_MS: u64 = 20_000;
-
-fn monotonic_ms() -> Option<u64> {
-    let now = now_monotonic().ok()?;
-    Some(
-        (now.tv_sec.max(0) as u64)
-            .saturating_mul(1000)
-            .saturating_add((now.tv_nsec.max(0) as u64) / 1_000_000),
-    )
-}
 
 /// Print an HTTP error
 fn print_error(e: &HttpError) {
@@ -190,10 +180,7 @@ fn main() {
     // Test 5: HTTPS fetch. OK only for an HTTP response received over TLS; a
     // TLS failure is a failure, and only connect-phase network errors skip.
     print!("HTTP_TEST: testing HTTPS fetch...\n");
-    let https_deadline_ms = monotonic_ms()
-        .unwrap_or(1)
-        .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
-    socket::arm_recv_deadline(https_deadline_ms);
+    socket::arm_recv_timeout(EXTERNAL_FETCH_DEADLINE_MS);
     let https_result = http::http_get_status("https://example.com/");
     socket::disarm_recv_deadline();
     if socket::recv_deadline_fired() {
@@ -207,6 +194,10 @@ fn main() {
         Err(HttpError::TlsError) => {
             print!("HTTP_TEST: https_url FAILED (TLS handshake or TLS record exchange failed)\n");
             process::exit(5);
+        }
+        Err(HttpError::DnsError(libbreenix::dns::DnsError::ResolutionDeadline)) => {
+            print!("HTTP_TEST: https_url FAILED (DNS resolution exceeded its 20000ms deadline)\n");
+            process::exit(1);
         }
         Err(HttpError::ConnectError) | Err(HttpError::DnsError(_)) | Err(HttpError::Timeout) => {
             print!("HTTP_TEST: https_url SKIP (network unavailable)\n");
@@ -247,10 +238,7 @@ fn main() {
 
     // Test 7: Network integration - try to fetch example.com
     print!("HTTP_TEST: testing HTTP fetch (example.com)...\n");
-    let example_deadline_ms = monotonic_ms()
-        .unwrap_or(1)
-        .saturating_add(EXTERNAL_FETCH_DEADLINE_MS);
-    socket::arm_recv_deadline(example_deadline_ms);
+    socket::arm_recv_timeout(EXTERNAL_FETCH_DEADLINE_MS);
     let mut buf = [0u8; MAX_RESPONSE_SIZE];
     let example_result = http::http_get_with_buf("http://example.com/", &mut buf);
     socket::disarm_recv_deadline();
@@ -296,6 +284,10 @@ fn main() {
         }
         Err(HttpError::Timeout) => {
             print!("HTTP_TEST: example_fetch SKIP (network unavailable - Timeout)\n");
+        }
+        Err(HttpError::DnsError(libbreenix::dns::DnsError::ResolutionDeadline)) => {
+            print!("HTTP_TEST: example_fetch FAILED (DNS resolution exceeded its 20000ms deadline)\n");
+            process::exit(1);
         }
         Err(HttpError::DnsError(_)) => {
             print!("HTTP_TEST: example_fetch SKIP (network unavailable - DNS unreachable)\n");

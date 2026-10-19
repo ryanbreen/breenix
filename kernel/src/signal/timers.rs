@@ -462,6 +462,30 @@ impl PosixTimers {
         Some((timer.signo, super::types::SigInfo::timer(timer.signal.id, timer.value), process, timer.signal.clone()))
     }
 
+    /// Claim a signal of `set` that this process's timers have due for the
+    /// thread whose signal state is `signals`, the lowest-numbered, and of
+    /// that signal's the oldest, as delivery and sigtimedwait take the lowest
+    /// pending signal first; for an interrupt return or rt_sigtimedwait
+    /// taking it without PROCESS_MANAGER. The claim holds the table until it
+    /// is committed or dropped, so no syscall deletes, rearms or rebinds the
+    /// timer while the handler frame or the siginfo is written, and a claim
+    /// dropped uncommitted leaves the signal due exactly as it was. None,
+    /// claiming nothing, when the table is busy or nothing of `set` is due.
+    pub fn try_claim_due<'a>(&'a self, signals: &'a ThreadSignals, set: u64) -> Option<DueClaim<'a>> {
+        let me = signals as *const ThreadSignals as usize;
+        let table = self.table.try_lock()?;
+        let index = table
+            .timers
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                super::constants::sig_mask(t.signo) & set != 0 && t.signal.due_for.load(Ordering::Acquire) == me
+            })
+            .min_by_key(|(_, t)| (t.signo, t.signal.due_order()))?
+            .0;
+        Some(DueClaim { table, index, signals })
+    }
+
     /// The oldest due SIGCONT or stop signal of this process's timers, as
     /// (signal, siginfo, the thread SIGEV_THREAD_ID names, timer), its due
     /// mark cleared. None too when a syscall holds the table.
@@ -485,6 +509,51 @@ impl PosixTimers {
     fn redo_job_due(&self, timer: &TimerSignal) {
         timer.due_for.store(JOB, Ordering::Release);
         JOB_DUE.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// A due POSIX timer signal claimed for delivery (`PosixTimers::try_claim_due`),
+/// with the process's timer table held.
+pub struct DueClaim<'a> {
+    table: spin::MutexGuard<'a, Table>,
+    index: usize,
+    signals: &'a ThreadSignals,
+}
+
+impl DueClaim<'_> {
+    /// The signal the timer sends.
+    pub fn sig(&self) -> u32 {
+        self.table.timers[self.index].signo
+    }
+
+    /// The siginfo the handler is given: SI_TIMER, the timer's ID, its
+    /// sigev_value and the overruns so far, which stay as they are while the
+    /// table is held.
+    pub fn info(&self) -> super::types::SigInfo {
+        let timer = &self.table.timers[self.index];
+        super::types::SigInfo::timer(timer.signal.id, timer.value)
+            .with_overrun(timer.signal.pending_overrun())
+    }
+
+    /// The handler frame is written: the signal is delivered. The thread's
+    /// due bit for it is cleared unless another of its timers' signal of the
+    /// same number is due for it too.
+    pub fn commit(self) {
+        let me = self.signals as *const ThreadSignals as usize;
+        let timer = &self.table.timers[self.index];
+        let sig = timer.signo;
+        timer.signal.due_for.store(0, Ordering::Release);
+        timer.signal.deliver();
+        let still_due = self
+            .table
+            .timers
+            .iter()
+            .any(|t| t.signo == sig && t.signal.due_for.load(Ordering::Acquire) == me);
+        if !still_due {
+            self.signals
+                .posix_pending
+                .fetch_and(!super::constants::sig_mask(sig), Ordering::AcqRel);
+        }
     }
 }
 
@@ -557,10 +626,7 @@ fn generate_job_control(_: crate::task::softirqd::SoftirqType) {
         row.signals.queue_timer_signal(sig, info, thread.is_none(), timer);
         let wake = row.main_thread.as_ref().filter(|_| row.job.stopped.is_none()).map(|t| t.id);
         if let Some(tid) = wake {
-            crate::task::scheduler::with_scheduler(|scheduler| {
-                scheduler.unblock_for_signal(tid);
-                scheduler.unblock_for_child_exit(tid);
-            });
+            crate::task::scheduler::wake_for_signal(tid, true);
         }
     }
 }

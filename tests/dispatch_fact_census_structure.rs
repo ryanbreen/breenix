@@ -7,24 +7,25 @@
 //! published. This suite is the other half: for each of the sixteen sites, the
 //! arm now carries either a `trace_dispatch_abandon(DispatchAbandonSite::…)`
 //! that already counted it, or exactly one
-//! `note_fact(DispatchLogFact::…)` in the new sibling family -- and the ten
-//! new facts each reach the `[DISPATCH_STRAND_CENSUS:...]` line under their
-//! own name.
+//! `note_fact(DispatchLogFact::…)` in the sibling family -- and each fact
+//! reaches the `[DISPATCH_STRAND_CENSUS:...]` line under its own name.
+//!
+//! Some of those arms are gone, not moved: the dispatch no longer takes the
+//! process manager (#1635), so the save's three process-row arms became one
+//! scheduler-row arm, and the blocked-in-syscall signal-delivery arm, which
+//! no x86 wait armed, went with its three facts and its abandon site. Ten
+//! sites remain, five of them facts.
 //!
 //! # Why this is the binding, and the boot oracle is not
 //!
-//! `run_x86_dispatch_fact_oracle` drives the ten counters directly and shows
+//! `run_x86_dispatch_fact_oracle` drives the five counters directly and shows
 //! each field of the census line moving by exactly one. That measures the
 //! counter-to-line plumbing on real bytes. It cannot measure the
-//! site-to-counter binding, because seven of the ten arms are defensive arms
-//! this tree cannot reach on a running kernel -- a userspace thread with no
-//! process row, an idle thread with no kernel stack, a `ProcessManager` that
-//! is `None` after `process::init` -- and reaching them would mean injecting
-//! a fault into a Tier-2 dispatch path. So the binding is pinned HERE, at
-//! source, per site.
-//! claim-lint:ok: the 16/6/10 split and the 7 unreachable arms are the
-//! per-site table in
-//! docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md.
+//! site-to-counter binding, because four of the five arms are defensive arms
+//! this tree cannot reach on a running kernel -- a user thread with no
+//! scheduler row, an idle thread with no kernel stack -- and reaching them
+//! would mean injecting a fault into a Tier-2 dispatch path. So the binding
+//! is pinned HERE, at source, per site.
 //!
 //! # Shape-anchored, not line-pinned
 //!
@@ -79,43 +80,36 @@ fn code(body: &str) -> String {
         .join("\n")
 }
 
-/// The ten new facts, as `(variant, census-line field name)`.
-const FACTS: [(&str, &str); 10] = [
-    ("SaveNoMainThread", "save_no_thread"),
-    ("SaveProcessNotFound", "save_no_proc"),
-    ("SaveManagerNone", "save_no_pm"),
-    ("SignalPendingBlocked", "sig_pending_blocked"),
-    ("SignalContextBlocked", "sig_ctx_blocked"),
-    ("SignalDeliveredBlocked", "sig_delivered_blocked"),
+/// The five facts, as `(variant, census-line field name)`.
+const FACTS: [(&str, &str); 5] = [
+    ("SaveNoThread", "save_no_thread"),
     ("IdleStackMissing", "idle_no_stack"),
     ("KernelThreadInfoMissing", "kthread_no_info"),
     ("UserKernelStackMissing", "user_no_kstack"),
     ("SignalDeliverableUser", "sig_deliverable_user"),
 ];
 
-/// Each of the sixteen deleted sites, as
+/// Each of the surviving deleted-print sites, as
 /// `(enclosing fn, publication spelling, how many that fn carries)`.
 ///
-/// Six rows name a `DispatchAbandonSite` that was ALREADY beside the deleted
-/// print and already counted that arm; ten name a new `DispatchLogFact`. The
-/// count column is what makes a copy-paste of the wrong variant fail: a
-/// function that publishes the same fact twice, or drops one of two, moves it.
-const SITE_PUBLICATIONS: [(&str, &str, usize); 16] = [
-    // Already counted before this PR (the print was redundant).
+/// Five rows name a `DispatchAbandonSite` (or marker) that was ALREADY beside
+/// the deleted print and already counted that arm; five name a
+/// `DispatchLogFact`. The count column is what makes a copy-paste of the wrong
+/// variant fail: a function that publishes the same fact twice, or drops one
+/// of two, moves it.
+const SITE_PUBLICATIONS: [(&str, &str, usize); 10] = [
+    // Already counted before PR-1 (the print was redundant).
     (
         "check_need_resched_and_switch",
         "DispatchAbandonSite::RollbackSaveFailed",
         1,
     ),
     ("switch_to_thread", "DispatchAbandonSite::RollbackTls", 1),
+    // The busy-lock rollback, which the blocked-in-syscall arm's
+    // `RollbackKernelContextLock` became when the root lookup took its place.
     (
-        "switch_to_thread",
-        "DispatchAbandonSite::IdleSignalTerminatedBlocked",
-        1,
-    ),
-    (
-        "switch_to_thread",
-        "DispatchAbandonSite::RollbackKernelContextLock",
+        "refuse_user_dispatch",
+        "DispatchAbandonSite::RollbackRootLock",
         1,
     ),
     (
@@ -127,31 +121,10 @@ const SITE_PUBLICATIONS: [(&str, &str, usize); 16] = [
     // carry: a lock-free raw-serial marker that was already there beside the
     // deleted `log::error!`.
     ("restore_userspace_thread_context", "<KFRAME>", 1),
-    // New this PR.
+    // New in PR-1.
     (
-        "save_current_thread_context_with_guard",
-        "DispatchLogFact::SaveNoMainThread",
-        1,
-    ),
-    (
-        "save_current_thread_context_with_guard",
-        "DispatchLogFact::SaveProcessNotFound",
-        1,
-    ),
-    (
-        "save_current_thread_context_with_guard",
-        "DispatchLogFact::SaveManagerNone",
-        1,
-    ),
-    (
-        "switch_to_thread",
-        "DispatchLogFact::SignalPendingBlocked",
-        1,
-    ),
-    ("switch_to_thread", "DispatchLogFact::SignalContextBlocked", 1),
-    (
-        "switch_to_thread",
-        "DispatchLogFact::SignalDeliveredBlocked",
+        "save_current_thread_context",
+        "DispatchLogFact::SaveNoThread",
         1,
     ),
     ("setup_idle_return", "DispatchLogFact::IdleStackMissing", 1),
@@ -166,7 +139,7 @@ const SITE_PUBLICATIONS: [(&str, &str, usize); 16] = [
         1,
     ),
     (
-        "restore_userspace_thread_context",
+        "deliver_signals_on_user_return",
         "DispatchLogFact::SignalDeliverableUser",
         1,
     ),
@@ -203,7 +176,7 @@ fn every_deleted_site_still_publishes_its_fact() {
 fn the_touched_functions_carry_no_emitting_logging_macro() {
     let source = read(CONTEXT_SWITCH);
     for function in [
-        "save_current_thread_context_with_guard",
+        "save_current_thread_context",
         "setup_idle_return",
         "setup_kernel_thread_return",
     ] {
@@ -265,14 +238,14 @@ fn note_fact_is_one_relaxed_atomic_add() {
     );
 }
 
-/// The ten facts, their ten field names and the array they index are one
+/// The five facts, their five field names and the array they index are one
 /// list, in one order, of one length.
 #[test]
 fn the_fact_family_is_one_list_in_one_order() {
     let census = read(CENSUS);
     assert!(
-        census.contains("pub(crate) const DISPATCH_LOG_FACT_COUNT: usize = 10;"),
-        "DISPATCH_LOG_FACT_COUNT is no longer 10"
+        census.contains("pub(crate) const DISPATCH_LOG_FACT_COUNT: usize = 5;"),
+        "DISPATCH_LOG_FACT_COUNT is no longer 5"
     );
     assert!(
         census.contains(
@@ -321,18 +294,18 @@ fn the_fact_family_is_one_list_in_one_order() {
     assert_eq!(
         names_body.matches('"').count(),
         FACTS.len() * 2,
-        "FACT_FIELD_NAMES carries a name that is not one of the ten facts"
+        "FACT_FIELD_NAMES carries a name that is not one of the five facts"
     );
 }
 
-/// The ten totals reach the census line, appended after the eight fields the
+/// The five totals reach the census line, appended after the eight fields the
 /// strand verdict reads, and the strand tool accepts both shapes.
 #[test]
-fn the_ten_facts_reach_the_census_line() {
+fn the_facts_reach_the_census_line() {
     let census = read(CENSUS);
     assert!(
         census.contains(
-            "\"[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}]\""
+            "\"[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}:waiting={}]\""
         ),
         "the census line no longer appends the fact fields after ledger_overflow"
     );
@@ -404,7 +377,7 @@ fn the_gate_pins_the_oracle_verdict() {
     let gate = read(GATE);
     assert!(
         gate.contains(
-            "DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]'"
+            "DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=5:legs=5:moved_by_one=5:moved_wrong=0:irqs_enabled_before=1:PASS]'"
         ),
         "docker/qemu/run-x86-boot-tests.sh no longer pins the dispatch-fact oracle verdict"
     );

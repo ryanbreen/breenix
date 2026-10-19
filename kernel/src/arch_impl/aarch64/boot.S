@@ -744,10 +744,17 @@ irq_handler:
     mov x0, sp
     bl check_need_resched_and_switch_arm64
 
+    // After a context switch x0 is the dispatched frame, staged on this CPU's
+    // scheduler stack. Restore from the copy: once SP is off the old thread's
+    // kernel stack, clear the mark that holds another CPU off the old thread,
+    // which the switch has already requeued (#1785). The call is one store,
+    // with no lock. x0 == 0 leaves SP on the frame this exception pushed.
+    cbz x0, .Lirq_frame_ready
+    mov sp, x0
+    bl aarch64_complete_exception_switch
+.Lirq_frame_ready:
+
     // Read ELR from exception frame (written by dispatch function if context switched).
-    // The deferred requeue mechanism prevents cross-CPU frame overwrite: the old
-    // thread stays in per-CPU DEFERRED_REQUEUE until the next timer tick on THIS
-    // CPU, so no other CPU can dispatch it while we still read from the frame.
     ldr x16, [sp, #248]      // x16 = frame.elr
 
     // Admit EL1 and EL0 resume PCs through their shared window predicates.

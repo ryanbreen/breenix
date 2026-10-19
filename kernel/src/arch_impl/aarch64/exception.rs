@@ -450,6 +450,7 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
     unsafe {
         core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
     }
+    super::irq_mask_account::opened();
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let first_fault = cpu_id < EL1_UNHANDLED_FAULT_LATCHED.len()
@@ -835,6 +836,9 @@ mod exception_class {
 /// - x2 = FAR_EL1 (Fault Address Register)
 #[no_mangle]
 pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
+    // The CPU takes the exception masked; the return restores the frame's
+    // DAIF.
+    let _masked = super::irq_mask_account::ExceptionStretch::begin(frame);
     // Per-CPU sync exception counter — increment FIRST, before any branching.
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id < 8 {
@@ -2029,6 +2033,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             unsafe {
                 core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
             }
+            super::irq_mask_account::opened();
             let frame_ref = unsafe { &mut *frame };
             let fatal_uart_guard = acquire_fatal_postmortem_uart();
             // Use lock-free raw UART — serial_println! acquires a spinlock that may be
@@ -2597,6 +2602,7 @@ impl Drop for KernelTime {
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
+    super::irq_mask_account::taken_irq();
     crate::tracing::providers::counters::count_irq();
     let have_percpu = crate::per_cpu_aarch64::is_initialized();
 
@@ -2626,6 +2632,9 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             && interrupted_context_had_irqs_unmasked(frame)
             && !gic::is_spi_level_triggered(irq_id);
         if reopen_nested_irq_window {
+            // This interrupt stays active until `deactivate_irq`, so when it is
+            // the timer's it holds the next tick off with interrupts enabled.
+            super::irq_mask_account::closing_nested();
             unsafe {
                 core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
             }
@@ -2637,6 +2646,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             unsafe {
                 core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
             }
+            super::irq_mask_account::opened();
         }
 
         // Mask IRQs before deactivation: a level source may already be
@@ -2702,15 +2712,9 @@ fn check_need_resched_on_irq_exit() {
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
-    // Read all available bytes from the UART FIFO
-    while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Push to stdin buffer for kernel shell or userspace read() syscall
-        // This wakes any blocked readers waiting for input
-        crate::ipc::stdin::push_byte_from_irq(byte);
-    }
-
-    // Clear the interrupt
-    serial_aarch64::clear_rx_interrupt();
+    // Do not consume a UART byte until stdin owns space for it. Contention
+    // defers RX until the ring holder releases it; the IRQ does not wait.
+    crate::ipc::stdin::receive_serial_from_irq(serial_aarch64::get_received_byte);
 }
 
 /// Get exception class name for debugging

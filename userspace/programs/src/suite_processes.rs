@@ -1913,6 +1913,73 @@ fn exec_keeps_process() -> CaseResult {
     state_is(&state, "sid", &sid, "the session")
 }
 
+/// execve from a thread other than the process's first one, while a third thread waits:
+/// the new image runs as the process, under its process ID and with its parent, and the
+/// first thread and the waiting one, both live just before the exec, are gone (POSIX).
+fn exec_from_thread() -> CaseResult {
+    let me = pid();
+    let (r, w) = io::pipe()?;
+    let report = w.raw();
+    let child = Child::start(move || {
+        let _ = io::close(r);
+        let fail = |msg: String| { let _ = io::write(Fd::from_raw(report), msg.as_bytes()); 126 };
+        if block(bit(SIGUSR1)).is_err() { return fail("setup=block SIGUSR1 failed\n".into()); }
+        if kill(pid(), SIGUSR1) != 0 { return fail("setup=queue SIGUSR1 failed\n".into()); }
+        let first = sc(libbreenix::syscall::nr::GETTID, &[]);
+        let Ok((hold_r, _hold_w)) = io::pipe2(O_CLOEXEC) else { return fail("setup=pipe2 failed\n".into()) };
+        let waiting = std::sync::Arc::new(AtomicI64::new(0));
+        let seen = waiting.clone();
+        std::thread::spawn(move || {
+            seen.store(sc(libbreenix::syscall::nr::GETTID, &[]), Ordering::Release);
+            drain(hold_r);
+        });
+        let start = now_ms();
+        while waiting.load(Ordering::Acquire) == 0 {
+            if now_ms().saturating_sub(start) >= WAIT_MS { return fail("setup=the waiting thread never started\n".into()); }
+            nap();
+        }
+        let tids = [first, waiting.load(Ordering::Acquire)];
+        let process = pid() as u64;
+        let execer = std::thread::spawn(move || {
+            for tid in tids {
+                let r = sc(libbreenix::syscall::nr::TGKILL, &[process, tid as u64, 0]);
+                if r != 0 { return format!("setup=before the exec tgkill(pid, {tid}, 0) returned {}\n", shown(r)); }
+            }
+            let args: Vec<String> = ["processes-exec", "threads", &report.to_string(), &tids[0].to_string(), &tids[1].to_string()]
+                .iter().map(|a| a.to_string()).collect();
+            let (path, argv, envp) = (cpath(HELPER), cargs(&args), cargs(&[]));
+            let ret = sc(nr::EXECVE, &[path.as_ptr() as u64, argv.ptrs.as_ptr() as u64, envp.ptrs.as_ptr() as u64]);
+            format!("exec=E{}\n", -ret)
+        });
+        match execer.join() {
+            Ok(msg) => fail(msg),
+            Err(_) => fail("setup=the exec thread panicked\n".into()),
+        }
+    });
+    io::close(w)?;
+    let (mut child, out) = match child {
+        Ok(child) => { let out = read_to_eof(r, EXEC_MS); (child, out) }
+        Err(e) => { let _ = io::close(r); return Err(e); }
+    };
+    io::close(r)?;
+    let out = out?;
+    let state: HashMap<String, String> = String::from_utf8_lossy(&out).lines()
+        .filter_map(|line| line.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect();
+    if let Some(msg) = state.get("setup") { return fail(format!("before the exec: {msg}")); }
+    if let Some(errno) = state.get("exec") { return fail(format!("execve from a thread failed with errno {}", &errno[1..])); }
+    state_is(&state, "pid", &child.pid.to_string(), "the process ID")?;
+    state_is(&state, "ppid", &me.to_string(), "the parent process ID")?;
+    let pending = u64::from_str_radix(state.get("pending").map_or("", String::as_str), 16).unwrap_or(0);
+    check(pending & bit(SIGUSR1) != 0, "exec lost the process-directed SIGUSR1 queued on its old leader")?;
+    let gone: Vec<(&String, &String)> = state.iter().filter(|(k, _)| k.starts_with("tid")).collect();
+    check(gone.len() == 2, &format!("the exec'd program reported {} old threads, expected 2", gone.len()))?;
+    for (key, value) in gone {
+        check(value == "E3", &format!("after the exec tgkill(pid, {}, 0) returned {value}, expected ESRCH: that thread outlived the exec", &key[3..]))?;
+    }
+    child.expect_exit(0, "the exec'd program")
+}
+
 fn exec_keeps_cwd_umask() -> CaseResult {
     let tmp = Tmp::new()?;
     let dir = tmp.dir.clone();
@@ -3407,6 +3474,7 @@ static SUITE: Suite = suite(
             case("signal-reset", "Caught signals reset to default; ignored signals stay ignored", exec_signal_reset),
             case("mask-pending", "The signal mask and pending signals are kept", exec_mask_pending),
             case("keeps-process", "The process ID, parent, process group and session are kept", exec_keeps_process),
+            case("from-thread", "exec from a thread other than the first runs the new image as the process, under its process ID, and ends its other threads", exec_from_thread),
             case("keeps-cwd-umask", "The working directory and umask are kept", exec_keeps_cwd_umask),
             case("keeps-alarm", "A pending alarm is kept", exec_keeps_alarm),
             case("keeps-ids", "An ordinary program keeps the user, group and supplementary group IDs", exec_keeps_ids),

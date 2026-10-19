@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from vigil_record_fixture import isolated_commands
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "vigil-record.sh"
@@ -36,7 +37,7 @@ class VigilRecordHomeTest(unittest.TestCase):
         if vigil_home is not None:
             env["VIGIL_TEST_HOME"] = str(vigil_home)
         subprocess.run([str(SCRIPT), "record", "qemu", "tests", "", str(tmp / "serial.txt"), "", "", boot_id,
-                        "0" * 40, "1", "2", "0"], env=env, check=True, capture_output=True, text=True)
+                        "0" * 40, "1", "2", "0"], env=isolated_commands(env, tmp), check=True, capture_output=True, text=True)
         return log.read_text().split("\n")[1]
 
     def test_a_boot_published_under_vigils_home_is_finished(self):

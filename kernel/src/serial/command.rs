@@ -7,6 +7,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use futures_util::stream::StreamExt;
 use spin::Once;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static TTY_INPUT: AtomicBool = AtomicBool::new(false);
+
+/// Select the userspace console before starting the serial input task.
+pub fn use_tty_input() {
+    TTY_INPUT.store(true, Ordering::Release);
+}
 
 // Command handler type
 type CommandHandler = fn();
@@ -49,11 +57,18 @@ pub async fn serial_command_task() {
 
     let mut input = SerialInputStream::new();
     let mut line_buffer = String::new();
+    let tty_input = TTY_INPUT.load(Ordering::Acquire);
 
     // Send a prompt
-    print_prompt();
+    if !tty_input {
+        print_prompt();
+    }
 
     while let Some(byte) = input.next().await {
+        if tty_input {
+            crate::tty::push_char_from(byte, crate::tty::InputSource::Serial);
+            continue;
+        }
         match byte {
             // Enter/newline - process the command
             b'\r' | b'\n' => {

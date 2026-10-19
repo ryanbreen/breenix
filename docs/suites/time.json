@@ -52,7 +52,7 @@
         },
         {
           "id": "rate-rtc",
-          "title": "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, over 3 seconds"
+          "title": "Linux ABI: CLOCK_REALTIME advances at the rate of the RTC, read through /dev/rtc0 RTC_RD_TIME, between seconds edges at least 3 seconds apart"
         },
         {
           "id": "cputime-process",

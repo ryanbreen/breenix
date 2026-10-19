@@ -797,53 +797,6 @@ fn assignment_to_false(body: &str, field: &str) -> bool {
         })
 }
 
-fn else_if_condition_has_disjunction(body: &str, left: &str, right: &str) -> bool {
-    let mask = code_mask(body);
-    let bytes = body.as_bytes();
-
-    identifier_offsets(body, &mask, "else")
-        .into_iter()
-        .any(|else_offset| {
-            let mut cursor = else_offset + "else".len();
-            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
-                cursor += 1;
-            }
-            if bytes.get(cursor..cursor + 2) != Some(b"if")
-                || bytes
-                    .get(cursor + 2)
-                    .is_some_and(|byte| identifier_byte(*byte))
-            {
-                return false;
-            }
-            cursor += 2;
-            let Some(open) =
-                (cursor..bytes.len()).find(|index| mask[*index] && bytes[*index] == b'{')
-            else {
-                return false;
-            };
-            let condition = &body[cursor..open];
-            let condition_mask = code_mask(condition);
-            let Some(left_offset) = identifier_offsets(condition, &condition_mask, left)
-                .first()
-                .copied()
-            else {
-                return false;
-            };
-            let Some(right_offset) = identifier_offsets(condition, &condition_mask, right)
-                .first()
-                .copied()
-            else {
-                return false;
-            };
-            let (first, second) = if left_offset < right_offset {
-                (left_offset + left.len(), right_offset)
-            } else {
-                (right_offset + right.len(), left_offset)
-            };
-            normalized_code(&condition[first..second]).contains("||")
-        })
-}
-
 fn validate_unblock_source(source: &str) -> Result<(), String> {
     let body = function_body(source, "unblock").ok_or_else(|| "missing fn unblock".to_string())?;
     if assignment_to_false(body, "blocked_in_syscall") {
@@ -855,14 +808,18 @@ fn validate_unblock_source(source: &str) -> Result<(), String> {
 fn validate_switch_source(source: &str) -> Result<(), String> {
     let switch_body = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
-    if !else_if_condition_has_disjunction(
-        switch_body,
-        "blocked_in_syscall",
-        "saved_context_is_kernel_frame",
+    let compact = normalized_code(switch_body).replace(' ', "");
+    if !compact.contains(
+        "resumes_in_kernel:thread.blocked_in_syscall||saved_context_is_kernel_frame(thread),",
     ) {
         return Err(
             "switch_to_thread does not combine blocked_in_syscall with the saved-frame term"
                 .to_string(),
+        );
+    }
+    if !compact.contains("}elseifincoming.resumes_in_kernel{resume_kernel_context(") {
+        return Err(
+            "switch_to_thread does not resume a kernel-saved user thread in the kernel".to_string(),
         );
     }
 
@@ -920,73 +877,10 @@ fn validate_routing_matches_enforcement(
     routing_source: &str,
     enforcement_source: &str,
 ) -> Result<(), String> {
-    fn closure_body<'a>(body: &'a str, call: &str) -> Result<&'a str, String> {
-        let mask = code_mask(body);
-        let bytes = body.as_bytes();
-        for call_offset in identifier_offsets(body, &mask, call) {
-            let mut open = call_offset + call.len();
-            while open < bytes.len() && (!mask[open] || bytes[open].is_ascii_whitespace()) {
-                open += 1;
-            }
-            if bytes.get(open) != Some(&b'(') {
-                continue;
-            }
-
-            let mut depth = 0usize;
-            let mut close = None;
-            for offset in open..bytes.len() {
-                if !mask[offset] {
-                    continue;
-                }
-                match bytes[offset] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth = depth
-                            .checked_sub(1)
-                            .ok_or_else(|| format!("unbalanced {call} call"))?;
-                        if depth == 0 {
-                            close = Some(offset);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let close = close.ok_or_else(|| format!("unterminated {call} call"))?;
-            let pipes: Vec<_> = (open + 1..close)
-                .filter(|offset| mask[*offset] && bytes[*offset] == b'|')
-                .take(2)
-                .collect();
-            if pipes.len() != 2 || normalized_code(&body[pipes[0] + 1..pipes[1]]) != "thread" {
-                continue;
-            }
-
-            let mut expression_start = pipes[1] + 1;
-            while expression_start < close
-                && (!mask[expression_start] || bytes[expression_start].is_ascii_whitespace())
-            {
-                expression_start += 1;
-            }
-            if bytes.get(expression_start) == Some(&b'{') {
-                let block = braced_block(body, &mask, expression_start)
-                    .ok_or_else(|| format!("{call} closure has an unterminated body"))?;
-                let block_end = expression_start + block.len();
-                if block_end > close || !normalized_code(&body[block_end..close]).is_empty() {
-                    return Err(format!("{call} closure has tokens after its braced body"));
-                }
-                return Ok(&block[1..block.len() - 1]);
-            }
-            if expression_start == close {
-                return Err(format!("{call} closure has no body"));
-            }
-            return Ok(&body[expression_start..close]);
-        }
-        Err(format!("missing {call} closure with |thread| parameter"))
-    }
-
+    // The helper's body is the predicate, over the scheduler row it is handed.
     let routing = function_body(routing_source, "saved_context_is_kernel_frame")
         .ok_or_else(|| "missing fn saved_context_is_kernel_frame".to_string())?;
-    let routing_predicate = normalized_predicate(closure_body(routing, "is_some_and")?);
+    let routing_predicate = normalized_predicate(&routing[1..routing.len() - 1]);
 
     let enforcement = function_body(enforcement_source, "restore_userspace_context")
         .ok_or_else(|| "missing fn restore_userspace_context".to_string())?;
@@ -1018,189 +912,322 @@ fn validate_routing_matches_enforcement(
     Ok(())
 }
 
-fn validate_dispatch_guard_precheck(source: &str) -> Result<(), String> {
-    fn binding_initializer<'a>(body: &'a str, name: &str) -> Result<(usize, &'a str), String> {
-        let mask = code_mask(body);
-        let bytes = body.as_bytes();
-        let mut bindings = Vec::new();
-
-        for let_offset in identifier_offsets(body, &mask, "let") {
-            let mut cursor = let_offset + "let".len();
-            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
-                cursor += 1;
-            }
-            if bytes
-                .get(cursor..cursor + "mut".len())
-                .is_some_and(|candidate| candidate == b"mut")
-                && !bytes
-                    .get(cursor + "mut".len())
-                    .is_some_and(|byte| identifier_byte(*byte))
-            {
-                cursor += "mut".len();
-                while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace())
-                {
-                    cursor += 1;
-                }
-            }
-
-            let name_start = cursor;
-            while cursor < bytes.len() && mask[cursor] && identifier_byte(bytes[cursor]) {
-                cursor += 1;
-            }
-            if &body[name_start..cursor] != name {
-                continue;
-            }
-            while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace()) {
-                cursor += 1;
-            }
-            if bytes.get(cursor) != Some(&b'=') {
-                return Err(format!("{name} binding has no initializer"));
-            }
-
-            let initializer_start = cursor + 1;
-            let mut parentheses = 0usize;
-            let mut braces = 0usize;
-            let mut brackets = 0usize;
-            let initializer_end = (initializer_start..bytes.len())
-                .find(|offset| {
-                    if !mask[*offset] {
-                        return false;
-                    }
-                    match bytes[*offset] {
-                        b'(' => parentheses += 1,
-                        b')' => parentheses = parentheses.saturating_sub(1),
-                        b'{' => braces += 1,
-                        b'}' => braces = braces.saturating_sub(1),
-                        b'[' => brackets += 1,
-                        b']' => brackets = brackets.saturating_sub(1),
-                        b';' if parentheses == 0 && braces == 0 && brackets == 0 => return true,
-                        _ => {}
-                    }
-                    false
-                })
-                .ok_or_else(|| format!("unterminated {name} binding"))?;
-            bindings.push((let_offset, &body[initializer_start..initializer_end]));
-        }
-
-        if bindings.len() != 1 {
-            return Err(format!(
-                "expected exactly one {name} binding, found {}",
-                bindings.len()
-            ));
-        }
-        Ok(bindings[0])
+/// The braced body of the `pattern => { ... }` match arm in `scope`.
+fn match_arm_block<'a>(scope: &'a str, pattern: &str) -> Option<&'a str> {
+    let mask = code_mask(scope);
+    let at = code_offsets(scope, &mask, pattern).into_iter().next()?;
+    let arrow = at + scope[at..].find("=>")?;
+    let bytes = scope.as_bytes();
+    let open = (arrow + 2..bytes.len()).find(|offset| mask[*offset] && !bytes[*offset].is_ascii_whitespace())?;
+    if bytes[open] != b'{' {
+        return None;
     }
+    braced_block(scope, &mask, open)
+}
 
-    fn qualified_zero_arg_call_offsets(scope: &str, qualifier: &str, call: &str) -> Vec<usize> {
-        let mask = code_mask(scope);
-        let bytes = scope.as_bytes();
-        identifier_offsets(scope, &mask, call)
-            .into_iter()
-            .filter(|call_offset| {
-                let previous_code = |before: usize| {
-                    (0..before)
-                        .rev()
-                        .find(|offset| mask[*offset] && !bytes[*offset].is_ascii_whitespace())
-                };
-                let Some(second_colon) = previous_code(*call_offset) else {
-                    return false;
-                };
-                let Some(first_colon) = previous_code(second_colon) else {
-                    return false;
-                };
-                if bytes[second_colon] != b':' || bytes[first_colon] != b':' {
-                    return false;
-                }
-                let Some(qualifier_end) = previous_code(first_colon) else {
-                    return false;
-                };
-                let mut qualifier_start = qualifier_end;
-                while qualifier_start > 0
-                    && mask[qualifier_start - 1]
-                    && identifier_byte(bytes[qualifier_start - 1])
-                {
-                    qualifier_start -= 1;
-                }
-                if &scope[qualifier_start..=qualifier_end] != qualifier {
-                    return false;
-                }
+/// `source` with `old` replaced by `new` inside the body of `fn function`
+/// only, for mutating one function of the real source.
+fn mutate_function(source: &str, function: &str, old: &str, new: &str) -> String {
+    let body = function_body(source, function)
+        .unwrap_or_else(|| panic!("no fn {function} in the source under test"));
+    assert_eq!(body.matches(old).count(), 1, "mutation anchor in fn {function}: {old}");
+    let start = body.as_ptr() as usize - source.as_ptr() as usize;
+    format!(
+        "{}{}{}",
+        &source[..start],
+        body.replacen(old, new, 1),
+        &source[start + body.len()..]
+    )
+}
 
-                let mut open = *call_offset + call.len();
-                while open < bytes.len() && (!mask[open] || bytes[open].is_ascii_whitespace()) {
-                    open += 1;
-                }
-                if bytes.get(open) != Some(&b'(') {
-                    return false;
-                }
-                let mut close = open + 1;
-                while close < bytes.len() && (!mask[close] || bytes[close].is_ascii_whitespace()) {
-                    close += 1;
-                }
-                bytes.get(close) == Some(&b')')
-            })
-            .collect()
+/// Offsets, in `compact`, of each needle, in the order given; an error names
+/// the first needle missing or out of order.
+fn ordered_in(compact: &str, needles: &[&str], what: &str) -> Result<(), String> {
+    let mut last = 0usize;
+    for needle in needles {
+        let at = compact[last..]
+            .find(needle)
+            .map(|offset| last + offset)
+            .ok_or_else(|| format!("{what}: `{needle}` missing or out of order"))?;
+        last = at + needle.len();
     }
-
-    let body = function_body(source, "check_need_resched_and_switch")
-        .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
-    let (binding_offset, initializer) = binding_initializer(body, "process_manager_guard")?;
-    let compact_initializer = normalized_code(initializer).replace(' ', "");
-    // Either non-blocking acquisition: the single attempt, or x86_64's
-    // bounded poll of it.
-    if compact_initializer
-        .matches("crate::process::try_manager()")
-        .count()
-        + compact_initializer
-            .matches("crate::process::poll_manager()")
-            .count()
-        != 1
-    {
-        return Err(
-            "process_manager_guard is not bound exactly once from crate::process::try_manager() \
-             or crate::process::poll_manager()"
-                .to_string(),
-        );
-    }
-
-    let initializer_mask = code_mask(initializer);
-    if !identifier_offsets(initializer, &initializer_mask, "from_userspace").is_empty() {
-        return Err(
-            "process-manager guard acquisition is conditional on from_userspace".to_string(),
-        );
-    }
-
-    let schedule_offsets = qualified_zero_arg_call_offsets(body, "scheduler", "schedule");
-    let schedule_offset = schedule_offsets
-        .first()
-        .copied()
-        .ok_or_else(|| "missing scheduler::schedule() call".to_string())?;
-    if binding_offset >= schedule_offset {
-        return Err("process-manager guard is acquired after scheduler::schedule()".to_string());
-    }
-
-    let none_blocks: Vec<_> = identifier_offsets(initializer, &initializer_mask, "None")
-        .into_iter()
-        .filter_map(|offset| braced_block(initializer, &initializer_mask, offset))
-        .collect();
-    if none_blocks.len() != 1 {
-        return Err("guard acquisition does not have exactly one unavailable arm".to_string());
-    }
-    let unavailable = none_blocks[0];
-    let unavailable_mask = code_mask(unavailable);
-    let compact_unavailable = normalized_code(unavailable).replace(' ', "");
-    if !compact_unavailable.contains("scheduler::set_need_resched();")
-        || identifier_offsets(unavailable, &unavailable_mask, "return").is_empty()
-    {
-        return Err("guard-unavailable arm does not re-arm rescheduling and return".to_string());
-    }
-    if !identifier_offsets(unavailable, &unavailable_mask, "schedule").is_empty()
-        || !identifier_offsets(unavailable, &unavailable_mask, "abort_dispatch_and_resume")
-            .is_empty()
-    {
-        return Err("guard-unavailable arm commits or rolls back a dispatch".to_string());
-    }
-
     Ok(())
+}
+
+/// The interrupt-return switch saves and restores thread contexts in the
+/// scheduler rows and takes PROCESS_MANAGER in two places only (#1635): to
+/// fill a thread's empty page-table root cache (`dispatch_root`, after it
+/// found the cache empty), and to deliver a signal
+/// (`deliver_signals_on_user_return`, reached only when the thread's
+/// return-work hint is set). A busy lock at the first rolls the switch back
+/// and retries it; the stop check before the switch also waits on the hint.
+fn validate_dispatch_takes_no_process_manager(source: &str) -> Result<(), String> {
+    const ACQUISITIONS: [&str; 4] = ["try_manager", "poll_manager", "manager", "with_process_manager"];
+    for name in [
+        "check_need_resched_and_switch",
+        "switch_to_thread",
+        "save_current_thread_context",
+        "save_kernel_context",
+        "save_kthread_context",
+        "save_thread_frame",
+        "saved_context_is_kernel_frame",
+        "resume_kernel_context",
+        "restore_userspace_thread_context",
+        "setup_first_userspace_entry",
+        "refuse_user_dispatch",
+        "check_and_deliver_signals_for_current_thread",
+        "deliver_timer_signal_lockless",
+    ] {
+        let body = function_body(source, name).ok_or_else(|| format!("missing fn {name}"))?;
+        let mask = code_mask(body);
+        for acquisition in ACQUISITIONS {
+            if !call_offsets(body, &mask, acquisition).is_empty() {
+                return Err(format!("{name} takes the process manager through {acquisition}()"));
+            }
+        }
+    }
+
+    let check = function_body(source, "check_need_resched_and_switch")
+        .ok_or_else(|| "missing fn check_need_resched_and_switch".to_string())?;
+    let compact_check = normalized_code(check).replace(' ', "");
+    ordered_in(
+        &compact_check,
+        &[
+            "&&crate::per_cpu::current_thread().is_some_and(|thread|thread.signals.mirror.stop_possible())",
+            "hold_stopped_thread_on_interrupt_return_or_busy(",
+        ],
+        "the interrupt-return stop check is not gated on a possible stop",
+    )?;
+
+    let root = function_body(source, "dispatch_root")
+        .ok_or_else(|| "missing fn dispatch_root".to_string())?;
+    let root_mask = code_mask(root);
+    let compact_root = normalized_code(root).replace(' ', "");
+    ordered_in(
+        &compact_root,
+        &[
+            "ifcached!=0{returnOk(cached);}",
+            "letmutmanager_guard=crate::process::poll_manager().ok_or(RootRefusal::ManagerBusy)?;",
+        ],
+        "dispatch_root does not take the process manager only on an empty cache",
+    )?;
+    if call_offsets(root, &root_mask, "poll_manager").len() != 1
+        || ["try_manager", "manager", "with_process_manager"]
+            .iter()
+            .any(|name| !call_offsets(root, &root_mask, name).is_empty())
+    {
+        return Err("dispatch_root acquires the process manager more than once".to_string());
+    }
+
+    let refuse = function_body(source, "refuse_user_dispatch")
+        .ok_or_else(|| "missing fn refuse_user_dispatch".to_string())?;
+    let busy = match_arm_block(refuse, "RootRefusal::ManagerBusy")
+        .ok_or_else(|| "refuse_user_dispatch has no busy-lock arm".to_string())?;
+    let compact_busy = normalized_code(busy).replace(' ', "");
+    ordered_in(
+        &compact_busy,
+        &[
+            "scheduler::abort_dispatch_and_resume(thread_id,resume_thread_id);",
+            "scheduler::set_need_resched();",
+            "scheduler::retry_after_interrupts_x86();",
+        ],
+        "a busy lock does not roll the switch back and retry it",
+    )?;
+    if compact_busy.contains("switch_to_idle") || compact_busy.contains("setup_idle_return") {
+        return Err("a busy lock completes the switch instead of rolling it back".to_string());
+    }
+
+    let restore = function_body(source, "restore_userspace_thread_context")
+        .ok_or_else(|| "missing fn restore_userspace_thread_context".to_string())?;
+    let compact_restore = normalized_code(restore).replace(' ', "");
+    if !compact_restore.contains(".map(|()|(thread.kernel_stack_top,thread.needs_user_return_check()))")
+        || compact_restore.matches("deliver_signals_on_user_return(").count() != 1
+        || !compact_restore.contains("ifreturn_work{deliver_signals_on_user_return(")
+    {
+        return Err("dispatch signal delivery is not gated on the return-work hint".to_string());
+    }
+    let no_switch = function_body(source, "check_and_deliver_signals_for_current_thread")
+        .ok_or_else(|| "missing fn check_and_deliver_signals_for_current_thread".to_string())?;
+    let compact_no_switch = normalized_code(no_switch).replace(' ', "");
+    ordered_in(
+        &compact_no_switch,
+        &[
+            "ifcrate::per_cpu::current_thread().is_some_and(|thread|!thread.needs_user_return_check()){return;}",
+            "deliver_signals_on_user_return(",
+        ],
+        "no-switch signal delivery is not gated on the return-work hint",
+    )?;
+    Ok(())
+}
+
+/// Offsets of `return` statements written directly in a function body,
+/// outside every inner block: a return no condition guards.
+fn unconditional_returns(body: &str) -> Vec<usize> {
+    let mask = code_mask(body);
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut depths = vec![0usize; bytes.len()];
+    for index in 0..bytes.len() {
+        if mask[index] && bytes[index] == b'{' {
+            depth += 1;
+        }
+        depths[index] = depth;
+        if mask[index] && bytes[index] == b'}' {
+            depth = depth.saturating_sub(1);
+        }
+    }
+    identifier_offsets(body, &mask, "return")
+        .into_iter()
+        .filter(|offset| depths[*offset] == 1)
+        .collect()
+}
+
+/// A due timer signal reaches its user handler without PROCESS_MANAGER
+/// (#1635), and the path that does it is live: the interrupt return in
+/// `context_switch.rs` and the syscall return go through
+/// `deliver_current_lockless` and act on its answer, the syscall return
+/// without a POSIX timer claim, which tries the timer table lock; it calls
+/// `deliver_timer_signal_lockless`, whose interval-timer and POSIX-timer
+/// arms each write the handler frame and report the delivery, the POSIX arm
+/// committing its claim only after the frame is written; no return in any
+/// of them is unconditional; and none takes the lock.
+fn validate_timer_delivery_takes_no_process_manager(
+    source: &str,
+    context_switch: &str,
+) -> Result<(), String> {
+    const ACQUISITIONS: [&str; 4] = ["try_manager", "poll_manager", "manager", "with_process_manager"];
+    for (name, callee) in [
+        ("deliver_timer_signal_on_syscall_return", Some("deliver_current_lockless")),
+        ("deliver_current_timer_signal_lockless", Some("deliver_current_lockless")),
+        ("deliver_current_lockless", Some("deliver_timer_signal_lockless")),
+        ("deliver_timer_signal_lockless", None),
+    ] {
+        let body = function_body(source, name).ok_or_else(|| format!("missing fn {name}"))?;
+        let mask = code_mask(body);
+        for acquisition in ACQUISITIONS {
+            if !call_offsets(body, &mask, acquisition).is_empty() {
+                return Err(format!("{name} takes the process manager through {acquisition}()"));
+            }
+        }
+        if let Some(callee) = callee {
+            if call_offsets(body, &mask, callee).len() != 1 {
+                return Err(format!("{name} does not deliver through {callee}()"));
+            }
+        }
+        if !unconditional_returns(body).is_empty() {
+            return Err(format!("{name} returns before it delivers, whatever is due"));
+        }
+    }
+
+    let syscall_adapter = function_body(source, "deliver_timer_signal_on_syscall_return")
+        .ok_or_else(|| "missing fn deliver_timer_signal_on_syscall_return".to_string())?;
+    ordered_in(
+        &normalized_code(syscall_adapter).replace(' ', ""),
+        &[
+            "if!deliver_current_lockless(thread_id,&mutuser_return,&mutregs,false){returnfalse;}",
+            "frame.rip=user_return.rip;",
+            "true}",
+        ],
+        "the syscall-return adapter does not act on the lockless delivery",
+    )?;
+
+    let leaf = function_body(source, "deliver_timer_signal_lockless")
+        .ok_or_else(|| "missing fn deliver_timer_signal_lockless".to_string())?;
+    let compact_leaf = normalized_code(leaf).replace(' ', "");
+    if !compact_leaf.ends_with("claim.commit();true}") {
+        return Err("deliver_timer_signal_lockless does not end by committing a delivery".to_string());
+    }
+    ordered_in(
+        &compact_leaf,
+        &[
+            "let(Some(action),Some(alt))=(mirror.action(sig),mirror.alt_stack())else{returnfalse;};",
+            "ifitimer!=0{",
+            "ifsignals.timer_pending.fetch_and(!bit,Ordering::AcqRel)&bit==0{returnfalse;}",
+            "letmuttarget=LocklessTarget{signals,thread_id,info:SigInfo::kernel(),alt};",
+            "letinstalled=install_user_handler_x86_64(&muttarget,user_return,saved_regs,sig,action.handler,&action);",
+            "ifinstalled.is_err(){signals.timer_pending.fetch_or(bit,Ordering::AcqRel);returnfalse;}returntrue;}",
+            "letSome(claim)=timers.and_then(|timers|timers.posix.try_claim_due(signals,bit))else{returnfalse;};",
+            "letmuttarget=LocklessTarget{signals,thread_id,info:claim.info(),alt};",
+            "letinstalled=install_user_handler_x86_64(&muttarget,user_return,saved_regs,sig,action.handler,&action);",
+            "ifinstalled.is_err(){returnfalse;}claim.commit();true}",
+        ],
+        "deliver_timer_signal_lockless does not write and report both timer deliveries",
+    )?;
+
+    let user_return = function_body(context_switch, "deliver_signals_on_user_return")
+        .ok_or_else(|| "missing fn deliver_signals_on_user_return".to_string())?;
+    ordered_in(
+        &normalized_code(user_return).replace(' ', ""),
+        &[
+            "ifdeliver_timer_signal_lockless(thread_id,saved_regs,interrupt_frame){return;}",
+            "crate::process::poll_manager()",
+        ],
+        "the interrupt return takes the process manager before the lockless timer delivery",
+    )?;
+    let interrupt_adapter = function_body(context_switch, "deliver_timer_signal_lockless")
+        .ok_or_else(|| "missing fn deliver_timer_signal_lockless in context_switch.rs".to_string())?;
+    if !unconditional_returns(interrupt_adapter).is_empty() {
+        return Err("the interrupt-return adapter returns before it delivers".to_string());
+    }
+    ordered_in(
+        &normalized_code(interrupt_adapter).replace(' ', ""),
+        &[
+            "if!crate::signal::delivery::deliver_current_timer_signal_lockless(thread_id,&mutuser_return,saved_regs,){returnfalse;}",
+            "frame.instruction_pointer=x86_64::VirtAddr::new(user_return.rip);",
+            "true}",
+        ],
+        "the interrupt-return adapter does not act on the lockless delivery",
+    )
+}
+
+/// The mirror's reader gives up after a bounded number of attempts rather
+/// than wait for its writer, the PROCESS_MANAGER holder, whose vCPU can stop
+/// mid-write (#1635): nothing in `impl SignalMirror` loops without a bound.
+fn validate_signal_mirror_reader_is_bounded(source: &str) -> Result<(), String> {
+    let mask = code_mask(source);
+    let at = code_offsets(source, &mask, "impl SignalMirror {");
+    let [at] = at.as_slice() else {
+        return Err("expected one `impl SignalMirror` block".to_string());
+    };
+    let block = braced_block(source, &mask, *at).ok_or_else(|| "unclosed impl SignalMirror".to_string())?;
+    let block_mask = code_mask(block);
+    for keyword in ["loop", "while"] {
+        if !identifier_offsets(block, &block_mask, keyword).is_empty() {
+            return Err(format!("impl SignalMirror has an unbounded `{keyword}`"));
+        }
+    }
+    if !normalized_code(block)
+        .replace(' ', "")
+        .contains("fntry_read<T>(&self,read:implFn()->T)->Option<T>{")
+    {
+        return Err("the mirror reader cannot report that it gave up".to_string());
+    }
+    let read = function_body(block, "try_read").ok_or_else(|| "missing fn try_read".to_string())?;
+    ordered_in(
+        &normalized_code(read).replace(' ', ""),
+        &[
+            "for_in0..READ_ATTEMPTS{",
+            "returnSome(value);",
+            "None}",
+        ],
+        "the mirror reader is not a bounded attempt that can give up",
+    )
+}
+
+/// The syscall return offers a due timer signal to the lockless delivery
+/// before it takes PROCESS_MANAGER, and returns when that delivered it.
+fn validate_syscall_return_delivers_timer_signal_first(source: &str) -> Result<(), String> {
+    let body = function_body(source, "deliver_signals_on_syscall_return")
+        .ok_or_else(|| "missing fn deliver_signals_on_syscall_return".to_string())?;
+    let compact = normalized_code(body).replace(' ', "");
+    ordered_in(
+        &compact,
+        &[
+            "ifcrate::signal::delivery::deliver_timer_signal_on_syscall_return(current_thread_id,frame){returnfalse;}",
+            "crate::process::try_manager()",
+        ],
+        "the syscall return takes the process manager before the lockless timer delivery",
+    )
 }
 
 fn validate_first_run_dispatch_has_no_logging(source: &str) -> Result<(), String> {
@@ -1333,231 +1360,79 @@ fn validate_first_userspace_entry_source(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A user thread switched out inside the kernel resumes on its process's page
+/// tables: `resume_kernel_context` resolves the root once, through
+/// `dispatch_root`, before it writes the return frame, the saved registers or
+/// CR3, returns with nothing written when the root cannot be had, and every
+/// CR3 use consumes that one resolved value.
 fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), String> {
-    fn qualified_zero_arg_call_offsets(scope: &str, qualifier: &str, call: &str) -> Vec<usize> {
-        let mask = code_mask(scope);
-        let bytes = scope.as_bytes();
-        identifier_offsets(scope, &mask, call)
-            .into_iter()
-            .filter(|call_offset| {
-                let mut cursor = *call_offset;
-                while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
-                    cursor -= 1;
-                }
-                if cursor == 0 || bytes[cursor - 1] != b'.' {
-                    return false;
-                }
-                cursor -= 1;
-                while cursor > 0 && (!mask[cursor - 1] || bytes[cursor - 1].is_ascii_whitespace()) {
-                    cursor -= 1;
-                }
-                let qualifier_end = cursor;
-                while cursor > 0 && mask[cursor - 1] && identifier_byte(bytes[cursor - 1]) {
-                    cursor -= 1;
-                }
-                if &scope[cursor..qualifier_end] != qualifier {
-                    return false;
-                }
-
-                let mut open = *call_offset + call.len();
-                while open < bytes.len() && (!mask[open] || bytes[open].is_ascii_whitespace()) {
-                    open += 1;
-                }
-                if bytes.get(open) != Some(&b'(') {
-                    return false;
-                }
-                let mut close = open + 1;
-                while close < bytes.len() && (!mask[close] || bytes[close].is_ascii_whitespace()) {
-                    close += 1;
-                }
-                bytes.get(close) == Some(&b')')
-            })
-            .collect()
-    }
-
-    fn field_assignment_offsets(scope: &str, field: &str) -> Vec<usize> {
-        let mask = code_mask(scope);
-        let bytes = scope.as_bytes();
-        identifier_offsets(scope, &mask, field)
-            .into_iter()
-            .filter(|field_offset| {
-                let mut cursor = *field_offset + field.len();
-                while cursor < bytes.len() && (!mask[cursor] || bytes[cursor].is_ascii_whitespace())
-                {
-                    cursor += 1;
-                }
-                if bytes.get(cursor) != Some(&b'.') {
-                    return false;
-                }
-                let statement_end = (*field_offset..bytes.len())
-                    .find(|offset| mask[*offset] && bytes[*offset] == b';')
-                    .unwrap_or(bytes.len());
-                (cursor..statement_end).any(|offset| {
-                    bytes[offset] == b'='
-                        && bytes.get(offset + 1) != Some(&b'=')
-                        && (offset == 0 || bytes[offset - 1] != b'!')
-                })
-            })
-            .collect()
-    }
-
     let switch = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
-    let switch_mask = code_mask(switch);
-    let blocked_branch = identifier_offsets(switch, &switch_mask, "if")
-        .into_iter()
-        .find_map(|if_offset| {
-            let block = braced_block(switch, &switch_mask, if_offset)?;
-            let open = block.find('{')?;
-            let predicate = normalized_predicate(&block["if".len()..open]);
-            (predicate.contains("blocked_in_syscall")
-                && predicate.contains("saved_context_is_kernel_frame"))
-            .then_some(block)
-        })
-        .ok_or_else(|| "switch_to_thread has no blocked-in-syscall dispatch branch".to_string())?;
-
-    let blocked_mask = code_mask(blocked_branch);
-    let lookup_offset =
-        identifier_offsets(
-            blocked_branch,
-            &blocked_mask,
-            "find_process_and_shared_table_by_thread_mut",
-        )
-            .first()
-            .copied()
-            .ok_or_else(|| "blocked-in-syscall branch has no process lookup".to_string())?;
-    let process_block = identifier_offsets(blocked_branch, &blocked_mask, "if")
-        .into_iter()
-        .filter_map(|if_offset| {
-            let block = braced_block(blocked_branch, &blocked_mask, if_offset)?;
-            let block_end = if_offset + block.len();
-            (lookup_offset >= if_offset && lookup_offset < block_end).then_some(block)
-        })
-        .min_by_key(|block| block.len())
-        .ok_or_else(|| "blocked-in-syscall process lookup has no body".to_string())?;
-    let process_mask = code_mask(process_block);
-    let compact_process = normalized_code(process_block).replace(' ', "");
-    let cr3_calls = qualified_zero_arg_call_offsets(process_block, "process", "cr3_value");
-    if cr3_calls.len() != 1 || compact_process.matches("process.cr3_value()").count() != 1 {
-        return Err(format!(
-            "blocked-in-syscall dispatch must resolve process.cr3_value() exactly once, found {}",
-            cr3_calls.len()
-        ));
+    if !normalized_code(switch).replace(' ', "").contains(
+        "}elseifincoming.resumes_in_kernel{resume_kernel_context(thread_id,resume_thread_id,incoming.cached_root,saved_regs,interrupt_frame,);",
+    ) {
+        return Err("switch_to_thread has no blocked-in-syscall dispatch branch".to_string());
     }
-    if !compact_process.contains("letprocess_cr3=matchprocess.cr3_value()") {
-        return Err(
-            "blocked-in-syscall dispatch does not bind the resolved CR3 up front".to_string(),
-        );
+    let body = function_body(source, "resume_kernel_context")
+        .ok_or_else(|| "missing fn resume_kernel_context".to_string())?;
+    let compact = normalized_code(body).replace(' ', "");
+    const RESOLVE: &str = "letroot=matchdispatch_root(thread_id,cached_root){Ok(root)=>root,Err(refusal)=>{refuse_user_dispatch(thread_id,resume_thread_id,refusal,true,interrupt_frame);return;}};";
+    let resolve = compact
+        .find(RESOLVE)
+        .ok_or_else(|| "blocked-in-syscall dispatch does not bind the resolved root up front".to_string())?;
+    if compact.matches("dispatch_root(").count() != 1 {
+        return Err("blocked-in-syscall dispatch must resolve the root exactly once".to_string());
     }
-    if compact_process.matches("Cr3::write(").count() != 2
-        || compact_process.matches("set_next_cr3(process_cr3)").count() != 1
-        || compact_process
-            .matches("PhysAddr::new(process_cr3)")
-            .count()
-            != 2
-    {
-        return Err(
-            "blocked-in-syscall CR3 uses do not all consume the resolved value".to_string(),
-        );
-    }
-    let cr3_resolution = cr3_calls[0];
-    let unpublished_refusals =
-        identifier_offsets(process_block, &process_mask, "refuse_unpublished_dispatch");
-    if unpublished_refusals.len() != 1 || unpublished_refusals[0] >= cr3_resolution {
-        return Err(
-            "blocked-in-syscall dispatch does not refuse unpublished rows before CR3 resolution"
-                .to_string(),
-        );
-    }
-    let unpublished_arm = identifier_offsets(process_block, &process_mask, "if")
-        .into_iter()
-        .filter_map(|if_offset| {
-            let block = braced_block(process_block, &process_mask, if_offset)?;
-            let end = if_offset + block.len();
-            (unpublished_refusals[0] >= if_offset && unpublished_refusals[0] < end).then_some(block)
-        })
-        .min_by_key(|block| block.len())
-        .ok_or_else(|| "unpublished-row refusal call has no recovery arm".to_string())?;
-    let compact_unpublished_arm = normalized_code(unpublished_arm).replace(' ', "");
-    if identifier_offsets(
-        unpublished_arm,
-        &code_mask(unpublished_arm),
-        "set_terminated",
-    )
-    .len()
-        != 0
-        || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
-        || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
-        || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
-        || !compact_unpublished_arm.contains("scheduler::requeue_refused_dispatch(")
-        || !compact_unpublished_arm.contains("process_memory::switch_to_kernel_page_table();")
-        || !compact_unpublished_arm.contains("return;")
-    {
-        return Err("blocked-in-syscall unpublished-row recovery is not retry-only".to_string());
-    }
-    let switch_idle = compact_unpublished_arm
-        .find("scheduler::switch_to_idle();")
-        .ok_or_else(|| "unpublished-row recovery has no switch_to_idle".to_string())?;
-    let requeue = compact_unpublished_arm
-        .find("scheduler::requeue_refused_dispatch(")
-        .ok_or_else(|| "unpublished-row recovery has no refused-thread requeue".to_string())?;
-    let early_return = compact_unpublished_arm
-        .find("return;")
-        .ok_or_else(|| "unpublished-row recovery has no early return".to_string())?;
-    if !(switch_idle < requeue && requeue < early_return) {
-        return Err("blocked-in-syscall unpublished-row requeue is out of order".to_string());
-    }
-    for publisher in ["set_next_cr3", "Cr3"] {
-        if identifier_offsets(process_block, &process_mask, publisher)
-            .into_iter()
-            .any(|offset| offset < unpublished_refusals[0])
-        {
-            return Err("unpublished-row refusal occurs after a CR3 publish".to_string());
+    for write in ["saved_regs.", "interrupt_frame.as_mut()", "Cr3::write(", "set_next_cr3("] {
+        let first = compact
+            .find(write)
+            .ok_or_else(|| format!("blocked-in-syscall dispatch has no `{write}`"))?;
+        if first < resolve + RESOLVE.len() {
+            return Err(format!("`{write}` occurs before the root is resolved"));
         }
     }
-
-    let first_frame_mutation =
-        qualified_zero_arg_call_offsets(process_block, "interrupt_frame", "as_mut")
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                "blocked-in-syscall branch has no interrupt-frame mutation".to_string()
-            })?;
-    let first_saved_regs_assignment = field_assignment_offsets(process_block, "saved_regs")
-        .first()
-        .copied()
-        .ok_or_else(|| "blocked-in-syscall branch has no saved_regs assignment".to_string())?;
-    if cr3_resolution > first_frame_mutation || cr3_resolution > first_saved_regs_assignment {
-        return Err(
-            "process CR3 resolution occurs after a return-frame or saved-register mutation"
-                .to_string(),
-        );
+    if compact.matches("Cr3::write(").count() != 1
+        || compact.matches("set_next_cr3(root)").count() != 1
+        || compact.matches("set_next_cr3(").count() != 1
+        || compact.matches("PhysAddr::new(root)").count() != 1
+        || compact.contains("cr3_value")
+        || compact.contains("find_process")
+    {
+        return Err("blocked-in-syscall CR3 uses do not all consume the resolved value".to_string());
     }
+    validate_dispatch_root_fails_closed(source)?;
+    validate_refused_user_dispatch_recovers(source)
+}
 
-    for if_offset in identifier_offsets(process_block, &process_mask, "if") {
-        let block = braced_block(process_block, &process_mask, if_offset)
-            .ok_or_else(|| "blocked-in-syscall if has no body".to_string())?;
-        let open = block
-            .find('{')
-            .ok_or_else(|| "blocked-in-syscall if has no opening brace".to_string())?;
-        let predicate = normalized_predicate(&block["if".len()..open]);
-        let normalized_block = normalized_code(block).replace(' ', "");
-        if predicate.contains("cr3_value")
-            && (normalized_block.contains("Cr3::write(")
-                || normalized_block.contains("set_next_cr3("))
-        {
-            return Err("a CR3 publish is still guarded by an if on cr3_value".to_string());
-        }
+/// `dispatch_root` refuses an unpublished row before it resolves the root,
+/// and fails closed on a row with no page table: counted, logged once, the
+/// process-owned thread terminated. Only a resolved root is cached.
+fn validate_dispatch_root_fails_closed(source: &str) -> Result<(), String> {
+    let body = function_body(source, "dispatch_root")
+        .ok_or_else(|| "missing fn dispatch_root".to_string())?;
+    let mask = code_mask(body);
+    let compact = normalized_code(body).replace(' ', "");
+    if compact.matches("refuse_unpublished_dispatch(").count() != 1 {
+        return Err("dispatch_root must refuse unpublished rows exactly once".to_string());
     }
-
-    let no_cr3_arm = identifier_offsets(process_block, &process_mask, "None")
+    ordered_in(
+        &compact,
+        &[
+            "ifrefuse_unpublished_dispatch(process,thread_id,pid.as_u64()){returnErr(RootRefusal::Unpublished);}",
+            "letSome(root)=process.cr3_value()else{",
+            "scheduler::with_thread_mut(thread_id,|thread|thread.set_dispatch_root(root));",
+            "Ok(root)",
+        ],
+        "dispatch_root does not refuse unpublished rows before resolving and caching the root",
+    )?;
+    let else_offset = code_offsets(body, &mask, "else")
         .into_iter()
-        .filter_map(|none_offset| braced_block(process_block, &process_mask, none_offset))
-        .find(|arm| normalized_code(arm).contains("USERSPACE_DISPATCH_NO_CR3_REFUSED"))
+        .find(|offset| normalized_code(&body[..*offset]).replace(' ', "").ends_with("letSome(root)=process.cr3_value()"))
+        .ok_or_else(|| "process CR3 resolution has no unavailable arm".to_string())?;
+    let no_cr3_arm = braced_block(body, &mask, else_offset)
         .ok_or_else(|| "process CR3 resolution has no unavailable arm".to_string())?;
     let no_cr3_mask = code_mask(no_cr3_arm);
-    let normalized_arm = normalized_code(no_cr3_arm);
-    let compact_arm = normalized_arm.replace(' ', "");
+    let compact_arm = normalized_code(no_cr3_arm).replace(' ', "");
     let diagnostic_guard = identifier_offsets(no_cr3_arm, &no_cr3_mask, "if")
         .into_iter()
         .filter_map(|offset| braced_block(no_cr3_arm, &no_cr3_mask, offset))
@@ -1571,63 +1446,51 @@ fn validate_blocked_syscall_dispatch_resolves_cr3(source: &str) -> Result<(), St
     {
         return Err("unavailable CR3 arm lacks the guarded atomic diagnostic line".to_string());
     }
+    ordered_in(
+        &compact_arm,
+        &[
+            "ifletSome(refmutthread)=process.main_thread{thread.set_terminated();}",
+            "returnErr(RootRefusal::NoRoot);",
+        ],
+        "unavailable CR3 arm does not terminate the process-owned thread and refuse",
+    )
+}
 
-    let with_thread_mut_source = identifier_offsets(no_cr3_arm, &no_cr3_mask, "with_thread_mut")
-        .first()
-        .copied()
-        .ok_or_else(|| "unavailable CR3 arm has no scheduler synchronization".to_string())?;
-    let with_thread_mut = normalized_arm
-        .find("scheduler::with_thread_mut")
-        .ok_or_else(|| "unavailable CR3 arm has no scheduler with_thread_mut call".to_string())?;
-    if !normalized_arm.contains("process.main_thread") {
-        return Err("unavailable CR3 arm does not mark the process-owned thread".to_string());
+/// What a refused user-thread dispatch does: a row still being published goes
+/// back to the queue, retry-only, with the CPU sent to idle; a thread with no
+/// address space is terminated and the CPU sent to idle.
+fn validate_refused_user_dispatch_recovers(source: &str) -> Result<(), String> {
+    let body = function_body(source, "refuse_user_dispatch")
+        .ok_or_else(|| "missing fn refuse_user_dispatch".to_string())?;
+    let unpublished = match_arm_block(body, "RootRefusal::Unpublished")
+        .ok_or_else(|| "refuse_user_dispatch has no unpublished-row arm".to_string())?;
+    if !identifier_offsets(unpublished, &code_mask(unpublished), "set_terminated").is_empty() {
+        return Err("unpublished-row recovery is not retry-only".to_string());
     }
-    identifier_offsets(no_cr3_arm, &no_cr3_mask, "set_terminated")
-        .into_iter()
-        .find(|offset| *offset < with_thread_mut_source)
-        .ok_or_else(|| {
-            "unavailable CR3 arm does not terminate the process-owned thread".to_string()
-        })?;
-    let process_terminated = normalized_arm
-        .find("set_terminated();")
-        .ok_or_else(|| "unavailable CR3 arm has no process-owned termination call".to_string())?;
-    let closure = braced_block(no_cr3_arm, &no_cr3_mask, with_thread_mut_source)
-        .ok_or_else(|| "scheduler with_thread_mut has no closure body".to_string())?;
-    if identifier_offsets(closure, &code_mask(closure), "set_terminated").is_empty() {
-        return Err("unavailable CR3 arm does not terminate the scheduler thread".to_string());
-    }
-    let closure_terminated = normalized_arm
-        .get(with_thread_mut..)
-        .and_then(|suffix| suffix.find("set_terminated();"))
-        .map(|offset| with_thread_mut + offset)
-        .ok_or_else(|| "scheduler closure lacks set_terminated".to_string())?;
-    let set_need_resched = normalized_arm
-        .find("scheduler::set_need_resched();")
-        .ok_or_else(|| "unavailable CR3 arm has no set_need_resched".to_string())?;
-    let setup_idle = normalized_arm
-        .find("setup_idle_return(interrupt_frame);")
-        .ok_or_else(|| "unavailable CR3 arm has no setup_idle_return".to_string())?;
-    let switch_idle = normalized_arm
-        .find("scheduler::switch_to_idle();")
-        .ok_or_else(|| "unavailable CR3 arm has no switch_to_idle".to_string())?;
-    let switch_kernel_page_table = normalized_arm
-        .find("crate::memory::process_memory::switch_to_kernel_page_table();")
-        .ok_or_else(|| "unavailable CR3 arm has no kernel page-table recovery".to_string())?;
-    let early_return = normalized_arm
-        .find("return;")
-        .ok_or_else(|| "unavailable CR3 arm has no early return".to_string())?;
-    if !(process_terminated < with_thread_mut
-        && with_thread_mut < closure_terminated
-        && closure_terminated < set_need_resched
-        && set_need_resched < setup_idle
-        && setup_idle < switch_idle
-        && switch_idle < switch_kernel_page_table
-        && switch_kernel_page_table < early_return)
-    {
-        return Err("unavailable CR3 recovery sequence is out of order".to_string());
-    }
-
-    Ok(())
+    ordered_in(
+        &normalized_code(unpublished).replace(' ', ""),
+        &[
+            "scheduler::set_need_resched();",
+            "setup_idle_return(interrupt_frame);",
+            "scheduler::switch_to_idle();",
+            "scheduler::requeue_refused_dispatch(thread_id);",
+            "crate::memory::process_memory::switch_to_kernel_page_table();",
+        ],
+        "unpublished-row recovery",
+    )?;
+    let no_root = match_arm_block(body, "RootRefusal::NoRoot")
+        .ok_or_else(|| "refuse_user_dispatch has no missing-root arm".to_string())?;
+    ordered_in(
+        &normalized_code(no_root).replace(' ', ""),
+        &[
+            "scheduler::with_thread_mut(thread_id,|thread|thread.set_terminated());",
+            "scheduler::set_need_resched();",
+            "setup_idle_return(interrupt_frame);",
+            "scheduler::switch_to_idle();",
+            "crate::memory::process_memory::switch_to_kernel_page_table();",
+        ],
+        "unavailable CR3 recovery",
+    )
 }
 
 fn validate_no_cr3_dispatch_fails_closed(source: &str) -> Result<(), String> {
@@ -1641,151 +1504,21 @@ fn validate_no_cr3_dispatch_fails_closed(source: &str) -> Result<(), String> {
             cr3_writes.len()
         ));
     }
-    let cr3_resolutions = identifier_offsets(restore, &restore_mask, "cr3_value");
-    let unpublished_refusals =
-        identifier_offsets(restore, &restore_mask, "refuse_unpublished_dispatch");
-    if cr3_resolutions.is_empty()
-        || unpublished_refusals.len() != 1
-        || unpublished_refusals[0] >= cr3_resolutions[0]
-        || cr3_writes
-            .iter()
-            .any(|write| *write < unpublished_refusals[0])
-        || identifier_offsets(restore, &restore_mask, "Cr3")
-            .into_iter()
-            .any(|write| write < unpublished_refusals[0])
-    {
-        return Err(
-            "normal userspace restore does not refuse unpublished rows before CR3 resolution and publication"
-                .to_string(),
-        );
+    let compact = normalized_code(restore).replace(' ', "");
+    ordered_in(
+        &compact,
+        &[
+            "letroot=matchdispatch_root(thread_id,cached_root){Ok(root)=>root,Err(refusal)=>{refuse_user_dispatch(thread_id,resume_thread_id,refusal,false,interrupt_frame);return;}};",
+            "setup_first_userspace_entry(thread_id,root,",
+            "crate::per_cpu::set_next_cr3(root);",
+        ],
+        "normal userspace restore does not resolve the root, refusing with a return, before it installs or publishes it",
+    )?;
+    if compact.contains("cr3_value") || compact.contains("find_process") || compact.contains("Cr3::write(") {
+        return Err("normal userspace restore resolves CR3 other than through dispatch_root".to_string());
     }
-    let unpublished_arm = identifier_offsets(restore, &restore_mask, "if")
-        .into_iter()
-        .filter_map(|if_offset| {
-            let block = braced_block(restore, &restore_mask, if_offset)?;
-            let end = if_offset + block.len();
-            (unpublished_refusals[0] >= if_offset && unpublished_refusals[0] < end).then_some(block)
-        })
-        .min_by_key(|block| block.len())
-        .ok_or_else(|| "normal-restore unpublished refusal has no recovery arm".to_string())?;
-    let compact_unpublished_arm = normalized_code(unpublished_arm).replace(' ', "");
-    if !identifier_offsets(
-        unpublished_arm,
-        &code_mask(unpublished_arm),
-        "set_terminated",
-    )
-    .is_empty()
-        || !compact_unpublished_arm.contains("scheduler::set_need_resched();")
-        || !compact_unpublished_arm.contains("setup_idle_return(interrupt_frame);")
-        || !compact_unpublished_arm.contains("scheduler::switch_to_idle();")
-        || !compact_unpublished_arm.contains("scheduler::requeue_refused_dispatch(")
-        || !compact_unpublished_arm.contains("return;")
-    {
-        return Err("normal-restore unpublished-row recovery is not retry-only".to_string());
-    }
-    let switch_idle = compact_unpublished_arm
-        .find("scheduler::switch_to_idle();")
-        .ok_or_else(|| "normal-restore refusal has no switch_to_idle".to_string())?;
-    let requeue = compact_unpublished_arm
-        .find("scheduler::requeue_refused_dispatch(")
-        .ok_or_else(|| "normal-restore refusal has no refused-thread requeue".to_string())?;
-    let early_return = compact_unpublished_arm
-        .find("return;")
-        .ok_or_else(|| "normal-restore refusal has no early return".to_string())?;
-    if !(switch_idle < requeue && requeue < early_return) {
-        return Err("normal-restore unpublished-row requeue is out of order".to_string());
-    }
-
-    let (cr3_if_offset, cr3_if_block) = identifier_offsets(restore, &restore_mask, "if")
-        .into_iter()
-        .find_map(|if_offset| {
-            let block = braced_block(restore, &restore_mask, if_offset)?;
-            let open = block.find('{')?;
-            let predicate = normalized_predicate(&block[..open]);
-            let block_start = if_offset;
-            let block_end = block_start + block.len();
-            (predicate == "if let Some(cr3_value) = process_cr3"
-                && cr3_writes[0] >= block_start
-                && cr3_writes[0] < block_end)
-                .then_some((if_offset, block))
-        })
-        .ok_or_else(|| {
-            "next CR3 publish is not guarded by if let Some(cr3_value) = process_cr3".to_string()
-        })?;
-
-    let if_end = cr3_if_offset + cr3_if_block.len();
-    let else_offset = identifier_offsets(restore, &restore_mask, "else")
-        .into_iter()
-        .find(|offset| *offset >= if_end)
-        .ok_or_else(|| "CR3 guard has no else arm".to_string())?;
-    let no_cr3_arm = braced_block(restore, &restore_mask, else_offset)
-        .ok_or_else(|| "CR3 guard else arm has no block".to_string())?;
-    let normalized_arm = normalized_code(no_cr3_arm);
-    let arm_mask = code_mask(no_cr3_arm);
-    let arm_bytes = no_cr3_arm.as_bytes();
-    if identifier_offsets(no_cr3_arm, &arm_mask, "log")
-        .into_iter()
-        .any(|offset| {
-            let mut cursor = offset + "log".len();
-            while cursor < arm_bytes.len()
-                && (!arm_mask[cursor] || arm_bytes[cursor].is_ascii_whitespace())
-            {
-                cursor += 1;
-            }
-            arm_bytes.get(cursor..cursor + 2) == Some(b"::")
-        })
-    {
-        return Err("no-CR3 arm still calls log".to_string());
-    }
-
-    let process_terminated = normalized_arm
-        .find("thread.set_terminated();")
-        .ok_or_else(|| "no-CR3 arm does not terminate the process-owned thread".to_string())?;
-    let with_thread_mut_source = identifier_offsets(no_cr3_arm, &arm_mask, "with_thread_mut")
-        .into_iter()
-        .next()
-        .ok_or_else(|| "no-CR3 arm has no scheduler with_thread_mut closure".to_string())?;
-    let with_thread_mut = normalized_arm
-        .find("scheduler::with_thread_mut")
-        .ok_or_else(|| "no-CR3 arm has no scheduler with_thread_mut call".to_string())?;
-    if process_terminated >= with_thread_mut {
-        return Err("process-owned termination must precede scheduler synchronization".to_string());
-    }
-
-    let closure = braced_block(no_cr3_arm, &arm_mask, with_thread_mut_source)
-        .ok_or_else(|| "with_thread_mut has no closure block".to_string())?;
-    let closure_mask = code_mask(closure);
-    if identifier_offsets(closure, &closure_mask, "set_terminated").is_empty() {
-        return Err("with_thread_mut closure does not terminate its scheduler thread".to_string());
-    }
-
-    let closure_terminated = normalized_arm
-        .get(with_thread_mut..)
-        .and_then(|suffix| suffix.find("set_terminated();"))
-        .map(|offset| with_thread_mut + offset)
-        .ok_or_else(|| "with_thread_mut closure lacks scheduler set_terminated".to_string())?;
-    let set_need_resched = normalized_arm
-        .find("scheduler::set_need_resched();")
-        .ok_or_else(|| "no-CR3 arm has no set_need_resched".to_string())?;
-    let setup_idle = normalized_arm
-        .find("setup_idle_return(interrupt_frame);")
-        .ok_or_else(|| "no-CR3 arm has no setup_idle_return".to_string())?;
-    let switch_idle = normalized_arm
-        .find("scheduler::switch_to_idle();")
-        .ok_or_else(|| "no-CR3 arm has no switch_to_idle".to_string())?;
-    let early_return = normalized_arm
-        .find("return;")
-        .ok_or_else(|| "no-CR3 arm has no early return".to_string())?;
-    if !(with_thread_mut < closure_terminated
-        && closure_terminated < set_need_resched
-        && set_need_resched < setup_idle
-        && setup_idle < switch_idle
-        && switch_idle < early_return)
-    {
-        return Err("no-CR3 recovery sequence is out of order".to_string());
-    }
-
-    Ok(())
+    validate_dispatch_root_fails_closed(source)?;
+    validate_refused_user_dispatch_recovers(source)
 }
 
 fn validate_fault_idle_return_source(source: &str) -> Result<(), String> {
@@ -1908,24 +1641,14 @@ fn switch_dispatches_saved_kernel_frames_to_kernel_resume() {
 
 #[test]
 fn switch_validator_rejects_flag_only_dispatch() {
-    let synthetic = r#"
-        fn saved_context_is_kernel_frame(thread_id: u64) -> bool {
-            is_kernel_code_selector(saved_context(thread_id).cs)
-        }
-
-        fn switch_to_thread(thread_id: u64) {
-            if is_idle {
-                setup_idle_return();
-            } else if is_kernel_thread {
-                setup_kernel_thread_return(thread_id);
-            } else if blocked_in_syscall {
-                setup_kernel_thread_return(thread_id);
-            } else {
-                restore_userspace_thread_context(thread_id);
-            }
-        }
-    "#;
-    assert!(validate_switch_source(synthetic).is_err());
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "switch_to_thread",
+        "thread.blocked_in_syscall || saved_context_is_kernel_frame(thread)",
+        "thread.blocked_in_syscall",
+    );
+    assert!(validate_switch_source(&mutant).is_err());
 }
 
 #[test]
@@ -1974,13 +1697,8 @@ fn saved_frame_routing_matches_userspace_restore_enforcement() {
 #[test]
 fn routing_enforcement_validator_rejects_has_started_conjunct() {
     let routing_mutant = r#"
-        fn saved_context_is_kernel_frame(thread_id: u64) -> bool {
-            process_for_thread(thread_id)
-                .main_thread
-                .as_ref()
-                .is_some_and(|thread| {
-                    thread.has_started && is_kernel_code_selector(thread.context.cs)
-                })
+        fn saved_context_is_kernel_frame(thread: &Thread) -> bool {
+            thread.has_started && is_kernel_code_selector(thread.context.cs)
         }
     "#;
     let enforcement_source = repo_text("kernel/src/task/process_context.rs");
@@ -1990,11 +1708,8 @@ fn routing_enforcement_validator_rejects_has_started_conjunct() {
 #[test]
 fn routing_enforcement_validator_rejects_missing_selector_check() {
     let routing_mutant = r#"
-        fn saved_context_is_kernel_frame(thread_id: u64) -> bool {
-            process_for_thread(thread_id)
-                .main_thread
-                .as_ref()
-                .is_some_and(|thread| thread.privilege == ThreadPrivilege::User)
+        fn saved_context_is_kernel_frame(thread: &Thread) -> bool {
+            thread.privilege == ThreadPrivilege::User
         }
     "#;
     let enforcement_source = repo_text("kernel/src/task/process_context.rs");
@@ -2002,64 +1717,186 @@ fn routing_enforcement_validator_rejects_missing_selector_check() {
 }
 
 #[test]
-fn dispatch_guard_is_shared_and_acquired_before_scheduling() {
+fn dispatch_takes_no_process_manager_but_to_fill_a_root_or_deliver() {
     let source = repo_text("kernel/src/interrupts/context_switch.rs");
-    assert_eq!(validate_dispatch_guard_precheck(&source), Ok(()));
+    assert_eq!(validate_dispatch_takes_no_process_manager(&source), Ok(()));
 }
 
 #[test]
-fn dispatch_guard_validator_rejects_userspace_only_acquisition() {
-    let synthetic = r#"
-        fn check_need_resched_and_switch() {
-            let mut process_manager_guard = if from_userspace {
-                match crate::process::try_manager() {
-                    Some(guard) => guard,
-                    None => {
-                        scheduler::set_need_resched();
-                        return;
-                    }
-                }
-            } else {
-                None
-            };
-            let schedule_result = scheduler::schedule();
-        }
-    "#;
-    assert!(validate_dispatch_guard_precheck(synthetic).is_err());
+fn dispatch_no_pm_validator_rejects_a_poll_before_scheduling() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "check_need_resched_and_switch",
+        "    // Perform scheduling decision\n",
+        "    let _guard = crate::process::poll_manager();\n    // Perform scheduling decision\n",
+    );
+    assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
 }
 
 #[test]
-fn dispatch_guard_validator_rejects_acquisition_after_scheduling() {
-    let synthetic = r#"
-        fn check_need_resched_and_switch() {
-            let schedule_result = scheduler::schedule();
-            let mut process_manager_guard = match crate::process::try_manager() {
-                Some(guard) => guard,
-                None => {
-                    scheduler::set_need_resched();
-                    return;
-                }
-            };
-        }
-    "#;
-    assert!(validate_dispatch_guard_precheck(synthetic).is_err());
+fn dispatch_no_pm_validator_rejects_a_poll_before_the_cache() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "dispatch_root",
+        "    if cached != 0 {",
+        "    let _early = crate::process::poll_manager();\n    if cached != 0 {",
+    );
+    assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
 }
 
 #[test]
-fn dispatch_guard_validator_rejects_unavailable_fallthrough() {
-    let synthetic = r#"
-        fn check_need_resched_and_switch() {
-            let mut process_manager_guard = match crate::process::try_manager() {
-                Some(guard) => guard,
-                None => {
-                    scheduler::set_need_resched();
-                    scheduler::schedule();
-                }
-            };
-            let schedule_result = scheduler::schedule();
-        }
-    "#;
-    assert!(validate_dispatch_guard_precheck(synthetic).is_err());
+fn dispatch_no_pm_validator_rejects_a_busy_lock_without_rollback() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "refuse_user_dispatch",
+        "scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);\n            trace_dispatch_abandon(DispatchAbandonSite::RollbackRootLock);",
+        "trace_dispatch_abandon(DispatchAbandonSite::RollbackRootLock);",
+    );
+    assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
+}
+
+#[test]
+fn dispatch_no_pm_validator_rejects_ungated_delivery() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "restore_userspace_thread_context",
+        "if return_work {",
+        "if return_work || true {",
+    );
+    assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "check_need_resched_and_switch",
+        "\n        && crate::per_cpu::current_thread().is_some_and(|thread| thread.signals.mirror.stop_possible())",
+        "",
+    );
+    assert!(validate_dispatch_takes_no_process_manager(&mutant).is_err());
+}
+
+#[test]
+fn timer_delivery_takes_no_process_manager() {
+    let source = repo_text("kernel/src/signal/delivery.rs");
+    let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
+    assert_eq!(validate_timer_delivery_takes_no_process_manager(&source, &context_switch), Ok(()));
+}
+
+#[test]
+fn timer_delivery_validator_rejects_a_manager_acquisition() {
+    let source = repo_text("kernel/src/signal/delivery.rs");
+    let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "deliver_current_lockless",
+        "    let root = thread.cached_ttbr0;\n",
+        "    let _guard = crate::process::try_manager();\n    let root = thread.cached_ttbr0;\n",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_on_syscall_return",
+        "if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, false) {",
+        "if crate::process::manager().is_some() {",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    // The syscall return claims no POSIX timer, which would try the timer
+    // table's lock.
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_on_syscall_return",
+        "if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, false) {",
+        "if !deliver_current_lockless(thread_id, &mut user_return, &mut regs, true) {",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+}
+
+#[test]
+fn timer_delivery_validator_rejects_disabled_delivery() {
+    let source = repo_text("kernel/src/signal/delivery.rs");
+    let context_switch = repo_text("kernel/src/interrupts/context_switch.rs");
+    let leaf = function_body(&source, "deliver_timer_signal_lockless").unwrap();
+    let open = leaf.find('{').unwrap();
+    let start = leaf.as_ptr() as usize - source.as_ptr() as usize;
+    let disabled = format!(
+        "{}{{\n    false\n}}{}",
+        &source[..start + open],
+        &source[start + leaf.len()..]
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&disabled, &context_switch).is_err());
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_lockless",
+        "    let mirror = &signals.mirror;\n",
+        "    return false;\n    let mirror = &signals.mirror;\n",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    let mutant = mutate_function(
+        &source,
+        "deliver_timer_signal_lockless",
+        "    claim.commit();\n",
+        "",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&mutant, &context_switch).is_err());
+    let mutant = mutate_function(
+        &context_switch,
+        "deliver_signals_on_user_return",
+        "    if deliver_timer_signal_lockless(thread_id, saved_regs, interrupt_frame) {\n        return;\n    }\n",
+        "",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&source, &mutant).is_err());
+    let mutant = mutate_function(
+        &context_switch,
+        "deliver_timer_signal_lockless",
+        "    let mut user_return = crate::signal::delivery::X86UserReturn {",
+        "    return false;\n    let mut user_return = crate::signal::delivery::X86UserReturn {",
+    );
+    assert!(validate_timer_delivery_takes_no_process_manager(&source, &mutant).is_err());
+}
+
+#[test]
+fn signal_mirror_reader_is_bounded() {
+    let source = repo_text("kernel/src/signal/types.rs");
+    assert_eq!(validate_signal_mirror_reader_is_bounded(&source), Ok(()));
+}
+
+#[test]
+fn signal_mirror_validator_rejects_a_reader_that_waits_for_the_writer() {
+    let source = repo_text("kernel/src/signal/types.rs");
+    let mutant = mutate_function(
+        &source,
+        "try_read",
+        "for _ in 0..READ_ATTEMPTS {",
+        "loop {",
+    );
+    assert!(validate_signal_mirror_reader_is_bounded(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "try_read",
+        "for _ in 0..READ_ATTEMPTS {",
+        "for _ in 0.. {",
+    );
+    assert!(validate_signal_mirror_reader_is_bounded(&mutant).is_err());
+}
+
+#[test]
+fn syscall_return_delivers_timer_signal_before_the_manager() {
+    let source = repo_text("kernel/src/syscall/handler.rs");
+    assert_eq!(validate_syscall_return_delivers_timer_signal_first(&source), Ok(()));
+}
+
+#[test]
+fn syscall_return_validator_rejects_the_manager_first() {
+    let source = repo_text("kernel/src/syscall/handler.rs");
+    let mutant = mutate_function(
+        &source,
+        "deliver_signals_on_syscall_return",
+        "    if crate::signal::delivery::deliver_timer_signal_on_syscall_return(current_thread_id, frame) {\n        return false;\n    }\n",
+        "",
+    );
+    assert!(validate_syscall_return_delivers_timer_signal_first(&mutant).is_err());
 }
 
 #[test]
@@ -2209,76 +2046,6 @@ fn first_userspace_entry_validator_rejects_idle_abort_recovery() {
     assert!(validate_first_userspace_entry_source(synthetic).is_err());
 }
 
-fn synthetic_blocked_syscall_dispatch_source(dispatch_body: &str) -> String {
-    format!(
-        r#"
-        fn switch_to_thread(thread_id: u64) {{
-            if is_idle {{
-                setup_idle_return(interrupt_frame);
-            }} else if is_kernel_thread {{
-                setup_kernel_thread_return(thread_id);
-            }} else if blocked_in_syscall
-                || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref())
-            {{
-                if let Some((pid, process, shared_table)) =
-                    manager.find_process_and_shared_table_by_thread_mut(thread_id)
-                {{
-                    {dispatch_body}
-                }}
-            }}
-        }}
-        "#,
-        dispatch_body = dispatch_body,
-    )
-}
-
-fn valid_blocked_syscall_no_cr3_arm() -> &'static str {
-    r#"
-        if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
-            scheduler::set_need_resched();
-            setup_idle_return(interrupt_frame);
-            scheduler::switch_to_idle();
-            scheduler::requeue_refused_dispatch(thread_id);
-            unsafe {
-                crate::memory::process_memory::switch_to_kernel_page_table();
-            }
-            return;
-        }
-        let process_cr3 = match process.cr3_value() {
-            Some(cr3_value) => cr3_value,
-            None => {
-                USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
-                if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                    DiagLine::new()
-                        .text("[PMGUARD] no-cr3 dispatch refused tid=")
-                        .number(thread_id).text(" pid=")
-                        .number(pid.as_u64()).text("\n").write();
-                }
-                if let Some(ref mut thread) = process.main_thread {
-                    thread.set_terminated();
-                }
-                scheduler::with_thread_mut(thread_id, |sched_thread| {
-                    sched_thread.set_terminated();
-                });
-                scheduler::set_need_resched();
-                setup_idle_return(interrupt_frame);
-                scheduler::switch_to_idle();
-                unsafe {
-                    crate::memory::process_memory::switch_to_kernel_page_table();
-                }
-                return;
-            }
-        };
-        saved_regs.rax = 0;
-        interrupt_frame.as_mut().update(|frame| {
-            frame.instruction_pointer = VirtAddr::new(0);
-        });
-        unsafe {
-            crate::per_cpu::set_next_cr3(process_cr3);
-        }
-    "#
-}
-
 #[test]
 fn blocked_syscall_dispatch_resolves_cr3_before_commit() {
     let source = repo_text("kernel/src/interrupts/context_switch.rs");
@@ -2290,78 +2057,59 @@ fn blocked_syscall_dispatch_resolves_cr3_before_commit() {
 
 #[test]
 fn blocked_syscall_dispatch_validator_rejects_per_use_cr3_guards() {
-    let synthetic = synthetic_blocked_syscall_dispatch_source(
-        r#"
-            saved_regs.rax = 0;
-            interrupt_frame.as_mut().update(|_| {});
-            if has_pending_signals {
-                if let Some(cr3_val) = process.cr3_value() {
-                    unsafe { Cr3::write(PhysFrame::containing_address(PhysAddr::new(cr3_val)), Cr3Flags::empty()); }
-                }
-            }
-            if let Some(cr3_val) = process.cr3_value() {
-                unsafe { Cr3::write(PhysFrame::containing_address(PhysAddr::new(cr3_val)), Cr3Flags::empty()); }
-            }
-            if let Some(cr3_val) = process.cr3_value() {
-                unsafe { crate::per_cpu::set_next_cr3(cr3_val); }
-            }
-        "#,
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "resume_kernel_context",
+        "crate::per_cpu::set_next_cr3(root);",
+        "if let Some(cr3_val) = process.cr3_value() { crate::per_cpu::set_next_cr3(cr3_val); }",
     );
-    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&synthetic).is_err());
+    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
 }
 
 #[test]
 fn blocked_syscall_dispatch_validator_rejects_log_only_no_cr3() {
-    let synthetic = synthetic_blocked_syscall_dispatch_source(
-        r#"
-            let process_cr3 = match process.cr3_value() {
-                Some(cr3_value) => cr3_value,
-                None => {
-                    raw_serial_str("missing CR3");
-                }
-            };
-            saved_regs.rax = 0;
-            interrupt_frame.as_mut().update(|_| {});
-            unsafe { crate::per_cpu::set_next_cr3(process_cr3); }
-        "#,
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "dispatch_root",
+        "        if let Some(ref mut thread) = process.main_thread {\n            thread.set_terminated();\n        }\n",
+        "",
     );
-    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&synthetic).is_err());
+    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "refuse_user_dispatch",
+        "            scheduler::with_thread_mut(thread_id, |thread| thread.set_terminated());\n",
+        "",
+    );
+    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
 }
 
 #[test]
 fn blocked_syscall_dispatch_validator_rejects_late_no_cr3_refusal() {
-    let refusal = valid_blocked_syscall_no_cr3_arm();
-    let synthetic = synthetic_blocked_syscall_dispatch_source(&format!(
-        r#"
-            saved_regs.rax = 0;
-            interrupt_frame.as_mut().update(|_| {{}});
-            {refusal}
-        "#,
-        refusal = refusal,
-    ));
-    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&synthetic).is_err());
-}
-
-fn synthetic_no_cr3_restore_source(else_arm: &str) -> String {
-    format!(
-        r#"
-        fn restore_userspace_thread_context() {{
-            if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {{
-                scheduler::set_need_resched();
-                setup_idle_return(interrupt_frame);
-                scheduler::switch_to_idle();
-                scheduler::requeue_refused_dispatch(thread_id);
-                return;
-            }}
-            let process_cr3 = process.cr3_value();
-            if let Some(cr3_value) = process_cr3 {{
-                crate::per_cpu::set_next_cr3(cr3_value);
-            }} else {{
-                {else_arm}
-            }}
-        }}
-        "#
-    )
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "resume_kernel_context",
+        "    // Restore interrupt frame with KERNEL context\n",
+        "    let _late = dispatch_root(thread_id, 0);\n    // Restore interrupt frame with KERNEL context\n",
+    );
+    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "resume_kernel_context",
+        "            refuse_user_dispatch(thread_id, resume_thread_id, refusal, true, interrupt_frame);\n            return;\n",
+        "            refuse_user_dispatch(thread_id, resume_thread_id, refusal, true, interrupt_frame);\n            0\n",
+    );
+    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
+    let mutant = mutate_function(
+        &source,
+        "dispatch_root",
+        "    if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {\n        return Err(RootRefusal::Unpublished);\n    }\n    let Some(root) = process.cr3_value() else {",
+        "    let Some(root) = process.cr3_value() else {",
+    );
+    assert!(validate_blocked_syscall_dispatch_resolves_cr3(&mutant).is_err());
 }
 
 fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
@@ -2718,7 +2466,7 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
     }
 
     let manager = repo_text("kernel/src/process/manager.rs");
-    validate_exec_sibling_guard_census(&manager)?;
+    validate_exec_group_guard_census(&manager)?;
     Ok(())
 }
 
@@ -2727,25 +2475,26 @@ fn validate_clone_publication_lifecycle(clone: &str) -> Result<(), String> {
 /// disk content (`validate_clone_publication_lifecycle` always re-reads the
 /// real file internally, which would make in-memory mutation invisible to it).
 ///
-/// #721 B1: both architectures now guard exec against a live CLONE_VM sibling
-/// still holding the old CR3/TTBR0 (x86 gained this in the same round that
-/// reddened this census — #721 K5/B2), so every one of the four `exec_process`
-/// / `exec_process_with_argv` bodies must carry the same guard shape. This is
-/// a per-arch census only in that it labels which arch failed; the
-/// requirement itself is arch-uniform.
-fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
+/// Ruling S2 (#1781, #1718): an exec does not retire an address space another
+/// thread runs on. Each of the four `exec_process` /
+/// `exec_process_with_argv` bodies refuses to commit while another thread of
+/// its process runs (`exec_blocked_by_group`, an `if` guard returning `Err`)
+/// and hands the old address space to the rows that share it without sharing
+/// the thread group (`transfer_address_space`), both before it takes the old
+/// root. The argv bodies guard before they consume the prepared image, so an
+/// exec that has to wait keeps it. This is a per-arch census only in that it
+/// labels which arch failed; the requirement itself is arch-uniform.
+fn validate_exec_group_guard_census(manager: &str) -> Result<(), String> {
     let manager_bodies = module_function_bodies(manager);
-    let sibling_guard_definitions = manager_bodies
-        .get("find_live_clone_vm_sibling_holding_cr3")
+    let guard_definitions = manager_bodies
+        .get("exec_blocked_by_group")
         .map_or(0, Vec::len);
-    if sibling_guard_definitions != 1 {
+    if guard_definitions != 1 {
         return Err(format!(
-            "find_live_clone_vm_sibling_holding_cr3 must be defined exactly once, found {sibling_guard_definitions}"
+            "exec_blocked_by_group must be defined exactly once, found {guard_definitions}"
         ));
     }
 
-    // Issue #468 is open and this phase does not close it. Census this guard
-    // because it sits immediately adjacent to the exec-commit code this phase edits.
     let mut exec_bodies = Vec::new();
     for name in ["exec_process", "exec_process_with_argv"] {
         for body in manager_bodies.get(name).into_iter().flatten() {
@@ -2772,29 +2521,36 @@ fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
             "x86"
         };
         let body_mask = code_mask(body);
-        let sibling_guard_calls =
-            call_offsets(body, &body_mask, "find_live_clone_vm_sibling_holding_cr3");
-        if sibling_guard_calls.len() != 1 {
+        let guard_calls = call_offsets(body, &body_mask, "exec_blocked_by_group");
+        if guard_calls.len() != 1 {
             return Err(format!(
-                "{arch} {name} must call find_live_clone_vm_sibling_holding_cr3 exactly once, found {}",
-                sibling_guard_calls.len()
+                "{arch} {name} must call exec_blocked_by_group exactly once, found {}",
+                guard_calls.len()
             ));
         }
-        // argv images are prepared before taking PM; the sibling guard must
-        // precede consuming that image and retiring the old root on both arches.
-        let boundary = if name == "exec_process_with_argv" {
-            code_offsets(body, &body_mask, "prepared.take()")
-        } else {
-            code_offsets(body, &body_mask, "UnpublishedPageTable::new(")
-        };
+        let handoffs = call_offsets(body, &body_mask, "transfer_address_space");
+        if handoffs.len() != 1 {
+            return Err(format!(
+                "{arch} {name} must call transfer_address_space exactly once, found {}",
+                handoffs.len()
+            ));
+        }
         let retire = code_offsets(body, &body_mask, "process.page_table.take()");
-        if boundary.len() != 1 || retire.len() != 1 {
-            return Err(format!("{arch} {name} lacks its unique image/retirement boundaries"));
+        if retire.len() != 1 {
+            return Err(format!("{arch} {name} lacks its unique retirement boundary"));
         }
-        if sibling_guard_calls[0] >= boundary[0] || boundary[0] >= retire[0] {
+        if guard_calls[0] >= handoffs[0] || handoffs[0] >= retire[0] {
             return Err(format!(
-                "{arch} {name} must guard live CLONE_VM siblings before consuming an image and retiring its root"
+                "{arch} {name} must wait for its group and hand the old address space on before retiring its root"
             ));
+        }
+        if name == "exec_process_with_argv" {
+            let consume = code_offsets(body, &body_mask, "prepared.take()");
+            if consume.len() != 1 || guard_calls[0] >= consume[0] {
+                return Err(format!(
+                    "{arch} {name} must wait for its group before consuming the prepared image"
+                ));
+            }
         }
         let guard_arm = identifier_offsets(body, &body_mask, "if")
             .into_iter()
@@ -2804,15 +2560,15 @@ fn validate_exec_sibling_guard_census(manager: &str) -> Result<(), String> {
                 (call_offsets(
                     &block[..open],
                     &code_mask(&block[..open]),
-                    "find_live_clone_vm_sibling_holding_cr3",
+                    "exec_blocked_by_group",
                 )
                 .len()
                     == 1)
                     .then_some(block)
             })
-            .ok_or_else(|| format!("{arch} {name} sibling check is not an if guard"))?;
+            .ok_or_else(|| format!("{arch} {name} group check is not an if guard"))?;
         if !normalized_code(guard_arm).contains("return Err(") {
-            return Err(format!("{arch} {name} live-sibling guard does not return Err"));
+            return Err(format!("{arch} {name} group guard does not return Err"));
         }
     }
     Ok(())
@@ -3973,41 +3729,42 @@ fn clone_publication_lifecycle_is_closed() {
 
 #[test]
 fn clone_publication_lifecycle_guard_census_reddens_when_either_arch_guard_removed() {
-    // #721 B1: the guard census must fail closed in both directions on both
-    // architectures — deleting x86's guard call must redden it exactly as
-    // deleting aarch64's does. Prove all four exec bodies singly.
+    // The guard census must fail closed on both architectures: deleting any
+    // one exec body's group guard, or its hand-off, must redden it. Prove the
+    // four exec bodies singly (4 of 4), for each call.
     let manager = repo_text("kernel/src/process/manager.rs");
-    assert_eq!(validate_exec_sibling_guard_census(&manager), Ok(()));
+    assert_eq!(validate_exec_group_guard_census(&manager), Ok(()));
 
     let bodies = module_function_bodies(&manager);
-    let call = "self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)";
     let mut mutated = 0;
-    for name in ["exec_process", "exec_process_with_argv"] {
-        for &body in bodies.get(name).into_iter().flatten() {
-            let arch = if body.contains("[ARM64]") {
-                "aarch64"
-            } else {
-                "x86"
-            };
-            let offset = manager
-                .find(body)
-                .unwrap_or_else(|| panic!("{name} ({arch}) body offset"));
-            let call_offset = body.find(call).unwrap_or_else(|| {
-                panic!("{name} ({arch}) must call the sibling guard before mutation")
-            });
-            let mut mutant = manager.clone();
-            mutant.replace_range(
-                offset + call_offset..offset + call_offset + call.len(),
-                "false",
-            );
-            assert!(
-                validate_exec_sibling_guard_census(&mutant).is_err(),
-                "deleting the {arch} sibling-guard call from {name} must redden the census"
-            );
-            mutated += 1;
+    for call in ["self.exec_blocked_by_group(pid)", "self.transfer_address_space(pid);"] {
+        for name in ["exec_process", "exec_process_with_argv"] {
+            for &body in bodies.get(name).into_iter().flatten() {
+                let arch = if body.contains("[ARM64]") {
+                    "aarch64"
+                } else {
+                    "x86"
+                };
+                let offset = manager
+                    .find(body)
+                    .unwrap_or_else(|| panic!("{name} ({arch}) body offset"));
+                let call_offset = body.find(call).unwrap_or_else(|| {
+                    panic!("{name} ({arch}) must make the call {call} before mutation")
+                });
+                let mut mutant = manager.clone();
+                mutant.replace_range(
+                    offset + call_offset..offset + call_offset + call.len(),
+                    if call.ends_with(';') { "" } else { "false" },
+                );
+                assert!(
+                    validate_exec_group_guard_census(&mutant).is_err(),
+                    "deleting {call} from the {arch} {name} must redden the census"
+                );
+                mutated += 1;
+            }
         }
     }
-    assert_eq!(mutated, 4, "expected to mutate all four exec bodies' guard calls");
+    assert_eq!(mutated, 8, "expected to mutate all four exec bodies' two calls");
 }
 
 #[test]
@@ -4810,9 +4567,9 @@ fn userspace_resume_pc_predicate_stays_outside_the_kernel_text_window() {
     let source = repo_text(AARCH64_CONTEXT_SWITCH);
     assert_eq!(validate_user_resume_pc_predicate_is_independent(&source), Ok(()));
 
-    // Parallels identity-maps kernel text around 0x4008_0000, overlapping the
+    // Parallels identity-maps kernel text around 0x4020_0000, overlapping the
     // 0x4000_0000/0x4100_0000 ranges where userspace programs are linked. The
-    // EL0 predicate must therefore never reuse the kernel-text-window test.
+    // EL0 predicate uses its separate user-address bounds in the check below.
     let body = function_body(&source, "resume_pc_is_user_dispatchable")
         .expect("userspace resume-PC predicate");
     let body_start = source.find(body).expect("userspace predicate body offset");
@@ -4946,40 +4703,38 @@ fn no_cr3_dispatch_fails_closed() {
 
 #[test]
 fn no_cr3_dispatch_validator_rejects_warn_only_arm() {
-    let synthetic = synthetic_no_cr3_restore_source(r#"log::warn!("Process has no page table!");"#);
-    assert!(validate_no_cr3_dispatch_fails_closed(&synthetic).is_err());
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "dispatch_root",
+        "        USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);\n",
+        "        log::warn!(\"Process has no page table!\");\n",
+    );
+    assert!(validate_no_cr3_dispatch_fails_closed(&mutant).is_err());
 }
 
 #[test]
 fn no_cr3_dispatch_validator_rejects_missing_return() {
-    let synthetic = synthetic_no_cr3_restore_source(
-        r#"
-            thread.set_terminated();
-            scheduler::with_thread_mut(thread_id, |sched_thread| {
-                sched_thread.set_terminated();
-            });
-            scheduler::set_need_resched();
-            setup_idle_return(interrupt_frame);
-            scheduler::switch_to_idle();
-        "#,
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "restore_userspace_thread_context",
+        "            refuse_user_dispatch(thread_id, resume_thread_id, refusal, false, interrupt_frame);\n            return;\n",
+        "            refuse_user_dispatch(thread_id, resume_thread_id, refusal, false, interrupt_frame);\n            0\n",
     );
-    assert!(validate_no_cr3_dispatch_fails_closed(&synthetic).is_err());
+    assert!(validate_no_cr3_dispatch_fails_closed(&mutant).is_err());
 }
 
 #[test]
 fn no_cr3_dispatch_validator_rejects_scheduler_only_termination() {
-    let synthetic = synthetic_no_cr3_restore_source(
-        r#"
-            scheduler::with_thread_mut(thread_id, |sched_thread| {
-                sched_thread.set_terminated();
-            });
-            scheduler::set_need_resched();
-            setup_idle_return(interrupt_frame);
-            scheduler::switch_to_idle();
-            return;
-        "#,
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "refuse_user_dispatch",
+        "            scheduler::switch_to_idle();\n            trace_dispatch_abandon(if in_kernel {\n                DispatchAbandonSite::IdleNoCr3Blocked",
+        "            trace_dispatch_abandon(if in_kernel {\n                DispatchAbandonSite::IdleNoCr3Blocked",
     );
-    assert!(validate_no_cr3_dispatch_fails_closed(&synthetic).is_err());
+    assert!(validate_no_cr3_dispatch_fails_closed(&mutant).is_err());
 }
 
 #[test]
@@ -5154,24 +4909,42 @@ fn validate_interrupt_return_scheduler_acquisitions(source: &str) -> Result<(), 
         return Err("old-thread fields require more than one scheduler acquisition".to_string());
     }
 
+    // The incoming thread is made current, and everything its routing needs
+    // is read, in one scheduler acquisition: `scheduler::switch_in`, which
+    // makes it the per-CPU current thread under the lock it reads it with.
     let switch = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
-    let normalized_switch = normalized_code(switch);
-    if !normalized_switch.contains(
-        "} else if blocked_in_syscall || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref()) {",
-    ) || normalized_switch.contains("let saved_context_is_kernel_frame =")
+    let switch_mask = code_mask(switch);
+    let compact_switch = normalized_code(switch).replace(' ', "");
+    let acquisitions = ["with_scheduler", "with_thread_mut", "lock_scheduler", "switch_in"]
+        .iter()
+        .map(|name| call_offsets(switch, &switch_mask, name).len())
+        .sum::<usize>();
+    let idle_context_reads = compact_switch
+        .matches("scheduler::with_thread_mut(thread_id,|thread|{letidle_loop_addr")
+        .count();
+    if acquisitions - idle_context_reads != 1
+        || !compact_switch.contains(
+            "letincoming=scheduler::switch_in(Some(resume_thread_id),thread_id,|thread,is_idle|{",
+        )
+        || !compact_switch.contains(
+            "resumes_in_kernel:thread.blocked_in_syscall||saved_context_is_kernel_frame(thread),",
+        )
+        || !switch_in_publishes_current_thread()
     {
         return Err(
-            "saved-frame lookup is not lazy inside the non-idle user branch".to_string(),
+            "the incoming thread's routing fields take more than one scheduler acquisition"
+                .to_string(),
         );
     }
+    // The saved-frame predicate reads the row it is handed and takes no lock.
     let helper = function_body(source, "saved_context_is_kernel_frame")
         .ok_or_else(|| "missing fn saved_context_is_kernel_frame".to_string())?;
     let helper_mask = code_mask(helper);
-    if !identifier_offsets(helper, &helper_mask, "with_scheduler").is_empty()
-        || !identifier_offsets(helper, &helper_mask, "with_thread_mut").is_empty()
-    {
-        return Err("saved-frame helper recomputes caller-known scheduler state".to_string());
+    for lock in ["with_scheduler", "with_thread_mut", "try_manager", "poll_manager", "manager", "lock"] {
+        if !call_offsets(helper, &helper_mask, lock).is_empty() {
+            return Err("saved-frame helper takes a lock of its own".to_string());
+        }
     }
     Ok(())
 }
@@ -5268,8 +5041,8 @@ fn validate_abort_dispatch_preserves_resume_state(source: &str) -> Result<(), St
 }
 
 fn validate_terminated_signal_dispatch_switches_to_idle(source: &str) -> Result<(), String> {
-    let body = function_body(source, "switch_to_thread")
-        .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
+    let body = function_body(source, "deliver_signals_on_user_return")
+        .ok_or_else(|| "missing fn deliver_signals_on_user_return".to_string())?;
     let mask = code_mask(body);
     let bytes = body.as_bytes();
     let arm = identifier_offsets(body, &mask, "Terminated")
@@ -5292,7 +5065,7 @@ fn validate_terminated_signal_dispatch_switches_to_idle(source: &str) -> Result<
             braced_block(body, &mask, arrow + 1)
         })
         .ok_or_else(|| {
-            "switch_to_thread has no SignalDeliveryResult::Terminated arm".to_string()
+            "deliver_signals_on_user_return has no SignalDeliveryResult::Terminated arm".to_string()
         })?;
     let arm_mask = code_mask(arm);
 
@@ -5306,11 +5079,10 @@ fn validate_terminated_signal_dispatch_switches_to_idle(source: &str) -> Result<
         .first()
         .copied()
         .ok_or_else(|| "Terminated arm does not switch scheduler state to idle".to_string())?;
-    let return_offset = identifier_offsets(arm, &arm_mask, "return")
+    if identifier_offsets(arm, &arm_mask, "return")
         .first()
-        .copied()
-        .ok_or_else(|| "Terminated arm has no early return".to_string())?;
-    if switch_offset > return_offset {
+        .is_some_and(|return_offset| *return_offset < switch_offset)
+    {
         return Err("Terminated arm returns before switching scheduler state to idle".to_string());
     }
     Ok(())
@@ -5397,15 +5169,31 @@ fn validate_save_failure_rollback(source: &str) -> Result<(), String> {
     validate_rollback_return_alternation(&save_tail[..switch_offset], "save region")
 }
 
+/// `scheduler::switch_in` makes the incoming thread the per-CPU current thread
+/// in both of its arms: under this CPU's run-queue lock (`rq::switch_in`) and
+/// under the whole scheduler.
+fn switch_in_publishes_current_thread() -> bool {
+    let scheduler = repo_text("kernel/src/task/scheduler.rs");
+    let rq = repo_text("kernel/src/task/scheduler/rq.rs");
+    let whole = function_body(&scheduler, "switch_in").map(|body| normalized_code(body).replace(' ', ""));
+    let local = function_body(&rq, "switch_in").map(|body| normalized_code(body).replace(' ', ""));
+    whole.is_some_and(|body| {
+        body.contains("rq::switch_in(&mutlocal,outgoing,incoming,")
+            && body.contains("crate::per_cpu::set_current_thread(thread_ptr);")
+    }) && local.is_some_and(|body| body.contains("crate::per_cpu::set_current_thread(threadas*mutThread);"))
+}
+
 fn validate_switch_dispatch_rollback(source: &str) -> Result<(), String> {
     let body = function_body(source, "switch_to_thread")
         .ok_or_else(|| "missing fn switch_to_thread".to_string())?;
     let body_mask = code_mask(body);
-    let committed_start = identifier_offsets(body, &body_mask, "set_current_thread")
+    // The dispatch is committed where the incoming thread becomes the per-CPU
+    // current thread, inside `scheduler::switch_in`.
+    let committed_start = call_offsets(body, &body_mask, "switch_in")
         .first()
         .copied()
         .ok_or_else(|| {
-            "switch_to_thread has no set_current_thread dispatch-commit anchor".to_string()
+            "switch_to_thread has no switch_in dispatch-commit anchor".to_string()
         })?;
 
     validate_rollback_return_alternation(
@@ -5415,7 +5203,7 @@ fn validate_switch_dispatch_rollback(source: &str) -> Result<(), String> {
 }
 
 #[test]
-fn interrupt_return_reads_old_thread_once_and_lazily_checks_saved_cs() {
+fn interrupt_return_reads_each_thread_in_one_acquisition() {
     let source = repo_text("kernel/src/interrupts/context_switch.rs");
     assert_eq!(
         validate_interrupt_return_scheduler_acquisitions(&source),
@@ -5424,38 +5212,25 @@ fn interrupt_return_reads_old_thread_once_and_lazily_checks_saved_cs() {
 }
 
 #[test]
-fn interrupt_return_validator_rejects_unconditional_saved_frame_lookup() {
-    let synthetic = r#"
-        fn check_need_resched_and_switch(old_thread_id: u64) {
-            let (blocked_in_syscall, old_thread_is_user, old_thread_terminated) =
-                scheduler::with_thread_mut(old_thread_id, |thread| {
-                    (
-                        thread.blocked_in_syscall,
-                        thread.privilege == ThreadPrivilege::User,
-                        thread.state == crate::task::thread::ThreadState::Terminated,
-                    )
-                });
-            if from_userspace {}
-        }
-        fn saved_context_is_kernel_frame(thread_id: u64, guard: Option<&Guard>) -> bool {
-            manager_has_kernel_frame(thread_id, guard)
-        }
-        fn switch_to_thread(thread_id: u64, process_manager_guard: Option<Guard>) {
-            let saved_context_is_kernel_frame =
-                saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref());
-            if is_idle {
-                setup_idle_return();
-            } else if is_kernel_thread {
-                setup_kernel_thread_return();
-            } else if blocked_in_syscall || saved_context_is_kernel_frame {
-                restore_kernel_frame();
-            }
-        }
-    "#;
-    assert_eq!(
-        validate_interrupt_return_scheduler_acquisitions(synthetic),
-        Err("saved-frame lookup is not lazy inside the non-idle user branch".to_string())
+fn interrupt_return_validator_rejects_a_locking_saved_frame_lookup() {
+    let source = repo_text("kernel/src/interrupts/context_switch.rs");
+    let mutant = mutate_function(
+        &source,
+        "saved_context_is_kernel_frame",
+        "thread.privilege == ThreadPrivilege::User && is_kernel_code_selector(thread.context.cs)",
+        "scheduler::with_thread_mut(thread.id, |row| row.privilege == ThreadPrivilege::User && is_kernel_code_selector(row.context.cs)).unwrap_or(false)",
     );
+    assert_eq!(
+        validate_interrupt_return_scheduler_acquisitions(&mutant),
+        Err("saved-frame helper takes a lock of its own".to_string())
+    );
+    let mutant = mutate_function(
+        &source,
+        "switch_to_thread",
+        "    // Switch TLS if needed (kernel threads don't have TLS)\n",
+        "    let _again = scheduler::with_thread_mut(thread_id, |thread| thread.has_started);\n    // Switch TLS if needed (kernel threads don't have TLS)\n",
+    );
+    assert!(validate_interrupt_return_scheduler_acquisitions(&mutant).is_err());
 }
 
 #[test]
@@ -5535,12 +5310,13 @@ fn terminated_signal_dispatch_completes_switch_to_idle() {
 #[test]
 fn terminated_signal_validator_rejects_bookkeeping_rollback() {
     let synthetic = r#"
-        fn switch_to_thread(thread_id: u64, resume_thread_id: u64) {
+        fn deliver_signals_on_user_return(thread_id: u64, resume_thread_id: u64) {
             match signal_result {
                 SignalDeliveryResult::Terminated(notification) => {
                     scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
                     scheduler::set_need_resched();
-                    return;
+                    setup_idle_return(interrupt_frame);
+                    scheduler::switch_to_idle();
                 }
                 SignalDeliveryResult::NoAction => {}
             }
@@ -5552,11 +5328,13 @@ fn terminated_signal_validator_rejects_bookkeeping_rollback() {
 #[test]
 fn terminated_signal_validator_rejects_return_without_completed_switch() {
     let synthetic = r#"
-        fn switch_to_thread() {
+        fn deliver_signals_on_user_return() {
             match signal_result {
                 SignalDeliveryResult::Terminated(notification) => {
                     scheduler::set_need_resched();
+                    setup_idle_return(interrupt_frame);
                     return;
+                    scheduler::switch_to_idle();
                 }
                 SignalDeliveryResult::NoAction => {}
             }

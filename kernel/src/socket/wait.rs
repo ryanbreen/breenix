@@ -91,7 +91,7 @@ pub fn wait_until<R>(
             if let Some(error) = signal {
                 break Some(error);
             }
-            let waiting = crate::task::scheduler::with_scheduler(|sched| {
+            let waiting = crate::task::scheduler::with_current(|sched| {
                 sched
                     .current_thread_mut()
                     .map(|thread| thread.state == ThreadState::BlockedOnIO)

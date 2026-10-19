@@ -693,7 +693,7 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
 /// logs to until a process takes the display.
 #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
 pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
-    let Some((width, height, stride, bpp, is_bgr)) = crate::logger::display_geometry() else {
+    let Some((width, height, stride, bpp, is_bgr)) = crate::fbcon::display_geometry() else {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     };
     let info = FbInfo {
@@ -2923,17 +2923,19 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_fbdraw - production x86_64 form. Only Flush (op 6) is supported: it copies
+/// sys_fbdraw - production x86_64 form. Flush (op 6) copies
 /// the display owner's whole-screen fb_mmap pane (or the rectangle p1-p4 of it,
-/// when p3 and p4 are non-zero) onto the screen. The drawing ops draw on the
+/// when p3 and p4 are positive) onto the screen. The drawing ops draw on the
 /// interactive kernel's shell framebuffer, which this kernel does not have.
+/// ReadPixel (op 32) returns the hardware pixel at (p1, p2) as 0x00RRGGBB,
+/// allowing a root display owner to verify that a flush reached the framebuffer.
 ///
 /// # Returns
-/// * 0 on success
+/// * 0 on Flush success, or the RGB pixel for ReadPixel
 /// * -EFAULT if cmd_ptr is invalid
-/// * -EINVAL for any op but Flush, or a caller with no fb_mmap pane
-/// * -EPERM if the caller does not own the display
-/// * -EBUSY if the kernel's log sink holds the framebuffer (flush again)
+/// * -EINVAL for an unsupported op, invalid pixel coordinate, or no fb_mmap pane
+/// * -EPERM if the caller does not own the display, or ReadPixel is not privileged
+/// * -EBUSY if the screen console is writing a row (flush or read again)
 #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     use crate::syscall::memory_common::get_current_thread_id;
@@ -2943,25 +2945,34 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         Ok(cmd) => cmd,
         Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
     };
-    if cmd.op != 6 {
+    if cmd.op != 6 && cmd.op != 32 {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     }
-    let (fb_mmap, caller_owns_display) = match get_current_thread_id() {
+    let (fb_mmap, caller_owns_display, is_root) = match get_current_thread_id() {
         Some(tid) => match *crate::process::manager() {
             Some(ref mgr) => mgr
                 .find_process_by_thread(tid)
-                .map(|(pid, proc)| (proc.fb_mmap, owns_display(pid, proc)))
-                .unwrap_or((None, false)),
-            None => (None, false),
+                .map(|(pid, proc)| (proc.fb_mmap, owns_display(pid, proc), proc.cred.euid == 0))
+                .unwrap_or((None, false, false)),
+            None => (None, false, false),
         },
-        None => (None, false),
+        None => (None, false, false),
     };
-    if !caller_owns_display {
+    if !caller_owns_display || (cmd.op == 32 && !is_root) {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
     let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     };
+    if cmd.op == 32 {
+        if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= pane.width || cmd.p2 as usize >= pane.height {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        }
+        return match crate::fbcon::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
+            Some(pixel) => SyscallResult::Ok(pixel as u64),
+            None => SyscallResult::Err(super::ErrorCode::Busy as u64),
+        };
+    }
     let (rows, columns) = if cmd.p3 > 0 && cmd.p4 > 0 {
         let (x, y) = (cmd.p1.max(0) as usize, cmd.p2.max(0) as usize);
         (
@@ -2975,7 +2986,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
     // clipped to it.
     let copied = unsafe {
-        crate::logger::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
+        crate::fbcon::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
     };
     if copied {
         SyscallResult::Ok(0)
@@ -3114,7 +3125,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
 
     #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
     let (pane_width, height, bpp) = {
-        let Some((width, height, _stride, bpp, _is_bgr)) = crate::logger::display_geometry() else {
+        let Some((width, height, _stride, bpp, _is_bgr)) = crate::fbcon::display_geometry() else {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         };
         let pane_width = if whole_screen { width } else { width / 2 };

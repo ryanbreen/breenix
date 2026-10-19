@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Reassemble a finished Linux census into a new private evidence directory."""
+import argparse
+from metal_census import extract_record
+
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('record')
+p.add_argument('destination')
+a = p.parse_args()
+print(f'extracted {extract_record(a.record, a.destination)} checksummed platform files')

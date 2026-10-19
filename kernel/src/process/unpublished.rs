@@ -66,9 +66,14 @@ impl UnpublishedProcess {
     }
 
     /// Disarm the release and take the process. Called only where the builder
-    /// goes on to insert the row.
+    /// goes on to insert the row: its identity and descriptor table, now
+    /// final, are published for signals and descriptor lookups made without
+    /// PROCESS_MANAGER (`Process::publish_identity`, `publish_fd_table`).
     pub(crate) fn commit(mut self) -> Process {
-        self.process.take().expect("unpublished process")
+        let process = self.process.take().expect("unpublished process");
+        process.publish_identity();
+        process.publish_fd_table();
+        process
     }
 }
 

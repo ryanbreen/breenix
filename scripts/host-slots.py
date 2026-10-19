@@ -18,13 +18,45 @@ import time
 
 # Never checkout-relative or configurable by a launcher's environment.
 SLOT_DIR = Path('/tmp/breenix-host-slots')
-RESOURCES = {'x86-build': 2, 'x86-boot': 1, 'mac-boot': 1}
-# An x86 boot shares its VM with the build leases. Builds there left the gate guest's
-# vCPU threads waiting on the VM's run queue for up to ~100 ms despite the boot's higher
-# priority (#1368), so a boot first holds every build lease, then its boot lease, and
-# keeps both until it ends. A boot request queues for both in one step, so every queue
-# orders two boots the same way, and a session that holds a build lease gives it up
-# while it waits for all of them, so two such sessions never wait on each other.
+# x86 gate builds and metal builds run in the boot host's build containers, outside the
+# x86 gate VM: each container's cpuset is the host's shared CPUs, so its builds leave the
+# gate VM's reserved cores alone, and its slot directory is its own, so no lease in the
+# gate VM covers them. Each build runs BUILD_JOBS Cargo jobs and peaks near BUILD_MEMORY;
+# the machine a helper runs on holds as many builds as both fit (build_slots), which in
+# the gate VM itself is its 8 vCPUs at 4 jobs each.
+BUILD_JOBS = 4
+BUILD_MEMORY = 4 * 1024 ** 3
+# scripts/metal/metal-build sets its Cargo jobs from this name.
+METAL_BUILD_JOBS = BUILD_JOBS
+
+
+def build_slots():
+    try:
+        cpus = len(os.sched_getaffinity(1))  # the container's cpuset, whatever this process is pinned to
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    try:
+        memory = int(Path('/sys/fs/cgroup/memory.max').read_text())
+    except (OSError, ValueError):  # 'max' or no cgroup v2: the whole machine
+        try:
+            memory = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+        except (AttributeError, OSError, ValueError):
+            memory = BUILD_MEMORY
+    return max(1, min(cpus // BUILD_JOBS, memory // BUILD_MEMORY))
+
+
+RESOURCES = {'x86-build': build_slots(), 'x86-boot': 1, 'mac-boot': 1, 'metal-build': build_slots()}
+# A build inside the gate VM shares the VM's vCPUs with its boots. Builds there left the
+# gate guest's vCPU threads waiting on the VM's run queue for up to ~100 ms despite the
+# boot's higher priority (#1368), so a boot first holds every build lease in the VM, then
+# its boot lease, and keeps both until it ends. A boot request queues for both in one
+# step, so every queue orders two boots the same way, and a session that holds a build
+# lease gives it up while it waits for all of them, so two such sessions never wait on
+# each other. Gate builds of commits whose gate has a build phase run in the x86 build
+# container (scripts/x86-gate-build.py) and take its leases, which no boot excludes; only
+# builds still inside the VM (a commit older than that phase, a launcher sourcing
+# docker/qemu/lib/qemu-host-lock.sh there) take the VM's leases.
+# claim-lint:ok: tests/host_slots_test.py test_boot_holds_every_build_lease_until_it_ends.
 EXCLUDES = {'x86-boot': 'x86-build'}
 WAIT_MESSAGE_SECONDS = 60
 # A guest's vCPUs are host threads. A busy host leaves them unscheduled for tens of
@@ -653,7 +685,7 @@ def supervise_worker(argv, parent):
             # Run Inspector supervises a gate with its own helper, which can predate the
             # tested checkout's: name the operations newer than the first supervisor.
             env = dict(os.environ, BREENIX_SLOT_SESSION=session, BREENIX_SLOT_RECORD=record,
-                       BREENIX_SLOT_OPERATIONS='quiet')
+                       BREENIX_SLOT_OPERATIONS='quiet,number')
             child = subprocess.Popen(argv, env=env, start_new_session=True)
             deferred = []
             try:
@@ -761,7 +793,14 @@ def supervise_worker(argv, parent):
                                        'required': required, 'policy': policy,
                                        'quiet_since': time.monotonic(), 'quiet_samples': 0, 'next_sample': 0}
                         else:
-                            if operation == 'release':
+                            if operation == 'number':
+                                number = slots.held_number.get(request['resource'])
+                                response = ({'slot': number} if number is not None else
+                                            {'error': 'resource lease is not held'})
+                                client.sendall(json.dumps(response).encode() + b'\n')
+                                client.close()
+                                continue
+                            elif operation == 'release':
                                 if request['resource'].endswith('boot'):
                                     try:
                                         stop_qemu()
@@ -898,7 +937,7 @@ def supervise_worker(argv, parent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'quiet', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
+    parser.add_argument('operation', choices=('supervise', 'acquire', 'release', 'number', 'quiet', 'vm', 'serial', 'header', 'cargo-home', 'quiesce'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     values = args.arguments
@@ -909,6 +948,8 @@ def main():
         return supervise(values[1:] if values[0] == '--' else values)
     if args.operation in ('acquire', 'release'):
         send_request({'operation': args.operation, 'resource': values[0]})
+    elif args.operation == 'number':
+        print(send_request({'operation': 'number', 'resource': values[0]})['slot'])
     elif args.operation == 'quiet':
         if 'quiet' not in os.environ.get('BREENIX_SLOT_OPERATIONS', '').split(','):
             print('[host-slot] the supervising helper predates boot-start records: no quiet-host wait, start not recorded',

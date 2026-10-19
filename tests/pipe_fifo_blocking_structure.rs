@@ -248,9 +248,11 @@ fn prepared_sleep_owns_no_guard_and_cleans_up_eintr() {
     );
     assert_eq!(body.matches("preempt_enable()").count(), 1);
     assert_eq!(body.matches("preempt_disable()").count(), 1);
-    assert!(
-        body.find("check_signals_for_restartable_wait()").unwrap() < body.find("with_scheduler(").unwrap()
-    );
+    let state_check = body
+        .find("with_current(")
+        .or_else(|| body.find("with_scheduler("))
+        .expect("the sleep reads its blocked state in a scheduler acquisition");
+    assert!(body.find("check_signals_for_restartable_wait()").unwrap() < state_check);
     assert!(body.contains("ThreadState::BlockedOnIO"));
     assert!(body.find("preempt_disable()").unwrap() < body.find("take_waiter(").unwrap());
     assert!(body.rfind("finish_wait_for(tid)").unwrap() < body.rfind("Some(error)=>Err(error)").unwrap());
