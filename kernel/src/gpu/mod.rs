@@ -1504,6 +1504,9 @@ struct Hung {
 }
 
 /// The nodes the accounts are posted through; a node is reused once its line is written.
+// A summary never competes with account lines for a node. If this node is still
+// posted, kgpu retains the new counts and retries them after its next wake.
+static HUNG_LOSS_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
 static HUNG_NODES: [crate::log_notice::Node; HUNG_KEPT * HUNG_LINES] =
     [const { crate::log_notice::Node::new() }; HUNG_KEPT * HUNG_LINES];
 
@@ -1526,7 +1529,7 @@ impl core::fmt::Write for NoticeText {
 /// UART is written later by a thread that logs, or by the idle loop, rather than by this
 /// GPU path with its interrupts masked (section 1.16). `accounts` found no room in the core; a line
 /// that finds no free node is dropped too, and both are counted.
-fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32) {
+fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32, pending: &mut (u64, u64)) {
     use core::fmt::Write;
     let mut lines = 0u32;
     let mut post = |f: &dyn Fn(&mut NoticeText) -> core::fmt::Result| {
@@ -1564,10 +1567,14 @@ fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32) {
                 q.outstanding, q.oldest, q.oldest_cmd, h.oldest_serial, h.oldest_age_ms, h.backlog)
         });
     }
-    if accounts > 0 || lines > 0 {
+    pending.0 += u64::from(accounts);
+    pending.1 += u64::from(lines);
+    if *pending != (0, 0) {
         let mut t = NoticeText { bytes: [0; 80], len: 0 };
-        let _ = write!(t, "[gpu] watchdog: {} accounts and {} lines dropped", accounts, lines);
-        let _ = HUNG_NODES.iter().any(|n| n.post_again(core::str::from_utf8(&t.bytes[..t.len]).unwrap_or("")));
+        let _ = write!(t, "[gpu] watchdog: {} accounts and {} lines dropped", pending.0, pending.1);
+        if HUNG_LOSS_NODE.post_again(core::str::from_utf8(&t.bytes[..t.len]).unwrap_or("")) {
+            *pending = (0, 0);
+        }
     }
 }
 
@@ -1827,6 +1834,7 @@ fn reaper() {
     let _path = GpuPath::enter();
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
+    let mut hung_losses = (0, 0);
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
         acknowledge_interrupt();
@@ -1836,7 +1844,7 @@ fn reaper() {
             (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung())
         })
         .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0)));
-        post_hung(&hung.0, hung.1);
+        post_hung(&hung.0, hung.1, &mut hung_losses);
         if reset {
             reset_device(tid);
             continue;
@@ -1851,6 +1859,11 @@ fn reaper() {
             (Some(d), false) => Some(d),
             (None, true) => Some(next_sweep),
             (None, false) => None,
+        };
+        let wake = if hung_losses != (0, 0) {
+            Some(wake.unwrap_or(u64::MAX).min(now + EXAMINE_NS))
+        } else {
+            wake
         };
         reaper_block(tid, seen, wake);
     }

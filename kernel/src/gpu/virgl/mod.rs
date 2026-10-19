@@ -164,6 +164,9 @@ pub struct Scanout {
 pub struct QueueView {
     /// Requests made available so far, and the latest-made one the device returned.
     pub made: u64,
+    // Highest numbered returned request, not a contiguous completion frontier.
+    // IN_ORDER and context timelines are not negotiated; earlier requests may
+    // still complete. This establishes lateness, never that a request was dropped.
     pub answered: u64,
     /// The used ring's index as the device last wrote it, and as far as the driver took it.
     pub used: u16,
