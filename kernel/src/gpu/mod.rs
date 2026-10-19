@@ -55,8 +55,7 @@ use gpu_abi::{self as abi, readback_reason, capability, fence_status, format, ki
 
 use crate::syscall::SyscallResult;
 use crate::tracing::providers::gpu::{gauge, GpuPath, GPU_CONTEXTS, GPU_RESOURCES};
-use crate::task::thread::ThreadState;
-use crate::task::waitqueue::WaitQueueHead;
+use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use dma::{Pages, WordBuf, PAGE};
 use virgl::{encode, wire, Device, Done, Reap, Request, Tag};
 
@@ -133,10 +132,22 @@ fn ring_doorbell() {
     }
 }
 
-/// Tell the waiters and `kgpu` that something changed.
+/// Tell the waiters and `kgpu` that something changed. The waiters come off the queue
+/// before they are woken, so no wake waits for the scheduler's lock while the queue's lock
+/// is held with interrupts masked (section 1.16, #2003); `wait_event` publishes a wait
+/// that this order cannot miss.
 fn notify() {
     EVENTS.fetch_add(1, Ordering::AcqRel);
-    WAITERS.wake_up();
+    let mut taken = [0u64; 8];
+    loop {
+        let n = WAITERS.take_waiters(&mut taken);
+        for &tid in &taken[..n] {
+            crate::task::scheduler::wake_waitqueue_thread(tid);
+        }
+        if n < taken.len() {
+            break;
+        }
+    }
     wake_reaper();
 }
 
@@ -1440,10 +1451,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         if unheld {
             crate::per_cpu::preempt_disable();
         }
-        let outcome = WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, wake, || {
-            EVENTS.load(Ordering::Acquire) == seen
-        });
-        let woke = crate::syscall::blocking_io::wait_prepared(&WAITERS, outcome);
+        let woke = wait_event(seen, wake);
         if unheld {
             crate::per_cpu::preempt_enable();
         }
@@ -1451,6 +1459,32 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             return Err(Stop::Interrupted);
         }
     }
+}
+
+/// Sleep until a GPU event after `seen`, the absolute `wake`, or a signal, holding a
+/// preemption level. The thread joins `WAITERS`, publishes its blocked state, then reads
+/// `EVENTS` again, each step in a section of its own, so no step waits for the scheduler's
+/// lock while it holds the queue's lock with interrupts masked (section 1.16, #2003).
+/// `notify` advances `EVENTS` before it takes waiters off the queue: a thread that joins
+/// after the take reads the new count, and one taken before it publishes reads it too,
+/// because its wake reached it running.
+fn wait_event(seen: u64, wake: Option<u64>) -> Result<(), i32> {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return Err(crate::syscall::errno::ESRCH);
+    };
+    if !WAITERS.add_waiter(tid) {
+        return Err(crate::syscall::errno::ENOMEM);
+    }
+    let published = crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_io_with_timeout(wake)).unwrap_or(false);
+    if !published {
+        WAITERS.finish_wait_for(tid);
+        return Err(crate::syscall::errno::ESRCH);
+    }
+    if EVENTS.load(Ordering::Acquire) != seen {
+        WAITERS.finish_wait_for(tid);
+        return Ok(());
+    }
+    crate::syscall::blocking_io::wait_prepared(&WAITERS, PrepareOutcome::Queued)
 }
 
 /// Send synchronous request `serial` (built with `Tag::Sync(serial)`) in device context
@@ -1601,14 +1635,12 @@ fn ensure_reaper() -> bool {
 /// the device's answers waiting for the next deadline. Once woken it returns without
 /// halting for a further interrupt.
 fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
-    crate::arch_without_interrupts(|| {
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_io_with_timeout(wake);
-        });
+    // One scheduler section publishes the block and checks for an event since `seen`, so
+    // the lock is taken once and waited for with interrupts enabled (section 1.16, #2003).
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_io_with_timeout(wake);
         if EVENTS.load(Ordering::Acquire) != seen {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(tid);
-            });
+            sched.unblock(tid);
         }
     });
     crate::task::scheduler::yield_current();

@@ -250,6 +250,24 @@ impl WaitQueueHead {
         })
     }
 
+    /// Take up to `out.len()` waiters off the queue, oldest first, without waking
+    /// them, for a caller that wakes them after the queue's lock is released (the
+    /// GPU core, whose waiters publish their own wait as `add_waiter` describes).
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn take_waiters(&self, out: &mut [u64]) -> usize {
+        self.with_waiters(|waiters| {
+            let mut taken = 0;
+            while taken < out.len() {
+                let Some(waiter) = waiters.pop_front() else {
+                    break;
+                };
+                out[taken] = waiter.tid;
+                taken += 1;
+            }
+            taken
+        })
+    }
+
     /// Remove a specific waiter under the waitqueue lock.
     pub fn take_waiter(&self, tid: u64) -> bool {
         let mut removed = false;
