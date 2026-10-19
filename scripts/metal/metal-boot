@@ -1106,6 +1106,8 @@ class Driver:
         self.on_hostkey_line(line)
         self.challenge_shell(line)
         self.challenge_console(line, complete=True)
+        # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
+        self.challenge_persistent(line)
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line, input_kind(self.args)):
                 stages.pop(0)

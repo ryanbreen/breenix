@@ -202,6 +202,22 @@ class DriverPersistentTest(unittest.TestCase):
         with self.assertRaises(boot.Finish):
             d.challenge_persistent('Login incorrect')
 
+    def test_run_answers_a_prompt_that_a_log_line_completed(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['true']
+        d.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture'}
+        d.kernel_started, d.t0 = 1, 0
+        sent = []
+        d.console_send = sent.append
+        d.dir.mkdir(parents=True, exist_ok=True)
+        (d.dir / 'serial.txt').touch()
+        (d.dir / 'serial.ts').touch()
+        # The prompt and the census line after it arrive in one read: the prompt is a complete line.
+        raw = d.dir / 'serial.raw'
+        raw.write_bytes(b'Breenix login: \r\n[census] cpu0=idle\r\n')
+        d.pump_serial()
+        self.assertEqual(sent, ['root'])
+
 
 class OperatorScoringTest(existing.StateTest):
     def test_keyboard_stages_count_once_typed_and_are_unmeasured_until_then(self):
