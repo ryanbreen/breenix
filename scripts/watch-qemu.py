@@ -95,6 +95,8 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
             return "idle"
         time.sleep(0.2)
+    if mode not in COMPLETING_MODES:
+        return "exit"
     # An operator quit (monitor, window, or signal) must not reboot the guest.
     # A fatal guest record still identifies a guest death if QEMU exited first.
     text = serial.read_bytes().decode("utf-8", errors="replace") if serial.exists() else ""
