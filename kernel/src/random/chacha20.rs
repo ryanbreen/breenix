@@ -60,5 +60,7 @@ pub fn block(key: &[u8; KEY_LEN], counter: u32, nonce: &[u8; 12]) -> [u8; BLOCK_
     for i in 0..16 {
         out[4 * i..4 * i + 4].copy_from_slice(&state[i].wrapping_add(initial[i]).to_le_bytes());
     }
+    super::erase::wipe(&mut initial);
+    super::erase::wipe(&mut state);
     out
 }

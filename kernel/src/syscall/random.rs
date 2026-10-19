@@ -60,7 +60,7 @@ pub fn sys_getrandom(buf_ptr: u64, buflen: u64, flags: u32) -> SyscallResult {
             break;
         }
     }
-    chunk.fill(0);
+    crate::random::erase::wipe(&mut chunk);
 
     if written == 0 {
         SyscallResult::Err(ErrorCode::Fault as u64)

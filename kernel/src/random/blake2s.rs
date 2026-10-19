@@ -9,7 +9,13 @@ pub const MAX_LEN: usize = 32;
 
 /// The initialization vector (RFC 7693 section 2.6).
 const IV: [u32; 8] = [
-    0x6A09_E667, 0xBB67_AE85, 0x3C6E_F372, 0xA54F_F53A, 0x510E_527F, 0x9B05_688C, 0x1F83_D9AB,
+    0x6A09_E667,
+    0xBB67_AE85,
+    0x3C6E_F372,
+    0xA54F_F53A,
+    0x510E_527F,
+    0x9B05_688C,
+    0x1F83_D9AB,
     0x5BE0_CD19,
 ];
 
@@ -72,6 +78,8 @@ fn compress(h: &mut [u32; 8], block: &[u8; BLOCK], bytes: u64, last: bool) {
     for i in 0..8 {
         h[i] ^= v[i] ^ v[i + 8];
     }
+    super::erase::wipe(&mut m);
+    super::erase::wipe(&mut v);
 }
 
 /// An incremental BLAKE2s computation.
@@ -89,7 +97,13 @@ impl Blake2s {
         assert!((1..=MAX_LEN).contains(&digest_len) && key.len() <= MAX_LEN);
         let mut h = IV;
         h[0] ^= 0x0101_0000 ^ ((key.len() as u32) << 8) ^ digest_len as u32;
-        let mut state = Self { h, buffer: [0; BLOCK], buffered: 0, bytes: 0, digest_len };
+        let mut state = Self {
+            h,
+            buffer: [0; BLOCK],
+            buffered: 0,
+            bytes: 0,
+            digest_len,
+        };
         if !key.is_empty() {
             // The key, zero-padded, is the first message block (RFC 7693 section 3.3).
             state.buffer[..key.len()].copy_from_slice(key);
@@ -115,7 +129,7 @@ impl Blake2s {
     }
 
     /// Write the digest into `out[..digest_len]`.
-    pub fn finalize(mut self, out: &mut [u8]) {
+    pub fn finalize(&mut self, out: &mut [u8]) {
         self.bytes += self.buffered as u64;
         self.buffer[self.buffered..].fill(0);
         compress(&mut self.h, &self.buffer, self.bytes, true);
@@ -124,5 +138,8 @@ impl Blake2s {
             digest[4 * i..4 * i + 4].copy_from_slice(&word.to_le_bytes());
         }
         out[..self.digest_len].copy_from_slice(&digest[..self.digest_len]);
+        super::erase::wipe(&mut digest);
+        super::erase::wipe(&mut self.h);
+        super::erase::wipe(&mut self.buffer);
     }
 }

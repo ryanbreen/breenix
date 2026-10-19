@@ -43,17 +43,19 @@ impl Generator {
     pub fn fill(&mut self, out: &mut [u8]) {
         assert!(out.len() <= MAX_FILL);
         let nonce = [0u8; 12];
-        let first = chacha20::block(&self.key, 0, &nonce);
+        let mut first = chacha20::block(&self.key, 0, &nonce);
         let mut written = (BLOCK_LEN - KEY_LEN).min(out.len());
         out[..written].copy_from_slice(&first[KEY_LEN..KEY_LEN + written]);
         let mut counter = 1;
         while written < out.len() {
-            let block = chacha20::block(&self.key, counter, &nonce);
+            let mut block = chacha20::block(&self.key, counter, &nonce);
             let take = BLOCK_LEN.min(out.len() - written);
             out[written..written + take].copy_from_slice(&block[..take]);
+            super::erase::wipe(&mut block);
             written += take;
             counter += 1;
         }
         self.key.copy_from_slice(&first[..KEY_LEN]);
+        super::erase::wipe(&mut first);
     }
 }

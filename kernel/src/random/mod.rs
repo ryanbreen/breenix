@@ -22,6 +22,7 @@
 mod blake2s;
 mod chacha20;
 mod generator;
+pub(crate) mod erase;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 

@@ -10,6 +10,8 @@ mod blake2s;
 mod chacha20;
 #[path = "../../../kernel/src/random/generator.rs"]
 mod generator;
+#[path = "../../../kernel/src/random/erase.rs"]
+mod erase;
 
 use blake2s::Blake2s;
 use generator::{Generator, MAX_FILL};
