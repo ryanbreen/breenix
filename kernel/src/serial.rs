@@ -575,22 +575,75 @@ pub(crate) fn sync_log_to_console() {
         }) {
             break target;
         }
-        let _ = write_burst_waiting();
-        core::hint::spin_loop();
+        if let Burst::Busy = write_burst_waiting() {
+            wait_for_console_room();
+        }
     };
-    drain_until(target);
+    drain_until(target, wait_for_console_room);
+}
+
+/// How long a console writer sleeps while COM1's queue has no room for the
+/// next log line: about a dozen bytes at 115200 baud.
+const CONSOLE_SYNC_NAP_NS: u64 = 1_000_000;
+
+/// Wait for COM1's queue to take more of the log ahead of a terminal record.
+/// The backlog can be the whole ring, 64 KiB or about 5.7 s at 115200 baud,
+/// and x86 syscalls run with interrupts masked: spinning held the CPU that
+/// long with no interrupts, so device completions it had to take (an AHCI
+/// command's) passed their 5 s deadlines and failed filesystem calls with EIO.
+/// A thread in a syscall sleeps instead, while the transmit thread drains the
+/// queue; any other caller spins as before.
+fn wait_for_console_room() {
+    use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
+    static WAITERS: WaitQueueHead = WaitQueueHead::new();
+
+    if !console_sync_can_sleep() {
+        core::hint::spin_loop();
+        return;
+    }
+    let deadline = crate::signal::monotonic_nanos().saturating_add(CONSOLE_SYNC_NAP_NS);
+    match WAITERS.prepare_to_wait_checked(
+        crate::task::thread::ThreadState::BlockedOnIO,
+        Some(deadline),
+        || true,
+    ) {
+        PrepareOutcome::Queued => {
+            crate::task::waitqueue::schedule_current_wait();
+            WAITERS.finish_wait();
+        }
+        PrepareOutcome::Mismatch | PrepareOutcome::PublishFailed => {
+            WAITERS.finish_wait();
+            core::hint::spin_loop();
+        }
+        PrepareOutcome::OutOfMemory => core::hint::spin_loop(),
+    }
+}
+
+/// Whether the console writer may sleep: a thread other than idle, in a
+/// syscall with only the syscall's own preemption brake held, outside
+/// interrupt context, once the transmit thread drains COM1's queue.
+fn console_sync_can_sleep() -> bool {
+    if TX_THREAD.get().is_none() || !crate::per_cpu::is_initialized() {
+        return false;
+    }
+    if crate::per_cpu::in_interrupt() || crate::per_cpu::preempt_count() != 1 {
+        return false;
+    }
+    let tid = crate::task::scheduler::current_thread_id();
+    let idle = crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid);
+    tid.is_some() && idle == Some(false)
 }
 
 /// Write the ring out until `target` retained producer bytes have gone to the log UART (with
-/// the log on the console, into COM1's queue) in total, waiting on the UART
-/// between bursts with interrupts as the caller has them.
-fn drain_until(target: u64) {
+/// the log on the console, into COM1's queue) in total, calling `wait`
+/// between bursts while the UART or the queue is busy.
+fn drain_until(target: u64, wait: fn()) {
     use core::sync::atomic::Ordering;
     while LOG_SENT.load(Ordering::Acquire) < target {
         match write_burst_waiting() {
             Burst::Empty => break,
             Burst::Wrote => {}
-            Burst::Busy => core::hint::spin_loop(),
+            Burst::Busy => wait(),
         }
     }
     // Before the transmit thread exists, early log lines still reach the
@@ -1128,12 +1181,12 @@ pub fn _log_print(args: fmt::Arguments) {
             (ring.len() > LOG_RING_BYTES / 2).then_some(ring.accepted())
         });
         if let Some(target) = backlog {
-            drain_until(target);
+            drain_until(target, core::hint::spin_loop);
         }
     }
     let end = enqueue_log(args);
     if may_wait {
-        drain_until(end);
+        drain_until(end, core::hint::spin_loop);
     } else {
         let _ = write_burst(SHORT_BURST);
     }
