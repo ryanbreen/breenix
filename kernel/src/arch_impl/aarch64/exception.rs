@@ -1276,7 +1276,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
             if !from_el0 {
-                crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
+                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
             }
 
             // EL1 may have faulted while holding SCHEDULER, so termination is
@@ -1419,7 +1419,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
 
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
-                    crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -1617,6 +1616,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
             drop(fatal_uart_guard);
+
+            if !from_el0 {
+                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            }
 
             if from_el0 {
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);

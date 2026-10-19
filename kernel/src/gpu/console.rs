@@ -569,8 +569,10 @@ pub fn pump() {
         if let Some(epoch) = with_core(|c| {
             (!c.stalled && !c.resetting && !c.reset_wanted).then_some(c.epoch)
         }).flatten() {
-            if PANIC_EPOCH.swap(epoch, Ordering::AcqRel) != epoch {
-                let _ = super::panic::prepare();
+            if PANIC_EPOCH.load(Ordering::Acquire) != epoch {
+                if super::panic::prepare().is_ok() {
+                    PANIC_EPOCH.store(epoch, Ordering::Release);
+                }
                 #[cfg(feature = "capture_panic_oracle")]
                 super::panic::preparation_finished();
             }

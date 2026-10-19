@@ -109,7 +109,7 @@ static LAYOUT_SETTLED: AtomicBool = AtomicBool::new(false);
 /// still drawn, but their flush is left to the render thread, so a stalled GPU
 /// costs the boot path one command timeout rather than one per update.
 static GPU_FLUSH_FAILED: AtomicBool = AtomicBool::new(false);
-/// The diagnostics screen has been claimed (first failure wins).
+/// The terminal diagnostics screen has been claimed (first fatal failure wins).
 static DIAG_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 const BG: Color = Color::rgb(15, 20, 35);
@@ -714,9 +714,10 @@ pub fn show_panic(info: &core::panic::PanicInfo) {
 }
 
 /// Draw the diagnostics screen for a fatal EL1 exception, described in words
-/// from its syndrome (`esr`), fault address (`far`) and PC (`elr`). Does not block.
-pub fn show_fault(esr: u64, far: u64, elr: u64) {
+/// from its syndrome (`esr`), fault address (`far`) and PC (`elr`), then stop this CPU.
+pub fn show_fault(esr: u64, far: u64, elr: u64) -> ! {
     fault_diagnostics(esr, far, elr, true);
+    crate::gpu::panic::park();
 }
 
 /// Preserve firmware diagnostics for recoverable faults without terminal takeover.
@@ -830,17 +831,20 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     if !terminal && crate::gpu::console::active() {
         return;
     }
-    if DIAG_CLAIMED.swap(true, Ordering::AcqRel) {
+    if (terminal && DIAG_CLAIMED.swap(true, Ordering::AcqRel))
+        || (!terminal && DIAG_CLAIMED.load(Ordering::Acquire))
+    {
         return;
     }
-    if crate::gpu::console::active() {
-        // Handoff can race the earlier recovery check.
-        if !terminal {
-            return;
+    let show_gpu = || {
+        if terminal {
+            let mut tail = [0u8; DIAG_LOG_BYTES];
+            let n = recent.copy(&mut tail);
+            crate::gpu::panic::show(title, headline, details, current_stage_name(), &tail[..n]);
         }
-        let mut tail = [0u8; DIAG_LOG_BYTES];
-        let n = recent.copy(&mut tail);
-        crate::gpu::panic::show(title, headline, details, current_stage_name(), &tail[..n]);
+    };
+    if crate::gpu::console::active() {
+        show_gpu();
         return;
     }
     let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() else {
@@ -849,6 +853,15 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     let Some(mut guard) = fb.try_lock() else {
         return;
     };
+    // Retirement takes this same lock. Recheck before writing the firmware canvas.
+    if crate::gpu::console::active() {
+        drop(guard);
+        show_gpu();
+        return;
+    }
+    if !terminal && DIAG_CLAIMED.load(Ordering::Acquire) {
+        return;
+    }
     ACTIVE.store(false, Ordering::Release);
     HANDED_OVER.store(true, Ordering::Release);
     super::log_console::stop();

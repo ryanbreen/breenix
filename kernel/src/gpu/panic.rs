@@ -46,7 +46,7 @@ static STATE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
 static USERS: [AtomicUsize; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const { AtomicUsize::new(0) }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
-fn park() -> ! {
+pub(crate) fn park() -> ! {
     unsafe {
         core::arch::asm!("msr daifset, #3", options(nomem, nostack));
     }
