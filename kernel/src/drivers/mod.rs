@@ -253,6 +253,9 @@ pub fn init() -> usize {
         // The GPU core's device: QEMU's virtio-gpu-gl-pci, when the boot attaches one.
         crate::gpu::init();
 
+        // An entropy device on PCI, when the boot attaches virtio-rng-pci rather than the MMIO one.
+        init_entropy_pci();
+
         // Initialize AHCI from PCI
         match ahci::init() {
             Ok(count) => {
@@ -324,6 +327,8 @@ pub fn init() -> usize {
                 }
             }
         }
+
+        init_entropy_pci();
 
         // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
         match vmware::svga3::init() {
@@ -399,6 +404,14 @@ fn init_legacy_gpu_pci() {
     }
 }
 
+/// The virtio-pci entropy device, unless an MMIO one is already set up.
+#[cfg(target_arch = "aarch64")]
+fn init_entropy_pci() {
+    if let Err(e) = virtio::rng::init_pci() {
+        crate::serial_println!("[drivers] VirtIO entropy (PCI): {}", e);
+    }
+}
+
 /// Initialize VirtIO MMIO devices (QEMU virt platform).
 #[cfg(target_arch = "aarch64")]
 fn init_virtio_mmio() -> usize {
@@ -465,6 +478,11 @@ fn init_virtio_mmio() -> usize {
         Err(e) => {
             serial_println!("[drivers] VirtIO GPU driver init failed: {}", e);
         }
+    }
+
+    // The entropy device seeds the kernel's random pool (crate::random).
+    if let Err(e) = virtio::rng::init_mmio() {
+        serial_println!("[drivers] VirtIO entropy (MMIO): {}", e);
     }
 
     // Initialize VirtIO sound driver

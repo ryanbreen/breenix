@@ -1942,6 +1942,7 @@ if [ "$ARCH" = "arm64" ]; then
         $DISPLAY_OPTS \
         $HOME_DISK_OPTS \
         $DISK_OPTS \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::2323-:2323,hostfwd=tcp::7890-:7890 \
         $AUDIO_OPTS \

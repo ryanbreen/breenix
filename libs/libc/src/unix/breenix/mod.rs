@@ -988,6 +988,7 @@ pub const AT_HWCAP2: c_ulong = 26;
 // sched_yield, nanosleep request values
 pub const GRND_NONBLOCK: c_uint = 0x0001;
 pub const GRND_RANDOM: c_uint = 0x0002;
+pub const GRND_INSECURE: c_uint = 0x0004;
 
 // Socket listen backlog
 pub const SOMAXCONN: c_int = 4096;
