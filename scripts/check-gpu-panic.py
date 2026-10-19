@@ -6,12 +6,21 @@ from pathlib import Path
 import re
 
 
+def fields(row):
+    pairs = re.findall(r"(\w+)=([^ ]+)", row)
+    if len({key for key, _ in pairs}) != len(pairs):
+        return None
+    return dict(pairs)
+
+
 def check(text):
     captures = list(re.finditer(r"\[BXCAP:BEGIN ([^\]\r\n]+)\]", text))
     ends = list(re.finditer(r"\[BXCAP:END ([^\]\r\n]+)\]", text))
     if len(captures) != 1 or len(ends) != 1:
         return False, "expected one complete capture"
-    begin, end = (dict(re.findall(r"(\w+)=([^ ]+)", row)) for row in (captures[0].group(1), ends[0].group(1)))
+    begin, end = (fields(row) for row in (captures[0].group(1), ends[0].group(1)))
+    if begin is None or end is None:
+        return False, "duplicate capture field"
     if not (
         begin.get("edge") == end.get("edge") == "PANIC"
         and begin.get("seq") is not None
@@ -25,7 +34,9 @@ def check(text):
     screens = list(re.finditer(r"\[GPU_PANIC_SCREEN ([^\]\r\n]+)\]", text))
     if len(screens) != 1:
         return False, "expected one device screen observation"
-    screen = dict(re.findall(r"(\w+)=([^ ]+)", screens[0].group(1)))
+    screen = fields(screens[0].group(1))
+    if screen is None:
+        return False, "duplicate screen field"
     if any(screen.get(key) != value for key, value in {
         "shown": "1", "observed": "1", "pixels": "4096000", "mismatches": "0",
     }.items()):

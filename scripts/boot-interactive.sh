@@ -224,6 +224,19 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 [ -f "$KERNEL" ] || { echo "No kernel at $KERNEL" >&2; exit 1; }
 [ -f "$DISK" ] || { echo "No disk at $DISK" >&2; exit 1; }
+# These feature-only Rust modules leave names in the kernel ELF's symbol table.
+# Inspect the image also with --no-build: the caller's environment can be stale.
+TERMINAL_PROFILE=$(python3 - "$KERNEL" <<'PYPROFILE'
+from pathlib import Path
+import sys
+image = Path(sys.argv[1]).read_bytes()
+if b"gpu_fault_acceptance" in image:
+    print("fault")
+elif b"capture_oracle" in image:
+    print("panic")
+PYPROFILE
+)
+
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
     # The Developer SDK suite's host side builds the SDK and its test apps and stages
     # them onto a copy of the disk (docs/suites/README.md, "Developer SDK").
@@ -337,7 +350,7 @@ fi
 # Terminal profiles end in an intentional panic or fatal abort, not probe's
 # program completion. Their stopped serials are judged by the profile check below.
 WATCH_MODE=$MODE
-if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",gpu_fault_acceptance,"* || ",${BREENIX_KERNEL_FEATURES:-}," == *",capture_panic_oracle,"* ]]; then
+if [ -n "$TERMINAL_PROFILE" ]; then
     WATCH_MODE=default
 fi
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
@@ -374,12 +387,12 @@ if [ "$GPU_GL" -eq 1 ]; then
     fi
 fi
 # This special profile intentionally panics; judge its stopped serial as well.
-if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",capture_panic_oracle,"* ]]; then
+if [ "$TERMINAL_PROFILE" = panic ]; then
     if ! python3 "$ROOT/scripts/check-gpu-panic.py" "$SERIAL_LOG"; then
         [ "$code" -ne 0 ] || code=1
     fi
 fi
-if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",gpu_fault_acceptance,"* ]]; then
+if [ "$TERMINAL_PROFILE" = fault ]; then
     if ! python3 "$ROOT/scripts/check-gpu-fault-routing.py" "$SERIAL_LOG"; then
         [ "$code" -ne 0 ] || code=1
     fi

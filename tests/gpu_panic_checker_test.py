@@ -24,6 +24,9 @@ class PanicCheckerTest(unittest.TestCase):
             VALID.replace("mismatches=0", "mismatches=1"),
             VALID + "soft-lockup\n",
             VALID + VALID,
+            VALID.replace("observed=1", "observed=0 observed=1"),
+            VALID.replace("BEGIN seq=1", "BEGIN seq=2 seq=1"),
+            VALID.replace("END seq=1", "END seq=2 seq=1"),
             VALID.splitlines()[2] + "\n" + "\n".join(VALID.splitlines()[:2]),
         ):
             with self.subTest(serial=bad):
