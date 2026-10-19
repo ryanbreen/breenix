@@ -5031,7 +5031,8 @@ fn validate_blocked_state_publication_family(
 /// than by naming the modules they live in.
 /// Resolve `self.state` through its enclosing impl and the struct's written
 /// field type. Unknown receivers remain in the census (fail closed); a known
-/// non-scheduler type never becomes ThreadState because its field is `state`.
+/// type counts as ThreadState only when that field's written type is
+/// `ThreadState`, not because the field is named `state`.
 fn known_non_thread_state_field(source: &str, mask: &[bool], offset: usize) -> bool {
     let Some(dot) = previous_code(source, mask, offset) else { return false; };
     if preceding_identifier(source, mask, dot).as_deref() != Some("self") {
