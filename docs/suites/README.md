@@ -201,17 +201,19 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   line and `reclaimed=FAIL`. A one-case run (`--case`) is not full-suite evidence and has no
   memory record.
 
-The allowance comes from two leak-free boots of the fifteen suites (2026-10-19):
+The allowance comes from leak-free boots: two of the fifteen suites, and one of the memory
+suite alone (2026-10-19):
 
 | Boot | Suites short of `free_before` | Why |
 |---|---|---|
-| ARM64 QEMU, 4 CPUs, 512 MiB | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
-| R240 (a diagnostic build of this branch) | 12 of 15 by 5 to 7 pages | As above |
+| ARM64 QEMU, 4 CPUs, 512 MiB, fifteen suites | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
+| R240 (a diagnostic build of this branch), fifteen suites | 12 of 15 by 5 to 7 pages | As above |
 | | terminals and networking by 37 pages | Each starts a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
 | | console 42 pages over | Kernel stacks freed during it came back |
+| ARM64 QEMU, memory suite alone | 38 pages | The runner's own pages: booted alone it draws its live panel, and its heap grows with it |
 
 ARM64's kernel stacks are not taken from the frame ledger, so its workers do not show. The
-allowance, 48 pages, is the largest deficit, 37 pages, with headroom; a process image left
+allowance, 48 pages, is the largest deficit, 38 pages, with headroom; a process image left
 behind is 300 pages or more.
 
 ## Writing a suite

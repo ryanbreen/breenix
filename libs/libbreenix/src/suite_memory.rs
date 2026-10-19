@@ -30,11 +30,12 @@ use std::vec::Vec;
 use crate::time;
 
 /// How many pages of free memory a suite may leave behind once its processes are
-/// reaped. A leak-free suite leaves the runner's own growth, 5 to 7 pages, and the
-/// first suite to use a kernel worker that starts on first use (the PTY hangup and
-/// TCP timer threads) leaves its 32 stack pages. The largest measured, 37 pages on
-/// the R240, with headroom (docs/suites/README.md, "Memory record"). Only the
-/// operator loosens it.
+/// reaped. A leak-free suite leaves the runner's own growth: 5 to 7 pages in a
+/// sequence, 38 for the memory suite booted alone, whose runner draws its live
+/// panel. The first suite to use a kernel worker that starts on first use (the PTY
+/// hangup and TCP timer threads) also leaves its 32 stack pages, 37 pages with the
+/// runner's on the R240. The largest measured, 38 pages, with headroom
+/// (docs/suites/README.md, "Memory record"). Only the operator loosens it.
 pub const MEMORY_RECLAIM_ALLOWANCE_PAGES: u64 = 48;
 
 /// The longest a sample waits for reclamation to finish.
