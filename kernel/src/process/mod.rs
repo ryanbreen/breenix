@@ -593,6 +593,12 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
 
 /// Execute a function with the process manager while interrupts are disabled (ARM64)
 /// This prevents deadlock when timer interrupts try to access the process manager
+///
+/// A caller that runs with interrupts enabled waits for a busy lock with them enabled, and
+/// masks them only to take the lock and for its own hold, so this CPU does not wait out
+/// another CPU's hold with its interrupts masked (`gpu_irq_masked_max_us`, #2003). A caller
+/// that already masked interrupts may hold an interrupt-safe lock, so it keeps waiting
+/// masked.
 #[cfg(target_arch = "aarch64")]
 pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
@@ -600,8 +606,7 @@ where
 {
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
-    crate::arch_impl::aarch64::cpu::without_interrupts(|| {
-        let mut manager_lock = PROCESS_MANAGER.lock();
+    let locked = |mut manager_lock: spin::MutexGuard<'static, Option<ProcessManager>>, f: F| {
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
@@ -611,7 +616,24 @@ where
         note_process_manager_lock_released(true);
         drop(manager_lock);
         result
-    })
+    };
+    if crate::arch_interrupts_enabled() {
+        let mut f = Some(f);
+        loop {
+            let done = crate::arch_impl::aarch64::cpu::without_interrupts(|| {
+                PROCESS_MANAGER
+                    .try_lock()
+                    .map(|manager_lock| locked(manager_lock, f.take().expect("process-manager section runs once")))
+            });
+            if let Some(result) = done {
+                return result;
+            }
+            while PROCESS_MANAGER.is_locked() {
+                core::hint::spin_loop();
+            }
+        }
+    }
+    crate::arch_impl::aarch64::cpu::without_interrupts(|| locked(PROCESS_MANAGER.lock(), f))
 }
 
 /// Try to get the process manager without blocking (for interrupt contexts).

@@ -484,6 +484,35 @@ fn lock_scheduler() -> SchedulerGuard {
     guard
 }
 
+/// Run `f` holding the scheduler lock, with interrupts masked while it is held.
+///
+/// On aarch64 a caller that runs with interrupts enabled waits for a busy lock with them
+/// enabled, and masks them only to take the lock and for its own hold. This CPU then does
+/// not wait out another CPU's hold (an aarch64 context switch keeps the lock from its
+/// decision until it leaves the outgoing stack) with its interrupts masked, which is what
+/// `gpu_irq_masked_max_us` counts for the GPU paths (docs/gui/gpu.md section 1.16, #2003).
+/// A caller that already masked interrupts may hold an interrupt-safe lock, so it keeps
+/// waiting masked.
+#[inline(always)]
+fn with_scheduler_lock<R>(f: impl FnOnce(&mut SchedulerGuard) -> R) -> R {
+    #[cfg(target_arch = "aarch64")]
+    if crate::arch_interrupts_enabled() {
+        let mut f = Some(f);
+        loop {
+            let done = without_interrupts(|| {
+                try_lock_scheduler().map(|mut guard| (f.take().expect("scheduler section runs once"))(&mut guard))
+            });
+            if let Some(result) = done {
+                return result;
+            }
+            while SCHEDULER.is_locked() {
+                core::hint::spin_loop();
+            }
+        }
+    }
+    without_interrupts(|| f(&mut lock_scheduler()))
+}
+
 #[inline(always)]
 fn try_lock_scheduler() -> Option<SchedulerGuard> {
     let guard = SCHEDULER.try_lock()?;
@@ -7463,8 +7492,7 @@ where
             CPU0_BREADCRUMB_ID.store(20, Ordering::Relaxed); // with_scheduler entry
         }
     }
-    without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
+    with_scheduler_lock(|scheduler_lock| {
         let _scheduler_scope = crate::tracing::providers::teardown::SchedulerScope::enter();
         #[cfg(target_arch = "aarch64")]
         {
@@ -7595,8 +7623,7 @@ pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
-    without_interrupts(|| {
-        let mut scheduler_lock = lock_scheduler();
+    with_scheduler_lock(|scheduler_lock| {
         scheduler_lock
             .as_mut()
             .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
@@ -8108,8 +8135,7 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
 /// Get the current thread ID
 /// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn current_thread_id() -> Option<u64> {
-    without_interrupts(|| {
-        let scheduler_lock = lock_scheduler();
+    with_scheduler_lock(|scheduler_lock| {
         scheduler_lock
             .as_ref()
             .and_then(|s| s.cpu_state[Scheduler::current_cpu_id()].current_thread)
