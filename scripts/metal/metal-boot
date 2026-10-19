@@ -94,7 +94,8 @@ def ceiling_seconds(args):
 
 
 MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300, 'tests': 600}
-# The testing kernel's last report line (kernel/src/syscall/handlers.rs), where every testing boot ends.
+# The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
+# through the logger, after a level and module prefix.
 TESTS_DONE = 'USERSPACE TEST REPORT DONE'
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
@@ -467,7 +468,7 @@ class Driver:
             # A testing boot is scored against main's path (metal_score.score_tests) once it has stopped, so it waits
             # for nothing but the report's end; main's fatal patterns stop it as they stop every testing boot.
             self.fatal_patterns = [re.compile(p) for p in main.get('fatal', [])]
-            self.final_marker = (TESTS_DONE, 'line')
+            self.final_marker = (TESTS_DONE, 'contains')
             self.required_stages = []
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')

@@ -143,15 +143,18 @@ class TestsDriverTest(StateTest):
                      'milestones': [{'id': 'idle', 'kernel': True, 'stages': {'x86_64': [{'marker': '[metal] kernel idle'}]}}]})
         m.write_json(definition / 'docs/boot-path.json', {'fatal': ['\\[TEST:[^\\]]*:FAIL'], 'milestones': []})
         d.load_definition()
-        self.assertEqual((d.final_marker, d.required_stages), ((boot.TESTS_DONE, 'line'), []))
+        self.assertEqual((d.final_marker, d.required_stages), ((boot.TESTS_DONE, 'contains'), []))
         self.assertEqual([p.pattern for p in d.fatal_patterns], ['\\[TEST:[^\\]]*:FAIL'])
         d.t0 = d.kernel_started = 100
-        d.on_line('  USERSPACE TEST REPORT DONE')  # only the whole line ends it
-        d.on_line(boot.TESTS_DONE)
+        # x86-64 prints the report through the logger (R240 boot 20261019T012239Z-metal).
+        report = '[ INFO] kernel::syscall::handlers: USERSPACE TEST REPORT DONE'
+        d.on_line('[ INFO] kernel::syscall::handlers: USERSPACE TEST REPORT')
+        self.assertFalse(d.final_seen)
+        d.on_line(report)
         self.assertFalse(d.completion_reported)  # the installed root is not yet confirmed
         d.seen.add('disk-root')
         with self.assertRaises(boot.Finish) as done:
-            d.on_line(boot.TESTS_DONE)
+            d.on_line(report)
         self.assertEqual(done.exception.status, m.EXIT_DONE)
         d = self.driver(1)
         d.fatal_patterns, d.t0, d.kernel_started = [re.compile('\\[TEST:[^\\]]*:FAIL')], 100, 100
