@@ -136,6 +136,24 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             }
             _ => errors.push(format!("{at}: diskChecks must be a nonempty array")),
         }
+        // The host reads the disk after the boot, so in a boot of several suites no suite may run after this one.
+        if object.get("sequence") != Some(&Value::String("last".into())) {
+            errors.push(format!("{at}: a suite with diskChecks runs last in a multi-suite boot: set \"sequence\": \"last\""));
+        }
+    }
+    // Where the suite must run in a boot of several suites (docs/suites/README.md, "Several suites in one boot").
+    if let Some(place) = object.get("sequence") {
+        expected.push("sequence");
+        if place != "first" && place != "last" {
+            errors.push(format!("{at}: sequence is \"first\" or \"last\" when present"));
+        }
+    }
+    // A suite that renders through a 3D GPU; launchers for targets without one leave it out of a resolved list.
+    if let Some(needs) = object.get("needs3dGpu") {
+        expected.push("needs3dGpu");
+        if needs != &Value::Bool(true) {
+            errors.push(format!("{at}: needs3dGpu is true when present"));
+        }
     }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();

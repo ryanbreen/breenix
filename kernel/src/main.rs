@@ -660,6 +660,8 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // Deferred reclamation drains on a timer too, not only when a CPU idles
     // or a process starts or ends (ruling S26).
     task::process_task::start_reclaim_daemon();
+    // Terminal signals the input interrupt generates are sent from a thread.
+    tty::driver::start_foreground_signal_thread();
     // Queued COM1 output goes to the UART from its own kernel thread (#1415).
     serial::start_transmitter();
     #[cfg(feature = "btrt")]
@@ -1410,8 +1412,8 @@ fn x86_console_mode() -> Option<X86ConsoleMode> {
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 Some(X86ConsoleMode::Console {
                     idle_minutes: Some(idle_minutes),
-                    replug: kernel::boot::console_intent::replug_or(replug),
-                    from: if kernel::boot::console_intent::explicit().is_some() { "intent" } else { "target" },
+                    replug,
+                    from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
                 })
             },
             _ => None,

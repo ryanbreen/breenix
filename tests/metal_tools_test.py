@@ -779,6 +779,7 @@ class RootStagingTest(unittest.TestCase):
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            (tree / 'sbin/suite-time').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
@@ -815,6 +816,15 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'suite', 'absent', site)
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+            # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
+            metal_root.stage_root(image, 'suite', 'smoke,time', site)
+            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('suite-sequence'), 'smoke,time\n')
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'smoke,absent', site)
+            metal_root.stage_root(image, 'suite', 'time', site)
+            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root
@@ -1017,15 +1027,18 @@ class DriverTest(StateTest):
         d.on_line('[storage] read back identical: truncated')
         self.assertFalse(d.completion_reported)
 
-    def test_disk_root_refuses_a_different_commit_before_assembling_the_payload(self):
+    def test_disk_root_stages_the_requested_build_before_assembling_the_payload(self):
         d = self.driver
         d.args.disk, d.args.commit = 'root', 'b' * 40
         inputs = d.stage / 'inputs'
         inputs.mkdir(parents=True)
         (inputs / 'ready').touch()
         m.write_json(inputs / 'build.json', {'commit': d.args.commit, 'profile': 'production', 'features': []})
-        m.write_json(m.STATE / 'disk.json', {'commit': 'a' * 40})
-        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        with patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+             patch.object(boot.metal_disk, 'stage', side_effect=ValueError('changed build')) as stage:
+            with self.assertRaisesRegex(ValueError, 'changed build'):
+                d.prepare_payload()
+        self.assertEqual(stage.call_args.args[3], d.args.commit)
         self.assertNotIn('diskRoot', d.delivery)
 
     def test_disk_mismatch_rejects_the_boot_before_prefix_completion(self):
@@ -1275,6 +1288,18 @@ class DriverTest(StateTest):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=1420):
             self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
+
+    def test_each_suite_of_a_multi_suite_boot_gets_its_own_deadline(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'directories,processes,time'
+        self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
+        d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 900
+        d.on_line('SUITE processes START cases=154', observed_at=500)
+        with patch.object(m, 'now', return_value=920):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=921):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
 
     def test_404_and_fatal_capture_graces(self):
         d = self.driver
@@ -1548,7 +1573,8 @@ class StagingTest(unittest.TestCase):
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
                          ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'efi-stub/Cargo.toml',
-                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs',
+                          'efi-stub/src/suite_disk.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'

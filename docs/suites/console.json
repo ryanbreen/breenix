@@ -5,6 +5,7 @@
   "summary": "Each target boots behind the Breenix logo and hands the screen to a text console sized for its display, with six virtual terminals that keep their own screens, scrollback and sessions, switched by ioctl, chvt and the keyboard, each screen checked by reading its displayed pixels back.",
   "binary": "/sbin/suite-console",
   "timingSensitive": true,
+  "sequence": "first",
   "categories": [
     {
       "id": "screen",

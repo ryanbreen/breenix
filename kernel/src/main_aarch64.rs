@@ -411,9 +411,7 @@ fn launch_init_from_elf(
     // This allows tests that need process context (like sys_socket) to run
     #[cfg(feature = "boot_tests")]
     {
-        let failures = kernel::test_framework::advance_to_stage(
-            kernel::test_framework::TestStage::ProcessContext,
-        );
+        let failures = kernel::test_framework::advance_to_process_context(pid);
         if failures > 0 {
             kernel::serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
         }
@@ -1207,6 +1205,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Deferred reclamation drains on a timer too, not only when a CPU idles
     // or a process starts or ends (ruling S26).
     kernel::task::process_task::start_reclaim_daemon();
+    // Terminal signals the input interrupt generates are sent from a thread.
+    kernel::tty::driver::start_foreground_signal_thread();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
@@ -2192,13 +2192,11 @@ fn load_test_binaries_from_ext2() {
         let created = kernel::process::creation::create_user_process_before_run(
             String::from(*name),
             &elf_data,
-            |_| {
+            |#[cfg_attr(not(feature = "boot_tests"), allow(unused_variables))] pid| {
                 #[cfg(feature = "boot_tests")]
                 if core::mem::take(&mut process_context_pending) {
                     kernel::per_cpu_aarch64::preempt_enable();
-                    let failures = kernel::test_framework::advance_to_stage(
-                        kernel::test_framework::TestStage::ProcessContext,
-                    );
+                    let failures = kernel::test_framework::advance_to_process_context(pid);
                     kernel::per_cpu_aarch64::preempt_disable();
                     if failures > 0 {
                         serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);

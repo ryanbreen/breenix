@@ -4,11 +4,13 @@ use alloc::vec::Vec;
 
 pub(super) fn list_entries() -> Result<Vec<String>, i32> {
     let mut entries = Vec::new();
-    entries.try_reserve_exact(1).map_err(|_| -12)?;
-    let mut name = String::new();
-    name.try_reserve_exact(3).map_err(|_| -12)?;
-    name.push_str("pnp");
-    entries.push(name);
+    entries.try_reserve_exact(2).map_err(|_| -12)?;
+    for listed in ["pnp", "tcp"] {
+        let mut name = String::new();
+        name.try_reserve_exact(listed.len()).map_err(|_| -12)?;
+        name.push_str(listed);
+        entries.push(name);
+    }
     Ok(entries)
 }
 

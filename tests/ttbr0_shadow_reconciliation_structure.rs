@@ -30,7 +30,7 @@
 //! is recorded verbatim under
 //! docs/planning/green-program/aarch64-testing/serials/slice1b/
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -404,18 +404,15 @@ fn is_mechanism_primitive(signature: &str, body: &str, operand: &str) -> bool {
 /// The attribute block immediately above `name`'s declaration.
 fn function_attributes(source: &str, name: &str) -> String {
     let needle = format!("fn {name}");
-    let lines: Vec<&str> = source.lines().collect();
-    let declaration = match lines.iter().position(|line| line.contains(&needle)) {
-        Some(index) => index,
-        None => return String::new(),
+    let Some(declaration) = source.find(&needle) else {
+        return String::new();
     };
+    let line_start = source[..declaration].rfind('\n').map_or(0, |at| at + 1);
     let mut attributes = Vec::new();
-    let mut cursor = declaration;
-    while cursor > 0 {
-        let candidate = lines[cursor - 1].trim();
+    for line in source[..line_start].lines().rev() {
+        let candidate = line.trim();
         if candidate.starts_with("#[") || candidate.starts_with("//") {
             attributes.push(candidate.to_string());
-            cursor -= 1;
         } else {
             break;
         }
@@ -445,8 +442,9 @@ fn aarch64_scoped_functions(sources: &[(String, String)]) -> Vec<(String, String
     for (file, source) in sources {
         let arch_file = file.contains("/aarch64/");
         for name in declared_function_names(source) {
-            let attributes = function_attributes(source, &name);
-            if !arch_file && !attributes.contains("target_arch = \"aarch64\"") {
+            if !arch_file
+                && !function_attributes(source, &name).contains("target_arch = \"aarch64\"")
+            {
                 continue;
             }
             out.push((
@@ -2046,13 +2044,16 @@ fn shadow_publish_census(
     dispatch_tag: (u64, u32),
 ) -> Vec<ShadowPublish> {
     let mut out = Vec::new();
+    let mut readers_by_file = BTreeMap::new();
     for (file, name, raw_body) in aarch64_scoped_functions(sources) {
         let source = sources
             .iter()
             .find(|(candidate, _)| candidate == &file)
             .map(|(_, source)| source.as_str())
             .expect("the census walks sources it was handed");
-        let register_readers = register_reading_functions(source);
+        let register_readers = readers_by_file
+            .entry(file.clone())
+            .or_insert_with(|| register_reading_functions(source));
         let signature = function_signature(source, &name);
         let body = without_line_comments(&raw_body);
         for setter in SHADOW_WRITERS {
@@ -2089,6 +2090,7 @@ fn unresolved_caller_borne(
     dispatch_tag: (u64, u32),
 ) -> Vec<String> {
     let mut out = Vec::new();
+    let mut readers_by_file = BTreeMap::new();
     for publish in census {
         if publish.provenance != Provenance::CallerBorne {
             continue;
@@ -2102,7 +2104,9 @@ fn unresolved_caller_borne(
                 .find(|(candidate, _)| candidate == &file)
                 .map(|(_, source)| source.as_str())
                 .expect("the census walks sources it was handed");
-            let register_readers = register_reading_functions(source);
+            let register_readers = readers_by_file
+                .entry(file.clone())
+                .or_insert_with(|| register_reading_functions(source));
             let signature = function_signature(source, &name);
             let body = without_line_comments(&raw_body);
             for argument in call_arguments(&body, &publish.function) {

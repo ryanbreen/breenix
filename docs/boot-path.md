@@ -311,14 +311,13 @@ old and a /proc scan of command lines, current directories and open files finds 
 owning process, including gates killed before DONE.
 Evidence is harvested after the lane lease ends and retained remotely after a disconnect.
 
-`--mode suite --suite files-io,directories,processes` boots once. A sequence file on the
-private boot-target disk instructs each suite to exec the next after emitting its own
-DONE, keeping PID 1 and giving the next suite a fresh address space. After drawing its panel each sequence suite waits for host acknowledgement. The gate
-pauses QEMU at that boundary, saves both serial windows and its screen, and checks
-its private raw disk snapshot before allowing the next exec. Each suite gets its own
-DONE deadline and unchanged manifest; unstarted suites are NOT-RUN. Exec closes only
-FD_CLOEXEC descriptors, while /tmp, PID allocation and the page cache persist, so
-case equivalence must be verified against separate boots on the same commit.
+The x86 gate runs one suite per boot and refuses a list: suites now hand PID 1 to the
+next without the keyboard acknowledgement its boundary capture waited on. Lists run on
+ARM64 QEMU, Parallels, VMware and x86-metal ("Several suites in one boot" in
+`docs/suites/README.md`).
+
+<!-- claim-lint:ok: running owners are kept by testTerminalTombstonesArePrunedButRunningAndRecentClaimsRemain in
+tools/breenix-runs/Tests/BreenixRunsTests/DetachedGateTests.swift -->
 Run Inspector streams both beast serial logs into its local run directory over a separate
 owned SSH connection. It registers the gate with Vigil at launch, before building or receiving
 serial bytes, with the launcher's PID and links to the local files. The gate runs in a detached remote session with an exclusive per-run launch claim,
@@ -334,8 +333,7 @@ subsequent launches; running owners are never pruned.
 After the remote owner records its final result it stops the stream and pulls the remote evidence before finishing Vigil. Interrupted gates,
 failed builds and failed evidence pulls finish with nonzero status; captured remote evidence
 is harvested after the supervisor has stopped. Runs with no boot directories still receive a
-finished record. Multi-suite sequences keep an overall gate record and file each started
-suite separately with its own serial window, times and result. Registration subprocesses are
+finished record. Registration subprocesses are
 bounded and run outside the serial frame lock. The stream reader uses nonblocking writes so
 EOF and its heartbeat deadline remain effective when output stalls.
 Duplicate suite IDs are rejected. Single-suite boots keep their
