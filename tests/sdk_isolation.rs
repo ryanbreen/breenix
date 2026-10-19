@@ -1,11 +1,12 @@
 //! The kernel and boot never depend on the Developer SDK (docs/suites/README.md,
 //! "Developer SDK"). Only the SDK suite builds it: `scripts/sdk-suite.py` runs
-//! `scripts/build-sdk.sh`, and the four hooks below run the suite's host side.
+//! `scripts/build-sdk.sh`, and the hooks below run the suite's host side.
+//! claim-lint:ok: tests/sdk_isolation.rs, `only_the_sdk_suite_reaches_the_sdk`, checks the tracked files.
 //!
 //! A tracked file outside the SDK's own sources and the suite's measurement files fails
 //! this test if it names `build-sdk.sh` or a path of the SDK's sources or build, and a
-//! file other than the hooks, the suite's own and the one that only names it to read it in a
-//! text check fails it if it names `sdk-suite.py`.
+//! file other than the hooks, the suite's own and the ones that only name it fails it if it
+//! names `sdk-suite.py`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,13 +34,14 @@ const HOOKS: &[&str] = &[
     "run.sh",
     "scripts/boot-interactive.sh",
     "docker/qemu/run-x86-gate.sh",
+    "scripts/metal/metal-build",
     "tests/suite_manifests.rs",
 ];
 
 /// Files that name `sdk-suite.py` without running it: the image-inputs test reads the harness's
 /// recipes in its foreign-libc check, leaving out only the block of marks its clean-room scan
-/// rejects.
-const NAMES_ONLY: &[&str] = &["tests/utilities_image_inputs_test.py"];
+/// rejects, and the metal tools test checks that the metal build calls it.
+const NAMES_ONLY: &[&str] = &["tests/metal_tools_test.py", "tests/utilities_image_inputs_test.py"];
 
 /// Paths of the SDK's sources, its build root and its installed layout, matched only where a
 /// path component starts (so `wasi-sdk/bin/` is not `sdk/bin/`).

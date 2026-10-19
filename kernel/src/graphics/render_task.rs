@@ -242,14 +242,8 @@ fn update_mouse_cursor() {
 
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         if let Some(mut fb_guard) = fb.try_lock() {
-            if super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize) {
-                crate::graphics::arm64_fb::mark_dirty(
-                    mx.saturating_sub(16),
-                    my.saturating_sub(16),
-                    32,
-                    32,
-                );
-            }
+            // Marks both the old and the new cursor rectangle dirty.
+            super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize);
         }
     }
 }

@@ -7245,6 +7245,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     let mut arm = TTY_IRQ_FG_ARM_UNARMED;
     #[cfg(not(target_arch = "aarch64"))]
     let arm;
+    let mut buffered_after_intr = usize::MAX;
     let mut processed_b = 0u64;
     let mut entry_us = 0u64;
     let mut touches_b = 0u64;
@@ -7311,6 +7312,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
                 {
                     fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
                     let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
+                    buffered_after_intr = tty.input_line_pending();
                     processed_b = injected.0;
                     entry_us = injected.1;
                     touches_b = injected.2;
@@ -7350,6 +7352,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
             tty.hold_foreground_pgrp_for_test(&mut || {
                 fg_busy_probe = u64::from(tty.foreground_pgrp_busy_for_test());
                 let injected = tty_irq_fg_inject(TTY_IRQ_FG_INTR_BYTE);
+                buffered_after_intr = tty.input_line_pending();
                 processed_b = injected.0;
                 entry_us = injected.1;
                 touches_b = injected.2;
@@ -7372,7 +7375,6 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         }
     }
 
-    let buffered_after_intr = tty.input_line_pending();
     let (_, sig_pid, sig_num) = crate::tty::driver::tty_irq_fg_signal_census();
 
     // Leg 3 -- the thread side still owns the field, and the snapshot tracks
@@ -7393,38 +7395,6 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     let sig_calls = calls_a.wrapping_add(calls_b);
     let processed = processed_a.wrapping_add(processed_b);
 
-    let common_pass = fg_known == TTY_IRQ_FG_PGRP
-        && target_absent == 1
-        && touches == 0
-        && blocking == 0
-        && reads >= 2
-        && processed == 2
-        && buffered >= 1
-        && termios.c_lflag & crate::tty::termios::ISIG != 0
-        && termios.c_lflag & crate::tty::termios::NOFLSH == 0
-        && buffered_after_intr == 0
-        && irqs_enabled_before == 1
-        && fg_busy_probe == 1
-        && sig_calls == 1
-        && sig_pid == TTY_IRQ_FG_PGRP
-        && sig_num == TTY_IRQ_FG_SIGINT
-        && snapshot_agrees == 1
-        && restored == 1;
-
-    #[cfg(target_arch = "aarch64")]
-    let passed = common_pass
-        && arm == TTY_IRQ_FG_ARM_PEER_HOLD
-        && peer_held_after
-        && peer_irqs_masked
-        && !TTY_IRQ_FG_HOLD_SAFETY.load(AtomicOrdering::Acquire)
-        && holder_cpu != u64::MAX
-        && hold_us >= TTY_IRQ_FG_HOLD_US
-        && entry_us < TTY_IRQ_FG_ENTRY_CEILING_US
-        && joined == 1;
-
-    #[cfg(not(target_arch = "aarch64"))]
-    let passed = common_pass && arm == TTY_IRQ_FG_ARM_LOCAL_HOLD;
-
     // Failure diagnostics name each conjunct, including the architecture's
     // arming witnesses; preserve the passing marker consumed by the gates.
     let common_checks = [
@@ -7434,7 +7404,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         ("fg_blocking_acquires", blocking == 0),
         ("snapshot_reads", reads >= 2),
         ("processed", processed == 2),
-        ("buffered", buffered >= 1),
+        ("buffered", buffered >= 1), // Pre-INTR witness, before the required flush.
         ("isig", termios.c_lflag & crate::tty::termios::ISIG != 0),
         (
             "noflsh_clear",
@@ -7468,6 +7438,7 @@ pub fn run_tty_irq_fg_oracle() -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     let arch_checks = [("arm", arm == TTY_IRQ_FG_ARM_LOCAL_HOLD)];
 
+    let passed = common_checks.iter().chain(arch_checks.iter()).all(|(_, ok)| *ok);
     let failures: alloc::vec::Vec<_> = common_checks
         .iter()
         .chain(arch_checks.iter())
@@ -7480,6 +7451,14 @@ pub fn run_tty_irq_fg_oracle() -> bool {
         Some(alloc::format!("FAIL:failed={}", failures.join(",")))
     };
     let verdict = failure_verdict.as_deref().unwrap_or("PASS");
+
+    crate::serial_println!(
+        "[TTY_IRQ_FG_INPUT:buffered_pre_intr={}:buffered_after_intr={}:isig={}:noflsh={}]",
+        buffered,
+        buffered_after_intr,
+        u64::from(termios.c_lflag & crate::tty::termios::ISIG != 0),
+        u64::from(termios.c_lflag & crate::tty::termios::NOFLSH != 0),
+    );
 
     #[cfg(target_arch = "aarch64")]
     crate::serial_println!(
@@ -7827,25 +7806,24 @@ fn test_current_thread_exists() -> TestResult {
             return TestResult::Fail("current thread is not registered with the scheduler");
         }
 
-        // 2. The user process whose creation advanced this stage — the newest
-        //    PID, since PIDs are allocated monotonically and no ProcessContext
-        //    test creates a process — owns an address space and a dispatchable
-        //    main thread. That main thread is exactly what `launch_init_from_elf`
-        //    installs as CPU 0's current thread once this stage returns (in a
-        //    testing kernel, what the loader hands to the scheduler); without
-        //    it, no current thread could ever exist.
+        // 2. The user process whose creation advanced this stage, named by
+        //    the id its creator's own create call returned (S24): init at the
+        //    reserved PID 1 when launch_init_from_elf created it, otherwise the
+        //    loader's first test process. It owns an address space and a
+        //    dispatchable main thread, exactly what becomes CPU 0's current
+        //    thread once this stage returns; without it, no current thread
+        //    could ever exist.
+        let Some(created) = crate::test_framework::process_context_created() else {
+            return TestResult::Fail("ProcessContext advanced without naming its created process");
+        };
         let manager_guard = crate::process::manager();
         let manager = match *manager_guard {
             Some(ref manager) => manager,
             None => return TestResult::Fail("process manager not initialized in ProcessContext"),
         };
-        let newest = manager
-            .iter_processes()
-            .max_by_key(|(pid, _)| pid.as_u64())
-            .map(|(_, process)| process);
-        let process = match newest {
+        let process = match manager.get_process(created) {
             Some(process) => process,
-            None => return TestResult::Fail("no process registered in ProcessContext"),
+            None => return TestResult::Fail("created process is not registered in ProcessContext"),
         };
         if process.page_table.is_none() {
             return TestResult::Fail("created process has no address space in ProcessContext");
@@ -8404,75 +8382,94 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 None => return TestResult::Fail("scheduler not initialized"),
             };
 
-        let (pid, fd, pair, original_main_thread) = {
-            let mut manager_guard = crate::process::manager();
-            let manager = match manager_guard.as_mut() {
-                Some(m) => m,
-                None => return TestResult::Fail("process manager not initialized"),
-            };
-
-            const ELF: &[u8] = include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../userspace/programs/aarch64/simple_exit.elf"
-            ));
-
-            let pid = match manager.create_process(String::from("pty_ioctl_test"), ELF) {
-                Ok(pid) => pid,
-                Err(_) => return TestResult::Fail("create_process failed"),
-            };
-
-            let process = match manager.get_process_mut(pid) {
-                Some(process) => process,
-                None => return TestResult::Fail("process not found"),
-            };
-
-            let original_main_thread = process.main_thread.clone();
-            process.set_main_thread(current_thread.clone());
-
-            let pair = match pty::allocate() {
-                Ok(pair) => pair,
-                Err(_) => return TestResult::Fail("pty allocate failed"),
-            };
-
-            let fd = match process.fd_table.alloc(FdKind::PtyMaster(pair.clone())) {
-                Ok(fd) => fd,
-                Err(_) => return TestResult::Fail("pty fd alloc failed"),
-            };
-
-            (pid, fd, pair, original_main_thread)
+        let pair = match pty::allocate() {
+            Ok(pair) => pair,
+            Err(_) => return TestResult::Fail("pty allocate failed"),
         };
-
-        let mut pty_num_out: u32 = 0xFFFF_FFFF;
-        let arg = &mut pty_num_out as *mut u32 as u64;
-
-        let result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
-            SyscallResult::Err(e) if e == crate::syscall::errno::EFAULT as u64
-                && pty_num_out == 0xFFFF_FFFF => TestResult::Pass,
-            SyscallResult::Ok(_) => TestResult::Fail("pty ioctl accepted a kernel pointer"),
-            SyscallResult::Err(errno) => {
-                if errno == crate::syscall::ioctl::ENOTTY {
-                    TestResult::Fail("pty ioctl returned ENOTTY")
-                } else {
-                    TestResult::Fail("pty ioctl returned error")
-                }
+        // This row lends the kernel test an fd table without scheduling its user
+        // thread. Withdraw the PID returned by creation after the ioctl check.
+        let created = {
+            let mut manager_guard = crate::process::manager();
+            manager_guard.as_mut().map(|manager| {
+                const ELF: &[u8] = include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../userspace/programs/aarch64/simple_exit.elf"
+                ));
+                manager.create_process(String::from("pty_ioctl_test"), ELF)
+            })
+        };
+        let pid = match created {
+            Some(Ok(pid)) => pid,
+            _ => {
+                pty::close_master_ref(&pair);
+                return TestResult::Fail("pty process creation failed");
             }
         };
-
-        {
+        let fd = {
             let mut manager_guard = crate::process::manager();
-            if let Some(manager) = manager_guard.as_mut() {
-                if let Some(process) = manager.get_process_mut(pid) {
-                    if let Some(thread) = original_main_thread {
-                        process.set_main_thread(thread);
+            let manager = manager_guard.as_mut().expect("process manager initialized");
+            let process = manager.get_process_mut(pid).expect("created pty process");
+            process.fd_table.alloc(FdKind::PtyMaster(pair.clone()))
+        };
+        let result = fd
+            .map_err(|_| TestResult::Fail("pty fd alloc failed"))
+            .map(|fd| {
+                let original_main_thread = {
+                    let mut manager_guard = crate::process::manager();
+                    let process = manager_guard
+                        .as_mut()
+                        .unwrap()
+                        .get_process_mut(pid)
+                        .unwrap();
+                    let original = process.main_thread.take();
+                    process.set_main_thread(current_thread.clone());
+                    original
+                };
+                let mut pty_num_out: u32 = 0xFFFF_FFFF;
+                let arg = &mut pty_num_out as *mut u32 as u64;
+                let result = match sys_ioctl(fd as u64, TIOCGPTN, arg) {
+                    SyscallResult::Err(e)
+                        if e == crate::syscall::errno::EFAULT as u64
+                            && pty_num_out == 0xFFFF_FFFF =>
+                    {
+                        TestResult::Pass
                     }
-                    let _ = process.fd_table.close(fd);
-                }
-            }
-        }
+                    SyscallResult::Ok(_) => TestResult::Fail("pty ioctl accepted a kernel pointer"),
+                    SyscallResult::Err(errno) => {
+                        if errno == crate::syscall::ioctl::ENOTTY {
+                            TestResult::Fail("pty ioctl returned ENOTTY")
+                        } else {
+                            TestResult::Fail("pty ioctl returned error")
+                        }
+                    }
+                };
+                let mut manager_guard = crate::process::manager();
+                let process = manager_guard
+                    .as_mut()
+                    .unwrap()
+                    .get_process_mut(pid)
+                    .unwrap();
+                process.main_thread = original_main_thread;
+                let _ = process.fd_table.close(fd);
+                result
+            });
 
+        let (removed, reclaim) = {
+            let mut manager_guard = crate::process::manager();
+            let manager = manager_guard.as_mut().expect("process manager initialized");
+            let process = manager.get_process_mut(pid).expect("created pty process");
+            let reclaim = crate::task::process_task::defer_process_resources(process);
+            crate::task::process_task::release_process_resources(process);
+            manager.remove_from_ready_queue(pid);
+            (manager.remove_process(pid), reclaim)
+        };
+        drop(removed);
+        let queued = crate::task::process_task::enqueue_process_reclaim(reclaim);
         pty::close_master_ref(&pair);
-
-        result
+        if !queued {
+            return TestResult::Fail("pty receipt enqueue failed");
+        }
+        result.unwrap_or_else(|failure| failure)
     }
 }
 
@@ -9155,187 +9152,221 @@ fn test_future_basics() -> TestResult {
 // System Subsystem Tests (Phase 4e)
 // =============================================================================
 
-/// Test that create_user_process() sets the TTY foreground process group.
+/// Test how create_user_process() treats the TTY foreground process group.
 ///
-/// This is a RIGOROUS integration test that verifies the actual code path
-/// in kernel/src/process/creation.rs lines 175-183 (ARM64) and 77-87 (x86_64)
-/// is executed during process creation.
-///
-/// The test:
-/// 1. Sets the TTY foreground pgrp to a known sentinel value
-/// 2. Calls create_user_process() to create a real user process
-/// 3. Verifies that the foreground pgrp was changed to the new process's PID
-///
-/// CRITICAL: This test will FAIL if the set_foreground_pgrp() call is removed
-/// from create_user_process(). The sentinel value would remain unchanged,
-/// causing the test to detect the missing integration.
-///
-/// Note: This test requires:
-/// - TTY subsystem initialized (tty::console() returns Some)
-/// - Process manager initialized (process::manager() available)
-/// - Test disk with ELF binaries available (for get_test_binary())
-/// - Scheduler initialized (for spawn())
+/// Creation adopts a missing or dead group and preserves a live one (S21).
+/// A group is live while an unreaped process has it as its pgid, or while it
+/// is the PID of such a process (S25). Ctrl+C goes to the group's members,
+/// not to a process whose PID merely equals the group number (S25).
 fn test_tty_foreground_pgrp() -> TestResult {
-    use crate::tty;
-
-    // =========================================================================
-    // Step 1: Verify prerequisites
-    // =========================================================================
-
-    // Verify TTY console is available
-    let tty = match tty::console() {
-        Some(t) => t,
-        None => return TestResult::Fail("tty::console() returned None - TTY not initialized"),
+    use alloc::string::String;
+    let Some(tty) = crate::tty::console() else {
+        return TestResult::Fail("console TTY missing");
     };
-
-    // Verify process manager is available
-    {
-        let manager_guard = crate::process::manager();
-        if manager_guard.is_none() {
-            return TestResult::Fail("process manager not initialized");
-        }
-    }
-
-    // =========================================================================
-    // Step 2: Set sentinel value to detect if create_user_process changes it
-    // =========================================================================
-
-    // Use a sentinel value that no real PID would have (PIDs start at 1)
-    // We use 0xDEAD_BEEF as a recognizable sentinel
-    const SENTINEL_PGRP: u64 = 0xDEAD_BEEF;
-    tty.set_foreground_pgrp(SENTINEL_PGRP);
-
-    // Verify sentinel was set
-    if tty.get_foreground_pgrp() != Some(SENTINEL_PGRP) {
-        return TestResult::Fail("failed to set sentinel foreground pgrp");
-    }
-
-    log::info!("[TTY_PGRP_TEST] Sentinel pgrp set to {:#x}", SENTINEL_PGRP);
-
-    // =========================================================================
-    // Step 3: Load test binary and create a user process
-    // =========================================================================
-
-    // Use each architecture's actual test-binary source.
-    #[cfg(all(feature = "testing", target_arch = "x86_64"))]
-    let elf_data = {
-        // Use get_test_binary which loads from the test disk
-        // This will panic with a clear error if the disk isn't available
-        crate::userspace_test::get_test_binary("hello_time")
+    #[cfg(target_arch = "x86_64")]
+    let elf = match crate::userspace_test::load_test_binary_from_disk("hello_time") {
+        Ok(elf) => elf,
+        Err(_) => return TestResult::Fail("hello_time unavailable from the test disk"),
     };
-
-    #[cfg(all(feature = "testing", target_arch = "aarch64"))]
-    let elf_data = include_bytes!(concat!(
+    #[cfg(target_arch = "aarch64")]
+    let elf = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../userspace/programs/aarch64/hello_time.elf"
     ))
     .to_vec();
 
-    #[cfg(not(feature = "testing"))]
-    {
-        // Without testing feature, we can't load test binaries
-        // Fall back to a simpler test that just verifies the API works
-        log::warn!("[TTY_PGRP_TEST] Testing feature not enabled - falling back to API-only test");
+    // A kernel-created process starts in init's group (process.rs), so that
+    // is the group creation adopts. The created process may already have
+    // exited on a peer CPU by the time creation returns, so the expectation
+    // does not depend on its process-table row surviving this observation.
+    let adopted = Some(crate::process::RESERVED_INIT_PID);
+    let found = tty.get_foreground_pgrp();
 
-        // Test basic API functionality
-        let test_pgrp = 42u64;
-        tty.set_foreground_pgrp(test_pgrp);
-        if tty.get_foreground_pgrp() != Some(test_pgrp) {
-            return TestResult::Fail("foreground_pgrp API mismatch");
-        }
-
-        log::info!("[TTY_PGRP_TEST] API-only test passed (testing feature not enabled)");
-        return TestResult::Pass;
+    // Leg 1: no foreground group at all.
+    tty.set_foreground_pgrp_raw_for_test(None);
+    if crate::process::creation::create_user_process(String::from("tty_pgrp_none"), &elf).is_err() {
+        return TestResult::Fail("missing-group process creation failed");
+    }
+    if tty.get_foreground_pgrp() != adopted {
+        return TestResult::Fail("creation did not adopt a missing foreground group");
     }
 
-    #[cfg(feature = "testing")]
+    // Leg 2: a group with no member and no process of that PID.
+    const DEAD: u64 = 0xDEAD_BEEF;
     {
-        use alloc::string::String;
-
-        log::info!(
-            "[TTY_PGRP_TEST] Loaded test binary ({} bytes), creating process...",
-            elf_data.len()
-        );
-
-        // Call create_user_process - this should set the foreground pgrp
-        let pid = match crate::process::creation::create_user_process(
-            String::from("tty_pgrp_test"),
-            &elf_data,
-        ) {
-            Ok(pid) => {
-                log::info!("[TTY_PGRP_TEST] Process created with PID {}", pid.as_u64());
-                pid
-            }
-            Err(e) => {
-                // Process creation failed - this could be due to various reasons
-                // (e.g., scheduler not ready, memory exhausted, etc.)
-                // Log the error and fail the test clearly
-                log::error!("[TTY_PGRP_TEST] create_user_process failed: {}", e);
-                return TestResult::Fail("create_user_process failed");
-            }
+        let manager = crate::process::manager();
+        let Some(ref manager) = *manager else {
+            return TestResult::Fail("process manager missing");
         };
+        if manager.iter_processes().any(|(pid, row)| {
+            !row.is_tombstone() && (row.pgid.as_u64() == DEAD || pid.as_u64() == DEAD)
+        }) {
+            return TestResult::Fail("dead-group fixture has a live member");
+        }
+    }
+    tty.set_foreground_pgrp(DEAD);
+    if crate::process::creation::create_user_process(String::from("tty_pgrp_dead"), &elf).is_err() {
+        return TestResult::Fail("dead-group process creation failed");
+    }
+    if tty.get_foreground_pgrp() != adopted {
+        return TestResult::Fail("creation did not replace dead foreground group");
+    }
 
-        // =========================================================================
-        // Step 4: Verify the foreground pgrp was set to the new PID
-        // =========================================================================
+    // Legs 3 to 5 use real processes not yet handed to the scheduler, so they
+    // cannot exit while the legs assert.
+    let mut fixtures = alloc::vec::Vec::new();
+    {
+        let mut manager = crate::process::manager();
+        let Some(ref mut manager) = *manager else {
+            return TestResult::Fail("process manager missing");
+        };
+        let root = crate::process::credentials::ProcessCredentials::root();
+        for _ in 0..3 {
+            let pid = match manager.create_process_with_argv(
+                String::from("tty_pgrp_live"),
+                &elf,
+                &[b"tty_pgrp_live\0"],
+                &root,
+                None,
+            ) {
+                Ok(pid) => pid,
+                Err(_) => break,
+            };
+            let row = manager.get_process_mut(pid).unwrap();
+            let thread =
+                alloc::boxed::Box::new(row.main_thread.as_mut().unwrap().publish_to_scheduler());
+            fixtures.push((pid, thread));
+        }
+    }
+    if fixtures.len() != 3 {
+        for (_, thread) in fixtures {
+            crate::task::scheduler::spawn(thread);
+        }
+        return TestResult::Fail("live-group fixture creation failed");
+    }
+    let live_pid = fixtures[0].0;
+    let member_pid = fixtures[1].0;
+    let second_member_pid = fixtures[2].0;
 
-        let current_pgrp = tty.get_foreground_pgrp();
+    // Leg 3: the group number is a live process's PID while that process is
+    // in another group, as after tty_test's tcsetpgrp to its own PID.
+    tty.set_foreground_pgrp(live_pid.as_u64());
+    let created_pid_leg =
+        crate::process::creation::create_user_process(String::from("tty_pgrp_pid"), &elf);
+    let preserved_pid_leg = tty.get_foreground_pgrp() == Some(live_pid.as_u64());
 
-        // The foreground pgrp should now be the PID of the created process
-        // If the set_foreground_pgrp() call in create_user_process() was removed,
-        // the sentinel value (0xDEAD_BEEF) would still be present
-        match current_pgrp {
-            Some(pgrp) if pgrp == pid.as_u64() => {
-                // SUCCESS: create_user_process correctly set the foreground pgrp
-                log::info!(
-                    "[TTY_PGRP_TEST] PASS: foreground pgrp correctly set to PID {}",
-                    pid.as_u64()
-                );
+    // Leg 4: the group has a live member and is no process's PID, as after
+    // its leader has been reaped.
+    const MEMBER_ONLY: u64 = 0xBEEF_0822;
+    let member_only_free = {
+        let mut manager = crate::process::manager();
+        match *manager {
+            Some(ref mut manager) => {
+                let free = manager.get_process(crate::process::ProcessId::new(MEMBER_ONLY)).is_none();
+                if let Some(row) = manager.get_process_mut(live_pid) {
+                    row.pgid = crate::process::ProcessId::new(MEMBER_ONLY);
+                }
+                free
             }
-            Some(pgrp) if pgrp == SENTINEL_PGRP => {
-                // FAILURE: The sentinel is still there - create_user_process didn't
-                // call set_foreground_pgrp()
-                log::error!(
-                    "[TTY_PGRP_TEST] FAIL: foreground pgrp is still sentinel ({:#x}), \
-                     create_user_process() did not set it to PID {}",
-                    SENTINEL_PGRP,
-                    pid.as_u64()
-                );
-                return TestResult::Fail("create_user_process did not set foreground pgrp");
-            }
-            Some(pgrp) => {
-                // FAILURE: Some other value - unexpected state
-                log::error!(
-                    "[TTY_PGRP_TEST] FAIL: foreground pgrp is {:#x}, expected PID {} ({:#x})",
-                    pgrp,
-                    pid.as_u64(),
-                    pid.as_u64()
-                );
-                return TestResult::Fail("foreground pgrp has unexpected value");
-            }
-            None => {
-                // FAILURE: No foreground pgrp set at all
-                log::error!(
-                    "[TTY_PGRP_TEST] FAIL: foreground pgrp is None after create_user_process"
-                );
-                return TestResult::Fail("foreground pgrp is None after process creation");
+            None => false,
+        }
+    };
+    tty.set_foreground_pgrp(MEMBER_ONLY);
+    let created_member_leg =
+        crate::process::creation::create_user_process(String::from("tty_pgrp_member"), &elf);
+    let preserved_member_leg = tty.get_foreground_pgrp() == Some(MEMBER_ONLY);
+
+    // Leg 5: one Ctrl+C through the console's interrupt-side entry reaches
+    // both members of the foreground group, and not the process whose PID
+    // merely equals the group number (S25). The members' signals show the
+    // group walk ran, so the other's absence is not vacuous. The entry refuses
+    // a byte only while the console's line discipline is busy, so the byte is
+    // offered again only until the console takes it; the signal itself is
+    // sent from the foreground signal thread, so the members are watched for
+    // it, bounded.
+    let (members_signalled, pid_holder_signalled) = {
+        {
+            let mut manager = crate::process::manager();
+            if let Some(ref mut manager) = *manager {
+                if let Some(row) = manager.get_process_mut(live_pid) {
+                    row.pgid = crate::process::ProcessId::new(crate::process::RESERVED_INIT_PID);
+                }
+                for pid in [member_pid, second_member_pid] {
+                    if let Some(row) = manager.get_process_mut(pid) {
+                        row.pgid = live_pid;
+                    }
+                }
             }
         }
+        let termios = tty.get_termios();
+        let mut quiet = termios;
+        quiet.c_lflag &= !crate::tty::termios::ECHO;
+        quiet.c_lflag |= crate::tty::termios::ISIG;
+        tty.set_termios(&quiet);
+        tty.set_foreground_pgrp(live_pid.as_u64());
+        let sigint = crate::signal::constants::SIGINT;
+        let pending = |pid| {
+            let manager = crate::process::manager();
+            manager
+                .as_ref()
+                .and_then(|manager| manager.get_process(pid))
+                .is_some_and(|row| row.signals.is_pending(sigint))
+        };
+        let mut accepted = false;
+        for _ in 0..200 {
+            if crate::tty::push_char_nonblock(0x03) {
+                accepted = true;
+                break;
+            }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
+        }
+        let both = || pending(member_pid) && pending(second_member_pid);
+        let deadline = crate::time::get_monotonic_time().saturating_add(2_000);
+        while accepted && !both() && crate::time::get_monotonic_time() < deadline {
+            crate::task::scheduler::yield_current();
+            crate::arch_halt_with_interrupts();
+        }
+        let signalled = (accepted && both(), pending(live_pid));
+        tty.flush_input();
+        tty.set_termios(&termios);
+        let mut manager = crate::process::manager();
+        if let Some(ref mut manager) = *manager {
+            for pid in [live_pid, member_pid, second_member_pid] {
+                if let Some(row) = manager.get_process_mut(pid) {
+                    row.signals.clear_pending(sigint);
+                }
+            }
+        }
+        signalled
+    };
 
-        // =========================================================================
-        // Step 5: Cleanup (optional - let the process be cleaned up normally)
-        // =========================================================================
-
-        // The created process will be scheduled and may run, but for this test
-        // we only care that the TTY foreground pgrp was set correctly.
-        // The process will eventually exit or be cleaned up by normal kernel
-        // operations.
-
-        log::info!(
-            "[TTY_PGRP_TEST] Integration test passed - create_user_process sets foreground pgrp"
-        );
-        TestResult::Pass
+    // Release the fixtures to normal execution and exit even on a failed
+    // assertion, and give the console back the group it had.
+    for (_, thread) in fixtures {
+        crate::task::scheduler::spawn(thread);
     }
+    tty.set_foreground_pgrp_raw_for_test(found);
+    if created_pid_leg.is_err() || created_member_leg.is_err() {
+        return TestResult::Fail("live-group process creation failed");
+    }
+    if !preserved_pid_leg {
+        return TestResult::Fail("creation stole a group named by a live PID");
+    }
+    if !member_only_free {
+        return TestResult::Fail("member-only group number names a process");
+    }
+    if !preserved_member_leg {
+        return TestResult::Fail("creation stole a group with a live member");
+    }
+    if !members_signalled {
+        return TestResult::Fail("one Ctrl+C did not reach every foreground group member");
+    }
+    if pid_holder_signalled {
+        return TestResult::Fail("Ctrl+C reached a process outside the group by its PID");
+    }
+    TestResult::Pass
 }
 
 /// Verify boot sequence completed successfully.
@@ -10828,8 +10859,20 @@ static SCHEDULER_TESTS: &[TestDef] = &[
 /// - boot_sequence: Verify boot completed and essential subsystems initialized
 /// - system_stability: Verify no panics or errors - reached test point
 /// - kernel_heap: Verify kernel heap functional with various allocation patterns
-/// - tty_foreground_pgrp: Integration test verifying create_user_process() sets TTY foreground pgrp
+/// - tty_foreground_pgrp: Integration test of create_user_process()'s foreground-group rule (S21, S25)
 static SYSTEM_TESTS: &[TestDef] = &[
+    #[cfg(target_arch = "aarch64")]
+    TestDef {
+        name: "stdin_serial_contention",
+        func: || if crate::ipc::stdin::test_serial_contention() {
+            TestResult::Pass
+        } else {
+            TestResult::Fail("serial input consumed while stdin held or reordered on retry")
+        },
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+        stage: TestStage::EarlyBoot,
+    },
     TestDef {
         name: "boot_sequence",
         func: test_boot_sequence,
