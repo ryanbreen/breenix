@@ -3,9 +3,9 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const TRBS: usize = 256;
-/// Event ring segment length: room for every posted interrupt-IN TD's
-/// completion (`POSTED_TDS` per pipe) besides commands and port changes, so a
-/// burst of reports cannot fill the ring (4.9.4).
+/// Event ring segment length: room for the completions of the `POSTED_TDS`
+/// interrupt-IN TDs each pipe keeps posted, besides commands and port changes
+/// (4.9.4).
 pub const EVENT_TRBS: usize = 64;
 
 #[repr(C, align(16))]
@@ -64,10 +64,11 @@ impl Producer {
     }
 }
 
-/// Interrupt-IN TDs kept posted on one endpoint. A device sends a report
-/// only when an IN transaction finds a TD on the ring (xHCI 4.11.2, 4.14.2);
-/// with Set_Idle(0) a report that finds none is not sent again (HID 1.11
-/// 7.2.4), so the worker keeps several posted while it handles one.
+/// Interrupt-IN TDs kept posted on one endpoint. The controller schedules IN
+/// transactions on an interrupt endpoint while a TD is posted (xHCI 4.11.2,
+/// 4.14.2). With one TD, the endpoint is without one from a completion until
+/// the worker handles it, and a Parallels probe boot lost reports sent in that
+/// window (#1925), so the worker keeps several posted while it handles one.
 pub const POSTED_TDS: usize = 4;
 
 /// The posted TDs of one interrupt-IN pipe, by the buffer slot each fills:
@@ -102,7 +103,7 @@ impl Posted {
     pub fn post(&mut self, slot: usize, pointer: u64) {
         self.tds[slot] = Some(pointer);
     }
-    /// The ring's dequeue pointer moved past every posted TD (4.6.10).
+    /// The ring's dequeue pointer moved past the posted TDs (4.6.10).
     pub fn abandon(&mut self) {
         self.tds = [None; POSTED_TDS];
     }
@@ -135,7 +136,8 @@ pub fn ring_next(base: u64, index: usize, cycle: bool) -> (u64, bool) {
 }
 
 /// Bytes between a pipe's buffer slots for `request`-byte reports: whole
-/// 64-byte lines, so a slot's cache maintenance never touches its neighbour's.
+/// 64-byte lines, so cache maintenance of one slot stays out of its
+/// neighbour's lines.
 pub fn posted_stride(request: u32, buffer: usize) -> Result<usize, &'static str> {
     let stride = (request as usize).div_ceil(64) * 64;
     if request == 0 || stride * POSTED_TDS > buffer {

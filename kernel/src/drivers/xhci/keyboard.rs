@@ -353,7 +353,7 @@ impl Controller {
             .keyboard
             .as_mut()
             .ok_or("device has no keyboard pipe")?;
-        // The dequeue moves past every posted TD, not only the failed one.
+        // The dequeue moves past the posted TDs, not only the failed one.
         pipe.posted.abandon();
         let next = pipe.ring.enqueue();
         self.set_dequeue(slot, dci, next)

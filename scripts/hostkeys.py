@@ -319,7 +319,7 @@ class VNCKeys:
 
     def pointer(self, x, y, buttons, wheel, axes):
         # Fusion's configuration, not the RFB event, decides which interface reports it
-        # (run.sh's BREENIX_VMWARE_POINTER), so the requested kind needs nothing here.
+        # (run.sh's BREENIX_VMWARE_POINTER); the requested kind changes no RFB field.
         if not (0 <= x <= 65535 and 0 <= y <= 65535):
             raise ValueError("RFB pointer coordinate exceeds 16 bits")
         fresh = not hasattr(self, '_pointer_socket')

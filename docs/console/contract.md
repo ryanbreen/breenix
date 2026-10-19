@@ -749,7 +749,7 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   `-fw_cfg name=opt/breenix/hostkeys,string=<method>[;missing=<key>,...]`, the disk launchers write the same
   value as a `hostkeys` field of `/etc/breenix/boot-target`, and the kernel passes it to the suite as
   `--hostkeys <value>` beside `--case`. `missing=` names keys the path cannot send; QEMU, Parallels and VMware
-  send every key the chord grammar names, so none declares it today. V6 owns the declaration, the runner's argv,
+  declare no missing keys. V6 owns the declaration, the runner's argv,
   the kernel's forwarding and `scripts/suite-verdict.py`'s acceptance of HOSTKEY records.
 - **A case fails, and does not skip,** with `no host key path` when no method was declared, with
   `no host key path for <chord> on <method>` when a key it needs is missing, and with
@@ -758,15 +758,16 @@ case reads its effect back in the guest. The host key is the input; the in-guest
 
 ### V6 backend findings
 
-Parallels 27.0.3's `prlctl send-key-event` takes PS/2 set-1 scancodes or
-Parallels virtual key codes (`"key"` in its JSON input: the `PRL_KEY` values
-the Parallels Virtualization SDK's C API reference publishes for `PrlKeys.h`).
-A bare extended scancode is refused, so the watcher sends every key as its
-`PRL_KEY` code. A probe boot of V7's USB keyboard showed the reports: Left
-(usage 0x50), Right (0x4F), Page Up (0x4B), Page Down (0x4E), Home (0x4A),
-Shift+Page Up as modifier 0x02 with 0x4B, Alt+Left as 0x04 with 0x50, and the
-GUI, right Ctrl and right Alt modifier bits. That is the extended-key route
-#1791 asked for; Parallels declares no `missing=` keys.
+On Parallels 27.0.3 the watcher (`prlsdk`) calls the Parallels Virtualization
+SDK that ships inside Parallels Desktop, through its published C API. Keys are
+Parallels virtual key codes (`PRL_KEY`, `PrlKeys.h`), sent one event at a time
+with `PrlDevKeyboard_SendKeyEventEx`; `prlctl send-key-event` takes the same
+codes but refuses a bare extended scancode, and its JSON batches lost a
+chord's releases in 1 of 20 chords in one probe VM. A probe boot of V7's USB
+keyboard showed the reports: Left (usage 0x50), Right (0x4F), Page Up (0x4B),
+Page Down (0x4E), Home (0x4A), Shift+Page Up as modifier 0x02 with 0x4B,
+Alt+Left as 0x04 with 0x50, and the GUI, right Ctrl and right Alt modifier
+bits. That is the extended-key route #1791 asked for.
 
 **VMware spike (Q5):** the earlier Fusion probe reported an RFB handshake,
 framebuffer updates and accepted key events after enabling the built-in VNC

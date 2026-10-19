@@ -293,7 +293,7 @@ impl Controller {
                     return Err("pointer CLEAR_FEATURE refused");
                 }
                 let pipe = &mut self.devices[index].pointers[pipe_index];
-                // The dequeue moves past every posted TD, not only the failed one.
+                // The dequeue moves past the posted TDs, not only the failed one.
                 pipe.posted.abandon();
                 let next = pipe.ring.enqueue();
                 self.set_dequeue(slot, dci, next)
