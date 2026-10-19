@@ -428,6 +428,11 @@ path = "src/init.rs"
 name = "probe"
 path = "src/probe.rs"
 
+# The persistent install's migration (docs/metal/README.md, "Install and upgrade"): installed as /sbin/persistent-install.
+[[bin]]
+name = "persistent-install"
+path = "src/persistent_install.rs"
+
 # Effort suites (docs/suites/<id>.json): installed as /sbin/suite-<id>.
 [[bin]]
 name = "suite-smoke"
