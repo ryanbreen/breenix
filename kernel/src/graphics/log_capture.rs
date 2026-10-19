@@ -1,8 +1,8 @@
 //! Lock-free byte ring buffer for capturing serial output.
 //!
-//! Serial output is tee'd into this buffer by `serial_aarch64::_print()`.
-//! The render thread drains it periodically, splits into lines, and feeds
-//! those lines to the Logs terminal pane.
+//! Serial output is tee'd into this buffer by the UART record path
+//! (`serial_line`). After GPU-core handoff the render thread drains it into
+//! the GPU kernel console (`gpu::console::pump`).
 //!
 //! The buffer is single-producer (serial output path, which already holds
 //! UART ownership) and single-consumer (render thread), so we only need

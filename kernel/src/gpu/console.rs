@@ -77,8 +77,8 @@ fn quiesce() {
     if RETIRED.load(Ordering::Acquire) {
         return;
     }
+    // Stops the screen console's splash and terminals too (`console::take_display`).
     crate::graphics::boot_screen::stop_drawing();
-    crate::graphics::log_console::stop();
     // Quiesce direct canvas writers under the framebuffer lock before retiring it.
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         let _guard = fb.lock();

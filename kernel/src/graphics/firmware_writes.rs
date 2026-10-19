@@ -61,6 +61,16 @@ impl<'a> BufferMut<'a> {
         Self { bytes, firmware }
     }
 
+    /// Render into this buffer, accounting the operation without lending mutable access.
+    pub fn render(&mut self, draw: impl FnOnce(&mut [u8])) {
+        if !self.bytes.is_empty() {
+            draw(self.bytes);
+            if self.firmware {
+                note();
+            }
+        }
+    }
+
     pub fn copy_from_slice(&mut self, offset: usize, source: &[u8]) {
         let destination = &mut self.bytes[offset..offset + source.len()];
         if !destination.is_empty() {

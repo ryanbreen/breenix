@@ -176,6 +176,18 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                         revents |= events::POLLIN;
                     }
                 }
+                DeviceType::Tty0 | DeviceType::Vt(_) => {
+                    // A virtual terminal's readiness follows its own input queue.
+                    let tty = device_type.terminal().and_then(crate::tty::driver::vt);
+                    if (events & events::POLLOUT) != 0 {
+                        revents |= events::POLLOUT;
+                    }
+                    if (events & events::POLLIN) != 0 && tty.is_some_and(|tty| tty.input_ready()) {
+                        revents |= events::POLLIN;
+                    }
+                }
+                // The screens are read through their own descriptors.
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) => {}
             }
         }
         FdKind::DevfsDirectory { .. } => {

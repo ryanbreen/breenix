@@ -628,11 +628,15 @@ sys.stdin.readline()
                               f'{sys.executable} {HELPER} quiet; sleep 1; '
                               f'echo "kernel::test_exec:     -> Userspace will emit PROBE DONE" >> {serial}; sleep 1; '
                               f'cp {sidecar} {self.root}/before-done; '
-                              f'echo "PROBE DONE passed=16 failed=0" >> {serial}; echo SHOWN; read -r stop')
+                              f'echo "PROBE DONE passed=16 failed=0" >> {serial}; echo SHOWN; read -r stop',
+                              prelude="m.sys.platform = 'linux'\n"
+                                      "def no_load_probe(seconds): raise AssertionError('boot admission ran a load probe')\n"
+                                      "m.vcpu_gap_ms = no_load_probe")
         self.line_matching(session, 'SHOWN')
         before = json.loads((self.root / 'before-done').read_text())
         self.assertEqual(before['quiet'], {'required': False})
         self.assertEqual(len(before['load_at_start']), 3)
+        self.assertNotIn('vcpu_gap_ms_at_start', before)
         self.assertNotIn('load_at_verdict', before)
         deadline = time.monotonic() + 10
         while 'load_at_verdict' not in sidecar.read_text() and time.monotonic() < deadline:

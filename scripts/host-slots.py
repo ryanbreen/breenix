@@ -575,7 +575,7 @@ def supervise_worker(argv, parent):
             print('[host-slot] boot start: no boot lease is held; nothing recorded', file=sys.stderr, flush=True)
         else:
             entry = records[index]
-            sample = request.get('sample') or host_sample(request['policy'])
+            sample = request.get('sample') or host_sample(request['policy'], burst=False)
             entry['load_at_start'] = os.getloadavg()
             if 'vcpu_gap_ms' in sample:
                 entry['vcpu_gap_ms_at_start'] = sample['vcpu_gap_ms']

@@ -43,14 +43,14 @@ pub enum JobOp {
 ///   restarted once the group continues (ERESTARTSYS), or fails with EINTR
 ///   when a handler installed without SA_RESTART runs first.
 ///
-/// Called with no locks held: for reads (before every attempt, so a sleeping
+/// Called with no locks held: for reads (again on each retry, so a sleeping
 /// reader moved to the background is caught), writes, flushes, flow control
 /// and breaks on the slave side of a PTY, and for attribute changes and
 /// tcsetpgrp on either side, which Linux checks against the slave behind a
-/// master (`real_tty`). The console keeps its own foreground handling in this
-/// effort and is always allowed.
+/// master (`real_tty`). The virtual terminals keep the console's own
+/// foreground handling in this effort, and are allowed here.
 pub fn check(t: &TtyRef, op: JobOp) -> Result<(), i32> {
-    if let TtyRef::Console(_) = t {
+    if let TtyRef::Vt(_) = t {
         return Ok(());
     }
     let sig = match op {
@@ -93,10 +93,10 @@ fn blocks_or_ignores(me: &Process, sig: u32) -> bool {
 /// TIOCGPGRP and TIOCSPGRP on terminal `t`, reached through `side`.
 pub fn ioctl(t: &TtyRef, side: Side, request: u64, arg: u64) -> Result<i32, i32> {
     match (t, request) {
-        // The console keeps its foreground handling in this effort: any
-        // caller may read it or set it to any non-negative group.
-        (TtyRef::Console(tty), TIOCGPGRP) => super::ioctl::handle_tiocgpgrp(tty, arg).map(|()| 0),
-        (TtyRef::Console(tty), TIOCSPGRP) => super::ioctl::handle_tiocspgrp(tty, arg).map(|()| 0),
+        // Each virtual terminal keeps the console's foreground handling in
+        // this effort: any caller may read it or set it to any non-negative group.
+        (TtyRef::Vt(tty), TIOCGPGRP) => super::ioctl::handle_tiocgpgrp(tty, arg).map(|()| 0),
+        (TtyRef::Vt(tty), TIOCSPGRP) => super::ioctl::handle_tiocspgrp(tty, arg).map(|()| 0),
         (TtyRef::Pty(_), TIOCGPGRP) => get_pgrp(t, side, arg),
         (TtyRef::Pty(pair), TIOCSPGRP) => set_pgrp(t, pair, arg),
         _ => Err(ENOTTY),

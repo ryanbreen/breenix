@@ -78,7 +78,7 @@ fn run() -> Result<(), String> {
     if !fields[5].starts_with('/') || !fields[6].starts_with('/') { return Err("invalid account paths".into()); }
     // Discard inherited environment and install only the login environment.
     let environment = [format!("HOME={}", fields[5]), format!("USER={}", user), format!("LOGNAME={}", user),
-        format!("SHELL={}", fields[6]), "PATH=/bin:/sbin:/usr/bin".into(), "TERM=vt100".into()];
+        format!("SHELL={}", fields[6]), "PATH=/bin:/sbin:/usr/bin".into(), "TERM=breenix".into()];
     let environment: Vec<CString> = check(environment.iter().map(|s| CString::new(s.as_bytes())).collect::<Result<_, _>>())?;
     let mut envp: Vec<*const u8> = environment.iter().map(|s| s.as_ptr().cast()).collect();
     envp.push(core::ptr::null());

@@ -241,16 +241,45 @@ fn run_console_mode() -> ! {
         print!("[init] console detach failed\n");
         reap_forever();
     }
+    let mut children = [None; 6];
+    let mut retry_at = [0i128; 6];
     loop {
-        print!("[init] getty on the console\n");
-        match spawn(b"/bin/getty\0") {
-            Ok(child) => {
-                while reap_one() != Some(child.raw() as i32) {}
-                print!("[init] console session ended; restarting getty\n");
+        let now = libbreenix::time::now_monotonic().expect("console clock").as_nanos();
+        // Start tty1 last so launch messages precede its login prompt.
+        for index in (1..6).chain(0..1) {
+            if children[index].is_some() || now < retry_at[index] { continue; }
+            let tty = format!("tty{}\0", index + 1);
+            let argv = [b"getty\0".as_ptr(), tty.as_ptr(), core::ptr::null()];
+            // tty1 retains getty's default /dev/console path.
+            if index == 0 { print!("[init] getty on the console\n"); }
+            else { print!("[init] getty on tty{}\n", index + 1); }
+            let result = if index == 0 { spawn(b"/bin/getty\0") }
+                else { spawnv(b"/bin/getty\0", argv.as_ptr()) };
+            match result {
+                Ok(child) => {
+                    children[index] = Some(child.raw() as i32);
+                }
+                Err(error) => print!("[init] getty tty{}: {}\n", index + 1, error),
             }
-            Err(e) => print!("[init] Failed to start getty: {}\n", e),
+            retry_at[index] = now + 1_000_000_000;
         }
-        sleep_one_second();
+        // Reap without waiting on one particular VT: another session may exit
+        // while a fast-failing getty is rate limited.
+        loop {
+            let mut status = 0;
+            match waitpid(-1, &mut status, libbreenix::process::WNOHANG) {
+                Ok(pid) if pid.raw() != 0 => {
+                    if let Some(index) = children.iter().position(|p| *p == Some(pid.raw() as i32)) {
+                        children[index] = None;
+                        retry_at[index] = libbreenix::time::now_monotonic().expect("console clock").as_nanos() + 1_000_000_000;
+                        if index == 0 { print!("[init] console session ended; restarting getty\n"); }
+                        else { print!("[init] tty{} session ended\n", index + 1); }
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = libbreenix::time::sleep_ms(50);
     }
 }
 
@@ -550,19 +579,34 @@ fn run_bssh_exec_autorun(host: &str) {
     }
 }
 
+/// The boot script is done: give the console's text the screen, which ends the
+/// boot splash (`KDSETMODE(KD_TEXT)` on tty1, `docs/console/contract.md` section 7).
+fn console_text_mode() {
+    extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
+    const KDSETMODE: u64 = 0x4B3A;
+    const KD_TEXT: u64 = 0;
+    if unsafe { ioctl(0, KDSETMODE, KD_TEXT) } != 0 {
+        print!("[init] KDSETMODE(KD_TEXT) on the console failed: {}\n", std::io::Error::last_os_error());
+    }
+}
+
 fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64 Parallels boots from AHCI. Mirror the boot script's service
-        // sequence directly from init so the standard desktop services are
-        // always started even before bsh runs init.js.
-        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/bin/bwm\0", b"/sbin/telnetd\0"];
+        // Start background services before handing the splash to the console.
+        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
             }
         }
+        console_text_mode();
+        // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
+        // A graphical child may take the display after init's text-mode request.
+        if let Err(e) = spawn(b"/bin/bwm\0") {
+            print!("[init] Warning: failed to spawn service: {}\n", e);
+        }
         return;
     }
 
@@ -584,6 +628,7 @@ fn run_boot_script() {
             if exit_code != 0 {
                 print!("[init] Boot script exited with code {}\n", exit_code);
             } else {
+                console_text_mode();
                 print!("[init] Boot script completed\n");
             }
         }

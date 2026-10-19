@@ -157,83 +157,34 @@
       "title": "Boot logo & progress",
       "summary": "The Breenix logo and boot progress are drawn on the framebuffer as soon as it exists, the displayed pixels read back identical to the shadow and to the logo's independently computed pixels at two stages of the boot, and the console takes the screen when the system first waits for its user.",
       "kernel": true,
-      "stub": true,
       "stages": {
         "aarch64": [
-          {
-            "name": "Logo drawn",
-            "marker": "[splash] logo drawn: "
-          },
-          {
-            "name": "Boot progress shown",
-            "marker": "[splash] progress shown: "
-          },
-          {
-            "name": "Logo read back",
-            "marker": "[splash] logo read back: "
-          },
-          {
-            "name": "Progress read back as it advanced",
-            "marker": "[splash] progress read back: "
-          }
+          "Logo drawn",
+          "Boot progress shown",
+          "Logo read back",
+          "Progress read back as it advanced"
         ],
         "x86_64": [
-          {
-            "name": "Logo drawn",
-            "marker": "[splash] logo drawn: "
-          },
-          {
-            "name": "Boot progress shown",
-            "marker": "[splash] progress shown: "
-          },
-          {
-            "name": "Logo read back",
-            "marker": "[splash] logo read back: "
-          },
-          {
-            "name": "Progress read back as it advanced",
-            "marker": "[splash] progress read back: "
-          }
+          "Logo drawn",
+          "Boot progress shown",
+          "Logo read back",
+          "Progress read back as it advanced"
         ],
         "shell": [
-          {
-            "name": "Logo drawn",
-            "marker": "[splash] logo drawn: "
-          },
-          {
-            "name": "Boot progress shown",
-            "marker": "[splash] progress shown: "
-          },
-          {
-            "name": "Logo read back",
-            "marker": "[splash] logo read back: "
-          },
-          {
-            "name": "Progress read back as it advanced",
-            "marker": "[splash] progress read back: "
-          },
+          "Logo drawn",
+          "Boot progress shown",
+          "Logo read back",
+          "Progress read back as it advanced",
           {
             "name": "Console took the screen",
             "marker": "[splash] console took the screen: reader"
           }
         ],
         "default": [
-          {
-            "name": "Logo drawn",
-            "marker": "[splash] logo drawn: "
-          },
-          {
-            "name": "Boot progress shown",
-            "marker": "[splash] progress shown: "
-          },
-          {
-            "name": "Logo read back",
-            "marker": "[splash] logo read back: "
-          },
-          {
-            "name": "Progress read back as it advanced",
-            "marker": "[splash] progress read back: "
-          },
+          "Logo drawn",
+          "Boot progress shown",
+          "Logo read back",
+          "Progress read back as it advanced",
           {
             "name": "Console took the screen",
             "marker": "[splash] console took the screen: kd-text"
@@ -462,7 +413,7 @@
             "marker": "[init] Breenix init starting (PID 1)"
           },
           {
-            "name": "init boot script completed",
+            "name": "init boot script completed (ARM64: services and KD_TEXT, before bwm spawn)",
             "marker": "[init] Boot script completed"
           }
         ],

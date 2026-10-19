@@ -48,4 +48,11 @@ fn count_stores_fills_and_row_copies_even_from_access_obtained_before_handoff() 
     access.fill_pixels(0..3, &[1, 2, 3, 4]);
     access.fill_pixels(0..4, &[]);
     assert_eq!(count(), 7);
+    access.render(|frame| frame[..4].fill(5));
+    assert_eq!(&access[..4], &[5; 4]);
+    assert_eq!(count(), 8);
+    let mut shadow = [0; 4];
+    BufferMut::new(&mut shadow, false).render(|frame| frame.fill(6));
+    assert_eq!(shadow, [6; 4]);
+    assert_eq!(count(), 8);
 }

@@ -162,16 +162,18 @@ the four-hour ceiling still applies. Disk-root sessions use the per-boot idle ch
 
 ## The screen console
 
-The x86 kernel without `interactive` (`kernel/src/fbcon`) draws a text console on the firmware's framebuffer, the
-display on the server's VGA port. It runs on x86 kernels built without `interactive`, QEMU's included.
+The screen console (`kernel/src/console`) draws a text console on the firmware's framebuffer, the display on the
+server's VGA port. x86 kernels run it, QEMU's included, and ARM64 kernels run the same code on their displays.
+On x86 its lines keep the `[fbcon]` tag and `/proc/fbcon/check` the text below, which this boot path measures.
 
 - **One grid, any writer.** Kernel log records (INFO and above) and the console TTY's output, echo included, are
-  written as text into a retained character grid: one byte per cell, rows in a ring so scrolling moves no text, the
+  written as text into a retained character grid, sized by the font size rule (`docs/console/contract.md` section
+  2; size 16 and 146 by 42 cells at 1024x768): one byte per cell, rows in a ring so scrolling moves no text, the
   cursor, and a generation. Writers take its lock with interrupts masked for one record or one write, so log records
   from interrupt context reach the screen too; a write is dropped, and counted, only if the lock stays held for
   milliseconds. A log line starts its own row, as it does on the UART. TTY output is interpreted as a terminal
   does: CR, LF, BS, HT, autowrap, and the CSI cursor and erase sequences.
-- **One screen writer.** The `fbcon` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
+- **One screen writer.** The `console` kernel thread (normal time-sharing, sleeping between passes) looks at the grid each 20 ms, draws the rows that
   changed into a RAM shadow of the framebuffer, and copies only those rows' pixels to video memory, one text row with
   interrupts masked at a time. Drawing does not read video memory. A display owner's `fbdraw` flush and pixel
   read take the same row token, so they do not interleave with the console's rows. When a process takes the display
@@ -317,6 +319,12 @@ the initiator's value.
 
 ## One boot
 
+`metal-run boot --branch BRANCH --catchup` (or `BREENIX_CATCHUP=1`) records
+`catchup: true` in `run.json`; it does not override metal ancestry or permit
+main-path effort history. `metal-build` fetches the guard from origin/main for
+both ordinary and catch-up boots, so the target branch cannot supply its own
+admission policy.
+
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
 soon as the unit holds, or waits for, the machine lease, so the caller's ssh session can end. The driver then:
 
@@ -324,7 +332,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    holds it; a quarantined lease refuses new boots). The lease carries the boot id, the driver's unit, a heartbeat refreshed
    each 5 s and, from power-on, the attempt's absolute ceiling.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
-   the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
+   the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;
+   `--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
    production kernel (no features; an xHCI fault boot's kernel adds only `xhci_fault_inject`) and its UEFI image,
@@ -738,22 +747,22 @@ and the HID Usage Tables; their comments cite the sections.
   and enumerated again (xHCI 4.10.2, "Stall Error" on control endpoints), at most twice per attach.
 - **Reports.** One interrupt-IN TD is posted at a time. A report must be 8 bytes; one of any other length is
   ignored. Presses and releases are the differences between consecutive reports, and an ErrorRollOver report
-  leaves the previous keys standing. The US layout follows the Keyboard/Keypad page's usage names; Shift,
-  Ctrl (control codes, so Ctrl-C reaches the line discipline as from SOL), Alt (ESC before the key) and Caps,
-  Num and Scroll Lock, whose LEDs the host sets. Arrows, Home, End, Insert, Delete, PageUp and PageDown send
-  `ESC [ A`-`D`, `ESC [ H`, `ESC [ F` and `ESC [ 2~`, `3~`, `5~`, `6~`. Typematic is the host's: 500 ms, then
-  one repeat each 33.3 ms. Alt+F1 to Alt+F6, Alt+Left and Alt+Right decode as distinct chord events for the
-  virtual-terminal layer and send no bytes yet.
-- **Into TTY 0.** Bytes wait in a 4096-byte queue until `tty::push_char_nonblock_from` accepts them, tagged as
-  USB keyboard input; a byte the TTY refuses (its lock is held) stays at the head and is offered again 5 ms
-  later. A key event is queued whole or refused whole. `[hid] first key report`, `[hid] typed into the console
-  tty: <n> bytes` and TTY 0's `[console] first input byte input=keyboard` print once each, for the first key
-  after the replug exercise, so a key pressed earlier is not reported first; no key value is logged.
+  leaves the previous keys standing. Each usage, and each modifier bit, becomes a key event with the published
+  `input-event-codes.h` key code for the usage's name, reported to the input core (`kernel/src/input/`) with
+  modifier releases and presses ahead of the array's. Typematic is the host's: 500 ms, then one repeat (value 2)
+  each 33.3 ms; the lock keys do not repeat. The console keymap turns the events into bytes and console actions
+  (`docs/console/contract.md` sections 5.5 and 9), and the keyboards' LEDs show its Num, Caps (the foreground
+  terminal's) and Scroll Lock state, sent to each attached keyboard when a report changes it.
+- **Into TTY 0.** The console's key bytes are tagged as USB keyboard input; a byte the terminal's discipline
+  refuses (its lock is held) waits in the terminal's keyboard queue, which the console's render thread offers
+  again. `[hid] first key report`, `[hid] typed into the console tty: <n> bytes` and TTY 0's
+  `[console] first input byte input=keyboard` print once each, for the first key after the replug exercise, so
+  a key pressed earlier is not reported first; no key value is logged.
 - **Detach.** A disconnect, a disabled port or a new connection on a keyboard's port tears the device down:
   Stop Endpoint for EP0 and the keyboard endpoint, the slot's transfer events discarded once those commands
   complete, Disable Slot, its DCBAA entry cleared, and then its contexts, rings and buffers returned to the
-  frame allocator. Key state, modifiers and the repeat go with it. `[usb] boot keyboard detached:` gives the
-  page count. When the controller does not complete Disable Slot, the memory stays pinned.
+  frame allocator. The keys and modifiers it held are reported released, and its repeat goes with it.
+  `[usb] boot keyboard detached:` gives the page count. When the controller does not complete Disable Slot, the memory stays pinned.
 - **The replug exercise.** On a `console` boot, as init starts the console target, the driver detaches and
   reattaches each boot keyboard ten times, so both paths run on the machine and an intermittent reattach shows:
   with port power control (HCCPARAMS1.PPC) it powers the port off and on and attaches the connection the port
