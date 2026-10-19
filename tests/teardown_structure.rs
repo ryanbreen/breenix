@@ -14176,6 +14176,12 @@ fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
     assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
 }
 
+/// A census emitter's emissions: one `serial_println!` or `diag_println!` (ruling F26; the
+/// diagnostic macro keeps the line on serial and off the screen consoles).
+fn emissions(body: &str) -> usize {
+    body.matches("serial_println!").count() + body.matches("diag_println!").count()
+}
+
 fn validate_production_root_custody_summary(
     provider: &str,
     procfs_trace: &str,
@@ -14205,7 +14211,7 @@ fn validate_production_root_custody_summary(
             return Err(());
         }
     }
-    if body.matches("serial_println!").count() != 1
+    if emissions(&body) != 1
         || !function_body(procfs_trace, "generate_counters")
             .contains("emit_root_custody_summary();")
         || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
@@ -15643,7 +15649,7 @@ fn validate_production_tombstone_census(
             return Err(());
         }
     }
-    if body.matches("serial_println!").count() != 1
+    if emissions(&body) != 1
         || !function_body(procfs_trace, "generate_counters").contains("emit_tombstone_census();")
         || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_tombstone_census();")

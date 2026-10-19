@@ -68,7 +68,7 @@ Shift+PageUp after the hand-over shows the boot log.
 
 **Diagnostic records are not drawn on the screen**, on ARM64 or x86-64: census and trace lines the kernel
 writes for gates and debugging (`diag_println!`: the `[syscall] exit` trace, the `TTBR0_ASID_CENSUS`
-census, the process-creation and `[spawn]` traces). They are DEBUG records: serial and the kernel log
+census, the `PT_ROOT_CUSTODY` and `TOMBSTONE_CENSUS` censuses, the process-creation and `[spawn]` traces). They are DEBUG records: serial and the kernel log
 (`/proc/kmsg`) keep them, and the INFO-and-above rule above keeps them off tty1. On x86-64 only `log`
 records reach the screen; serial lines do not.
 
