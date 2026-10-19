@@ -953,7 +953,10 @@ impl Port {
             if let Some((interrupts, errors, flags)) = counters {
                 log::info!("[bcm5720] MSI interrupts {interrupts}, receive errors {errors}, last flags {flags:#x}");
             }
-            let _ = crate::net::arp::request(&lease.gateway);
+            match crate::net::arp::request(&lease.gateway) {
+                Ok(()) => log::info!("ARP request sent successfully"),
+                Err(error) => log::warn!("[bcm5720] gateway ARP request failed: {error}"),
+            }
             let _ = crate::net::ping(lease.gateway);
             crate::net::dns_probe::run(lease);
         } else {
@@ -990,7 +993,10 @@ impl Port {
                     connectivity_reported = true;
                     log::info!("[bcm5720] reply received: DHCP server acknowledged the requested lease");
                     log::info!("[dhcp] lease acquired");
-                    let _ = crate::net::arp::request(&lease.gateway);
+                    match crate::net::arp::request(&lease.gateway) {
+                        Ok(()) => log::info!("ARP request sent successfully"),
+                        Err(error) => log::warn!("[bcm5720] gateway ARP request failed: {error}"),
+                    }
                     let _ = crate::net::ping(lease.gateway);
                     crate::net::dns_probe::run(lease);
                 }
