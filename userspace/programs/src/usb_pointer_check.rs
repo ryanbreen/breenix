@@ -430,16 +430,26 @@ fn replay_one(pointer: &Pointer, report: &[u8]) -> Result<u64, i64> {
     }
 }
 
-/// Replay `pointer`'s recorded reports; returns how many were replayed.
-fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) -> usize {
+/// What one interface's replayed reports covered.
+#[derive(Default)]
+struct Covered {
+    reports: usize,
+    moved: bool,
+    pressed: bool,
+    turned: bool,
+    wheel: bool,
+}
+
+/// Replay `pointer`'s recorded reports.
+fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) -> Covered {
     let prefix = format!("replay/port{}-if{}", pointer.port, pointer.interface);
     let Ok(layout) = Layout::parse(&pointer.descriptor) else {
         tally.case(&prefix, false, "descriptor unreadable");
-        return 0;
+        return Covered::default();
     };
     let (Some(x), Some(y)) = (layout.x, layout.y) else {
         tally.case(&prefix, false, "missing X/Y");
-        return 0;
+        return Covered::default();
     };
     let id = x.id;
     let wheel = layout.wheel.filter(|f| f.id == id && f.relative);
@@ -449,15 +459,14 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) -> usiz
         .iter()
         .filter(|r| !layout.ids || r.first() == Some(&id))
         .collect();
+    let mut covered = Covered { wheel: wheel.is_some(), ..Covered::default() };
     if reports.is_empty() {
-        tally.case(&prefix, false, "the device sent this interface no pointer report to replay");
-        return 0;
+        return covered;
     }
     let scale = |field: Field, value: i64, extent: u32| {
         let range = (field.maximum - field.minimum).max(1);
         ((value - field.minimum).clamp(0, range) * (extent as i64 - 1) / range) as u32
     };
-    let (mut motion, mut pressed, mut turned) = (false, false, false);
     for (n, report) in reports.iter().enumerate() {
         let (vx, vy) = (layout.value(report, x), layout.value(report, y));
         let held = buttons
@@ -474,9 +483,9 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) -> usiz
         } else {
             (scale(x, vx, width), scale(y, vy, height))
         };
-        motion |= target.0.abs_diff(before.0) > 1 || target.1.abs_diff(before.1) > 1;
-        pressed |= held != 0;
-        turned |= turn != 0;
+        covered.moved |= target.0.abs_diff(before.0) > 1 || target.1.abs_diff(before.1) > 1;
+        covered.pressed |= held != 0;
+        covered.turned |= turn != 0;
         let hex: String = report.iter().map(|b| format!("{b:02x}")).collect();
         let name = format!("{prefix}/report-{n}");
         match replay_one(pointer, report) {
@@ -503,12 +512,8 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) -> usiz
             Err(errno) => tally.case(&name, false, &format!("report={hex} replay control returned {errno}")),
         }
     }
-    tally.case(
-        &format!("{prefix}/coverage"),
-        motion && pressed && (turned || wheel.is_none()),
-        &format!("replayed reports moved={motion} pressed={pressed} wheel={turned}"),
-    );
-    reports.len()
+    covered.reports = reports.len();
+    covered
 }
 
 fn main() {
@@ -564,15 +569,45 @@ fn main() {
         seq = host(kind, seq, width, height, &mut tally);
     }
     if replaying {
-        // The census again, for the reports the host cases produced.
+        // The census again, for the reports the host cases produced. A device
+        // may report one pointer's motion and its buttons or wheel on different
+        // interfaces (VMware's tablet and mouse), so each interface's reports
+        // go back and coverage is the device's.
         let attached = census();
-        for kind in &kinds {
-            let replayed: usize = attached
-                .iter()
-                .filter(|p| kind_of(p) == Some(kind))
-                .map(|p| replay(p, width, height, &mut tally))
-                .sum();
-            tally.case(&format!("replay/{kind}/recorded"), replayed > 0, &format!("{replayed} recorded reports replayed"));
+        let mut ports: Vec<u32> = attached.iter().map(|p| p.port).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        let mut by_kind = vec![0usize; kinds.len()];
+        for port in ports {
+            let mut device = Covered::default();
+            for pointer in attached.iter().filter(|p| p.port == port) {
+                let covered = replay(pointer, width, height, &mut tally);
+                if let Some(i) = kinds.iter().position(|k| kind_of(pointer) == Some(k)) {
+                    by_kind[i] += covered.reports;
+                }
+                device.reports += covered.reports;
+                device.moved |= covered.moved;
+                device.pressed |= covered.pressed;
+                device.turned |= covered.turned;
+                device.wheel |= covered.wheel;
+            }
+            if device.reports != 0 {
+                tally.case(
+                    &format!("replay/port{port}/coverage"),
+                    device.moved && device.pressed && (device.turned || !device.wheel),
+                    &format!(
+                        "{} reports replayed: moved={} pressed={} wheel={}",
+                        device.reports, device.moved, device.pressed, device.turned
+                    ),
+                );
+            }
+        }
+        for (kind, replayed) in kinds.iter().zip(by_kind) {
+            tally.case(
+                &format!("replay/{kind}/recorded"),
+                replayed > 0,
+                &format!("{replayed} recorded reports of {kind} interfaces replayed"),
+            );
         }
     }
     println!(
