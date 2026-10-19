@@ -132,7 +132,7 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 | 1280x960 | Parallels and VMware defaults | 20 | 9x22 | 142x43 | 2 |
 | 1920x1080 | x86-64 QEMU (`virtio-vga`) | 24 | 11x26 | 174x41 | 3 |
 | 1920x1200 | VMware `--retina` | 24 | 11x26 | 174x46 | 3 |
-| 2560x1600 | Parallels `--retina`, GL QEMU | 32 | 14x34 | 182x47 | 4 |
+| 2560x1600 | Parallels `--retina` | 32 | 14x34 | 182x47 | 4 |
 
 The console enables the font crate's `size_20`, `size_24`, `size_32`, `bold`, `unicode-latin-1-supplement`
 and `unicode-latin-extended-a` features (V1).

@@ -33,8 +33,8 @@
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #   --cpu MODEL          QEMU CPU model (default max; cortex-a72 selects the strict TCG profile)
 #   --gpu-gl             also attach virtio-gpu-gl-pci, on the GL QEMU that scripts/build-qemu-gl.sh installs
-#                        (VirGL on ANGLE's Metal backend), as the window's display: the kernel's boot screen and
-#                        console draw through VirGL on it. The window is -display cocoa,gl=es, a run without
+#                        (VirGL on ANGLE's Metal backend), as the window's display: the GPU core drives it, and
+#                        after its handoff the window shows the GPU kernel console. The window is -display cocoa,gl=es, a run without
 #                        one has SPICE GL on a local socket. After the VM stops, scripts/check-host-renderer.py
 #                        judges the run's host renderer attestation, host-renderer.json beside the serial log,
 #                        and a refused attestation fails the boot. BREENIX_QEMU_GL_BINARY names another GL
