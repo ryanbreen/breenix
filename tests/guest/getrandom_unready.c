@@ -12,17 +12,13 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__aarch64__)
-#define NR_GETRANDOM 278
-#else
-#define NR_GETRANDOM 318
-#endif
+extern ssize_t getrandom(void *, size_t, unsigned);
 
 static volatile sig_atomic_t caught;
 static void handler(int sig) { caught = sig; }
 static long random_byte(unsigned flags) {
     unsigned char byte;
-    return syscall(NR_GETRANDOM, &byte, 1UL, (unsigned long)flags);
+    return getrandom(&byte, 1, flags);
 }
 static void pause_for_child(void) {
     struct timespec delay = {0, 100000000};
