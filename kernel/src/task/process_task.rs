@@ -653,6 +653,7 @@ pub(crate) fn defer_superseded_roots(
         return None;
     }
     process.note_receipt_created();
+    crate::tracing::providers::teardown::record_defer(process.id.as_u64());
     Some(PendingProcessReclaim {
         pid: process.id.as_u64(),
         page_table: None,
