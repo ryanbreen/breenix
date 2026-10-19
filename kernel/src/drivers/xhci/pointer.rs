@@ -393,14 +393,12 @@ impl Controller {
             .collect();
         let pipe = &mut self.devices[index].pointers[pipe_index];
         let ring = pipe.ring.memory.phys;
-        // The oldest TD still posted and uncompleted is at the dequeue pointer.
-        let oldest = (0..spec::POSTED_TDS)
-            .filter_map(|buffer_slot| {
-                let at = pipe.posted.tds(buffer_slot)?;
-                (!completed.contains(&at)).then_some((buffer_slot, at))
-            })
-            .min_by_key(|(_, at)| spec::ring_age(ring, pipe.ring.enqueue(), *at));
-        let (buffer_slot, at) = oldest.ok_or("no posted TD to replay into")?;
+        // The oldest TD still posted and uncompleted is at the dequeue pointer;
+        // moving the dequeue past it keeps the TDs behind it posted.
+        let (buffer_slot, at) = pipe
+            .posted
+            .oldest_uncompleted(&completed, ring, pipe.ring.enqueue())
+            .ok_or("no posted TD to replay into")?;
         for (i, byte) in data.iter().enumerate() {
             pipe.buffer.put8(buffer_slot * pipe.stride + i, *byte);
         }

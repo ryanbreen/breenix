@@ -95,10 +95,17 @@ impl Posted {
     pub fn free(&self) -> impl Iterator<Item = usize> + '_ {
         self.tds.iter().enumerate().filter(|(_, td)| td.is_none()).map(|(slot, _)| slot)
     }
-    /// The TD posted in `slot`, if any.
+    /// The posted TD the controller reaches first among those `completed`
+    /// does not name, and its slot: the oldest, in a ring at `base` whose
+    /// producer's next TRB is `enqueue`.
     #[cfg(any(test, feature = "usb_pointer_replay"))]
-    pub fn tds(&self, slot: usize) -> Option<u64> {
-        self.tds[slot]
+    pub fn oldest_uncompleted(&self, completed: &[u64], base: u64, enqueue: (u64, bool)) -> Option<(usize, u64)> {
+        self.tds
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, td)| Some((slot, (*td)?)))
+            .filter(|(_, at)| !completed.contains(at))
+            .max_by_key(|(_, at)| ring_age(base, enqueue, *at))
     }
     pub fn post(&mut self, slot: usize, pointer: u64) {
         self.tds[slot] = Some(pointer);
@@ -420,7 +427,7 @@ mod tests {
         p.post(1, 0x1040);
         assert_eq!(p.slot(0x1040), Some(1));
         p.abandon();
-        assert!(p.free().count() == POSTED_TDS && p.tds(1).is_none());
+        assert!(p.free().count() == POSTED_TDS);
         assert_eq!(posted_stride(8, 4096), Ok(64));
         assert_eq!(posted_stride(65, 4096), Ok(128));
         assert_eq!(posted_stride(1024, 4096), Ok(1024));
@@ -450,6 +457,15 @@ mod tests {
         assert_eq!(ring_next(base, 253, true), queued[1]);
         assert_eq!(ring_next(base, 254, true), queued[2]);
         assert_eq!(ring_next(base, 0, false), enqueue);
+        // Posted out of slot order across the Link: the oldest is the TD at 253,
+        // not the newest at 0, and one already completed is passed over.
+        let mut posted = Posted::new();
+        posted.post(2, queued[0].0);
+        posted.post(0, queued[1].0);
+        posted.post(1, queued[2].0);
+        assert_eq!(posted.oldest_uncompleted(&[], base, enqueue), Some((2, queued[0].0)));
+        assert_eq!(posted.oldest_uncompleted(&[queued[0].0], base, enqueue), Some((0, queued[1].0)));
+        assert_eq!(posted.oldest_uncompleted(&[queued[0].0, queued[1].0, queued[2].0], base, enqueue), None);
     }
     #[test]
     fn producer_and_event_cycles_cross_two_wraps() {
