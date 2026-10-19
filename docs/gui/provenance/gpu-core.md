@@ -976,7 +976,7 @@ The facts these establish, for this host and renderer:
 
 ## Parallels catch-up values
 
-The #1875 per-step warm-up timings cited in the catalogue derivation and `Asm::passes`
+The historical #1875 per-step warm-up timings cited in the catalogue derivation
 used uncommitted timing diagnostics. Those historical timings are unverified under
 ruling 12 and are not reproducible from the recorded revision.
 
@@ -987,8 +987,10 @@ ruling 12 and are not reproducible from the recorded revision.
 | In the 39 generated programs an instruction with only immediate sources (a word copy `UADD x, k, 0`, or a select between two literals lowered to `XOR`) takes `CONST[4].z` in place of its immediate 0; the draws of these programs supply that word as 0 (`kernel/src/gpu/virgl/encode.rs`: catalogue draws pass `CONST[4]` as `0, 0, 0, 0`, PROBE passes `word, routine, 0, 0`) | B19; the operation and its result are unchanged where `CONST[4].z` is 0 |
 
 The programs were regenerated with the commands in "G4 shader derivation" and "G5 parameterized
-catalogue"; the generator's model and emitted-ISA tests passed on the result. The generator at the
-previous commit reproduced the committed programs byte for byte before the change.
+catalogue". The model tests exercise arithmetic routines; the emitted-ISA tests exercise
+profile routines and catalogue triangle 15, rather than each regenerated catalogue program.
+The committed-catalogue comparison checks generated text and token counts for pipelines 2 through 15.
+The generator at the previous commit reproduced the committed programs byte for byte before the change.
 
 ## B18: Parallels variable shift counts
 

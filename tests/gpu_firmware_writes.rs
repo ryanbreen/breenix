@@ -40,4 +40,12 @@ fn count_stores_fills_and_row_copies_even_from_access_obtained_before_handoff() 
     note_range(destination, 4);
     note_range(unsafe { destination.add(28) }, 4);
     assert_eq!(count(), 6);
+    let mut access = BufferMut::new(&mut framebuffer, true);
+    access.fill_pixels(0..10, &[1, 2, 3, 4]);
+    assert_eq!(&access[..8], &[1, 2, 3, 4, 1, 2, 3, 4]);
+    assert_eq!(count(), 7);
+    access.fill_pixels(0..0, &[1, 2, 3, 4]);
+    access.fill_pixels(0..3, &[1, 2, 3, 4]);
+    access.fill_pixels(0..4, &[]);
+    assert_eq!(count(), 7);
 }

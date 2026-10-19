@@ -20,7 +20,7 @@ fn finalize(text: String, tokens: u32, registers: usize) -> (String, u32) {
     (text.trim_end_matches('\0').to_string(), tokens)
 }
 
-fn shape(pipe: u32) -> (String, u32) {
+pub(super) fn shape(pipe: u32) -> (String, u32) {
     let mut c = Code::default();
     let a: Vec<_> = (0..16).map(|i| c.input(i)).collect();
     let x = c.input(16);
@@ -148,11 +148,9 @@ impl Asm {
     /// Run `body` `n` times, in a loop whose bound is computed from `CONST[4].x`, which the
     /// encoder's catalogue and warm-up draws supply as 0 (`kernel/src/gpu/virgl/encode.rs`):
     /// the bound is not known when the program is compiled, so the program carries one
-    /// copy of the body, which a compiler cannot unroll into `n`. On
-    /// Parallels compile time grows with program length (pipeline 8's warm-up step took
-    /// 0.86 to 1.64 s across 124 contexts on a busy host, from uncommitted
-    /// timing diagnostics; historical and unverified under ruling 12), and each compilation is held to
-    /// the 2 s watchdog.
+    /// copy of the body. This reduces the emitted arithmetic without relying on
+    /// historical compile timings from uncommitted diagnostics. The 2 s watchdog
+    /// bounds each fenced request, including any compilation it triggers.
     fn passes(&mut self, n: u32, body: impl FnOnce(&mut Self)) {
         let one = self.k(1);
         let count = self.k(n);
@@ -236,7 +234,7 @@ impl Asm {
     }
 }
 
-fn sampled(pipe: u32) -> (String, u32) {
+pub(super) fn sampled(pipe: u32) -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
     let one = s.k(1);
@@ -411,7 +409,7 @@ fn sampled(pipe: u32) -> (String, u32) {
     s.finish()
 }
 
-fn gradient() -> (String, u32) {
+pub(super) fn gradient() -> (String, u32) {
     let mut c = Code::default();
     let a: Vec<_> = (0..16).map(|i| c.input(i)).collect();
     let y = c.input(17);
@@ -521,7 +519,7 @@ impl Asm {
 /// the vertices rotating between passes. Both are `Code::triangle`'s own helpers, so the
 /// program computes the predicate the probe's routine 23 does; it is about half the
 /// length of one with three edge copies, which on Parallels compiled for 0.43 to 0.75 s.
-fn triangle() -> (String, u32) {
+pub(super) fn triangle() -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
     let one = s.k(1);
@@ -560,7 +558,7 @@ fn triangle() -> (String, u32) {
     s.finish()
 }
 
-fn spans() -> (String, u32) {
+pub(super) fn spans() -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
     let one = s.k(1);
