@@ -54,6 +54,8 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
+// Kernel random-number pool behind getrandom
+pub mod random;
 // Kernel output accounting per thread (docs/gui/breengel.md section 22)
 pub mod output_accounting;
 // Socket module - enabled for both architectures

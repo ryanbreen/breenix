@@ -1309,6 +1309,7 @@ pub fn current_packet_src_mac() -> [u8; 6] {
 /// Process a received Ethernet frame
 /// Source-MAC state is also read from thread context, so its NetRx write is guarded.
 fn process_packet(data: &[u8]) {
+    crate::random::add_event(crate::random::Event::NetRx, data.len() as u64);
     if let Some(frame) = ethernet::EthernetFrame::parse(data) {
         crate::tracing::providers::net_rx::count_frame();
         // Save source MAC so TCP can use it for SYN-ACK routing
