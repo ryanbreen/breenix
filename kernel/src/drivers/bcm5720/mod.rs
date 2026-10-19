@@ -90,6 +90,7 @@ const PCI_CAP_EXPRESS: u8 = 0x10;
 /// (Section 7, "Device Reset Procedure", step 11, p. 147).
 const BOOTCODE_TIMEOUT_MS: u64 = 10_000;
 const LINK_TIMEOUT_MS: u64 = 15_000;
+#[cfg(not(feature = "testing"))]
 const CENSUS_TIMEOUT_MS: u64 = 60_000;
 /// Each attached port's register window, for its interrupt handler, which
 /// takes no lock; 0 until the port's rings are live.
@@ -903,9 +904,10 @@ impl Port {
             now_ms() - self.phy_configured_ms
         );
 
-        // Where the tick census runs (no fw_cfg), it reports the interrupt and
-        // SMP milestones' last stages once boot is idle; this probe's lines
-        // follow them.
+        // Only production starts the tick census. Where it runs (no fw_cfg),
+        // it reports the interrupt and SMP milestones' last stages once boot
+        // is idle; this probe's lines follow them.
+        #[cfg(not(feature = "testing"))]
         if !crate::drivers::fw_cfg::present() {
             let start = now_ms();
             while !crate::arch_impl::x86_64::tick_census::reported()
@@ -951,7 +953,10 @@ impl Port {
             if let Some((interrupts, errors, flags)) = counters {
                 log::info!("[bcm5720] MSI interrupts {interrupts}, receive errors {errors}, last flags {flags:#x}");
             }
-            let _ = crate::net::arp::request(&lease.gateway);
+            match crate::net::arp::request(&lease.gateway) {
+                Ok(()) => log::info!("ARP request sent successfully"),
+                Err(error) => log::warn!("[bcm5720] gateway ARP request failed: {error}"),
+            }
             let _ = crate::net::ping(lease.gateway);
             crate::net::dns_probe::run(lease);
         } else {
@@ -988,7 +993,10 @@ impl Port {
                     connectivity_reported = true;
                     log::info!("[bcm5720] reply received: DHCP server acknowledged the requested lease");
                     log::info!("[dhcp] lease acquired");
-                    let _ = crate::net::arp::request(&lease.gateway);
+                    match crate::net::arp::request(&lease.gateway) {
+                        Ok(()) => log::info!("ARP request sent successfully"),
+                        Err(error) => log::warn!("[bcm5720] gateway ARP request failed: {error}"),
+                    }
                     let _ = crate::net::ping(lease.gateway);
                     crate::net::dns_probe::run(lease);
                 }
