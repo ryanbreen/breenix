@@ -90,6 +90,7 @@ unsafe fn write_bands(target: *mut u8, layout: &Layout, shadow: &[u8], lines: Ra
             // SAFETY: inside the mapping, which holds `layout.bytes()` bytes.
             unsafe {
                 core::ptr::copy_nonoverlapping(shadow[bytes.clone()].as_ptr(), target.add(bytes.start), bytes.len());
+                #[cfg(target_arch = "aarch64")]
                 crate::graphics::firmware_writes::note_range(target.add(bytes.start), bytes.len());
             }
             drawn = true;
