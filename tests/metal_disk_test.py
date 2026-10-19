@@ -80,6 +80,45 @@ class DiskTest(existing.StateTest):
         finally:
             fixture.tearDown()
 
+    def test_multi_suite_disk_intent_boots_first_suite_and_scores_cold_disk(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit = 'suite', 'root', 'b' * 40
+            d.args.suite, d.args.ramdisk = 'smoke,files-io', True
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            (inputs / 'stub.efi').write_bytes(b'stub')
+            existing.m.write_json(inputs / 'build.json', dict(commit=d.args.commit, profile='production', features=[], suite=d.args.suite))
+            definition = inputs / 'definition'
+            for name, contents in {'docs/suites/smoke.json': '{"id":"smoke"}',
+                                   'docs/suites/files-io.json': '{"id":"files-io","diskChecks":[{}]}',
+                                   'scripts/suite-sequence.py': '# scorer', 'scripts/suite-verdict.py': '# verdict',
+                                   'docs/boot-path.json': '{}'}.items():
+                path = definition / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(contents)
+            with patch.object(existing.boot.metal_disk, 'stage', return_value=({}, {})) as stage, \
+                 patch.object(existing.boot.metal_image, 'extract_esp', return_value={}), \
+                 patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')) as assemble:
+                with self.assertRaisesRegex(RuntimeError, 'captured'):
+                    d.prepare_payload()
+            self.assertEqual(assemble.call_args.args[1]['ramdisk'].read_bytes(), b'BREENIX-BOOT 1\nsuite smoke\n')
+            self.assertEqual(stage.call_args.kwargs['suite'], 'smoke,files-io')
+            self.assertEqual((d.dir / 'readback-stub.efi').read_bytes(), b'stub')
+            (d.dir / 'serial.txt').write_text('serial')
+            raw = d.dir / 'raw.img'
+            raw.write_bytes(b'disk')
+            with patch.object(existing.boot.subprocess, 'run', return_value=existing.SimpleNamespace(returncode=0, stdout='pass', stderr='')) as scorer:
+                self.assertTrue(d.score_suite(disk=raw))
+            command = scorer.call_args.args[0]
+            self.assertEqual(command[-6:], ['/run/metal-verdict-input/scripts/suite-sequence.py', 'score', 'smoke,files-io',
+                                           '/run/metal-verdict-input/serial.txt', '--disk', '/run/metal-verdict-input/disk.img'])
+        finally:
+            fixture.tearDown()
+
     def test_pre_mount_fault_replaces_only_the_delivered_bootloader(self):
         fixture = existing.DriverTest()
         fixture.setUp()

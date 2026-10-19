@@ -400,7 +400,7 @@ class Driver:
         if disk == 'root':
             target = self.args.mode
             if target == 'suite':
-                target += ' ' + self.args.suite
+                target += ' ' + suites(self.args)[0]
             elif target == 'console':
                 self.console_intent = 'session' if session(self.args) else 'measure'
                 self.delivery['consoleIntent'] = self.console_intent

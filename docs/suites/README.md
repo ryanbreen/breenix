@@ -231,7 +231,7 @@ firmware, delivery and build time runs the list for one boot's overhead:
 ```bash
 scripts/boot-interactive.sh --mode suite --suite directories,processes,time
 ./run.sh --parallels --suite all
-python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite files-io,directories,memory
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite directories,memory,files-io
 ```
 
 <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and
