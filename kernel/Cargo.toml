@@ -135,6 +135,8 @@ capture_selftest = ["boot_tests"]
 # (scripts/check-critical-path-violations.sh) forbids `panic!`, and rightly:
 # the emitter must not panic, only the thing that summons it may.
 capture_panic_oracle = ["boot_tests"]
+# Targeted post-handoff user-syscall and kernel-thread abort acceptance.
+gpu_fault_acceptance = []
 # Failure-capture PR-7: the deterministic `edge=LOCKUP` oracle. Test profile
 # only, and NOT implied by `boot_tests` -- no gate builds with it. It strands
 # the REAL scheduler guard on a CPU1-pinned kernel thread, with interrupts

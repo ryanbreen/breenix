@@ -413,7 +413,7 @@ pub fn init_qemu() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     panic::initialized();
 }
 
