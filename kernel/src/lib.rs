@@ -54,26 +54,34 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
+// Kernel output accounting per thread (docs/gui/breengel.md section 22)
+pub mod output_accounting;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod net;
 pub mod socket;
+// Suite-mode test controls (syscall 415) and the GPU core (syscall 416): ARM64 only
+// until x86-64 joins the GPU era (docs/gui/gpu.md section 1.6.4).
+#[cfg(target_arch = "aarch64")]
+pub mod gpu;
+#[cfg(target_arch = "aarch64")]
+pub mod test_control;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
 pub mod time;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-pub mod fbcon;
+pub mod console;
+pub mod input;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]
 pub mod platform_config;
-// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+// Graphics module: the ARM64 framebuffer, boot screen and display owners' drawing
+#[cfg(target_arch = "aarch64")]
 pub mod graphics;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
@@ -188,10 +196,6 @@ pub mod macros;
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub mod clock_gettime_test;
-
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-#[allow(dead_code)]
-pub mod terminal_emulator;
 
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 #[allow(dead_code)]

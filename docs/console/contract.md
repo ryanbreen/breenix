@@ -59,8 +59,10 @@ mode 0600.
 
 The kernel log is drawn on tty1 only, under C1's policy: records at INFO and above while tty1 belongs to
 init's session or to no session, then warnings and errors only once a getty or login session holds tty1.
-Serial keeps each record. Records written while another VT is in the foreground go into tty1's grid and
-scrollback and are not drawn over the foreground VT. While the splash is up, records go into tty1's grid, so
+Serial keeps each record. Screen records select the main screen, use the default pen and full-screen
+scrolling, and discard control bytes other than LF (which starts a new line). TTY parser state and drawing
+modes are preserved; an active alternate screen is left so warnings remain visible. Records written while
+another VT is in the foreground go into tty1's grid and scrollback and are not drawn over the foreground VT. While the splash is up, records go into tty1's grid, so
 Shift+PageUp after the hand-over shows the boot log.
 
 ### 1.4 Terminals in the background
@@ -86,10 +88,20 @@ the VT's own size succeeds without effect; with any other size it fails with EIN
 
 ### 1.6 Scrollback
 
-- 1,000 lines per VT, allocated when the VT first receives output. If the allocation fails, the VT runs
-  without scrollback and the kernel logs `[console] ttyN scrollback unavailable` once.
+- 1,000 lines per VT, retaining output from the first output, including interrupt-generated echo.
+  tty1 uses static storage because its boot output begins before the heap exists. The others reserve
+  their history when their screens are initialized, before keyboard input can reach them; allocation
+  runs in thread context. If allocation fails, the VT runs without scrollback and the kernel
+  logs `[console] ttyN scrollback unavailable` once.
+- Once tty2 to tty6 have their screens and scrollback, the kernel logs what they took from the heap,
+  measured, beside the size they add up to, and the heap's high-water mark (plan Q10): `[console]
+  terminals: tty2 to tty6 took <n> KiB of the kernel heap, measured (calculated: ...); heap high-water <n>
+  KiB of <heap size> KiB`. `/proc/meminfo`'s `KernelHeapPeak` gives the high-water mark at any later time.
+- Lines enter the scrollback when they scroll off the top of the main screen: full-screen scrolling, or a
+  scroll region whose top is the screen's first row. Erasing the screen does not move lines into it.
 - **Shift+PageUp** and **Shift+PageDown** move the foreground VT's view back and forward by half a screen
   (`rows / 2`, rounded down): the `Scroll_Backward` and `Scroll_Forward` actions `keymaps(5)` names.
+  `VT_SCROLLVIEW` (section 4.1) moves any VT's view by a number of lines, for programs and the suite.
 - New output does not move a scrolled-back view. A key that sends input to the VT returns the view to the
   live screen. The cursor is not drawn while the view is scrolled back.
 - Each VT's scrollback and view position survive switches.
@@ -120,7 +132,7 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 | 1280x960 | Parallels and VMware defaults | 20 | 9x22 | 142x43 | 2 |
 | 1920x1080 | x86-64 QEMU (`virtio-vga`) | 24 | 11x26 | 174x41 | 3 |
 | 1920x1200 | VMware `--retina` | 24 | 11x26 | 174x46 | 3 |
-| 2560x1600 | Parallels `--retina`, GL QEMU | 32 | 14x34 | 182x47 | 4 |
+| 2560x1600 | Parallels `--retina` | 32 | 14x34 | 182x47 | 4 |
 
 The console enables the font crate's `size_20`, `size_24`, `size_32`, `bold`, `unicode-latin-1-supplement`
 and `unicode-latin-extended-a` features (V1).
@@ -178,15 +190,20 @@ On a pseudo-terminal or any other device they fail with ENOTTY. "The descriptor'
 | `VT_WAITACTIVE` | 0x5607 | value: VT number | Blocks until that VT is active (section 4.5) | ENXIO, EINTR |
 | `KDSETMODE` | 0x4B3A | value: `KD_TEXT` 0 or `KD_GRAPHICS` 1 | Sets the descriptor's VT's KD mode (section 4.3) | EINVAL, EPERM, EBUSY |
 | `KDGETMODE` | 0x4B3B | `int *` | Writes the descriptor's VT's KD mode | EFAULT |
+| `VT_SCROLLVIEW` | 0x56B0 | value: signed line count | Breenix's own: moves the descriptor's VT's view that many lines back (positive) or forward (negative), within its scrollback, and returns how many lines back from the live screen the view then is; 0 only asks | EPERM |
 
 - **Layouts.** `struct vt_mode` is 8 bytes: `mode` (u8, offset 0: `VT_AUTO` 0, `VT_PROCESS` 1), `waitv` (u8,
   offset 1), `relsig` (i16, offset 2), `acqsig` (i16, offset 4), `frsig` (i16, offset 6). `struct vt_stat`
   is 6 bytes: `v_active`, `v_signal`, `v_state` (u16 each, offsets 0, 2, 4). `VT_ACKACQ` is 2.
+  `relsig` and `acqsig` are valid from 1 to 64.
 - **`VT_GETSTATE`:** `v_active` is the foreground VT (during a pending switch, the VT still in the
   foreground); `v_signal` is 0; bit *n* of `v_state` is set while VT *n* is open, and bit 0 is clear. A VT is
-  open while a process holds a descriptor for `/dev/ttyN`, for `/dev/console` (tty1), or for `/dev/tty`
-  resolved to it. Descriptors for `/dev/tty0` and the `vcs` devices do not count.
-- **Permission.** The requests that change state (`VT_SETMODE`, `VT_ACTIVATE`, `KDSETMODE`) need root, or a
+  open while a process holds a descriptor for `/dev/ttyN`, for `/dev/console` (tty1, as are the console
+  standard streams the kernel gives a process it creates), or for `/dev/tty` resolved to it. Descriptors
+  for `/dev/tty0` and the `vcs` devices do not count.
+- **`VT_SCROLLVIEW`** is not in `linux/vt.h`: its number is outside the range that header uses, and its
+  argument is the line count as a signed `long`. A view on the alternate screen does not move.
+- **Permission.** The requests that change state (`VT_SETMODE`, `VT_ACTIVATE`, `KDSETMODE`, `VT_SCROLLVIEW`) need root, or a
   controlling terminal that is a VT; `VT_SETMODE` and `KDSETMODE` without root also need that controlling
   terminal to be the descriptor's VT. Otherwise they fail with EPERM. `VT_RELDISP` is answered only by the
   VT's `VT_PROCESS` owner (EPERM for any other process, root included). The read-only requests and
@@ -214,7 +231,10 @@ boots once the GPU effort's console draws the VTs, the top of the GPU display ow
   to the displayed pixels. Its calls succeed; their effect is not shown. When its VT is acquired again the
   owner's authority returns, the kernel sends `acqsig`, and the owner redraws: the kernel does not restore
   its pixels. On `--gpu-gl` boots the GPU effort implements this suspension of its ownership stack and the
-  restoration of the owner's mode and target (Q8); V4 implements it for the framebuffer path.
+  restoration of the owner's mode and target (Q8); V4 implements it for the framebuffer path. There, an
+  owner's `fb_mmap` mapping is a pane the kernel copies at each flush, not the scanout, so the suspension
+  is of the framebuffer draw and flush requests (`fbdraw`): they return success without drawing, and a
+  switch away waits for any of them already under way before the new VT is drawn.
 - A panic or fatal fault takes the screen regardless of VT state.
 
 ### 4.3 KD mode
@@ -293,6 +313,8 @@ before setting `fg := to`; the pending `from` loses presentation authority if it
   and wake `VT_WAITACTIVE` waiters. An owner's exit resets its mode as in section 4.3; if this makes the
   destination `KD_TEXT`, the resulting redraw must finish too.
 - A held next switch then starts as a new request.
+- **While the boot splash is up**, tty1's screen is the splash's: a switch is recorded at once (`fg := to`),
+  and its acquisition completes with the first frame drawn after the splash gives way (V4).
 
 ### 4.5 `VT_WAITACTIVE`
 
@@ -318,13 +340,19 @@ A cell holds one character from the repertoire, a foreground and a background pa
 attribute bits bold, underline, reverse and invisible. The repertoire is U+0020-U+007E, U+00A0-U+00FF,
 U+0100-U+017F (from the font) and U+2500-U+257F (box drawing, generated geometrically at each cell size by
 Breenix's own code). A malformed UTF-8 sequence and a character outside the repertoire are shown as one cell
-of `?`. Characters are one cell wide.
+of `?`. Characters are one cell wide. U+00A0 draws as a space; U+00AD draws as a hyphen
+in this fixed grid. Erased, inserted and scrolled-in cells are spaces with the current colour pair and no
+attribute flags.
 
 - **Bold** draws the font's bold weight; it does not brighten the colour. **Reverse** swaps the pair as drawn.
   **Invisible** draws the background colour for the glyph. **Underline** fills the cell's first cursor-band
   pixel row in the foreground colour.
 - **The cursor** fills the two cursor-band pixel rows of the cursor cell in the cell's displayed foreground
   colour. It does not blink, so a read-back sees one state.
+- **Antialiasing:** a font sample `a` (0-255) blends the displayed foreground `fg` and background `bg`
+  per channel as `(fg * a + bg * (255 - a) + 127) / 255`, integer division. Box-drawing strokes use
+  binary coverage over the whole cell, including the cursor band, to join adjacent rows. Their arm weights,
+  dash counts, rounded corners and diagonals are the geometry table in `kernel/src/console/boxdraw.rs` (V3).
 
 ### 5.2 Palette
 
@@ -400,6 +428,15 @@ Other parameters are parsed and have no effect.
   character first moves to the start of the next line (scrolling the region at its bottom). A cursor movement
   clears the pending wrap. With autowrap off, characters past the last column overwrite it.
 - Tab stops start at each 8th column. HT moves to the next stop, or to the last column.
+- **Reports** (the DSR answers) are the VT's input, as keys are: they join the VT's keyboard queue behind the
+  keys already in it and go through its line discipline, so in canonical mode an answer becomes part of the
+  line being typed and is read with it (`keys/report-joins-typed-line`). tty1's output also goes to serial,
+  where a terminal could answer the same request. **On tty1 the screen is the one terminal that answers**,
+  because tty1's window size is its grid's: while the render thread runs to deliver answers, the serial copy
+  of tty1's output leaves out each request the screen answered (control characters inside it still go), so
+  a terminal on serial is not asked. Any other escape sequence reaches serial whole and in order, held back
+  only until it ends. A request the screen does not answer, because it came before the render thread ran,
+  its answer did not fit the VT's reply queue, or it was longer than 64 bytes, goes to serial unchanged.
 - Sequences not listed are consumed without effect.
 - Login and init set `TERM=breenix`. A terminfo source entry is added when a curses library arrives.
 
@@ -429,90 +466,120 @@ and that table together.
 
 **Colours.** Field (the screen's background) 15, 20, 35. Badge gradient from 52, 92, 190 (top) to 34, 150, 160
 (bottom). The B 236, 241, 250. Cursor block 70, 200, 120. Wordmark 205, 215, 235. Bar track 40, 50, 75 and
-fill 70, 200, 120. Running dot 230, 170, 60. Dim text and pending-dot outline 110, 120, 145.
+fill 70, 200, 120. Running dot 230, 170, 65. Pending-dot outline 115, 135, 170. Dim text 110, 120, 145.
 
-**Shape kinds.** `rect(x0, y0, x1, y1)` is the half-open box `x0 <= x < x1, y0 <= y < y1`.
-`rrect(x0, y0, x1, y1, r)` is that box less its corners: a point with `x < x0 + r` or `x >= x1 - r`, and
-`y < y0 + r` or `y >= y1 - r`, is inside only within distance `r` of the nearest of the centres `(x0 + r, y0 + r)`,
-`(x1 - r, y0 + r)`, `(x0 + r, y1 - r)` and `(x1 - r, y1 - r)`. `half_annulus(cx, cy, R, r)` is
-`x > cx` and `r² <= (x - cx)² + (y - cy)² <= R²`. `quad(p0, p1, p2, p3)` is the convex quadrilateral with those
-corners in order, its edges included. `disc(cx, cy, r)` is `(x - cx)² + (y - cy)² <= r²`, and `ring(cx, cy, R,
-r)` is `r² <= d² <= R²`.
+**Shape kinds.** Here `rect(x, y, w, h)` uses position and size, as does the crate's table; its closed box is
+`x <= px <= x + w, y <= py <= y + h`. `rrect(x, y, w, h, r)` is that box with rounded corners: clamp the
+point to the inner box `[x+r, x+w-r]` by `[y+r, y+h-r]` and include it when the squared distance to the
+clamped point is at most `r²`. `half_annulus(cx, cy, R, r)` is `px >= cx` and
+`r² <= (px - cx)² + (py - cy)² <= R²`. `quad(p0, p1, p2, p3)` is the convex quadrilateral with those
+corners in order, its edges included. `disc(cx, cy, r)` is `(px - cx)² + (py - cy)² <= r²`, and
+`ring(cx, cy, R, r)` is `r² <= d² <= R²`. Fractional coordinates below are exact: the table stores
+integers in thirds of a design unit.
 
 **The badge** (64 by 64 units, origin at its top-left):
 
 | Layer | Shapes | Colour |
 |---|---|---|
-| Badge | `rrect(0, 0, 64, 64, 12)` | Gradient |
-| B spine | `rect(13, 14, 19, 50)` | B |
-| B upper bowl | `rect(19, 14, 27, 20)`, `rect(19, 28, 27, 34)`, `half_annulus(27, 24, 10, 4)` | B |
-| B lower bowl | `rect(19, 28, 29, 34)`, `rect(19, 44, 29, 50)`, `half_annulus(29, 39, 11, 5)` | B |
-| Cursor | `rect(44, 44, 52, 50)` | Cursor block |
+| Badge | `rrect(0, 0, 64, 64, 13)` | Gradient |
+| B spine | `rect(16, 14, 6, 36)` | B |
+| B upper bowl | `half_annulus(22, 23, 9, 4)` | B |
+| B lower bowl | `half_annulus(22, 39, 11, 5)` | B |
+| Cursor | `rect(38, 45, 13, 5)` | Cursor block |
 
-**The wordmark "BREENIX"** is 119 by 19 units, stroke 3. Letters, each from its own left edge:
+**The wordmark "BREENIX"** has ink bounds x=19..157, y=80..104 in the composition: 138 by 24 units.
+Its ink centre is x=88, on the badge/bar axis. B, R, E and N are 16 units wide; the I is 10 and
+X is 18. Straight stems are 4 units wide. B and R share one upper bowl, using the badge's upper
+bowl radii at two-thirds scale; B's lower bowl likewise uses the scaled badge radii. Straight
+shoulders extend the bowls to the wordmark's proportions. The badge itself retains its geometry.
+Letters below use local coordinates relative to their listed left edge and y=80, in table order:
 
 | Letter | Left | Shapes |
 |---|---|---|
-| B | 0 | `rect(0, 0, 3, 19)`; `rect(3, 0, 7, 3)`, `rect(3, 7, 7, 10)`, `half_annulus(7, 5, 5, 2)`; `rect(3, 16, 7, 19)`, `half_annulus(7, 13, 6, 3)` |
-| R | 20 | `rect(0, 0, 3, 19)`; `rect(3, 0, 7, 3)`, `rect(3, 7, 7, 10)`, `half_annulus(7, 5, 5, 2)`; `quad((6, 10), (9, 10), (13, 19), (10, 19))` |
-| E | 40 | `rect(0, 0, 3, 19)`, `rect(3, 0, 11, 3)`, `rect(3, 8, 9, 11)`, `rect(3, 16, 11, 19)` |
-| E | 58 | as above |
-| N | 76 | `rect(0, 0, 3, 19)`, `rect(10, 0, 13, 19)`, `quad((0, 0), (3, 0), (13, 19), (10, 19))` |
-| I | 96 | `rect(0, 0, 3, 19)` |
-| X | 106 | `quad((0, 0), (3, 0), (13, 19), (10, 19))`, `quad((10, 0), (13, 0), (3, 19), (0, 19))` |
+| B | 19 | `rect(0, 0, 4, 24)`, `rect(0, 0, 26/3, 10/3)`, `half_annulus(26/3, 6, 6, 8/3)`, `rect(0, 26/3, 26/3, 14/3)`, `half_annulus(26/3, 50/3, 22/3, 10/3)`, `rect(0, 20, 26/3, 4)` |
+| R | 42 | `rect(0, 0, 4, 24)`, `rect(0, 0, 26/3, 10/3)`, `half_annulus(26/3, 6, 6, 8/3)`, `rect(0, 26/3, 26/3, 10/3)`, `quad((4, 11), (9, 11), (16, 24), (11, 24))` |
+| E | 64 | `rect(0, 0, 4, 24)`, `rect(0, 0, 16, 4)`, `rect(0, 10, 13, 4)`, `rect(0, 20, 16, 4)` |
+| E | 84 | as above |
+| N | 104 | `rect(0, 0, 4, 24)`, `quad((0, 0), (4, 0), (16, 24), (12, 24))`, `rect(12, 0, 4, 24)` |
+| I | 126 | `rect(3, 0, 4, 24)`, `rect(0, 0, 10, 4)`, `rect(0, 20, 10, 4)` |
+| X | 139 | `quad((0, 0), (5, 0), (18, 24), (13, 24))`, `quad((13, 0), (18, 0), (5, 24), (0, 24))` |
+
+The bounding-box gaps B-R, R-E, E-E, E-N, N-I and I-X are 7, 6, 4, 4, 6 and 3 units.
+These are optical gaps: the bowls recede, E has open sides, I's stem is inset, and X's diagonals
+recede toward its waist. The spacing is judged from the rendered contours rather than a fixed pitch.
 
 ### 6.2 Layout on the screen
 
-In pixels, with `W` by `H` the framebuffer, `cx = floor(W / 2)` and `top = floor(2 * H / 5) - 32k` (the badge's
-centre at 40% of the height):
+The crate draws a 176 by 136 unit composition. In pixels, with `W` by `H` the framebuffer,
+`cx = floor(W / 2)` and `top = floor(2 * H / 5) - 32k` (the badge's centre at 40% of the height),
+pass composition origin `(left, top) = (cx - 88k, top)` to `render`. Positions below are relative to that
+origin unless given as screen coordinates:
 
 | Element | Position and size |
 |---|---|
-| Badge | left `cx - 32k`, top `top` |
-| Wordmark | left `cx - floor(119k / 2)`, top `top + 78k` |
-| Progress bar | the wordmark's left, top `top + 113k`, 119 by 6 units: track `rrect(0, 0, 119, 6, 3)` |
-| Milestone dots | six, centre x `bar_left + floor(119k * (2i + 1) / 12)` for `i` 0 to 5, centre y `top + 130k`, radius `3k` |
-| Stage name | console font size `S`, dim, centred on `cx`, top `top + 141k` |
-| Boot mode, status | console font size `S`, dim, centred on `cx`, tops `H - 3(S + 2)` and `H - 2(S + 2)` |
+| Badge | `(56k, 0)`, 64 by 64 units |
+| Wordmark | local letter coordinates from 6.1, top `80k` |
+| Progress bar | `(0, 114k)`, 176 by 4 units: track `rrect(0, 114, 176, 4, 2)` |
+| Milestone dots | centre x `k * [3, 37, 71, 105, 139, 173][i]`, centre y `130k`, radius `3k` |
+| Stage name | console font size `S`, dim, centred on screen `cx`, screen top `top + 141k` |
+| Boot mode, status | console font size `S`, dim, centred on screen `cx`, tops `H - 3(S + 2)` and `H - 2(S + 2)` |
 
-- **The bar's fill** has the track's coverage on pixels left of `bar_left + floor(119k * reached / total)` and
-  0 coverage from that pixel on: a hard pixel edge, without antialiasing at the fill's right end. `reached` and `total` count the kernel stages of
-  the six milestones below.
+- **The bar's fill** has width `f = floor(176 * min(reached, total) / total)` design units; total 0 gives
+  width 0. When `f > 0`, draw `rrect(0, 114, f, 4, min(floor(f / 2), 2))` in green over the track.
+  Both layers have antialiased rounded edges. Width is quantized in design units before scaling by `k`.
+  `reached` and `total` count the kernel stages of the six milestones below.
 - **The dots** are the boot path's milestones `arch-bringup`, `interrupts-time`, `devices`, `filesystems`,
   `scheduler` and `first-userspace`, over their arch's stage lists in `docs/boot-path.json`, less stages
   printed after PID 1 starts. A dot is a fill `disc` in the fill colour when each of its stages is reached,
-  in the running colour while some are, and a `ring(…, 3k, 2k)` in the dim colour while no stage of it is.
+  in the running colour while some are, and a `ring(…, 3k, 2k)` in the pending colour while no stage of it is.
 - **The stage name** is the latest stage reached. The boot-mode line reads `Boot mode: <mode>` and the status
-  line names the next step, as today's boot screen does.
+  line names the next step, as today's boot screen does. Text is outside the crate's composition.
+- **The stages counted (V2b).** ARM64 counts the 25 kernel stages of those milestones in
+  `docs/boot-path.json` that the kernel reaches before PID 1 (each but `User work ran on every online
+  CPU`), and `Starting PID 1` for `first-userspace`: 26 in all, by dot 4, 5, 4, 5, 7 and 1. The four
+  `devices` stages are the device-class stages `kernel/src/drivers/device_class.rs` reports. x86-64's lists
+  are long and mostly in-kernel tests, so it counts 13 catalog stages that `main.rs` reaches at the
+  milestones' boundaries: `Kernel entry point`, `Serial port initialized`, `GDT and IDT initialized`,
+  `Kernel heap initialized`; `Interrupt controller initialized`, `Timer initialized`; `PCI bus
+  enumerated`, `Network stack initialized`; `procfs initialized`; `Threading subsystem ready`, `Process
+  management ready`, `Kernel initialization complete`; and `Starting PID 1`, when the production kernel
+  launches its first process. A testing kernel's last stage is labelled `Starting test programs`.
+  claim-lint:ok: the one 'every' above is inside a stage name quoted from docs/boot-path.json.
 - **The cursor block blinks:** drawn during the first 500 ms of each second since the splash was first
-  drawn, and not drawn (the badge shows) in the second 500 ms.
+  drawn, and not drawn (the badge shows) in the second 500 ms; held lit after boot hand-over.
 
 ### 6.3 Rasterization
 
 Each pixel `(px, py)` of a shape's layer has a coverage `c` from 0 to 16: the number of its 16 sample points
 inside the layer's shapes (a point inside any of them counts once). The sample points are at
-`((8(px - left) + 2i + 1) / 8k, (8(py - top) + 2j + 1) / 8k)` in units, for `i` and `j` from 0 to 3. No
-sample point lies exactly on a rectangle edge or an arc, so only quadrilateral edges need the "edges
-included" rule.
+`((8(px - left) + 2i + 1) / (8k), (8(py - top) + 2j + 1) / (8k))` in composition units,
+for `i` and `j` from 0 to 3. Shape boundaries are included as specified in 6.1.
 
-- **Blending:** each layer is blended over what is beneath it, in the order field, badge, B and cursor,
-  wordmark, bar track, bar fill, dots, text, per channel: `out = (src * c + under * (16 - c) + 8) / 16`,
-  integer division.
-- **The gradient's colour on a badge pixel row** `row` (0 at the badge's top pixel, `64k` rows in the badge) is
-  `top_c + ((bottom_c - top_c) * (2 * row + 1)) / (128k)` per channel, with integer division that discards the
-  fraction (Rust's `/` on signed integers).
+- **Layer grouping and order:** enumerate badge, badge B, wordmark, visible cursor, track, nonempty fill,
+  and dots left to right. Adjacent shapes with the same resolved RGB colour on the current pixel row
+  form one layer, with unioned sample coverage. A colour change ends the layer; a later occurrence of
+  the same colour starts another layer. Table order is part of the specification.
+- **Blending:** start with the field and blend layers in that order, per channel:
+  `out = (src * c + under * (16 - c) + 8) / 16`, integer division. Text is drawn afterwards.
+- **The gradient's colour on a badge pixel row** `row` (0 at the badge's top pixel) uses
+  `d = 64k - 1` and `t = clamp(row, 0, d)`. Per channel the colour is
+  `(top_c * (d - t) + bottom_c * t + floor(d / 2)) / d`, integer division. This rounds to nearest and
+  includes both endpoint colours at rows 0 and `64k - 1`.
 - Text is drawn from the font's glyphs as the console draws them.
-- **Pixel formats:** RGB or BGR order, 3 or 4 bytes per pixel; the fourth byte is written 0.
-- Pixels outside the framebuffer are clipped.
+- **Pixel formats:** RGB or BGR order, 3 or 4 bytes per pixel; the fourth byte is written 255 (opaque).
+- Pixels outside the framebuffer are clipped. The renderer writes the composition rectangle, including
+  its field pixels, and leaves pixels outside it and row padding untouched. The caller fills the rest
+  of the screen with the field colour.
 
 ### 6.4 The oracle
 
 `expected_at(px, py, state)` returns the exact colour of a pixel of the logo block from this section alone: it
 evaluates the 16 sample points of each layer by the shape inequalities, with no code shared with the
-rasterizer's scanline filler, and blends as above. `state` carries the stage mask and the cursor's blink
-phase. The geometry table and the colour formulas are the specification both sides share; the rasterization
-code is not. Because coverage is defined exactly, the oracle covers antialiased edges and the wordmark as well
-as interiors.
+rasterizer's scanline filler, and blends as above. `state` is the crate's `Frame`: completed/total stage
+counts, six milestone states and the cursor's blink phase. The oracle takes local composition pixel
+coordinates and scale `k`; V2b maps stage masks to this frame. The geometry table and the colour formulas
+are the specification both sides share; the rasterization code is not. Because coverage is defined exactly,
+the oracle covers antialiased edges and the wordmark as well as interiors.
 
 ---
 
@@ -538,7 +605,14 @@ show as reached when it is first drawn.
 - **Init issues `KDSETMODE(KD_TEXT)` on tty1 in `default` mode only**, immediately before it prints
   `[init] Boot script completed`. In `shell` and `console` modes it does not; the `reader` trigger hands
   over.
-- A testing kernel (`tests` mode) keeps the splash until the backstop or the end of the run.
+- A testing kernel (`tests` mode) keeps the splash until the backstop or the end of the run: there the
+  `reader`, `kd-text` and `key` triggers have no effect.
+- **The two read-backs (V2b).** The boot thread makes the first once the screen shows the whole shadow,
+  preserving that sample when the render thread takes over. The second is made on the first boot or
+  render pass where the stages reached, the bar's width and
+  the cursor's phase each differ from the first's. When a trigger arrives after the bar has moved but
+  before the second read-back, the hand-over waits up to 520 ms (half a blink and a pass) so it can still
+  be made; it does not wait otherwise.
 
 **Markers** (V2b lands the exact strings with its code and the stage catalog, replacing the stub in
 `docs/boot-path.json`):
@@ -574,8 +648,13 @@ the backstop does not pass.
   it read after, and fails when the backing read is not the bound resource's or the flush had not completed.
   Marker lines on those boots say `backing after flush`.
 - **A switch logs** `[console] foreground ttyN (<source>)` (`key alt-f2`, `key ctrl-alt-f2`, `ioctl`, or
-  `chvt`), then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
-  the shadow's SHA-256>` or `[console] ttyN shown: read back differs: <first mismatch>` (fatal). **A switch
+  `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
+  then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
+  the shadow's SHA-256>; <ms> ms after the switch` or `[console] ttyN shown: read back differs: <first
+  mismatch>; <ms> ms after the switch` (fatal). When a display owner or graphics mode takes ttyN's screen
+  before the check reads it, the check compares no pixels and the verdict is `[console] ttyN shown: not read back:
+  display ownership changed; <ms> ms after the switch`, which is not a difference. The time runs from the moment ttyN became the foreground
+  to the verdict (plan Q25); `vt-switch/switch-readback` requires it under that case's 2000 ms. **A switch
   does not log screen contents:** terminals can show secrets, and serial and boot logs are retained.
 - **`/proc/console/check`** (root only, mode 0400) is how a case or a metal script reads the screen. Reading it
   runs the check on the foreground VT and returns:
@@ -616,6 +695,14 @@ binding's key have no effect, and the release of a consumed press is consumed to
   no shortcut from an application.
 - The foreground VT owns the keyboard: its line discipline gets the bytes, Ctrl+C signals its foreground
   process group, and Caps Lock state is kept per VT.
+- **Choices this table leaves open (V5).** Alt+Left and Alt+Right act only without Ctrl, and Shift+PageUp and
+  Shift+PageDown only without Ctrl or Alt; with them, those keys send their bytes (section 5.5), Alt first
+  adding `ESC`. A repeat of a key delivered as input sends its bytes again. A key that acts, the splash's
+  ending press included, sends no bytes. Num Lock is one state for the console, off at boot: with it off the
+  keypad's digit keys send the navigation key each is labelled with (keypad 5 sends no bytes), with it on
+  their digits. Scroll Lock toggles only its LED. A key's switch is requested by the render thread, not in the
+  interrupt that reported it; a second switch key before that request is made replaces the first, and Alt+Left
+  and Alt+Right count from the terminal the first named.
 
 ### 9.2 Grabs
 
@@ -624,7 +711,9 @@ consumer, except the reserved chords above. **A grab is effective only while the
 foreground:** when its VT is released, the input core sends the grab holder releases for each key it holds
 and delivers it no further events until its VT is acquired again, when the grab resumes with pressed state reset;
 meanwhile key events go to the console consumer for the foreground VT. V5 builds the routing point in the
-input core's first slice; the grab itself, and the case that measures the reserved chords under it
+input core's first slice (`kernel/src/input/mod.rs`): it marks an event reserved when it is a Ctrl+Alt+F1..F12
+press, or a repeat or release of such a press whatever modifiers are held by then, and the console acts on
+that mark. The grab itself, and the case that measures the reserved chords under it
 (`window-manager/input-core/grab`), belong to the window-manager effort.
 
 ---
@@ -640,6 +729,11 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   ```text
   SUITE console HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...]
   ```
+
+  `libbreenix::suite::hostkeys(chords)` emits the record and returns its sequence;
+  `hostkey_method()` exposes the declaration. The helper rejects an absent method
+  or a chord containing a declared missing key. Sequence ranges are reserved in
+  the parent before each case forks, and `--hostkeys` is retained across a suite sequence.
 
   `seq` increases across the run, so a launcher that sees a line twice (a serial replay) injects it once. A
   chord is modifiers and one key joined by `-`: modifiers `ctrl`, `alt`, `shift`, `super` (left keys) and
@@ -662,6 +756,29 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   `host key seq=<n> not received within <ms> ms (<method>)` when the effect does not arrive in time. A case
   waits on its effect (usually `VT_WAITACTIVE` in a child bounded by `case_ms_left()`), then reads back.
 
+### V6 backend findings
+
+Parallels 27.0.3 accepts the basic `prlctl send-key-event` codes. The earlier
+probe reported letters and Alt+Fn reaching the guest, but those boots predate
+V6's final HOSTKEY record format and do not validate the final watcher.
+Extended codes remain declared in `missing=`; a case requiring one fails.
+The VNC fallback was tried on a disposable VM configuration: `prlctl set`
+with `--vnc-mode manual --vnc-address 127.0.0.1 --vnc-port 5997` returned
+`Unrecognized option: --vnc-mode`. The configuration was deleted without booting.
+This does not establish a Parallels VNC key path; #1791 tracks the missing
+extended-key route without changing target expectations.
+
+**VMware spike (Q5):** the earlier Fusion probe reported an RFB handshake,
+framebuffer updates and accepted key events after enabling the built-in VNC
+server, but no observed guest key effect. The guest reported
+`XHCI command IRQ unavailable`. This is transport evidence only, predates the
+final HOSTKEY format, and is not a successful VMware keyboard self-test.
+V7 must repair the guest keyboard and rerun the host-key self-test during the
+catch-up before VMware key coverage can pass. Without the opt-in VNC port,
+the launcher declares no path and cases fail `no host key path`.
+The VNC server is unauthenticated; its exposure must be resolved before using
+it outside an isolated test environment.
+
 ---
 
 ## 11. Userspace
@@ -673,8 +790,16 @@ case reads its effect back in the guest. The host key is the input; the in-guest
 - **`init console`** starts a getty on each VT, tty1 through `/dev/console`, each respawned independently with
   C4's rate limit. **`init shell`** keeps bsh on tty1 and starts no process on tty2 to tty6, so `VT_OPENQRY`
   answers 2. **`init` (default mode)** issues `KDSETMODE(KD_TEXT)` on tty1 as section 7 says.
-- The `getty` cases log in with a per-run account the suite writes into `/etc/shadow` on its own disposable
-  disk copy (random password, C4's SHA-512-crypt), and remove it afterwards. No image ships a known password.
+- The `getty` cases replace `/etc/passwd` and root's `/etc/shadow` entry on their disposable
+  disk copy with per-run random SHA-512-crypt credentials and `/sbin/suite-console` as root's
+  session-witness shell. They restore the original files (or absence) on normal completion.
+  A deadline kill prevents `Drop` restoration: the retained writable image can still contain
+  these credentials. HOSTKEY records disclose the password in the retained serial log; treat
+  that image and log together as disposable test artifacts; do not use the image as an installed system.
+  No distributed image ships a known password.
+- `getty/logout-reacquires` and `getty/independent-sessions` each have a named 30-second
+  allowance: two logins require about 39 host keys and two SHA-512-crypt verifications;
+  logout also waits for init's one-second respawn delay. Other cases keep the default limit.
 
 ---
 
@@ -691,13 +816,20 @@ milestone's measure, built by the lane named here:
 | `chvt`, `getty` | `chvt-getty` | V4u |
 | `keys` | `keyboard` | V5, with V6's host keys and, on Parallels and VMware, V7's USB keyboard |
 
+`keys/alt-left-right-wrap` and `keys/shift-pageup` remain scored on Parallels and
+fail while its extended-key host path is absent (#1791). Resolving that path or
+obtaining an explicit target-scope ruling is required; V6 does not reduce these
+expectations to make this target green.
+
 - **Until its layer exists, a case fails naming it:** `missing <layer> (<lane>): <what the kernel answered>`.
   The suite asks the kernel each time: `/proc/console/check` for the screen layers, and `VT_GETSTATE` on
   `/dev/console` for the terminal layers. Once the kernel answers, a case whose check has not been written yet
   fails saying so. No case skips. A lane writes a case's check from this contract in its own commit, before
   the implementation it measures.
-- **The suite takes the display only after its last case** (Q17), so its cases run on the console itself. That
+- **The suite takes the display only after its last case** (Q17), so its cases run on the console itself.
+  That
   is the `Suite::defer_display()` runner option, supplied by D0 and enabled by the console skeleton. The runner
   neither takes nor maps the display and draws no panel during cases; it opens the display for the final panel
-  after the last case. Other suites keep their live panels.
+  after the last case. Before the first case it ends the splash with `KDSETMODE(KD_TEXT)` on tty1 and waits
+  until `/proc/console/check` no longer reports the splash (V2b). Other suites keep their live panels.
 - The suite is `timingSensitive`: its cases wait on switches and on host keys.

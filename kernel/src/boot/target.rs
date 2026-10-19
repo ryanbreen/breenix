@@ -40,6 +40,7 @@ pub fn suite_path(id: &str) -> String {
 pub struct SuiteTarget {
     pub id: String,
     pub case: Option<String>,
+    pub hostkeys: Option<String>,
 }
 
 impl SuiteTarget {
@@ -54,7 +55,7 @@ impl SuiteTarget {
                 return Err(format!("{:?} is not a case-id token", name));
             }
         }
-        Ok(Self { id, case })
+        Ok(Self { id, case, hostkeys: None })
     }
 }
 
@@ -81,6 +82,18 @@ pub fn parse(text: &str) -> Result<Target, String> {
         return Ok(Target::Probe);
     }
     // Single spaces only, as the runner writes: a tab or a doubled space is refused.
+    if let Some((selection, value)) = line.rsplit_once(" hostkeys ") {
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-;,=".contains(&b)) {
+            return Err(String::from("invalid hostkeys declaration"));
+        }
+        return match parse(selection)? {
+            Target::Suite(mut suite) if suite.hostkeys.is_none() => {
+                suite.hostkeys = Some(String::from(value));
+                Ok(Target::Suite(suite))
+            }
+            _ => Err(String::from("hostkeys needs one suite declaration")),
+        };
+    }
     let words: alloc::vec::Vec<&str> = line.trim().split(' ').collect();
     match words.as_slice() {
         ["console", "replug"] => Ok(Target::Console { idle_minutes: 30, replug: true }),

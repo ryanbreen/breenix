@@ -145,6 +145,20 @@ impl Font {
         }
     }
 
+    /// Geometry only for GPU text: flattened segments and their bitmap bounds.
+    /// This does not allocate or calculate coverage pixels.
+    pub fn glyph_segments(&self, glyph_index:u16, pixel_size:f32) -> Result<(usize,usize,alloc::vec::Vec<outline::LineSegment>),String> {
+        if !(1.0..=1024.0).contains(&pixel_size) {return Err(alloc::string::String::from("invalid pixel size"));}
+        let scale=pixel_size/self.head.units_per_em as f32;
+        let loca=LocaTable::new(self.loca_data(),self.index_to_loc_format);
+        let Some(offset)=loca.glyph_offset(glyph_index) else {return Ok((0,0,alloc::vec::Vec::new()));};
+        let glyph=self.resolve_glyph(offset)?;
+        let x_min=glyph.x_min as f32*scale;let x_max=glyph.x_max as f32*scale;
+        let y_min=glyph.y_min as f32*scale;let y_max=glyph.y_max as f32*scale;
+        let width=ceil(x_max-x_min) as usize+2;let height=ceil(y_max-y_min) as usize+2;
+        Ok((width,height,flatten_glyph(&glyph,scale,-floor(x_min),ceil(y_max))))
+    }
+
     /// Rasterize a single glyph at the given pixel size.
     pub fn rasterize_glyph(
         &self,

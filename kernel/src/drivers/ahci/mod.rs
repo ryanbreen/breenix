@@ -3072,6 +3072,7 @@ pub fn init() -> Result<usize, &'static str> {
 
     *AHCI_CONTROLLER.lock() = Some(controller);
     AHCI_INITIALIZED.store(true, Ordering::Release);
+    crate::drivers::device_class::storage_initialized("ahci", sata_device_count());
 
     #[cfg(target_arch = "x86_64")]
     for index in 0..sata_count {
@@ -3210,6 +3211,10 @@ pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
     }
 
     let controller = AhciController::init_from_mmio(abar_phys)?;
+    crate::drivers::device_class::found(
+        crate::drivers::device_class::Class::Storage,
+        format_args!("platform AHCI controller at {:#x}", abar_phys),
+    );
 
     let sata_count = controller
         .ports
@@ -3219,6 +3224,7 @@ pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
 
     *AHCI_CONTROLLER.lock() = Some(controller);
     AHCI_INITIALIZED.store(true, Ordering::Release);
+    crate::drivers::device_class::storage_initialized("ahci", sata_device_count());
 
     Ok(sata_count)
 }

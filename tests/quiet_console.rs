@@ -132,14 +132,45 @@ impl std::fmt::Display for Level {
     }
 }
 #[allow(dead_code)]
-#[path = "../kernel/src/fbcon/grid.rs"]
+#[path = "../kernel/src/console/grid.rs"]
 mod grid;
-static GRID: std::sync::Mutex<grid::Grid> = std::sync::Mutex::new(grid::Grid::new());
-fn with_grid<R>(f: impl FnOnce(&mut grid::Grid) -> R) -> Option<R> {
+#[allow(dead_code)]
+#[path = "../kernel/src/console/raster.rs"]
+mod raster;
+#[allow(dead_code)]
+#[path = "../kernel/src/console/boxdraw.rs"]
+mod boxdraw;
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct Console {
+    vts: [vt::Vt; 1],
+    kernel_line_open: bool,
+}
+mod vt {
+    pub struct Vt {
+        pub grid: super::grid::Grid,
+        pub replies: Replies,
+    }
+    pub struct Replies;
+    impl Replies {
+        pub fn push(&mut self, _: &[u8]) -> bool {
+            true
+        }
+    }
+    pub fn ensure_history(_: usize) {}
+}
+static GRID: std::sync::Mutex<Console> = std::sync::Mutex::new(Console {
+    vts: [vt::Vt {
+        grid: grid::Grid::new(),
+        replies: vt::Replies,
+    }],
+    kernel_line_open: false,
+});
+fn with_grid<R>(f: impl FnOnce(&mut Console) -> R) -> Option<R> {
     Some(f(&mut GRID.lock().unwrap()))
 }
 #[allow(dead_code)]
-#[path = "../kernel/src/fbcon/records.rs"]
+#[path = "../kernel/src/console/records.rs"]
 mod records;
 
 #[test]
@@ -179,11 +210,19 @@ fn input_preparation_and_thread_allocation_failures_still_schedule_init_once() {
 
 #[test]
 fn login_prompt_survives_usb_records_and_periodic_and_immediate_census() {
-    with_grid(|g| g.set_size(100, 8));
+    with_grid(|console| {
+        let g = &mut console.vts[0].grid;
+        g.set_storage(vec![grid::BLANK; 800].leak(), vec![grid::BLANK; 800].leak());
+        g.set_size(100, 8)
+    });
     records::log_record(Level::Info, &format_args!("boot console"));
     records::console_session(true);
-    records::write_tty(b"Breenix login: ");
-    let before = with_grid(|g| (g.generation(), g.cursor())).unwrap();
+    records::write_tty(b"Breenix login: ", |_| {});
+    let before = with_grid(|console| {
+        let g = &mut console.vts[0].grid;
+        (g.generation(), g.cursor())
+    })
+    .unwrap();
     for message in [
         "[usb] boot keyboard attached: port=2",
         "[usb] boot keyboard detached: port=2",
@@ -205,10 +244,23 @@ fn login_prompt_survives_usb_records_and_periodic_and_immediate_census() {
     assert!(periodic.contains("DISPATCH_STRAND_CENSUS:seq=2:"));
     assert!(periodic.contains(":saved=1:stranded=1:tids=7:"));
     assert!(periodic.contains(":waiting=0]"));
-    assert_eq!(with_grid(|g| (g.generation(), g.cursor())).unwrap(), before);
-    let screen = with_grid(|g| {
+    assert_eq!(
+        with_grid(|console| {
+            let g = &mut console.vts[0].grid;
+            (g.generation(), g.cursor())
+        })
+        .unwrap(),
+        before
+    );
+    let screen = with_grid(|console| {
+        let g = &mut console.vts[0].grid;
         (0..g.rows())
-            .map(|r| String::from_utf8_lossy(g.row(r)).into_owned())
+            .map(|r| {
+                g.row(r)
+                    .iter()
+                    .map(|cell| cell.character())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     })
@@ -221,12 +273,30 @@ fn login_prompt_survives_usb_records_and_periodic_and_immediate_census() {
         .unwrap()
         .contains("DISPATCH_STRAND_CENSUS"));
     records::log_record(Level::Warn, &format_args!("input unavailable"));
-    records::write_tty(b"root");
-    assert!(with_grid(|g| g.generation()).unwrap() > before.0);
+    records::write_tty(b"root", |_| {});
+    assert!(
+        with_grid(|console| {
+            let g = &mut console.vts[0].grid;
+            g.generation()
+        })
+        .unwrap()
+            > before.0
+    );
     records::console_session(false);
-    let before = with_grid(|g| g.generation()).unwrap();
+    let before = with_grid(|console| {
+        let g = &mut console.vts[0].grid;
+        g.generation()
+    })
+    .unwrap();
     records::log_record(Level::Info, &format_args!("session ended"));
-    assert!(with_grid(|g| g.generation()).unwrap() > before);
+    assert!(
+        with_grid(|console| {
+            let g = &mut console.vts[0].grid;
+            g.generation()
+        })
+        .unwrap()
+            > before
+    );
 }
 
 // Source guards tie the host doubles to hardware-only producers and sinks.
@@ -302,7 +372,16 @@ fn real_usb_levels_and_census_sinks_match_host_inputs() {
     let snapshot = body(&census, "fn snapshot(deferred: bool)");
     assert!(snapshot.contains("crate::serial::enqueue_log(args)"));
     assert!(snapshot.contains("crate::serial::_log_print(args)"));
-    for sink in ["log::", "fbcon::", "tty::", "serial::_print(", "serial_print!"] {
-        assert!(!snapshot.contains(sink), "census enters console sink {sink}");
+    for sink in [
+        "log::",
+        "console::",
+        "tty::",
+        "serial::_print(",
+        "serial_print!",
+    ] {
+        assert!(
+            !snapshot.contains(sink),
+            "census enters console sink {sink}"
+        );
     }
 }

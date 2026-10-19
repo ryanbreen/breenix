@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod phys_memory;
 pub mod uefi_time;
 
 /// High-half direct-map base used by the ARM64 loader and kernel.
@@ -8,9 +9,9 @@ pub const HHDM_BASE: u64 = 0xffff_0000_0000_0000;
 pub const LINKED_RAM_START: u64 = 0x4000_0000;
 /// The loader remaps this 512 MiB interval; the rest of L1[1] is device space.
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
-/// HardwareConfig version carrying the loader's RAM relocation offset and the
-/// firmware's enabled-CPU count.
-pub const HARDWARE_CONFIG_VERSION: u32 = 4;
+/// HardwareConfig v5 carries only final-map conventional memory as free RAM.
+/// Earlier versions included boot-services memory before loader allocations.
+pub const HARDWARE_CONFIG_VERSION: u32 = 5;
 
 /// Firmware ranges that must remain identity mapped for physical-mode runtime
 /// services after ExitBootServices. They are excluded from usable RAM.

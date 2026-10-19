@@ -1,0 +1,10 @@
+[package]
+name = "breenix-logo"
+version = "0.1.0"
+edition = "2021"
+description = "Original Breenix splash geometry and integer rasterizer"
+
+[workspace]
+
+[lib]
+doctest = false

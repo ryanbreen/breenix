@@ -46,6 +46,11 @@ static AVAILABLE: AtomicBool = AtomicBool::new(false);
 static FAILED: AtomicBool = AtomicBool::new(false);
 static CONSOLE_READY: crate::task::completion::Completion = crate::task::completion::Completion::new();
 
+/// A thread-context request: the console's lock state changed without a
+/// keyboard report (a switch to a terminal with other locks), so the worker
+/// sends attached keyboards their LEDs (`keyboard::sync_leds`).
+static LEDS: AtomicBool = AtomicBool::new(false);
+
 /// Prepare input before init starts getty. Only measured boot targets request
 /// the destructive replug exercise; ordinary sessions only arm input markers.
 pub fn console_session_starting(replug: bool) {
@@ -54,8 +59,17 @@ pub fn console_session_starting(replug: bool) {
         return;
     }
     REPLUG.store(replug, Ordering::Relaxed);
+    request(&CONSOLE_START);
+}
+
+/// The foreground terminal changed: its lock state is what keyboards show.
+pub fn lock_state_changed() {
+    request(&LEDS);
+}
+
+fn request(flag: &AtomicBool) {
     // Store, then read the waiter: the worker publishes, then checks the flag.
-    CONSOLE_START.store(true, Ordering::SeqCst);
+    flag.store(true, Ordering::SeqCst);
     let tid = WORK.waiter();
     if tid != 0 {
         scheduler::wake_waitqueue_thread(tid);
@@ -288,7 +302,7 @@ struct Controller {
     protocols: Vec<Protocol>,
     devices: Vec<Device>,
     console: crate::drivers::hid_boot::Console,
-    /// Absolute console lock state, shared across keyboard pipes and reattach.
+    /// The LED state last sent to the keyboards: the console's lock state.
     keyboard_leds: u8,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
@@ -732,7 +746,7 @@ impl Controller {
     /// `requests` is set, a thread-context request arrives (false).
     fn wait_work(&self, deadline: Option<u64>, requests: bool) -> Result<bool, &'static str> {
         let tid = scheduler::current_thread_id().ok_or("worker has no thread identity")?;
-        let requested = || requests && CONSOLE_START.load(Ordering::SeqCst);
+        let requested = || requests && (CONSOLE_START.load(Ordering::SeqCst) || LEDS.load(Ordering::SeqCst));
         loop {
             WORK.publish(tid);
             if WORK.take() {

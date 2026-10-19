@@ -1391,12 +1391,12 @@ fn sys_exec_aarch64(
 
     // The new image's credentials are decided before its stack is built, so
     // the auxiliary vector reports them; the commit refuses if they change.
-    let (current_pid, image_cred) = {
+    let (current_pid, image_cred, old_gpu_owner) = {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
-            if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+            if let Some((pid, row)) = manager.find_process_by_thread(current_thread_id) {
                 match manager.credentials_after_exec(pid, image_identity) {
-                    Some(cred) => (pid, cred),
+                    Some(cred) => (pid, cred, row.thread_group_id.unwrap_or(pid.as_u64())),
                     None => return (-3_i64) as u64, // -ESRCH
                 }
             } else {
@@ -1580,6 +1580,11 @@ fn sys_exec_aarch64(
             break result;
         }
     };
+
+    // The new image holds no GPU handles (docs/gui/gpu.md section 1.16); with no lock held.
+    if result == 0 {
+        crate::gpu::owner_ended(old_gpu_owner);
+    }
 
     // The exec lock-order counters are only live after an exec has actually run. This is the only
     // site on the aarch64 boot path where a gate can observe `commits >= 1`; it sits OUTSIDE the

@@ -4339,8 +4339,12 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
 /// would arrive here as a new row.
 #[rustfmt::skip]
 const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
+    // GPU ABI Counters.state is the u64 LIVE/WARMING/QUARANTINED/RESET
+    // context-state output, not thread state (#1909, S27).
+    ("kernel/src/gpu/mod.rs", "fn op_counters", 1),
     // A TCP socket's own state machine (`TcpSockState`), returned to Bound or
-    // Unbound by `connect(AF_UNSPEC)`; no thread is involved.
+    // Unbound by `connect(AF_UNSPEC)`; no thread is involved. The socket's guard
+    // receiver is opaque to the local struct-field resolver.
     ("kernel/src/socket/tcp.rs", "impl TcpSock::fn disconnect", 1),
     // The #647 departure probe restores the state it snapshotted rather than
     // naming a variant, so its restore is an opaque store by construction. It is
@@ -4351,7 +4355,6 @@ const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
     // The core-proof departure probe restores the state it snapshotted, for the
     // same reason and in the same shape as the gate above.
     ("kernel/src/task/scheduler.rs", "#[cfg(feature=coreproof)] fn block_current_coreproof_probe", 1),
-    ("kernel/src/syscall/random.rs", "impl Xorshift64Star::fn next_u64", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
 ];
@@ -5026,10 +5029,39 @@ fn validate_blocked_state_publication_family(
 /// Path-valued stores (`conn.state = TcpState::Established`,
 /// `self.state = ProcessState::Running`) are excluded by construction rather
 /// than by naming the modules they live in.
+/// Resolve `self.state` through its enclosing impl and the struct's written
+/// field type. Unknown receivers remain in the census (fail closed); a known
+/// type counts as ThreadState only when that field's written type is
+/// `ThreadState`, not because the field is named `state`.
+fn known_non_thread_state_field(source: &str, mask: &[bool], offset: usize) -> bool {
+    let Some(dot) = previous_code(source, mask, offset) else { return false; };
+    if preceding_identifier(source, mask, dot).as_deref() != Some("self") {
+        return false;
+    }
+    let spans = item_spans(source, mask);
+    let Some((_, _, implementation)) = spans.iter()
+        .filter(|(open, close, name)| *open < offset && offset < *close && name.starts_with("impl "))
+        .min_by_key(|(open, close, _)| close - open) else { return false; };
+    let Some(name) = implementation.strip_prefix("impl ") else { return false; };
+    let Some((_, fields)) = struct_item_header_and_body(source, name) else { return false; };
+    let fields_mask = code_mask(fields);
+    for field in identifier_offsets(fields, &fields_mask, "state") {
+        let Some(colon) = next_code(fields, &fields_mask, field + 5) else { continue; };
+        if fields.as_bytes()[colon] != b':' { continue; }
+        let Some(start) = next_code(fields, &fields_mask, colon + 1) else { continue; };
+        let end = fields[start..].find([',', '}']).map_or(fields.len(), |n| start + n);
+        let ty = normalized_code(&fields[start..end]);
+        return !thread_state_spellings(source, mask).iter().any(|spelling|
+            ty == *spelling || ty.ends_with(&format!("::{spelling}")));
+    }
+    false
+}
+
 fn opaque_thread_state_store_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
     let bytes = source.as_bytes();
     assignment_offsets(source, mask, "state")
         .into_iter()
+        .filter(|offset| !known_non_thread_state_field(source, mask, *offset))
         .filter(|offset| {
             // A field store, not a local binding: `receiver.state = …`. The
             // receiver spelling is free, and a range expression (`..state`) is
@@ -18531,4 +18563,14 @@ fn exit_kick_scaled_fixture_legs_remain_present() {
     ] {
         assert!(anchor.contains(leg), "missing C5 leg: {leg}");
     }
+}
+
+#[test]
+fn console_cursor_state_is_not_scheduler_thread_state() {
+    let sources = rust_sources_below("kernel/src");
+    let fixture = with_synthetic_source(&sources, "kernel/src/synthetic_console_state.rs",
+        "struct State { row: usize } struct Grid { state: State, main: State } \
+         impl Grid { fn alternate_screen(&mut self) { self.state = self.main; } \
+         fn reset(&mut self) { self.state = State { row: 0 }; } }");
+    assert!(validate_opaque_thread_state_stores(&fixture).is_ok());
 }

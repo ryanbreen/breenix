@@ -6,8 +6,12 @@
 Copies SOURCE (libs/libbreenix) to VENDOR/libbreenix-<version>/ with a normalized
 manifest: the `suite` feature, its optional `libgfx` path dependency and the module
 behind it are dropped, and so is the crate's own `[workspace]` table, so the package
-resolves offline from the SDK alone. Writes the `.cargo-checksum.json` cargo needs to
-use the directory as a source. Python 3.9 standard library only.
+resolves offline from the SDK alone. Every other dependency must be an in-tree path
+crate (gpu-abi, the syscall 416 layouts libbreenix shares with the kernel): each is
+vendored the same way as VENDOR/<name>-<version>/, with its own path dependencies, and
+the depending manifest names it by that exact version instead of its path. A registry
+dependency stops the build. Writes the `.cargo-checksum.json` cargo needs to use each
+directory as a source. Python 3.9 standard library only.
 """
 import hashlib
 import json
@@ -35,22 +39,45 @@ def sections(text):
     return out
 
 
-def normalize_manifest(text):
+def package_field(manifest, field):
+    """A `[package]` string field of a manifest."""
+    for header, lines in sections(manifest):
+        if header == '[package]':
+            for line in lines:
+                match = re.match(r'^\s*' + field + r'\s*=\s*"([^"]+)"', line)
+                if match:
+                    return match.group(1)
+    raise SystemExit(f'rust-vendor: a manifest has no [package] {field}')
+
+
+def normalize_manifest(text, source, vendor, dropped):
+    """The manifest with `[workspace]` and comments removed, `dropped` features and
+    dependencies removed, and each path dependency vendored and named by version."""
     kept = []
     for header, lines in sections(text):
         if header == '[workspace]':
             continue
-        if header == '[features]':
-            lines = [l for l in lines if l.split('=')[0].strip() not in DROPPED_FEATURES]
-        if header == '[dependencies]':
-            names = {l.split('=')[0].strip() for l in lines if '=' in l and not l.lstrip().startswith('#')}
-            if names - DROPPED_DEPENDENCIES:
-                raise SystemExit('rust-vendor: libbreenix gained dependencies the SDK cannot vendor: '
-                                 + ', '.join(sorted(names - DROPPED_DEPENDENCIES)))
-            continue
         lines = [l for l in lines if not l.lstrip().startswith('#')]
+        if header == '[features]':
+            lines = [l for l in lines if l.split('=')[0].strip() not in dropped]
+        if header == '[dependencies]':
+            deps = []
+            for line in lines:
+                if '=' not in line:
+                    continue
+                name = line.split('=')[0].strip()
+                if name in dropped:
+                    continue
+                path = re.search(r'\bpath\s*=\s*"([^"]+)"', line)
+                if not path:
+                    raise SystemExit(f'rust-vendor: {name} is not an in-tree path crate, so the SDK cannot vendor it')
+                version = vendor_crate(source / path.group(1), vendor)
+                deps.append(line[:path.start()] + f'version = "={version}"' + line[path.end():])
+            lines = deps
         while lines and not lines[-1].strip():
             lines.pop()
+        if not lines and header == '[dependencies]':
+            continue
         if header is None:
             kept.append('\n'.join(lines))
         else:
@@ -73,35 +100,42 @@ def strip_dropped_modules(lib_rs):
     return ''.join(out)
 
 
-def main():
-    if len(sys.argv) != 3:
-        raise SystemExit('usage: rust-vendor.py SOURCE VENDOR')
-    source, vendor = Path(sys.argv[1]), Path(sys.argv[2])
+def vendor_crate(source, vendor, root=False):
+    """Copy the crate at `source` to VENDOR/<name>-<version>/; returns its version. The
+    root crate (libbreenix) loses the dropped features, dependencies and files."""
+    source = source.resolve()
     manifest = (source / 'Cargo.toml').read_text()
-    version = re.search(r'^version\s*=\s*"([^"]+)"', manifest, re.MULTILINE).group(1)
-    dest = vendor / f'libbreenix-{version}'
+    name, version = package_field(manifest, 'name'), package_field(manifest, 'version')
+    dest = vendor / f'{name}-{version}'
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
+    dropped = (DROPPED_FEATURES | DROPPED_DEPENDENCIES) if root else set()
     files = sorted(p for p in (source / 'src').rglob('*') if p.is_file())
     for path in files:
         rel = path.relative_to(source).as_posix()
-        if rel in DROPPED_FILES:
+        if root and rel in DROPPED_FILES:
             continue
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         data = path.read_bytes()
-        if rel == 'src/lib.rs':
+        if root and rel == 'src/lib.rs':
             data = strip_dropped_modules(data.decode()).encode()
         target.write_bytes(data)
-    (dest / 'Cargo.toml').write_text(normalize_manifest(manifest))
+    (dest / 'Cargo.toml').write_text(normalize_manifest(manifest, source, vendor, dropped))
     checksums = {}
     for path in sorted(p for p in dest.rglob('*') if p.is_file()):
         checksums[path.relative_to(dest).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     # A directory source with no .crate file has no package checksum.
     (dest / '.cargo-checksum.json').write_text(json.dumps({'files': checksums, 'package': None},
                                                           sort_keys=True, separators=(',', ':')))
-    print(version)
+    return version
+
+
+def main():
+    if len(sys.argv) != 3:
+        raise SystemExit('usage: rust-vendor.py SOURCE VENDOR')
+    print(vendor_crate(Path(sys.argv[1]), Path(sys.argv[2]), root=True))
 
 
 if __name__ == '__main__':

@@ -409,6 +409,7 @@ STD_BINARIES=(
     # Services
     "init"
     "getty"
+    "chvt"
     "login"
     "probe"
 
@@ -430,7 +431,9 @@ STD_BINARIES=(
     "suite-utilities"
     "suite-sdk"
     "suite-gpu"
+    "gpu-exec-probe"
     "suite-console"
+    "console-login-shell"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"

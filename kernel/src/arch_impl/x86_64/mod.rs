@@ -29,6 +29,7 @@ pub mod irq;
 pub mod msi;
 mod msi_message;
 pub mod nmi_report;
+pub mod pagewalk;
 pub mod paging;
 pub mod pat;
 pub mod platform;

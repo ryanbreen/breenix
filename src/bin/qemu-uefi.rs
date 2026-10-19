@@ -188,6 +188,10 @@ fn main() {
         }
     }
 
+    if env::var("BREENIX_BOOT_SUITE").is_ok_and(|id| !id.is_empty()) {
+        qemu.args(["-fw_cfg", "name=opt/breenix/hostkeys,string=qmp"]);
+    }
+
     // Attach test binaries disk (second disk, index 1)
     // Attach the test disk when using the virtio storage configuration.
     if storage_mode == "virtio" {

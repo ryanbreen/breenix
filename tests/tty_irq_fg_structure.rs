@@ -388,13 +388,15 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
         .copied()
         .filter(|name| name.ends_with("_nonblock"))
         .collect();
-    if roots.len() < 6 {
-        return Err(format!(
-            "driver.rs declares {} interrupt-context entries (names ending in _nonblock); this \
-             rule was written against 6 and a census that shrank below 6 is a rule that stopped \
-             looking",
-            roots.len()
-        ));
+    const REQUIRED: [&str; 8] = [
+        "input_char_nonblock", "input_char_from_nonblock", "input_char_source_nonblock",
+        "output_char_nonblock", "send_signal_to_foreground_nonblock",
+        "queue_foreground_signal_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
+    ];
+    for name in REQUIRED {
+        if !roots.contains(&name) {
+            return Err(format!("driver.rs no longer declares {name}, a required interrupt-context entry"));
+        }
     }
     if !roots.contains(&"input_char_nonblock") {
         return Err(
@@ -409,6 +411,20 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
              signal path #822 is about"
                 .to_string(),
         );
+    }
+
+    let send = function_body(driver, "send_signal_to_foreground_nonblock")
+        .ok_or("missing foreground signal entry")?;
+    let enqueue = function_body(driver, "queue_foreground_signal_nonblock")
+        .ok_or("missing foreground atomic queue")?;
+    if !normalized_code(send).replace(' ', "").contains("queue_foreground_signal_nonblock(pgrp,sig)")
+        || !normalized_code(enqueue).replace(' ', "").contains("FG_SIGNAL_QUEUE.iter()")
+        || !normalized_code(enqueue).replace(' ', "").contains("compare_exchange(0,entry,")
+        || normalized_code(enqueue).replace(' ', "").contains(".lock()")
+        || normalized_code(enqueue).replace(' ', "").contains(".try_lock()")
+        || !normalized_code(driver).replace(' ', "").contains("FG_SIGNAL_QUEUE:[AtomicU64;FG_SIGNAL_SLOTS]")
+    {
+        return Err("foreground IRQ delivery must enqueue through the atomic group queue without a lock".into());
     }
 
     let mut queue: Vec<&str> = roots.clone();
@@ -1009,27 +1025,16 @@ fn deliberately_broken_copies_redden_the_rules() {
         "leg K reddened for the wrong reason: {error}"
     );
 
-    // Leg L -- a root renamed out of the `_nonblock` convention leaves the
-    // census. Measured against the unmutated census rather than a fixed count,
-    // so the rename is detected however many roots driver.rs declares; one
-    // root fewer is one interrupt entry that stopped being swept.
+    // Leg L -- losing any named IRQ root must fail the validator itself.
     let census_shrank = replace_once(
         &driver,
         "    fn wake_blocked_readers_nonblock() {",
         "    fn wake_blocked_readers_from_irq() {",
     );
     assert_ne!(census_shrank, driver, "leg L's mutation must apply");
-    let roots = |source: &str| {
-        function_spans(source)
-            .iter()
-            .filter(|span| span.name.ends_with("_nonblock"))
-            .count()
-    };
-    assert_eq!(
-        roots(&census_shrank),
-        roots(&driver) - 1,
-        "leg L: renaming one root out of the convention has to shrink the census by exactly one"
-    );
+    let error = validate_irq_entry_takes_no_foreground_pgrp_lock(&census_shrank)
+        .expect_err("leg L: renaming a required IRQ root must fail validation");
+    assert!(error.contains("no longer declares wake_blocked_readers_nonblock"), "{error}");
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
     // path. This is the call the round's review found still live at that hop,
