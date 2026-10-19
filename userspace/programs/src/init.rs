@@ -1,6 +1,6 @@
 //! Breenix init process (/sbin/init) - std version
 //!
-//! PID 1 - runs bsh as the init shell, then starts background services and reaps zombies.
+//! PID 1 - starts services and boot checks, then the desktop on ARM64 or gettys on x86.
 //! Init confers the init-shell role by passing `--init-shell`; no PID value is part of that
 //! contract.
 
@@ -98,8 +98,8 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
-    // The kernel passes a boot mode as argv[1] (`shell` or `desktop`); no argument is the
-    // full boot below.
+    // Explicit shell, console and desktop modes bypass the full startup below.
+    // No argument or `default` keeps the services and boot checks.
     match std::env::args().nth(1).as_deref() {
         Some("shell") => run_shell_mode(),
         Some("console") => run_console_mode(),
@@ -228,8 +228,15 @@ fn run_shell_mode() -> ! {
     }
 }
 
-/// Release init's terminal before starting an independent login session.
+/// Explicit console mode skips the default boot script and boot checks.
 fn run_console_mode() -> ! {
+    #[cfg(target_arch = "x86_64")]
+    console_text_mode();
+    run_console_gettys()
+}
+
+/// Release init's terminal before starting an independent login session.
+fn run_console_gettys() -> ! {
     use libbreenix::signal::{self, Sigaction};
     extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
     let ignored = Sigaction { handler: signal::SIG_IGN, ..Sigaction::default() };
@@ -241,8 +248,6 @@ fn run_console_mode() -> ! {
         print!("[init] console detach failed\n");
         reap_forever();
     }
-    console_text_mode();
-    print!("[init] Boot script completed\n");
     let mut children = [None; 6];
     let mut retry_at = [0i128; 6];
     loop {
@@ -285,8 +290,8 @@ fn run_console_mode() -> ! {
     }
 }
 
-/// `init desktop`: the window manager and a terminal window, then reap. No oracles or
-/// smoke tests.
+/// `init desktop`: ARM64 starts the desktop; x86 falls back to console gettys.
+/// Neither explicit mode runs boot checks.
 #[cfg(target_arch = "x86_64")]
 fn run_desktop_mode() -> ! {
     print!("Desktop mode requires a GPU; using the framebuffer console.\n");
@@ -619,8 +624,35 @@ fn run_boot_script() {
         return;
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
+    let path = b"/bin/bsh\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arg0 = b"bsh\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arg1 = b"--init-shell\0";
+    #[cfg(not(target_arch = "aarch64"))]
+    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
+    #[cfg(not(target_arch = "aarch64"))]
+    match spawnv(path, argv.as_ptr()) {
+        Ok(child_pid) => {
+            let child_raw = child_pid.raw() as i32;
+            let mut status: i32 = 0;
+            match waitpid(child_raw, &mut status as *mut i32, 0) {
+                Ok(_) if libbreenix::process::wifexited(status)
+                    && libbreenix::process::wexitstatus(status) == 0 => {
+                    console_text_mode();
+                    print!("[init] Boot script completed\n");
+                }
+                Ok(_) => print!("[init] Boot script failed with status {}\n", status),
+                Err(e) => print!("[init] Boot script reap failed: {}\n", e),
+            }
+        }
+        Err(e) => {
+            print!("[init] Failed to spawn boot script: {}\n", e);
+        }
+    }
     #[cfg(target_arch = "x86_64")]
-    run_console_mode();
+    run_console_gettys();
 }
 
 #[cfg(target_arch = "aarch64")]
