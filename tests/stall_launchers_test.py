@@ -67,9 +67,12 @@ signal.signal(signal.SIGTERM,stop)
 serial.write_text('[clock] UTC epoch=%d source=UEFI\\n'%time.time()+sys.argv[3])
 while True:time.sleep(.1)
 '''
-                text = 'SUITE smoke START cases=5\n' + ''.join(
-                    f'SUITE smoke CASE {case} PASS ms=1\n' for case in cases)
+                owners = 'user_stacks=17 user_pages=300 page_tables=13 page_cache=0 kernel_stacks=40 buffers=8 other=2 receipts=0 settle_ms=100'
+                text = (f'SUITE smoke START cases=5\nSUITE smoke MEMORY before free=1000 heap_free_kb=500 {owners}\n'
+                        + ''.join(f'SUITE smoke CASE {case} PASS ms=1\n' for case in cases))
                 text += 'SUITE smoke DONE passed=5 failed=0 skipped=0 total=5\n'
+                text += (f'SUITE smoke MEMORY after free=990 heap_free_kb=496 {owners}\n'
+                         'SUITE smoke MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n')
                 started = time.time()
                 guest = subprocess.Popen([sys.executable, '-c', guest_code, str(serial), str(stopped), text])
                 controller = out / 'vmrun'

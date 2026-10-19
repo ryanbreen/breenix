@@ -58,8 +58,13 @@ class ScoreTests(unittest.TestCase):
 
     @staticmethod
     def passing(suite):
-        return (f"SUITE {suite} START cases=2\nSUITE {suite} CASE case/one PASS ms=1\nSUITE {suite} CASE case/two PASS ms=1\n"
-                f"SUITE {suite} DONE passed=2 failed=0 skipped=0 total=2\nSUITE_SEQUENCE READY {suite}\n")
+        owners = "user_stacks=17 user_pages=300 page_tables=13 page_cache=0 kernel_stacks=40 buffers=8 other=2 receipts=0 settle_ms=100"
+        return (f"SUITE {suite} START cases=2\nSUITE {suite} MEMORY before free=1000 heap_free_kb=500 {owners}\n"
+                f"SUITE {suite} CASE case/one PASS ms=1\nSUITE {suite} CASE case/two PASS ms=1\n"
+                f"SUITE {suite} DONE passed=2 failed=0 skipped=0 total=2\n"
+                f"SUITE {suite} MEMORY after free=990 heap_free_kb=496 {owners}\n"
+                f"SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n"
+                f"SUITE_SEQUENCE READY {suite}\n")
 
     def test_each_suite_is_scored_from_its_own_part_of_the_serial(self):
         serial = ("SUITE_SEQUENCE BEGIN suites=a,b,c,d,e baseline=9\n" + self.passing("a")

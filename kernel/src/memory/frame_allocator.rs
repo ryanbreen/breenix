@@ -5,9 +5,10 @@ mod contiguous;
 use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
+use core::panic::Location;
 #[cfg(feature = "testing")]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
@@ -89,6 +90,9 @@ const STATE_MASK: u32 = 0b11;
 struct FrameLedgerSlot {
     allocation: AtomicU32,
     leaf_refs: AtomicU32,
+    /// The allocation site of the current generation (`FRAME_SITES` index + 1),
+    /// or 0 when unknown: frames allocated before the ledger, or a full table.
+    site: AtomicU16,
 }
 
 impl FrameLedgerSlot {
@@ -96,6 +100,7 @@ impl FrameLedgerSlot {
         Self {
             allocation: AtomicU32::new(allocation),
             leaf_refs: AtomicU32::new(0),
+            site: AtomicU16::new(0),
         }
     }
 
@@ -185,6 +190,41 @@ impl FrameLedger {
 
 static FRAME_LEDGER: spin::Once<FrameLedger> = spin::Once::new();
 static FREE_FRAME_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+
+/// The code that allocated each frame: one entry per caller location of the
+/// allocation functions (`#[track_caller]`), so the census in
+/// `/proc/breenix/frames` can name the code that owns an allocated frame.
+const FRAME_SITE_SLOTS: usize = 256;
+static FRAME_SITES: [AtomicPtr<Location<'static>>; FRAME_SITE_SLOTS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; FRAME_SITE_SLOTS];
+
+/// The site number of `location`, entered in `FRAME_SITES` on first use; 0
+/// when the table is full. Lock-free, so any allocation context may call it.
+fn frame_site(location: &'static Location<'static>) -> u16 {
+    let wanted = location as *const Location<'static> as *mut Location<'static>;
+    let mut index = ((wanted as usize as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize;
+    for _ in 0..FRAME_SITE_SLOTS {
+        let entry = &FRAME_SITES[index];
+        let current = entry.load(Ordering::Acquire);
+        if current == wanted {
+            return index as u16 + 1;
+        }
+        if current.is_null() {
+            match entry.compare_exchange(
+                core::ptr::null_mut(),
+                wanted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return index as u16 + 1,
+                Err(other) if other == wanted => return index as u16 + 1,
+                Err(_) => {}
+            }
+        }
+        index = (index + 1) % FRAME_SITE_SLOTS;
+    }
+    0
+}
 const BOOTSTRAP_FREE_CAPACITY: usize = 64;
 
 struct BootstrapFreeFrames {
@@ -248,26 +288,24 @@ static EXTERNAL_LEAF_SPANS: Mutex<[ExternalLeafSpan; MAX_EXTERNAL_LEAF_SPANS]> =
 /// refuse at the exact boundary rather than reallocating.
 static FREE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
 
-/// x86_64: the logical CPU holding `FREE_FRAMES` through `with_free_frames`,
-/// or `usize::MAX`.
-#[cfg(target_arch = "x86_64")]
+/// The logical CPU holding `FREE_FRAMES` through `with_free_frames`, or
+/// `usize::MAX`.
 static FREE_FRAMES_OWNER: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// x86_64: run `f` on the free list. A holder on another CPU is waited for;
-/// `f` gets `None` only when this CPU already holds it, which happens when the
+/// Run `f` on the free list. A holder on another CPU is waited for; `f` is
+/// handed the list unless this CPU already holds it, which happens when the
 /// capacity reservation below grows the heap and the heap allocates a frame.
 ///
-/// The list used to be try-locked everywhere. With one CPU a busy lock could
-/// only mean such nesting, and the fallbacks fit it: an allocation took the
-/// next frame past the frontier, a return was dropped. With several CPUs it
-/// is usually held by another CPU for a push or a pop, and every frame
-/// returned while it was held was lost: free in the ledger, on no list.
-/// Interrupts are masked for the hold, so no holder is ever interrupted or
-/// switched out with it held.
-#[cfg(target_arch = "x86_64")]
+/// The list used to be try-locked. With one CPU a busy lock could only mean
+/// such nesting, and the fallbacks fit it: an allocation took the next frame
+/// past the frontier, a return was dropped. With several CPUs it is usually
+/// held by another CPU for a push or a pop, and a frame returned while it was
+/// held was lost: free in the ledger but missing from the list. Interrupts are
+/// masked for the hold, so a holder is not interrupted or switched out with it
+/// held.
 fn with_free_frames<R>(f: impl FnOnce(Option<&mut Vec<PhysFrame>>) -> R) -> R {
     crate::arch_without_interrupts(|| {
-        let me = crate::per_cpu::cpu_id();
+        let me = crate::task::scheduler::current_cpu();
         loop {
             if let Some(mut free_list) = FREE_FRAMES.try_lock() {
                 FREE_FRAMES_OWNER.store(me, Ordering::Relaxed);
@@ -432,6 +470,23 @@ pub(crate) fn register_external_leaf_frame(frame: PhysFrame) -> Result<(), &'sta
     } else {
         Err("external leaf frame is outside allocator memory")
     }
+}
+
+/// Return a frame `register_external_leaf_frame` marked. Its owner calls this
+/// once the process page tables that mapped the frame are gone: a table drops
+/// an external leaf's mapping without returning the frame.
+pub(crate) fn release_external_leaf_frame(frame: PhysFrame) -> ReturnOutcome {
+    let Some(slot) = frame_ordinal(frame).and_then(|index| FRAME_LEDGER.get()?.get(index)) else {
+        return counted(ReturnOutcome::RefusedUntracked);
+    };
+    if slot
+        .leaf_refs
+        .compare_exchange(LEAF_EXTERNAL, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return counted(ReturnOutcome::RefusedLiveLeaf);
+    }
+    return_lease(current_lease_for_frame(frame))
 }
 
 /// Register a kernel/device-owned physical span before it is exposed through a
@@ -686,17 +741,7 @@ fn ensure_free_frame_capacity(required: usize) -> PrepareFrame {
         FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
         PrepareFrame::Ready
     };
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let Some(mut free_list) = FREE_FRAMES.try_lock() else {
-            return PrepareFrame::Contended;
-        };
-        reserve(&mut free_list)
-    }
+    with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
 }
 
 fn prepare_frame_for_allocation(index: usize) -> PrepareFrame {
@@ -895,21 +940,8 @@ fn allocate_candidate() -> Option<PhysFrame> {
     }
 
     // Try to reuse a frame from the free list (all architectures).
-    #[cfg(target_arch = "x86_64")]
     if let Some(frame) = with_free_frames(|free_list| free_list.and_then(|list| list.pop())) {
         return Some(frame);
-    }
-    // Uses try_lock() to avoid deadlock if called from interrupt context.
-    #[cfg(not(target_arch = "x86_64"))]
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        if let Some(frame) = free_list.pop() {
-            log::trace!(
-                "Frame allocator: Reused frame {:#x} from free list ({} remaining)",
-                frame.start_address().as_u64(),
-                free_list.len()
-            );
-            return Some(frame);
-        }
     }
 
     // Fall back to sequential allocation from memory map
@@ -922,6 +954,7 @@ enum ClaimError {
     Untracked,
 }
 
+#[track_caller]
 fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
     let Some(ledger) = FRAME_LEDGER.get() else {
         return Ok(None);
@@ -949,6 +982,8 @@ fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
                     .compare_exchange(observed, allocated, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
+                    slot.site
+                        .store(frame_site(Location::caller()), Ordering::Relaxed);
                     return Ok(Some(FrameLease {
                         frame,
                         index: index as u32,
@@ -968,6 +1003,7 @@ fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
     }
 }
 
+#[track_caller]
 fn allocate_claimed() -> Option<(PhysFrame, Option<FrameLease>)> {
     loop {
         let frame = allocate_candidate()?;
@@ -978,6 +1014,7 @@ fn allocate_claimed() -> Option<(PhysFrame, Option<FrameLease>)> {
     }
 }
 
+#[track_caller]
 pub fn allocate_frame() -> Option<PhysFrame> {
     allocate_claimed().map(|(frame, _)| frame)
 }
@@ -997,6 +1034,7 @@ pub fn allocate_frame() -> Option<PhysFrame> {
 ///
 /// Fail-closed: returns `None` rather than a run that is not contiguous. A
 /// caller that cannot get real contiguity must fail its own initialization.
+#[track_caller]
 pub fn allocate_contiguous_frames(
     count: usize,
     out: &mut [Option<PhysFrame>],
@@ -1011,6 +1049,9 @@ pub fn allocate_contiguous_frames(
         return None;
     }
 
+    // The claim runs in a closure, where `#[track_caller]` stops: record the
+    // caller as each frame's site after its claim.
+    let site = frame_site(Location::caller());
     contiguous::allocate(
         count,
         out,
@@ -1018,9 +1059,22 @@ pub fn allocate_contiguous_frames(
         BootInfoFrameAllocator::get_usable_frame,
         |frame| frame.start_address().as_u64(),
         prepare_contiguous_run,
-        |frame| claim_frame(frame).is_ok(),
+        |frame| {
+            let claimed = claim_frame(frame).is_ok();
+            if claimed {
+                set_frame_site(frame, site);
+            }
+            claimed
+        },
         deallocate_frame,
     )
+}
+
+/// Record `site` as the allocation site of `frame`'s current generation.
+fn set_frame_site(frame: PhysFrame, site: u16) {
+    if let Some(slot) = frame_ordinal(frame).and_then(|index| FRAME_LEDGER.get()?.get(index)) {
+        slot.site.store(site, Ordering::Relaxed);
+    }
 }
 
 /// Prepare ledger and free-list capacity for every ordinal in a contiguous run.
@@ -1047,6 +1101,7 @@ fn prepare_contiguous_run(base: usize, run: usize) -> bool {
     true
 }
 
+#[track_caller]
 pub(crate) fn allocate_frame_leased() -> Option<FrameLease> {
     assert!(FRAME_LEDGER.get().is_some(), "frame ledger not initialized");
     allocate_claimed().and_then(|(_, lease)| lease)
@@ -1128,18 +1183,9 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         free_list.push(lease.frame);
         ReturnOutcome::Returned
     };
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|free_list| {
-            free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
-        })
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        push(&mut free_list)
-    } else {
-        counted(ReturnOutcome::LostContended)
-    }
+    with_free_frames(|free_list| {
+        free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
+    })
 }
 
 fn current_lease_for_frame(frame: PhysFrame) -> FrameLease {
@@ -1248,10 +1294,231 @@ pub fn memory_stats() -> MemoryStats {
     }
 }
 
+/// What holds an allocated frame, for the census's `owner` rows: the owners a
+/// suite's memory record breaks its frames down by (docs/suites/README.md,
+/// "Memory record").
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FrameOwner {
+    /// A process's stack pages, as exec and process creation map them.
+    UserStacks = 1,
+    /// Other pages mapped into processes: program, heap, anonymous and shared
+    /// memory, copy-on-write copies.
+    UserPages,
+    /// Page-table frames, a process's and the kernel's.
+    PageTables,
+    /// File pages the per-inode cache holds (`memory::file_map`).
+    PageCache,
+    /// Kernel and per-CPU stacks.
+    KernelStacks,
+    /// Device and DMA buffers, and the display's.
+    Buffers,
+    /// Everything else, the kernel heap's growth among it.
+    Other,
+}
+
+impl FrameOwner {
+    const ALL: [FrameOwner; 7] = [
+        FrameOwner::UserStacks,
+        FrameOwner::UserPages,
+        FrameOwner::PageTables,
+        FrameOwner::PageCache,
+        FrameOwner::KernelStacks,
+        FrameOwner::Buffers,
+        FrameOwner::Other,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            FrameOwner::UserStacks => "user_stacks",
+            FrameOwner::UserPages => "user_pages",
+            FrameOwner::PageTables => "page_tables",
+            FrameOwner::PageCache => "page_cache",
+            FrameOwner::KernelStacks => "kernel_stacks",
+            FrameOwner::Buffers => "buffers",
+            FrameOwner::Other => "other",
+        }
+    }
+
+    /// The owner of a frame allocated at `file` (as `short_source_path` names
+    /// it) that a process page table maps (`mapped`) or does not. A site
+    /// `allocate_frame_for` tagged is that owner instead.
+    fn of_site(file: &str, mapped: bool) -> FrameOwner {
+        const STACKS: [&str; 3] = ["memory/kernel_stack.rs", "memory/per_cpu_stack.rs", "memory/stack.rs"];
+        const BUFFERS: [&str; 4] = ["drivers/", "gpu/", "console/", "syscall/graphics.rs"];
+        const TABLES: [&str; 3] = ["memory/process_memory.rs", "memory/kernel_page_table.rs", "/structures/paging/"];
+        const USER: [&str; 7] = [
+            "memory/anon_map.rs", "elf.rs", "process/fork.rs", "process/manager.rs", "syscall/memory",
+            "ipc/shmem/", "interrupts.rs",
+        ];
+        if file == "memory/file_map.rs" {
+            FrameOwner::PageCache
+        } else if STACKS.contains(&file) {
+            FrameOwner::KernelStacks
+        } else if BUFFERS.iter().any(|prefix| file.starts_with(prefix)) {
+            FrameOwner::Buffers
+        } else if mapped {
+            FrameOwner::UserPages
+        } else if TABLES.iter().any(|part| file.contains(part)) {
+            FrameOwner::PageTables
+        } else if USER.iter().any(|part| file.contains(part)) {
+            FrameOwner::UserPages
+        } else {
+            FrameOwner::Other
+        }
+    }
+}
+
+/// The owner `allocate_frame_for` gave each site (`FRAME_SITES` index), or 0.
+static FRAME_SITE_OWNERS: [AtomicU8; FRAME_SITE_SLOTS] =
+    [const { AtomicU8::new(0) }; FRAME_SITE_SLOTS];
+
+/// `allocate_frame`, recording what the caller's frames are for where the
+/// census cannot tell it from the caller's source file.
+#[track_caller]
+pub fn allocate_frame_for(owner: FrameOwner) -> Option<PhysFrame> {
+    if let Some(slot) = (frame_site(Location::caller()) as usize).checked_sub(1) {
+        FRAME_SITE_OWNERS[slot].store(owner as u8, Ordering::Relaxed);
+    }
+    allocate_frame()
+}
+
+/// Allocated frames by the code that allocated them and by owner, and frames
+/// lost to the allocator, read from the ledger (`/proc/breenix/frames`).
+///
+/// `used` is what `/proc/meminfo` counts as in use: the frames the sequential
+/// allocator has handed out, less those on the free list. It is `allocated`
+/// plus `lost`, frames the ledger records as free that no free list holds (a
+/// return that found the list locked or full). The walk is not atomic against
+/// concurrent allocation, so the parts can disagree by the frames allocated or
+/// returned while it ran.
+pub fn frame_census() -> Result<alloc::string::String, i32> {
+    use core::fmt::Write;
+    const ENOMEM: i32 = -12;
+
+    let Some(ledger) = FRAME_LEDGER.get() else {
+        return Ok(alloc::string::String::from("ledger 0\n"));
+    };
+    // Per site (index 0 = unknown): frames, of which mapped by a process page
+    // table (owned leaf references) and registered external leaves.
+    let mut frames: Vec<[usize; 3]> = Vec::new();
+    frames
+        .try_reserve_exact(FRAME_SITE_SLOTS + 1)
+        .map_err(|_| ENOMEM)?;
+    frames.resize(FRAME_SITE_SLOTS + 1, [0; 3]);
+    // Per site, the owner of its frames that no process page table maps and
+    // of those one does, as `FrameOwner` discriminants.
+    let mut site_owners = [[FrameOwner::Other as u8; 2]; FRAME_SITE_SLOTS + 1];
+    for (slot, owners) in site_owners.iter_mut().enumerate().skip(1) {
+        let location = FRAME_SITES[slot - 1].load(Ordering::Acquire);
+        // SAFETY: entries are only ever set to `&'static Location`s.
+        let file = unsafe { location.as_ref() }.map_or("unknown", |location| short_source_path(location.file()));
+        let tagged = FRAME_SITE_OWNERS[slot - 1].load(Ordering::Relaxed);
+        for (mapped, owner) in owners.iter_mut().enumerate() {
+            *owner = if tagged != 0 { tagged } else { FrameOwner::of_site(file, mapped == 1) as u8 };
+        }
+    }
+    let mut by_owner = [0usize; FrameOwner::ALL.len() + 1];
+    let (mut allocated, mut free) = (0usize, 0usize);
+    for chunk in ledger.chunks.iter().filter_map(spin::Once::get) {
+        for slot in chunk.iter() {
+            match slot.load(Ordering::Relaxed) & STATE_MASK {
+                ST_ALLOCATED => {
+                    allocated += 1;
+                    let index = slot.site.load(Ordering::Relaxed) as usize;
+                    let site = &mut frames[index];
+                    site[0] += 1;
+                    let refs = slot.leaf_refs.load(Ordering::Relaxed);
+                    match refs {
+                        0 => {}
+                        LEAF_EXTERNAL => site[2] += 1,
+                        _ => site[1] += 1,
+                    }
+                    by_owner[site_owners[index][usize::from(refs != 0)] as usize] += 1;
+                }
+                ST_FREE => free += 1,
+                _ => {}
+            }
+        }
+    }
+    let free_list = memory_stats().free_list_frames;
+    let frontier = NEXT_FREE_FRAME.load(Ordering::Relaxed);
+
+    // One row per source location; a location's statics may be duplicated
+    // across codegen units, so rows merge by file and line.
+    let mut rows: Vec<(&'static str, u32, [usize; 3])> = Vec::new();
+    rows.try_reserve_exact(FRAME_SITE_SLOTS + 1)
+        .map_err(|_| ENOMEM)?;
+    for (index, counts) in frames.iter().enumerate() {
+        if counts[0] == 0 {
+            continue;
+        }
+        let (file, line) = match index.checked_sub(1) {
+            None => ("unknown", 0),
+            Some(slot) => {
+                let location = FRAME_SITES[slot].load(Ordering::Acquire);
+                // SAFETY: entries are only ever set to `&'static Location`s.
+                match unsafe { location.as_ref() } {
+                    Some(location) => (location.file(), location.line()),
+                    None => ("unknown", 0),
+                }
+            }
+        };
+        match rows.iter_mut().find(|row| row.0 == file && row.1 == line) {
+            Some(row) => (0..3).for_each(|i| row.2[i] += counts[i]),
+            None => rows.push((file, line, *counts)),
+        }
+    }
+    rows.sort_unstable_by(|a, b| b.2[0].cmp(&a.2[0]));
+
+    let mut text = alloc::string::String::new();
+    text.try_reserve(64 + rows.len() * 80).map_err(|_| ENOMEM)?;
+    let _ = write!(
+        text,
+        "used {}\nallocated {}\nlost {}\nfree_list {}\n",
+        frontier.saturating_sub(free_list),
+        allocated,
+        free.saturating_sub(free_list),
+        free_list
+    );
+    for owner in FrameOwner::ALL {
+        let _ = writeln!(text, "owner {} {}", owner.name(), by_owner[owner as usize]);
+    }
+    for (file, line, counts) in rows {
+        let _ = writeln!(
+            text,
+            "site {} mapped={} external={} {}:{}",
+            counts[0],
+            counts[1],
+            counts[2],
+            short_source_path(file),
+            line
+        );
+    }
+    Ok(text)
+}
+
+/// A kernel source path without `kernel/src/`, and a dependency's (absolute,
+/// on the build host) as `<crate directory>/src/...`.
+fn short_source_path(file: &'static str) -> &'static str {
+    if let Some(kernel) = file.strip_prefix("kernel/src/") {
+        return kernel;
+    }
+    if !file.starts_with('/') {
+        return file;
+    }
+    let Some(src) = file.rfind("/src/") else {
+        return file.rsplit('/').next().unwrap_or(file);
+    };
+    let crate_start = file[..src].rfind('/').map_or(0, |slash| slash + 1);
+    &file[crate_start..]
+}
+
 /// A wrapper that allows using the global frame allocator with the mapper
 pub struct GlobalFrameAllocator;
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocator {
+    #[track_caller]
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         allocate_frame()
     }
