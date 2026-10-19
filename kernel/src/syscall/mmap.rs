@@ -935,6 +935,16 @@ pub(crate) fn unmap_range(
     }
 
     process.memory_locks.remove(addr, end_addr);
+    // A later mapping can use the range again. Placement searches down from the
+    // mmap hint (`place_below_hint`), so a range freed above it brings the hint
+    // back up to its end. While the hint only moved down, no freed range was
+    // used again: a process that maps and unmaps in turn (this C library's
+    // malloc gives each block a mapping of its own) walked down the region and
+    // kept a page-table frame for each 2 MiB it passed until it exited.
+    let region = crate::memory::vma::MMAP_REGION_START..=crate::memory::vma::MMAP_REGION_END;
+    if region.contains(&addr) && region.contains(&end_addr) && end_addr > process.mmap_hint {
+        process.mmap_hint = end_addr;
+    }
     Ok(())
 }
 

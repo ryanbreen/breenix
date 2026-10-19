@@ -93,6 +93,8 @@ pub enum ProcEntryType {
     BreenixTesting,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
+    /// /proc/breenix/frames - allocated physical frames by allocation site
+    Frames,
     /// /proc/pids - list of all process IDs
     Pids,
     /// /proc/kmsg - kernel log messages
@@ -171,6 +173,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::Ext2 => "ext2",
+            ProcEntryType::Frames => "frames",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::XhciDir => "xhci",
@@ -223,6 +226,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
+            ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
             ProcEntryType::XhciDir => "/proc/xhci",
@@ -276,6 +280,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::Ext2 => 202,
+            ProcEntryType::Frames => 203,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
             ProcEntryType::XhciDir => 300,
@@ -406,6 +411,7 @@ pub fn init() {
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SelfLink));
@@ -545,6 +551,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
+                    | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::XhciPointers
@@ -769,6 +776,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
+        ProcEntryType::Frames => generate_frames().map(String::into_bytes),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
             listing.try_reserve_exact(8).map_err(|_| -12)?;
@@ -785,7 +793,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\n"))
+            text(String::from("testing\next2\nframes\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]
@@ -895,6 +903,34 @@ fn generate_version() -> String {
         "nightly", // Could be made more specific
         1          // Build number placeholder
     )
+}
+
+/// Generate /proc/breenix/frames: the frame census, then what became of process
+/// page tables (`teardown` counters) and the reclaim receipts still queued.
+fn generate_frames() -> Result<String, i32> {
+    use crate::tracing::providers::teardown;
+    use core::fmt::Write;
+
+    let mut text = crate::memory::frame_allocator::frame_census()?;
+    let (pending, parked) = crate::task::process_task::reclaim_queue_lengths();
+    let _ = write!(
+        text,
+        "tables recorded={} returned={} lost={}\n\
+         roots retired={} no_proof={} no_arch={} terminated={} undecided={} mid_retire={}\n\
+         receipts pending={} parked={}\n",
+        teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
+        teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
+        teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
+        teardown::PT_ROOTS_RETIRED.aggregate(),
+        teardown::PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
+        teardown::PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
+        teardown::PT_ROOT_ABANDONED_TERMINATED.aggregate(),
+        teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
+        teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
+        pending,
+        parked
+    );
+    Ok(text)
 }
 
 /// Generate /proc/meminfo content

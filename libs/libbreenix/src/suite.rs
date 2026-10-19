@@ -16,6 +16,12 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
+//! A full run booted as PID 1 also prints its memory record ([`memory_record`]):
+//! `SUITE <id> MEMORY before ...` before its first case, and once DONE is out and
+//! its processes are reaped, `SUITE <id> MEMORY after ...` and
+//! `SUITE <id> MEMORY reclaimed=PASS|FAIL ...`. A suite whose memory was not
+//! reclaimed fails like one with a failing case.
+//!
 //! In a boot that runs several suites ([`sequence`]), the next suite replaces it as PID 1
 //! instead.
 //!
@@ -86,6 +92,8 @@
 //! fn main() { SUITE.run() }
 //! ```
 
+#[path = "suite_memory.rs"]
+pub mod memory_record;
 #[path = "suite_prerequisites.rs"]
 pub mod prerequisites;
 #[path = "suite_sequence.rs"]
@@ -486,6 +494,10 @@ impl Suite {
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
+        // A full run as PID 1 keeps the memory record; a one-case run is not
+        // full-suite evidence, and a suite run from a shell does not reap others.
+        let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        let before = if recording { memory_sample(self.id, "before") } else { None };
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
             if only.is_none() && category.idle_before_ms > 0 {
@@ -530,10 +542,19 @@ impl Suite {
         }
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
             self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
+        let reclaimed = !recording || {
+            // Each case's processes were swept after it; any left since go now.
+            let _ = sweep();
+            let after = memory_sample(self.id, "after");
+            let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
+            emit(&line);
+            reclaimed
+        };
 
-        let summary = std::format!("{} passed, {} failed, {} skipped of {}",
+        let mut summary = std::format!("{} passed, {} failed, {} skipped of {}",
             counts.passed, counts.failed, counts.skipped, total);
-        let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
+        if !reclaimed { summary.push_str("; memory not reclaimed"); }
+        let verdict = if counts.failed == 0 && reclaimed { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(self.id == "gpu"); }
@@ -565,6 +586,21 @@ enum State {
     Pending,
     Running,
     Done(Outcome),
+}
+
+/// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
+/// line saying why it could not be read.
+fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
+    match memory_record::settled() {
+        Ok(sample) => {
+            emit(&sample.record(id, when));
+            Some(sample)
+        }
+        Err(why) => {
+            emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
+            None
+        }
+    }
 }
 
 /// Write one serial line with a single write, so it is never split, starting with

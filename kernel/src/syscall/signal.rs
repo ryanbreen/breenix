@@ -1978,7 +1978,7 @@ pub fn sys_sigreturn_with_frame_aarch64(
         }
     }
 
-    log::info!(
+    log::debug!(
         "sigreturn_aarch64: restored context, returning to PC={:#x} SP={:#x}",
         ctx.pc,
         ctx.sp

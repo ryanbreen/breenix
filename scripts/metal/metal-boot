@@ -475,8 +475,9 @@ class Driver:
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
-            # Several suites finish when the last has handed off.
-            self.final_marker = (('SUITE ' + self.args.suite + ' DONE ', 'contains') if len(suites(self.args)) == 1
+            # One suite finishes at its READY, after its DONE and memory record (docs/suites/README.md,
+            # "Memory record"); several suites when the last has handed off.
+            self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
                                  else ('SUITE_SEQUENCE DONE ', 'contains'))
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)

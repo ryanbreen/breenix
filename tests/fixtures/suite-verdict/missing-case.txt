@@ -1,4 +1,7 @@
 SUITE fixture START cases=3
+SUITE fixture MEMORY before free=1000 heap_free_kb=500 user_stacks=17 user_pages=300 page_tables=13 page_cache=0 kernel_stacks=40 buffers=8 other=2 receipts=0 settle_ms=100
 SUITE fixture CASE first/one PASS ms=1
 SUITE fixture CASE first/two PASS ms=1
 SUITE fixture DONE passed=2 failed=0 skipped=0 total=3
+SUITE fixture MEMORY after free=990 heap_free_kb=496 user_stacks=17 user_pages=300 page_tables=13 page_cache=0 kernel_stacks=40 buffers=8 other=2 receipts=0 settle_ms=100
+SUITE fixture MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64

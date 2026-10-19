@@ -19,9 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((ROOT / "docs/suites/directories.json").read_text())
 CASES = [f"{category['id']}/{case['id']}" for category in MANIFEST["categories"]
          for case in category["cases"]]
-RECORDING = (f"SUITE directories START cases={len(CASES)}\n" +
+OWNERS = "user_stacks=17 user_pages=300 page_tables=13 page_cache=0 kernel_stacks=40 buffers=8 other=2 receipts=0 settle_ms=100"
+MEMORY_BEFORE = f"SUITE directories MEMORY before free=1000 heap_free_kb=500 {OWNERS}\n"
+MEMORY_AFTER = (f"SUITE directories MEMORY after free=990 heap_free_kb=496 {OWNERS}\n"
+                "SUITE directories MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n")
+RECORDING = (f"SUITE directories START cases={len(CASES)}\n" + MEMORY_BEFORE +
              "".join(f"SUITE directories CASE {case} PASS ms=0\n" for case in CASES) +
-             f"SUITE directories DONE passed={len(CASES)} failed=0 skipped=0 total={len(CASES)}\n").encode()
+             f"SUITE directories DONE passed={len(CASES)} failed=0 skipped=0 total={len(CASES)}\n" +
+             MEMORY_AFTER).encode()
 
 CANONICAL_COUNT = len(re.findall(r'^    "([^"]+)",',
     (ROOT / "kernel/src/boot/test_list.rs").read_text(), re.MULTILINE))
@@ -164,7 +169,8 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertLess(elapsed, 2)
 
     def test_duplicate_done_in_later_write_fails(self):
-        done = RECORDING.splitlines(keepends=True)[-1]
+        done = next(line for line in RECORDING.splitlines(keepends=True)
+                    if line.startswith(b"SUITE directories DONE "))
         result, _ = self.replay(RECORDING, late=done)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("duplicate completion records", result.stdout)
@@ -288,7 +294,8 @@ class SuiteWatcherTest(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 1)
 
     def test_done_with_missing_cases_is_failure(self):
-        data = b"SUITE directories START cases=117\nSUITE directories DONE passed=117 failed=0 skipped=0 total=117\n"
+        data = ("SUITE directories START cases=117\n" + MEMORY_BEFORE +
+                "SUITE directories DONE passed=117 failed=0 skipped=0 total=117\n" + MEMORY_AFTER).encode()
         result, _ = self.replay(data)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("no CASE line", result.stdout)

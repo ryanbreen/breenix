@@ -9169,8 +9169,11 @@ impl ExecSchedCommit {
                         t.tls_block = this.tls_block;
                         // x86_64 dispatches a user thread on the root cached
                         // here (`dispatch_root`), so exec replaces it in the
-                        // same hold that replaces the context.
-                        #[cfg(target_arch = "x86_64")]
+                        // same hold that replaces the context. aarch64 caches
+                        // the root a thread last ran on, which the reclaim
+                        // pass checks: a thread that only blocks in system
+                        // calls would keep the superseded root named, and the
+                        // receipt for it would park.
                         t.set_dispatch_root(this.new_page_table_root);
                         // A new address space: the futex key group is read
                         // again from the process row.
