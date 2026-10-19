@@ -251,6 +251,7 @@ for i in $(seq 1 "$ITERATIONS"); do
         -drive if=none,id=home,format=raw,readonly=on,file="$OUTPUT_DIR/ext2-readonly.img" \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$OUTPUT_DIR/ext2-writable.img" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$SERIAL" > "$OUTPUT_DIR/qemu-stdout.log" 2>&1 &

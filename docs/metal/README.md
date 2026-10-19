@@ -102,7 +102,12 @@ The kernel reports the choice as `[console] uart <port> source=<fw_cfg|spcr|defa
 the user console, whole log lines move from the log ring into COM1's transmit queue as kernel units, with CR LF line
 ends for the remote terminal: the UART has one writer, and output from userspace or the kernel's serial console
 starts a fresh line rather than landing inside a log line (`queue_log_line`). A boot-path stage line is still never
-dropped by the ring (`log_ring`). claim-lint:ok: 0 of 683 kernel-side lines split in first-light boot
+dropped by the ring (`log_ring`). Ordinary ring overflow emits
+`[log: N bytes dropped; M lines; source=serial-ring]` in serial order, including a final loss with no later
+producer. TTY records synchronize the older kernel records into COM1 first, so a final suite marker
+follows their loss reports. Counts cover whole discarded records, their newline-delimited lines (including a final partial
+line), and their UART-expanded bytes. Draining publishes pending counts before later records. Terminal
+output flushes discard only terminal bytes from COM1, preserving kernel records and their line boundaries. claim-lint:ok: 0 of 683 kernel-side lines split in first-light boot
 20261017T040009Z-metal, in "Measured".
 
 The driver clears any stale SOL session, opens one in a tmux pane it owns, and powers on only after the session's
@@ -332,8 +337,14 @@ admission policy.
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
 soon as the unit holds, or waits for, the machine lease, so the caller's ssh session can end. The driver then:
 
-1. **Claims the lease** (`lease.json` under a flock; one holder at a time; `--no-wait` gets exit 75 when another boot
-   holds it; a quarantined lease refuses new boots). The lease carries the boot id, the driver's unit, a heartbeat refreshed
+1. **Queues for the lease** (FIFO admission under `lease.lock`, one holder at a time). Unattended boots wait
+   up to 240 minutes by default; `--wait MIN` sets a shorter bound (more than zero through 240).
+   `--no-wait` returns after detached launch and does not bypass the queue. Launch output and `claim.json`
+   name the holder, queue position and deadline; `lease.json` mirrors the ordered `queue.json`, also exposed by
+   `metal-run status`. Cancelled, dead and expired waiters leave the queue. A boot that waited keeps its one
+   boot record and runs normally, without a refusal record. A timed-out wait or quarantined lease returns 75.
+   With `--attended`, `--wait` retains its challenge duration (default 30 minutes); queue admission still has its
+   own 240-minute bound. claim-lint:ok: tests/metal_boot_queue_test.py exercises FIFO handoff, cancellation, bounds and launch output. The powered lease carries the boot id, the driver's unit, a heartbeat refreshed
    each 5 s and, from power-on, the attempt's absolute ceiling.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
    the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;

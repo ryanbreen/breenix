@@ -379,6 +379,7 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE
     ${FIXTURE_ARGS[@]+"${FIXTURE_ARGS[@]}"} \
     -device virtio-blk-device,drive=ext2 \
     -drive "$ROOT_DRIVE" \
+    -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -chardev stdio,id=con,mux=on,signal=off,logfile="$SERIAL_LOG" \

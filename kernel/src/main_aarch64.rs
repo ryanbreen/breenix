@@ -933,6 +933,23 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
+    // Seed the random pool before the network stack picks ports and IDs.
+    let random = kernel::random::init();
+    serial_println!(
+        "[boot] random: pool ready={} rndr={} hardware_bits={} device_bits={} jitter_windows={}/{} jitter_bits={} jitter_run={}/{} jitter_common={}/{}",
+        random.ready,
+        random.rndr,
+        random.hardware_bits,
+        random.device_bits,
+        random.jitter.passed,
+        random.jitter.windows,
+        random.jitter.bits,
+        random.jitter.longest_run,
+        kernel::random::JitterReport::RUN_CUTOFF,
+        random.jitter.most_common,
+        kernel::random::JitterReport::COMMON_CUTOFF
+    );
+
     // Initialize network stack (after VirtIO network driver is ready)
     serial_println!("[boot] Initializing network stack...");
     kernel::net::init();

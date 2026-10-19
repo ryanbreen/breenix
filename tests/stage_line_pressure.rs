@@ -57,7 +57,7 @@ fn log(ring: &mut LogRing<RING>, out: &mut Vec<u8>, markers: &[&str], line: &str
                     needed <= RING,
                     "the ring asked for {needed} bytes, more than it holds"
                 );
-                while RING - ring.len() < needed {
+                while ring.available() < needed {
                     let mut chunk = [0u8; 16];
                     let n = ring.pop(&mut chunk);
                     assert!(n != 0, "the ring asked for room it could not make");
@@ -73,6 +73,9 @@ fn drain(ring: &mut LogRing<RING>, out: &mut Vec<u8>) {
     loop {
         let n = ring.pop(&mut chunk);
         if n == 0 {
+            assert_eq!(ring.sync_target(), Some(ring.pushed()), "final loss report was not drained");
+            assert_eq!(ring.sent(), ring.accepted());
+            assert_eq!(ring.len(), 0);
             return;
         }
         out.extend_from_slice(&chunk[..n]);
@@ -91,9 +94,11 @@ fn stage_line(marker: &str) -> String {
 }
 
 fn is_drop_report(line: &str) -> bool {
-    line.strip_prefix("[log: ")
-        .and_then(|rest| rest.strip_suffix(" bytes dropped]"))
-        .is_some_and(|count| !count.is_empty() && count.bytes().all(|b| b.is_ascii_digit()))
+    let Some(rest) = line.strip_prefix("[log: ").and_then(|s| s.strip_suffix(" lines; source=serial-ring]")) else {
+        return false;
+    };
+    let Some((bytes, lines)) = rest.split_once(" bytes dropped; ") else { return false; };
+    [bytes, lines].iter().all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[test]

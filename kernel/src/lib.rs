@@ -11,6 +11,8 @@ extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
 pub mod serial;
+#[cfg(target_arch = "x86_64")]
+mod serial_tx_queue;
 #[cfg(target_arch = "aarch64")]
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
@@ -54,6 +56,8 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
+// Kernel random-number pool behind getrandom
+pub mod random;
 // Kernel output accounting per thread (docs/gui/breengel.md section 22)
 pub mod output_accounting;
 // Socket module - enabled for both architectures
