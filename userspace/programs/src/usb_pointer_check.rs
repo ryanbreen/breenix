@@ -46,6 +46,7 @@ struct Pointer {
     descriptor: Vec<u8>,
     /// The reports the device sent this interface, oldest first.
     recorded: Vec<Vec<u8>>,
+    received: u64,
 }
 
 fn unhex(hex: &str, line: &str) -> Result<Vec<u8>, String> {
@@ -102,6 +103,8 @@ fn pointers() -> Result<Vec<Pointer>, String> {
                 endpoint,
                 descriptor,
                 recorded,
+                received: field("received=").and_then(|v| v.parse().ok())
+                    .ok_or_else(|| format!("missing received counter in {line:?}"))?,
             }),
             _ => return Err(format!("unreadable pointer line {line:?}")),
         }
@@ -334,13 +337,32 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
         if start.0.abs_diff(b.0) <= 1 && start.1.abs_diff(b.1) <= 1 { (b, a) } else { (a, b) }
     };
     let near = |s: (u32, u32, u32, i32), p: (u32, u32)| s.0.abs_diff(p.0) <= 1 && s.1.abs_diff(p.1) <= 1;
-    // The host's pointer position before the first request is unknown, so a
-    // relative device's motion from it is unknown too: it only sets the origin
-    // of the scored requests. An absolute device lands on it.
+    // Snapshot native reports before the origin request. Position alone
+    // cannot distinguish absolute input when host and guest both start at zero.
+    let native_before = if axes == "absolute" { pointers().unwrap_or_default() } else { Vec::new() };
     println!("USB POINTER HOST seq={seq} axes={axes} x={} y={} buttons=0 wheel=0", b.0, b.1);
     seq += 1;
     let landed = if axes == "absolute" {
-        wait_for(&|s| near(s, b)).1
+        let moved = !near(start, b) && wait_for(&|s| near(s, b)).1;
+        moved && pointers().unwrap_or_default().iter().any(|p| {
+            let Some(old) = native_before.iter().find(|old| old.port == p.port && old.interface == p.interface) else { return false; };
+            let Some(count) = p.received.checked_sub(old.received) else { return false; };
+            if count == 0 || count > p.recorded.len() as u64 { return false; }
+            let Ok(layout) = Layout::parse(&p.descriptor) else { return false; };
+            let (Some(x), Some(y)) = (layout.x, layout.y) else { return false; };
+            if x.relative || y.relative || x.id != y.id { return false; }
+            p.recorded[p.recorded.len() - count as usize..].iter().any(|report| {
+                if layout.ids && report.first() != Some(&x.id) { return false; }
+                let position = |field: Field, extent: u32| {
+                    let range = field.maximum - field.minimum;
+                    if range <= 0 { return None; }
+                    Some(((layout.value(report, field) - field.minimum).clamp(0, range)
+                        * (extent as i64 - 1) / range) as u32)
+                };
+                matches!((position(x, width), position(y, height)), (Some(px), Some(py))
+                    if px.abs_diff(b.0) <= 1 && py.abs_diff(b.1) <= 1)
+            })
+        })
     } else {
         std::thread::sleep(Duration::from_millis(500));
         false
@@ -358,9 +380,7 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
         ("wheel-down", b, 0, -1),
     ];
     let mut previous = (b, observe());
-    // Once an absolute device follows the host, a relative prediction from the
-    // last observed position gives the same place: an absolute move shows its
-    // kind only by the first request, which it lands on from elsewhere.
+    // Absolute coverage requires a fresh native absolute report at the target.
     let mut distinguished = landed;
     for (name, (x, y), buttons, wheel) in cases {
         let before = observe();
@@ -402,7 +422,7 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
         &format!("host/{axes}/coverage"),
         distinguished,
         if axes == "absolute" {
-            "requires the first request to move the pointer onto its position"
+            "requires motion onto the first target and a fresh native absolute X/Y report at that target"
         } else {
             "requires a move to where the requested position does not explain"
         },

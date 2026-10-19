@@ -16,6 +16,8 @@ struct Attached {
     /// measurement kernels for the replay control (`replay`).
     #[cfg(feature = "usb_pointer_replay")]
     recorded: alloc::collections::VecDeque<Vec<u8>>,
+    #[cfg(feature = "usb_pointer_replay")]
+    received: u64,
 }
 
 /// Reports kept per interface for replay.
@@ -43,7 +45,7 @@ pub fn describe() -> String {
         }
         #[cfg(feature = "usb_pointer_replay")]
         {
-            text.push_str(" recorded=");
+            let _ = write!(text, " received={} recorded=", p.received);
             for (i, report) in p.recorded.iter().enumerate() {
                 if i != 0 {
                     text.push(',');
@@ -218,6 +220,8 @@ impl Controller {
             descriptor,
             #[cfg(feature = "usb_pointer_replay")]
             recorded: alloc::collections::VecDeque::new(),
+            #[cfg(feature = "usb_pointer_replay")]
+            received: 0,
         });
         Ok(())
     }
@@ -427,6 +431,7 @@ fn record(port: u8, endpoint: u8, data: &[u8]) {
             p.recorded.pop_front();
         }
         p.recorded.push_back(data.to_vec());
+        p.received += 1;
     }
 }
 
