@@ -406,6 +406,7 @@ impl TtyDevice {
     /// This method acquires locks and should not be called from interrupt context
     /// without care. For interrupt context, use `input_char_from_nonblock`.
     pub fn input_char_from(&self, c: u8, source: super::InputSource) {
+        crate::random::add_event(crate::random::Event::TtyInput, u64::from(c));
         if self.num == 0 {
             super::input_clock::record_input();
         }
@@ -509,6 +510,7 @@ impl TtyDevice {
     }
 
     fn input_char_source_nonblock(&self, c: u8, source: super::InputSource) -> bool {
+        crate::random::add_event(crate::random::Event::TtyInput, u64::from(c));
         let mut ldisc = match self.ldisc.try_lock() {
             Some(guard) => guard,
             None => return false,

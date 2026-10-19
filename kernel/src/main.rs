@@ -271,6 +271,18 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
+    // Seed the random pool before the network stack picks ports and IDs.
+    let random = kernel::random::init();
+    log::info!(
+        "random: pool ready={} rdrand={} rdseed={} hardware_bits={} jitter_samples={} jitter_bits={}",
+        random.ready,
+        random.rdrand,
+        random.rdseed,
+        random.hardware_bits,
+        random.jitter_samples,
+        random.jitter_bits
+    );
+
     // Initialize network stack (after E1000 driver is ready)
     net::init();
     kernel::console::splash::stage(kernel::console::splash::Stage::NetworkStack);

@@ -26,6 +26,17 @@ pub mod syscall {
 }
 pub mod net;
 pub mod socket;
+/// The kernel pool's interface for ephemeral port choice; the host only needs varied values.
+pub mod random {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    pub fn next_u64() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(0x9e37_79b9_7f4a_7c15);
+        let mut x = NEXT.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    }
+}
 
 pub fn endpoint() -> Arc<socket::object::Socket> {
     socket::object::Socket::new(
