@@ -19,6 +19,9 @@ static DRAWN: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: AtomicU64 = AtomicU64::new(0);
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
 static PANIC_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
+static PANIC_ATTEMPT_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
+static PANIC_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+const PANIC_MAX_ATTEMPTS: u64 = 3;
 static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
@@ -575,7 +578,13 @@ pub fn pump() {
         if let Some(epoch) = with_core(|c| {
             (!c.stalled && !c.resetting && !c.reset_wanted).then_some(c.epoch)
         }).flatten() {
-            if PANIC_EPOCH.load(Ordering::Acquire) != epoch {
+            if PANIC_ATTEMPT_EPOCH.swap(epoch, Ordering::AcqRel) != epoch {
+                PANIC_ATTEMPTS.store(0, Ordering::Release);
+            }
+            if PANIC_EPOCH.load(Ordering::Acquire) != epoch
+                && PANIC_ATTEMPTS.load(Ordering::Acquire) < PANIC_MAX_ATTEMPTS
+            {
+                PANIC_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
                 if super::panic::prepare().is_ok() {
                     PANIC_EPOCH.store(epoch, Ordering::Release);
                 }

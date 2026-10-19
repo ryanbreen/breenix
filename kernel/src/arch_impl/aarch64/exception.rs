@@ -1269,20 +1269,24 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate — defer full process cleanup to
-            // the next safe scheduling point, then redirect to idle.
-            {
-                let mut line = crate::serial_line::Line::new();
-
-                line.text("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
-            }
-            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
-            if !from_el0 {
+            // A user thread can fault in EL1 through an unprotected syscall
+            // pointer. Preserve task recovery for this case.
+            if !from_el0
+                && !current_thread_lock_free().is_some_and(|thread| {
+                    thread.privilege == crate::task::thread::ThreadPrivilege::User
+                })
+            {
                 crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
             }
 
+            // Recover task faults and pre-handoff faults at a safe scheduling point.
+            {
+                let mut line = crate::serial_line::Line::new();
+                line.text("[DATA_ABORT] deferring process cleanup\n");
+            }
+            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             // EL1 may have faulted while holding SCHEDULER, so termination is
             // non-blocking there. Preserve the established EL0 path exactly.
             if from_el0 {
@@ -1621,7 +1625,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             drop(fatal_uart_guard);
 
-            if !from_el0 {
+            // A user thread can fault in EL1 through an unprotected syscall
+            // pointer. Preserve task recovery for this case.
+            if !from_el0
+                && !current_thread_lock_free().is_some_and(|thread| {
+                    thread.privilege == crate::task::thread::ThreadPrivilege::User
+                })
+            {
                 crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
             }
 

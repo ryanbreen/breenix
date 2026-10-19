@@ -112,6 +112,8 @@ static LAYOUT_SETTLED: AtomicBool = AtomicBool::new(false);
 static GPU_FLUSH_FAILED: AtomicBool = AtomicBool::new(false);
 /// The terminal diagnostics screen has been claimed (first fatal failure wins).
 static DIAG_CLAIMED: AtomicBool = AtomicBool::new(false);
+/// Bound firmware painting on recoverable faults independently of fatal ownership.
+static RECOVERABLE_DIAG_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 const BG: Color = Color::rgb(15, 20, 35);
 const TITLE: Color = Color::rgb(235, 240, 250);
@@ -755,10 +757,13 @@ pub fn show_panic(info: &core::panic::PanicInfo) {
 }
 
 /// Draw the diagnostics screen for a fatal EL1 exception, described in words
-/// from its syndrome (`esr`), fault address (`far`) and PC (`elr`), then stop this CPU.
-pub fn show_fault(esr: u64, far: u64, elr: u64) -> ! {
+/// from its syndrome (`esr`), fault address (`far`) and PC (`elr`).
+/// Terminal parking applies only after GPU handoff; firmware boots retain recovery.
+pub fn show_fault(esr: u64, far: u64, elr: u64) {
     fault_diagnostics(esr, far, elr, true);
-    crate::gpu::panic::park();
+    if crate::gpu::console::active() {
+        crate::gpu::panic::park();
+    }
 }
 
 /// Preserve firmware diagnostics for recoverable faults without terminal takeover.
@@ -869,7 +874,10 @@ fn write_fault_status(out: &mut Text, status: u8) {
 /// Draw the red diagnostics screen: `title`, a large `headline` saying what
 /// failed, labelled `details`, the boot stage and the recent kernel log.
 fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recent: RecentLog, terminal: bool) {
-    if !terminal && crate::gpu::console::active() {
+    if !terminal
+        && (crate::gpu::console::active()
+            || RECOVERABLE_DIAG_CLAIMED.swap(true, Ordering::AcqRel))
+    {
         return;
     }
     if (terminal && DIAG_CLAIMED.swap(true, Ordering::AcqRel))
