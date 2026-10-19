@@ -6922,13 +6922,11 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
-    // The contended return holds the list as this CPU's own nested holder:
-    // through `with_free_frames` on x86_64, where only that makes a return
-    // give up rather than wait, and by locking it elsewhere.
+    // The contended return holds the list as this CPU's own nested holder,
+    // through `with_free_frames`: a return waits for a holder on another CPU
+    // on both architectures, so only that makes it give up rather than wait.
     let held = function_body(tests, "with_free_list_held");
-    let held_split = held.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
-    let (held_x86, held_other) = held.split_at(held_split);
-    if !held_x86.contains("#[cfg(target_arch = \"x86_64\")]") {
+    if held.contains("#[cfg(") || held.contains("FREE_FRAMES") {
         return Err(());
     }
     let above_top = function_body(tests, "above_top_of_ram_frame");
@@ -7112,9 +7110,8 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
         && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
-        && held_x86.contains("with_free_frames(|_| f())")
-        && held_other.contains("let _free_list = FREE_FRAMES.lock();")
-        && held_other.contains("f()")
+        && normalized_code(held)
+            == "fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R { with_free_frames(|_| f()) }"
         && gate.matches("healthy_round_trip()").count() == 5
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
@@ -12338,16 +12335,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
 
-    // R1: seven syntactically distinct ways to bypass the return choke point.
+    // R1: seven syntactically distinct ways to bypass the return choke point,
+    // planted in the free-list closure allocate_candidate pops from.
     for insertion in [
-        "free_list.push(frame);",
-        "free_list.insert(0, frame);",
-        "free_list /* trivia */ .insert(0, frame);",
-        "free_list.push_within_capacity(frame);",
+        "list.push(frame);",
+        "list.insert(0, frame);",
+        "list /* trivia */ .insert(0, frame);",
+        "list.push_within_capacity(frame);",
     ] {
         let broken = allocator.replacen(
-            "if let Some(frame) = free_list.pop() {",
-            &format!("if let Some(frame) = free_list.pop() {{ {insertion}"),
+            "free_list.and_then(|list| list.pop())",
+            &format!("free_list.and_then(|list| {{ let frame = list.pop()?; {insertion} Some(frame) }})"),
             1,
         );
         let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
@@ -12379,16 +12377,16 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         );
     }
     let reborrowed = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let list = &mut *free_list; list.insert(0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let spare = &mut *list; spare.insert(0, frame); Some(frame) })",
         1,
     );
     let reborrowed =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
     assert!(validate_frame_return_choke_point(&reborrowed).is_err());
     let typed_reborrow = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let list: &mut Vec<PhysFrame> = &mut free_list; list.insert(0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let spare: &mut Vec<PhysFrame> = &mut *list; spare.insert(0, frame); Some(frame) })",
         1,
     );
     let typed_reborrow = with_replaced_source(
@@ -12398,8 +12396,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&typed_reborrow).is_err());
     let parenthesized_reborrow = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { (*free_list).insert(0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; (*list).insert(0, frame); Some(frame) })",
         1,
     );
     let parenthesized_reborrow = with_replaced_source(
@@ -12409,8 +12407,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
     let indexed_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { if free_list.len() > 0 { free_list[0] = frame; }",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; if list.len() > 0 { list[0] = frame; } Some(frame) })",
         1,
     );
     let indexed_alias_store = with_replaced_source(
@@ -12420,8 +12418,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_alias_store).is_err());
     let deref_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { *free_list = alloc::vec![frame, frame];",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; *list = alloc::vec![frame, frame]; Some(frame) })",
         1,
     );
     let deref_alias_store = with_replaced_source(
@@ -12432,8 +12430,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
     // R1: the same physical bypass through an indexed, sliced or branch-selected alias.
     let indexed_element_replace = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { core::mem::replace(&mut free_list[0], frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; core::mem::replace(&mut list[0], frame); Some(frame) })",
         1,
     );
     let indexed_element_replace = with_replaced_source(
@@ -12443,8 +12441,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_element_replace).is_err());
     let indexed_element_swap = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = frame; core::mem::swap(&mut free_list[0], &mut spare);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = frame; core::mem::swap(&mut list[0], &mut spare); Some(frame) })",
         1,
     );
     let indexed_element_swap = with_replaced_source(
@@ -12454,8 +12452,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_element_swap).is_err());
     let indexed_element_clone_from = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[0].clone_from(&frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[0].clone_from(&frame); Some(frame) })",
         1,
     );
     let indexed_element_clone_from = with_replaced_source(
@@ -12465,8 +12463,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_element_clone_from).is_err());
     let sliced_copy_from_slice = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[..].copy_from_slice(&[frame]);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[..].copy_from_slice(&[frame]); Some(frame) })",
         1,
     );
     let sliced_copy_from_slice = with_replaced_source(
@@ -12476,8 +12474,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&sliced_copy_from_slice).is_err());
     let sliced_fill = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[0..1].fill(frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[0..1].fill(frame); Some(frame) })",
         1,
     );
     let sliced_fill = with_replaced_source(
@@ -12487,8 +12485,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&sliced_fill).is_err());
     let indexed_helper_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { publish_frame(&mut free_list[0], frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; publish_frame(&mut list[0], frame); Some(frame) })",
         1,
     );
     let indexed_helper_export = with_replaced_source(
@@ -12498,8 +12496,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_helper_export).is_err());
     let conditional_branch_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; *dest = alloc::vec![frame];",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; *dest = alloc::vec![frame]; Some(frame) })",
         1,
     );
     let conditional_branch_alias_store = with_replaced_source(
@@ -12509,8 +12507,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_store).is_err());
     let conditional_branch_alias_method = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; dest.push(frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; dest.push(frame); Some(frame) })",
         1,
     );
     let conditional_branch_alias_method = with_replaced_source(
@@ -12520,8 +12518,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_method).is_err());
     let helper_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { stash_frame(&mut free_list, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; stash_frame(&mut list, frame); Some(frame) })",
         1,
     );
     let helper_export = with_replaced_source(
@@ -12531,8 +12529,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&helper_export).is_err());
     let ufcs_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { Vec::insert(&mut free_list, 0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; Vec::insert(&mut list, 0, frame); Some(frame) })",
         1,
     );
     let ufcs_export = with_replaced_source(
@@ -12542,8 +12540,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
     let renamed_alias = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); } Some(frame) })",
         1,
     );
     let renamed_alias = with_replaced_source(
@@ -12553,8 +12551,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&renamed_alias).is_err());
     let matched_alias = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} } Some(frame) })",
         1,
     );
     let matched_alias = with_replaced_source(

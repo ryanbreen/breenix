@@ -285,26 +285,24 @@ static EXTERNAL_LEAF_SPANS: Mutex<[ExternalLeafSpan; MAX_EXTERNAL_LEAF_SPANS]> =
 /// refuse at the exact boundary rather than reallocating.
 static FREE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
 
-/// x86_64: the logical CPU holding `FREE_FRAMES` through `with_free_frames`,
-/// or `usize::MAX`.
-#[cfg(target_arch = "x86_64")]
+/// The logical CPU holding `FREE_FRAMES` through `with_free_frames`, or
+/// `usize::MAX`.
 static FREE_FRAMES_OWNER: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-/// x86_64: run `f` on the free list. A holder on another CPU is waited for;
-/// `f` gets `None` only when this CPU already holds it, which happens when the
+/// Run `f` on the free list. A holder on another CPU is waited for; `f` is
+/// handed the list unless this CPU already holds it, which happens when the
 /// capacity reservation below grows the heap and the heap allocates a frame.
 ///
-/// The list used to be try-locked everywhere. With one CPU a busy lock could
-/// only mean such nesting, and the fallbacks fit it: an allocation took the
-/// next frame past the frontier, a return was dropped. With several CPUs it
-/// is usually held by another CPU for a push or a pop, and every frame
-/// returned while it was held was lost: free in the ledger, on no list.
-/// Interrupts are masked for the hold, so no holder is ever interrupted or
-/// switched out with it held.
-#[cfg(target_arch = "x86_64")]
+/// The list used to be try-locked. With one CPU a busy lock could only mean
+/// such nesting, and the fallbacks fit it: an allocation took the next frame
+/// past the frontier, a return was dropped. With several CPUs it is usually
+/// held by another CPU for a push or a pop, and a frame returned while it was
+/// held was lost: free in the ledger but missing from the list. Interrupts are
+/// masked for the hold, so a holder is not interrupted or switched out with it
+/// held.
 fn with_free_frames<R>(f: impl FnOnce(Option<&mut Vec<PhysFrame>>) -> R) -> R {
     crate::arch_without_interrupts(|| {
-        let me = crate::per_cpu::cpu_id();
+        let me = crate::task::scheduler::current_cpu();
         loop {
             if let Some(mut free_list) = FREE_FRAMES.try_lock() {
                 FREE_FRAMES_OWNER.store(me, Ordering::Relaxed);
@@ -740,17 +738,7 @@ fn ensure_free_frame_capacity(required: usize) -> PrepareFrame {
         FREE_FRAME_CAPACITY.store(free_list.capacity(), Ordering::Release);
         PrepareFrame::Ready
     };
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let Some(mut free_list) = FREE_FRAMES.try_lock() else {
-            return PrepareFrame::Contended;
-        };
-        reserve(&mut free_list)
-    }
+    with_free_frames(|free_list| free_list.map_or(PrepareFrame::Contended, reserve))
 }
 
 fn prepare_frame_for_allocation(index: usize) -> PrepareFrame {
@@ -962,21 +950,8 @@ fn allocate_candidate() -> Option<PhysFrame> {
     }
 
     // Try to reuse a frame from the free list (all architectures).
-    #[cfg(target_arch = "x86_64")]
     if let Some(frame) = with_free_frames(|free_list| free_list.and_then(|list| list.pop())) {
         return Some(frame);
-    }
-    // Uses try_lock() to avoid deadlock if called from interrupt context.
-    #[cfg(not(target_arch = "x86_64"))]
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        if let Some(frame) = free_list.pop() {
-            log::trace!(
-                "Frame allocator: Reused frame {:#x} from free list ({} remaining)",
-                frame.start_address().as_u64(),
-                free_list.len()
-            );
-            return Some(frame);
-        }
     }
 
     // Fall back to sequential allocation from memory map
@@ -1263,18 +1238,9 @@ pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {
         free_list.push(lease.frame);
         ReturnOutcome::Returned
     };
-    #[cfg(target_arch = "x86_64")]
-    {
-        with_free_frames(|free_list| {
-            free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
-        })
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-        push(&mut free_list)
-    } else {
-        counted(ReturnOutcome::LostContended)
-    }
+    with_free_frames(|free_list| {
+        free_list.map_or_else(|| counted(ReturnOutcome::LostContended), push)
+    })
 }
 
 fn current_lease_for_frame(frame: PhysFrame) -> FrameLease {
