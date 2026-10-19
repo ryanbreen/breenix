@@ -237,7 +237,7 @@ serial.write_text(''.join('SUITE '+s+' DONE passed=1 failed=0 skipped=0 total=1\
                 with self.assertRaises(metal.Finish) as finished:
                     driver.on_line('disk evidence complete', observed_at=154)
             self.assertEqual(finished.exception.status, metal.m.EXIT_DONE)
-            update.assert_called_with(driver.id, ceilingAt=154 + metal.MODE_DEADLINE_SECONDS['suite'])
+            update.assert_not_called()  # a sequence never extends the attempt's fixed lease ceiling
             driver.completion_reported = driver.final_seen = False
             driver.on_line('KERNEL PANIC!', observed_at=155)
             driver.on_line('SUITE_SEQUENCE DONE suites=2', observed_at=156)
