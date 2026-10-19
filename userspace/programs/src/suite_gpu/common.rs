@@ -270,6 +270,8 @@ pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseE
             || "oversized source was bound as scanout".to_string())?;
         return Ok(None);
     }
+    let (source_pixels, _) = read(source, w, h)?;
+    let want = Canvas { w, h, px: source_pixels };
     let composed = w != mode.width || h != mode.height;
     let target = if composed {
         scanout_target(u32_at(&source_record, record::FORMAT), mode.width, mode.height)?
@@ -284,7 +286,8 @@ pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseE
         ensure(ret == 0 && present.fence != 0 && present.answer == native_success()?,
             || format!("PRESENT view: {} fence={} answer={:#x}", errno(ret), present.fence, present.answer))?;
         wait_ok(ctx, present.fence, 0)?;
-        let (_, actual) = read(0, 1, 1)?;
+        let (pixels, actual) = read(0, w, h)?;
+        want.matches(&pixels, "scanout source rectangle")?;
         ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
             && u32_at(&actual, record::TARGET_HEIGHT) == mode.height
             && u32_at(&actual, record::FLAGS) & 1 == 1

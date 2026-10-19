@@ -1272,7 +1272,7 @@ fn corpus_view(ctx: u64, source: u64, view: u64, mode: &gpu::abi::Mode,
     ensure(ret == 0 && present.fence != 0 && present.answer == native_success()?,
         || format!("PRESENT corpus view: {} answer {:#x}", errno(ret), present.answer))?;
     wait_ok(ctx, present.fence, 0)?;
-    let (pixels, actual) = read(0, 1, 1)?;
+    let (pixels, actual) = read(0, want.w, want.h)?;
     ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
         && u32_at(&actual, record::TARGET_HEIGHT) == mode.height
         && u32_at(&actual, record::FLAGS) & 1 == 1
@@ -1280,7 +1280,7 @@ fn corpus_view(ctx: u64, source: u64, view: u64, mode: &gpu::abi::Mode,
         && u32_at(&rec, record::FLAGS) & 1 == 0
         && u64_at(&rec, record::RESOURCE) != u64_at(&actual, record::RESOURCE),
         || "corpus view lost display geometry, identities or completed present".to_string())?;
-    ensure(pixels == want.px[..4], || "corpus view lost source origin pixel".to_string())
+    want.matches(&pixels, what)
 }
 
 // Literal first-octant table from breengel-cpu-393, §5.5.
