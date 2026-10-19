@@ -2,9 +2,10 @@
 use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
+use core::panic::Location;
 #[cfg(feature = "testing")]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
@@ -86,6 +87,9 @@ const STATE_MASK: u32 = 0b11;
 struct FrameLedgerSlot {
     allocation: AtomicU32,
     leaf_refs: AtomicU32,
+    /// The allocation site of the current generation (`FRAME_SITES` index + 1),
+    /// or 0 when unknown: frames allocated before the ledger, or a full table.
+    site: AtomicU16,
 }
 
 impl FrameLedgerSlot {
@@ -93,6 +97,7 @@ impl FrameLedgerSlot {
         Self {
             allocation: AtomicU32::new(allocation),
             leaf_refs: AtomicU32::new(0),
+            site: AtomicU16::new(0),
         }
     }
 
@@ -182,6 +187,41 @@ impl FrameLedger {
 
 static FRAME_LEDGER: spin::Once<FrameLedger> = spin::Once::new();
 static FREE_FRAME_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+
+/// The code that allocated each frame: one entry per caller location of the
+/// allocation functions (`#[track_caller]`), so the census in
+/// `/proc/breenix/frames` can name the code that owns an allocated frame.
+const FRAME_SITE_SLOTS: usize = 256;
+static FRAME_SITES: [AtomicPtr<Location<'static>>; FRAME_SITE_SLOTS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; FRAME_SITE_SLOTS];
+
+/// The site number of `location`, entered in `FRAME_SITES` on first use; 0
+/// when the table is full. Lock-free, so any allocation context may call it.
+fn frame_site(location: &'static Location<'static>) -> u16 {
+    let wanted = location as *const Location<'static> as *mut Location<'static>;
+    let mut index = ((wanted as usize as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize;
+    for _ in 0..FRAME_SITE_SLOTS {
+        let entry = &FRAME_SITES[index];
+        let current = entry.load(Ordering::Acquire);
+        if current == wanted {
+            return index as u16 + 1;
+        }
+        if current.is_null() {
+            match entry.compare_exchange(
+                core::ptr::null_mut(),
+                wanted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return index as u16 + 1,
+                Err(other) if other == wanted => return index as u16 + 1,
+                Err(_) => {}
+            }
+        }
+        index = (index + 1) % FRAME_SITE_SLOTS;
+    }
+    0
+}
 const BOOTSTRAP_FREE_CAPACITY: usize = 64;
 
 struct BootstrapFreeFrames {
@@ -932,6 +972,7 @@ enum ClaimError {
     Untracked,
 }
 
+#[track_caller]
 fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
     let Some(ledger) = FRAME_LEDGER.get() else {
         return Ok(None);
@@ -959,6 +1000,8 @@ fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
                     .compare_exchange(observed, allocated, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
+                    slot.site
+                        .store(frame_site(Location::caller()), Ordering::Relaxed);
                     return Ok(Some(FrameLease {
                         frame,
                         index: index as u32,
@@ -978,6 +1021,7 @@ fn claim_frame(frame: PhysFrame) -> Result<Option<FrameLease>, ClaimError> {
     }
 }
 
+#[track_caller]
 fn allocate_claimed() -> Option<(PhysFrame, Option<FrameLease>)> {
     loop {
         let frame = allocate_candidate()?;
@@ -988,6 +1032,7 @@ fn allocate_claimed() -> Option<(PhysFrame, Option<FrameLease>)> {
     }
 }
 
+#[track_caller]
 pub fn allocate_frame() -> Option<PhysFrame> {
     allocate_claimed().map(|(frame, _)| frame)
 }
@@ -1012,6 +1057,7 @@ const MAX_CONTIGUOUS_ATTEMPTS: usize = 16;
 ///
 /// Fail-closed: returns `None` rather than a run that is not contiguous. A
 /// caller that cannot get real contiguity must fail its own initialization.
+#[track_caller]
 pub fn allocate_contiguous_frames(
     count: usize,
     out: &mut [Option<PhysFrame>],
@@ -1118,6 +1164,7 @@ fn prepare_contiguous_run(base: usize, run: usize) -> bool {
     true
 }
 
+#[track_caller]
 pub(crate) fn allocate_frame_leased() -> Option<FrameLease> {
     assert!(FRAME_LEDGER.get().is_some(), "frame ledger not initialized");
     allocate_claimed().and_then(|(_, lease)| lease)
@@ -1319,10 +1366,123 @@ pub fn memory_stats() -> MemoryStats {
     }
 }
 
+/// Allocated frames by the code that allocated them, and frames lost to the
+/// allocator, read from the ledger (`/proc/breenix/frames`).
+///
+/// `used` is what `/proc/meminfo` counts as in use: the frames the sequential
+/// allocator has handed out, less those on the free list. It is `allocated`
+/// plus `lost`, frames the ledger records as free that no free list holds (a
+/// return that found the list locked or full). The walk is not atomic against
+/// concurrent allocation, so the parts can disagree by the frames allocated or
+/// returned while it ran.
+pub fn frame_census() -> Result<alloc::string::String, i32> {
+    use core::fmt::Write;
+    const ENOMEM: i32 = -12;
+
+    let Some(ledger) = FRAME_LEDGER.get() else {
+        return Ok(alloc::string::String::from("ledger 0\n"));
+    };
+    // Per site (index 0 = unknown): frames, of which mapped by a process page
+    // table (owned leaf references) and registered external leaves.
+    let mut frames: Vec<[usize; 3]> = Vec::new();
+    frames
+        .try_reserve_exact(FRAME_SITE_SLOTS + 1)
+        .map_err(|_| ENOMEM)?;
+    frames.resize(FRAME_SITE_SLOTS + 1, [0; 3]);
+    let (mut allocated, mut free) = (0usize, 0usize);
+    for chunk in ledger.chunks.iter().filter_map(spin::Once::get) {
+        for slot in chunk.iter() {
+            match slot.load(Ordering::Relaxed) & STATE_MASK {
+                ST_ALLOCATED => {
+                    allocated += 1;
+                    let site = &mut frames[slot.site.load(Ordering::Relaxed) as usize];
+                    site[0] += 1;
+                    match slot.leaf_refs.load(Ordering::Relaxed) {
+                        0 => {}
+                        LEAF_EXTERNAL => site[2] += 1,
+                        _ => site[1] += 1,
+                    }
+                }
+                ST_FREE => free += 1,
+                _ => {}
+            }
+        }
+    }
+    let free_list = memory_stats().free_list_frames;
+    let frontier = NEXT_FREE_FRAME.load(Ordering::Relaxed);
+
+    // One row per source location; a location's statics may be duplicated
+    // across codegen units, so rows merge by file and line.
+    let mut rows: Vec<(&'static str, u32, [usize; 3])> = Vec::new();
+    rows.try_reserve_exact(FRAME_SITE_SLOTS + 1)
+        .map_err(|_| ENOMEM)?;
+    for (index, counts) in frames.iter().enumerate() {
+        if counts[0] == 0 {
+            continue;
+        }
+        let (file, line) = match index.checked_sub(1) {
+            None => ("unknown", 0),
+            Some(slot) => {
+                let location = FRAME_SITES[slot].load(Ordering::Acquire);
+                // SAFETY: entries are only ever set to `&'static Location`s.
+                match unsafe { location.as_ref() } {
+                    Some(location) => (location.file(), location.line()),
+                    None => ("unknown", 0),
+                }
+            }
+        };
+        match rows.iter_mut().find(|row| row.0 == file && row.1 == line) {
+            Some(row) => (0..3).for_each(|i| row.2[i] += counts[i]),
+            None => rows.push((file, line, *counts)),
+        }
+    }
+    rows.sort_unstable_by(|a, b| b.2[0].cmp(&a.2[0]));
+
+    let mut text = alloc::string::String::new();
+    text.try_reserve(64 + rows.len() * 80).map_err(|_| ENOMEM)?;
+    let _ = write!(
+        text,
+        "used {}\nallocated {}\nlost {}\nfree_list {}\n",
+        frontier.saturating_sub(free_list),
+        allocated,
+        free.saturating_sub(free_list),
+        free_list
+    );
+    for (file, line, counts) in rows {
+        let _ = writeln!(
+            text,
+            "site {} mapped={} external={} {}:{}",
+            counts[0],
+            counts[1],
+            counts[2],
+            short_source_path(file),
+            line
+        );
+    }
+    Ok(text)
+}
+
+/// A kernel source path without `kernel/src/`, and a dependency's (absolute,
+/// on the build host) as `<crate directory>/src/...`.
+fn short_source_path(file: &'static str) -> &'static str {
+    if let Some(kernel) = file.strip_prefix("kernel/src/") {
+        return kernel;
+    }
+    if !file.starts_with('/') {
+        return file;
+    }
+    let Some(src) = file.rfind("/src/") else {
+        return file.rsplit('/').next().unwrap_or(file);
+    };
+    let crate_start = file[..src].rfind('/').map_or(0, |slash| slash + 1);
+    &file[crate_start..]
+}
+
 /// A wrapper that allows using the global frame allocator with the mapper
 pub struct GlobalFrameAllocator;
 
 unsafe impl FrameAllocator<Size4KiB> for GlobalFrameAllocator {
+    #[track_caller]
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         allocate_frame()
     }

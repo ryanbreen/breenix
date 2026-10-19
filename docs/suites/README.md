@@ -259,6 +259,7 @@ they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds t
 SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
 SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 SUITE_SEQUENCE RESET <id> FAIL <why>
+SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
 SUITE_SEQUENCE READY <id>
 SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
 SUITE_SEQUENCE FAIL exec <id>

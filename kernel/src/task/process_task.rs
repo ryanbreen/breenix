@@ -1506,6 +1506,15 @@ fn reclaim_daemon() {
 
 /// Whether a receipt is queued or parked. Each queue is held on its own, as
 /// their lock order requires.
+/// Receipts waiting for a reclaim pass, and receipts parked by one
+/// (`/proc/breenix/frames`).
+pub fn reclaim_queue_lengths() -> (usize, usize) {
+    (
+        crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().len()),
+        crate::arch_without_interrupts(|| PARKED_PROCESS_RECLAIMS.lock().len()),
+    )
+}
+
 fn reclaim_work_queued() -> bool {
     crate::arch_without_interrupts(|| !PENDING_PROCESS_RECLAIMS.lock().is_empty())
         || crate::arch_without_interrupts(|| !PARKED_PROCESS_RECLAIMS.lock().is_empty())

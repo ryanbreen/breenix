@@ -9,6 +9,7 @@
 //! SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
 //! SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 //! SUITE_SEQUENCE RESET <id> FAIL <why>
+//! SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
 //! SUITE_SEQUENCE READY <id>
 //! SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
 //! SUITE_SEQUENCE FAIL exec <id>
@@ -33,7 +34,8 @@
 //!   Exec gives the next suite a fresh address space and the environment the kernel gave
 //!   the first. PID numbers, the page cache and kernel memory carry over. BEGIN and RESET report the free memory and kernel heap
 //!   `/proc/meminfo` shows as each suite starts, so memory an earlier suite left
-//!   allocated is visible.
+//!   allocated is visible, and the FRAMES lines after them name the code that
+//!   allocated the frames in use and what became of process page tables.
 //! - A watchdog ends a suite that makes no progress (no case starts or finishes) for
 //!   [`STALL_MS`]: SIGALRM from ITIMER_REAL prints STALLED with the cases reported so far
 //!   and hands off to the next suite. The handler uses system calls only, since the
@@ -111,6 +113,7 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
     if index == 0 {
         let entries = record_baseline();
         emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
+        frames(&ids[index]);
     } else {
         emit(&match reset() {
             Ok(reset) => {
@@ -120,6 +123,7 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
             }
             Err(why) => std::format!("SUITE_SEQUENCE RESET {} FAIL {why}", ids[index]),
         });
+        frames(&ids[index]);
     }
     // The walk is not the suite's progress: its own watchdog period starts at START.
     progress();
@@ -149,6 +153,15 @@ fn memory() -> String {
     match (field("MemFree:"), field("KernelHeapFree:")) {
         (Some(free), Some(heap)) => std::format!(" memfree={free}kB heapfree={heap}kB"),
         _ => String::new(),
+    }
+}
+
+/// `SUITE_SEQUENCE FRAMES <id> ...`: the frames in use as the suite starts and the code
+/// that allocated them, one record per line of `/proc/breenix/frames`.
+fn frames(id: &str) {
+    let Ok(text) = std::fs::read_to_string("/proc/breenix/frames") else { return };
+    for line in text.lines() {
+        emit(&std::format!("SUITE_SEQUENCE FRAMES {id} {line}"));
     }
 }
 
