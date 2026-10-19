@@ -193,8 +193,9 @@ class DriverPersistentTest(unittest.TestCase):
             d.line_start = offset
             d.challenge_persistent(text)
             d.challenge_persistent(text)  # the same partial line again is not a new prompt
-        for text in ('Breenix login: ', 'Password: ', 'bsh /root> ', 'bsh /root> ', 'bsh /root> ', 'bsh /root> ',
-                     'Breenix login: '):
+        for text in ('Breenix login: ', 'Password: ', 'bsh /root> ', 'bsh /root> writeF', 'bsh /root> writeFile(',
+                     'bsh /root> ', 'bsh /root> ', 'bsh /root> sy', 'bsh /root> ', 'Breenix login: '):
+            # Redraws of a line being typed are prompts with text after them, not fresh ones.
             prompt(text)
         self.assertEqual(sent, ['root', 'fixture', 'writeFile("/root/a", "1")', 'sync', 'sync', 'exit'])
         self.assertTrue(d.run_done)

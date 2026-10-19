@@ -1184,9 +1184,12 @@ class Driver:
         if not persistent(self.args) or len(commands) == 1 or self.kernel_started is None or self.fatal_at is not None:
             return
         fresh = self.line_start > self.sent_at
+        # bsh redraws its prompt and the line typed so far on each key; only a prompt with nothing after it is a
+        # fresh one, once the command before it has finished.
+        prompt = re.fullmatch(r'bsh [^>\n]*>\s*', text) is not None
         # Steps: 0 the login prompt, 1 the password prompt, then one shell prompt per command, then logout.
         last = 2 + len(commands)
-        if self.run_step == 0 and fresh and 'login: ' in text:
+        if self.run_step == 0 and fresh and text.rstrip().endswith('login:'):
             self.run_step, self.sent_at = 1, self.line_start
             self.console_send(self.site['CONSOLE_USER'])
         elif self.run_step == 1 and fresh and 'Password: ' in text:
@@ -1194,16 +1197,16 @@ class Driver:
             self.console_send(self.site['CONSOLE_PASSWORD'])
         elif 2 <= self.run_step <= last and 'Login incorrect' in text:
             raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account')
-        elif 2 <= self.run_step < last and fresh and re.search(r'bsh [^\n]*>', text):
+        elif 2 <= self.run_step < last and fresh and prompt:
             self.sent_at = self.line_start
             self.event('persistent-command', index=self.run_step - 1, of=len(commands))
             self.console_send(commands[self.run_step - 2])
             self.run_step += 1
-        elif self.run_step == last and fresh and re.search(r'bsh [^\n]*>', text):
+        elif self.run_step == last and fresh and prompt:
             self.sent_at = self.line_start
             self.run_step = last + 1
             self.console_send('exit')
-        elif self.run_step == last + 1 and fresh and 'login: ' in text:
+        elif self.run_step == last + 1 and fresh and text.rstrip().endswith('login:'):
             self.run_step = last + 2
             self.run_done = True
             self.event('persistent-commands-done', commands=len(commands))
