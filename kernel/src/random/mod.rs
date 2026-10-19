@@ -4,8 +4,9 @@
 //! read to the next. Its inputs:
 //!
 //! - At boot, the CPU's random-number instructions where the CPU reports
-//!   them (x86-64 RDSEED, else RDRAND; ARMv8.5 RNDRRS, else RNDR), then
-//!   timer jitter: the cycle-counter time of a bounded short memory walk.
+//!   them (x86-64 RDSEED, else RDRAND; ARMv8.5 RNDRRS, else RNDR), an entropy
+//!   device where the machine has one (virtio-rng), and windows of timer
+//!   jitter: the counter time of a fixed memory walk (`jitter.rs`).
 //! - Device events (`add_event`): the cycle counter at each received network
 //!   frame and each terminal input byte, gathered lock-free and folded in at
 //!   the next read.
@@ -14,26 +15,30 @@
 //!
 //! The pool is ready once `READY_BITS` have been credited. Credit is
 //! conservative: a full word per RDSEED or RNDRRS word, half a word per RDRAND
-//! or RNDR word (each is a generator's output, not raw entropy). Timing and
-//! device events add input but no credit: variation does not establish entropy.
-//! Without a hardware RNG the pool stays unready.
+//! or RNDR word (each is a generator's output, not raw entropy), 8 bits per
+//! byte from an entropy device (it exists to supply them), and 1/8 bit per
+//! jitter sample once the NIST SP 800-90B health tests pass (`health.rs`):
+//! nothing before the start-up tests pass, nothing after any failure.
+//! Device events add input but no credit: their timing is not assessed.
+//! Without any credited source the pool stays unready.
 
 mod blake2s;
 mod chacha20;
 pub(crate) mod erase;
 mod generator;
+mod health;
+mod jitter;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use blake2s::Blake2s;
 use generator::{Generator, MAX_FILL};
 use spin::Mutex;
 
 /// Credited bits at which the pool counts as initialized.
 pub const READY_BITS: u32 = 256;
 
-/// Bounded, uncredited supplemental timing input.
-const JITTER_SAMPLES: u32 = 4096;
+/// Most jitter windows boot seeding takes (4096 samples).
+const JITTER_MAX_WINDOWS: u32 = 8;
 
 /// The generator's key. A leaf lock, held only with interrupts masked; callers
 /// copy to user memory after releasing it.
@@ -66,9 +71,25 @@ pub struct BootReport {
     pub rdseed: bool,
     pub rndr: bool,
     pub hardware_bits: u32,
-    pub jitter_samples: u32,
-    pub jitter_bits: u32,
+    pub device_bits: u32,
+    pub jitter: JitterReport,
     pub ready: bool,
+}
+
+/// The jitter windows boot seeding took, and the worst figures they showed
+/// against the health tests' cutoffs.
+#[derive(Default)]
+pub struct JitterReport {
+    pub windows: u32,
+    pub passed: u32,
+    pub bits: u32,
+    pub longest_run: u32,
+    pub most_common: u32,
+}
+
+impl JitterReport {
+    pub const RUN_CUTOFF: u32 = health::RCT_CUTOFF;
+    pub const COMMON_CUTOFF: u32 = health::APT_CUTOFF;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -201,29 +222,67 @@ pub fn add_event(event: Event, value: u64) {
     EVENTS[n as usize % EVENT_SLOTS].fetch_xor(sample.rotate_left(rotation), Ordering::Relaxed);
 }
 
-/// Mix bounded timer measurements without asserting their unpredictability.
-fn collect_timer_jitter() -> u32 {
-    let mut hash = Blake2s::new(32, &[]);
-    let mut scratch = [0u64; 32];
-    let mut walk = counter();
-    for _ in 0..JITTER_SAMPLES {
-        let start = counter();
-        for i in 0..16 {
-            let j = (walk as usize).wrapping_add(i * 5) % scratch.len();
-            scratch[j] = core::hint::black_box(scratch[j].wrapping_add(walk).rotate_left(9));
-            walk ^= scratch[j];
-        }
-        hash.update(&counter().wrapping_sub(start).to_le_bytes());
-    }
+/// Take jitter windows: the start-up windows first, then more until the pool
+/// is ready, up to `JITTER_MAX_WINDOWS`, stopping at the first failure. Each
+/// window is mixed in; `health::Credit` decides what it earns.
+fn collect_jitter() -> JitterReport {
+    let mut report = JitterReport::default();
+    let Some(mut source) = jitter::Jitter::new() else {
+        return report;
+    };
+    let startup = health::STARTUP_SAMPLES / health::WINDOW;
+    let mut earned = health::Credit::new();
     let mut digest = [0u8; 32];
-    hash.finalize(&mut digest);
-    with_generator(|g| g.mix(&[b"jitter", &digest, &walk.to_le_bytes()]));
+    while report.windows < JITTER_MAX_WINDOWS
+        && !earned.failed()
+        && (report.windows < startup || !is_ready())
+    {
+        let verdict = source.window(&mut digest);
+        with_generator(|g| g.mix(&[b"jitter", &digest]));
+        report.windows += 1;
+        report.passed += u32::from(verdict.passed());
+        report.longest_run = report.longest_run.max(verdict.longest_run);
+        report.most_common = report.most_common.max(verdict.most_common);
+        let bits = earned.record(&verdict);
+        report.bits += bits;
+        credit(bits);
+    }
     erase::wipe(&mut digest);
-    JITTER_SAMPLES
+    report
+}
+
+/// Bytes from the machine's entropy device into `out`; 0 without one.
+#[cfg(target_arch = "aarch64")]
+fn device_read(out: &mut [u8]) -> usize {
+    crate::drivers::virtio::rng::read(out)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn device_read(_out: &mut [u8]) -> usize {
+    0
+}
+
+/// Ask the entropy device for a seed; each byte it returns earns 8 bits.
+fn reseed_device() -> u32 {
+    let mut seed = [0u8; 64];
+    let got = device_read(&mut seed);
+    if got > 0 {
+        with_generator(|g| g.mix(&[b"device", &seed[..got]]));
+    }
+    erase::wipe(&mut seed);
+    let bits = got as u32 * 8;
+    credit(bits);
+    bits
+}
+
+/// Ask the sources that can be asked again: the CPU's instructions and the
+/// entropy device. Returns the bits credited.
+pub fn reseed() -> u32 {
+    reseed_hardware() + reseed_device()
 }
 
 /// Retry the CPU RNG after transient failures; only successful words earn credit.
-pub fn reseed_hardware() -> u32 {
+fn reseed_hardware() -> u32 {
     let mut seed = [0u8; 64];
     let mut hardware_bits = 0;
     for chunk in seed.chunks_exact_mut(8) {
@@ -251,14 +310,15 @@ pub fn init() -> BootReport {
     HARDWARE.store(hardware, Ordering::Relaxed);
 
     let hardware_bits = reseed_hardware();
-    let jitter_samples = collect_timer_jitter();
+    let device_bits = reseed_device();
+    let jitter = collect_jitter();
     BootReport {
         rdrand: hardware & HW_RDRAND != 0,
         rdseed: hardware & HW_RDSEED != 0,
         rndr: hardware & HW_RNDR != 0,
         hardware_bits,
-        jitter_samples,
-        jitter_bits: 0,
+        device_bits,
+        jitter,
         ready: is_ready(),
     }
 }

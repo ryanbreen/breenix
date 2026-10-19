@@ -41,6 +41,10 @@ pub mod net_mmio;
 pub mod net_pci;
 pub mod pci_transport;
 #[cfg(target_arch = "aarch64")]
+pub mod rng;
+#[cfg(target_arch = "aarch64")]
+pub mod rng_queue;
+#[cfg(target_arch = "aarch64")]
 pub mod sound_mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod virgl;

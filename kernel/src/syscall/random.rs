@@ -72,9 +72,10 @@ pub fn sys_getrandom(buf_ptr: u64, buflen: u64, flags: u32) -> SyscallResult {
     }
 }
 
-/// Sleep between bounded hardware retries. Timing and device input cannot
-/// establish readiness, so a machine without a CPU RNG may wait indefinitely,
-/// but it must leave the CPU available and let caught/fatal signals end the call.
+/// Sleep between bounded retries of the sources that can be asked again (the
+/// CPU's instructions and the entropy device). A machine whose sources earned
+/// no credit at boot may wait indefinitely, but it must leave the CPU
+/// available and let caught/fatal signals end the call.
 fn wait_ready() -> Result<(), i32> {
     use crate::task::thread::ThreadState;
     use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
@@ -84,7 +85,7 @@ fn wait_ready() -> Result<(), i32> {
         if let Some(error) = super::check_signals_for_wait() {
             return Err(error);
         }
-        crate::random::reseed_hardware();
+        crate::random::reseed();
         let deadline = crate::signal::monotonic_nanos().saturating_add(10_000_000);
         let outcome =
             WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(deadline), || {

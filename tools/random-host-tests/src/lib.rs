@@ -1,7 +1,9 @@
-//! Host checks for the kernel random pool's primitives and generator, compiled
-//! from the kernel's own files. Vectors are the published ones: RFC 8439
-//! (ChaCha20) sections 2.1.1, 2.2.1, 2.3.2 and Appendix A.1, and RFC 7693
-//! (BLAKE2s) Appendix B and the Appendix E self-test.
+//! Host checks for the kernel random pool's primitives, generator and
+//! entropy sources, compiled from the kernel's own files. Vectors are the
+//! published ones: RFC 8439 (ChaCha20) sections 2.1.1, 2.2.1, 2.3.2 and
+//! Appendix A.1, RFC 7693 (BLAKE2s) Appendix B and the Appendix E self-test,
+//! NIST SP 800-90B sections 4.3 and 4.4 (`health_checks`), and the virtio 1.x
+//! specification (`rng_queue_checks`).
 #![cfg(test)]
 
 #[path = "../../../kernel/src/random/blake2s.rs"]
@@ -12,6 +14,13 @@ mod chacha20;
 mod generator;
 #[path = "../../../kernel/src/random/erase.rs"]
 mod erase;
+#[path = "../../../kernel/src/random/health.rs"]
+mod health;
+#[path = "../../../kernel/src/drivers/virtio/rng_queue.rs"]
+mod rng_queue;
+
+mod health_checks;
+mod rng_queue_checks;
 
 use blake2s::Blake2s;
 use generator::{Generator, MAX_FILL};

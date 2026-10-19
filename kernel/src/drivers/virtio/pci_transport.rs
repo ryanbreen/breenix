@@ -87,7 +87,7 @@ const STATUS_ACKNOWLEDGE: u8 = 1;
 const STATUS_DRIVER: u8 = 2;
 const STATUS_DRIVER_OK: u8 = 4;
 const STATUS_FEATURES_OK: u8 = 8;
-const STATUS_FAILED: u8 = 128;
+pub const STATUS_FAILED: u8 = 128;
 
 // =============================================================================
 // VirtIO Device Types (from VirtIO spec)
@@ -98,6 +98,7 @@ pub mod device_id {
     pub const NETWORK: u32 = 1;
     pub const BLOCK: u32 = 2;
     pub const CONSOLE: u32 = 3;
+    pub const ENTROPY: u32 = 4;
     pub const GPU: u32 = 16;
     pub const INPUT: u32 = 18;
     pub const SOUND: u32 = 25;
@@ -800,6 +801,7 @@ fn pci_device_id_to_virtio(dev: &PciDevice) -> u32 {
         0x1000 => device_id::NETWORK,
         0x1001 => device_id::BLOCK,
         0x1003 => device_id::CONSOLE,
+        0x1005 => device_id::ENTROPY,
         0x1019 => device_id::SOUND,
         _ => 0, // Unknown
     }
@@ -831,6 +833,7 @@ pub fn device_type_name(device_id: u32) -> &'static str {
         device_id::NETWORK => "network",
         device_id::BLOCK => "block",
         device_id::CONSOLE => "console",
+        device_id::ENTROPY => "entropy",
         device_id::GPU => "GPU",
         device_id::INPUT => "input",
         device_id::SOUND => "sound",
