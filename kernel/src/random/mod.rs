@@ -5,8 +5,7 @@
 //!
 //! - At boot, the CPU's random-number instructions where the CPU reports
 //!   them (x86-64 RDSEED, else RDRAND; ARMv8.5 RNDRRS, else RNDR), then
-//!   timer jitter: the cycle-counter time of a short memory walk, sampled
-//!   until the pool is ready and at least `JITTER_MIN_SAMPLES` were taken.
+//!   timer jitter: the cycle-counter time of a bounded short memory walk.
 //! - Device events (`add_event`): the cycle counter at each received network
 //!   frame and each terminal input byte, gathered lock-free and folded in at
 //!   the next read.
@@ -15,14 +14,14 @@
 //!
 //! The pool is ready once `READY_BITS` have been credited. Credit is
 //! conservative: a full word per RDSEED or RNDRRS word, half a word per RDRAND
-//! or RNDR word (each is a generator's output, not raw entropy), one bit per
-//! `JITTER_CHANGES_PER_BIT` jitter samples whose time differs from the one
-//! before. Device events add input but no credit.
+//! or RNDR word (each is a generator's output, not raw entropy). Timing and
+//! device events add input but no credit: variation does not prove entropy.
+//! Without a hardware RNG the pool stays unready.
 
 mod blake2s;
 mod chacha20;
-mod generator;
 pub(crate) mod erase;
+mod generator;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
@@ -33,17 +32,8 @@ use spin::Mutex;
 /// Credited bits at which the pool counts as initialized.
 pub const READY_BITS: u32 = 256;
 
-/// Jitter samples whose time changed, per credited bit.
-const JITTER_CHANGES_PER_BIT: u32 = 64;
-
-/// Bits credited per batch of jitter folded into the generator.
-const JITTER_BATCH_BITS: u32 = 32;
-
-/// Samples a jitter round takes before it stops, even when hardware already readied the pool.
-const JITTER_MIN_SAMPLES: u32 = 4096;
-
-/// Samples one jitter round takes at most.
-const JITTER_MAX_SAMPLES: u32 = 1 << 22;
+/// Bounded supplemental timing input; never credited as entropy.
+const JITTER_SAMPLES: u32 = 4096;
 
 /// The generator's key. A leaf lock, held only with interrupts masked; callers
 /// copy to user memory after releasing it.
@@ -188,7 +178,9 @@ fn with_generator<R>(f: impl FnOnce(&mut Generator) -> R) -> R {
 }
 
 fn credit(bits: u32) {
-    let total = CREDITED_BITS.fetch_add(bits, Ordering::AcqRel).saturating_add(bits);
+    let total = CREDITED_BITS
+        .fetch_add(bits, Ordering::AcqRel)
+        .saturating_add(bits);
     if total >= READY_BITS {
         READY.store(true, Ordering::Release);
     }
@@ -209,54 +201,29 @@ pub fn add_event(event: Event, value: u64) {
     EVENTS[n as usize % EVENT_SLOTS].fetch_xor(sample.rotate_left(rotation), Ordering::Relaxed);
 }
 
-/// Sample timer jitter until `JITTER_MIN_SAMPLES` are taken and the pool is
-/// ready, or `JITTER_MAX_SAMPLES` are taken. Returns (samples, credited bits).
-fn collect_timer_jitter() -> (u32, u32) {
+/// Mix bounded timer measurements without asserting their unpredictability.
+fn collect_timer_jitter() -> u32 {
     let mut hash = Blake2s::new(32, &[]);
     let mut scratch = [0u64; 32];
     let mut walk = counter();
-    let mut previous = 0u64;
-    let mut changed = 0u32;
-    let mut samples = 0u32;
-    let mut credited = 0u32;
-    while samples < JITTER_MAX_SAMPLES {
+    for _ in 0..JITTER_SAMPLES {
         let start = counter();
         for i in 0..16 {
             let j = (walk as usize).wrapping_add(i * 5) % scratch.len();
             scratch[j] = core::hint::black_box(scratch[j].wrapping_add(walk).rotate_left(9));
             walk ^= scratch[j];
         }
-        let delta = counter().wrapping_sub(start);
-        hash.update(&delta.to_le_bytes());
-        changed += (delta != previous) as u32;
-        previous = delta;
-        samples += 1;
-
-        if changed >= JITTER_BATCH_BITS * JITTER_CHANGES_PER_BIT {
-            let mut digest = [0u8; 32];
-            core::mem::replace(&mut hash, Blake2s::new(32, &[])).finalize(&mut digest);
-            with_generator(|g| g.mix(&[b"jitter", &digest]));
-            credit(JITTER_BATCH_BITS);
-            credited += JITTER_BATCH_BITS;
-            changed = 0;
-        }
-        if samples >= JITTER_MIN_SAMPLES && is_ready() {
-            break;
-        }
+        hash.update(&counter().wrapping_sub(start).to_le_bytes());
     }
-    // The uncredited remainder still goes in.
     let mut digest = [0u8; 32];
     hash.finalize(&mut digest);
     with_generator(|g| g.mix(&[b"jitter", &digest, &walk.to_le_bytes()]));
-    (samples, credited)
+    erase::wipe(&mut digest);
+    JITTER_SAMPLES
 }
 
-/// Seed the pool at boot. Runs once, before the network stack and before any
-/// user process.
-pub fn init() -> BootReport {
-    let hardware = probe_hardware();
-    HARDWARE.store(hardware, Ordering::Relaxed);
-
+/// Retry the CPU RNG after transient failures; only successful words earn credit.
+pub fn reseed_hardware() -> u32 {
     let mut seed = [0u8; 64];
     let mut hardware_bits = 0;
     for chunk in seed.chunks_exact_mut(8) {
@@ -271,25 +238,28 @@ pub fn init() -> BootReport {
             chunk.copy_from_slice(&word.to_le_bytes());
         }
     }
-    with_generator(|g| g.mix(&[b"boot", &counter().to_le_bytes(), &seed]));
+    with_generator(|g| g.mix(&[b"hardware", &seed]));
+    erase::wipe(&mut seed);
     credit(hardware_bits);
+    hardware_bits
+}
 
-    let (jitter_samples, jitter_bits) = collect_timer_jitter();
+/// Seed the pool at boot. Runs once, before the network stack and before any
+/// user process.
+pub fn init() -> BootReport {
+    let hardware = probe_hardware();
+    HARDWARE.store(hardware, Ordering::Relaxed);
+
+    let hardware_bits = reseed_hardware();
+    let jitter_samples = collect_timer_jitter();
     BootReport {
         rdrand: hardware & HW_RDRAND != 0,
         rdseed: hardware & HW_RDSEED != 0,
         rndr: hardware & HW_RNDR != 0,
         hardware_bits,
         jitter_samples,
-        jitter_bits,
+        jitter_bits: 0,
         ready: is_ready(),
-    }
-}
-
-/// Collect timer jitter until the pool is ready. What a blocking read waits for.
-pub fn wait_ready() {
-    while !is_ready() {
-        collect_timer_jitter();
     }
 }
 
@@ -301,7 +271,13 @@ fn mix_fresh(g: &mut Generator) {
     }
     events[8 * EVENT_SLOTS..].copy_from_slice(&EVENT_COUNT.load(Ordering::Relaxed).to_le_bytes());
     let hardware = hardware_word(false).unwrap_or(0);
-    g.mix(&[b"read", &counter().to_le_bytes(), &hardware.to_le_bytes(), &events]);
+    g.mix(&[
+        b"read",
+        &counter().to_le_bytes(),
+        &hardware.to_le_bytes(),
+        &events,
+    ]);
+    erase::wipe(&mut events);
 }
 
 /// Fill `out` (at most 256 bytes) from the pool. The first chunk of a read
@@ -319,14 +295,15 @@ pub fn fill_chunk(out: &mut [u8], fresh: bool) {
 pub const CHUNK: usize = MAX_FILL;
 
 /// Fill `out` from the pool, whether or not it is ready yet. For kernel users
-/// that need unpredictable values and cannot wait (port numbers, IDs).
+/// that cannot wait (port numbers, IDs). Before readiness, unpredictability
+/// is not guaranteed.
 pub fn fill(out: &mut [u8]) {
     for (i, chunk) in out.chunks_mut(CHUNK).enumerate() {
         fill_chunk(chunk, i == 0);
     }
 }
 
-/// One unpredictable `u64` from the pool (see `fill`).
+/// One `u64` from the pool (see `fill` for readiness limits).
 pub fn next_u64() -> u64 {
     let mut bytes = [0u8; 8];
     fill(&mut bytes);

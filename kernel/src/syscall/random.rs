@@ -26,7 +26,8 @@ const MAX_BYTES: u64 = 33_554_431;
 /// Returns: number of bytes written (at most `MAX_BYTES`; fewer if the buffer
 /// faults part way through), or negative errno: EINVAL for unknown flags or
 /// GRND_INSECURE with GRND_RANDOM, EAGAIN with GRND_NONBLOCK before the pool
-/// is initialized, EFAULT if no byte could be written.
+/// is initialized, EINTR if a signal interrupts initialization, EFAULT if no
+/// byte could be written.
 pub fn sys_getrandom(buf_ptr: u64, buflen: u64, flags: u32) -> SyscallResult {
     if flags & !(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE) != 0
         || flags & (GRND_INSECURE | GRND_RANDOM) == (GRND_INSECURE | GRND_RANDOM)
@@ -37,7 +38,9 @@ pub fn sys_getrandom(buf_ptr: u64, buflen: u64, flags: u32) -> SyscallResult {
         if flags & GRND_NONBLOCK != 0 {
             return SyscallResult::Err(ErrorCode::TryAgain as u64);
         }
-        crate::random::wait_ready();
+        if let Err(error) = wait_ready() {
+            return SyscallResult::Err(error as u64);
+        }
     }
     if buflen == 0 {
         return SyscallResult::Ok(0);
@@ -67,4 +70,48 @@ pub fn sys_getrandom(buf_ptr: u64, buflen: u64, flags: u32) -> SyscallResult {
     } else {
         SyscallResult::Ok(written as u64)
     }
+}
+
+/// Sleep between bounded hardware retries. Timing and device input cannot
+/// establish readiness, so a machine without a CPU RNG may wait indefinitely,
+/// but it must leave the CPU available and let caught/fatal signals end the call.
+fn wait_ready() -> Result<(), i32> {
+    use crate::task::thread::ThreadState;
+    use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
+    static WAITERS: WaitQueueHead = WaitQueueHead::new();
+
+    while !crate::random::is_ready() {
+        if let Some(error) = super::check_signals_for_wait() {
+            return Err(error);
+        }
+        crate::random::reseed_hardware();
+        let deadline = crate::signal::monotonic_nanos().saturating_add(10_000_000);
+        let outcome =
+            WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(deadline), || {
+                !crate::random::is_ready()
+            });
+        match outcome {
+            PrepareOutcome::Mismatch => {
+                WAITERS.finish_wait();
+            }
+            PrepareOutcome::PublishFailed => {
+                WAITERS.finish_wait();
+                return Err(super::errno::ESRCH);
+            }
+            PrepareOutcome::OutOfMemory => return Err(super::errno::ENOMEM),
+            PrepareOutcome::Queued => {
+                // Recheck after publication: a signal that arrived before it
+                // already spent its wake and must not be slept through.
+                let interrupted = super::check_signals_for_wait();
+                if interrupted.is_none() {
+                    crate::task::waitqueue::schedule_current_wait();
+                }
+                WAITERS.finish_wait();
+                if let Some(error) = interrupted.or_else(super::check_signals_for_wait) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
 }
