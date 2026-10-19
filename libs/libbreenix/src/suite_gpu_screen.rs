@@ -12,6 +12,15 @@ pub(super) struct GpuScreen {
 impl GpuScreen {
     pub fn new() -> Self { Self { context: 0, target: 0 } }
 
+    /// Create the view's context and scanout target before the first case, as the first
+    /// `draw` would. The runner opens the view before its memory record's first sample and
+    /// keeps it for the final panel, so both samples count it.
+    pub fn open(&mut self) -> Result<(), String> {
+        // As in `draw`: no test-control point can alter the view or be spent by it.
+        let _ = gpu::tc_disarm_all();
+        self.create()
+    }
+
     /// Draw the strip and present it. A failure leaves the view as it was and is the
     /// caller's to report; the cases run either way (`docs/gui/gpu.md` section 1.10).
     pub fn draw(&mut self, states: &[Vec<State>]) -> Result<(), String> {
@@ -29,18 +38,7 @@ impl GpuScreen {
                 self.target = 0;
             }
         }
-        if self.context == 0 {
-            self.context = gpu::context_create().map_err(|e| std::format!("context: errno {}", -e))?;
-            match gpu::scanout_target_create(abi::format::B8G8R8A8, 2560, 1600) {
-                Ok(t) => self.target = t,
-                Err(e) => {
-                    let _ = gpu::context_destroy(self.context);
-                    self.context = 0;
-                    return Err(std::format!("target: errno {}", -e));
-                }
-            }
-            self.settle();
-        }
+        self.create()?;
         let mut stream = Vec::new();
         encode::begin(&mut stream, self.target);
         encode::clear(&mut stream, 0xFF18_1512);
@@ -70,6 +68,25 @@ impl GpuScreen {
         if r != 0 || p.answer != success {
             return Err(std::format!("present: errno {}, answer {:#x}", -r, p.answer));
         }
+        Ok(())
+    }
+
+    /// Create the context and its 2560x1600 scanout target unless the view has them, and
+    /// wait for the context's warm-up.
+    fn create(&mut self) -> Result<(), String> {
+        if self.context != 0 {
+            return Ok(());
+        }
+        self.context = gpu::context_create().map_err(|e| std::format!("context: errno {}", -e))?;
+        match gpu::scanout_target_create(abi::format::B8G8R8A8, 2560, 1600) {
+            Ok(t) => self.target = t,
+            Err(e) => {
+                let _ = gpu::context_destroy(self.context);
+                self.context = 0;
+                return Err(std::format!("target: errno {}", -e));
+            }
+        }
+        self.settle();
         Ok(())
     }
 

@@ -497,6 +497,7 @@ impl Suite {
         // A full run as PID 1 keeps the memory record; a one-case run is not
         // full-suite evidence, and a suite run from a shell does not reap others.
         let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        screen.prepare();
         let before = if recording { memory_sample(self.id, "before") } else { None };
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
@@ -1188,6 +1189,19 @@ impl Screen {
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
         Screen { live: fb.is_some() && !off, fb, gpu: None, gpu_failure: None, area: None }
+    }
+
+    /// Before the memory record's first sample, create what the view keeps until its final
+    /// panel: the GPU view's context and scanout target, as `open` has already mapped a
+    /// framebuffer suite's display. Both samples then count it.
+    fn prepare(&mut self) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            let failed = gpu.open().err();
+            if failed.is_some() && failed != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", failed.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = failed;
+        }
     }
 
     fn live_on(&self) -> bool { self.live }
