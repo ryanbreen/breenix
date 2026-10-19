@@ -2071,9 +2071,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 
     #[cfg(target_arch = "aarch64")]
     {
-        // Exercise the known unproved immediate-release path before the leak
-        // measurement. Its intentional abandonment is therefore present in
-        // both allocator baselines and cannot disguise a deferred-root leak.
+        // Exercise the non-live-root exit path before the leak measurement:
+        // it releases the child's leaves at once and defers its tables to a
+        // receipt, which is retired below, so both allocator baselines include
+        // it and it cannot disguise a deferred-root leak.
         let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => alloc::boxed::Box::new(page_table),
             Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
@@ -2113,6 +2114,21 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
         // #813: PM scope ended; release removed rows before further observations.
         retired_rows.clear();
+        let baseline_deadline = retirement_oracle_quiesce_deadline();
+        while crate::task::process_task::boot_reclaim_locations(immediate.0.as_u64())
+            != (false, false)
+        {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if retirement_oracle_clock_now() >= baseline_deadline {
+                return TestResult::Fail("baseline child's deferred tables did not retire");
+            }
+        }
     }
 
     let mut pairing_child_pids = [0u64; 64];
