@@ -1290,7 +1290,6 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=426):
             self.finish(d.check_deadlines, m.EXIT_HUNG)
 
-    # S35: an inactivity timeout is retryable, with the timeout status, not a launch failure.
     def test_suite_deadline_and_attempt_ceiling_stop_unfinished_boots(self):
         d = self.driver
         d.args.mode = 'suite'
@@ -1299,7 +1298,7 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=530):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=531):
-            self.finish(d.check_deadlines, m.EXIT_HUNG)
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
         d.lease_ceiling = d.t0 + boot.ceiling_seconds(d.args)
         d.kernel_started = d.last_serial = 1419
         with patch.object(m, 'now', return_value=1419):
@@ -1313,11 +1312,14 @@ class DriverTest(StateTest):
         self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
         d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
         d.last_serial = 900
+        d.lease_ceiling = 2000
         d.on_line('SUITE processes START cases=154', observed_at=500)
+        d.on_line('SUITE processes CASE fork PASS ms=1', observed_at=910)
+        self.assertEqual(d.lease_ceiling, 2000)
         with patch.object(m, 'now', return_value=920):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=921):
-            self.finish(d.check_deadlines, m.EXIT_HUNG)
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
 
     def test_404_and_fatal_capture_graces(self):
         d = self.driver

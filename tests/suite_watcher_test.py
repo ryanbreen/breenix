@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((ROOT / "docs/suites/directories.json").read_text())
@@ -55,6 +56,29 @@ while True:
 
 
 class SuiteWatcherTest(unittest.TestCase):
+    def test_case_progress_cannot_extend_suite_done_deadlines(self):
+        for monitor in ('watch-qemu.py', 'wait-boot-done.py'):
+            with self.subTest(monitor=monitor), tempfile.TemporaryDirectory() as tmp:
+                serial = Path(tmp) / 'serial'
+                serial.write_text('SUITE directories START cases=117\n')
+                elapsed = [0.0]
+                def tick(seconds):
+                    elapsed[0] += seconds
+                    with serial.open('a') as stream:
+                        stream.write('SUITE directories CASE progress PASS ms=1\n')
+                module = runpy.run_path(str(ROOT / 'scripts' / monitor))
+                entry = module['watch'] if monitor == 'watch-qemu.py' else module['main']
+                with patch.object(time, 'monotonic', side_effect=lambda: elapsed[0]), \
+                     patch.object(time, 'sleep', side_effect=tick):
+                    if monitor == 'watch-qemu.py':
+                        self.assertEqual(entry(Mock(poll=lambda: None), serial, 'suite',
+                                               'directories,smoke', 0, 1, 0, Mock()), 'deadline')
+                    else:
+                        with patch.object(sys, 'argv', [monitor, str(serial), 'suite',
+                                                       '--suite', 'directories,smoke', '--timeout', '1']):
+                            self.assertEqual(entry(), 124)
+                self.assertLess(elapsed[0], 2)
+
     def test_partial_sequence_timeout_has_the_retryable_timeout_status(self):
         result, _ = self.replay(b'SUITE directories DONE passed=1 failed=0 skipped=0 total=1\n'
                                 b'SUITE smoke START cases=5\n', suite='directories,smoke',

@@ -17,13 +17,13 @@
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --suite ID,ID,...|all  for --mode suite: several suites in one boot, in order (docs/suites/README.md,
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
-#                        with --gpu-gl); --gate-timeout bounds time without suite progress
+#                        with --gpu-gl); --gate-timeout bounds each suite's wait for DONE
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
-#   --gate-timeout SECONDS  suite progress timeout (default 1800), even with --idle-exit 0
+#   --gate-timeout SECONDS  per-suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop

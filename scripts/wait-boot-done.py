@@ -86,9 +86,10 @@ def main():
             parser.error("BREENIX_SUITE_HOLD must be a nonnegative number of seconds")
     done_at = None
     deadline = time.monotonic() + args.timeout
-    # Suite timeouts measure progress inactivity; the launcher scores the sequence
-    # after the VM stops (suite-sequence.py score).
+    # Each suite boundary starts a new DONE deadline; case progress cannot extend it.
     sequence = args.mode == "suite" and "," in args.suite
+    boundaries = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))["boundaries"] if sequence else None
+    started = 0
     while True:
         try:
             serial = args.serial.read_bytes().decode("utf-8", errors="replace")
@@ -97,6 +98,8 @@ def main():
             result = completion(serial, args.mode, args.suite, args.only)
         except FileNotFoundError:
             result = serial = None
+        if sequence and serial is not None and boundaries(serial) > started:
+            started, deadline = boundaries(serial), time.monotonic() + args.timeout
         if result is not None and sequence:
             ok, reason = result
             clock_ok, clock_reason = clock.verdict()
@@ -123,7 +126,7 @@ def main():
         if progress.stalled():
             progress.record()
             return 124
-        if time.monotonic() >= (progress.last_at + args.timeout if args.mode == "suite" else deadline):
+        if time.monotonic() >= deadline:
             print(f"FAIL: no {args.mode} DONE within {args.timeout} seconds")
             return 124 if sequence else 1
         time.sleep(1)

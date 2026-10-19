@@ -331,8 +331,10 @@ watchdog. If the kernel itself stops, no code in the boot can move to the next s
 launcher's stall watchdog ends the boot. Unreached suites are NOT-RUN in that boot's
 record and are requested again in the next boot.
 
-Suite timeouts measure time without progress (`--gate-timeout` on ARM64 QEMU, Parallels
-and VMware; 420 s on x86-metal). Suite progress also extends metal's saved lease ceiling.
+Each suite has a DONE deadline (`--gate-timeout` on ARM64 QEMU, Parallels
+and VMware; 420 s on x86-metal), reset at suite boundaries, never by case progress.
+The independent 120 s inactivity watchdog can stop a boot earlier. Metal's saved
+attempt ceiling is fixed at power-on and includes the requested suites' deadlines.
 The sequence is finished at `SUITE_SEQUENCE DONE`; the last suite keeps its final panel. `scripts/suite-sequence.py score LIST SERIAL [--disk IMAGE]` then scores each
 suite from its own part of the serial (from where it begins to where the next begins, so a
 later kernel panic fails only the suite it happened in) and prints one line per suite:

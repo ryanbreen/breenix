@@ -873,15 +873,8 @@ class Driver:
                 and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if self.args.mode == 'suite' and re.match(r'^(?:SUITE |SUITE_SEQUENCE )', line):
+        if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_started = observed_at
-            # Suite work extends the safety ceiling; diagnostics alone do not.
-            if self.lease_ceiling is not None:
-                ceiling = observed_at + MODE_DEADLINE_SECONDS['suite']
-                if ceiling > self.lease_ceiling:
-                    self.lease_ceiling = ceiling
-                    if self.claimed:
-                        m.update_lease(self.id, ceilingAt=ceiling)
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
         if '[init] shell ready' in line:
@@ -1158,10 +1151,9 @@ class Driver:
             if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
                 raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
             return
-        # Suite deadlines measure inactivity; other modes retain their boot deadline.
+        # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
-            raise Finish(m.EXIT_HUNG if self.args.mode == 'suite' else m.EXIT_SHORT,
-                         'suite progress stalled' if self.args.mode == 'suite' else 'the mode deadline passed with stages missing')
+            raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
 
     # Power.
     def power_on(self):
