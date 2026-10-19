@@ -154,11 +154,13 @@ def boot(args):
     catchup = bool(getattr(args, 'catchup', False)) or catchup_from_env()
     is_session = bool(getattr(args, 'session', False))
     attended = bool(getattr(args, 'attended', False))
-    wait = getattr(args, 'wait', 30)
+    wait = getattr(args, 'wait', None)
+    if wait is None:
+        wait = 30 if attended else 240
     if attended and (is_session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
         raise SystemExit('--attended needs a console boot, without --session or --input')
-    if not 0 < wait <= 240 or (wait != 30 and not attended):
-        raise SystemExit('--wait needs --attended and more than 0 through 240 minutes')
+    if not 0 < wait <= 240:
+        raise SystemExit('--wait needs more than 0 through 240 minutes')
     idle = getattr(args, 'idle_minutes', 30)
     if is_session and (args.mode != 'console' or args.input or getattr(args, 'disk', None) == 'install'):
         raise SystemExit('--session needs console mode, operator input and no disk install')
@@ -192,11 +194,11 @@ def boot(args):
         print(f'[metal-run] suites: {args.suite}', file=sys.stderr, flush=True)
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
-    command += ['--mode', args.mode]
+    command += ['--mode', args.mode, '--wait', str(wait)]
     if catchup:
         command.append('--catchup')
     if attended:
-        command += ['--attended', '--wait', str(wait)]
+        command += ['--attended']
     elif is_session:
         command += ['--session', '--idle-minutes', str(idle)]
     elif args.mode == 'console':
@@ -338,7 +340,7 @@ def main():
                    help='default boots the framebuffer console with virtual-terminal logins')
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
-    p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
+    p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
     p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
     p.add_argument('--idle-minutes', type=int, default=30, help='console session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),
@@ -348,7 +350,7 @@ def main():
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
-    p.add_argument('--no-wait', action='store_true')
+    p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
     p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))

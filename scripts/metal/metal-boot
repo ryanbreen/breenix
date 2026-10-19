@@ -2,7 +2,7 @@
 """One x86-metal boot, end to end (docs/metal/README.md, "One boot").
 
   metal-boot launch [run options]   start the driver as its own transient unit; prints {"id", "status"} once the
-                                    unit holds or waits for the lease (exit 75 if busy with --no-wait, or quarantined)
+                                    unit holds or waits for the lease (exit 75 if the queue wait expires, or quarantined)
   metal-boot run --id ID [options]  the driver itself (what the unit runs)
   metal-boot stop ID                ask a running boot to stop (exit 130 before power-on, 143 after)
   metal-boot inputs-ready ID        the image build for ID has delivered its inputs
@@ -251,19 +251,25 @@ class Driver:
         self.event('created', payload=self.args.payload, mode=self.args.mode, inject=self.args.inject or 'none',
                    nmi=bool(getattr(self.args, 'nmi', False)))
 
-    def claim_status(self, status, text=''):
-        m.write_json(self.dir / 'claim.json', {'status': status, 'text': text, 't': m.now()})
+    def claim_status(self, status, text='', **fields):
+        m.write_json(self.dir / 'claim.json', dict(status=status, text=text, t=m.now(), **fields))
 
     def claim(self):
         holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload,
                   'kind': 'console-session' if session(self.args) else 'boot'}
+        def waiting(state):
+            text = f"Waiting for holder={state['holder']} queue position={state['position']}"
+            self.claim_status('waiting', text, **state)
+            self.phase(text)
+
+        wait = getattr(self.args, 'wait', None)
+        queue_minutes = 240 if attended(self.args) or wait is None else wait
         try:
-            m.claim_lease(holder, wait=not self.args.no_wait, checkpoint=self.checkpoint,
-                          on_wait=lambda lease: (self.claim_status('waiting'),
-                                                 self.phase('Waiting for the machine to finish another boot')))
+            m.claim_lease(holder, wait=True, checkpoint=self.checkpoint,
+                          wait_seconds=queue_minutes * 60, on_wait=waiting)
         except m.Busy:
             self.claim_status('busy')
-            raise Finish(m.EXIT_BUSY, 'the machine is busy with another boot')
+            raise Finish(m.EXIT_BUSY, 'the bounded machine queue wait expired')
         except m.Quarantined:
             self.claim_status('quarantined')
             raise Finish(m.EXIT_BUSY, 'the machine may still be on: power-off failed and the lease is quarantined')
@@ -1473,6 +1479,7 @@ def launch(args, extra):
     claim = m.boot_dir(boot_id) / 'claim.json'
     deadline = m.now() + 30
     status = 'starting'
+    state = None
     while m.now() < deadline:
         state = m.read_json(claim)
         if state:
@@ -1482,7 +1489,7 @@ def launch(args, extra):
             status = 'ended'
             break
         time.sleep(0.25)
-    print(json.dumps({'id': boot_id, 'unit': unit, 'status': status}))
+    print(json.dumps(dict(state or {}, id=boot_id, unit=unit, status=status)))
     return {'claimed': 0, 'waiting': 0, 'busy': 75, 'quarantined': 75, 'not-ready': 75}.get(status, 1)
 
 
@@ -1496,7 +1503,7 @@ def status():
             directory = m.boot_dir(entry['id'])
             entry['exit'] = (directory / 'exit-status').read_text().strip() if (directory / 'exit-status').exists() else None
             finished.append(entry)
-    print(json.dumps({'lease': m.read_lease(), 'machine': m.read_json(m.STATE / 'machine.json'),
+    print(json.dumps({'lease': m.read_lease(), 'queue': m.read_queue(), 'machine': m.read_json(m.STATE / 'machine.json'),
                       'finished': finished}, indent=1))
     return 0
 
@@ -1511,7 +1518,7 @@ def main():
         p.add_argument('--mode', choices=MODES, default='default')
         p.add_argument('--input', choices=('sol',))
         p.add_argument('--attended', action='store_true', help='score the operator challenge without sending input')
-        p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
+        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
@@ -1564,8 +1571,10 @@ def main():
             parser.error('--idle-minutes needs a console session and 1 through 240 minutes')
         if args.attended and (args.session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
             parser.error('--attended needs a console boot, without --session or --input')
-        if not 0 < args.wait <= 240 or (args.wait != 30 and not args.attended):
-            parser.error('--wait needs --attended and more than 0 through 240 minutes')
+        if args.wait is None:
+            args.wait = 30 if args.attended else 240
+        if not 0 < args.wait <= 240:
+            parser.error('--wait needs more than 0 through 240 minutes')
         if args.mode == 'console' and not args.session and not args.attended and args.input != 'sol':
             parser.error('console typing waits for the injector; development boots require --input sol')
         if args.input and args.mode != 'console':
@@ -1576,6 +1585,8 @@ def main():
         parser.error('disk-before-mount needs a disk-root image boot')
     if args.command == 'launch':
         extra = sys.argv[2:]
+        if '--wait' not in extra:
+            extra += ['--wait', str(args.wait)]
         if args.disk and '--disk' not in extra:
             extra += ['--disk', args.disk]
         if args.id:

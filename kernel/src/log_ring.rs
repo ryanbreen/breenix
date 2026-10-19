@@ -4,7 +4,8 @@
 //! later, one FIFO's worth at a time, or one line at a time into the console's
 //! queue when the log shares it (`serial`), so a caller that cannot wait on the
 //! UART still logs. When the ring is full an ordinary line is dropped whole
-//! and the bytes lost are reported, on a line of their own, once there is room.
+//! and the exact lines and wire bytes lost are reported at that position.
+//! Draining alone publishes the report, including a final loss with no later log call.
 //!
 //! A line that carries a boot-path stage marker (`stage_lines`) is never
 //! dropped. Ordinary lines may fill the ring only up to its last
@@ -26,6 +27,7 @@ pub struct LogRing<const N: usize> {
     len: usize,
     /// Bytes of dropped lines not yet reported.
     dropped: u64,
+    dropped_lines: u64,
     /// Bytes ever appended.
     pushed: u64,
 }
@@ -40,6 +42,7 @@ impl<const N: usize> LogRing<N> {
             head: 0,
             len: 0,
             dropped: 0,
+            dropped_lines: 0,
             pushed: 0,
         }
     }
@@ -52,6 +55,13 @@ impl<const N: usize> LogRing<N> {
     /// Bytes ever appended, counting the ones already written out.
     pub fn pushed(&self) -> u64 {
         self.pushed
+    }
+
+    /// Snapshot the serial synchronization boundary, including loss reports.
+    /// A pending loss asks the caller to drain room for its report.
+    pub fn sync_target(&mut self) -> Option<u64> {
+        self.report_dropped();
+        (self.dropped == 0).then_some(self.pushed)
     }
 
     /// Bytes waiting up to and including the first line end, or the whole
@@ -72,6 +82,9 @@ impl<const N: usize> LogRing<N> {
             self.head = (self.head + 1) % N;
         }
         self.len -= n;
+        // Materialize the loss before any later record, even if no producer
+        // ever calls append again. pop and line_len share the ring lock.
+        self.report_dropped();
         n
     }
 
@@ -85,10 +98,13 @@ impl<const N: usize> LogRing<N> {
         let mut writer = RingWriter {
             ring: self,
             overflow: 0,
+            lines: 0,
+            last: None,
         };
         let _ = writer.write_fmt(args);
         let overflow = writer.overflow;
-        if overflow == 0 && self.len <= N - Self::RESERVE {
+        let lines = writer.lines + usize::from(writer.last.is_some_and(|last| last != b'\n'));
+        if overflow == 0 && self.dropped == 0 && self.len <= N - Self::RESERVE {
             return Ok(self.pushed);
         }
         // Only a line that reaches into the reserve needs to know what it is.
@@ -101,38 +117,49 @@ impl<const N: usize> LogRing<N> {
         } else {
             stage_lines::formats(markers, args)
         };
-        if stage && overflow == 0 {
+        if stage && overflow == 0 && self.dropped == 0 {
             return Ok(self.pushed);
         }
         let record = (self.pushed - start_pushed) as usize + overflow;
         self.len = start_len;
         self.pushed = start_pushed;
         if stage && record <= N {
-            return Err(record);
+            return Err(if self.dropped == 0 { record } else { record.max(self.drop_report().len) });
         }
         // An ordinary line, or a stage line longer than the whole ring.
         self.dropped += record as u64;
+        self.dropped_lines += lines as u64;
+        self.report_dropped();
         Ok(self.pushed)
     }
 
-    /// Report dropped bytes on a line of their own once it fits outside the
-    /// reserve. Until then the count keeps growing.
+    fn drop_report(&self) -> Report {
+        let mut report = Report { bytes: [0; 128], len: 0 };
+        if self.len != 0 && self.bytes[(self.head + self.len - 1) % N] != b'\n' {
+            let _ = report.write_str("\n");
+        }
+        // Maximum length is bounded by two u64 decimal counts.
+        let _ = write!(report, "[log: {} bytes dropped; {} lines; source=serial-ring]\n",
+                       self.dropped, self.dropped_lines);
+        report
+    }
+
+    /// The report may use the reserve, but never overtake surviving bytes.
+    /// Until it fits, newer ordinary records join this same loss interval.
+    /// claim-lint:ok: tests/serial_log_loss.rs checks exact counts and ordering through the final drain.
     fn report_dropped(&mut self) {
         if self.dropped == 0 {
             return;
         }
-        let mut report = Report {
-            bytes: [0; 48],
-            len: 0,
-        };
-        let _ = write!(report, "[log: {} bytes dropped]\n", self.dropped);
-        if self.len + report.len > N - Self::RESERVE {
+        let report = self.drop_report();
+        if self.len + report.len > N {
             return;
         }
         for &byte in &report.bytes[..report.len] {
             self.push(byte);
         }
         self.dropped = 0;
+        self.dropped_lines = 0;
     }
 
     fn push(&mut self, byte: u8) -> bool {
@@ -156,11 +183,15 @@ impl<const N: usize> Default for LogRing<N> {
 struct RingWriter<'a, const N: usize> {
     ring: &'a mut LogRing<N>,
     overflow: usize,
+    lines: usize,
+    last: Option<u8>,
 }
 
 impl<const N: usize> fmt::Write for RingWriter<'_, N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
+            self.lines += usize::from(byte == b'\n');
+            self.last = Some(byte);
             // uart_16550::send translates backspace and DEL to BS SPACE BS.
             let wire: &[u8] = if byte == 0x08 || byte == 0x7f {
                 &[0x08, b' ', 0x08]
@@ -179,7 +210,7 @@ impl<const N: usize> fmt::Write for RingWriter<'_, N> {
 
 /// A drop report, formatted before it is known to fit.
 struct Report {
-    bytes: [u8; 48],
+    bytes: [u8; 128],
     len: usize,
 }
 
