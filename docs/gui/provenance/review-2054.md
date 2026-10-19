@@ -6,8 +6,8 @@ Its recorded strict-gate PASS is retained, but it does not establish a
 visible-window run. The PR body withdraws that claim; the historical record is
 unchanged.
 
-Landing remains blocked by #2058. The ARM64 self-death check requires zero
-defer and reclaim events, while ordinary exit releases leaves and defers the
+Landing remains blocked by #2058. The ARM64 self-death check requires
+`defer=0` and `reclaim=0`, while ordinary exit releases leaves and defers the
 remaining tables. No ruling authorizing an expectation change is recorded on
 that issue. The check and implementation are unchanged by this correction.
 
