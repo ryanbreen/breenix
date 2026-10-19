@@ -1049,6 +1049,9 @@ pub fn allocate_contiguous_frames(
         return None;
     }
 
+    // The claim runs in a closure, where `#[track_caller]` stops: record the
+    // caller as each frame's site after its claim.
+    let site = frame_site(Location::caller());
     contiguous::allocate(
         count,
         out,
@@ -1056,9 +1059,22 @@ pub fn allocate_contiguous_frames(
         BootInfoFrameAllocator::get_usable_frame,
         |frame| frame.start_address().as_u64(),
         prepare_contiguous_run,
-        |frame| claim_frame(frame).is_ok(),
+        |frame| {
+            let claimed = claim_frame(frame).is_ok();
+            if claimed {
+                set_frame_site(frame, site);
+            }
+            claimed
+        },
         deallocate_frame,
     )
+}
+
+/// Record `site` as the allocation site of `frame`'s current generation.
+fn set_frame_site(frame: PhysFrame, site: u16) {
+    if let Some(slot) = frame_ordinal(frame).and_then(|index| FRAME_LEDGER.get()?.get(index)) {
+        slot.site.store(site, Ordering::Relaxed);
+    }
 }
 
 /// Prepare ledger and free-list capacity for every ordinal in a contiguous run.
