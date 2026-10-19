@@ -699,19 +699,30 @@ rests on host-side evidence that the gate checks, recorded with every run:
   identities when a copy is needed, never an offscreen source reported as the bound resource.
   A minimal scanout bind arrives in G2 (section 1.11), so runs are watchable from then; modes,
   flipping and the ownership stack arrive in G7.
+<!-- claim-lint:ok: Normative display-ownership requirements, ruling R7 and ruling F25; not measured results. -->
 - **Ownership.** The display ownership stack (`take_over_display` 431, `give_back_display` 432, §18) keeps
   each owner's last presented target; giving the display back presents the previous owner's target again,
-  exactly. After the GPU driver starts, the kernel's console is drawn by the GPU from a glyph atlas uploaded
-  from its built-in font tables (`purpose` `Fixture`) through `bitmap_text`. Before it starts, the boot
-  console and panic screen are CPU-written on the firmware framebuffer, and nowhere else (ruling R7).
+  exactly. Whenever no process owns the display, the screen is the kernel's: the console effort's screen
+  console (`docs/console/contract.md`), its six virtual terminals with the grid sized for the kernel mode
+  (index 1) by the contract's size rule, drawn by the CPU into the backing of one display-sized scanout
+  target the core uploads, binds and flushes (`kernel/src/gpu/screen.rs`, ruling F25). A process that owns
+  the display through the framebuffer interface has its pane presented through a private target retained
+  for that owner across nested takeovers, so no
+  kernel writer touches the firmware framebuffer once the core has shown a frame. The core's own console,
+  drawn from a glyph atlas uploaded from its built-in font tables (`purpose` `Fixture`) through
+  `bitmap_text`, is the panic and diagnostics path only (section 1.7.1). Before the core shows a frame, the
+  boot console and panic screen are CPU-written on the firmware framebuffer, and nowhere else (ruling R7).
 
 G7's argument layouts, ownership transitions, console observation, firmware write count and
 present fault effects are defined in `gpu-abi.md`, "G7 display interface". These definitions
 supply the observability for the existing present cases; their case counts and expectations stay fixed.
 
-Under `--gpu-gl`, G7 shows the GPU kernel console until E17 migrates bwm from the legacy
+Under `--gpu-gl`, G7 shows the kernel's screen (the screen console) until E17 migrates bwm from the legacy
 compositor interface. Boots without `--gpu-gl` retain bwm's existing desktop behavior.
-G7 does not restore legacy takeover bookkeeping (ruling 39).
+G7 does not restore legacy takeover bookkeeping (ruling 39). A take-over on a GPU-core boot still makes the
+caller's terminal the display owner's (`KD_GRAPHICS`, switching refused unless `VT_PROCESS`), as the
+console contract's section 4.2 requires; while that terminal is released, the kernel's screen shows the
+foreground terminal.
 
 #### 1.7.1 Terminal panic display after GPU handoff
 

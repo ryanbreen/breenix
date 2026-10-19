@@ -44,7 +44,6 @@ pub mod cursor;
 pub mod double_buffer;
 pub mod firmware_writes;
 pub mod font;
-pub mod log_capture;
 pub mod primitives;
 pub mod render_task;
 

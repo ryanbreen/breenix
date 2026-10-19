@@ -622,8 +622,18 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
     // On ARM64, use the lock-free FbInfoCache to avoid contention with BWM's
     // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
     // pixel copies. Framebuffer dimensions are immutable after init.
+    // When the GPU core owns the display, the screen is the kernel's scanout target
+    // (`gpu::screen`), which a display owner's pane is drawn onto.
     #[cfg(target_arch = "aarch64")]
-    let info = {
+    let info = if let Some((width, height)) = crate::gpu::screen::open() {
+        FbInfo {
+            width: width as u64,
+            height: height as u64,
+            stride: width as u64,
+            bytes_per_pixel: 4,
+            pixel_format: 1,
+        }
+    } else {
         let cache = match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
             Some(c) => c,
             None => {
@@ -2430,6 +2440,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
 
+    // The GPU core shows the display: the firmware framebuffer is no longer scanned
+    // out and the kernel does not write it, so a pane reaches the screen through the core.
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() {
+        return fbdraw_through_gpu(&cmd, fb_mmap_info_pre, caller_owns_display);
+    }
+
     // Get framebuffer
     let fb = match SHELL_FRAMEBUFFER.get() {
         Some(fb) => fb,
@@ -2948,6 +2965,78 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
+/// `sys_fbdraw` while the GPU core owns the display: Flush (op 6, the pane or the
+/// rectangle p1-p4 of it) and FlushBatch (op 8, the rectangles' bounding box) draw the
+/// display owner's whole-screen pane onto the kernel's screen and present it as the owner's
+/// frame (`gpu::screen::present_pane`). The kernel draws no shapes on this display: the
+/// other ops fail with EINVAL, as Flush does without a whole-screen pane; EPERM for a
+/// caller that does not own the display.
+#[cfg(target_arch = "aarch64")]
+fn fbdraw_through_gpu(
+    cmd: &FbDrawCmd,
+    pane: Option<crate::process::process::FbMmapInfo>,
+    owner: bool,
+) -> SyscallResult {
+    if cmd.op != 6 && cmd.op != 8 {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    }
+    if !owner {
+        return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
+    }
+    let Some(pane) = pane.filter(|pane| pane.whole_screen) else {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    };
+    let whole = (0, 0, pane.width, pane.height);
+    let (x, y, w, h) = if cmd.op == 6 {
+        if cmd.p3 > 0 && cmd.p4 > 0 {
+            (cmd.p1.max(0) as usize, cmd.p2.max(0) as usize, cmd.p3 as usize, cmd.p4 as usize)
+        } else {
+            whole
+        }
+    } else {
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct FlushRect {
+            x: i32,
+            y: i32,
+            w: i32,
+            h: i32,
+        }
+        let rects_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
+        let count = (cmd.p3 as u32).min(16) as usize;
+        if count == 0 {
+            return SyscallResult::Ok(0);
+        }
+        let mut rects = [FlushRect { x: 0, y: 0, w: 0, h: 0 }; 16];
+        for (i, rect) in rects.iter_mut().enumerate().take(count) {
+            match crate::syscall::userptr::copy_from_user((rects_ptr + i as u64 * 16) as *const FlushRect) {
+                Ok(read) => *rect = read,
+                Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
+            }
+        }
+        let drawn = rects[..count].iter().filter(|r| r.w > 0 && r.h > 0);
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        for r in drawn {
+            x0 = x0.min(r.x.max(0) as usize);
+            y0 = y0.min(r.y.max(0) as usize);
+            x1 = x1.max(r.x.max(0) as usize + r.w as usize);
+            y1 = y1.max(r.y.max(0) as usize + r.h as usize);
+        }
+        if x1 <= x0 || y1 <= y0 {
+            return SyscallResult::Ok(0);
+        }
+        (x0, y0, x1 - x0, y1 - y0)
+    };
+    let columns = x.min(pane.width) * pane.bpp..x.saturating_add(w).min(pane.width) * pane.bpp;
+    let rows = y.min(pane.height)..y.saturating_add(h).min(pane.height);
+    // SAFETY: the pane maps `pane.height` rows of `pane.user_stride` bytes in the
+    // caller's address space, which is current in this system call.
+    match unsafe { crate::gpu::screen::present_pane(pane.user_addr as *const u8, pane.user_stride, rows, columns) } {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(e) => SyscallResult::Err(e as u64),
+    }
+}
+
 /// sys_fbdraw - x86_64 form. Flush (op 6) copies the display owner's
 /// whole-screen fb_mmap pane (or the rectangle p1-p4 of it, when p3 and p4 are
 /// positive) onto the screen. The kernel-side drawing ops are ARM64's; an x86
@@ -3145,7 +3234,9 @@ fn fbmmap(width_out: u64) -> SyscallResult {
     // fb_flush, which holds SHELL_FRAMEBUFFER for ~400μs during full-screen
     // pixel copies. Dimensions are immutable after init.
     #[cfg(target_arch = "aarch64")]
-    let (pane_width, height, bpp) = {
+    let (pane_width, height, bpp) = if let Some((width, height)) = crate::gpu::screen::open() {
+        (if whole_screen { width } else { width / 2 }, height, 4)
+    } else {
         let cache = match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
             Some(c) => c,
             None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),

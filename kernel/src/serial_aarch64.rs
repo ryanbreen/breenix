@@ -374,6 +374,14 @@ pub fn _print(args: fmt::Arguments) {
     let _ = crate::serial_line::TeeLine::new().write_fmt(args);
 }
 
+/// A kernel diagnostic record (`diag_println!`): serial and the kernel log, at DEBUG,
+/// which the screen console does not draw (`docs/console/contract.md` section 1.3).
+#[doc(hidden)]
+pub fn _diag_print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = crate::serial_line::TeeLine::with_level(log::Level::Debug).write_fmt(args);
+}
+
 /// Print without risk of deadlock. Aarch64 output takes no lock, so this
 /// always prints and returns `Ok`.
 pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
@@ -469,6 +477,13 @@ macro_rules! serial_print {
 macro_rules! serial_println {
     () => ($crate::serial_print!("\n"));
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
+}
+
+/// Print a kernel diagnostic line (a census or trace written for gates and debugging) to
+/// serial and the kernel log, not to a screen console.
+#[macro_export]
+macro_rules! diag_println {
+    ($($arg:tt)*) => ($crate::serial_aarch64::_diag_print(format_args!("{}\n", format_args!($($arg)*))));
 }
 
 #[macro_export]
