@@ -137,6 +137,9 @@ fn main() {
     run_exec_smoke();
     #[cfg(target_arch = "x86_64")]
     run_fork_smoke();
+    // Detach before starting daemons so the getty handoff cannot hang them up.
+    #[cfg(target_arch = "x86_64")]
+    detach_console();
     start_bsshd();
     run_bssh_pubkey_oracle();
     run_boot_script();
@@ -235,8 +238,8 @@ fn run_console_mode() -> ! {
     run_console_gettys()
 }
 
-/// Release init's terminal before starting an independent login session.
-fn run_console_gettys() -> ! {
+/// Release init's terminal before starting daemons or independent login sessions.
+fn detach_console() {
     use libbreenix::signal::{self, Sigaction};
     extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
     let ignored = Sigaction { handler: signal::SIG_IGN, ..Sigaction::default() };
@@ -248,6 +251,10 @@ fn run_console_gettys() -> ! {
         print!("[init] console detach failed\n");
         reap_forever();
     }
+}
+
+fn run_console_gettys() -> ! {
+    detach_console();
     let mut children = [None; 6];
     let mut retry_at = [0i128; 6];
     loop {
