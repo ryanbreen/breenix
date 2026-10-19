@@ -75,7 +75,7 @@ while [ "$#" -gt 0 ]; do
         --cpu) CPU="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
-        --case) [ -n "$2" ] || { echo "--case needs a category id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;

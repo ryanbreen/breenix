@@ -5,7 +5,7 @@
 //! This test runs before preemption is enabled and validates:
 //!
 //! ✓ TSC calibration agrees within 0.1% with an independent reference
-//! ✓ TSC frequency is plausible (100 MHz to 10 GHz)
+//! ✓ TSC frequency is plausible (1 to 5 GHz)
 //! ✓ TSC is actually being used (not PIT fallback)
 //! ✓ High-resolution timing provides sub-millisecond precision
 //! ✓ Time advances monotonically between calls
