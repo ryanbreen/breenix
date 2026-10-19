@@ -250,9 +250,8 @@ struct Sub {
     requests: u32,
     /// Its result has reached callers.
     published: bool,
-    /// Kept by test point 31's fence-depth mode.
-    kept: bool,
-    /// A kept submission's result, until it is published.
+    /// A submission kept by test point 31's fence-depth mode: its result, until it is
+    /// published.
     result: Option<(u32, u32)>,
     written: Vec<u32>,
     whole: Vec<u32>,
@@ -995,7 +994,7 @@ impl Core {
                 (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
                 (None, false) => (fence_status::OK, answer),
             };
-            let (ctx, kept) = (sub.ctx, sub.kept);
+            let ctx = sub.ctx;
             // Test point 31, `withhold-fence`, parameters 0 and 1: ignore this completion,
             // or every completion from now until the device is reset.
             let withheld = if submitted {
@@ -1010,8 +1009,14 @@ impl Core {
                     }
                 }
                 None => {
-                    // Fence depth keeps the answer until a fifth SUBMIT waits for room.
-                    let keep = kept && self.contexts.get(&ctx).is_some_and(|c| c.depth.is_some());
+                    // Fence depth keeps the answer until a fifth SUBMIT waits for room. Only
+                    // the depth that kept this submission holds it: an answer that comes after
+                    // that depth ended is published, even if a later depth has begun.
+                    let keep = self
+                        .contexts
+                        .get(&ctx)
+                        .and_then(|c| c.depth.as_ref())
+                        .is_some_and(|d| d.kept.contains(&serial));
                     if keep {
                         if let Some(sub) = self.subs.get_mut(&serial) {
                             sub.result = Some(result);
@@ -3060,14 +3065,10 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         {
             ctx.depth = Some(Depth { left: limits::IN_FLIGHT as u32, kept: Vec::new() });
         }
-        let kept = match ctx.depth.as_mut() {
-            Some(d) if d.left > 0 => {
-                d.left -= 1;
-                d.kept.push(serial);
-                true
-            }
-            _ => false,
-        };
+        if let Some(d) = ctx.depth.as_mut().filter(|d| d.left > 0) {
+            d.left -= 1;
+            d.kept.push(serial);
+        }
         ctx.objects = objects;
         ctx.issued += 1;
         let n = ctx.issued;
@@ -3112,7 +3113,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             mismatch: false,
             requests: reqs.len() as u32,
             published: false,
-            kept,
             result: None,
             written: written.clone(),
             whole,
