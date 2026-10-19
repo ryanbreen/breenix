@@ -432,6 +432,7 @@ STD_BINARIES=(
     "suite-sdk"
     "suite-gpu"
     "suite-console"
+    "console-login-shell"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"

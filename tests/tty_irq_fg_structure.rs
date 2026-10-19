@@ -391,7 +391,7 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
     const REQUIRED: [&str; 8] = [
         "input_char_nonblock", "input_char_from_nonblock", "input_char_source_nonblock",
         "output_char_nonblock", "send_signal_to_foreground_nonblock",
-        "send_signal_to_process_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
+        "queue_foreground_signal_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
     ];
     for name in REQUIRED {
         if !roots.contains(&name) {
@@ -411,6 +411,20 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
              signal path #822 is about"
                 .to_string(),
         );
+    }
+
+    let send = function_body(driver, "send_signal_to_foreground_nonblock")
+        .ok_or("missing foreground signal entry")?;
+    let enqueue = function_body(driver, "queue_foreground_signal_nonblock")
+        .ok_or("missing foreground atomic queue")?;
+    if !normalized_code(send).replace(' ', "").contains("queue_foreground_signal_nonblock(pgrp,sig)")
+        || !normalized_code(enqueue).replace(' ', "").contains("FG_SIGNAL_QUEUE.iter()")
+        || !normalized_code(enqueue).replace(' ', "").contains("compare_exchange(0,entry,")
+        || normalized_code(enqueue).replace(' ', "").contains(".lock()")
+        || normalized_code(enqueue).replace(' ', "").contains(".try_lock()")
+        || !normalized_code(driver).replace(' ', "").contains("FG_SIGNAL_QUEUE:[AtomicU64;FG_SIGNAL_SLOTS]")
+    {
+        return Err("foreground IRQ delivery must enqueue through the atomic group queue without a lock".into());
     }
 
     let mut queue: Vec<&str> = roots.clone();

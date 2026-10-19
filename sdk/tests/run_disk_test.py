@@ -19,6 +19,7 @@ class SuppliedDiskTests(unittest.TestCase):
         for directory in ('scripts', 'docker/qemu/lib', 'target/aarch64-breenix-kernel/release',
                           'target/release/build/breenix-test/out', 'target/ovmf/x64', 'bin'):
             (self.root / directory).mkdir(parents=True)
+        shutil.copy2(ROOT / 'scripts/build-background.sh', self.root / 'scripts/build-background.sh')
         shutil.copyfile(ROOT / 'scripts/ext2-machine.py', self.root / 'scripts/ext2-machine.py')
         shutil.copyfile(ROOT / 'scripts/x86-qemu-policy.sh', self.root / 'scripts/x86-qemu-policy.sh')
         (self.root / 'scripts/host-slots.sh').write_text('''
@@ -66,7 +67,10 @@ Path('build-called').write_text('yes')
 assert sys.argv[1] == '-b'
 from pathlib import Path
 Path('priority-called').write_text('yes')
-os.execvp(sys.argv[2], sys.argv[2:])
+args = sys.argv[2:]
+if args[:2] == ['-g', 'utility']:
+    args = args[2:]
+os.execvp(args[0], args)
 ''')
         for qemu in ('qemu-system-aarch64', 'qemu-system-x86_64'):
             self.write_tool(qemu, '''from pathlib import Path

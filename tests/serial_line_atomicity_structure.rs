@@ -201,7 +201,15 @@ fn validate_tty_source(source: &str) -> Result<(), &'static str> {
         return Err("TtyDevice::write_bytes calls write_byte");
     }
     if identifier_offsets(write_bytes, &write_mask, "write_bytes_atomic").is_empty() {
-        return Err("TtyDevice::write_bytes does not call write_bytes_atomic");
+        let sinks = function_body(source, "to_sinks").ok_or("missing TTY sink path")?;
+        let sinks_mask = code_mask(sinks);
+        if !write_bytes.contains("self.to_sinks(")
+            || !sinks.contains("crate::console::write_tty(unit, |bytes|")
+            || identifier_offsets(sinks, &sinks_mask, "write_bytes_atomic").is_empty()
+            || !identifier_offsets(sinks, &sinks_mask, "write_byte").is_empty()
+        {
+            return Err("TTY sink path does not end in an atomic serial write");
+        }
     }
     if identifier_offsets(write_bytes, &write_mask, "for_each_line_segment").is_empty() {
         return Err("TtyDevice::write_bytes does not use the line segmentation helper");

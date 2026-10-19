@@ -227,7 +227,11 @@ class ConsoleTest(unittest.TestCase):
             fixture.tearDown()
 
     def test_staged_shadow_permissions_and_target_and_malformed_hash_refusal(self):
-        hasher = Path(os.environ['CONSOLE_HASH_HELPER'])
+        helper = os.environ.get('CONSOLE_HASH_HELPER')
+        self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
+                        'Missing CONSOLE_HASH_HELPER: install with rustc --edition=2021 -O '
+                        'scripts/metal/sha512-crypt.rs -o /tmp/sha512-crypt, then export CONSOLE_HASH_HELPER=/tmp/sha512-crypt')
+        hasher = Path(helper)
         prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
         debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
         mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')

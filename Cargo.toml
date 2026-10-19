@@ -92,7 +92,7 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = 
 spin = "0.9"
 libc = "0.2"
 serde_json = "1.0"
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = "1"
 
 # The x86-64 kernel is the `kernel` build-dependency artifact above, so a
