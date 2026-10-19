@@ -985,6 +985,9 @@ impl TtyDevice {
                 }
             });
         });
+        // A report the output asked for is input now, behind the keys
+        // already typed, not at the render thread's next pass.
+        crate::console::deliver_queued_replies();
     }
 
     /// Write a character to the terminal output (non-blocking)
@@ -1198,18 +1201,22 @@ pub fn vt(number: usize) -> Option<Arc<TtyDevice>> {
 /// A terminal-input reply (a DSR answer) for virtual terminal `number`: it
 /// joins the terminal's keyboard queue behind the keys already there and goes
 /// through its line discipline as they do, so in canonical mode it is part of
-/// the line being typed. False while the queue cannot take it.
+/// the line being typed. False while the queue cannot take it. A queue another
+/// CPU holds is waited for as a key waits for it (`push_char_nonblock`).
 pub fn push_reply(number: usize, byte: u8) -> bool {
     let Some(tty) = vt(number) else {
         return false;
     };
     crate::arch_without_interrupts(|| {
-        let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() else {
-            return false;
-        };
-        let accepted = keys.push(byte, super::InputSource::Other);
-        keys.drain(|byte, source| tty.admit_key(byte, source));
-        accepted
+        for _ in 0..KEY_QUEUE_SPINS {
+            if let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() {
+                let accepted = keys.push(byte, super::InputSource::Other);
+                keys.drain(|byte, source| tty.admit_key(byte, source));
+                return accepted;
+            }
+            core::hint::spin_loop();
+        }
+        false
     })
 }
 

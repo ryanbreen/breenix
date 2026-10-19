@@ -142,6 +142,7 @@ mod raster;
 mod boxdraw;
 static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static REPLY_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 struct Console {
     vts: [vt::Vt; 1],
     kernel_line_open: bool,

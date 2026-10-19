@@ -1,5 +1,5 @@
 //! Synchronous record admission and console TTY output.
-use super::{grid, vt, with_grid, RUNNING, SESSION};
+use super::{grid, vt, with_grid, REPLY_QUEUED, RUNNING, SESSION};
 #[cfg(any(target_arch = "x86_64", test))]
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
@@ -84,7 +84,13 @@ pub fn write_tty(bytes: &[u8], mut serial: impl FnMut(&[u8])) {
             }
             let vt::Vt { grid, replies, .. } = &mut console.vts[0];
             if answering {
-                grid.write_forwarding(chunk, |reply| replies.push(reply), &mut out)
+                grid.write_forwarding(chunk, |reply| {
+                    let kept = replies.push(reply);
+                    if kept {
+                        REPLY_QUEUED.store(true, Ordering::SeqCst);
+                    }
+                    kept
+                }, &mut out)
             } else {
                 grid.write(chunk);
                 out[..chunk.len()].copy_from_slice(chunk);
