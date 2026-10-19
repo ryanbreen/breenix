@@ -3,7 +3,10 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const TRBS: usize = 256;
-pub const EVENT_TRBS: usize = 16;
+/// Event ring segment length: room for every posted interrupt-IN TD's
+/// completion (`POSTED_TDS` per pipe) besides commands and port changes, so a
+/// burst of reports cannot fill the ring (4.9.4).
+pub const EVENT_TRBS: usize = 64;
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -59,6 +62,86 @@ impl Producer {
     pub fn next(&self, base: u64) -> (u64, bool) {
         (base + (self.index * 16) as u64, self.cycle)
     }
+}
+
+/// Interrupt-IN TDs kept posted on one endpoint. A device sends a report
+/// only when an IN transaction finds a TD on the ring (xHCI 4.11.2, 4.14.2);
+/// with Set_Idle(0) a report that finds none is not sent again (HID 1.11
+/// 7.2.4), so the worker keeps several posted while it handles one.
+pub const POSTED_TDS: usize = 4;
+
+/// The posted TDs of one interrupt-IN pipe, by the buffer slot each fills:
+/// slot `i` is bytes `i * stride..` of the pipe's buffer.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Posted {
+    tds: [Option<u64>; POSTED_TDS],
+}
+impl Posted {
+    pub const fn new() -> Self {
+        Self { tds: [None; POSTED_TDS] }
+    }
+    /// The slot whose TD starts at `pointer`, if it is posted.
+    pub fn slot(&self, pointer: u64) -> Option<usize> {
+        self.tds.iter().position(|td| *td == Some(pointer))
+    }
+    /// `pointer`'s TD completed: its slot is free, and returned.
+    pub fn complete(&mut self, pointer: u64) -> Option<usize> {
+        let slot = self.slot(pointer)?;
+        self.tds[slot] = None;
+        Some(slot)
+    }
+    /// The slots with no TD posted, lowest first.
+    pub fn free(&self) -> impl Iterator<Item = usize> + '_ {
+        self.tds.iter().enumerate().filter(|(_, td)| td.is_none()).map(|(slot, _)| slot)
+    }
+    /// The TD posted in `slot`, if any.
+    #[cfg(any(test, feature = "usb_pointer_replay"))]
+    pub fn tds(&self, slot: usize) -> Option<u64> {
+        self.tds[slot]
+    }
+    pub fn post(&mut self, slot: usize, pointer: u64) {
+        self.tds[slot] = Some(pointer);
+    }
+    /// The ring's dequeue pointer moved past every posted TD (4.6.10).
+    pub fn abandon(&mut self) {
+        self.tds = [None; POSTED_TDS];
+    }
+    #[cfg(any(test, feature = "usb_pointer_replay", feature = "xhci_fault_inject"))]
+    pub fn full(&self) -> bool {
+        self.tds.iter().all(Option::is_some)
+    }
+}
+
+/// How many TRBs before the producer's `enqueue` the TRB at `at` was queued,
+/// in a ring at `base` whose last TRB is the Link: larger is older.
+#[cfg(any(test, feature = "usb_pointer_replay"))]
+pub fn ring_age(base: u64, enqueue: (u64, bool), at: u64) -> usize {
+    let lap = TRBS - 1;
+    let to = ((enqueue.0 - base) / 16) as usize;
+    let from = ((at - base) / 16) as usize;
+    (to + lap - from) % lap
+}
+
+/// The TRB after index `index` (whose cycle bit is `cycle`) and its cycle bit,
+/// following the Link TRB, which toggles the cycle (4.9.2): a Set TR Dequeue
+/// Pointer target past a one-TRB TD.
+#[cfg(any(test, feature = "usb_pointer_replay"))]
+pub fn ring_next(base: u64, index: usize, cycle: bool) -> (u64, bool) {
+    if index + 1 == TRBS - 1 {
+        (base, !cycle)
+    } else {
+        (base + ((index + 1) * 16) as u64, cycle)
+    }
+}
+
+/// Bytes between a pipe's buffer slots for `request`-byte reports: whole
+/// 64-byte lines, so a slot's cache maintenance never touches its neighbour's.
+pub fn posted_stride(request: u32, buffer: usize) -> Result<usize, &'static str> {
+    let stride = (request as usize).div_ceil(64) * 64;
+    if request == 0 || stride * POSTED_TDS > buffer {
+        return Err("interrupt-IN report too large for its posted buffers");
+    }
+    Ok(stride)
 }
 
 /// USB 2.0 9.2.6.3: after SET_ADDRESS's Status stage the device has 2 ms
@@ -320,6 +403,52 @@ impl Work {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn posted_tds_fill_free_slots_and_complete_in_any_order() {
+        let mut p = Posted::new();
+        assert_eq!(p.free().collect::<Vec<_>>(), [0, 1, 2, 3]);
+        for (slot, pointer) in [(0, 0x1000), (1, 0x1010), (2, 0x1020), (3, 0x1030)] {
+            p.post(slot, pointer);
+        }
+        assert!(p.full() && p.free().next().is_none());
+        assert_eq!(p.complete(0x1010), Some(1));
+        assert_eq!(p.complete(0x1010), None, "a completed TD is not posted twice");
+        assert_eq!(p.complete(0x2000), None, "a stale event names no slot");
+        assert_eq!(p.free().collect::<Vec<_>>(), [1]);
+        p.post(1, 0x1040);
+        assert_eq!(p.slot(0x1040), Some(1));
+        p.abandon();
+        assert!(p.free().count() == POSTED_TDS && p.tds(1).is_none());
+        assert_eq!(posted_stride(8, 4096), Ok(64));
+        assert_eq!(posted_stride(65, 4096), Ok(128));
+        assert_eq!(posted_stride(1024, 4096), Ok(1024));
+        assert!(posted_stride(1025, 4096).is_err() && posted_stride(0, 4096).is_err());
+    }
+    #[test]
+    fn ring_positions_order_tds_and_step_over_the_link() {
+        let base = 0x10_0000;
+        let mut p = Producer::new();
+        for _ in 0..TRBS - 3 {
+            p.advance();
+        }
+        // Three TDs queued at indexes 253 and 254 (the last before the Link
+        // at 255), then 0 on the next lap.
+        let queued: Vec<(u64, bool)> = (0..3)
+            .map(|_| {
+                let at = p.next(base);
+                p.advance();
+                at
+            })
+            .collect();
+        assert_eq!(queued, [(base + 253 * 16, true), (base + 254 * 16, true), (base, false)]);
+        let enqueue = p.next(base);
+        assert_eq!(enqueue, (base + 16, false));
+        let ages: Vec<usize> = queued.iter().map(|q| ring_age(base, enqueue, q.0)).collect();
+        assert_eq!(ages, [3, 2, 1]);
+        assert_eq!(ring_next(base, 253, true), queued[1]);
+        assert_eq!(ring_next(base, 254, true), queued[2]);
+        assert_eq!(ring_next(base, 0, false), enqueue);
+    }
     #[test]
     fn producer_and_event_cycles_cross_two_wraps() {
         let mut p = Producer::new();

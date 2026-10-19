@@ -35,7 +35,9 @@ pub(super) struct Pipe {
     ring: Ring,
     buffer: Dma,
     request: u32,
-    pub(super) outstanding: Option<u64>,
+    /// Bytes between the buffer's report slots (`spec::posted_stride`).
+    stride: usize,
+    pub(super) posted: spec::Posted,
     state: report::Keyboard,
     errors: u32,
     bad_reports: u64,
@@ -140,7 +142,7 @@ impl Controller {
                 d.slot == event.slot()
                     && d.keyboard
                         .as_ref()
-                        .is_some_and(|p| p.dci == dci && p.outstanding == Some(pointer))
+                        .is_some_and(|p| p.dci == dci && p.posted.slot(pointer).is_some())
             }) {
                 self.keyboard_event(index, event);
             }
@@ -208,6 +210,14 @@ impl Controller {
             }
         };
         let request = (boot.max_packet as u32).max(report::REPORT_LEN as u32);
+        let stride = match spec::posted_stride(request, 4096) {
+            Ok(stride) => stride,
+            Err(error) => {
+                ring.memory.release();
+                buffer.release();
+                return Err(error);
+            }
+        };
         // Input Control (A0 and the endpoint), Slot (Context Entries) and the
         // endpoint's context; the rest of the input context zeroed (4.6.6, 6.2.2.2, 6.2.3.2).
         let d = &self.devices[index];
@@ -255,7 +265,8 @@ impl Controller {
             ring,
             buffer,
             request,
-            outstanding: None,
+            stride,
+            posted: spec::Posted::new(),
             state: report::Keyboard::new(),
             errors: 0,
             bad_reports: 0,
@@ -336,12 +347,13 @@ impl Controller {
         if self.control(index, spec::clear_endpoint_halt(endpoint), None)? != 1 {
             return Err("CLEAR_FEATURE(ENDPOINT_HALT) refused");
         }
-        let next = self.devices[index]
+        let pipe = self.devices[index]
             .keyboard
-            .as_ref()
-            .ok_or("device has no keyboard pipe")?
-            .ring
-            .enqueue();
+            .as_mut()
+            .ok_or("device has no keyboard pipe")?;
+        // The dequeue moves past every posted TD, not only the failed one.
+        pipe.posted.abandon();
+        let next = pipe.ring.enqueue();
         self.set_dequeue(slot, dci, next)
     }
 
@@ -363,7 +375,8 @@ impl Controller {
         }
     }
 
-    /// Post one interrupt-IN TD for the next report.
+    /// Post an interrupt-IN TD in each free report slot, so the reports that
+    /// follow one another find TDs waiting (`spec::POSTED_TDS`).
     fn queue_report(&mut self, index: usize) -> Result<(), &'static str> {
         let device = &mut self.devices[index];
         let slot = device.slot;
@@ -371,10 +384,15 @@ impl Controller {
             .keyboard
             .as_mut()
             .ok_or("device has no keyboard pipe")?;
-        let pointer = pipe
-            .ring
-            .push(spec::normal_in(pipe.buffer.phys, pipe.request));
-        pipe.outstanding = Some(pointer);
+        let free: Vec<usize> = pipe.posted.free().collect();
+        if free.is_empty() {
+            return Ok(());
+        }
+        for buffer_slot in free {
+            let at = pipe.buffer.phys + (buffer_slot * pipe.stride) as u64;
+            let pointer = pipe.ring.push(spec::normal_in(at, pipe.request));
+            pipe.posted.post(buffer_slot, pointer);
+        }
         let dci = pipe.dci;
         self.ring_doorbell(slot, dci as u32);
         Ok(())
@@ -385,7 +403,9 @@ impl Controller {
         let Some(pipe) = self.devices[index].keyboard.as_mut() else {
             return;
         };
-        pipe.outstanding = None;
+        let Some(buffer_slot) = pipe.posted.complete(event.parameter & !15) else {
+            return;
+        };
         let (dci, endpoint) = (pipe.dci, pipe.endpoint);
         match event.code() {
             // Success or Short Packet: the TD's length less the residual.
@@ -393,7 +413,7 @@ impl Controller {
                 pipe.errors = 0;
                 let residual = event.status & 0x00ff_ffff;
                 let report = if residual <= pipe.request {
-                    pipe.buffer.copy(0, (pipe.request - residual) as usize)
+                    pipe.buffer.copy(buffer_slot * pipe.stride, (pipe.request - residual) as usize)
                 } else {
                     Vec::new()
                 };
