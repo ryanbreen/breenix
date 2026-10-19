@@ -1,0 +1,8 @@
+[package]
+name = "bgl"
+version = "0.1.0"
+edition = "2021"
+[workspace]
+[dependencies]
+libbreenix = { path = "../libbreenix" }
+gpu-abi = { path = "../gpu-abi", features = ["alloc"] }

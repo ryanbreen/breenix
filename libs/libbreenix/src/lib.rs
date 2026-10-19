@@ -42,6 +42,7 @@ pub mod dns;
 pub mod errno;
 pub mod error;
 pub mod fs;
+pub mod gpu;
 pub mod graphics;
 pub mod http;
 pub mod io;

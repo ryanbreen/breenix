@@ -1,0 +1,29 @@
+{
+  "about": "Files kept byte-identical to their source tag (coordinator ruling 30, #1719). scripts/check-frozen-copies.py fails if a listed file's bytes differ from its sha256, or if any file other than these is exempt from whitespace checks; scripts/claim-lint.py skips exactly these files.",
+  "copies": [
+    {
+      "path": "libs/libgfx-ref/src/error.rs",
+      "source_tag": "breengel-cpu-393",
+      "source_path": "libs/libfont/src/error.rs",
+      "sha256": "b28f916f3cd6994e91dc480ab2de960389d32668c5a2f23439da3cb60d2f35a7"
+    },
+    {
+      "path": "libs/libgfx-ref/src/float.rs",
+      "source_tag": "breengel-cpu-393",
+      "source_path": "libs/libfont/src/float.rs",
+      "sha256": "88712cee535a4c9ca3bf040bb007a45fba22c0b019ea60b6c440dc4219d75e34"
+    },
+    {
+      "path": "libs/libgfx-ref/src/rasterizer.rs",
+      "source_tag": "breengel-cpu-393",
+      "source_path": "libs/libfont/src/rasterizer.rs",
+      "sha256": "86bba91568c6f442db58d68ea19a901a402dd54d1d8cd08e1dd4c3e921bcb102"
+    },
+    {
+      "path": "libs/libgfx-ref/src/work.rs",
+      "source_tag": "breengel-cpu-393",
+      "source_path": "libs/libfont/src/work.rs",
+      "sha256": "27e2ab34e140b5a5434ae49bbef5a6355c20d63c8237bbb1666a659c20efdeae"
+    }
+  ]
+}

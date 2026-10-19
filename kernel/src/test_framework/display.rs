@@ -450,6 +450,10 @@ fn render_to_framebuffer() {
     {
         if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
             let mut guard = fb.lock();
+            // The console retires the firmware canvas under this lock.
+            if crate::gpu::console::active() {
+                return;
+            }
             let Some(area) = crate::graphics::boot_screen::runner_area(&*guard) else {
                 return;
             };

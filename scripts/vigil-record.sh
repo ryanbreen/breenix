@@ -12,6 +12,8 @@
 # them in turn (docs/suites/README.md, "Several suites in one boot"): Vigil's record names one suite, so each suite is
 # filed as its own record, ID-SUITE, over the boot's whole serial, which Vigil scores for that suite's lines alone as it
 # scores a single-suite boot. start then prints the ids joined by commas, and finish takes them so. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
+# BREENIX_VIGIL_DISPLAY=true|false is the launcher's effective window selection;
+# start records it before the VM starts. Finish retains BREENIX_HOST_RENDERER_JSON.
 # Skips registration when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
@@ -86,7 +88,11 @@ case "${1:-}" in
         # machine; Vigil keeps it out of main's evidence.
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
-        "$CLI" "${args[@]}" || exit 0
+        id=$("$CLI" "${args[@]}") || exit 0
+        if [ -n "$id" ] && [ -n "${BREENIX_VIGIL_DISPLAY:-}" ]; then
+            python3 "$ROOT/scripts/vigil-boot-metadata.py" start "$id" "$ROOT" >&2 || true
+        fi
+        printf '%s\n' "$id"
         exit 0
         ;;
     record)
@@ -115,6 +121,9 @@ case "${1:-}" in
         [ -n "${2:-}" ] || exit 0
         IFS=',' read -r -a filed <<< "$2"
         for id in "${filed[@]}"; do
+            if [ -n "${BREENIX_HOST_RENDERER_JSON:-}" ]; then
+                python3 "$ROOT/scripts/vigil-boot-metadata.py" finish "$id" "$ROOT" >&2 || true
+            fi
             "$CLI" breenix finish --id "$id" --exit-status "${3:-0}" >/dev/null 2>&1 || true
         done
         ;;

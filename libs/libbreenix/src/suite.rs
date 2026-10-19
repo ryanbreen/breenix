@@ -179,6 +179,25 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
 static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
+// Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up.
+// Its private pipe starts the timed window once.
+static CASE_WINDOW_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Start upload-visibility's ten-second window after its contexts have warmed.
+/// This one-shot signal is available only in that named case; setup is still bounded
+/// by the runner and host progress supervision.
+pub fn start_case_window() -> CaseResult {
+    let fd = CASE_WINDOW_FD.swap(-1, Ordering::Relaxed);
+    if fd < 0 { return fail("this case has no pending timed window"); }
+    let now = monotonic_ns().ok_or_else(|| CaseError::Fail(String::from("no monotonic clock")))? as u64;
+    CASE_DEADLINE_NS.store(now + DEFAULT_CASE_LIMIT_MS * 1_000_000, Ordering::Relaxed);
+    let sent = io::write(Fd::from_raw(fd as u64), &now.to_le_bytes());
+    let _ = io::close(Fd::from_raw(fd as u64));
+    match sent {
+        Ok(8) => Ok(()),
+        _ => fail("could not start the case's timed window"),
+    }
+}
 
 /// The milliseconds left before the running case is killed, or `u64::MAX` when called
 /// outside a case.
@@ -336,9 +355,9 @@ impl Suite {
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
         let mut screen = if self.defer_display {
-            Screen { fb: None, live: false, area: None }
+            Screen { fb: None, gpu: None, gpu_failure: None, live: false, area: None }
         } else {
-            Screen::open()
+            Screen::open(self.id == "gpu")
         };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
@@ -358,7 +377,7 @@ impl Suite {
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
-            if self.defer_display { screen = Screen::open(); }
+            if self.defer_display { screen = Screen::open(self.id == "gpu"); }
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
@@ -403,7 +422,7 @@ impl Suite {
         let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
-        if self.defer_display { screen = Screen::open(); }
+        if self.defer_display { screen = Screen::open(self.id == "gpu"); }
         screen.draw(self, &title, &subtitle, &states, verdict, &feed, only);
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
@@ -551,11 +570,21 @@ const FRAME_MS: i128 = 66;
 /// timed by the monotonic clock, so if that clock stopped the suite would never wake
 /// to report it. Instead, polls that see the clock stand still are counted, and
 /// `CLOCK_STALL_POLLS` of them end the wait.
-fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut()) -> Waited {
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>) -> Waited {
+    let mut awaiting_window = window.is_some();
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
     loop {
+        if awaiting_window {
+            let mut bytes = [0u8; 8];
+            if let Some(fd) = window {
+                if io::read(fd, &mut bytes).ok() == Some(8) {
+                    start = Some(u64::from_le_bytes(bytes) as i128);
+                    awaiting_window = false;
+                }
+            }
+        }
         let mut status = 0;
         match process::waitpid(pid, &mut status, WNOHANG) {
             Ok(done) if done.raw() as i32 == pid => return Waited::Exited(status),
@@ -564,7 +593,10 @@ fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut
         }
         let now = monotonic_ns();
         let ms = ms_since(start);
-        if ms >= limit_ms {
+        // Setup cannot outlive the existing 120-second progress watchdog. The
+        // named case gets exactly limit_ms after its one-shot warm-up signal.
+        let active_limit = if awaiting_window { 120_000 } else { limit_ms };
+        if ms >= active_limit {
             return Waited::TimedOut(ms);
         }
         if now.is_none() || now == last {
@@ -592,7 +624,7 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
         Waited::TimedOut(_) | Waited::ClockStopped(_) => "; still running after SIGKILL",
@@ -697,6 +729,9 @@ fn keep_record_output(suite: &str, name: &str) {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    // G1-G6 retain the runner owner they were checked against. G7's console
+    // cases explicitly start above the kernel console, with no runner owner.
+    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
@@ -712,16 +747,31 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             return Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: pipe failed: {error}")) };
         }
     };
+    let window = if suite == "gpu" && name == "textures/upload-visibility" {
+        match io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK) {
+            Ok(ends) => Some(ends),
+            Err(error) => {
+                let _ = (io::close(reader), io::close(writer));
+                if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
+                return Outcome::Fail { ms: 0, msg: plain(&std::format!("timed-window pipe failed: {error}")) };
+            }
+        }
+    } else { None };
     let start = monotonic_ns();
     match process::fork() {
         Ok(ForkResult::Child) => {
             sequence::in_child();
             let _ = io::close(reader);
+            if let Some((r, w)) = window {
+                let _ = io::close(r);
+                CASE_WINDOW_FD.store(w.raw() as i32, Ordering::Relaxed);
+            }
             if let Some((live_reader, live_writer)) = live {
                 let _ = io::close(live_reader);
                 LIVE_FD.store(live_writer.raw() as i32, Ordering::Relaxed);
             }
-            let deadline = start.map_or(0, |start| (start + limit_ms as i128 * 1_000_000) as u64);
+            let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
+            let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
@@ -739,6 +789,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
             let _ = io::close(writer);
+            if let Some((_, w)) = window { let _ = io::close(w); }
             let live_reader = live.map(|(live_reader, live_writer)| {
                 let _ = io::close(live_writer);
                 live_reader
@@ -747,7 +798,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 if let Some(fd) = live_reader { feed.drain(fd); }
                 screen.frame(feed);
             };
-            let outcome = match wait_exit(pid, start, limit_ms, &mut frame) {
+            let outcome = match wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r)) {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
@@ -766,6 +817,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 }
             };
             let _ = io::close(reader);
+            if let Some((r, _)) = window { let _ = io::close(r); }
             if let Some(fd) = live_reader {
                 feed.drain(fd);
                 let _ = io::close(fd);
@@ -782,6 +834,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         Err(error) => {
             let _ = io::close(reader);
             let _ = io::close(writer);
+            if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
             if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
             Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: fork failed: {error}")) }
         }
@@ -947,9 +1000,15 @@ impl Feed {
     }
 }
 
+#[path = "suite_gpu_screen.rs"]
+mod gpu_screen;
+
 /// The suite's view of the display, when there is one to draw on.
 struct Screen {
     fb: Option<FrameBuf>,
+    gpu: Option<gpu_screen::GpuScreen>,
+    /// Why the GPU view was last not drawn, so each failure is reported once.
+    gpu_failure: Option<String>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
     /// Where the last full draw put the live strip.
@@ -959,7 +1018,10 @@ struct Screen {
 impl Screen {
     /// Take the display and map all of it. Without a framebuffer the suite still
     /// runs and prints its serial lines; on a small one the panel draws what fits.
-    fn open() -> Screen {
+    fn open(gpu: bool) -> Screen {
+        if gpu {
+            return Screen { fb: None, gpu: Some(gpu_screen::GpuScreen::new()), gpu_failure: None, live: false, area: None };
+        }
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
             if !(3..=4).contains(&info.bytes_per_pixel) {
@@ -974,7 +1036,7 @@ impl Screen {
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
-        Screen { live: fb.is_some() && !off, fb, area: None }
+        Screen { live: fb.is_some() && !off, fb, gpu: None, gpu_failure: None, area: None }
     }
 
     fn live_on(&self) -> bool { self.live }
@@ -1009,6 +1071,17 @@ impl Screen {
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed, only: Option<&str>) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            // A GPU view failure is reported separately: without that view the suite cases still
+            // run and fail naming the layers they need. A failure is reported once
+            // each time it changes, on a line that is not a suite record.
+            let shown = gpu.draw(states).err();
+            if shown.is_some() && shown != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", shown.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = shown;
+            return;
+        }
         let live_on = self.live;
         let Some(fb) = self.fb.as_mut() else { return; };
         let details: Vec<Vec<String>> = states.iter()

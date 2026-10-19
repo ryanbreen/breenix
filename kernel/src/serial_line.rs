@@ -117,10 +117,15 @@ impl Port for Uart {
 }
 
 /// Write one record from `writer` to the UART while owning it, on a fresh
-/// line if another writer's line is open.
-fn emit<const TEE: bool>(writer: Writer, bytes: &[u8]) {
+/// line if another writer's line is open. This is the accounting boundary of
+/// kernel output (`output_accounting`): the record's bytes count once, toward
+/// the current thread when `attributed`, and the lead newline does not count.
+fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], attributed: bool) {
     if bytes.is_empty() {
         return;
+    }
+    if writer == Writer::Kernel {
+        crate::output_accounting::count(bytes.len(), attributed);
     }
     // Raw diagnostics (including the timer's lockup capture) must stay on
     // their fixed-width writer path. Notice draining tees into the log rings
@@ -146,6 +151,9 @@ pub fn write_notices() {
     }
 }
 
+/// Posted lines were counted when they were posted: writing them out here is a
+/// drain, not counted again.
+///
 /// [`write_notices`], from thread context only: never from an interrupt or
 /// softirq, nor with interrupts masked, so interrupt paths and the timer's
 /// lockup report never write the list.
@@ -165,6 +173,7 @@ pub fn write_notices_from_thread() {
 pub fn try_write(bytes: &[u8]) -> bool {
     match Ownership::try_acquire() {
         Some(mut ownership) => {
+            crate::output_accounting::count(bytes.len(), true);
             uart_owner::write::<Uart, false>(Writer::Kernel, bytes, Kind::Plain, &mut ownership);
             true
         }
@@ -184,6 +193,8 @@ pub struct Buffer<const TEE: bool> {
     bytes: [MaybeUninit<u8>; CAPACITY],
     len: usize,
     writer: Writer,
+    /// Whether the bytes count toward the current thread (`output_accounting`).
+    attributed: bool,
 }
 
 impl<const TEE: bool> Buffer<TEE> {
@@ -197,6 +208,18 @@ impl<const TEE: bool> Buffer<TEE> {
             bytes: [MaybeUninit::uninit(); CAPACITY],
             len: 0,
             writer,
+            attributed: true,
+        }
+    }
+
+    /// A record of kernel output that names no thread (`emergency_print`): its bytes
+    /// count as unattributed.
+    pub const fn unattributed() -> Self {
+        Self {
+            bytes: [MaybeUninit::uninit(); CAPACITY],
+            len: 0,
+            writer: Writer::Kernel,
+            attributed: false,
         }
     }
 
@@ -273,7 +296,7 @@ impl<const TEE: bool> Buffer<TEE> {
         // `char` initializes every byte below `len`.
         let record =
             unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.len) };
-        emit::<TEE>(self.writer, record);
+        emit::<TEE>(self.writer, record, self.attributed);
         self.len = 0;
     }
 }
