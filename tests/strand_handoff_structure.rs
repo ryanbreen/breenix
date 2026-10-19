@@ -3196,8 +3196,10 @@ fn code_mask_raw_string_close_preserves_next_byte() {
 
 /// #1862: the strict gate is the completion contract for a focused
 /// `boot_tests,strand_inject_live_outgoing` boot. A serial from that kernel
-/// completes only with the live-outgoing PASS; other boot_tests kernels do
-/// not need it.
+/// completes only with exactly one live-outgoing PASS line; other boot_tests
+/// kernels do not need it. A serial that carries the line is scored as that
+/// profile even when no kernel is given, and is refused beside a kernel that
+/// has no print site for it.
 #[test]
 fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
     let root = repo_root();
@@ -3242,6 +3244,11 @@ exec "$REAL_GREP" "$@"
         ("live-with-pass", Some(&live), format!("{fixture}\n{pass}\n"), true),
         ("live-with-fail", Some(&live), format!("{fixture}\n{pass}\n{fail}\n"), false),
         ("missing-kernel", Some(&missing), format!("{fixture}\n{pass}\n"), false),
+        ("no-kernel-with-pass", None, format!("{fixture}\n{pass}\n"), true),
+        ("same-line-duplicate", Some(&live), format!("{fixture}\n{pass}{pass}\n"), false),
+        ("no-kernel-with-fail", None, format!("{fixture}\n{fail}\n"), false),
+        ("plain-with-live-line", Some(&plain), format!("{fixture}\n{pass}\n"), false),
+        ("live-with-two-passes", Some(&live), format!("{fixture}\n{pass}\n{pass}\n"), false),
         ("unreadable-live-without-pass", Some(&unreadable), fixture.clone(), false),
         ("unreadable-live-with-pass", Some(&unreadable), format!("{fixture}\n{pass}\n"), false),
     ] {

@@ -939,18 +939,40 @@ fn owner_on_tty3(ready: &Gate, body: impl FnOnce(&Term) -> Verdict) -> Verdict<C
 pub fn vt_switch_vt_process_release() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
+        let witness = mark("suspended-compositor");
+        Term::vt(2)?.write(format!("\x1bc{witness}\r\n").as_bytes())?;
         let (ready, asked) = (Gate::new()?, Gate::new()?);
+        let (presented, checked) = (Gate::new()?, Gate::new()?);
         let mut owner = owner_on_tty3(&ready, |tty3| {
             require(signalled(&RELEASES, 1, 3000), "no release signal")?;
             require(tty3.state()?[0] == 3, "the foreground moved before the owner answered")?;
+            libbreenix::process::setsid().map_err(|e| e.to_string())?;
+            tty3.ok("TIOCSCTTY", TIOCSCTTY, 0)?;
+            let display = super::DisplayOwner::take()?;
             asked.open();
             sleep(200);
-            tty3.ok("VT_RELDISP(1)", VT_RELDISP, 1).map(drop)
+            tty3.ok("VT_RELDISP(1)", VT_RELDISP, 1)?;
+            require(within(3000, || foreground().ok() == Some(2)), "owner did not leave foreground")?;
+            #[cfg(target_arch = "aarch64")]
+            for op in [10, 16] {
+                // A suspended owner's command succeeds without reaching the
+                // compositor, even with a pointer it would otherwise reject.
+                let cmd = libbreenix::graphics::FbDrawCmd { op, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 };
+                let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const _ as u64) } as i64;
+                require(ret == 0, &format!("suspended compositor op {op} returned {ret}"))?;
+            }
+            presented.open();
+            checked.wait(3000, "the foreground read-back")?;
+            drop(display);
+            Ok(())
         })?;
         activate(2)?;
         asked.wait(3000, "the owner's release signal")?;
         require(foreground()? == 3, "the switch did not wait for VT_RELDISP")?;
         wait_active(2)?;
+        presented.wait(3000, "the suspended compositor commands")?;
+        shows(2, &witness)?;
+        checked.open();
         owner.finish(3000)
     })
 }
@@ -1129,9 +1151,22 @@ pub fn vt_switch_eperm_unprivileged() -> CaseResult {
             const SETUID: u64 = 105;
             #[cfg(target_arch = "aarch64")]
             const SETUID: u64 = 146;
+            // Keep a privileged descriptor to exercise ioctl authorization after
+            // dropping privileges, independently of the open-time input check.
+            let tty2 = Term::vt(2)?;
             // SAFETY: setuid takes its user ID by value.
             require(unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0, "setuid(1000)")?;
-            let tty2 = Term::vt(2)?;
+            for path in ["/dev/console", "/dev/tty0", "/dev/tty1", "/dev/tty2", "/dev/tty3", "/dev/tty4", "/dev/tty5", "/dev/tty6"] {
+                for mode in [fs::O_RDONLY, fs::O_RDWR] {
+                    match fs::open(path, mode | O_NOCTTY) {
+                        Ok(fd) => {
+                            let _ = io::close(fd);
+                            return Err(format!("unprivileged input open succeeded: {path}"));
+                        }
+                        Err(error) => require(matches!(error, libbreenix::error::Error::Os(libbreenix::errno::Errno::EACCES)), &format!("{path}: expected EACCES, got {error}"))?,
+                    }
+                }
+            }
             tty2.fails("VT_ACTIVATE", VT_ACTIVATE, 3, EPERM)?;
             tty2.fails("KDSETMODE", KDSETMODE, KD_TEXT, EPERM)?;
             let mode = vt_mode(VT_PROCESS, 10, 12);

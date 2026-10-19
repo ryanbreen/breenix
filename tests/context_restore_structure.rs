@@ -4567,9 +4567,9 @@ fn userspace_resume_pc_predicate_stays_outside_the_kernel_text_window() {
     let source = repo_text(AARCH64_CONTEXT_SWITCH);
     assert_eq!(validate_user_resume_pc_predicate_is_independent(&source), Ok(()));
 
-    // Parallels identity-maps kernel text around 0x4008_0000, overlapping the
+    // Parallels identity-maps kernel text around 0x4020_0000, overlapping the
     // 0x4000_0000/0x4100_0000 ranges where userspace programs are linked. The
-    // EL0 predicate must therefore never reuse the kernel-text-window test.
+    // EL0 predicate uses its separate user-address bounds in the check below.
     let body = function_body(&source, "resume_pc_is_user_dispatchable")
         .expect("userspace resume-PC predicate");
     let body_start = source.find(body).expect("userspace predicate body offset");

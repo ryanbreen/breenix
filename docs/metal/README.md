@@ -44,8 +44,8 @@ serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-s
 
 - **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
   `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and
-  the ext2 root as `ramdisk` by default, including before the kernel consumes it. The root image determines
-  the payload size.
+  a `BREENIX-BOOT 1` target payload as `ramdisk` for disk-root boots. The same
+  target is written into the fresh physical ext2 root before boot.
 - **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
   builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
   image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
@@ -103,7 +103,7 @@ dropped by the ring (`log_ring`). claim-lint:ok: 0 of 683 kernel-side lines spli
 
 The driver clears any stale SOL session, opens one in a tmux pane it owns, and powers on only after the session's
 banner has arrived in its capture files. The pane is held silent until its output is piped to the capture, so
-`serial.raw` holds the bytes the session printed, banner first. `serial.txt` is that text with VT100/ANSI sequences
+`serial.raw` receives SOL stdout and stderr through a blocking pipe and `tee`, before the terminal or tmux processes them, banner first. SOL stdin remains on the pane for input; reconnects append to the same capture. `serial.txt` is that text with VT100/ANSI sequences
 and NULs removed, CRLF and lone CR made LF, and cursor positioning made a line break; `serial.ts` gives each line's
 arrival time and byte offset. A dropped session is reopened within two seconds and recorded as a `console-gap`; a
 boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_console` and `heal_console` in
@@ -150,28 +150,15 @@ or an idle line lost during SOL recovery without treating a quiet login prompt a
 claim-lint:ok: the worker in `kernel/src/tty/input_clock.rs` produces the pulse; `tests/metal_session_test.py`
 checks the missing-pulse boundary and powered-off reading.
 
-Sessions use a fresh RAM-disk root by default; files disappear at power-off. `--disk root` uses a console image
-previously installed by the storage lane, with the existing commit and credential checks. A session cannot install
-or rewrite that disk. To exercise input expiry quickly on a RAM-disk session:
-
-```sh
-metal-run boot --mode console --session --idle-minutes 2
-```
-
-Driver-launched sessions suppress the keyboard replug exercise through per-boot intent. A manual boot
-without that intent uses the installed target, which may request replug. Measured attended and SOL test boots stage `console replug`;
-the kernel completes keyboard attachment and the exercise before starting init and getty.
-Disk-root console boots carry a small per-boot intent payload through the bootloader's RAM-payload slot; the
-kernel consumes it as metadata, without registering a RAM block device or changing the installed root. A
-session intent suppresses an installed measurement flag; a test intent requests the exercise even on a plain
-installed console target. Input preparation starts only after `/sbin/init` is read and published, so an init
-that cannot be read or launched leaves the keyboard alone. The kernel then prints
-`[console] input preparation: replug requested|not requested by intent|target|fw_cfg`. On a disk-root console
-boot the driver requires `by intent` with the staged choice (event `console-intent`; a test boot that disagrees
-ends short), and `image-assembled` records `consoleIntent` with `ramdisk` false, since no RAM-disk root is delivered.
+Sessions, measured console boots, default boots and suites use the physical disk root.
+A per-boot `BREENIX-BOOT 1` payload selects the target and console idle/replug
+choice without rewriting the installed filesystem. It is consumed before disk
+root discovery and does not become a RAM block device. Console tests require
+`[console] input preparation: replug requested by intent`; sessions request no
+replug. A short session can use `--session --idle-minutes 2`.
 
 Staging writes `console idle=2` to the boot target and checks its readback. The range is 1 through 240 minutes;
-the four-hour ceiling still applies. Disk-root sessions use the installed console target's default 30 minutes.
+the four-hour ceiling still applies. Disk-root sessions use the per-boot idle choice, 30 minutes by default.
 
 ## The screen console
 
@@ -332,6 +319,12 @@ the initiator's value.
 
 ## One boot
 
+`metal-run boot --branch BRANCH --catchup` (or `BREENIX_CATCHUP=1`) records
+`catchup: true` in `run.json`; it does not override metal ancestry or permit
+main-path effort history. `metal-build` fetches the guard from origin/main for
+both ordinary and catch-up boots, so the target branch cannot supply its own
+admission policy.
+
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
 soon as the unit holds, or waits for, the machine lease, so the caller's ssh session can end. The driver then:
 
@@ -339,7 +332,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    holds it; a quarantined lease refuses new boots). The lease carries the boot id, the driver's unit, a heartbeat refreshed
    each 5 s and, from power-on, the attempt's absolute ceiling.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
-   the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
+   the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;
+   `--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
    production kernel (no features; an xHCI fault boot's kernel adds only `xhci_fault_inject`) and its UEFI image,
@@ -398,8 +392,8 @@ in "Measured".
 | Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or boot progress returning to a state other than `OSBootStarted` or `OSRunning` (which the firmware reports once a boot option runs) | 124, 1, 1 |
-| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing | 0, else 1 |
-| Whole attempt | — | 15 minutes from power-on (enforced by the reaper as well) | 124 |
+| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted (tests mode: `USERSPACE TEST REPORT DONE`) | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes, and in a multi-suite boot 7 minutes from each suite's START; tests mode: 10 minutes | 0, else 1 |
+| Whole attempt | — | 15 minutes from power-on, 22 for a suite and 7 more for each further suite of a multi-suite boot, 25 for tests mode (enforced by the reaper as well) | 124 |
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice
 the longest of them (`post-times.json` in the boot store; the measured values are in "Measured", below). A POST
@@ -463,10 +457,10 @@ numbers, written after `ended` by whichever of the driver, the reaper or reconci
 importer that asks for the entries above the lowest sequence it lacks catches up without gaps. Fault tests (`kind: fault-test`)
 have no definition and are not scored.
 
-## RAM-disk userspace
+## Physical-disk userspace
 
-At staging, `metal_root.stage_root` calls the deployed copy of `scripts/write-boot-target.sh` to write
-`/etc/breenix/boot-target` as `default`, `shell`, or `suite <id>` onto the boot's ext2 image, remove a stale suite
+Before each main-path boot, `metal_root.stage_root` calls the deployed copy of `scripts/write-boot-target.sh` to write
+`/etc/breenix/boot-target` with the requested mode onto a fresh ext2 image, remove a stale suite
 sequence, and verify the configuration bytes and selected PID 1 ELF with host debugfs. Metal staging requires
 debugfs in the service container and does not launch a fallback container. Deployment carries the current shared
 writer, including when the selected kernel predates its default/shell options, and records the writer checksum. Site fields prefixed `GUEST_` become lines in `/etc/breenix/site.env` without that prefix; management
@@ -480,24 +474,89 @@ manifest and verdict tool into the boot record, waits for that suite's DONE line
 running the manifest verdict against the captured serial. The scorer runs as a transient unprivileged user with
 management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
 180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
-for firmware and delivery. The driver also waits for the measured kernel stages, including the delayed per-CPU timer census, before accepting
-the mode result. The console-gap and fatal-output vetoes apply (issue #1702).
+for firmware and delivery (a 1320-second attempt ceiling).
+
+Any main-path suite runs this way (`metal-run boot --mode suite --suite ID`). Its fixtures are the ones the other
+launchers attach: the ext2 root on the physical disk, and the machine's own network port with its DHCP lease where
+QEMU attaches a user network. The Developer SDK suite also needs its host side: `metal-run` passes the suite to the
+build, and `metal-build` runs the commit's SDK suite host harness for x86-64 on a copy of the root under the same
+build lease, so the delivered root carries the SDK's records (`suite` in `build.json`; the driver refuses a
+build staged for another suite). A manifest's `diskChecks` (files-io's raw writeback checks) require a cold firmware
+read of the physical disk, before any filesystem mount. After the suite boot
+powers off, the driver retains its lease and starts a separate cold-readback boot
+record with the same built firmware. The lease transfers directly to that record,
+so a queued disk user cannot intervene. A manual retry can use
+`metal-run boot --payload disk-readback --source-boot ID --branch BRANCH --sha SOURCE_COMMIT`; it builds
+only the deployed firmware stub under a metal-build slot. The readback identifies the disk by its
+exact storage record, and uploads its raw sectors to a one-use, lease-bound HTTP
+route. No kernel or filesystem is loaded on that boot. An intervening disk-root
+boot invalidates the association, including when it reuses the same build.
+The source suite remains failed pending this evidence. The retained manifest
+scorer receives `--disk` only after the complete upload, size, root record and
+digest have been verified and the readback boot has powered off. It checks the
+original byte expectations without guest page-cache reads. The driver also waits
+for the measured kernel stages before accepting the mode result. The console-gap and fatal-output vetoes apply (issue #1702).
+
+<!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and scripts/metal/metal-boot implement this paragraph. -->
+A suite boot can run several suites in turn for one boot's firmware, delivery and build time:
+`metal-run boot --mode suite --suite directories,memory,files-io`, or `--suite all` for every main-path effort suite
+but those that need a 3D GPU, which this machine lacks (docs/suites/README.md, "Several suites in one boot").
+`metal-run` resolves the list against the commit's own `docs/efforts/path.json` and manifests with the deployed
+`suite-sequence.py`, and refuses a list that puts `console` anywhere but first or `files-io` anywhere but last.
+Staging writes the list beside the boot target and checks that each suite's binary is on the root; the build stages
+the SDK suite's host side when the list includes it. The final marker is `SUITE_SEQUENCE DONE`; each suite has the
+420-second deadline from its own START, and the attempt ceiling grows by 420 seconds per further suite. After
+power-off, whether or not the sequence finished, the commit's `scripts/suite-sequence.py score` scores each suite
+from its own part of the serial into `suite-verdict.txt`, one line per suite (PASS, FAIL, STALLED with its reported
+cases, NOT-RUN or NOT-ISOLATED). `run.json` lists the suites in `suites`, and keeps `suite` for a boot of one.
+
+## Tests mode
+
+`metal-run boot --mode tests` measures the main path's boot-path milestones (`docs/boot-path.json`) on this machine
+the way the ARM64 targets measure them: from the testing kernel's own boot. `metal-run` passes `--features testing` to
+the build, and `metal-build` builds the kernel exactly as `run.sh --tests` does for its targets (`cargo build --release
+--bin qemu-uefi --features testing`; `profile` `testing` in `build.json`). The x86-64 testing kernel reads its test
+binaries from a BXTEST disk, which the QEMU launchers attach as a second drive; this machine has one hardware disk,
+which holds the root. So the build also delivers the userspace build's `target/test_binaries.img` (`testBinaries` in
+`build.json`), and the driver hands it to the kernel as the bootloader's RAM disk in place of the boot intent. The
+kernel takes a RAM disk that starts with the BXTEST header as its test disk and not as a root
+(`kernel/src/block/ramdisk.rs`), so the root is the physical disk, installed for this boot as in the default, shell, probe,
+suite and console modes; staging writes it as a default boot's root; the testing kernel has production init compiled out, so it does not read
+that boot target (`kernel/src/main.rs`).
+
+The boot ends at the testing kernel's last report line, `USERSPACE TEST REPORT DONE`, or at the first `fatal` pattern
+of the commit's `docs/boot-path.json`, as `scripts/wait-boot-done.py` ends a Parallels or VMware testing boot. Completion first validates the test-binary loader totals, rejects skips and failed canonical programs, and checks
+process exits against the existing exit contracts with complete publication accounting. The shared validator is
+`scripts/test-report-verdict.py`; the build record includes it, the canonical test list, and the exit classifier's
+contracts from the boot commit. `milestone-verdict.json` records its result under `testReport`; a failed or incomplete
+report makes the boot fall short even when its milestone markers are present. It waits for no metal-path stage: after power-off,
+`milestone-verdict.json` scores each milestone of the boot's own copy of `docs/boot-path.json` (`definition` names
+it) by its `x86_64` stage list against `xtask/src/boot_stages.rs`'s markers, a stage reached when one of its marker's
+alternatives appears on a serial line other than the test runner's announcements, and lists each milestone's
+`missing` stages. A milestone with a missing stage makes the boot fall short (exit 1). `run.json` records mode `tests`.
 
 ## The disks
 
 Embedded SATA stays enabled in **AHCI mode**, not RAID. The stream owns the disk; `metal-storage` is scheduled
 after `metal-userspace`, in parallel with `metal-network`, to implement SATA/AHCI and the Breenix filesystem on it.
-Boot delivery and root arrive in RAM. The kernel installs the bootloader RAM disk as a writable, 512-byte-sector
-block device; ext2 uses that device for root. On physical x86 boots (no QEMU fw_cfg signature), root candidates
-contain only that RAM device, and the home-disk-by-index rule is disabled. Hardware write entry points in VirtIO,
-AHCI and NVMe refuse writes; flushes on these read-only devices submit no command. QEMU and ARM64 retain their
-hardware-disk write policy. Discovered physical disks also receive a read-only block wrapper; its refused-write
-test checks that single-block and multi-block writes never reach the backend
-(`kernel/src/block/read_only.rs`, `discovered_hardware_refuses_writes_before_reaching_backend`; claim-lint:ok: #1702). The disk marker reports `detected` and `gated` counts of attached block devices, including zero
-when a controller has no attached block backend. It does not claim physical-drive discovery from policy alone. RAM-disk byte copies hold their spin mutex only
-inside an interrupt-masked window.
-Controller, port and drive observations belong in the private recon and platform facts; site identifiers stay
-out of this repository.
+The bootloader arrives over HTTP; the root for main-path boots lives on the
+physical disk. The firmware delivery stub selects the previously owned disk
+by its complete storage record, installs a fresh userspace image, flushes and
+reads its bytes back, and writes the new root record last. The kernel then takes
+the installed disk-root path from #1930. Other discovered disks keep their write
+refusal. Recovery fault boots retain a RAM-disk root.
+
+Each main-path boot reinstalls its staged root, including kernel-only commits and
+mode/suite switches. No mutable ext2 state crosses boots: consumed fixtures and
+fixed-path writeback outputs from an earlier run cannot satisfy the next run.
+The build digest records the base image and private configuration for provenance;
+it does not authorize reuse. Firmware verifies the installed bytes before kernel
+entry, and the driver persists the new disk record on `suite fixture verified`,
+so a kernel panic before mount does not lose disk ownership. Kernel mount still
+has to report the exact record before a boot can pass.
+
+Private reconnaissance, site identifiers, addresses, credentials and service tags
+stay out of this repository and public evidence.
 
 ### The SATA controller
 
@@ -513,7 +572,7 @@ commands of up to 128 sectors (64 KiB), as reads already were.
 
 ### Writing the disk: install and disk-root boots
 
-The write refusal above is lifted only by the storage lane, explicitly, for one disk and one purpose, by a
+The kernel lifts its write refusal for the installed root disk, identified by a
 storage record in a disk's first sector (`kernel/src/block/install.rs`). ext2 leaves its first 1024 bytes unused,
 so the record has that sector to itself. A record is the line `BREENIX-STORAGE 1`, one record line, and NUL
 padding to the end of the sector.
@@ -657,10 +716,10 @@ the screen check and its row, logout, a keyboard-only session end, reacquisition
 `input=other` ends the boot short. `first-local-login` is the attended computation stage. Text over SOL is the
 observation path; no screenshot or framebuffer capture is used.
 
-Only the storage lane may run `--mode console --input sol --disk install`: the console target and shadow
-then ride the verified image copy. A subsequent `--disk root` console request requires that recorded install's
-commit, console mode and credential identity to match. It does not restage or change credentials on the SSD.
-A changed credential requires the storage lane to install again. This lane uses a RAM-disk hardware boot.
+The recovery form `--mode console --input sol --disk install` remains available.
+Ordinary console requests install a fresh physical root with the current userspace
+build and credentials before each boot. The current boot payload selects session
+or measurement behavior.
 
 ### The USB keyboard
 
@@ -748,10 +807,11 @@ On the boot host:
 
 ```
 python3 ~/.local/share/breenix-metal/metal-run boot                      # origin/main's kernel as boot.efi
-python3 ~/.local/share/breenix-metal/metal-run boot --ramdisk            # explicit spelling of the default RAM-disk root
+python3 ~/.local/share/breenix-metal/metal-run boot                      # physical-disk root by default
 python3 ~/.local/share/breenix-metal/metal-run boot --mode shell
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite smoke
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite time
+python3 ~/.local/share/breenix-metal/metal-run boot --mode tests        # the testing kernel, scored against docs/boot-path.json
 python3 ~/.local/share/breenix-metal/metal-run boot --mode probe --disk install   # copy the RAM-disk root onto the disk
 python3 ~/.local/share/breenix-metal/metal-run boot --mode probe --disk root      # boot from the disk the install wrote
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)
@@ -765,9 +825,14 @@ python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-iso [--serve-
 python3 ~/.local/share/breenix-metal/metal-run follow ID | stop ID | status
 ```
 
+`--inject disk-before-mount` installs and verifies a fresh root, then fails firmware
+loading by replacing the delivered bootloader with an invalid EFI image. No kernel
+or filesystem mount runs; the next disk-root boot must use the retained ownership
+record and install another fresh root.
+
 `--inject forceoff-fail` makes the driver skip its own ForceOff and report it failed, which quarantines the lease
 with the machine on; the reaper's retry then powers it off and lifts the quarantine. The default, shell and suite
-modes stage their boot targets as described under "RAM-disk userspace"; probe mode stages `probe`, and its storage
+modes deliver their boot targets as described under "Physical-disk userspace"; probe mode stages `probe`, and its storage
 boots are described under "The disks".
 Probe completion requires `PROBE DONE` and the measured kernel and fetch stages.
 
@@ -893,8 +958,7 @@ between retries. Panic flushing follows the same writer lead and CR LF path. The
 
 The console and APIC handoff lines precede the serial-initialized line, in the metal definition's order.
 The metal idle marker is emitted only without fw_cfg. Read-only MCFG inventory reports the firmware's ECAM
-allocations without mapping or using them. Breenix payloads include their RAM-disk root by default;
-consuming that root remains the userspace lane's work.
+allocations without mapping or using them. Those historical first-light boots used RAM-disk roots; main-path boots now use the physical disk.
 
 HTTP events retain the server's observation time, serial events retain the capture read's arrival time,
 and power-on uses the machine queue's dispatch time. Polling latency does not change these timestamps.
@@ -975,7 +1039,7 @@ The driver and retained `milestone-verdict.json` score only milestones that the 
 An install measures the RAM-disk root and disk copy; a disk-root boot measures the installed filesystem.
 Missing stages of a measured milestone still fail the boot. The RAM-disk root contract remains three stages.
 
-A disk-root boot requires a verified install from the requested commit; install that commit first when it changes.
+A disk-root boot installs a fresh staged root before kernel entry.
 The driver rejects an install size or digest mismatch and a root record that differs from that verified install.
 A reinstall invalidates and flushes the previous root record before replacing data, then writes the new record last.
 Physical boots keep the global write refusal, granting only the selected backend device permission to write;

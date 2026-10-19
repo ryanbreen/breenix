@@ -390,6 +390,8 @@ fn launch_init_from_elf(
             let ticket =
                 manager.create_init_process_with_argv(String::from(proc_name), exe_path, &elf_data, argv)?;
             let publication = manager.designate_init(ticket)?;
+            // Decide suite controls after designation and before the init thread is published.
+            kernel::test_control::latch_init_program(exe_path);
             let pid = publication.pid();
             let init_thread = manager.publish_init(publication);
             let designated_pid_raw = manager
@@ -413,9 +415,7 @@ fn launch_init_from_elf(
     // This allows tests that need process context (like sys_socket) to run
     #[cfg(feature = "boot_tests")]
     {
-        let failures = kernel::test_framework::advance_to_stage(
-            kernel::test_framework::TestStage::ProcessContext,
-        );
+        let failures = kernel::test_framework::advance_to_process_context(pid);
         if failures > 0 {
             kernel::serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
         }
@@ -806,17 +806,35 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // the high half -- the ADRP relocation would be out of range (~281 TB).
     // Instead, read the current TTBR0_EL1 to get the physical address and
     // access it through the HHDM.
-    // Initialize memory management for ARM64
-    // ARM64 QEMU virt machine: RAM starts at 0x40000000
-    // Frame allocator range from platform_config (QEMU defaults or HardwareConfig)
-    let fa_start = kernel::platform_config::frame_alloc_start();
-    let fa_end = kernel::platform_config::frame_alloc_end();
+    // Initialize memory management for ARM64. The frame pool is the RAM the
+    // firmware describes (the loader's UEFI map, or QEMU's device tree) less
+    // the kernel's fixed ranges.
+    let frame_pool = kernel::platform_config::frame_pool();
+    match frame_pool.source {
+        kernel::platform_config::FramePoolSource::UefiMemoryMap => {
+            serial_println!("[boot] Frame pool from the UEFI memory map:")
+        }
+        kernel::platform_config::FramePoolSource::DeviceTree => {
+            serial_println!("[boot] Frame pool from the device tree:")
+        }
+        kernel::platform_config::FramePoolSource::Unavailable(reason) => {
+            panic!("No safe physical frame pool: {}", reason)
+        }
+    }
+    for range in frame_pool.ranges.as_slice() {
+        serial_println!("[boot]   {:#x}-{:#x}", range.start, range.end);
+    }
     serial_println!(
-        "[boot] Initializing memory management ({:#x}-{:#x})...",
-        fa_start,
-        fa_end
+        "[boot] Initializing memory management ({} MiB in {} ranges{})...",
+        frame_pool.ranges.total_bytes() >> 20,
+        frame_pool.ranges.as_slice().len(),
+        if frame_pool.ranges.truncated() {
+            ", firmware map truncated"
+        } else {
+            ""
+        }
     );
-    kernel::memory::frame_allocator::init_aarch64(fa_start, fa_end);
+    kernel::memory::frame_allocator::init_aarch64(frame_pool.ranges.as_slice());
     kernel::memory::init_aarch64_heap();
     kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
@@ -910,9 +928,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
-    splash::stage(Stage::DriversInitialized);
     kernel::drivers::run_post_init_self_tests();
-    splash::stage(Stage::DriverSelfTests);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
@@ -1175,6 +1191,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::softirqd::init_softirq();
     kernel::net::init_loopback_pump();
     kernel::net::init_rx_poll();
+    // Deferred reclamation drains on a timer too, not only when a CPU idles
+    // or a process starts or ends (ruling S26).
+    kernel::task::process_task::start_reclaim_daemon();
+    // Terminal signals the input interrupt generates are sent from a thread.
+    kernel::tty::driver::start_foreground_signal_thread();
     kernel::drivers::xhci::init();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
@@ -1792,6 +1813,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     #[cfg(feature = "boot_tests")]
     {
         serial_println!("[boot] Running parallel boot tests...");
+        // The boot is not complete until they finish: say why it is waiting.
+        splash::set_status(format_args!("Running kernel boot tests"));
         #[cfg(feature = "btrt")]
         kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = kernel::test_framework::run_all_tests();
@@ -1846,6 +1869,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // move what that census reports.
     #[cfg(feature = "boot_tests")]
     kernel::task::timer_wake_oracle::run();
+
+    // Ruling S26: deferred reclamation retires a CLONE_VM-only child's receipt
+    // while each CPU runs a spinning thread or this boot thread. After the censuses above, so its two rows do
+    // not move what they report.
+    #[cfg(feature = "boot_tests")]
+    kernel::task::reclaim_busy_oracle::run();
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all
@@ -2125,13 +2154,11 @@ fn load_test_binaries_from_ext2() {
         let created = kernel::process::creation::create_user_process_before_run(
             String::from(*name),
             &elf_data,
-            |_| {
+            |#[cfg_attr(not(feature = "boot_tests"), allow(unused_variables))] pid| {
                 #[cfg(feature = "boot_tests")]
                 if core::mem::take(&mut process_context_pending) {
                     kernel::per_cpu_aarch64::preempt_enable();
-                    let failures = kernel::test_framework::advance_to_stage(
-                        kernel::test_framework::TestStage::ProcessContext,
-                    );
+                    let failures = kernel::test_framework::advance_to_process_context(pid);
                     kernel::per_cpu_aarch64::preempt_disable();
                     if failures > 0 {
                         serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
@@ -2476,6 +2503,8 @@ fn panic(info: &PanicInfo) -> ! {
         core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
     }
     kernel::arch_impl::aarch64::irq_mask_account::opened();
+    // Output from here on names no thread (docs/gui/breengel.md section 22).
+    kernel::output_accounting::panicking();
 
     serial_println!();
     serial_println!("========================================");
@@ -2517,9 +2546,12 @@ fn panic(info: &PanicInfo) -> ! {
     kernel::tracing::output::trace_dump_counters();
 
     // Show the panic on screen after the serial records above, so drawing and
-    // GPU commands cannot delay or lose them. It does not print or block on a
-    // lock: skipped if the framebuffer lock is held, and left for the render or
-    // presenter thread if the GPU lock stays held (possibly by this CPU).
+    // GPU commands cannot delay or lose them. Before GPU handoff it does not
+    // print or block on a lock: skipped if the framebuffer lock is held, and left
+    // for the render or presenter thread if the GPU lock stays held (possibly by
+    // this CPU). After GPU handoff the terminal path uses preallocated commands
+    // and reserved descriptors, without taking the core, console or framebuffer
+    // locks.
     kernel::graphics::boot_screen::show_panic(info);
 
     loop {

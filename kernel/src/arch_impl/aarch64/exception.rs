@@ -487,6 +487,7 @@ pub(crate) fn set_idle_stack_for_eret() {
 
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let idle_stack = super::constants::percpu_kernel_stack_top(cpu_id);
+    crate::gpu::panic::abandon_accesses();
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
@@ -1279,7 +1280,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
             if !from_el0 {
-                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+                crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
             }
 
             // EL1 may have faulted while holding SCHEDULER, so termination is
@@ -1422,7 +1423,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
 
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
-                    crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+                    crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -2225,7 +2226,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             drop(fatal_uart_guard);
-            crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -2541,6 +2542,12 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                     crate::drivers::virtio::gpu_pci::handle_interrupt();
                 }
             }
+            // GPU core interrupt dispatch (virtio-gpu-gl-pci INTx on QEMU)
+            if let Some(gpu_core_irq) = crate::gpu::irq() {
+                if irq_id == gpu_core_irq {
+                    crate::gpu::handle_interrupt();
+                }
+            }
             // VirtIO network PCI interrupt dispatch (GICv2m MSI)
             if let Some(net_pci_irq) = crate::drivers::virtio::net_pci::get_irq() {
                 if irq_id == net_pci_irq {
@@ -2700,15 +2707,9 @@ fn check_need_resched_on_irq_exit() {
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
-    // Read all available bytes from the UART FIFO
-    while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Push to stdin buffer for kernel shell or userspace read() syscall
-        // This wakes any blocked readers waiting for input
-        crate::ipc::stdin::push_byte_from_irq(byte);
-    }
-
-    // Clear the interrupt
-    serial_aarch64::clear_rx_interrupt();
+    // Do not consume a UART byte until stdin owns space for it. Contention
+    // defers RX until the ring holder releases it; the IRQ does not wait.
+    crate::ipc::stdin::receive_serial_from_irq(serial_aarch64::get_received_byte);
 }
 
 /// Get exception class name for debugging

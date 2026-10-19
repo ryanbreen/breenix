@@ -391,7 +391,7 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
     const REQUIRED: [&str; 8] = [
         "input_char_nonblock", "input_char_from_nonblock", "input_char_source_nonblock",
         "output_char_nonblock", "send_signal_to_foreground_nonblock",
-        "send_signal_to_process_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
+        "queue_foreground_signal_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
     ];
     for name in REQUIRED {
         if !roots.contains(&name) {
@@ -411,6 +411,20 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
              signal path #822 is about"
                 .to_string(),
         );
+    }
+
+    let send = function_body(driver, "send_signal_to_foreground_nonblock")
+        .ok_or("missing foreground signal entry")?;
+    let enqueue = function_body(driver, "queue_foreground_signal_nonblock")
+        .ok_or("missing foreground atomic queue")?;
+    if !normalized_code(send).replace(' ', "").contains("queue_foreground_signal_nonblock(pgrp,sig)")
+        || !normalized_code(enqueue).replace(' ', "").contains("FG_SIGNAL_QUEUE.iter()")
+        || !normalized_code(enqueue).replace(' ', "").contains("compare_exchange(0,entry,")
+        || normalized_code(enqueue).replace(' ', "").contains(".lock()")
+        || normalized_code(enqueue).replace(' ', "").contains(".try_lock()")
+        || !normalized_code(driver).replace(' ', "").contains("FG_SIGNAL_QUEUE:[AtomicU64;FG_SIGNAL_SLOTS]")
+    {
+        return Err("foreground IRQ delivery must enqueue through the atomic group queue without a lock".into());
     }
 
     let mut queue: Vec<&str> = roots.clone();
@@ -921,7 +935,7 @@ fn deliberately_broken_copies_redden_the_rules() {
     // Leg F -- a setter that writes the field without the publisher.
     let unpublished_setter = replace_once(
         &driver,
-        "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        self.store_foreground_pgrp(Some(pgrp));\n    }",
+        "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        self.store_foreground_pgrp(Some(pgrp), None);\n    }",
         "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        note_foreground_pgrp_acquisition(true);\n        *self.foreground_pgrp.lock() = Some(pgrp);\n    }",
     );
     assert_ne!(unpublished_setter, driver, "leg F's mutation must apply");
@@ -935,8 +949,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     // Leg G -- the interrupt-side signal path stops reading the snapshot.
     let reader_dropped = replace_once(
         &driver,
-        "        if let Some(pgrp) = self.foreground_pgrp_snapshot() {\n            let pid = ProcessId::new(pgrp);",
-        "        if let Some(pgrp) = None::<u64> {\n            let pid = ProcessId::new(pgrp);",
+        "        let Some(pgrp) = self.foreground_pgrp_snapshot() else {\n",
+        "        let Some(pgrp) = None::<u64> else {\n",
     );
     assert_ne!(reader_dropped, driver, "leg G's mutation must apply");
     let error = validate_irq_readers_use_the_snapshot(&reader_dropped)
@@ -1024,17 +1038,19 @@ fn deliberately_broken_copies_redden_the_rules() {
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
     // path. This is the call the round's review found still live at that hop,
-    // and rule 7's own subject.
+    // and rule 7's own subject. The hop is now the queueing step that hands
+    // the group to the foreground signal thread (the per-process sender it
+    // replaced is gone), so the mutation follows it there.
     let printed = inject_into_function(
         &driver,
-        "send_signal_to_process_nonblock",
-        "\n        crate::serial_println!(\"TTY: sig {}\", sig);\n",
+        "queue_foreground_signal_nonblock",
+        "\n    crate::serial_println!(\"TTY: sig {}\", sig);\n",
     );
     assert_ne!(printed, driver, "leg M's mutation must apply");
     let error = validate_irq_entry_takes_no_locking_output(&printed)
         .expect_err("leg M: rule 7 has to redden on a restored serial_println!");
     assert!(
-        error.contains("send_signal_to_process_nonblock") && error.contains("serial_println!"),
+        error.contains("queue_foreground_signal_nonblock") && error.contains("serial_println!"),
         "leg M reddened for the wrong reason: {error}"
     );
 

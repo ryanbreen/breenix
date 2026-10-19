@@ -20,7 +20,7 @@ BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))
 
 ROOT = Path(__file__).resolve().parents[1]
 FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERNEL PANIC:"]
-TESTS_DONE = "USERSPACE TEST REPORT DONE"
+test_report_completion = runpy.run_path(str(ROOT / "scripts/test-report-verdict.py"))["completion"]
 
 
 def completion(serial, mode, suite, only=None):
@@ -36,37 +36,11 @@ def completion(serial, mode, suite, only=None):
                 return bool(re.match(r"^RUN /\S+ DONE PASS ", line)), line
         return None
     if mode == "tests":
-        if not any(line == TESTS_DONE for line in lines):
-            return None
-        tally = [line for line in lines if line.startswith("TEST_TALLY: ")]
-        # Child programs deliberately test signal deaths and nonzero exits;
-        # their supervising canonical tests must exit zero after verifying them.
-        canonical = set(re.findall(r'^    "([^"]+)",',
-                         (ROOT / "kernel/src/boot/test_list.rs").read_text(), re.MULTILINE))
-        for line in lines:
-            if re.search(r"\bSKIP\b", line):
-                return False, f"skipped test: {line}"
-        loaded_lines = [line for line in lines if line.startswith("[test] Loaded ")
-                        and "test binaries" in line]
-        if len(loaded_lines) != 1:
-            return False, "expected exactly one test-binary loader summary"
-        loaded = re.fullmatch(r"\[test\] Loaded (\d+)/(\d+) test binaries \((\d+) failed, (\d+) not found\)", loaded_lines[0])
-        if not loaded or tuple(map(int, loaded.groups())) != (len(canonical), len(canonical), 0, 0):
-            return False, f"unloaded test programs: {loaded_lines[0]}"
-        for line in tally:
-            failures = re.search(r"failed=\[(.*?)\]", line)
-            if failures:
-                for failure in failures[1].split(","):
-                    name, _, status = failure.rpartition(":")
-                    if name in canonical and status != "0":
-                        return False, f"canonical test failed: {failure}"
-        try:
-            classify = runpy.run_path(str(ROOT / "scripts/x86-gate-exits.py"))["classify_serial"]
-            if not classify(serial, ROOT / "scripts/x86-gate-allowlist.txt"):
-                return False, "unexpected process exit"
-        except (OSError, ValueError) as error:
-            return False, f"incomplete exit accounting: {error}"
-        return True, tally[0]
+        return test_report_completion(serial, ROOT)
+    if mode == "suite" and "," in suite:
+        # Several suites: the boot is done once the last has handed off (docs/suites/README.md).
+        done = [line for line in lines if re.fullmatch(r"SUITE_SEQUENCE DONE suites=\d+", line)]
+        return (True, done[0]) if done else None
     prefix = "PROBE DONE " if mode == "probe" else f"SUITE {suite} DONE "
     done = [line for line in lines if line.startswith(prefix)]
     if not done:
@@ -107,6 +81,11 @@ def main():
             parser.error("BREENIX_SUITE_HOLD must be a nonnegative number of seconds")
     done_at = None
     deadline = time.monotonic() + args.timeout
+    # A boot of several suites gives each its own DONE deadline, from when it starts; the
+    # launcher scores them once the VM has stopped (suite-sequence.py score).
+    sequence = args.mode == "suite" and "," in args.suite
+    boundaries = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))["boundaries"] if sequence else None
+    started = 0
     while True:
         try:
             serial = args.serial.read_bytes().decode("utf-8", errors="replace")
@@ -114,7 +93,15 @@ def main():
             clock.observe(serial)
             result = completion(serial, args.mode, args.suite, args.only)
         except FileNotFoundError:
-            result = None
+            result = serial = None
+        if sequence and serial is not None and boundaries(serial) > started:
+            started, deadline = boundaries(serial), time.monotonic() + args.timeout
+        if result is not None and sequence:
+            ok, reason = result
+            clock_ok, clock_reason = clock.verdict()
+            print(clock_reason)
+            print(f"{'DONE' if ok else 'FAIL'}: {reason}")
+            return 0 if ok and clock_ok else 1
         if result is not None:
             ok, reason = result
             if args.mode == "suite" and args.only and not reason.startswith("fatal kernel output:"):

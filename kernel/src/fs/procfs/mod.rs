@@ -109,6 +109,8 @@ pub enum ProcEntryType {
     NetDir,
     /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
     NetPnp,
+    /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
+    NetTcp,
     /// /proc/console - screen console directory
     ConsoleDir,
     /// /proc/console/check - the screen read back against the console's shadow
@@ -134,6 +136,13 @@ pub enum ProcEntryType {
     PidCmdline(u64),
     /// /proc/self - symlink to the caller's process directory
     SelfLink,
+    /// /proc/[pid]/task - a directory per thread of the process
+    PidTasks(u64),
+    /// /proc/[pid]/task/[tid] - one thread's directory
+    PidTask(u64, u64),
+    /// /proc/[pid]/task/[tid]/kernel_output - the thread's kernel output bytes
+    /// (docs/gui/breengel.md section 22)
+    PidTaskKernelOutput(u64, u64),
 }
 
 impl ProcEntryType {
@@ -170,6 +179,7 @@ impl ProcEntryType {
             ProcEntryType::XhciPointers => "pointers",
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
+            ProcEntryType::NetTcp => "tcp",
             ProcEntryType::ConsoleDir => "console",
             ProcEntryType::ConsoleCheck => "check",
             #[cfg(target_arch = "x86_64")]
@@ -182,6 +192,9 @@ impl ProcEntryType {
             ProcEntryType::PidStat(_) => "stat",
             ProcEntryType::PidCmdline(_) => "cmdline",
             ProcEntryType::SelfLink => "self",
+            ProcEntryType::PidTasks(_) => "task",
+            ProcEntryType::PidTask(_, _) => "tid",
+            ProcEntryType::PidTaskKernelOutput(_, _) => "kernel_output",
         }
     }
 
@@ -218,6 +231,7 @@ impl ProcEntryType {
             ProcEntryType::XhciPointers => "/proc/xhci/pointers",
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
+            ProcEntryType::NetTcp => "/proc/net/tcp",
             ProcEntryType::ConsoleDir => "/proc/console",
             ProcEntryType::ConsoleCheck => "/proc/console/check",
             #[cfg(target_arch = "x86_64")]
@@ -231,6 +245,9 @@ impl ProcEntryType {
             ProcEntryType::PidStat(_) => "/proc/<pid>/stat",
             ProcEntryType::PidCmdline(_) => "/proc/<pid>/cmdline",
             ProcEntryType::SelfLink => "/proc/self",
+            ProcEntryType::PidTasks(_) => "/proc/<pid>/task",
+            ProcEntryType::PidTask(_, _) => "/proc/<pid>/task/<tid>",
+            ProcEntryType::PidTaskKernelOutput(_, _) => "/proc/<pid>/task/<tid>/kernel_output",
         }
     }
 
@@ -267,6 +284,7 @@ impl ProcEntryType {
             ProcEntryType::XhciPointers => 303,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
+            ProcEntryType::NetTcp => 402,
             #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => 500,
             #[cfg(target_arch = "x86_64")]
@@ -279,6 +297,9 @@ impl ProcEntryType {
             ProcEntryType::PidStat(pid) => pid_inode(*pid, 4),
             ProcEntryType::PidCmdline(pid) => pid_inode(*pid, 5),
             ProcEntryType::SelfLink => 11,
+            ProcEntryType::PidTasks(pid) => pid_inode(*pid, 6),
+            ProcEntryType::PidTask(_, tid) => task_inode(*tid, 0),
+            ProcEntryType::PidTaskKernelOutput(_, tid) => task_inode(*tid, 1),
         }
     }
 
@@ -304,6 +325,8 @@ impl ProcEntryType {
                 | ProcEntryType::XhciDir
                 | ProcEntryType::NetDir
                 | ProcEntryType::PidDir(_)
+                | ProcEntryType::PidTasks(_)
+                | ProcEntryType::PidTask(_, _)
         )
     }
 }
@@ -314,8 +337,14 @@ pub fn pid_inode(pid: u64, slot: u64) -> u64 {
     (1u64 << 32).wrapping_add(pid.wrapping_mul(8)).wrapping_add(slot)
 }
 
+/// The inode of a per-thread entry: `slot` 0 is `/proc/<pid>/task/<tid>`, 1 its
+/// `kernel_output`. Thread ids get their own range above the per-process inodes.
+pub fn task_inode(tid: u64, slot: u64) -> u64 {
+    (1u64 << 62).wrapping_add(tid.wrapping_mul(2)).wrapping_add(slot)
+}
+
 /// The names in a process directory, in listing order.
-pub const PID_DIR_ENTRIES: [&str; 4] = ["status", "stat", "cmdline", "exe"];
+pub const PID_DIR_ENTRIES: [&str; 5] = ["status", "stat", "cmdline", "exe", "task"];
 
 /// A procfs entry node
 #[derive(Debug, Clone)]
@@ -396,6 +425,7 @@ pub fn init() {
     // Register /proc/net directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
 
     // Register the screen console's directories and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
@@ -519,6 +549,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::XhciPointers
                     | ProcEntryType::NetPnp
+                    | ProcEntryType::NetTcp
             ) && !is_console_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
@@ -563,7 +594,21 @@ pub fn directory_child(dir: &str, name: &str) -> Option<ProcEntryType> {
             "stat" => Some(ProcEntryType::PidStat(pid)),
             "cmdline" => Some(ProcEntryType::PidCmdline(pid)),
             "exe" => Some(ProcEntryType::PidExe(pid)),
+            "task" => Some(ProcEntryType::PidTasks(pid)),
             _ => None,
+        };
+    }
+    if let Some((pid, rest)) = dir
+        .strip_prefix("/proc/")
+        .and_then(|tail| tail.split_once("/task"))
+        .and_then(|(pid, rest)| Some((pid.parse::<u64>().ok()?, rest)))
+    {
+        return match rest {
+            "" => name.parse().ok().map(|tid| ProcEntryType::PidTask(pid, tid)),
+            _ => {
+                let tid = rest.strip_prefix('/')?.parse().ok()?;
+                (name == "kernel_output").then_some(ProcEntryType::PidTaskKernelOutput(pid, tid))
+            }
         };
     }
     let procfs = PROCFS.lock();
@@ -578,6 +623,18 @@ pub fn directory_child(dir: &str, name: &str) -> Option<ProcEntryType> {
                 == Some(name)
         })
         .map(|e| e.entry_type)
+}
+
+/// The listing of `/proc/<pid>/task` (its threads) or `/proc/<pid>/task/<tid>`; other
+/// directories are not listed here.
+pub fn list_task_entries(dir: &str) -> Option<Result<Vec<String>, i32>> {
+    let (pid, rest) = dir.strip_prefix("/proc/")?.split_once("/task")?;
+    let pid: u64 = pid.parse().ok()?;
+    if rest.is_empty() {
+        return Some(thread_ids(pid).map(|ids| ids.iter().map(|tid| alloc::format!("{tid}")).collect()));
+    }
+    rest.strip_prefix('/')?.parse::<u64>().ok()?;
+    Some(Ok(alloc::vec![String::from("kernel_output")]))
 }
 
 /// List entries in the /proc/trace directory
@@ -714,11 +771,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
-            listing.try_reserve_exact(4).map_err(|_| -12)?;
-            listing.extend_from_slice(b"pnp\n");
+            listing.try_reserve_exact(8).map_err(|_| -12)?;
+            listing.extend_from_slice(b"pnp\ntcp\n");
             Ok(listing)
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
+        ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
         ProcEntryType::ConsoleDir => text(String::from("check\n")),
         ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
         #[cfg(target_arch = "x86_64")]
@@ -743,6 +801,17 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::PidStatus(pid) => text(generate_pid_status(pid)),
         ProcEntryType::PidStat(pid) => generate_pid_stat(pid),
         ProcEntryType::PidCmdline(pid) => generate_pid_cmdline(pid),
+        ProcEntryType::PidTasks(pid) => {
+            let mut listing = String::new();
+            for tid in thread_ids(pid)? {
+                listing.push_str(&alloc::format!("{tid}\n"));
+            }
+            text(listing)
+        }
+        ProcEntryType::PidTask(_, _) => text(String::from("kernel_output\n")),
+        ProcEntryType::PidTaskKernelOutput(pid, tid) => {
+            text(alloc::format!("{}\n", thread_kernel_output(pid, tid).ok_or(-2)?))
+        }
         // Opening a link without following it (O_NOFOLLOW), as on Linux.
         ProcEntryType::PidExe(_) | ProcEntryType::SelfLink => Err(-40),
     }
@@ -1250,13 +1319,53 @@ fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
     if !pid_exists(pid) {
         return None;
     }
+    let in_group = |tid: u64| thread_kernel_output(pid, tid).is_some();
+    match entry {
+        pid_path::Entry::Task(tid) | pid_path::Entry::KernelOutput(tid) if !in_group(tid) => return None,
+        _ => {}
+    }
     Some(ProcEntry::new(match entry {
+        pid_path::Entry::Tasks => ProcEntryType::PidTasks(pid),
+        pid_path::Entry::Task(tid) => ProcEntryType::PidTask(pid, tid),
+        pid_path::Entry::KernelOutput(tid) => ProcEntryType::PidTaskKernelOutput(pid, tid),
         pid_path::Entry::Directory => ProcEntryType::PidDir(pid),
         pid_path::Entry::Status => ProcEntryType::PidStatus(pid),
         pid_path::Entry::Exe => ProcEntryType::PidExe(pid),
         pid_path::Entry::Stat => ProcEntryType::PidStat(pid),
         pid_path::Entry::Cmdline => ProcEntryType::PidCmdline(pid),
     }))
+}
+
+/// The thread ids of thread group `pid`, in increasing order.
+pub fn thread_ids(pid: u64) -> Result<Vec<u64>, i32> {
+    let mut ids = Vec::new();
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        for (row, process) in manager.iter_processes() {
+            if process.thread_group_id.unwrap_or(row.as_u64()) != pid || process.is_terminated() {
+                continue;
+            }
+            if let Some(thread) = process.main_thread.as_ref() {
+                ids.try_reserve(1).map_err(|_| -12)?;
+                ids.push(thread.id);
+            }
+        }
+    }
+    ids.sort_unstable();
+    Ok(ids)
+}
+
+/// The kernel output bytes of thread `tid` (docs/gui/breengel.md section 22), if it is a live
+/// thread of thread group `pid`.
+pub fn thread_kernel_output(pid: u64, tid: u64) -> Option<u64> {
+    let manager_guard = crate::process::manager();
+    let manager = manager_guard.as_ref()?;
+    let (row, process) = manager.find_process_by_thread(tid)?;
+    if process.thread_group_id.unwrap_or(row.as_u64()) != pid || process.is_terminated() {
+        return None;
+    }
+    let thread = process.main_thread.as_ref().filter(|t| t.id == tid)?;
+    Some(thread.signals.kernel_output_bytes.load(core::sync::atomic::Ordering::Relaxed))
 }
 
 fn lookup_trace_teardown_path(path: &str) -> Option<ProcEntry> {

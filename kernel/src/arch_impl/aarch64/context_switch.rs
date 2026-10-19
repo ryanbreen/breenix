@@ -918,7 +918,7 @@ pub fn emit_resume_pc_census() {
     }
 }
 
-/// Emit non-zero producer-classification rows with whole-line serialization.
+/// Emit the routing total, then the producer-classification rows that have counts.
 pub fn emit_resume_pc_census_locked() {
     // The selection-side custody total, and the only reader it has in a boot
     // that does not fault. Work-stealing declines a stack-pinned thread without
@@ -931,30 +931,9 @@ pub fn emit_resume_pc_census_locked() {
         crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
     }
 
-    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
-            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
-            let text = row[0].load(Ordering::Relaxed);
-            let kstack = row[1].load(Ordering::Relaxed);
-            let uva = row[2].load(Ordering::Relaxed);
-            let smallint = row[3].load(Ordering::Relaxed);
-            let other = row[4].load(Ordering::Relaxed);
-            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
-                continue;
-            }
-
-            crate::serial_println!(
-                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]",
-                cpu_id,
-                source_name,
-                text,
-                kstack,
-                uva,
-                smallint,
-                other,
-            );
-        }
-    }
+    // The rows go to serial as raw records, kept out of the log rings and off
+    // the screen console: a burst of them would scroll tty1's text away (#2037).
+    emit_resume_pc_census();
 }
 
 fn emit_resume_pc_census_if_due() {
@@ -4155,7 +4134,7 @@ fn restore_kernel_context_inline(
     // On QEMU, kernel code runs from HHDM (>= 0xFFFF_0000_0000_0000).
     // On Parallels, the UEFI loader jumps to kernel_main at a physical
     // address and the kernel runs identity-mapped, so function pointers
-    // resolve to physical addresses in the RAM range (0x40080000+).
+    // resolve to physical addresses in the RAM range (0x40200000+).
     let resume_pc = if thread.saved_by_inline_schedule {
         // Inline save captures only x19..x30 + SP, so x30 is its sole valid
         // architectural resume point. Exception-saved contexts keep ELR_EL1.

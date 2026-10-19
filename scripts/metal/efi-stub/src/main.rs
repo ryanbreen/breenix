@@ -196,6 +196,8 @@ macro_rules! say {
     };
 }
 
+mod suite_disk;
+
 /// The firmware's vendor string, printable ASCII only.
 struct Vendor(*const u16);
 
@@ -276,6 +278,9 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         Ok(path) => path,
         Err(status) => return status,
     };
+    if let Err(status) = suite_disk::run(boot, volume, image) {
+        return status;
+    }
     let file = match file_path(boot, volume, BOOTLOADER) {
         Ok(path) => path,
         Err(status) => return status,

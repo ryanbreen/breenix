@@ -234,8 +234,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --program-arg WORD         The one argument --program's PATH gets"
             echo "  --kernel-features LIST     With --program: build the kernel with these cargo features (a measurement kernel)"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
-            echo "  --case CATEGORY            Run just this suite category (not full-suite evidence)"
+            echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
@@ -344,9 +345,11 @@ if [ -n "$SUITE" ]; then
         echo "--suite is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode suite --suite ID)"
         exit 1
     fi
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE"
-        exit 1
+    # A comma-separated list runs several suites in one boot (docs/suites/README.md, "Several suites in one boot").
+    if [ "$PARALLELS" = true ]; then SUITE_TARGET=parallels; else SUITE_TARGET=vmware; fi
+    SUITE=$(python3 "$BREENIX_ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target "$SUITE_TARGET") || exit 1
+    if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
+        echo "--case watches one case of one suite, not a list"; exit 2
     fi
 fi
 
@@ -386,6 +389,10 @@ elif [ -n "$PROGRAM_ARG" ] || [ -n "$KERNEL_FEATURES" ]; then
     echo "--program-arg and --kernel-features need --program"
     exit 2
 fi
+# The manifests of the suites this boot runs, for the quiet-host check.
+SUITE_MANIFESTS=()
+IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
+for id in ${SUITE_IDS[@]+"${SUITE_IDS[@]}"}; do SUITE_MANIFESTS+=("$BREENIX_ROOT/docs/suites/$id.json"); done
 
 # --tests: the testing kernel (--features testing) and its test loader, as
 # scripts/boot-interactive.sh --mode tests runs it on ARM64 QEMU.
@@ -465,9 +472,11 @@ stage_boot_ext2_disk() {
         elif [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
             hostkeys_backend="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
         fi
+        local sequence=
+        [[ "$SUITE" != *,* ]] || sequence=$SUITE
         BREENIX_HOSTKEYS="$(python3 "$BREENIX_ROOT/scripts/hostkeys.py" declare --backend "$hostkeys_backend")" \
-        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" || exit 1
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "${SUITE%%,*}" \
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$sequence" "$ONLY" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -527,15 +536,62 @@ bounded_vm_command() {
     python3 "$BREENIX_ROOT/scripts/bounded-vm-command.py" 30 "$@"
 }
 
+# F21: a name is not ownership. Keep crashed-run records until deletion succeeds.
+vm_run_owner() {
+    python3 "$BREENIX_ROOT/scripts/vm-run-owner.py" "$@"
+}
+
+delete_parallels_vm() {
+    local vm="$1" info disk
+    info=$(bounded_vm_command prlctl list -i "$vm") || return 1
+    # These disks are reusable artifacts outside the VM bundle. Detach hdd0
+    # and hdd1 when present before deleting our own VM or a dead owner's VM.
+    for disk in hdd0 hdd1; do
+        if grep -q "^[[:space:]]*$disk[[:space:]]" <<< "$info"; then
+            bounded_vm_command prlctl set "$vm" --device-del "$disk" || return 1
+        fi
+    done
+    bounded_vm_command prlctl delete "$vm"
+}
+
+sweep_parallels_vms() {
+    local marker vm status
+    for marker in "$PARALLELS_OWNER_DIR"/breenix-*.json; do
+        [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+        vm_run_owner dead "$marker" || continue
+        vm=${marker##*/}; vm=${vm%.json}
+        status=$(bounded_vm_command prlctl status "$vm") || continue
+        [[ "$status" == *" stopped" ]] || continue
+        if delete_parallels_vm "$vm"; then rm -f "$marker"; fi
+    done
+}
+
+sweep_vmware_bundles() {
+    local bundle
+    for bundle in "$VM_MACHINES"/breenix-*.vmwarevm; do
+        [ -d "$bundle" ] && [ ! -L "$bundle" ] || continue
+        vm_run_owner dead "$bundle/.breenix-run-process" || continue
+        # Give the existing deletion path only the dead runner's exact bundle;
+        # it separately checks the name marker and that no VMX inside is running.
+        ( VM_BUNDLE="$bundle"; VM_NAME=${bundle##*/}; VM_NAME=${VM_NAME%.vmwarevm}
+          VM_BUNDLE_OWNED=true; delete_vmware_bundle "$bundle" )
+    done
+}
+
 # Read the VM's written disk only after stop has succeeded. VMware's deployed
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
+# A boot of several suites scores each of them here, the last with its disk checks.
 score_vm_suite_disk() {
     (
         # Whole-suite disk checks depend on other cases and are not one-case evidence.
         [ -z "${ONLY:-}" ] || exit 0
-        local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
+        local manifest="$BREENIX_ROOT/docs/suites/${SUITE##*,}.json" checks disk="" temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
-        [ "$checks" != 0 ] || exit 0
+        if [ "$checks" = 0 ]; then
+            [[ "$SUITE" == *,* ]] || exit 0
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG"
+            exit $?
+        fi
         if [ "$PARALLELS" = true ]; then
             disk=$(find "$EXT2_HDD_DIR" -name '*.hds' -type f) || exit $?
             if [ ! -f "$disk" ]; then
@@ -548,7 +604,11 @@ score_vm_suite_disk() {
             disk="$temporary/ext2.raw"
             bounded_vm_command qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
         fi
-        python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        if [[ "$SUITE" == *,* ]]; then
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --disk "$disk"
+        else
+            python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        fi
     )
 }
 
@@ -589,7 +649,7 @@ delete_vmware_bundle() {
     # Remove only that marker, the window frame we wrote and an empty
     # directory, never unknown contents.
     if [ -d "$bundle" ] && [ ! -e "$vmx" ]; then
-        rm -f "$bundle/.breenix-run-owner" "$bundle/$VM_NAME.plist"
+        rm -f "$bundle/.breenix-run-owner" "$bundle/.breenix-run-process" "$bundle/$VM_NAME.plist"
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
@@ -663,25 +723,22 @@ finish_vm_boot() {
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
     fi
-    if [ "$status" = 0 ] && [ "${BOOT_MODE:-}" = suite ]; then
+    if [ "${BOOT_MODE:-}" = suite ] && { [ "$status" = 0 ] || [[ "$SUITE" == *,* ]]; }; then
+        # Each suite of a sequence is scored even when the boot was stopped part way.
         if [ "$stopped" != true ]; then
             echo "FAIL: could not stop VM for suite disk checks"
-            status=1
+            [ "$status" != 0 ] || status=1
         else
-            score_vm_suite_disk || status=$?
+            score_vm_suite_disk || { [ "$status" != 0 ] || status=1; }
         fi
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
     if [ "$PARALLELS" = true ] && [ "$stopped" = true ]; then
-        # eb298971 removed the global stopped-VM sweep because those VMs belong to
-        # other runs. Delete only this run's VM, after its verdict, retaining the
-        # reusable disks outside its bundle by detaching them first.
-        if prlctl set "$PARALLELS_VM" --device-del hdd0 \
-            && { [ ! -d "$EXT2_HDD_DIR" ] || prlctl set "$PARALLELS_VM" --device-del hdd1; }; then
-            prlctl delete "$PARALLELS_VM" || echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
+        if delete_parallels_vm "$PARALLELS_VM"; then
+            rm -f "${PARALLELS_OWNER_FILE:-}"
         else
-            echo "WARNING: keeping owned VM $PARALLELS_VM because disk detach failed" >&2
+            echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
         fi
         host_slot_release mac-boot
     elif [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
@@ -935,12 +992,18 @@ if [ "$PARALLELS" = true ]; then
     echo ""
     echo "--- Configuring Parallels VM ---"
 
-    # Create a run-specific VM; cleanup below uses this run's registered name.
-    PARALLELS_VM="breenix-$(date +%s)"
+    # Use a unique VM name each time to avoid Parallels stale state issues.
+    # Parallels can get stuck in "stopping"/"suspended" states that require
+    # sudo service restarts. Using unique names sidesteps this entirely.
+    PARALLELS_OWNER_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/breenix/vm-owners/parallels"
+    sweep_parallels_vms
+    PARALLELS_VM="breenix-$(date +%s)-$$"
     echo "VM name: $PARALLELS_VM"
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
+    PARALLELS_OWNER_FILE="$PARALLELS_OWNER_DIR/$PARALLELS_VM.json"
+    vm_run_owner record "$PARALLELS_OWNER_FILE" "$$"
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
     # Forward modifier transitions for console chords (Parallels KB 119070).
@@ -1012,7 +1075,7 @@ if [ "$PARALLELS" = true ]; then
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
@@ -1282,18 +1345,13 @@ if [ "$VMWARE" = true ]; then
     VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
-    if [ -d "$VM_BUNDLE" ] && [ ! -L "$VM_BUNDLE" ] \
-        && [ -f "$VM_BUNDLE/.breenix-run-owner" ] \
-        && [ "$(cat "$VM_BUNDLE/.breenix-run-owner")" = "$VM_NAME" ]; then
-        VM_BUNDLE_OWNED=true
-        delete_vmware_bundle "$VM_BUNDLE"
-        VM_BUNDLE_OWNED=false
-    fi
+    sweep_vmware_bundles
     # Exclusive creation fails if a running, unowned or unknown-content bundle
     # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
+    vm_run_owner record "$VM_BUNDLE/.breenix-run-process" "$$"
     echo "VM name: $VM_NAME"
     trap cleanup_vmware_bundle EXIT
     trap 'exit 130' INT
@@ -1389,6 +1447,7 @@ VMXEOF
         cat >> "$VMX_FILE" <<VMXEOF
 RemoteDisplay.vnc.enabled = "TRUE"
 RemoteDisplay.vnc.port = "$BREENIX_VMWARE_VNC_PORT"
+RemoteDisplay.vnc.ip = "127.0.0.1"
 VMXEOF
     fi
 
@@ -1428,7 +1487,7 @@ VMXEOF
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     vmware_network_summary

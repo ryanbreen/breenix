@@ -779,12 +779,14 @@ class RootStagingTest(unittest.TestCase):
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            (tree / 'sbin/suite-time').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
             site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
+            # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
-                                          ('suite', 'smoke', 'suite smoke')]:
+                                          ('suite', 'smoke', 'suite smoke'), ('tests', None, 'default')]:
                 facts = metal_root.stage_root(image, mode, suite, site)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):
@@ -815,6 +817,15 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'suite', 'absent', site)
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+            # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
+            metal_root.stage_root(image, 'suite', 'smoke,time', site)
+            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('suite-sequence'), 'smoke,time\n')
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'smoke,absent', site)
+            metal_root.stage_root(image, 'suite', 'time', site)
+            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root
@@ -1017,15 +1028,18 @@ class DriverTest(StateTest):
         d.on_line('[storage] read back identical: truncated')
         self.assertFalse(d.completion_reported)
 
-    def test_disk_root_refuses_a_different_commit_before_assembling_the_payload(self):
+    def test_disk_root_stages_the_requested_build_before_assembling_the_payload(self):
         d = self.driver
         d.args.disk, d.args.commit = 'root', 'b' * 40
         inputs = d.stage / 'inputs'
         inputs.mkdir(parents=True)
         (inputs / 'ready').touch()
         m.write_json(inputs / 'build.json', {'commit': d.args.commit, 'profile': 'production', 'features': []})
-        m.write_json(m.STATE / 'disk.json', {'commit': 'a' * 40})
-        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        with patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+             patch.object(boot.metal_disk, 'stage', side_effect=ValueError('changed build')) as stage:
+            with self.assertRaisesRegex(ValueError, 'changed build'):
+                d.prepare_payload()
+        self.assertEqual(stage.call_args.args[3], d.args.commit)
         self.assertNotIn('diskRoot', d.delivery)
 
     def test_disk_mismatch_rejects_the_boot_before_prefix_completion(self):
@@ -1259,6 +1273,34 @@ class DriverTest(StateTest):
         d.lease_ceiling = 400
         with patch.object(m, 'now', return_value=426):
             self.finish(d.check_deadlines, m.EXIT_HUNG)
+
+    def test_suite_deadline_and_attempt_ceiling_stop_unfinished_boots(self):
+        d = self.driver
+        d.args.mode = 'suite'
+        d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 530
+        with patch.object(m, 'now', return_value=530):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=531):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+        d.lease_ceiling = d.t0 + boot.ceiling_seconds(d.args)
+        d.kernel_started = d.last_serial = 1419
+        with patch.object(m, 'now', return_value=1419):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=1420):
+            self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
+
+    def test_each_suite_of_a_multi_suite_boot_gets_its_own_deadline(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'directories,processes,time'
+        self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
+        d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 900
+        d.on_line('SUITE processes START cases=154', observed_at=500)
+        with patch.object(m, 'now', return_value=920):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=921):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
 
     def test_404_and_fatal_capture_graces(self):
         d = self.driver
@@ -1531,8 +1573,9 @@ class StagingTest(unittest.TestCase):
             self.assertEqual(run.build('20261017T000009Z-metal', 'a' * 40), 0)
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
-                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'efi-stub/Cargo.toml',
-                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'effort-target-guard.py', 'efi-stub/Cargo.toml',
+                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs',
+                          'efi-stub/src/suite_disk.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'
@@ -1540,8 +1583,36 @@ class StagingTest(unittest.TestCase):
         self.assertEqual(builder.call_args_list[0].args[1:3], ('rm', '-rf'))
 
 
+class CatchupTest(StateTest):
+    def test_catchup_is_recorded_and_defaults_to_false(self):
+        for catchup in (False, True):
+            args = SimpleNamespace(id='20261017T00000' + str(int(catchup)) + 'Z-metal',
+                                   mode='default', payload='image', target='main', task='',
+                                   commit='a' * 40, inject=None, suite=None, nmi=False, catchup=catchup)
+            with patch.object(m, 'load_site', return_value={}):
+                driver = boot.Driver(args)
+            driver.create_record()
+            record = m.read_json(driver.dir / 'run.json')
+            self.assertIs(record['catchup'], catchup)
+
+    def test_environment_matches_run_sh(self):
+        run = load_script('metal-run')
+        for value, expected in [('1', True), ('YES', True), ('true', True),
+                                ('0', False), ('no', False), ('false', False), ('', False)]:
+            with patch.dict(os.environ, BREENIX_CATCHUP=value):
+                self.assertIs(run.catchup_from_env(), expected)
+        with patch.dict(os.environ, BREENIX_CATCHUP='maybe'):
+            with self.assertRaises(SystemExit):
+                run.catchup_from_env()
+
+
 class BuildPolicyTest(unittest.TestCase):
     def test_guard_comes_from_origin_main_instead_of_the_target_tree(self):
+        for catchup in (False, True):
+            with self.subTest(catchup=catchup):
+                self.guard_from_main(catchup)
+
+    def guard_from_main(self, catchup):
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1563,18 +1634,19 @@ class BuildPolicyTest(unittest.TestCase):
             git('-C', repo, 'commit', '-am', 'Attempt to bypass the policy')
             sha = git('-C', repo, 'rev-parse', 'HEAD')
             args = SimpleNamespace(id='20261017T000011Z-metal', root=str(root), repo=str(repo), sha=sha,
-                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'))
+                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'), catchup=catchup)
             self.assertEqual(build.outer(args), 3)
 
 
 class BuildSlotTest(unittest.TestCase):
-    def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
+    def build_inner(self, suite):
+        """Run metal-build's inner build with every subprocess faked; returns the helper and build calls."""
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = SimpleNamespace(id='20261017T000012Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
-                                   guard_target='x86-metal', features='')
+                                   guard_target='x86-metal', features='', suite=suite)
             clone, out, tmp = build.paths(args)
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
@@ -1582,18 +1654,30 @@ class BuildSlotTest(unittest.TestCase):
             for path in (image, stub, clone / 'testdata/ext2.img'):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'bytes')
-            helper = []
+            order = []
             def run(command, **options):
-                helper.append(command[2:])
+                order.append(command[2:])
                 return SimpleNamespace(returncode=0, stdout=str(root / 'cargo-home') + '\n')
-            calls = []
             def call(command, **options):
-                calls.append(command)
+                order.append(command)
+                if command[1:2] == [str(clone / 'scripts/sdk-suite.py')]:
+                    Path(command[-1]).write_bytes(b'staged')
+                    work = options['env']['TMPDIR']
+                    order.append(('sdk-work', work, Path(work).is_dir()))
                 return 0
             with patch.dict(build.os.environ, CARGO_BUILD_JOBS='4'), \
                  patch.object(build.subprocess, 'run', side_effect=run), \
                  patch.object(build.subprocess, 'call', side_effect=call):
                 self.assertEqual(build.inner(args), 0)
+            built = json.loads((out / 'build.json').read_text())
+            built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
+            built['clone'] = str(clone)
+            return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built
+
+    def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
+        build, clone, tmp, order, root, built = self.build_inner('')
+        helper = [call for call in order if isinstance(call, list) and call[:1] not in ([sys.executable], ['cargo'])]
+        calls = [call for call in order if call not in helper]
         self.assertEqual(helper, [['cargo-home', str(Path.home() / '.cargo'), str(clone / 'target')],
                                   ['acquire', 'metal-build'], ['release', 'metal-build']])
         # The deployed helpers beside metal-build, not the commit's copies.
@@ -1601,6 +1685,22 @@ class BuildSlotTest(unittest.TestCase):
         self.assertFalse(build.ARTIFACTS.is_relative_to(clone))
         self.assertEqual(calls[1][:3], ['cargo', 'build', '--release'])
         self.assertEqual(len(calls), 3)
+        self.assertEqual((root, built['suite']), (b'bytes', None))
+
+    def test_the_sdk_suite_stages_its_root_under_the_build_lease(self):
+        _, clone, _, order, root, built = self.build_inner('sdk')
+        staging = next(i for i, call in enumerate(order) if call[1:2] == [str(clone / 'scripts/sdk-suite.py')])
+        self.assertEqual(order[staging][2:5], ['--arch', 'x86_64', '--image'])
+        self.assertLess(order.index(['acquire', 'metal-build']), staging)
+        self.assertLess(staging, order.index(['release', 'metal-build']))
+        # The staged copy is the root delivered; the built root is left as it is.
+        self.assertEqual((root, built['builtRoot'], built['suite']), (b'staged', b'bytes', 'sdk'))
+        # The harness's work folder holds neither the checkout's path nor the builder's home, which it scans for.
+        _, work, existed = order[staging + 1]
+        self.assertTrue(existed)
+        self.assertFalse(Path(work).exists())
+        self.assertNotIn(built['clone'], work)
+        self.assertNotIn(str(Path.home()), work)
 
 
 class PublicRepositoryTest(unittest.TestCase):

@@ -431,7 +431,9 @@ STD_BINARIES=(
     "suite-utilities"
     "suite-sdk"
     "suite-gpu"
+    "gpu-exec-probe"
     "suite-console"
+    "console-login-shell"
     "files-io-exec_test"
     "processes-exec_test"
     "rust-std-child_test"
@@ -467,7 +469,6 @@ CURRENT_TARGETS="$(cd "$SCRIPT_DIR" && cargo metadata --no-deps --format-version
 printf '%s' "$CURRENT_TARGETS" | python3 -c '
 import json, os, sys
 metadata = json.load(sys.stdin)
-# Cargo reports the resolved path; the script directory may be reached through a symlink.
 manifest = os.path.realpath(sys.argv[1])
 names = {target["name"] for package in metadata["packages"]
          if os.path.realpath(package["manifest_path"]) == manifest

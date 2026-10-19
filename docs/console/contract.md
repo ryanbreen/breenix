@@ -132,7 +132,7 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 | 1280x960 | Parallels and VMware defaults | 20 | 9x22 | 142x43 | 2 |
 | 1920x1080 | x86-64 QEMU (`virtio-vga`) | 24 | 11x26 | 174x41 | 3 |
 | 1920x1200 | VMware `--retina` | 24 | 11x26 | 174x46 | 3 |
-| 2560x1600 | Parallels `--retina`, GL QEMU | 32 | 14x34 | 182x47 | 4 |
+| 2560x1600 | Parallels `--retina` | 32 | 14x34 | 182x47 | 4 |
 
 The console enables the font crate's `size_20`, `size_24`, `size_32`, `bold`, `unicode-latin-1-supplement`
 and `unicode-latin-extended-a` features (V1).
@@ -534,9 +534,10 @@ origin unless given as screen coordinates:
   in the running colour while some are, and a `ring(…, 3k, 2k)` in the pending colour while no stage of it is.
 - **The stage name** is the latest stage reached. The boot-mode line reads `Boot mode: <mode>` and the status
   line names the next step, as today's boot screen does. Text is outside the crate's composition.
-- **The stages counted (V2b).** ARM64 counts the 23 kernel stages of those milestones in
+- **The stages counted (V2b).** ARM64 counts the 25 kernel stages of those milestones in
   `docs/boot-path.json` that the kernel reaches before PID 1 (each but `User work ran on every online
-  CPU`), and `Starting PID 1` for `first-userspace`: 24 in all, by dot 4, 5, 2, 5, 7 and 1. x86-64's lists
+  CPU`), and `Starting PID 1` for `first-userspace`: 26 in all, by dot 4, 5, 4, 5, 7 and 1. The four
+  `devices` stages are the device-class stages `kernel/src/drivers/device_class.rs` reports. x86-64's lists
   are long and mostly in-kernel tests, so it counts 13 catalog stages that `main.rs` reaches at the
   milestones' boundaries: `Kernel entry point`, `Serial port initialized`, `GDT and IDT initialized`,
   `Kernel heap initialized`; `Interrupt controller initialized`, `Timer initialized`; `PCI bus
@@ -650,7 +651,9 @@ the backstop does not pass.
   `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
   then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
   the shadow's SHA-256>; <ms> ms after the switch` or `[console] ttyN shown: read back differs: <first
-  mismatch>; <ms> ms after the switch` (fatal). The time runs from the moment ttyN became the foreground
+  mismatch>; <ms> ms after the switch` (fatal). When a display owner or graphics mode takes ttyN's screen
+  before the check reads it, the check compares no pixels and the verdict is `[console] ttyN shown: not read back:
+  display ownership changed; <ms> ms after the switch`, which is not a difference. The time runs from the moment ttyN became the foreground
   to the verdict (plan Q25); `vt-switch/switch-readback` requires it under that case's 2000 ms. **A switch
   does not log screen contents:** terminals can show secrets, and serial and boot logs are retained.
 - **`/proc/console/check`** (root only, mode 0400) is how a case or a metal script reads the screen. Reading it

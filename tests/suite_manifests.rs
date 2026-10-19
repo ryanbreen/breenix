@@ -136,6 +136,24 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             }
             _ => errors.push(format!("{at}: diskChecks must be a nonempty array")),
         }
+        // The host reads the disk after the boot, so in a boot of several suites no suite may run after this one.
+        if object.get("sequence") != Some(&Value::String("last".into())) {
+            errors.push(format!("{at}: a suite with diskChecks runs last in a multi-suite boot: set \"sequence\": \"last\""));
+        }
+    }
+    // Where the suite must run in a boot of several suites (docs/suites/README.md, "Several suites in one boot").
+    if let Some(place) = object.get("sequence") {
+        expected.push("sequence");
+        if place != "first" && place != "last" {
+            errors.push(format!("{at}: sequence is \"first\" or \"last\" when present"));
+        }
+    }
+    // A suite that renders through a 3D GPU; launchers for targets without one leave it out of a resolved list.
+    if let Some(needs) = object.get("needs3dGpu") {
+        expected.push("needs3dGpu");
+        if needs != &Value::Bool(true) {
+            errors.push(format!("{at}: needs3dGpu is true when present"));
+        }
     }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
@@ -242,6 +260,67 @@ fn id_and_title(args: &[&syn::Expr], name: &str, arity: usize) -> Result<Entry, 
     Ok(Entry { id: string(args[0])?, title: string(args[1])? })
 }
 
+/// Setup may prepare cases, but cannot print or bypass the suite runner.
+/// Follow local functions (including callbacks) so a helper cannot hide output
+/// or process termination. Returns and `?` in helpers return to their caller;
+/// either in main would instead bypass the runner.
+struct SetupCheck<'a> {
+    file: &'a syn::File,
+    active: HashSet<String>,
+    errors: Vec<String>,
+    in_main: bool,
+}
+impl<'ast> syn::visit::Visit<'ast> for SetupCheck<'ast> {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if self.in_main && matches!(expr, syn::Expr::Return(_) | syn::Expr::Try(_)) {
+            self.errors.push("setup can return before SUITE.run()".into());
+        }
+        if let syn::Expr::Call(call) = expr {
+            if matches!(&*call.func, syn::Expr::Path(p) if p.path.is_ident("sc"))
+                && !matches!(call.args.first(), Some(syn::Expr::Path(p)) if
+                    p.path.segments.last().is_some_and(|s| s.ident == "CLOCK_GETTIME" || s.ident == "NANOSLEEP"))
+            {
+                self.errors.push("setup syscall is not proven silent and non-exiting".into());
+            }
+        }
+        if let syn::Expr::MethodCall(call) = expr {
+            if call.method == "unwrap" || call.method == "expect" {
+                self.errors.push("setup can panic".into());
+            }
+        }
+        syn::visit::visit_expr(self, expr);
+    }
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let name = mac.path.segments.last().unwrap().ident.to_string();
+        // The networking setup reads monotonic time and sleeps through sc().
+        // Its one-instruction syscall assembly is silent and returns; calls
+        // from setup are limited below to those two non-exiting syscalls.
+        let syscall = name == "asm"
+            && mac.tokens.to_string().starts_with("\"syscall\" ,")
+            && !mac.tokens.to_string().contains("noreturn");
+        if name != "format" && !syscall {
+            self.errors.push(format!("setup macro {name} is not proven silent and non-exiting"));
+        }
+    }
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        let name = path.path.segments.last().unwrap().ident.to_string();
+        if ["exit", "abort", "_exit", "panic", "print", "println", "eprint", "eprintln"].contains(&name.as_str()) {
+            self.errors.push(format!("setup calls {name}"));
+        }
+        if self.active.insert(name.clone()) {
+            if let Some(function) = self.file.items.iter().find_map(|item| match item {
+                syn::Item::Fn(f) if f.sig.ident == name => Some(f), _ => None,
+            }) {
+                let in_main = self.in_main;
+                self.in_main = false;
+                self.visit_block(&function.block);
+                self.in_main = in_main;
+            }
+            self.active.remove(&name);
+        }
+    }
+}
+
 /// The suite id, title and categories in the table the suite's `main` runs:
 /// `main` must be `NAME.run()`, and `static NAME: Suite` is read from the parsed
 /// source, so comments, disabled code and calls outside the table play no part.
@@ -255,8 +334,8 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
             _ => None,
         })
         .ok_or_else(|| table_error("no fn main"))?;
-    let run_target = match main.block.stmts.as_slice() {
-        [syn::Stmt::Expr(syn::Expr::MethodCall(method), _)] if method.method == "run" && method.args.is_empty() => {
+    let run_target = match main.block.stmts.last() {
+        Some(syn::Stmt::Expr(syn::Expr::MethodCall(method), _)) if method.method == "run" && method.args.is_empty() => {
             match &*method.receiver {
                 syn::Expr::Path(path) if path.path.get_ident().is_some() => path.path.get_ident().cloned(),
                 _ => None,
@@ -264,6 +343,11 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
         }
         _ => None,
     };
+    let mut setup = SetupCheck { file: &file, active: HashSet::new(), errors: Vec::new(), in_main: true };
+    for stmt in main.block.stmts.iter().take(main.block.stmts.len().saturating_sub(1)) {
+        syn::visit::Visit::visit_stmt(&mut setup, stmt);
+    }
+    if !setup.errors.is_empty() { return Err(table_error(&setup.errors.join("; "))); }
     let name = run_target.ok_or_else(|| table_error("fn main is not `NAME.run()`"))?;
     if has_attributes(&main.attrs) {
         return Err(table_error("fn main has attributes"));
@@ -425,12 +509,10 @@ fn suite_manifests_match_their_binaries() {
         }
     }
 
-    for entry in fs::read_dir(root.join("userspace/programs/src")).unwrap() {
-        let name = entry.unwrap().file_name().to_string_lossy().to_string();
-        if let Some(module) = name.strip_prefix("suite_").and_then(|rest| rest.strip_suffix(".rs")) {
-            let id = module.replace('_', "-");
-            if !manifest_ids.contains(&id) {
-                errors.push(format!("userspace/programs/src/{name} has no manifest docs/suites/{id}.json"));
+    for (name, _) in &bins {
+        if let Some(id) = name.strip_prefix("suite-") {
+            if !manifest_ids.contains(id) {
+                errors.push(format!("Cargo binary {name} has no manifest docs/suites/{id}.json"));
             }
         }
     }
@@ -1031,5 +1113,14 @@ fn metal_definition_contract_rejects_invalid_inputs() {
         let mut bad = boot.clone();
         *bad.pointer_mut(pointer).unwrap() = value;
         assert!(!metal_definition_errors(&root, &main, &metal, &bad).is_empty(), "{pointer}");
+    }
+}
+
+#[test]
+fn setup_is_silent_and_cannot_bypass_the_table() {
+    let table = r#"static S: Suite = suite("d", "D", &[]);"#;
+    assert!(source_suite(&format!("{table} fn prepare() -> Result<(), ()> {{ Ok(()) }} fn main() {{ let _ = prepare(); S.run() }}")).is_ok());
+    for setup in ["return;", r#"println!("early");"#, "std::process::exit(0);", "let _ = prepare()?;", "prepare();"] {
+        assert!(source_suite(&format!(r#"{table} fn prepare() {{ eprintln!("hidden"); }} fn main() {{ {setup} S.run() }}"#)).is_err(), "{setup}");
     }
 }

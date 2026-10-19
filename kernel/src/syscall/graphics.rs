@@ -46,6 +46,12 @@ pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::A
 pub(crate) static DISPLAY_OWNER_PID: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(u64::MAX);
 
+/// The thread group of the process in `DISPLAY_OWNER_PID`, stored with it, so the GPU
+/// core can test ownership by thread group without the process manager's lock (a take-over
+/// from any thread of a process makes the whole process the owner).
+pub(crate) static DISPLAY_OWNER_GROUP: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(u64::MAX);
+
 /// Whether `process` (whose PID is `pid`) owns the display now.
 fn owns_display(
     pid: crate::process::process::ProcessId,
@@ -2402,6 +2408,13 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         };
     }
 
+    // A display owner whose terminal is not in the foreground keeps drawing
+    // successfully, but what it draws or flushes does not reach the screen
+    // (`docs/console/contract.md` section 4.2).
+    let Some(_presenting) = crate::console::vt::Presentation::begin(caller_owns_display) else {
+        return SyscallResult::Ok(0);
+    };
+
     // VirGL/compositor ops (7=balls, 9=rects, 10-14=compositor) don't need the
     // software framebuffer — they go straight to the GPU or window registry.
     // Handle them before acquiring SHELL_FRAMEBUFFER.
@@ -2409,13 +2422,6 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     if cmd.op == 7 || cmd.op >= 9 {
         return handle_virgl_op(&cmd);
     }
-
-    // A display owner whose terminal is not in the foreground keeps drawing
-    // successfully, but what it draws or flushes does not reach the screen
-    // (`docs/console/contract.md` section 4.2).
-    let Some(_presenting) = crate::console::vt::Presentation::begin(caller_owns_display) else {
-        return SyscallResult::Ok(0);
-    };
 
     // A whole-screen mapping was made by a display owner. Once another process
     // has taken the display, drawing through it would overwrite the new owner's

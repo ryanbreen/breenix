@@ -8,6 +8,10 @@
 /// to override these with ACPI-discovered addresses.
 
 #[cfg(target_arch = "aarch64")]
+use arm64_boot_contract::phys_memory::{
+    self, fdt, frame_pool_from_fdt, FdtError, PhysRange, RangeSet,
+};
+#[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 /// Next GICv2m SPI index to allocate (offset from GICV2M_SPI_BASE).
@@ -90,19 +94,149 @@ static BOOT_WALL_TIME_UTC: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "aarch64")]
 static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 
-// Memory layout defaults (QEMU virt, 512MB RAM at 0x40000000)
-// Kernel image:   0x4000_0000 - 0x4300_0000 (48 MB, image + BSS incl. PCI_3D_FRAMEBUFFER)
+// Fixed physical layout, relative to a RAM base of 0x4000_0000 (on VMware the
+// loader moves this layout up by ram_base_offset):
+// DTB (QEMU):     0x4000_0000 - 0x4010_0000 (below the kernel's load address)
+// Kernel image:   0x4020_0000 - 0x41E0_0000 (image + BSS incl. PCI_3D_FRAMEBUFFER)
+// Loader stack:   0x41E0_0000 - 0x4200_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
-// Frame alloc:    0x4400_0000 - 0x5000_0000 (192 MB)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
-// Heap:           0x5020_0000 - 0x541F_FFFF (64 MB)
-// Kernel stacks:  0x5420_0000 - 0x561F_FFFF (32 MB)
+// Heap:           0x5020_0000 - 0x581F_FFFF (128 MB native, 64 MB QEMU)
+// Kernel stacks:  0x5820_0000 - 0x5A1F_FFFF (32 MB)
+// The rest of the RAM the firmware describes is the frame pool.
+
+/// The kernel's fixed physical ranges at a RAM base of 0x4000_0000: the DTB,
+/// image, boot stacks and per-CPU stacks below, and the DMA block, heap and
+/// kernel-stack pool above.
+#[cfg(target_arch = "aarch64")]
+const KERNEL_FIXED_RANGES: [PhysRange; 2] = [
+    PhysRange::new(arm64_boot_contract::LINKED_RAM_START, 0x4400_0000),
+    PhysRange::new(0x5000_0000, 0x5A20_0000),
+];
 
 #[cfg(target_arch = "aarch64")]
-static FRAME_ALLOC_START: AtomicU64 = AtomicU64::new(0x4400_0000);
+const _: () = {
+    use crate::arch_impl::aarch64::constants::{
+        HHDM_BASE, MAX_CPUS, PERCPU_STACK_REGION_BASE_DEFAULT, PERCPU_STACK_STRIDE,
+    };
+    let low = KERNEL_FIXED_RANGES[0];
+    let high = KERNEL_FIXED_RANGES[1];
+    assert!(
+        PERCPU_STACK_REGION_BASE_DEFAULT - HHDM_BASE + MAX_CPUS as u64 * PERCPU_STACK_STRIDE
+            <= low.end
+    );
+    let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
+    assert!(crate::memory::heap::QEMU_HEAP_SIZE <= crate::memory::heap::HEAP_SIZE);
+    assert!(heap >= high.start);
+    assert!(heap + crate::memory::heap::HEAP_SIZE
+        <= crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE);
+    assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE >= high.start);
+    assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE <= high.end);
+};
+
+/// Physical memory both boot paths map as normal memory in the high-half
+/// direct map ends here (L1 entries 0-3).
+#[cfg(target_arch = "aarch64")]
+const DIRECT_MAP_RAM_END: u64 = 0x1_0000_0000;
+
+/// QEMU's virt machine places the DTB of an ELF guest at the start of RAM when
+/// it fits below the kernel's load address (0x4020_0000; its DTB is 1 MiB) and
+/// otherwise boots without one.
+#[cfg(target_arch = "aarch64")]
+const QEMU_DTB_PHYS: u64 = arm64_boot_contract::LINKED_RAM_START;
+#[cfg(target_arch = "aarch64")]
+const QEMU_DTB_MAX_SIZE: usize = 0x20_0000;
+
+/// Where the frame pool's description of RAM came from.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePoolSource {
+    /// The UEFI memory map's conventional memory, passed by the loader.
+    UefiMemoryMap,
+    /// The memory nodes of QEMU's device tree.
+    DeviceTree,
+    /// No trustworthy description could be read; no page may be allocated.
+    Unavailable(&'static str),
+}
 
 #[cfg(target_arch = "aarch64")]
-static FRAME_ALLOC_END: AtomicU64 = AtomicU64::new(0x5000_0000);
+pub struct FramePool {
+    pub ranges: RangeSet,
+    pub source: FramePoolSource,
+}
+
+#[cfg(target_arch = "aarch64")]
+static FRAME_POOL: spin::Once<FramePool> = spin::Once::new();
+
+/// The window of physical RAM the direct map covers as normal memory. On
+/// VMware the loader remaps the linked RAM alias, so the direct map is an
+/// identity map only from the relocated RAM base.
+#[cfg(target_arch = "aarch64")]
+fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
+    PhysRange::new(
+        arm64_boot_contract::LINKED_RAM_START + ram_base_offset,
+        DIRECT_MAP_RAM_END,
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+fn unavailable_pool(reason: &'static str) -> FramePool {
+    // A partial or missing map cannot establish that even the old window is
+    // free of firmware reservations. Keep the pool empty until a valid map exists.
+    FramePool {
+        ranges: RangeSet::new(),
+        source: FramePoolSource::Unavailable(reason),
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn kernel_fixed_ranges(ram_base_offset: u64) -> impl Iterator<Item = PhysRange> {
+    KERNEL_FIXED_RANGES
+        .into_iter()
+        .map(move |r| PhysRange::new(r.start + ram_base_offset, r.end + ram_base_offset))
+}
+
+/// Read QEMU's device tree from the start of RAM.
+#[cfg(target_arch = "aarch64")]
+fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
+    use crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let base = (HHDM_BASE + QEMU_DTB_PHYS) as *const u8;
+    // SAFETY: the boot page tables map the first 2 MiB block of RAM. QEMU
+    // writes the DTB there, below the kernel's load address, and the kernel
+    // does not write below its load address.
+    let header = unsafe { core::slice::from_raw_parts(base, fdt::HEADER_SIZE) };
+    let size = fdt::total_size(header)?;
+    if size > QEMU_DTB_MAX_SIZE {
+        return Err(FdtError::Truncated);
+    }
+    // SAFETY: as above; `size` lies inside the mapped block.
+    let blob = unsafe { core::slice::from_raw_parts(base, size) };
+    // The native legacy VirGL buffers need the larger heap. QEMU's GPU core
+    // uses frames instead, so its unused heap tail stays in the frame pool.
+    let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
+    let stacks = crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE;
+    let fixed = [
+        KERNEL_FIXED_RANGES[0],
+        PhysRange::new(KERNEL_FIXED_RANGES[1].start, heap + crate::memory::heap::QEMU_HEAP_SIZE),
+        PhysRange::new(stacks, KERNEL_FIXED_RANGES[1].end),
+    ];
+    frame_pool_from_fdt(blob, QEMU_DTB_PHYS, fixed, direct_map_ram_window(0))
+}
+
+/// The frame allocator's free memory: the pages the firmware describes as
+/// RAM, less the kernel's fixed ranges and firmware reservations, inside the
+/// direct map. The loader path records it in `init_from_parallels`; the QEMU
+/// path reads the device tree on first use.
+#[cfg(target_arch = "aarch64")]
+pub fn frame_pool() -> &'static FramePool {
+    FRAME_POOL.call_once(|| match frame_pool_from_qemu_dtb() {
+        Ok(ranges) => FramePool {
+            ranges,
+            source: FramePoolSource::DeviceTree,
+        },
+        Err(error) => unavailable_pool(error.as_str()),
+    })
+}
 
 // =============================================================================
 // Framebuffer info (UEFI GOP, populated by init_from_parallels)
@@ -393,22 +527,6 @@ pub fn pci_bus_end() -> u8 {
     PCI_BUS_END.load(Ordering::Relaxed) as u8
 }
 
-/// Frame allocator start physical address.
-/// QEMU: 0x4200_0000 (after kernel + stacks)
-#[cfg(target_arch = "aarch64")]
-#[inline]
-pub fn frame_alloc_start() -> u64 {
-    FRAME_ALLOC_START.load(Ordering::Relaxed)
-}
-
-/// Frame allocator end physical address (exclusive).
-/// QEMU: 0x5000_0000
-#[cfg(target_arch = "aarch64")]
-#[inline]
-pub fn frame_alloc_end() -> u64 {
-    FRAME_ALLOC_END.load(Ordering::Relaxed)
-}
-
 /// Returns true if running on QEMU (default platform).
 /// Detected by checking if the UART address is the QEMU virt default.
 #[cfg(target_arch = "aarch64")]
@@ -669,30 +787,43 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
 
     RAM_BASE_OFFSET.store(config.ram_base_offset, Ordering::Relaxed);
 
-    // Use the first RAM region containing the loaded kernel to bound frames.
-    // Reserve the image and SMP stacks below the allocator, and DMA above it.
-    if config.ram_region_count > 0 {
-        // The loader owns the relocation calculation and publishes the value
-        // used for both ELF loading and its linked RAM page-table mapping.
-        let first_base = config.ram_regions[0].base;
-        let first_size = config.ram_regions[0].size;
-
-        if first_size > 0 {
-            // Frame allocator starts after kernel image + BSS + SMP stacks (64 MB from RAM base).
-            // BSS (0x0300_0000) includes PCI_3D_FRAMEBUFFER (~7.5 MB) and other large statics.
-            // SMP stacks occupy 0x0300_0000 - 0x0400_0000 (8 CPUs × 2 MB = 16 MB).
-            // 0x0400_0000 (64 MB) keeps the frame allocator safely clear of all static regions.
-            let fa_start = first_base + 0x0400_0000; // +64 MB
-                                                     // Frame allocator must end BEFORE the DMA NC region.
-                                                     // The .dma section starts at physical 0x5000_0000, so cap fa_end there.
-                                                     // On VMware (RAM base 0x80000000), apply the offset to the DMA boundary.
-            let dma_boundary = 0x5000_0000u64 + RAM_BASE_OFFSET.load(Ordering::Relaxed);
-            let fa_end = (first_base + first_size).min(dma_boundary);
-            if fa_end > fa_start {
-                FRAME_ALLOC_START.store(fa_start, Ordering::Relaxed);
-                FRAME_ALLOC_END.store(fa_end, Ordering::Relaxed);
+    // HardwareConfig v5 carries only EfiConventionalMemory from the final
+    // ExitBootServices map (UEFI 2.10 section 7.2, Tables 7.5 and 7.6).
+    // Boot-services and loader pages stay reserved: firmware's in-flight
+    // device DMA may still be active after ExitBootServices.
+    let region_count = (config.ram_region_count as usize).min(config.ram_regions.len());
+    if region_count > 0 {
+        let offset = config.ram_base_offset;
+        let runtime_count =
+            (config.runtime_region_count as usize).min(config.runtime_regions.len());
+        let runtime = config.runtime_regions[..runtime_count]
+            .iter()
+            .map(|r| PhysRange::from_base_size(r.base, r.pages.saturating_mul(4096)));
+        let mut ranges = phys_memory::frame_pool(
+            config.ram_regions[..region_count]
+                .iter()
+                .map(|r| PhysRange::from_base_size(r.base, r.size)),
+            runtime,
+            direct_map_ram_window(offset),
+        );
+        // Heap and stack storage is written directly, outside the frame allocator.
+        // Admit it only from conventional RAM too, before excluding it from frames.
+        use crate::arch_impl::aarch64::constants::HHDM_BASE;
+        let heap_start = crate::memory::heap::HEAP_START - HHDM_BASE + offset;
+        let stacks_end = crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE + offset;
+        let pool = if ranges.as_slice().iter().any(|r| r.start <= heap_start && r.end >= stacks_end) {
+            for fixed in kernel_fixed_ranges(offset) {
+                ranges.subtract(fixed);
             }
-        }
+            FramePool { ranges, source: FramePoolSource::UefiMemoryMap }
+        } else {
+            unavailable_pool("heap and stack storage is not conventional RAM")
+        };
+        FRAME_POOL.call_once(|| pool);
+    } else {
+        FRAME_POOL.call_once(|| {
+            unavailable_pool("the loader passed no conventional RAM regions")
+        });
     }
 
     // Store framebuffer info if the loader discovered a GOP framebuffer

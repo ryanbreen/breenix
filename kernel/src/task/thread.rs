@@ -614,9 +614,11 @@ impl SchedPolicy {
     pub const RR: u8 = 2;
     pub const BATCH: u8 = 3;
     pub const IDLE: u8 = 5;
-    /// The kernel thread that ends processes killed by a fatal signal: it
-    /// ranks above every real-time thread, so runnable SCHED_FIFO threads on
-    /// every CPU cannot keep a group's deaths from being carried out.
+    /// The kernel threads that end processes killed by a fatal signal and
+    /// drain deferred reclamation: they rank above the real-time priorities
+    /// (rank 101 against at most 100), so runnable SCHED_FIFO threads on each
+    /// CPU cannot keep a group's deaths from being carried out or dead address
+    /// spaces from being freed.
     pub const KERNEL: u8 = 0x80;
     /// A thread's policy until it is changed: SCHED_OTHER.
     pub const DEFAULT: Self = Self {
@@ -633,7 +635,7 @@ impl SchedPolicy {
     };
     /// A SCHED_RR quantum, in timer ticks (`sched_rr_get_interval`).
     pub const RR_QUANTUM_TICKS: u64 = 10;
-    /// The policy of the kernel's fatal-exit thread (`KERNEL`).
+    /// The policy of the kernel's fatal-exit and reclaim threads (`KERNEL`).
     pub const KERNEL_EXIT: Self = Self {
         policy: Self::KERNEL,
         ..Self::DEFAULT
@@ -943,6 +945,13 @@ pub struct CpuPin {
     /// affinity sched_setaffinity set is inherited, as on Linux; a per-CPU
     /// worker's or a hold pen's is not.
     pub inherited: bool,
+    /// Whether the pin was set while its thread stood on another CPU -- running
+    /// there, or named there by a handoff record or a held wake -- so that
+    /// the thread's next placement is the pin's own move to `cpu`, not a
+    /// migration of a thread already at home. 3 of 3 constructors below leave
+    /// it false; `set_user_affinity` sets it, and the migration guard clears
+    /// it once it places the thread on `cpu`.
+    pub relocating: bool,
 }
 
 /// `CpuPin` values minted since boot, by any of its constructors.
@@ -968,7 +977,11 @@ pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
 impl CpuPin {
     /// The pin a child of a thread holding `pin` starts with.
     pub fn for_child(pin: Option<CpuPin>) -> Option<CpuPin> {
-        pin.filter(|pin| pin.inherited)
+        // A child starts on its pin's CPU, so it has no move to make.
+        pin.filter(|pin| pin.inherited).map(|mut pin| {
+            pin.relocating = false;
+            pin
+        })
     }
 
     /// A pin whose work lives in `cpu`'s per-CPU state.
@@ -979,6 +992,7 @@ impl CpuPin {
             per_cpu_worker: true,
             allowed: 1 << cpu,
             inherited: false,
+            relocating: false,
         }
     }
 
@@ -994,6 +1008,7 @@ impl CpuPin {
             per_cpu_worker: true,
             allowed,
             inherited: true,
+            relocating: false,
         }
     }
 
@@ -1011,6 +1026,7 @@ impl CpuPin {
             per_cpu_worker: false,
             allowed: 1 << cpu,
             inherited: false,
+            relocating: false,
         }
     }
 }

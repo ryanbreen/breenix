@@ -228,6 +228,8 @@ for i in $(seq 1 "$ITERATIONS"); do
     SERIAL="$OUTPUT_DIR/serial.txt"
     : > "$SERIAL"
     cp "$EXT2_DISK" "$OUTPUT_DIR/ext2-writable.img"
+    "$BREENIX_ROOT/scripts/build-background.sh" bash "$BREENIX_ROOT/scripts/create-readonly-ext2-fixture.sh" \
+        "$EXT2_DISK" "$OUTPUT_DIR/ext2-readonly.img"
 
     qemu_host_lock_acquire
     # F2: this used to run in the foreground (no `&`), which left no PID a
@@ -245,6 +247,8 @@ for i in $(seq 1 "$ITERATIONS"); do
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
+        -device virtio-blk-device,drive=home \
+        -drive if=none,id=home,format=raw,readonly=on,file="$OUTPUT_DIR/ext2-readonly.img" \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$OUTPUT_DIR/ext2-writable.img" \
         -device virtio-net-device,netdev=net0 \

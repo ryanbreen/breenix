@@ -11,6 +11,23 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Testing-boot work for #2009, #2012 and #1982 waits for BCM5720 DHCP before
+loading userspace tests, continuing with a warning if no lease arrives within
+60 seconds. Noninteractive tests prefer the attached home disk and use an
+embedded read-only ext2 fixture without an attached disk; interactive boots
+retain their writable home disk. Fixture consolidation and reproducibility
+follow-ups are tracked in #1961 and #2029.
+
+ARM64 testing accounting work (#1958, #1969) withdraws the PTY ioctl fixture
+and requires completed retirement of both busy-CPU reclaim receipts. Its
+[evidence record](green-program/aarch64-testing/1958-1969-ACCOUNTING-2026-10-18.md)
+also records verification of PR #1959's read-only fixture and truncate fixes.
+
+PR #1967 separates the ARM64 boot-test panel from the boot checklist and
+restores the display pixels under the moving cursor; its
+[retained evidence](green-program/gui/1967-evidence/README.md) includes the
+known unrelated strict-gate failures.
+
 PR #1880 enables x86 release kernel optimization; its [evidence record](../efforts/1868-x86-release-evidence.md)
 distinguishes diagnostic results from interrupted acceptance. PR #1881 bypasses
 the ext2 lock only for root entering virtual mounts; its [scope record](../efforts/1863-dns-config-scope.md)
@@ -22,9 +39,13 @@ records the conditional idle probe and the separate completion-accounting failur
 
 The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
-It advances from delivery to a RAM-disk shell, then networking and SATA/AHCI storage in parallel,
-including disk writes and the Breenix filesystem, separately from the main effort path.
-The RAM-disk userspace lane is tracked in [#1702](https://github.com/ryanbreen/breenix/issues/1702).
+The R240 disk-root work in [#1972](https://github.com/ryanbreen/breenix/issues/1972)
+extends installed-disk console boots to default and suite modes, with a fresh root
+installation before each boot and cold raw writeback verification. The
+[physical-root evidence](../metal/1972-1973-evidence.md) records the three suite
+results and cold disk checks. SOL capture work is tracked in
+[#1973](https://github.com/ryanbreen/breenix/issues/1973). The earlier RAM-disk
+userspace lane remains documented in [#1702](https://github.com/ryanbreen/breenix/issues/1702).
 
 ARM64 QEMU uses HVF on native Apple Silicon hosts in [#1452](https://github.com/ryanbreen/breenix/issues/1452),
 with the testing kernel, production probe and effort suites as its gates. Native

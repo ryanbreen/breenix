@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Adding a driver completion wait is expected to force explicit review of this
 /// number rather than allowing a new interruptible wait to land silently.
+/// The separately named x86_64 console-readiness wait below is the only addition.
 const DRIVER_COMPLETION_WAIT_POPULATION: usize = 10;
 const INTERRUPTIBLE_WAIT: &str = ".wait_timeout(";
 const UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible(";
@@ -267,16 +268,72 @@ fn drivers_have_no_interruptible_completion_waits() {
     );
 }
 
+// The startup kthread must wait for xHCI keyboard preparation before getty.
+// Admit that deliberate addition only in its exact function and module cfg.
+fn validate_console_ready_wait(module: &str, driver: &str) -> Result<(), String> {
+    let declarations = code_occurrences(module, "pub mod xhci;");
+    let attribute = "#[cfg(target_arch = \"x86_64\")]";
+    let cfg_is_code = declarations.first().is_some_and(|declaration| {
+        let prefix = module[..*declaration].trim_end();
+        prefix.ends_with(attribute)
+            && code_mask(module)[prefix.len() - attribute.len()]
+    });
+    if declarations.len() != 1 || !cfg_is_code
+    {
+        return Err("xhci must remain cfg(target_arch = \"x86_64\")".into());
+    }
+    let code = masked_code(driver);
+    let sites: Vec<_> = code_occurrences(driver, UNINTERRUPTIBLE_WAIT)
+        .into_iter()
+        .filter(|offset| {
+            enclosing_fn_body(&code, *offset)
+                .and_then(|(start, _)| fn_name_for_body(&code, start))
+                == Some("wait_console_ready")
+        })
+        .collect();
+    if sites.len() != 1 {
+        return Err("xhci::wait_console_ready must contain exactly one completion wait".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn driver_completion_wait_population_is_pinned() {
     let (census, discovered_files) = driver_completion_wait_census();
+    validate_console_ready_wait(
+        &repo_text("kernel/src/drivers/mod.rs"),
+        &repo_text("kernel/src/drivers/xhci/mod.rs"),
+    )
+    .expect("the added wait is x86_64 xhci::wait_console_ready only");
     assert_eq!(
         census.total(),
-        DRIVER_COMPLETION_WAIT_POPULATION,
+        DRIVER_COMPLETION_WAIT_POPULATION + 1,
         "completion-wait census changed across {discovered_files} discovered driver Rust files: {} interruptible + {} uninterruptible",
         census.interruptible,
         census.uninterruptible
     );
+}
+
+#[test]
+fn console_ready_wait_census_rejects_a_different_name_or_cfg() {
+    let module = repo_text("kernel/src/drivers/mod.rs");
+    let driver = repo_text("kernel/src/drivers/xhci/mod.rs");
+    assert!(validate_console_ready_wait(
+        &module,
+        &driver.replace("fn wait_console_ready()", "fn different_wait()"),
+    ).is_err());
+    assert!(validate_console_ready_wait(
+        &module.replace("#[cfg(target_arch = \"x86_64\")]\npub mod xhci;", "pub mod xhci;"),
+        &driver,
+    ).is_err());
+    for fake_attribute in [
+        "// #[cfg(target_arch = \"x86_64\")]",
+        "/* #[cfg(target_arch = \"x86_64\")] */",
+    ] {
+        let commented = module.replace("#[cfg(target_arch = \"x86_64\")]", fake_attribute);
+        assert!(validate_console_ready_wait(&commented, &driver).is_err());
+    }
+
 }
 
 #[test]

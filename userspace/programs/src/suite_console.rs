@@ -746,8 +746,26 @@ fn chvt_chvt_switches() -> CaseResult {
     measured(|| {
         let tty3 = VtFd::open(3)?;
         io::write(tty3.0, b"\x1bcchvt-switch-witness\r\n").map_err(|e| e.to_string())?;
-        let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
-        require(child.wait()? == 0, "chvt 3 failed")?;
+        let pid = match libbreenix::process::fork().map_err(|e| e.to_string())? {
+            libbreenix::process::ForkResult::Child => {
+                let result = (|| -> Verdict {
+                    libbreenix::process::setsid().map_err(|e| e.to_string())?;
+                    vt_ioctl(tty3.0, 0x540E, 0)?; // TIOCSCTTY before dropping root.
+                    #[cfg(target_arch = "x86_64")]
+                    const SETUID: u64 = 105;
+                    #[cfg(target_arch = "aarch64")]
+                    const SETUID: u64 = 146;
+                    require(unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0, "setuid(1000)")?;
+                    let mut command = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+                    require(command.wait()? == 0, "non-root chvt 3 failed")
+                })();
+                if let Err(reason) = &result { eprintln!("chvt credential probe: {reason}"); }
+                libbreenix::process::exit(if result.is_ok() { 0 } else { 1 });
+            }
+            libbreenix::process::ForkResult::Parent(pid) => pid,
+        };
+        let mut child = VtChild(pid.raw() as i32, false);
+        require(child.wait()? == 0, "chvt with a non-root controlling VT failed")?;
         require(foreground()? == 3, "chvt did not select tty3")?;
         let check = screen_check()?;
         require(check.lines().any(|l| l == "console foreground: tty3"), "read-back is not tty3")?;
@@ -835,7 +853,7 @@ fn login_credentials() -> Verdict<LoginCredentials> {
     // Encode the 64 random bits in 13 unmodified keyboard chords. The two-login
     // cases have named allowances for host injection, verification and respawn.
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut bits = u64::from_le_bytes(random[..8].try_into().unwrap());
+    let mut bits = u64::from_le_bytes(random[..8].try_into().map_err(|_| "random word length")?);
     let mut password = String::new();
     for _ in 0..13 {
         password.push(ALPHABET[(bits % 36) as usize] as char);
@@ -860,7 +878,7 @@ impl LoginAccount {
             Err(error) => return Err(format!("read shadow: {error}")),
         };
         let account = Self { passwd, shadow, password: credentials.password.clone() };
-        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/sbin/suite-console\n").map_err(|e| e.to_string())?;
+        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/bin/console-login-shell\n").map_err(|e| e.to_string())?;
         std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", credentials.hash))
             .map_err(|e| e.to_string())?;
         Ok(account)
@@ -1040,42 +1058,7 @@ fn getty_independent_sessions() -> CaseResult {
     })
 }
 
-// Login invokes this entry point as the staged account's shell.
-fn login_shell() -> Verdict {
-    use libbreenix::{process, termios, types::Fd};
-    let pid = process::getpid().map_err(|e| e.to_string())?.raw();
-    let sid = process::getsid(0).map_err(|e| e.to_string())?.raw();
-    let pgid = process::getpgrp().map_err(|e| e.to_string())?.raw() as i32;
-    let mut tty_sid = 0i32;
-    vt_ioctl(Fd::STDIN, 0x5429, &mut tty_sid as *mut i32 as u64)?;
-    require(pid == sid && sid as i32 == pgid && tty_sid == pgid
-        && termios::tcgetpgrp(Fd::STDIN).map_err(|e| e.to_string())? == pgid, "login session or foreground group differs")?;
-    let ctty = fs::open("/dev/tty", fs::O_RDWR | O_NOCTTY).map_err(|e| e.to_string())?;
-    let device = fs::fstat(Fd::STDIN).map_err(|e| e.to_string())?.st_rdev;
-    require(fs::fstat(ctty).map_err(|e| e.to_string())?.st_rdev == device, "/dev/tty differs from stdin")?;
-    let _ = io::close(ctty);
-    for fd in [Fd::STDOUT, Fd::STDERR] {
-        require(fs::fstat(fd).map_err(|e| e.to_string())?.st_rdev == device, "login standard descriptors differ")?;
-    }
-    let number = (1..=6).find(|n| {
-        let Ok(fd) = VtFd::open(*n) else { return false; };
-        fs::fstat(fd.0).is_ok_and(|s| s.st_rdev == device)
-    }).ok_or("login terminal is not a numbered VT")?;
-    require(std::env::var("TERM").as_deref() == Ok("breenix")
-        && std::env::var("USER").as_deref() == Ok("root"), "login environment differs")?;
-    println!("VTLOGIN tty{number} sid={sid} pgid={pgid}");
-    let mut line = String::new();
-    let count = std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
-    require(count == 0 && line.is_empty(), "login shell expected terminal EOF")?;
-    println!("VTLOGOUT tty{number} sid={sid}");
-    Ok(())
-}
-
 fn main() {
-    if std::env::args().next().as_deref() == Some("-suite-console") {
-        if let Err(error) = login_shell() { eprintln!("login shell: {error}"); std::process::exit(1); }
-        return;
-    }
     let args: Vec<_> = std::env::args().collect();
     let selected = args.windows(2).find_map(|pair| (pair[0] == "--case").then_some(pair[1].as_str()));
     if selected.is_none_or(|case| case == "getty" || case.starts_with("getty/")) {

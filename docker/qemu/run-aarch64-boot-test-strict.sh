@@ -11,6 +11,7 @@ BREENIX_HOST_ARGS=("$@")
 #
 # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
 #        Default: 20 iterations
+# BREENIX_QEMU_DISPLAY=cocoa opens the window for a local acceptance run.
 #
 # Before booting anything, this gate runs each tests/*_structure.rs suite
 # (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
@@ -349,6 +350,41 @@ if ! timer_wake_oracle_sample 9 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATT
     exit 1
 fi
 
+# Ruling S26: a CLONE_VM-only child's reclaim receipt is retired by the reclaim
+# daemon while the other drains refuse and each of the 4 CPUs is busy: CPU 0
+# runs the boot thread, which holds it with preemption disabled until init
+# (held_cpus=1), and CPUs 1-3 each run a pinned CPU-bound thread. The kernel
+# decides PASS (latency within bound_ms, 3 of 3 spinners progressed, retired by the daemon, both rows cleaned up); the pattern
+# pins the profile's constants and that verdict. mechanism_ms is 100 ms of
+# idle sleep plus a dispatch (10 ms quantum + 1 ms tick), a 10 ms retry and
+# another dispatch.
+RECLAIM_BUSY_CPU_ORACLE_PATTERN='\[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=[0-9]+:bound_ms=1000:mechanism_ms=132:daemon_passes=[1-9][0-9]*:enqueued=2:completed=2:cleaned=1:backstops=0:PASS\]'
+reclaim_busy_oracle_sample() {
+    printf '[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=%s:latency_ms=%s:bound_ms=1000:mechanism_ms=132:daemon_passes=3:enqueued=%s:completed=%s:cleaned=1:backstops=0:%s]\n' "$1" "$2" "${4:-2}" "${5:-2}" "$3"
+}
+if reclaim_busy_oracle_sample none 30000 FAIL | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+    echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts a receipt nothing retired, so this gate would score green on the strand it exists to catch"
+    exit 1
+fi
+if reclaim_busy_oracle_sample other 40 PASS | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+    echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts a receipt another drain retired, so the daemon would go unproved"
+    exit 1
+fi
+if ! reclaim_busy_oracle_sample daemon 40 PASS | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+    echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN rejects a daemon retirement inside the bound, so this gate can never pass"
+    exit 1
+fi
+
+# An empty queue (cleaned=1 in the old oracle) cannot stand in for either
+# successful publication or completion of both receipts (#1969).
+for receipts in '1 2' '2 1' '0 0'; do
+    read -r enqueued completed <<< "$receipts"
+    if reclaim_busy_oracle_sample daemon 40 PASS "$enqueued" "$completed" | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+        echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts incomplete receipt retirement"
+        exit 1
+    fi
+done
+
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
 # checks are guarded on this being empty; the scoring rules themselves are not
@@ -362,6 +398,10 @@ KERNEL_HAS_CAPTURE_SELFTEST=0
 # kernel's userspace report. strand_inject_live_outgoing adds its oracle. Live
 # boots read the profile from $KERNEL below; scoring-only mode reads it from
 # BREENIX_STRICT_SCORE_KERNEL, the kernel that produced the serial, when given.
+# The serial names the profile too: a serial that carries the oracle's line is
+# scored as that profile whether or not its kernel was given, and a serial that
+# carries it beside a kernel without its print site is not that kernel's serial.
+# The oracle reports once per boot, so its evidence is exactly one PASS line.
 STRAND_LIVE_OUTGOING_ORACLE_PATTERN='\[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=[1-9][0-9]*:live_outgoing=[1-9][0-9]*:outgoing_tid=[0-9]+:stranded=0:PASS\]'
 kernel_has_live_outgoing() {
     # Read through EOF: grep -q can hide a later read error after a match.
@@ -374,11 +414,13 @@ kernel_has_live_outgoing() {
     esac
 }
 KERNEL_HAS_LIVE_OUTGOING=0
+KERNEL_PROFILE_KNOWN=0
 if [ -n "${BREENIX_STRICT_SCORE_KERNEL:-}" ]; then
     if [ ! -f "$BREENIX_STRICT_SCORE_KERNEL" ]; then
         echo "SCORE: FAIL - BREENIX_STRICT_SCORE_KERNEL names no readable kernel ($BREENIX_STRICT_SCORE_KERNEL)"
         exit 1
     fi
+    KERNEL_PROFILE_KNOWN=1
     if kernel_has_live_outgoing "$BREENIX_STRICT_SCORE_KERNEL"; then
         KERNEL_HAS_LIVE_OUTGOING=1
     fi
@@ -442,7 +484,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[RECLAIM_BUSY_CPU_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -475,6 +517,7 @@ KERNEL_HAS_CAPTURE_SELFTEST=0
 if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
     KERNEL_HAS_CAPTURE_SELFTEST=1
 fi
+KERNEL_PROFILE_KNOWN=1
 if kernel_has_live_outgoing "$KERNEL"; then
     KERNEL_HAS_LIVE_OUTGOING=1
 fi
@@ -660,12 +703,23 @@ score_serial() {
         echo "Scheduler strand injection oracle marker missing or failed"
         return 1
     fi
-    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ]; then
-        if grep -qE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
+    local live_outgoing_reports
+    live_outgoing_reports=$(grep -aoF '[STRAND_LIVE_OUTGOING_ORACLE:' "$serial_file" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${live_outgoing_reports:-0}" -gt 0 ] && [ "$KERNEL_PROFILE_KNOWN" = "1" ] \
+        && [ "$KERNEL_HAS_LIVE_OUTGOING" = "0" ]; then
+        echo "Live-outgoing strand oracle line from a kernel without its print site; the serial is not this kernel's"
+        return 1
+    fi
+    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ] || [ "${live_outgoing_reports:-0}" -gt 0 ]; then
+        if grep -aqE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
             echo "Live-outgoing strand oracle reported failure ($(grep -aoE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
             return 1
         fi
-        if ! grep -qE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        if [ "${live_outgoing_reports:-0}" -gt 1 ]; then
+            echo "Live-outgoing strand oracle reported $live_outgoing_reports times; it reports once per boot"
+            return 1
+        fi
+        if ! grep -aqE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
             echo "Live-outgoing strand oracle marker missing or failed"
             return 1
         fi
@@ -684,6 +738,15 @@ score_serial() {
     fi
     if ! grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Timer wake latency oracle marker missing or failed"
+        return 1
+    fi
+    # Ruling S26, pinned as a pair like #766 above.
+    if grep -qE '\[RECLAIM_BUSY_CPU_ORACLE:[^]]*:FAIL' "$serial_file" 2>/dev/null; then
+        echo "Busy-CPU reclaim oracle reported failure ($(grep -aoE '\[RECLAIM_BUSY_CPU_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Busy-CPU reclaim oracle marker missing or failed"
         return 1
     fi
     # #796, pinned as a pair: the FAIL scan names what went wrong even when the
@@ -1004,7 +1067,7 @@ run_single_test() {
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -qmp unix:"$QMP_SOCK",server=on,wait=off \
-        -display none -no-reboot \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \

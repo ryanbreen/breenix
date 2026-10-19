@@ -5,6 +5,7 @@
   "summary": "Breenix renders on the GPU through a validated, per-process command stream that a hardware GPU executes on every target, and reads every result back from the device pixel-exact under the deterministic rendering profile, with modes up to 2560x1600 presented within the stated bounds.",
   "binary": "/sbin/suite-gpu",
   "timingSensitive": true,
+  "needs3dGpu": true,
   "categories": [
     {
       "id": "device",
@@ -28,7 +29,7 @@
       "id": "submit",
       "title": "command submission & fences",
       "cases": [
-        { "id": "context-create", "title": "CONTEXT_CREATE, including all catalogue warm-up, returns an owned context within 10 s" },
+        { "id": "context-create", "title": "CONTEXT_CREATE returns an owned context within 10 s that draws while its fixed rendering catalogue warms, reports the warm-up complete, and its first PROBE warms probe_int" },
         { "id": "context-destroy", "title": "CONTEXT_DESTROY frees the context once its submitted work has completed" },
         { "id": "context-limit", "title": "Creating a context past the per-process quota returns EAGAIN" },
         { "id": "stream-validate", "title": "A malformed command stream returns EINVAL with the failing command's index" },
@@ -72,7 +73,7 @@
         { "id": "fault-corrupt-pixel", "title": "A pixel corrupted outside the draw fails the exact comparison at that pixel" },
         { "id": "fault-suppress-draw", "title": "A draw dropped from the device stream while its fence completes fails the exact comparison" },
         { "id": "error-invalidates-targets", "title": "A failed submission's targets read back EIO until a later submission writes them whole" },
-        { "id": "owner-only", "title": "Only the display owner reads back the scanout" },
+        { "id": "owner-only", "title": "A live non-owner gets EPERM for scanout readback and the restored parent can read back" },
         { "id": "efault", "title": "A readback into unmapped or read-only memory returns EFAULT with no side effect" },
         { "id": "large-target", "title": "A 2560x1600 target reads back exactly" }
       ]
@@ -187,9 +188,9 @@
         { "id": "efault-readonly", "title": "A readback record into read-only memory returns EFAULT with no side effect" },
         { "id": "quiet-errors", "title": "No GPU error path prints kernel output" },
         { "id": "unknown-op", "title": "An unknown op returns EINVAL" },
-        { "id": "test-hooks-absent", "title": "Test-control points 19 to 31 are refused to every process but the latched PID 1" },
+        { "id": "test-hooks-absent", "title": "Test-control points 19 to 31 are refused to every non-root process" },
         { "id": "killable-wait", "title": "SIGKILL ends a process blocked in CONTEXT_CREATE warm-up, WAIT, READBACK or PRESENT within 250 ms" },
-        { "id": "client-cannot-scanout", "title": "A process that is not the display owner can neither present nor set a mode" },
+        { "id": "client-cannot-scanout", "title": "A non-owner cannot present and gets EPERM for valid SET_MODE; the owner gets EINVAL for SET_MODE(NULL, 0)" },
         { "id": "irq-masked-bound", "title": "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload" }
       ]
     },
@@ -222,7 +223,7 @@
         { "id": "clear-rate-2560", "title": "At least 60 full-screen 2560x1600 clears per second, each presented" },
         { "id": "rect-throughput", "title": "10000 solid 16x16 rectangles in one submission complete within 50 ms" },
         { "id": "submit-latency", "title": "An empty submission's fence: median at most 2 ms and maximum at most 10 ms over 1000" },
-        { "id": "first-draw-latency", "title": "A new context's first draw with each catalogue pipeline completes within 10 ms" },
+        { "id": "first-draw-latency", "title": "A new context's first draw with each fixed rendering-catalogue pipeline (excluding probe_int) completes within 10 ms" },
         { "id": "readback-time-2560", "title": "A full 2560x1600 readback completes within 100 ms" },
         { "id": "upload-bandwidth", "title": "A 16 MiB upload is visible to the next submission within 100 ms" },
         { "id": "coverage-throughput", "title": "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms" },

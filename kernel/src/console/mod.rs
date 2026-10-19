@@ -311,10 +311,18 @@ pub(crate) fn splash_boot_pass() {
 /// screen; true when the screen then shows the whole shadow. The first time it
 /// is shown, say what was drawn.
 fn present_splash(display: &Display, shadow: &mut [u8], painter: &mut splash::Painter) -> bool {
+    #[cfg(all(target_arch = "aarch64", any(feature = "boot_tests", feature = "btrt")))]
+    let force_panel = painter.drawn().is_none();
     let bands = painter.paint(shadow, splash::now_ms());
+    #[cfg(all(target_arch = "aarch64", any(feature = "boot_tests", feature = "btrt")))]
+    let panel = crate::test_framework::display::render_splash(shadow, display.layout(), force_panel);
     let shown = bands
         .iter()
         .all(|rows| display.write(shadow, rows.clone(), may_draw) && may_draw() && display.flush(rows).is_ok());
+    #[cfg(all(target_arch = "aarch64", any(feature = "boot_tests", feature = "btrt")))]
+    let shown = shown && panel.is_none_or(|rows| {
+        display.write(shadow, rows.clone(), may_draw) && may_draw() && display.flush(rows).is_ok()
+    });
     if !shown {
         painter.forget();
         return false;
@@ -1147,7 +1155,7 @@ impl Screen {
         let layout = self.layout;
         let bpp = layout.bytes_per_pixel;
         let font = layout.font;
-        let source = if may_draw() { self.display.settle() } else { Err("display ownership changed") };
+        let source = if may_draw() { self.display.settle() } else { Err(DISPLAY_OWNED) };
         let mut line = alloc::vec![0u8; layout.width * bpp];
         let mut differing_lines = 0;
         let mut first_difference = None;
@@ -1321,6 +1329,10 @@ fn answer_checks(screen: Result<(&Screen, usize), Absent>, idle_allowed: bool, a
     }
 }
 
+/// Why a read-back compared no pixels: a display owner or graphics mode has
+/// the screen (`may_draw`).
+const DISPLAY_OWNED: &str = "display ownership changed";
+
 /// After a switch, the read-back of the new terminal's frame, logged with
 /// the terminal number and a digest of the shadow, not the screen's text
 /// (contract section 8).
@@ -1332,6 +1344,9 @@ fn report_switch(number: usize, check: &Check) {
         return;
     }
     match (&check.source, check.first_difference) {
+        // The terminal's screen went to a display owner before the read-back
+        // ran: it compared no pixels, so it found no difference.
+        (Err(reason), _) if *reason == DISPLAY_OWNED => log::info!("[console] tty{} shown: not read back: {}; {} after the switch", number, reason, after),
         (Err(reason), _) => log::warn!("[console] tty{} shown: read back differs: not read from the scanout: {}; {} after the switch", number, reason, after),
         (Ok(_), Some((x, y))) => log::warn!("[console] tty{} shown: read back differs: x={} y={}; {} after the switch", number, x, y, after),
         (Ok(_), None) if !check.complete => log::warn!("[console] tty{} shown: read back differs: frame incomplete; {} after the switch", number, after),

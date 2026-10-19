@@ -1,0 +1,2 @@
+   Compiling kernel v0.1.0 (<checkout>/kernel)
+    Finished `release` profile [optimized] target(s) in 20.41s

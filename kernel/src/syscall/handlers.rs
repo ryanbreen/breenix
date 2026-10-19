@@ -3516,6 +3516,8 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() { return crate::gpu::take_display(); }
     // The display goes with the caller's terminal, its controlling terminal
     // when that is a virtual terminal, else tty1; EBUSY while that terminal
     // is not in the foreground (`docs/console/contract.md` section 4.2).
@@ -3543,6 +3545,10 @@ pub fn sys_take_over_display() -> SyscallResult {
     // Quiesce the console before publishing authority to the new owner's
     // other threads, which can issue framebuffer syscalls concurrently.
     crate::console::take_display();
+    // Quiesce the boot screen before publishing authority to either the
+    // owner's other threads or the cursor presenter.
+    #[cfg(target_arch = "aarch64")]
+    let _ = crate::graphics::boot_screen::stop_drawing();
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3552,21 +3558,14 @@ pub fn sys_take_over_display() -> SyscallResult {
             if let Some(ref mut mgr) = *mgr_guard {
                 if let Some((pid, process)) = mgr.find_process_by_thread_mut(tid) {
                     process.has_display_ownership = true;
+                    let group = process.thread_group_id.unwrap_or(pid.as_u64());
+                    crate::syscall::graphics::DISPLAY_OWNER_GROUP
+                        .store(group, core::sync::atomic::Ordering::Release);
                     crate::syscall::graphics::DISPLAY_OWNER_PID
                         .store(pid.as_u64(), core::sync::atomic::Ordering::Release);
                 }
             }
         }
-
-        // The kernel stops drawing its boot screen but leaves it up until the new
-        // owner draws, so an owner that fails first does not blank the screen.
-        #[cfg(target_arch = "aarch64")]
-        let _ = crate::graphics::boot_screen::stop_drawing();
-
-        // Tell the render thread to stop flushing the framebuffer.
-        // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(target_arch = "aarch64")]
-        crate::graphics::render_task::set_display_taken();
 
     }
     SyscallResult::Ok(0)
@@ -3575,6 +3574,8 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() { return crate::gpu::give_display(); }
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return SyscallResult::Err(3);
     };

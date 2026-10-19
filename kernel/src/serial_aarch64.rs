@@ -293,12 +293,26 @@ pub fn disable_rx_interrupt() {
     }
 }
 
-/// Clear receive interrupt
-pub fn clear_rx_interrupt() {
+/// Rearm a deferred receive without boot-time diagnostics or a serial lock.
+pub(crate) fn resume_rx_interrupt() {
     if is_16550() {
-        // 16550: reading IIR/RBR clears the interrupt
-        let _ = read_reg8(reg16550::THR);
+        let ier = read_reg8(reg16550::IER);
+        write_reg8(reg16550::IER, ier | 0x01);
     } else {
+        let imsc = read_reg(reg::IMSC);
+        write_reg(reg::IMSC, imsc | int::RX | int::RT);
+    }
+}
+
+/// Acknowledge the receive interrupt once the FIFO has reported empty.
+///
+/// It does not read the receive register: a byte that arrived after the
+/// empty report would be consumed and lost (#1803).
+pub fn clear_rx_interrupt() {
+    // The 16550's received-data and character-timeout interrupts are cleared
+    // by the reads that drained the FIFO, so an empty 16550 FIFO needs no
+    // acknowledgement.
+    if !is_16550() {
         write_reg(reg::ICR, int::RX | int::RT);
     }
 }
@@ -369,9 +383,28 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
-/// Print from a panic or fatal path. Same as `try_print` on aarch64.
+/// Print from a panic or fatal path: `try_print`'s record, counted as unattributed
+/// output (`output_accounting`).
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
-    try_print(args)
+    use core::fmt::Write;
+    crate::serial_line::TeeLine::unattributed()
+        .write_fmt(args)
+        .map_err(|_| ())
+}
+
+/// Write `s` as one record without waiting indefinitely on another CPU's output: up to 2^20
+/// tries to own the UART without waiting, then the line goes out whole with the posted notices
+/// (`log_notice::write_or_post`), half of whose nodes are kept for boot-path stage lines.
+pub fn write_str_bounded(s: &str) {
+    use crate::log_notice::Node;
+    const ATTEMPTS: u32 = 1 << 20;
+    static FALLBACK: [Node; 4] = [const { Node::new() }; 4];
+
+    let stage = crate::stage_lines::contains(crate::STAGE_MARKERS, s.as_bytes());
+    let line = s.strip_suffix('\n').unwrap_or(s);
+    crate::log_notice::write_or_post(&FALLBACK, line, stage, ATTEMPTS, || {
+        crate::serial_line::try_write(s.as_bytes())
+    });
 }
 
 /// Wait until the output written so far has left for the UART (TCSETSW,

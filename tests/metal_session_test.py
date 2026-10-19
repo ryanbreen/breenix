@@ -142,7 +142,7 @@ class SessionTest(existing.StateTest):
     def test_session_options_reject_automated_typing_install_and_bad_idle_before_host_access(self):
         runner = existing.load_script('metal-run')
         for changes in [dict(mode='shell'), dict(input='sol'), dict(disk='install'),
-                        dict(idle_minutes=0), dict(idle_minutes=241), dict(disk='root')]:
+                        dict(idle_minutes=-1), dict(idle_minutes=0), dict(idle_minutes=241)]:
             args = SimpleNamespace(**(vars(self.args) | changes))
             with self.assertRaises(SystemExit), patch.object(runner, 'host_env') as host:
                 runner.boot(args)
@@ -162,6 +162,7 @@ class SessionTest(existing.StateTest):
         self.assertIn('--session', command)
         self.assertEqual(command[command.index('--idle-minutes') + 1], '2')
         self.assertNotIn('--input', command)
+        self.assertEqual(command[command.index('--disk') + 1], 'root')
 
     def test_session_shutdown_skips_scoring(self):
         d = self.driver

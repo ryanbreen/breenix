@@ -4,13 +4,22 @@
 #
 #   scripts/vigil-record.sh start PLATFORM MODE SUITE SERIAL [USER_SERIAL] [PROFILE] [ID] [COMMIT]   prints the boot id
 #   scripts/vigil-record.sh finish ID EXIT_STATUS
+#   scripts/vigil-record.sh record PLATFORM MODE SUITE SERIAL USER_SERIAL PROFILE ID COMMIT STARTED ENDED EXIT_STATUS
 # BREENIX_VIGIL_ARCH is the launcher's explicit guest architecture: aarch64 or x86_64.
 #
 # PLATFORM is qemu, parallels, vmware, beast or metal; MODE is a boot mode (suite when SUITE is set); empty arguments are
-# omitted; COMMIT defaults to this checkout's HEAD. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
+# omitted; COMMIT defaults to this checkout's HEAD. SUITE may list several suites, comma-separated, for a boot that ran
+# them in turn (docs/suites/README.md, "Several suites in one boot"): Vigil's record names one suite, so each suite is
+# filed as its own record, ID-SUITE, over the boot's whole serial, which Vigil scores for that suite's lines alone as it
+# scores a single-suite boot. start then prints the ids joined by commas, and finish takes them so. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
+# BREENIX_VIGIL_DISPLAY=true|false is the launcher's effective window selection;
+# start records it before the VM starts. Finish retains BREENIX_HOST_RENDERER_JSON.
 # Skips registration when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
+
+# Preserve the launcher through command substitutions and recursive registrations.
+export BREENIX_LAUNCHER_PID=${BREENIX_LAUNCHER_PID:-$PPID}
 
 [ "$(uname -s)" = Darwin ] || exit 0
 [ -z "${VIGIL_BOOT_ID:-}" ] || exit 0
@@ -50,11 +59,26 @@ VIGIL_WORKTREE=""
 if ! git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
     VIGIL_WORKTREE="$(basename "$ROOT")"
 fi
+# A boot of several suites: run this script once per suite, ID-SUITE, and print the ids joined by commas.
+if [[ "${4:-}" == *,* ]] && { [ "${1:-}" = start ] || [ "${1:-}" = record ]; }; then
+    [ -n "${2:-}" ] || exit 0
+    base=${8:-$(date -u +%Y%m%dT%H%M%SZ)-${2}}
+    ids=() status=0
+    IFS=',' read -r -a suites <<< "$4"
+    for suite in "${suites[@]}"; do
+        filed=$("$0" "$1" "$2" "$3" "$suite" "${5:-}" "${6:-}" "${7:-}" "$base-$suite" "${@:9}") || status=$?
+        [ -z "$filed" ] || ids+=("$filed")
+    done
+    (IFS=,; [ "${#ids[@]}" = 0 ] || echo "${ids[*]}")
+    exit "$status"
+fi
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
         # vigil-cli accepts desktop, and stores it as default for VM platforms.
-        [ "$mode" != default ] || mode=desktop
+        if [ "$mode" = default ]; then
+            case "$platform" in metal|beast) mode= ;; *) mode=desktop ;; esac
+        fi
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
         [ -n "$id" ] || id=$(date -u +%Y%m%dT%H%M%SZ)-$platform
@@ -74,7 +98,11 @@ case "${1:-}" in
         # machine; Vigil keeps it out of main's evidence.
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
-        "$CLI" "${args[@]}" || { echo "WARNING: Vigil boot registration failed" >&2; exit 0; }
+        id=$("$CLI" "${args[@]}") || { echo "WARNING: Vigil boot registration failed" >&2; exit 0; }
+        if [ -n "$id" ] && [ -n "${BREENIX_VIGIL_DISPLAY:-}" ]; then
+            python3 "$ROOT/scripts/vigil-boot-metadata.py" start "$id" "$ROOT" >&2 || true
+        fi
+        printf '%s\n' "$id"
         exit 0
         ;;
     record)
@@ -82,13 +110,15 @@ case "${1:-}" in
         started=${10:-}; ended=${11:-}; status=${12:-1}
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 1
         provenance || exit 1
-        [ "$mode" != default ] || mode=desktop
+        if [ "$mode" = default ]; then
+            case "$platform" in metal|beast) mode= ;; *) mode=desktop ;; esac
+        fi
         args=(breenix record --arch "$arch" --dirty "$dirty" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
-        if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
+        if [ -n "$suite" ]; then args+=(--suite "$suite"); elif [ -n "$mode" ]; then args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it
         # instead of creating a second record or letting the importer assign zero. vigil-cli keeps boots under the
@@ -103,7 +133,13 @@ case "${1:-}" in
         ;;
     finish)
         [ -n "${2:-}" ] || exit 0
-        "$CLI" breenix finish --id "$2" --exit-status "${3:-0}" >/dev/null 2>&1 || true
+        IFS=',' read -r -a filed <<< "$2"
+        for id in "${filed[@]}"; do
+            if [ -n "${BREENIX_HOST_RENDERER_JSON:-}" ]; then
+                python3 "$ROOT/scripts/vigil-boot-metadata.py" finish "$id" "$ROOT" >&2 || true
+            fi
+            "$CLI" breenix finish --id "$id" --exit-status "${3:-0}" >/dev/null 2>&1 || true
+        done
         ;;
 esac
 exit 0

@@ -1,8 +1,8 @@
 //! Framebuffer render thread (ARM64, displays without VirGL).
 //!
 //! The thread copies the shell framebuffer's double buffer to the screen and
-//! flushes its dirty rectangle to the display, for the boot screen and for a
-//! process that owns the display, and draws the mouse cursor for that owner.
+//! flushes its dirty rectangle to the display for the current foreground
+//! display owner, and draws the mouse cursor for that owner.
 //! The screen console draws with its own thread (`crate::console`).
 
 use crate::task::kthread::{kthread_run, kthread_should_stop, KthreadHandle};
@@ -11,14 +11,6 @@ use spin::Mutex;
 
 /// Flag indicating if the render thread is running
 static RENDER_THREAD_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// Flag to signal the render thread to check for work
-static RENDER_WAKE: AtomicBool = AtomicBool::new(false);
-
-/// Flag set when a userspace process (BWM) takes display ownership.
-/// When set, the render thread skips framebuffer flushing and cursor
-/// updates — the display owner handles all GPU operations directly.
-static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// Handle to the render kthread (for potential cleanup/stopping)
 static RENDER_KTHREAD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
@@ -60,42 +52,21 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 fn render_thread_main_kthread() {
     // Main rendering loop - runs until kthread_stop() is called
     while !kthread_should_stop() {
-        // When BWM owns the display, the render thread draws the mouse cursor
-        // into the framebuffer VRAM (SVGA3 VRAM traces detect the pixel writes
-        // and update the display), flushes its dirty rect, then sleeps. BWM
-        // handles the rest of the drawing and GPU flushing via fbdraw syscalls.
-        // Until then the screen is the kernel's, and a cursor would be drawn
-        // over the console's pixels.
-        if DISPLAY_TAKEN.load(Ordering::Acquire) {
+        // After GPU-core handoff the GPU kernel console owns the screen.
+        #[cfg(target_arch = "aarch64")]
+        if crate::gpu::display_active() {
+            crate::gpu::console::pump();
+            wait_for_next_tick();
+            continue;
+        }
+        // Only the current foreground display owner authorizes cursor writes
+        // and framebuffer flushes. The token keeps the console from repainting
+        // until a pass admitted before a switch or display return has finished.
+        if let Some(_presenting) = crate::console::vt::Presentation::begin_cursor() {
             update_mouse_cursor();
             flush_framebuffer();
-            wait_for_next_tick();
-            continue;
         }
-
-        // Flush dirty regions to the GPU. Returns true if a flush happened.
-        if flush_framebuffer() {
-            // Work was done — loop immediately to check for more.
-            // When bounce submits frames at 60fps, the render thread must
-            // flush each one promptly. Yielding here caused the thread to
-            // wait for rescheduling, dropping frames.
-            // Timer preemption (200Hz) still prevents CPU starvation.
-            continue;
-        }
-
-        // No work was done — yield CPU to other threads
-        crate::task::scheduler::yield_current();
-
-        // Check one more time for data before waiting for the next tick.
-        //
-        // NOTE: We intentionally do NOT use kthread_park/unpark here.
-        // There is a fundamental race between checking for data and parking:
-        // if data arrives after the check but before park sets parked=true,
-        // wake_render_thread's kthread_unpark is lost. Instead, the thread
-        // runs again on the next timer tick and re-checks all data sources.
-        if !RENDER_WAKE.swap(false, Ordering::Acquire) && !has_pending_flush() {
-            wait_for_next_tick();
-        }
+        wait_for_next_tick();
     }
 
     RENDER_THREAD_RUNNING.store(false, Ordering::SeqCst);
@@ -154,29 +125,6 @@ fn arch_halt() {
     }
 }
 
-/// Signal the render thread to wake up and check for work.
-///
-/// Sets RENDER_WAKE so the render thread skips the WFI halt on its next
-/// idle check. The render thread wakes on timer interrupts (200 Hz) and
-/// checks this flag, so worst-case latency is ~1ms. This avoids the
-/// lost-wakeup race that existed with the previous kthread_park/unpark
-/// approach.
-pub fn wake_render_thread() {
-    RENDER_WAKE.store(true, Ordering::Release);
-}
-
-/// Mark that a userspace process has taken over display ownership.
-/// The render thread will stop flushing the framebuffer and updating
-/// the cursor — the display owner (BWM) handles GPU operations directly.
-pub fn set_display_taken() {
-    DISPLAY_TAKEN.store(true, Ordering::Release);
-}
-
-/// Check whether a userspace process owns the display.
-pub fn is_display_taken() -> bool {
-    DISPLAY_TAKEN.load(Ordering::Acquire)
-}
-
 /// Update the mouse cursor on the framebuffer if a pointing device is active.
 ///
 /// Reads the current mouse position from whichever input driver is available:
@@ -198,21 +146,10 @@ fn update_mouse_cursor() {
 
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         if let Some(mut fb_guard) = fb.try_lock() {
-            if super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize) {
-                crate::graphics::arm64_fb::mark_dirty(
-                    mx.saturating_sub(16),
-                    my.saturating_sub(16),
-                    32,
-                    32,
-                );
-            }
+            // Marks both the old and the new cursor rectangle dirty.
+            super::cursor::update_cursor(&mut *fb_guard, mx as usize, my as usize);
         }
     }
-}
-
-/// Check if there's a pending GPU flush without consuming the dirty state.
-fn has_pending_flush() -> bool {
-    crate::graphics::arm64_fb::has_dirty_rect()
 }
 
 /// Flush the framebuffer if dirty. Returns true if a flush was performed.

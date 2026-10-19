@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 #[path = "shared_coreproof/mutation_leg_mask.rs"]
 mod mutation_leg_mask;
 
@@ -127,10 +129,25 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
 /// `raw_code_mask`, with every compiled-out core-proof mutation leg additionally
 /// masked out. See `shared_coreproof/mutation_leg_mask.rs` for why the exemption
 /// exists and exactly how narrow it is.
-fn code_mask(source: &str) -> Vec<bool> {
-    let mut mask = raw_code_mask(source);
-    mutation_leg_mask::apply(source, &mut mask);
-    mask
+fn code_mask(source: &str) -> Rc<Vec<bool>> {
+    // Mutation legs copy the whole kernel snapshot but usually change one file.
+    // Reuse lexical work keyed by complete text rather than path, address or length:
+    // a private mutation (including a same-length edit) must get its own mask.
+    // Each test thread drops its cache when it finishes.
+    thread_local! {
+        static MASKS: RefCell<HashMap<String, Rc<Vec<bool>>>> = RefCell::new(HashMap::new());
+    }
+    MASKS.with(|masks| {
+        let mut masks = masks.borrow_mut();
+        if let Some(mask) = masks.get(source) {
+            return Rc::clone(mask);
+        }
+        let mut mask = raw_code_mask(source);
+        mutation_leg_mask::apply(source, &mut mask);
+        let mask = Rc::new(mask);
+        masks.insert(source.to_owned(), Rc::clone(&mask));
+        mask
+    })
 }
 
 fn raw_code_mask(source: &str) -> Vec<bool> {
@@ -315,7 +332,7 @@ fn normalized_code(fragment: &str) -> String {
     let mask = code_mask(fragment);
     let kept: Vec<u8> = fragment
         .bytes()
-        .zip(mask)
+        .zip(mask.iter().copied())
         .filter_map(|(byte, code)| code.then_some(byte))
         .collect();
     String::from_utf8_lossy(&kept)
@@ -3920,6 +3937,14 @@ let _same_line = "needle"; let _real = needle();
         vec![fixture.rfind("needle();").expect("real code occurrence")]
     );
 
+    // The same allocation and length can hold different lexical code.
+    let mut edited = String::from("// needle();");
+    assert!(code_offsets(&edited, &code_mask(&edited), "needle").is_empty());
+    edited.replace_range(..2, "  ");
+    assert_eq!(code_offsets(&edited, &code_mask(&edited), "needle"), vec![3]);
+    edited.replace_range(..2, "//");
+    assert!(code_offsets(&edited, &code_mask(&edited), "needle").is_empty());
+
     let aliases = aliases_derived_from_free_frames(
         "if let Some(mut first) = FREE_FRAMES.try_lock() { let second = &mut *first; second.insert(0, frame); }",
     );
@@ -4136,6 +4161,9 @@ const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
 /// construction, and an added one is a `+` row here.
 #[rustfmt::skip]
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     // Class 2 — creation-failure retire. Never reaped, never retired.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
     // Class 2 — sys_spawn's Window-3 teardown arm: the child's main thread was
@@ -4148,7 +4176,10 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
-    // Class 3 — the nineteen in-kernel oracle callers, eight enclosing items.
+    // Ruling S26: the busy-CPU reclaim oracle's CLONE_VM member and leader
+    // (boot_tests; the module is gated in kernel/src/task/mod.rs).
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
+    // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
     // Ruling S2: the exec detach oracle's sibling, a thread's row, now leaves
     // through its own exit and the join, so its unowned-row helper is gone.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
@@ -4183,10 +4214,17 @@ const JOIN_RETIRE_ARM_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
+    // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
+    // kernel/src/task/mod.rs) retires its two fixture rows through the exit
+    // path's calls.
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
@@ -4301,8 +4339,12 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
 /// would arrive here as a new row.
 #[rustfmt::skip]
 const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
+    // GPU ABI Counters.state is the u64 LIVE/WARMING/QUARANTINED/RESET
+    // context-state output, not thread state (#1909, S27).
+    ("kernel/src/gpu/mod.rs", "fn op_counters", 1),
     // A TCP socket's own state machine (`TcpSockState`), returned to Bound or
-    // Unbound by `connect(AF_UNSPEC)`; no thread is involved.
+    // Unbound by `connect(AF_UNSPEC)`; no thread is involved. The socket's guard
+    // receiver is opaque to the local struct-field resolver.
     ("kernel/src/socket/tcp.rs", "impl TcpSock::fn disconnect", 1),
     // The #647 departure probe restores the state it snapshotted rather than
     // naming a variant, so its restore is an opaque store by construction. It is
@@ -4313,7 +4355,6 @@ const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
     // The core-proof departure probe restores the state it snapshotted, for the
     // same reason and in the same shape as the gate above.
     ("kernel/src/task/scheduler.rs", "#[cfg(feature=coreproof)] fn block_current_coreproof_probe", 1),
-    ("kernel/src/syscall/random.rs", "impl Xorshift64Star::fn next_u64", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
 ];
@@ -4492,6 +4533,9 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_prove_nested_drain_refusal", 1),
+    // Ruling S26: the reclaim daemon drains on a timer, so a machine whose CPUs
+    // stay busy still retires dead processes' page tables and address spaces.
+    ("kernel/src/task/process_task.rs", "fn reclaim_daemon", 1),
 ];
 /// Whole-tree writes include the boot-test alias arm. The separate production
 /// subset check in the page-table validator remains fixed to clone.rs +
@@ -4566,6 +4610,8 @@ const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "block_ready", "prepa
 /// someone must look at it.
 #[rustfmt::skip]
 const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
+    // #1958 / S24: remove only the unscheduled PTY fixture creation returned.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 2),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn exit_schedule_trampoline", 1),
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn terminate_current_scheduler_thread", 1),
@@ -4602,6 +4648,9 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
     ("kernel/src/task/scheduler/rq.rs", "fn reclaim", 1),
     ("kernel/src/task/scheduler/rq.rs", "fn repin", 1),
+    // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
+    // kernel/src/task/mod.rs).
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),
@@ -4980,10 +5029,39 @@ fn validate_blocked_state_publication_family(
 /// Path-valued stores (`conn.state = TcpState::Established`,
 /// `self.state = ProcessState::Running`) are excluded by construction rather
 /// than by naming the modules they live in.
+/// Resolve `self.state` through its enclosing impl and the struct's written
+/// field type. Unknown receivers remain in the census (fail closed); a known
+/// type counts as ThreadState only when that field's written type is
+/// `ThreadState`, not because the field is named `state`.
+fn known_non_thread_state_field(source: &str, mask: &[bool], offset: usize) -> bool {
+    let Some(dot) = previous_code(source, mask, offset) else { return false; };
+    if preceding_identifier(source, mask, dot).as_deref() != Some("self") {
+        return false;
+    }
+    let spans = item_spans(source, mask);
+    let Some((_, _, implementation)) = spans.iter()
+        .filter(|(open, close, name)| *open < offset && offset < *close && name.starts_with("impl "))
+        .min_by_key(|(open, close, _)| close - open) else { return false; };
+    let Some(name) = implementation.strip_prefix("impl ") else { return false; };
+    let Some((_, fields)) = struct_item_header_and_body(source, name) else { return false; };
+    let fields_mask = code_mask(fields);
+    for field in identifier_offsets(fields, &fields_mask, "state") {
+        let Some(colon) = next_code(fields, &fields_mask, field + 5) else { continue; };
+        if fields.as_bytes()[colon] != b':' { continue; }
+        let Some(start) = next_code(fields, &fields_mask, colon + 1) else { continue; };
+        let end = fields[start..].find([',', '}']).map_or(fields.len(), |n| start + n);
+        let ty = normalized_code(&fields[start..end]);
+        return !thread_state_spellings(source, mask).iter().any(|spelling|
+            ty == *spelling || ty.ends_with(&format!("::{spelling}")));
+    }
+    false
+}
+
 fn opaque_thread_state_store_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
     let bytes = source.as_bytes();
     assignment_offsets(source, mask, "state")
         .into_iter()
+        .filter(|offset| !known_non_thread_state_field(source, mask, *offset))
         .filter(|offset| {
             // A field store, not a local binding: `receiver.state = …`. The
             // receiver spelling is free, and a range expression (`..state`) is
@@ -18485,4 +18563,14 @@ fn exit_kick_scaled_fixture_legs_remain_present() {
     ] {
         assert!(anchor.contains(leg), "missing C5 leg: {leg}");
     }
+}
+
+#[test]
+fn console_cursor_state_is_not_scheduler_thread_state() {
+    let sources = rust_sources_below("kernel/src");
+    let fixture = with_synthetic_source(&sources, "kernel/src/synthetic_console_state.rs",
+        "struct State { row: usize } struct Grid { state: State, main: State } \
+         impl Grid { fn alternate_screen(&mut self) { self.state = self.main; } \
+         fn reset(&mut self) { self.state = State { row: 0 }; } }");
+    assert!(validate_opaque_thread_state_stores(&fixture).is_ok());
 }

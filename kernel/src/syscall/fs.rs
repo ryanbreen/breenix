@@ -2935,6 +2935,24 @@ fn handle_devfs_open(
         };
     }
 
+    // Numbered terminals may expose input only to their controlling session.
+    // tty0 follows the foreground dynamically, so an unprivileged reader
+    // cannot retain it across a switch to another session's login prompt.
+    if flags & 3 != 1 && process.cred.euid != 0 {
+        let permitted = match device.device_type {
+            devfs::DeviceType::Tty0 => false,
+            devfs::DeviceType::Console | devfs::DeviceType::Vt(_) => {
+                device.device_type.terminal().is_some_and(|number| {
+                    process.ctty == Some(crate::tty::ctty::TtyId::Vt(number as u8))
+                })
+            }
+            _ => true,
+        };
+        if !permitted {
+            return SyscallResult::Err(13); // EACCES
+        }
+    }
+
     // Allocate file descriptor with Device kind
     let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
         Ok(entry) => entry.with_inode(native_inode),
@@ -3553,6 +3571,11 @@ fn handle_procfs_getdents64(
         crate::fs::procfs::list_trace_entries()
     } else if dir_path == "/proc/net" {
         match crate::fs::procfs::list_net_entries() {
+            Ok(entries) => entries,
+            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        }
+    } else if let Some(listed) = crate::fs::procfs::list_task_entries(dir_path) {
+        match listed {
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }

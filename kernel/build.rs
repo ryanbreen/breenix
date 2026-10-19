@@ -36,6 +36,34 @@ fn main() {
     let kernel_dir = PathBuf::from(&manifest_dir);
     let target = env::var("TARGET").unwrap_or_default();
 
+    // Supply the fallback fixture for noninteractive testing boots without an
+    // attached home disk. Interactive profiles use their writable home disk.
+    if env::var_os("CARGO_FEATURE_TESTING").is_some()
+        && env::var_os("CARGO_FEATURE_INTERACTIVE").is_none()
+    {
+        let fixture = PathBuf::from(&out_dir).join("readonly-fixture");
+        fs::create_dir_all(&fixture).expect("create read-only fixture directory");
+        fs::write(fixture.join(".breenix-readonly-fixture"), b"Read-only ext2 acceptance fixture\n")
+            .expect("write fixture marker");
+        fs::write(fixture.join("hello.txt"), b"Read-only ext2 fixture contents\n")
+            .expect("write fixture contents");
+        let mke2fs = if env::consts::OS == "macos" {
+            let prefix = Command::new("brew").args(["--prefix", "e2fsprogs"])
+                .output().expect("read-only fixture needs e2fsprogs");
+            assert!(prefix.status.success(), "read-only fixture needs e2fsprogs");
+            PathBuf::from(String::from_utf8(prefix.stdout).unwrap().trim()).join("sbin/mke2fs")
+        } else {
+            PathBuf::from("mke2fs")
+        };
+        let image = PathBuf::from(&out_dir).join("readonly-ext2.img");
+        fs::File::create(&image).expect("create fixture image").set_len(1024 * 1024)
+            .expect("size fixture image");
+        let status = Command::new(mke2fs)
+            .args(["-q", "-t", "ext2", "-F", "-b", "1024", "-I", "256", "-N", "32", "-m", "0", "-O", "none", "-d"])
+            .arg(fixture).arg(image).status().expect("build read-only ext2 fixture");
+        assert!(status.success(), "build read-only ext2 fixture");
+    }
+
     // The boot-path stage markers, so the kernel's output paths can keep the
     // lines a stage depends on whole (`stage_lines`).
     let repo_root = kernel_dir.parent().expect("kernel dir should have parent");

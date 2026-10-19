@@ -261,10 +261,7 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
     };
 
     // Initialize SHELL_FRAMEBUFFER
-    let shell_fb = ShellFrameBuffer {
-        fb,
-        double_buffer: None,
-    };
+    let shell_fb = ShellFrameBuffer::from_fb(fb);
 
     // Cache immutable dimensions for lock-free access by sys_fbinfo
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
@@ -345,10 +342,7 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
         is_bgr_flag: true, // B8G8R8A8_UNORM
     };
 
-    let shell_fb = ShellFrameBuffer {
-        fb,
-        double_buffer: None,
-    };
+    let shell_fb = ShellFrameBuffer::from_fb(fb);
 
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
         width,
@@ -689,15 +683,32 @@ pub struct ShellFrameBuffer {
     fb: Arm64FrameBuffer,
     /// Double buffer: shadow buffer in cached RAM, flushed to hardware (GOP BAR0)
     double_buffer: Option<super::double_buffer::DoubleBufferedFrameBuffer>,
+    firmware_base: usize,
+    firmware_len: usize,
 }
 
 impl ShellFrameBuffer {
+    fn from_fb(fb: Arm64FrameBuffer) -> Self {
+        let bytes = fb.buffer();
+        let (firmware_base, firmware_len) = (bytes.as_ptr() as usize, bytes.len());
+        Self { fb, double_buffer: None, firmware_base, firmware_len }
+    }
+
+    /// Hash the display memory retained at framebuffer initialization, excluding a shadow.
+    pub(crate) fn firmware_hash(&self) -> u64 {
+        let mut hash = 14695981039346656037u64;
+        for offset in 0..self.firmware_len {
+            // SAFETY: legacy display backing is retained for the boot's lifetime. The
+            // framebuffer lock excludes kernel canvas writers; volatile reads observe memory.
+            let byte = unsafe { core::ptr::read_volatile((self.firmware_base as *const u8).add(offset)) };
+            hash = (hash ^ byte as u64).wrapping_mul(1099511628211);
+        }
+        hash
+    }
+
     /// Create a new shell framebuffer
     pub fn new() -> Option<Self> {
-        Some(Self {
-            fb: Arm64FrameBuffer::new()?,
-            double_buffer: None,
-        })
+        Some(Self::from_fb(Arm64FrameBuffer::new()?))
     }
 
     /// Get framebuffer width

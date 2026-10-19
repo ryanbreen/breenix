@@ -45,6 +45,30 @@
       "checkHint": "Check drivers::init() - VirtIO MMIO probe at 0x0a000000+"
     },
     {
+      "name": "Storage device found",
+      "marker": "[devices] storage found: ",
+      "failureMeaning": "No storage device was found on any bus",
+      "checkHint": "drivers::pci::report_class() for PCI class 0x01, the VirtIO MMIO enumeration in drivers::init(), or ahci::init_platform()"
+    },
+    {
+      "name": "Storage device initialized",
+      "marker": "[devices] storage initialized: ",
+      "failureMeaning": "A storage device was found but no storage driver attached a disk",
+      "checkHint": "the storage drivers' init (virtio block, ahci, nvme) and their device_class::storage_initialized() calls"
+    },
+    {
+      "name": "Storage device read",
+      "marker": "[devices] storage read: ",
+      "failureMeaning": "No attached disk completed a block read",
+      "checkHint": "fs::ext2::init_root_fs() - the root superblock read and mount must succeed"
+    },
+    {
+      "name": "Network device found",
+      "marker": "[devices] network found: ",
+      "failureMeaning": "No network device was found on any bus",
+      "checkHint": "drivers::pci::report_class() for PCI class 0x02, or the VirtIO MMIO enumeration in drivers::init()"
+    },
+    {
       "name": "ext2 root filesystem mounted",
       "marker": "[boot] ext2 root filesystem mounted",
       "failureMeaning": "ext2 filesystem mount failed - disk I/O or superblock read issue",
