@@ -24,6 +24,7 @@ static SUITE: Suite = suite("console", "Screen console & virtual terminals", &[
         case("scanout-bound", "The read-back is of the resource bound to the scanout, after a completed flush", screen_scanout_bound),
         case("font-oracle", "Drawn cells match the glyphs the font oracle expects", screen_font_oracle),
         case("size-class", "The font size and grid follow the size rule for the display", screen_size_class),
+        case("scanout-grid", "The scanned-out screen shows the foreground terminal's grid at the size rule's scale, and no diagnostic-only kernel line", screen_scanout_grid),
         case("cursor-drawn", "The cursor band is drawn in the cursor cell and in no other cell", screen_cursor_drawn),
         case("log-on-tty1", "Kernel records at INFO and above appear on tty1 while no login session holds it", screen_log_on_tty1),
         case("log-quiet-in-session", "Only warnings and errors are drawn once a login session holds tty1", screen_log_quiet_in_session),
@@ -258,21 +259,138 @@ fn pair(text: &str) -> Verdict<(usize, usize)> {
     Ok((a.parse::<usize>().map_err(|e| e.to_string())?, b.parse::<usize>().map_err(|e| e.to_string())?))
 }
 
+/// The check's `console display:` line: the display's size, the font size, the cell size
+/// and the grid.
+struct Shown {
+    display: (usize, usize),
+    size: usize,
+    cell: (usize, usize),
+    grid: (usize, usize),
+}
+
+fn shown_display(text: &str) -> Verdict<Shown> {
+    let line = text.lines().find_map(|line| line.strip_prefix("console display: ")).ok_or("missing display")?;
+    let display = pair(line.split_whitespace().next().ok_or("missing dimensions")?)?;
+    let (_, rest) = line.split_once(", font ").ok_or("missing font")?;
+    let (size, rest) = rest.split_once(" (").ok_or("missing cell")?;
+    let (cell, grid) = rest.split_once(" pixel cells), grid ").ok_or("missing grid")?;
+    Ok(Shown { display, size: size.parse().map_err(|e| format!("font size: {e}"))?, cell: pair(cell)?, grid: pair(grid)? })
+}
+
+/// The size rule (contract section 2) for a display: the font size, its cell and the grid.
+fn size_rule((width, height): (usize, usize)) -> (usize, (usize, usize), (usize, usize)) {
+    let fonts = [(16, 7, 18), (20, 9, 22), (24, 11, 26), (32, 14, 34)];
+    let &(size, cw, ch) = fonts.iter().rev().find(|&&(_, cw, ch)| width / cw >= 128 && height / ch >= 36)
+        .unwrap_or(&fonts[0]);
+    (size, (cw, ch), ((width / cw).min(255), (height / ch).min(255)))
+}
+
 fn screen_size_class() -> CaseResult {
     measured(|| {
         let text = screen_check()?;
         identical(&text)?;
-        let line = text.lines().find_map(|line| line.strip_prefix("console display: ")).ok_or("missing display")?;
-        let (width, height) = pair(line.split_whitespace().next().ok_or("missing dimensions")?)?;
-        let (_, rest) = line.split_once(", font ").ok_or("missing font")?;
-        let (size, rest) = rest.split_once(" (").ok_or("missing cell")?;
-        let (cell, grid) = rest.split_once(" pixel cells), grid ").ok_or("missing grid")?;
-        let fonts = [(16, 7, 18), (20, 9, 22), (24, 11, 26), (32, 14, 34)];
-        let &(wanted, cw, ch) = fonts.iter().rev().find(|&&(_, cw, ch)| width / cw >= 128 && height / ch >= 36)
-            .unwrap_or(&fonts[0]);
-        require(size.parse::<usize>().map_err(|e| e.to_string())? == wanted, line)?;
-        require(pair(cell)? == (cw, ch), line)?;
-        require(pair(grid)? == ((width / cw).min(255), (height / ch).min(255)), line)
+        let shown = shown_display(&text)?;
+        let (size, cell, grid) = size_rule(shown.display);
+        require(shown.size == size && shown.cell == cell && shown.grid == grid,
+            &format!("font {} cell {:?} grid {:?}, the size rule gives font {size} cell {cell:?} grid {grid:?}",
+                shown.size, shown.cell, shown.grid))
+    })
+}
+
+/// Kernel diagnostic records: census and trace lines written for gates and debugging, which
+/// go to serial and the kernel log, not to a screen (contract section 1.3).
+const DIAGNOSTICS: [&str; 6] = [
+    "[syscall] exit(", "[TTBR0_ASID_CENSUS:", "[PT_ROOT_CUSTODY:", "[TOMBSTONE_CENSUS:",
+    "manager.create_process_with_argv", "[spawn] ",
+];
+
+/// What the GPU core shows, when it owns the display: the current mode's size and the
+/// resource bound to scanout 0, from `MODES`.
+fn gpu_display() -> Verdict<Option<((usize, usize), u64)>> {
+    use libbreenix::gpu::{self, abi, abi::Plain};
+    let (r, caps) = gpu::caps();
+    if r != 0 || caps.status != abi::status::ADMITTED {
+        return Ok(None);
+    }
+    let mut modes = abi::Modes::ZERO;
+    let r = gpu::call_with(abi::op::MODES, &mut modes);
+    require(r == 0, &format!("MODES returned {r}"))?;
+    require(modes.binding_known == 1, "the GPU core does not know what scanout 0 shows")?;
+    let mode = modes.modes.get(modes.current as usize).ok_or("MODES names no current mode")?;
+    Ok(Some(((mode.width as usize, mode.height as usize), modes.scanout_resource)))
+}
+
+/// `TIOCGWINSZ` on `/dev/tty1`: rows, columns, then the pixel width and height.
+fn tty1_winsize() -> Verdict<[u16; 4]> {
+    const TIOCGWINSZ: u64 = 0x5413;
+    let fd = fs::open("/dev/tty1", fs::O_RDONLY | O_NOCTTY).map_err(|e| format!("open tty1: {e}"))?;
+    let mut size = [0u16; 4];
+    let ret = unsafe { raw::syscall3(nr::IOCTL, fd.raw(), TIOCGWINSZ, size.as_mut_ptr() as u64) };
+    let _ = io::close(fd);
+    Error::from_syscall(ret as i64).map_err(|e| format!("TIOCGWINSZ: {e}"))?;
+    Ok(size)
+}
+
+/// Read back what the display scans out: the console's frame must be the one bound to
+/// scanout 0 (on the GPU core, the resource `MODES` names, transferred back from the
+/// device), drawn with the foreground terminal's grid at the size rule's font and logo scale
+/// for that display, and with no kernel diagnostic line on it though the kernel logged one.
+fn screen_scanout_grid() -> CaseResult {
+    measured(|| {
+        // Diagnostics to look for: a child's exit (ARM64 logs it and the ASID census) and a
+        // read of the trace counters (both architectures log the root and tombstone census).
+        let child = match libbreenix::process::fork().map_err(|e| format!("fork: {e}"))? {
+            libbreenix::process::ForkResult::Child => libbreenix::process::exit(0),
+            libbreenix::process::ForkResult::Parent(pid) => pid,
+        };
+        let mut status = 0;
+        libbreenix::process::waitpid(child.raw() as i32, &mut status, 0).map_err(|e| format!("waitpid: {e}"))?;
+        std::fs::read_to_string("/proc/trace/counters").map_err(|e| format!("trace counters: {e}"))?;
+        let marker = marker("scanout")?;
+        tty_write(&format!("\r\n{marker}\r\n"))?;
+        let text = wait_for_row(&marker)?;
+        oracle(&text)?;
+        require(text.contains("console foreground: tty1\n"), &text)?;
+
+        let shown = shown_display(&text)?;
+        let source = text.lines().find_map(|line| line.strip_prefix("console scanout: ")).ok_or("missing scanout source")?;
+        match gpu_display()? {
+            Some((display, resource)) => {
+                require(shown.display == display,
+                    &format!("the console draws {:?}, the GPU core shows {display:?}", shown.display))?;
+                require(source.contains(&format!(" of resource {resource} bound to scanout 0"))
+                    && source.ends_with("transferred back from the device"),
+                    &format!("the GPU core shows resource {resource}, the console read {source}"))?;
+            }
+            None => require(source.starts_with("scanout memory at ")
+                || (source.starts_with("backing after flush ") && source.contains("bound to scanout 0")), source)?,
+        }
+        let (size, cell, grid) = size_rule(shown.display);
+        require(shown.size == size && shown.cell == cell && shown.grid == grid,
+            &format!("font {} cell {:?} grid {:?}, the size rule gives font {size} cell {cell:?} grid {grid:?} for {:?}",
+                shown.size, shown.cell, shown.grid, shown.display))?;
+        let logo = text.lines().find_map(|line| line.strip_prefix("console logo scale: ")).ok_or("missing logo scale")?;
+        let k = match size { 32 => 4, 24 => 3, _ => 2 };
+        require(logo == k.to_string(), &format!("logo scale {logo}, the splash's rule gives {k} for font {size}"))?;
+        let winsize = tty1_winsize()?;
+        let wanted = [grid.1 as u16, grid.0 as u16, (grid.0 * cell.0) as u16, (grid.1 * cell.1) as u16];
+        require(winsize == wanted, &format!("tty1 reports {winsize:?}, the screen shows {wanted:?}"))?;
+        let header = std::fs::read("/dev/vcsa1").map_err(|e| format!("read vcsa1: {e}"))?;
+        require(header.len() >= 2 && (usize::from(header[0]), usize::from(header[1])) == (grid.1, grid.0),
+            "vcsa1's header does not give the grid on the screen")?;
+
+        let log = std::fs::read_to_string("/proc/kmsg").map_err(|e| format!("kmsg: {e}"))?;
+        #[cfg(target_arch = "aarch64")]
+        let logged = format!("[syscall] exit(0) pid={} ", child.raw());
+        #[cfg(target_arch = "x86_64")]
+        let logged = "[TOMBSTONE_CENSUS:".to_string();
+        require(log.contains(&logged), &format!("the kernel log has no {logged} line to keep off the screen"))?;
+        for row in text.lines().filter_map(|line| line.strip_prefix("console row: ")) {
+            if let Some(found) = DIAGNOSTICS.iter().find(|&&diagnostic| row.contains(diagnostic)) {
+                return Err(format!("a diagnostic line ({found}) is on the screen: {row}"));
+            }
+        }
+        Ok(())
     })
 }
 
