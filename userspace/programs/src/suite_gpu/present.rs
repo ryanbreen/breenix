@@ -274,30 +274,38 @@ pub fn ownership_stack() -> CaseResult {
     nested()?;
     // Framebuffer owners also stack, with independent pixels behind each binding.
     for exits in [false, true] {
-        take()?;
-        pane_frame(A)?;
-        let original = pane_pixel(A)?;
-        let kid = spawn(move |_| {
+        // A process has one fb_mmap pane for its lifetime. Give each scenario
+        // its own outer owner, releasing that mapping when the process exits.
+        let owner = spawn(move |_| {
             (|| -> CaseResult {
                 take()?;
-                pane_frame(B)?;
-                ensure(pane_pixel(B)? != original, || "nested panes shared a resource".to_string())?;
-                if !exits { back()?; }
+                pane_frame(A)?;
+                let original = pane_pixel(A)?;
+                let kid = spawn(move |_| {
+                    (|| -> CaseResult {
+                        take()?;
+                        pane_frame(B)?;
+                        ensure(pane_pixel(B)? != original, || "nested panes shared a resource".to_string())?;
+                        if !exits { back()?; }
+                        Ok(())
+                    })().map_err(child_error)
+                })?;
+                kid.done()?;
+                // Exit restoration is performed by the render thread.
+                let mut restored = false;
+                for _ in 0..100 {
+                    if u32_at(&modes()?, 24) == 1 && pane_pixel(A).is_ok_and(|id| id == original) {
+                        restored = true;
+                        break;
+                    }
+                    let _ = libbreenix::time::sleep_ms(10);
+                }
+                ensure(restored, || "nested framebuffer give-back lost the saved pixels or binding".to_string())?;
+                back()?;
                 Ok(())
             })().map_err(child_error)
         })?;
-        kid.done()?;
-        // Exit restoration is performed by the render thread.
-        let mut restored = false;
-        for _ in 0..100 {
-            if u32_at(&modes()?, 24) == 1 && pane_pixel(A).is_ok_and(|id| id == original) {
-                restored = true;
-                break;
-            }
-            let _ = libbreenix::time::sleep_ms(10);
-        }
-        ensure(restored, || "nested framebuffer give-back lost the saved pixels or binding".to_string())?;
-        back()?;
+        owner.done()?;
     }
     Ok(())
 }
