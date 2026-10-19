@@ -200,6 +200,9 @@ Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BI
 - ARM64 QEMU: `scripts/boot-interactive.sh --mode suite --suite <id>` (fw_cfg
   `opt/breenix/mode=suite`, `opt/breenix/suite=<id>`).
 - Parallels and VMware: `./run.sh --parallels|--vmware --suite <id>`.
+- x86-metal: `metal-run boot --mode suite --suite <id>` on the boot host, which stages the suite's fixtures
+  onto the delivered RAM-disk root and scores the boot with this manifest
+  ([the metal boot loop](../metal/README.md), "RAM-disk userspace").
 - x86-64 gate: `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh`, or
   `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. The gate scores
   the boot with `scripts/suite-verdict.py`: one START with the manifest's case count, a CASE

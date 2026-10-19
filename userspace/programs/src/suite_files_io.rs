@@ -2758,7 +2758,27 @@ fn root_free_blocks() -> Result<u64, String> {
     Ok(counts[0])
 }
 
+// These cases consume dense inputs. Prepare them before the allocation and
+// free-count checks below.
+fn prepare_large_truncate_fixture(path: &str) -> CaseResult {
+    let fd = fs::open(path, O_CREAT | O_TRUNC | O_RDWR)?;
+    let result = (|| -> CaseResult {
+        let block_size = usize::try_from(fs::fstatfs(fd)?.f_bsize)
+            .map_err(|_| String::from("invalid fixture block size"))?;
+        check(
+            (1024..=65536).contains(&block_size) && block_size.is_power_of_two(),
+            "invalid fixture block size",
+        )?;
+        write_all(fd, &vec![0x5a; 129 * block_size])?;
+        sc(FSYNC, fd.raw(), 0, 0, 0, "fixture fsync")?;
+        Ok(())
+    })();
+    io::close(fd)?;
+    result
+}
+
 fn metadata_ftruncate_large() -> CaseResult {
+    prepare_large_truncate_fixture("/test/files-io-large-shrink")?;
     let fd = fs::open("/test/files-io-large-shrink", O_RDWR)?;
     let result = (|| -> CaseResult {
         let original = fstat(fd)?;
@@ -2808,6 +2828,7 @@ fn metadata_ftruncate_large() -> CaseResult {
 
 fn metadata_ftruncate_large_open() -> CaseResult {
     let path = "/test/files-io-large-open";
+    prepare_large_truncate_fixture(path)?;
     let original = stat(path, false)?;
     let block_size = original.st_size as u64 / 129;
     check(

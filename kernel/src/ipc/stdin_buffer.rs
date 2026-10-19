@@ -40,7 +40,7 @@ impl StdinBuffer {
     /// Push a single byte to the buffer
     /// Returns true if the byte was added, false if buffer is full
     pub(super) fn push_byte(&mut self, byte: u8) -> bool {
-        if self.len + self.eof_len >= STDIN_BUF_SIZE - 1 {
+        if self.is_full() {
             return false;
         }
 
@@ -51,6 +51,10 @@ impl StdinBuffer {
         // Buffer -> queue order matches checked publication. Deferred delivery
         // avoids acquiring the scheduler in the input producer.
         true
+    }
+
+    pub(super) fn is_full(&self) -> bool {
+        self.len + self.eof_len >= STDIN_BUF_SIZE - 1
     }
 
     /// Read bytes from the buffer into the provided slice
