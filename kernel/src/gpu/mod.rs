@@ -280,7 +280,7 @@ struct Sub {
     /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
     present: Option<display::Presenting>,
     /// The charge for its translated device chunks, released when it retires.
-    _charge: Option<Charge>,
+    _charge: Option<alloc::sync::Arc<Charge>>,
 }
 
 /// A synchronous request a thread waits on.
@@ -3004,36 +3004,23 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         release_slot(false);
         return Err(EIO);
     };
-    // First-use profile programs must not accumulate compilation time behind a single
-    // submission fence. The context slot is held; warm each needed pair separately on
-    // private scratch before encoding the user's draws. The watchdog remains 2 seconds.
-    let prewarm = (|| -> Result<(), i64> {
+    // Size first-use programs and user commands before sending either.
+    // The sizing object state includes the programs the warm-up will create.
+    let mut sized_objects = objects.clone();
+    let warm_bytes = (|| -> Result<u64, i64> {
+        let mut bytes = 0u64;
         let mut at = 0;
         while at < words.len() {
             if words.word(at) == stream::cmd::PROBE
-                && objects.probe[words.word(at + 2) as usize].1 == 0 {
-                let mut enc = encode::Enc::new();
-                encode::warm_probe(&mut enc, &mut objects, default_vb, scratch, &words, at, FLIP_Y);
-                let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
-                with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects.clone(); });
-                for chunk in chunks {
-                    let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
-                    let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
-                    let done = exec_req(serial, req, id, &[default_vb, scratch, scratch_texture], &[])?;
-                    if !virgl::ok(done.answer) || done.echoed != fence {
-                        return Err(EIO);
-                    }
-                }
+                && sized_objects.probe[words.word(at + 2) as usize].1 == 0 {
+                let mut enc = encode::Enc::size_only();
+                encode::warm_probe(&mut enc, &mut sized_objects, default_vb, scratch, &words, at, FLIP_Y);
+                bytes = bytes.checked_add(enc.backing_bytes().ok_or(ENOMEM)?).ok_or(ENOMEM)?;
             }
             at += words.word(at + 1) as usize;
         }
-        Ok(())
+        Ok(bytes)
     })();
-    if let Err(error) = prewarm {
-        drop_vertex_buffer();
-        release_slot(false);
-        return Err(error);
-    }
     let stale: Vec<u32> = objects.resources().filter(|&rid| rid != scratch && rid != scratch_texture && !view.has_id(rid)).collect();
     let mut suppression = None;
     let mut suppress = None;
@@ -3086,16 +3073,54 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
     };
     let mut sizing = encode::Enc::size_only();
-    translate(&mut sizing, &mut objects.clone());
-    let chunk_charge = match sizing.backing_bytes().ok_or(ENOMEM)
-        .and_then(|bytes| Charge::new(tgid, bytes, true)) {
-        Ok(charge) => Some(charge),
+    translate(&mut sizing, &mut sized_objects);
+    let chunk_charge = match warm_bytes.and_then(|warm| {
+        sizing.backing_bytes().and_then(|bytes| bytes.checked_add(warm)).ok_or(ENOMEM)
+    }).and_then(|bytes| Charge::new(tgid, bytes, true)) {
+        Ok(charge) => alloc::sync::Arc::new(charge),
         Err(e) => {
             drop_vertex_buffer();
             release_slot(false);
             return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
+    // Warm each pair separately; command backing retains the reservation even if the
+    // waiter leaves while the device still owns it. Publish programs after their chunks succeed.
+    let mut warm_sent = false;
+    let prewarm = (|| -> Result<(), i64> {
+        let mut at = 0;
+        while at < words.len() {
+            if words.word(at) == stream::cmd::PROBE
+                && objects.probe[words.word(at + 2) as usize].1 == 0 {
+                let mut enc = encode::Enc::new();
+                encode::warm_probe(&mut enc, &mut objects, default_vb, scratch, &words, at, FLIP_Y);
+                let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
+                for mut chunk in chunks {
+                    chunk.charge_copy(chunk_charge.clone());
+                    let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                    let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
+                    warm_sent = true;
+                    let done = exec_req(serial, req, id, &[default_vb, scratch, scratch_texture], &[])?;
+                    if !virgl::ok(done.answer) || done.echoed != fence {
+                        return Err(EIO);
+                    }
+                }
+                with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects.clone(); });
+            }
+            at += words.word(at + 1) as usize;
+        }
+        Ok(())
+    })();
+    if let Err(error) = prewarm {
+        if warm_sent {
+            // A partial shader or an interrupted fence has ambiguous device state.
+            // Do not let a subsequent call bind it or reuse its object handles.
+            with_core(|c| c.quarantine(id, now_ns()));
+        }
+        drop_vertex_buffer();
+        release_slot(false);
+        return Err(error);
+    }
     // Command frames and device requests come only after the quota reservation.
     let mut enc = encode::Enc::new();
     translate(&mut enc, &mut objects);
@@ -3230,7 +3255,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             whole,
             held,
             present: None,
-            _charge: chunk_charge,
+            _charge: Some(chunk_charge),
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));
