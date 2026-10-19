@@ -109,7 +109,6 @@ pub mod cmd {
     pub const DX_SET_SHADER_RESOURCES: u32 = 1149;
     pub const DX_SET_SHADER: u32 = 1150;
     pub const DX_DRAW: u32 = 1152;
-    pub const DX_DRAW_INSTANCED: u32 = 1154;
     pub const DX_SET_INPUT_LAYOUT: u32 = 1157;
     pub const DX_SET_VERTEX_BUFFERS: u32 = 1158;
     pub const DX_SET_TOPOLOGY: u32 = 1160;

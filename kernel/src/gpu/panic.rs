@@ -149,16 +149,17 @@ pub(super) fn prepare() -> Result<(), i64> {
     if VALID.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut c = console::Console::new(false)?;
-    c.draw(false)?;
-    let (mut objects, queue) = with_core(|core| {
-        Some((
-            core.contexts.get(&c.context)?.objects.clone(),
-            core.dev.as_ref()?.terminal_queue(),
-        ))
+    let queue = with_core(|core| match core.dev.as_ref()? {
+        dev::Device::Virgl(device) => Some(device.terminal_queue()),
+        dev::Device::Svga(_) => None,
     })
     .flatten()
     .ok_or(EIO)?;
+    let mut c = console::Console::new(false)?;
+    c.draw(false)?;
+    let mut objects = with_core(|core| Some(core.contexts.get(&c.context)?.objects.clone()))
+        .flatten()
+        .ok_or(EIO)?;
     #[cfg(feature = "capture_panic_oracle")]
     let (backing, pitch) = with_core(|core| {
         let r = core.resources.get(&c.target)?;

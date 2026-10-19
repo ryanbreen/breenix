@@ -1026,7 +1026,7 @@ F was downloaded with the others and supplies no value the backend uses.
 | DX_DEFINE_ELEMENTLAYOUT (input slot, aligned offset, format, per-vertex 0 or per-instance 1, step rate, register); DX_SET_INPUT_LAYOUT; DX_SET_VERTEX_BUFFERS (surface, stride, offset per buffer); DX_SET_TOPOLOGY, TRIANGLELIST 1 | D:43–44,303–320,380–382,1120–1143; T:1159; ids C:180–183,214 |
 | DX_DEFINE_BLEND_STATE (per-target enable, BLENDOP_ONE/BLENDOP_ZERO/BLENDEQ_ADD, write mask 0xf) and DX_SET_BLEND_STATE; DX_DEFINE_DEPTHSTENCIL_STATE (depth off, DEPTH_WRITE_MASK_ALL, COMPARISON_ALWAYS, STENCILOP_KEEP) and its set; DX_DEFINE_RASTERIZER_STATE (FILLMODE_FILL 3, CULL_NONE 1, depth clip on) and its set | D:46–94,393–410,1155–1187,1220–1241,1273–1291; T:739,774–775,799,855,884; ids C:185–187,216–221 |
 | DX_SET_VIEWPORTS (x, y, width, height, depth range as binary32); DX_CLEAR_RENDERTARGET_VIEW (RGBA binary32); DX_PRED_COPY_REGION (destination, source, copy box) | D:537–569,582–588; ids C:197,199,201 |
-| DX_DRAW_INSTANCED (vertices per instance, instances, first vertex, first instance) | D:249–254; id C:177 |
+| DX_DRAW (vertex count, first vertex); a single instance reads its constant record at the vertex-buffer binding's byte offset | D:234–237,308–312; id C:175; O: ruling 57 (#2019) |
 | DX_MOB_FENCE_64 (u64 value, MOB, offset) | D:1547–1551; id C:239 |
 | Signature trailer: header version `0x08a92d12`, input/output/patch counts; entries of register, semantic name (UNDEFINED 0, POSITION 1), mask, component type 0, precision 0 | D:1365–1415 (names 1365–1366, entry 1398–1404, header 1407–1415) |
 | Header bounds of 256 contexts and 32,768 surfaces | L:38–39 |

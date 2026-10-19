@@ -103,9 +103,9 @@ impl Commands {
         self.command(cmd::DX_SET_SHADER_RESOURCES, &[slot, ty, view]);
     }
     /// Vertex buffers 0 and 1: the vertices, `stride` bytes each, and the per-instance
-    /// records, `record` bytes each, both from byte 0.
-    pub fn dx_set_vertex_buffers(&mut self, vertices: u32, stride: u32, records: u32, record: u32) {
-        self.command(cmd::DX_SET_VERTEX_BUFFERS, &[0, vertices, stride, 0, records, record, 0]);
+    /// records, `record` bytes each, starting at byte `offset` of the record stream.
+    pub fn dx_set_vertex_buffers(&mut self, vertices: u32, stride: u32, records: u32, record: u32, offset: u32) {
+        self.command(cmd::DX_SET_VERTEX_BUFFERS, &[0, vertices, stride, 0, records, record, offset]);
     }
     pub fn dx_set_input_layout(&mut self, id: u32) { self.command(cmd::DX_SET_INPUT_LAYOUT, &[id]); }
     pub fn dx_set_topology(&mut self, topology: u32) { self.command(cmd::DX_SET_TOPOLOGY, &[topology]); }
@@ -128,10 +128,9 @@ impl Commands {
     pub fn dx_copy_region(&mut self, dst: u32, dx: u32, dy: u32, src: u32, sx: u32, sy: u32, w: u32, h: u32) {
         self.command(cmd::DX_PRED_COPY_REGION, &[dst, 0, src, 0, dx, dy, 0, w, h, 1, sx, sy, 0]);
     }
-    /// `count` vertices from vertex `start`, as one instance: instance `record` of the
-    /// per-instance stream.
-    pub fn dx_draw_instanced(&mut self, count: u32, start: u32, record: u32) {
-        self.command(cmd::DX_DRAW_INSTANCED, &[count, 1, start, record]);
+    /// `count` vertices from vertex `start`, as one instance.
+    pub fn dx_draw(&mut self, count: u32, start: u32) {
+        self.command(cmd::DX_DRAW, &[count, start]);
     }
     /// Input register 0: two binary32 values per vertex at offset 0 of buffer 0. Input
     /// registers 1 to `vectors`: four 32-bit unsigned values each, consecutive in a record

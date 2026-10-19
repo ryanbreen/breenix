@@ -251,7 +251,6 @@ struct Tx<'o> {
     transient: Vec<u32>,
     /// Transients the body defines (copy scratch), destroyed in the last buffer.
     defined: Vec<u32>,
-    vb_bound: bool,
     /// The views bound at the fragment stage's slots 0 to 2, when known.
     srv: Option<[u32; 3]>,
     failed: bool,
@@ -330,10 +329,9 @@ impl Tx<'_> {
         if rects.is_empty() {
             return;
         }
-        if !self.vb_bound {
-            self.b.c.dx_set_vertex_buffers(self.vb, STRIDE, self.cb, RECORD as u32);
-            self.vb_bound = true;
-        }
+        // Select this draw's constants by the record stream's byte offset
+        // instead of DX_DRAW_INSTANCED's first instance (ruling 57, #2019).
+        self.b.c.dx_set_vertex_buffers(self.vb, STRIDE, self.cb, RECORD as u32, record * RECORD as u32);
         let first = (self.sizes.vertices / STRIDE as usize) as u32;
         for &r in rects {
             let q = quad(r, w, h);
@@ -346,7 +344,7 @@ impl Tx<'_> {
             }
             self.sizes.vertices += 48;
         }
-        self.b.c.dx_draw_instanced(6 * rects.len() as u32, first, record);
+        self.b.c.dx_draw(6 * rects.len() as u32, first);
         self.boundary();
     }
 
@@ -566,7 +564,6 @@ fn start<'o>(o: &'o mut Objects, backing: Option<Backing>, layout: Option<Sizes>
         own_srv: Vec::new(),
         transient,
         defined: Vec::new(),
-        vb_bound: false,
         srv: None,
         failed: false,
     })
