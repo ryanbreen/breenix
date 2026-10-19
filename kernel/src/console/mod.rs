@@ -311,10 +311,18 @@ pub(crate) fn splash_boot_pass() {
 /// screen; true when the screen then shows the whole shadow. The first time it
 /// is shown, say what was drawn.
 fn present_splash(display: &Display, shadow: &mut [u8], painter: &mut splash::Painter) -> bool {
+    #[cfg(all(target_arch = "aarch64", any(feature = "boot_tests", feature = "btrt")))]
+    let force_panel = painter.drawn().is_none();
     let bands = painter.paint(shadow, splash::now_ms());
+    #[cfg(all(target_arch = "aarch64", any(feature = "boot_tests", feature = "btrt")))]
+    let panel = crate::test_framework::display::render_splash(shadow, display.layout(), force_panel);
     let shown = bands
         .iter()
         .all(|rows| display.write(shadow, rows.clone(), may_draw) && may_draw() && display.flush(rows).is_ok());
+    #[cfg(all(target_arch = "aarch64", any(feature = "boot_tests", feature = "btrt")))]
+    let shown = shown && panel.is_none_or(|rows| {
+        display.write(shadow, rows.clone(), may_draw) && may_draw() && display.flush(rows).is_ok()
+    });
     if !shown {
         painter.forget();
         return false;

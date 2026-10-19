@@ -6,6 +6,8 @@
   "fatal": [
     "panicked at kernel/src/",
     "!!! SOFT LOCKUP DETECTED !!!",
+    "\\[BOOT_TESTS:FAIL:[1-9][0-9]*\\]",
+    "\\[TEST:[^\\]\\r\\n]*:FAIL(?=[:\\]])",
     "\\[(DATA|INSTRUCTION)_ABORT\\].*from_el0=0",
     "\\[splash\\] logo read back differs",
     "\\[console\\] tty[1-6] shown: read back differs"

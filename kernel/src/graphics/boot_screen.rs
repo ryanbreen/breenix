@@ -18,6 +18,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::arm64_fb;
+use super::cursor;
 use super::primitives::{draw_char, fill_rect, Canvas, Color, Rect, TextStyle};
 use crate::console::splash::Text;
 use core::fmt::Write;
@@ -46,6 +47,37 @@ pub fn console_drew() {
 /// Whether the diagnostics screen has the screen.
 pub fn diagnostics_up() -> bool {
     DIAG_CLAIMED.load(Ordering::Acquire)
+}
+
+/// Space below the splash stage label and above its mode/status lines.
+/// The console presents this region only while its splash owns the display.
+pub fn runner_area(canvas: &impl Canvas) -> Option<Rect> {
+    if !crate::console::splash::is_up()
+        || HANDED_OVER.load(Ordering::Acquire)
+        || DIAG_CLAIMED.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    let width = canvas.width() as i32;
+    let height = canvas.height() as i32;
+    let font = crate::console::raster::Font::for_display(width as usize, height as usize);
+    let scale = match font.size() {
+        32 => 4,
+        24 => 3,
+        _ => 2,
+    };
+    let line = font.line_height() as i32;
+    let top = 2 * height / 5 + (141 - 32) * scale + line + 8;
+    let bottom = height - 3 * line - 8;
+    if bottom <= top || width <= 80 {
+        return None;
+    }
+    Some(Rect {
+        x: 40,
+        y: top,
+        width: (width - 80) as u32,
+        height: (bottom - top) as u32,
+    })
 }
 
 /// Userspace has taken the display: stop drawing the boot screen and the
@@ -82,6 +114,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
     }
     if CONSOLE_UP.swap(false, Ordering::AcqRel) {
         let (width, height) = (fb.width(), fb.height());
+        cursor::hide(fb);
         fill_rect(
             fb,
             Rect {
@@ -92,6 +125,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
             },
             BG,
         );
+        cursor::show(fb);
         if let Some(db) = fb.double_buffer_mut() {
             db.flush_if_dirty();
         }
@@ -372,6 +406,7 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     HANDED_OVER.store(true, Ordering::Release);
     let canvas = &mut *guard;
     let (width, height) = (canvas.width() as i32, canvas.height() as i32);
+    cursor::hide(canvas);
     fill_rect(
         canvas,
         Rect {
@@ -461,6 +496,8 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
         draw_str(canvas, left, y, shown, &text);
         y += LINE;
     }
+
+    cursor::show(canvas);
 
     if let Some(db) = guard.double_buffer_mut() {
         db.flush_if_dirty();

@@ -1,0 +1,14 @@
+{
+  "vigilBoot": "20261018T201339Z-qemu",
+  "snapshotCommit": "f02373eeabe96d526252feb44625101f22ea135f",
+  "prSourceCommit": "d92c162261a4374c8ada0f73fad0be5c4d641a2a",
+  "snapshotKernelTree": "b16cc52d6c755e9fc0572f4624bdb4df13260ba2",
+  "prKernelTree": "b16cc52d6c755e9fc0572f4624bdb4df13260ba2",
+  "kernelTreesEqual": true,
+  "rawSerialSha256": "1eb2698af6b5f619f0fd441c94c7f86f4082948a982ff7ff6f5e9ad50b79bd1e",
+  "retainedExitStatus": 1,
+  "limitations": [
+    "The snapshot records sources at launch; no retained kernel binary digest binds the executed artifact to those sources.",
+    "Original build command lines and manifest verification output were not retained."
+  ]
+}

@@ -1,0 +1,60 @@
+[GATE_PREFLIGHT:skipped=1:reason=BREENIX_GATE_SKIP_STRUCTURE set]
+Guard: kernel FP/SIMD instruction check
+  ELF:       <checkout>/target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   <toolchain>/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: <checkout>/scripts/kernel-neon-allowlist.txt
+PASS: 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 32).
+Guard: aarch64 soft-lockup report allocation check (failure-capture PR-7)
+  ELF:      <checkout>/target/aarch64-breenix-kernel/release/kernel-aarch64
+  sha256:   c6a71c67917ab5bdfde63208c0087713a971bffdedaf78d57417a1bf10bec568
+  objdump:  <toolchain>/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  root:     dump_lockup_state (its own symbols and every reachable callee)
+  roots:           1
+    _ZN6kernel9arch_impl7aarch6415timer_interrupt17dump_lockup_state17ha6117f547ab3eff1E
+  reachable funcs: 30
+  call edges:      96
+PASS: 0 allocation sinks reachable from 1 root symbol(s).
+PASS: no allocation is reachable from dump_lockup_state in this ELF.
+=========================================
+ARM64 Strict Boot Test
+=========================================
+Kernel: <checkout>/target/aarch64-breenix-kernel/release/kernel-aarch64
+ext2 disk: <checkout>/target/ext2-aarch64.img
+Iterations: 1
+Requirement: 100% success rate (all 1 must pass)
+
+Running tests...
+
+[host-slot] waiting for mac-boot: worktree=<other-checkout> commit=65c7cc37363c4205b6c0f7a97ff769926036826c held=66.3s; waited=0.0s
+[host-slot] waiting for mac-boot: worktree=<other-checkout> commit=e399af7c45ca09f086b04bc9a70e45b23a1100d8 held=8.4s; waited=60.3s
+[host-slot] waiting for mac-boot: worktree=<other-checkout> commit=e399af7c45ca09f086b04bc9a70e45b23a1100d8 held=68.5s; waited=120.4s
+[host-slot] acquired mac-boot; waited=124.5s load=(28.37646484375, 32.2919921875, 26.638671875)
+QEMU HOST LOCK: host qemu-system-aarch64 count before acquire: 0
+BREENIX_QEMU_CONFIG accel=tcg cpu=cortex-a72
+qemu-system-aarch64: terminating on signal 15 from pid 89121 (<unknown process>)
+  [FAIL] Boot 1: T4T5T6T7T8T9T0[SOFTIRQ_DEFERRAL_ORACLE:arch=aarch64:cpu=1:budget_ticks=250:wait_ticks=4:wait_ns=11653008:dispatches=1:iterations=41:verdict=ok]
+sigkill teardown: no starved window
+Pinned-placement census reported a field above zero ([PINNED_HOME_CPU_UNAVAILABLE:count=0:publish_discarded=0:hold_pen_migrated=0:delivered=0:migration_refused=1:stack_home_conflict=0]) (1391 lines); serial: <artifacts>/gate/breenix_aarch64_strict_failures/20261018T194222Z-boot1.txt
+  [GATE_BOOT_FACTS:boot=1:host_ms=1792352437620-1792352541712:qemu_at_start=0:load_at_start=28.38:qemu_at_end=0:load_at_end=9.08:qemu_cpu_s=NA:guest_uptime_ms=88954:ended_by=hard_timeout]
+  [CAPTURE_DRAIN:capture=absent:seq=-:edge=-:cpu=-:records=-:drain_ms=300]
+  [CAPTURE_DRAIN_EVENTS:last_events=none]
+  [QMP_DUMP:capture=partial:reason=qmp_socket_missing:core=-:decoded_events=-:dump_ms=23]
+
+=========================================
+RESULTS
+=========================================
+Total iterations: 1
+Successes: 0
+Failures: 1
+Inconclusive (host starvation): 0
+Success rate: 0%
+Duration: 233s
+
+Failed iterations: 1
+
+=========================================
+FAIL: Only 0/1 boots succeeded
+=========================================
+
+This indicates a regression or timing bug that needs investigation.
+Serial output from failed boots can be found in <artifacts>/gate/breenix_aarch64_strict_N/

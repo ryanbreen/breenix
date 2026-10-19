@@ -464,11 +464,11 @@ STD_BINARIES=(
 # Validate against this invocation's manifest, not the persistent output pool.
 CURRENT_TARGETS="$(cd "$SCRIPT_DIR" && cargo metadata --no-deps --format-version 1)"
 printf '%s' "$CURRENT_TARGETS" | python3 -c '
-import json, sys
+import json, os, sys
 metadata = json.load(sys.stdin)
-manifest = sys.argv[1]
+manifest = os.path.realpath(sys.argv[1])
 names = {target["name"] for package in metadata["packages"]
-         if package["manifest_path"] == manifest
+         if os.path.realpath(package["manifest_path"]) == manifest
          for target in package["targets"] if "bin" in target["kind"]}
 missing = [entry.split(":", 1)[0] for entry in sys.argv[2:]
            if entry.split(":", 1)[0] not in names]

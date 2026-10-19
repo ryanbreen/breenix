@@ -16,6 +16,9 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
+//! In a boot that runs several suites ([`sequence`]), the next suite replaces it as PID 1
+//! instead.
+//!
 //! Each record is written with a single write that starts with a newline, so output
 //! another writer left without one (the x86-64 scheduler's raw COM1 breadcrumbs, say)
 //! never prefixes it.
@@ -85,6 +88,8 @@
 
 #[path = "suite_prerequisites.rs"]
 pub mod prerequisites;
+#[path = "suite_sequence.rs"]
+pub mod sequence;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -410,6 +415,11 @@ impl Suite {
         };
         let mut counts = Counts::default();
         let mut feed = Feed::default();
+        // A one-case run, or one whose arguments could not be read, is not part of a sequence.
+        let place = if only.is_none() && error.is_none() { sequence::read(self.id) } else { None };
+        if let Some((ids, index)) = &place {
+            sequence::prepare(ids, *index, total);
+        }
         let suite_start = monotonic_ns();
 
         emit(&std::format!("SUITE {} START cases={}{}", self.id, total, suffix));
@@ -450,6 +460,7 @@ impl Suite {
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
+                if place.is_some() { sequence::progress_after(done); }
             }
         }
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
@@ -465,41 +476,9 @@ impl Suite {
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
-        // A sequence replaces PID 1 with the next suite after this suite has
-        // emitted its own DONE. Exec replaces the address space and closes only
-        // FD_CLOEXEC descriptors; /tmp, PID allocation and page cache persist.
-        // Single-suite disks have no sequence file and retain their final panel.
-        if let Ok(sequence) = std::fs::read_to_string("/etc/breenix/suite-sequence") {
-            let ids: Vec<&str> = sequence.trim_end().split(',').collect();
-            // The x86 sequence gate freezes and captures this boundary before
-            // acknowledging through the keyboard. Single-suite and ARM boots
-            // have no sequence file and never wait for host input.
-            let mut byte = [0u8; 1];
-            loop {
-                match io::read(Fd::STDIN, &mut byte) {
-                    Ok(1) if byte[0] == b'\n' => break,
-                    Ok(_) => { let _ = process::yield_now(); }
-                    Err(error) => {
-                        emit(&std::format!("SUITE_SEQUENCE FAIL acknowledgement: {:?}", error));
-                        idle(&mut screen, &feed);
-                    }
-                }
-            }
-            if let Some(index) = ids.iter().position(|id| *id == self.id) {
-                if let Some(next) = ids.get(index + 1) {
-                    let path = std::format!("/sbin/suite-{}\0", next);
-                    let mut arguments = vec![std::ffi::CString::new(path.trim_end_matches('\0')).unwrap()];
-                    if let Some(value) = hostkey_method() {
-                        arguments.push(std::ffi::CString::new("--hostkeys").unwrap());
-                        arguments.push(std::ffi::CString::new(value).unwrap());
-                    }
-                    let mut argv: Vec<*const u8> = arguments.iter().map(|s| s.as_ptr().cast()).collect();
-                    argv.push(core::ptr::null());
-                    let error = process::execv(path.as_bytes(), argv.as_ptr()).unwrap_err();
-                    emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
-                }
-            }
-        }
+        // In a sequence the next suite replaces this one as PID 1 (`sequence::finish`);
+        // the last keeps its final panel, as a suite booted alone does.
+        if place.is_some() { sequence::finish(); }
         idle(&mut screen, &feed)
     }
 }
@@ -805,6 +784,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
+            sequence::in_child();
             let _ = io::close(reader);
             if let Some((live_reader, live_writer)) = live {
                 let _ = io::close(live_reader);

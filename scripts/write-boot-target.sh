@@ -8,6 +8,9 @@
 # replacing the prior target. Use a copy so ordinary boots keep their disk.
 # The image must contain /sbin/suite-SUITE_ID or /sbin/probe respectively.
 # When PID1_ELF is supplied, readback must match its bytes before accepting the image.
+# SEQUENCE (suite ids joined by commas, SUITE_ID first) also writes /etc/breenix/suite-sequence,
+# so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot");
+# each /sbin/suite-ID must match the ELF beside PID1_ELF.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
 # and otherwise runs debugfs in an Alpine container.

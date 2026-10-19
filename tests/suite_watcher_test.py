@@ -217,6 +217,31 @@ class SuiteWatcherTest(unittest.TestCase):
             self.assertIn(expected, result.stdout)
             self.assertIn("UTC clock FAIL", result.stdout)
 
+    def test_kernel_failures_override_testing_report(self):
+        done = (LOADER.decode() +
+                "TEST_TALLY: exited=1 nonzero=0 failed=[] started=1\n"
+                "USERSPACE TEST REPORT DONE\n")
+        completion = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))["completion"]
+        for marker in ("[BOOT_TESTS:FAIL:1]", "[BOOT_TESTS:FAIL:12]",
+                       "[TEST:system:tty_foreground_pgrp:FAIL:foreground pgrp missing]",
+                       "[TEST:system:example:FAIL]"):
+            for serial in (marker + "\n" + done, done + marker + "\n"):
+                with self.subTest(marker=marker, serial=serial):
+                    result = completion(serial, "tests", "")
+                    self.assertFalse(result[0], result)
+                    self.assertIn(marker, result[1])
+        passed = "[BOOT_TESTS:FAIL:0]\n[TEST:system:example:PASS]\n" + done
+        self.assertTrue(completion(passed, "tests", "")[0])
+
+    def test_kernel_failure_stops_testing_watcher(self):
+        data = (b"[TEST:system:tty_foreground_pgrp:FAIL:foreground pgrp missing]\n"
+                b"[BOOT_TESTS:FAIL:1]\n"
+                b"TEST_TALLY: exited=1 nonzero=0 failed=[] started=1\n"
+                b"USERSPACE TEST REPORT DONE\n")
+        result, _ = self.replay(data, mode="tests", split=False)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("fatal kernel output", result.stdout)
+
     def test_testing_completion_rejects_a_failed_canonical_program(self):
         data = b"TEST_TALLY: exited=2 nonzero=1 failed=[clonevm_exec_test:1] started=2\nUSERSPACE TEST REPORT DONE\n"
         result, _ = self.replay(data, mode="tests")

@@ -115,6 +115,10 @@ pub fn parse(text: &str) -> Result<Target, String> {
 /// Read the boot target from the mounted ext2 root. `Ok(None)` when there is no
 /// file (or no root filesystem); `Err` when the file exists but cannot be used.
 pub fn read() -> Result<Option<Target>, String> {
+    if let Some(bytes) = crate::boot::intent::get() {
+        let text = core::str::from_utf8(bytes).map_err(|_| String::from("boot intent is not text"))?;
+        return parse(text).map(Some);
+    }
     let fs_guard = crate::fs::ext2::root_fs_read().map_err(String::from)?;
     let Some(fs) = fs_guard.as_ref() else {
         return Ok(None);

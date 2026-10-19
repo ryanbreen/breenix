@@ -1,0 +1,122 @@
+[
+ {
+  "frame": "000-during.ppm",
+  "size": [
+   1280,
+   800
+  ],
+  "cursor_sprites": [
+   [
+    300,
+    600
+   ]
+  ],
+  "panel_bbox": [
+   221,
+   537,
+   1058,
+   718
+  ],
+  "panel_between_stages_and_status": true
+ },
+ {
+  "frame": "001-during.ppm",
+  "size": [
+   1280,
+   800
+  ],
+  "cursor_sprites": [
+   [
+    900,
+    619
+   ]
+  ],
+  "panel_bbox": [
+   221,
+   537,
+   1058,
+   718
+  ],
+  "panel_between_stages_and_status": true
+ },
+ {
+  "frame": "002-during.ppm",
+  "size": [
+   1280,
+   800
+  ],
+  "cursor_sprites": [
+   [
+    500,
+    300
+   ]
+  ],
+  "panel_bbox": [
+   221,
+   537,
+   1058,
+   718
+  ],
+  "panel_between_stages_and_status": true
+ },
+ {
+  "frame": "003-during.ppm",
+  "size": [
+   1280,
+   800
+  ],
+  "cursor_sprites": [
+   [
+    1100,
+    200
+   ]
+  ],
+  "panel_bbox": [
+   221,
+   537,
+   1058,
+   718
+  ],
+  "panel_between_stages_and_status": true
+ },
+ {
+  "frame": "004-after-tests.ppm",
+  "size": [
+   1280,
+   800
+  ],
+  "cursor_sprites": [
+   [
+    200,
+    700
+   ]
+  ],
+  "panel_bbox": [
+   221,
+   537,
+   1058,
+   718
+  ],
+  "panel_between_stages_and_status": true
+ },
+ {
+  "frame": "005-final.ppm",
+  "size": [
+   1280,
+   800
+  ],
+  "cursor_sprites": [
+   [
+    640,
+    650
+   ]
+  ],
+  "panel_bbox": [
+   221,
+   537,
+   1058,
+   718
+  ],
+  "panel_between_stages_and_status": true
+ }
+]

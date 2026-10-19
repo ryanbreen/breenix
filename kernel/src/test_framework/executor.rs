@@ -230,6 +230,29 @@ pub fn advance_to_stage(stage: TestStage) -> u32 {
     run_staged_tests(stage)
 }
 
+/// The process whose creation advanced the stage to ProcessContext, by the id
+/// its creator's create call returned (0 until then).
+#[cfg(target_arch = "aarch64")]
+static PROCESS_CONTEXT_CREATED: AtomicU64 = AtomicU64::new(0);
+
+/// Advance to ProcessContext for `created`, the process the caller's own
+/// create call returned. The stage's tests check that process by this id
+/// rather than by a guess such as the largest PID (S24).
+#[cfg(target_arch = "aarch64")]
+pub fn advance_to_process_context(created: crate::process::ProcessId) -> u32 {
+    PROCESS_CONTEXT_CREATED.store(created.as_u64(), Ordering::Release);
+    advance_to_stage(TestStage::ProcessContext)
+}
+
+/// The process recorded by `advance_to_process_context`, if any.
+#[cfg(target_arch = "aarch64")]
+pub fn process_context_created() -> Option<crate::process::ProcessId> {
+    match PROCESS_CONTEXT_CREATED.load(Ordering::Acquire) {
+        0 => None,
+        pid => Some(crate::process::ProcessId::new(pid)),
+    }
+}
+
 /// Advance to a new stage without running tests
 ///
 /// Use this when in syscall context where spawning kthreads would block.

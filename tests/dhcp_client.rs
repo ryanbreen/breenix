@@ -229,6 +229,7 @@ pub fn process_rx_budgeted(_: usize) {
         ipv4::handle_ipv4(&eth, &ip);
     }
 }
+pub fn between_rx_polls() {}
 fn setup() -> MutexGuard<'static, ()> {
     static SERIAL: Mutex<()> = Mutex::new(());
     let guard = SERIAL.lock().unwrap();
@@ -368,7 +369,7 @@ fn procfs_secondary_dns_and_enomem() {
     dhcp::acquire(MAC).unwrap();
     let text = proc_net::generate_pnp().unwrap();
     assert!(text.contains("nameserver 192.0.2.53\nnameserver 192.0.2.54\n"));
-    assert_eq!(proc_net::list_entries().unwrap(), ["pnp"]);
+    assert_eq!(proc_net::list_entries().unwrap(), ["pnp", "tcp"]);
     FAIL_ALLOC.with(|f| f.set(true));
     let pnp = proc_net::generate_pnp();
     let entries = proc_net::list_entries();

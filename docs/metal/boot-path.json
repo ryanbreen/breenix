@@ -412,11 +412,26 @@
             "name": "Ext2 directory round trip on the disk",
             "marker": "PROBE dir OK"
           }
+        ],
+        "x86_64": [
+          {
+            "name": "Root record found",
+            "marker": "[storage] root record: installed by boot "
+          },
+          {
+            "name": "Writes granted for the installed root",
+            "marker": "[block] hardware disk writes granted: the root the storage lane installed"
+          },
+          {
+            "name": "Root mounted from the disk",
+            "marker": "[fs] root mounted from the installed disk"
+          }
         ]
       },
       "bootShapes": [
         "disk-root"
-      ]
+      ],
+      "kernel": true
     },
     {
       "id": "fb-console",

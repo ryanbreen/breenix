@@ -17,6 +17,7 @@ BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))
 ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
 VERDICT = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))
+SEQUENCE = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))
 
 
 def stop(process):
@@ -35,6 +36,8 @@ COMPLETING_MODES = ("suite", "probe", "tests", "program")
 
 
 def label(mode, suite):
+    if mode == "suite" and "," in suite:
+        return f"Suites {suite}"
     return f"Suite {suite}" if mode == "suite" else "Boot probe" if mode == "probe" else "Testing boot"
 
 
@@ -42,6 +45,8 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
     progress = BootProgress(serial)
     last_size = 0
     started = last_output = time.monotonic()
+    # A boot of several suites gives each its own DONE deadline, from when it starts.
+    boundaries = 0
     done_at = None
     text = ""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -65,6 +70,8 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             progress.observe(text)
             if mode in COMPLETING_MODES:
                 clock.observe(text)
+                if mode == "suite" and "," in suite and SEQUENCE["boundaries"](text) > boundaries:
+                    boundaries, started = SEQUENCE["boundaries"](text), now
                 result = DONE["completion"](text, mode, suite, only)
                 if result is not None:
                     if result[1].startswith("fatal kernel output:"):
@@ -127,6 +134,16 @@ def main():
     if args.mode in COMPLETING_MODES:
         clock_ok, clock_reason = clock.verdict()
         print(clock_reason, flush=True)
+    if args.mode == "suite" and "," in args.suite:
+        # Each suite's result, whether the sequence finished or the boot was stopped part way.
+        ok, rows = SEQUENCE["score"](args.suite.split(","), args.serial, [args.serial], args.disk)
+        for suite, status, detail in rows:
+            print(f"{status} {suite}: {detail}", flush=True)
+        passed = sum(status == "PASS" for _, status, _ in rows)
+        print(f"{'PASS' if ok else 'FAIL'}: {passed} of {len(rows)} suites passed", flush=True)
+        if reason == "stalled":
+            return 124
+        return 0 if ok and clock_ok and reason == "done" else 1
     if reason == "stalled":
         return 124
     if reason == "fatal":

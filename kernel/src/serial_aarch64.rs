@@ -293,12 +293,26 @@ pub fn disable_rx_interrupt() {
     }
 }
 
-/// Clear receive interrupt
-pub fn clear_rx_interrupt() {
+/// Rearm a deferred receive without boot-time diagnostics or a serial lock.
+pub(crate) fn resume_rx_interrupt() {
     if is_16550() {
-        // 16550: reading IIR/RBR clears the interrupt
-        let _ = read_reg8(reg16550::THR);
+        let ier = read_reg8(reg16550::IER);
+        write_reg8(reg16550::IER, ier | 0x01);
     } else {
+        let imsc = read_reg(reg::IMSC);
+        write_reg(reg::IMSC, imsc | int::RX | int::RT);
+    }
+}
+
+/// Acknowledge the receive interrupt once the FIFO has reported empty.
+///
+/// It does not read the receive register: a byte that arrived after the
+/// empty report would be consumed and lost (#1803).
+pub fn clear_rx_interrupt() {
+    // The 16550's received-data and character-timeout interrupts are cleared
+    // by the reads that drained the FIFO, so an empty 16550 FIFO needs no
+    // acknowledgement.
+    if !is_16550() {
         write_reg(reg::ICR, int::RX | int::RT);
     }
 }

@@ -106,7 +106,7 @@ const SLEEP_MS: u64 = 10;
 const QUANTUM_TICKS: u64 = 10;
 
 /// Milliseconds of a full scheduling quantum on this build.
-const QUANTUM_MS: u64 = QUANTUM_TICKS * crate::time::timer::MS_PER_TICK;
+pub(crate) const QUANTUM_MS: u64 = QUANTUM_TICKS * crate::time::timer::MS_PER_TICK;
 
 /// The wait a tail enqueue costs: the peers ahead of the woken thread each run
 /// a quantum before it is selected. Printed for the reader, not asserted.

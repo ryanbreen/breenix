@@ -7,6 +7,10 @@ extern crate alloc;
 #[path = "../kernel/src/boot/target.rs"]
 mod target;
 
+#[path = "../kernel/src/boot/intent.rs"]
+pub mod intent;
+mod boot { pub use crate::intent; }
+
 /// The mounted root as `target::read` sees it: one optional boot-target file.
 mod fs {
     pub mod ext2 {
@@ -139,6 +143,17 @@ fn read_parses_the_file_on_the_root() {
     *fs::ext2::FILE.lock().unwrap() = Some(vec![b'x'; 300]);
     assert!(target::read().is_err());
     *fs::ext2::FILE.lock().unwrap() = None;
+
+    // Disk-root boots choose a fresh mode without modifying their installed target.
+    assert!(!intent::capture(b"filesystem bytes"));
+    assert!(intent::get().is_none());
+    assert!(intent::capture(b"BREENIX-BOOT 1\nsuite signals\n"));
+    assert!(intent::get().is_some());
+    *fs::ext2::FILE.lock().unwrap() = Some(b"console\n".to_vec());
+    match target::read() {
+        Ok(Some(Target::Suite(suite))) => assert_eq!(suite.id, "signals"),
+        _ => panic!("the per-boot suite did not override the installed console target"),
+    }
 }
 
 #[test]
