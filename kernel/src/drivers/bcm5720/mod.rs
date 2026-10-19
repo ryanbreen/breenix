@@ -90,6 +90,7 @@ const PCI_CAP_EXPRESS: u8 = 0x10;
 /// (Section 7, "Device Reset Procedure", step 11, p. 147).
 const BOOTCODE_TIMEOUT_MS: u64 = 10_000;
 const LINK_TIMEOUT_MS: u64 = 15_000;
+#[cfg(not(feature = "testing"))]
 const CENSUS_TIMEOUT_MS: u64 = 60_000;
 /// Each attached port's register window, for its interrupt handler, which
 /// takes no lock; 0 until the port's rings are live.
@@ -903,9 +904,10 @@ impl Port {
             now_ms() - self.phy_configured_ms
         );
 
-        // Where the tick census runs (no fw_cfg), it reports the interrupt and
-        // SMP milestones' last stages once boot is idle; this probe's lines
-        // follow them.
+        // Only production starts the tick census. Where it runs (no fw_cfg),
+        // it reports the interrupt and SMP milestones' last stages once boot
+        // is idle; this probe's lines follow them.
+        #[cfg(not(feature = "testing"))]
         if !crate::drivers::fw_cfg::present() {
             let start = now_ms();
             while !crate::arch_impl::x86_64::tick_census::reported()

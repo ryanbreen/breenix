@@ -16,6 +16,8 @@ pub mod nvme;
 #[cfg(target_arch = "x86_64")]
 pub mod ramdisk;
 pub mod virtio;
+#[cfg(feature = "testing")]
+pub mod testing_fixture;
 
 mod write_policy;
 pub use write_policy::{hardware_read_only, hardware_disk_read_only, HardwareDisk};

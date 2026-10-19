@@ -2996,6 +2996,7 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// Initialize the home ext2 filesystem
 ///
 /// Mounts a second ext2 disk as the /home filesystem.
+/// Testing kernels instead mount their embedded immutable acceptance fixture.
 /// Device layout:
 ///   - x86_64: Device 3 (boot=0, test=1, root=2, home=3)
 ///   - ARM64: Device 1 (root=0, home=1)
@@ -3003,13 +3004,17 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// This is non-fatal — if no home disk is attached, /home falls through
 /// to the root ext2 filesystem (backward compatible).
 pub fn init_home_fs() -> Result<(), &'static str> {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(feature = "testing")]
+    let device: alloc::boxed::Box<dyn BlockDevice> =
+        alloc::boxed::Box::new(crate::block::testing_fixture::ReadOnlyFixture);
+
+    #[cfg(all(target_arch = "x86_64", not(feature = "testing")))]
     let device: alloc::boxed::Box<dyn BlockDevice> = crate::block::disk(3)
         .or_else(|| crate::block::disk(1))
         .ok_or("No home block device available (expected at disk index 3 or 1)")?;
 
     // Try device index 3, then the ARM64 layout's device index 1.
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "testing")))]
     let device: alloc::boxed::Box<dyn BlockDevice> = {
         use crate::block::virtio::VirtioBlockWrapper;
         let dev = VirtioBlockWrapper::new(3)

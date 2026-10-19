@@ -11,6 +11,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Testing-boot fixes for #2009, #2012 and #1982 bring up BCM5720 DHCP before
+userspace tests and supply the read-only ext2 acceptance fixture on metal and
+native ARM64. Validation is in progress on `metal-tests/dhcp-and-readonly`.
+
 ARM64 testing accounting work (#1958, #1969) withdraws the PTY ioctl fixture
 and requires completed retirement of both busy-CPU reclaim receipts. Its
 [evidence record](green-program/aarch64-testing/1958-1969-ACCOUNTING-2026-10-18.md)
