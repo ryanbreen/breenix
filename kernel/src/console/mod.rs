@@ -50,6 +50,9 @@ pub mod boxdraw;
 pub mod display;
 pub mod grid;
 mod records;
+mod replies;
+use replies::{deliver_replies, REPLY_QUEUED};
+pub use replies::deliver_queued_replies;
 #[cfg(target_arch = "x86_64")]
 pub use records::log_record;
 #[cfg(target_arch = "aarch64")]
@@ -357,34 +360,11 @@ pub fn write_vt(number: usize, bytes: &[u8]) {
         // Keep whole replies until the input ring accepts them. The writer
         // may be echoing in IRQ context, so it only queues fixed storage.
         grid.write_with_reply(bytes, |reply| {
-            replies.push(reply);
+            if replies.push(reply) {
+                REPLY_QUEUED.store(true, Ordering::SeqCst);
+            }
         });
     });
-}
-
-/// Hand each terminal's replies to its input, outside the grid's lock: the
-/// line discipline echoes into the grid. Replies are input, independent of
-/// which owner currently draws. A byte the input cannot take yet stays queued,
-/// with those behind it, for the next pass, so contention loses no CPR byte.
-fn deliver_replies(pending: &mut [usize; vt::VT_COUNT]) {
-    for (index, unacknowledged) in pending.iter_mut().enumerate() {
-        // Only this render thread consumes replies. A failed lock attempt
-        // must not make bytes already accepted by the input eligible again.
-        if *unacknowledged != 0 {
-            if with_grid(|console| console.vts[index].replies.consume(*unacknowledged)).is_none() {
-                continue;
-            }
-            *unacknowledged = 0;
-        }
-        let mut bytes = [0u8; 64];
-        let Some(n) = with_grid(|console| console.vts[index].replies.peek(&mut bytes)) else {
-            continue;
-        };
-        let taken = bytes[..n].iter().take_while(|&&byte| crate::tty::driver::push_reply(index + 1, byte)).count();
-        if taken != 0 && with_grid(|console| console.vts[index].replies.consume(taken)).is_none() {
-            *unacknowledged = taken;
-        }
-    }
 }
 
 /// A process has the display: stop drawing on it. Returns once no row of the
@@ -802,9 +782,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
 
     let mut announced = false;
     let mut last_session = false;
-    let mut pending_replies = [0; vt::VT_COUNT];
     while !crate::task::kthread::kthread_should_stop() {
-        deliver_replies(&mut pending_replies);
+        deliver_replies();
         crate::tty::driver::drain_keyboard_input();
         // The `/proc/console/check` this pass may answer: one asked for before
         // it copies the terminal, so the answer shows what was written before
