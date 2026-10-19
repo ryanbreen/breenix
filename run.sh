@@ -238,7 +238,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --program PATH             Parallels/VMware: /sbin/probe runs guest program PATH, wait for RUN DONE, stop VM"
             echo "  --program-arg WORD         The one argument --program's PATH gets"
             echo "  --kernel-features LIST     With --program: build the kernel with these cargo features (a measurement kernel)"
-            echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
+            echo "  --gate-timeout N           Per-suite DONE deadline in seconds (default 1800)"
             echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
@@ -406,6 +406,10 @@ if [ -n "$PROGRAM" ]; then
 elif [ -n "$PROGRAM_ARG" ] || [ -n "$KERNEL_FEATURES" ]; then
     echo "--program-arg and --kernel-features need --program"
     exit 2
+fi
+if [ -n "$SUITE" ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+    exec python3 "$BREENIX_ROOT/scripts/suite-sequence.py" run "$SUITE" \
+        "${SERIAL_LOG_OVERRIDE:-${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}" bash "$BREENIX_ROOT/run.sh" "${RUN_ARGS[@]}"
 fi
 # The manifests of the suites this boot runs, for the quiet-host check.
 SUITE_MANIFESTS=()

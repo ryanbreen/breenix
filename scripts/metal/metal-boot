@@ -161,7 +161,7 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
-        # In a multi-suite boot, when the running suite started (its START, or the previous one's STALLED).
+        # The latest suite progress record; failed cases and resets are progress too.
         self.suite_started = None
         self.input_clock_alive = None
         self.last_stage = None
@@ -867,10 +867,14 @@ class Driver:
             self.event('payload-started', observed_at=observed_at, seconds=seconds)
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
-        if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
+        suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
+        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        if (self.kernel_started and self.fatal_at is None
+                and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
+                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if len(suites(self.args)) > 1 and re.search(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED ', line):
+        if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
@@ -893,7 +897,10 @@ class Driver:
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line, input_kind(self.args)):
                 stages.pop(0)
-        if (self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+        suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
+                      else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
+                      ) if self.args.mode == 'suite' else True
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         if (self.final_marker and self.final_seen and not any(self.required_stages)
@@ -1145,7 +1152,7 @@ class Driver:
             if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
                 raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
             return
-        # Each suite of a multi-suite boot has the deadline from when it started.
+        # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
 
@@ -1288,7 +1295,8 @@ class Driver:
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
                 # the cases it reported.
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
-                if self.args.mode == 'suite' and (status == m.EXIT_DONE or several):
+                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
+                        and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
                     if self.gap:
