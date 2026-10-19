@@ -41,6 +41,17 @@ EXPECTATIONS = {
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_memory_only_log_fails_without_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            memory = [line for line in (FIXTURES / "all-pass.txt").read_text().splitlines()
+                      if " MEMORY " in line]
+            self.assertTrue(memory)
+            serial.write_text("\n".join(memory) + "\n")
+            ok, reason = SCORER.verdict(MANIFEST, serial, [serial])
+            self.assertFalse(ok)
+            self.assertIn("START", reason)
+
     def test_category_selection_requires_its_complete_case_list(self):
         with tempfile.TemporaryDirectory() as directory:
             serial = Path(directory) / "serial.txt"

@@ -111,6 +111,8 @@ def verdict(manifest, records_log, logs, only=None):
             return False, f"a {kind} record is outside START..DONE: {line[:200]}"
     memory = None if only else memory_problem(records)
     records = [record for record in records if record[0] not in LIVE + MEMORY]
+    if not records:
+        return False, "the records do not begin with exactly one START line"
     kind, match, line = records[0]
     if kind != "START" or [r[0] for r in records].count("START") != 1:
         return False, "the records do not begin with exactly one START line"
