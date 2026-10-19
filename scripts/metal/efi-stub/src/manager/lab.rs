@@ -276,7 +276,82 @@ pub unsafe fn ask(boot: &BootServices, image: Handle, port_path: &[u8], url: &[u
     parse_answer(&body[..len])
 }
 
-/// Starts the firmware's HTTP boot by `path`. Returns only when it could not be started, or its image returned.
+/// The node of `path` of `kind` and `subtype`, with its header.
+fn node_of(path: &[u8], kind: u8, subtype: u8) -> Option<&[u8]> {
+    Nodes::new(path).find(|(k, s, _)| *k == kind && *s == subtype).map(|(_, _, bytes)| bytes)
+}
+
+/// The device path to load the boot image by: the recorded path when a load-file handle covers it to its end (the
+/// firmware's HTTP boot child as a finished HTTP boot leaves it), else that port's HTTP boot child (its MAC node and
+/// an IPv4 node) with the recorded URI node after its own path, written into `out`.
+unsafe fn load_path(boot: &BootServices, port: &[u8], out: &mut [u8; 1024]) -> Option<usize> {
+    let mut remaining = port.as_ptr();
+    let mut handle = null_mut();
+    if (boot.locate_device_path)(&LOAD_FILE, &mut remaining, &mut handle) == SUCCESS
+        && *remaining == END_NODE[0]
+        && port.len() <= out.len()
+    {
+        say!("test loop: a load-file handle covers the recorded HTTP boot path");
+        out[..port.len()].copy_from_slice(port);
+        return Some(port.len());
+    }
+    let mac = node_of(port, node::MESSAGING, node::MAC)?;
+    let uri = node_of(port, node::MESSAGING, node::URI)?;
+    let mut count = 0;
+    let mut handles = null_mut();
+    if (boot.locate_handle_buffer)(BY_PROTOCOL, &LOAD_FILE, null(), &mut count, &mut handles) != SUCCESS {
+        return None;
+    }
+    let mut found = None;
+    for index in 0..count {
+        let mut path: *mut c_void = null_mut();
+        if (boot.handle_protocol)(*handles.add(index), &DEVICE_PATH, &mut path) != SUCCESS || path.is_null() {
+            continue;
+        }
+        let Some(length) = path_length(path.cast()) else { continue };
+        let bytes = core::slice::from_raw_parts(path.cast::<u8>(), length);
+        if node_of(bytes, node::MESSAGING, node::MAC) == Some(mac) && node_of(bytes, node::MESSAGING, node::IPV4).is_some() {
+            let has_uri = node_of(bytes, node::MESSAGING, node::URI).is_some();
+            let total = length + if has_uri { 0 } else { uri.len() } + END_NODE.len();
+            if total <= out.len() {
+                out[..length].copy_from_slice(bytes);
+                let mut at = length;
+                if !has_uri {
+                    out[at..at + uri.len()].copy_from_slice(uri);
+                    at += uri.len();
+                }
+                out[at..at + END_NODE.len()].copy_from_slice(&END_NODE);
+                found = Some(total);
+                break;
+            }
+        }
+    }
+    (boot.free_pool)(handles.cast());
+    if found.is_some() {
+        say!("test loop: loading through the port's HTTP boot child with the recorded URI");
+    }
+    found
+}
+
+unsafe fn boot_next(runtime: &RuntimeServices, http_option: Option<u16>) -> Status {
+    let Some(number) = http_option else { return NOT_FOUND };
+    let name = Wide::<16>::new("BootNext");
+    let attributes = VARIABLE_NON_VOLATILE | VARIABLE_BOOTSERVICE_ACCESS | VARIABLE_RUNTIME_ACCESS;
+    let bytes = number.to_le_bytes();
+    let status = (runtime.set_variable)(name.as_ptr(), &GLOBAL_VARIABLE, attributes, 2, bytes.as_ptr().cast());
+    if status != SUCCESS {
+        say!("could not set BootNext ({:#x})", status);
+        return status;
+    }
+    let mut text = [0u8; 8];
+    say!("BootNext is {}; restarting into the firmware's HTTP boot", options::option_name(number, &mut text));
+    (runtime.reset_system)(RESET_WARM, SUCCESS, 0, core::ptr::null())
+}
+
+/// Starts the firmware's HTTP boot. With `load-file`, `LoadImage` of the HTTP boot port's path (`load_path`); when
+/// the firmware has no load-file handle for it, or refuses the load, `BootNext` and a reset instead, which the
+/// firmware carries out as its own HTTP boot option. With `boot-next`, that alone. Returns only when no image could
+/// be started (no option, or the reset refused), or the started image returned.
 ///
 /// # Safety
 /// `port` must be the HTTP boot port's whole device path; `image` this application's handle.
@@ -288,37 +363,24 @@ pub unsafe fn start_test_loop(
     http_option: Option<u16>,
     path: TestPath,
 ) -> Status {
-    match path {
-        TestPath::LoadFile => {
-            if !is_whole_path(port) {
-                return INVALID_PARAMETER;
+    if path == TestPath::LoadFile && is_whole_path(port) {
+        let mut load = [0u8; 1024];
+        match load_path(boot, port, &mut load) {
+            Some(_) => {
+                let mut child = null_mut();
+                let status = (boot.load_image)(1, image, load.as_ptr(), null(), 0, &mut child);
+                if status == SUCCESS {
+                    say!("starting the image the firmware's HTTP boot fetched");
+                    let status = (boot.start_image)(child, null_mut(), null_mut());
+                    say!("the test loop's image returned ({:#x})", status);
+                    return if status == SUCCESS { LOAD_ERROR } else { status };
+                }
+                say!("test loop: the firmware did not load the boot image ({:#x}); using BootNext", status);
             }
-            let mut child = null_mut();
-            let status = (boot.load_image)(1, image, port.as_ptr(), null(), 0, &mut child);
-            if status != SUCCESS {
-                say!("the HTTP boot port could not load the boot image ({:#x})", status);
-                return status;
-            }
-            say!("starting the image the firmware's HTTP boot fetched");
-            let status = (boot.start_image)(child, null_mut(), null_mut());
-            say!("the test loop's image returned ({:#x})", status);
-            if status == SUCCESS { LOAD_ERROR } else { status }
-        }
-        TestPath::BootNext => {
-            let Some(number) = http_option else { return NOT_FOUND };
-            let name = Wide::<16>::new("BootNext");
-            let attributes = VARIABLE_NON_VOLATILE | VARIABLE_BOOTSERVICE_ACCESS | VARIABLE_RUNTIME_ACCESS;
-            let bytes = number.to_le_bytes();
-            let status = (runtime.set_variable)(name.as_ptr(), &GLOBAL_VARIABLE, attributes, 2, bytes.as_ptr().cast());
-            if status != SUCCESS {
-                say!("could not set BootNext ({:#x})", status);
-                return status;
-            }
-            let mut text = [0u8; 8];
-            say!("BootNext is {}; restarting into the firmware's HTTP boot", options::option_name(number, &mut text));
-            (runtime.reset_system)(RESET_WARM, SUCCESS, 0, core::ptr::null())
+            None => say!("test loop: no load-file handle for the HTTP boot port; using BootNext"),
         }
     }
+    boot_next(runtime, http_option)
 }
 
 /// Probe: whether the HTTP boot port's path resolves to a load-file handle, and which part of it that handle covers.
