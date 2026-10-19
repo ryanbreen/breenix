@@ -15,7 +15,7 @@ use x86_64::VirtAddr;
 #[cfg(target_arch = "x86_64")]
 pub const KERNEL_LOW_BASE: u64 = 0x100000; // Current low-half kernel base (1MB)
 #[cfg(target_arch = "aarch64")]
-pub const KERNEL_LOW_BASE: u64 = 0x40080000; // Physical load base
+pub const KERNEL_LOW_BASE: u64 = 0x40200000; // Physical load base
 
 #[cfg(target_arch = "x86_64")]
 pub const KERNEL_BASE: u64 = 0xffffffff80000000; // Upper half kernel base
