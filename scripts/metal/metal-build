@@ -44,7 +44,9 @@ ARTIFACTS = TOOLS / 'gate-artifacts.py'
 # The testing kernel reads its test binaries from a BXTEST disk (kernel/src/userspace_test.rs).
 TEST_BINARIES = 'target/test_binaries.img'
 DEFINITION = ('docs/metal/boot-path.json', 'docs/boot-path.json', 'xtask/src/boot_stages.rs',
-              'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')
+              'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
+              'kernel/src/boot/test_list.rs', 'scripts/test-report-verdict.py', 'scripts/x86-gate-exits.py',
+              'scripts/x86-gate-allowlist.txt', 'scripts/score-sigkill-teardown.py')
 
 
 def sha256(path):

@@ -516,7 +516,11 @@ suite and console modes; staging writes it as a default boot's root; the testing
 that boot target (`kernel/src/main.rs`).
 
 The boot ends at the testing kernel's last report line, `USERSPACE TEST REPORT DONE`, or at the first `fatal` pattern
-of the commit's `docs/boot-path.json`, as `scripts/wait-boot-done.py` ends a Parallels or VMware testing boot. It waits for no metal-path stage: after power-off,
+of the commit's `docs/boot-path.json`, as `scripts/wait-boot-done.py` ends a Parallels or VMware testing boot. Completion first validates the test-binary loader totals, rejects skips and failed canonical programs, and checks
+process exits against the existing exit contracts with complete publication accounting. The shared validator is
+`scripts/test-report-verdict.py`; the build record includes it, the canonical test list, and the exit classifier's
+contracts from the boot commit. `milestone-verdict.json` records its result under `testReport`; a failed or incomplete
+report makes the boot fall short even when its milestone markers are present. It waits for no metal-path stage: after power-off,
 `milestone-verdict.json` scores each milestone of the boot's own copy of `docs/boot-path.json` (`definition` names
 it) by its `x86_64` stage list against `xtask/src/boot_stages.rs`'s markers, a stage reached when one of its marker's
 alternatives appears on a serial line other than the test runner's announcements, and lists each milestone's

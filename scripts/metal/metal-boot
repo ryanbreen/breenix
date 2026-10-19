@@ -181,6 +181,7 @@ class Driver:
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
+        self.test_report_lines = []
         self.final_seen = False
         self.completion_reported = False
         self.probe_failed = False
@@ -465,8 +466,8 @@ class Driver:
             self.required_stages = [[(marker, 'contains')]]
             self.console_done = True
         if self.args.mode == 'tests':
-            # A testing boot is scored against main's path (metal_score.score_tests) once it has stopped, so it waits
-            # for nothing but the report's end; main's fatal patterns stop it as they stop every testing boot.
+            # The report's end triggers validation of its loader and exit accounting before completion.
+            # Milestones are scored against main's path after capture stops.
             self.fatal_patterns = [re.compile(p) for p in main.get('fatal', [])]
             self.final_marker = (TESTS_DONE, 'contains')
             self.required_stages = []
@@ -809,6 +810,8 @@ class Driver:
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line, *, observed_at=None):
+        if self.args.mode == 'tests':
+            self.test_report_lines.append(line + "\n")
         observed_at = m.now() if observed_at is None else observed_at
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
@@ -898,6 +901,11 @@ class Driver:
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
+            if self.args.mode == 'tests':
+                passed, reason = metal_score.tests_verdict(self.dir, ''.join(self.test_report_lines))
+                self.event('test-report', passed=passed, reason=reason)
+                if not passed:
+                    raise Finish(m.EXIT_SHORT, reason)
             if self.probe_failed:
                 raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
