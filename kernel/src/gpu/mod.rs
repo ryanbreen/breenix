@@ -88,6 +88,9 @@ static ISR: AtomicU64 = AtomicU64::new(0);
 /// was last written: see [`ring_doorbell`].
 static DOORBELL: AtomicU64 = AtomicU64::new(0);
 static KICK: AtomicBool = AtomicBool::new(false);
+/// The highest request number (`Device::made`) a completed doorbell write covered: the
+/// requests up to it were published before the device was notified.
+static RUNG: AtomicU64 = AtomicU64::new(0);
 /// A configuration change was signalled: the device may have set DEVICE_NEEDS_RESET.
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 /// The level interrupt is masked until normal GPU work reads its ISR byte.
@@ -108,11 +111,16 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     let (r, kick) = {
         let mut core = panic::lock(&CORE);
         let r = core.as_mut().map(f);
-        // Claim this operation's notification before another CPU can enter the core.
-        (r, KICK.swap(false, Ordering::AcqRel))
+        // Claim this operation's notification before another CPU can enter the core, with
+        // the requests made available so far, which the notification covers.
+        let kick = KICK.swap(false, Ordering::AcqRel).then(|| {
+            core.as_ref().and_then(|c| c.dev.as_ref()).map_or(0, |d| d.made())
+        });
+        (r, kick)
     };
-    if kick {
+    if let Some(made) = kick {
         ring_doorbell();
+        RUNG.fetch_max(made, Ordering::AcqRel);
     }
     crate::per_cpu::preempt_enable();
     r
@@ -380,6 +388,10 @@ struct Core {
     resetting: bool,
     /// The one catalogue warm-up step the device has, if any.
     warm_step: Option<WarmStep>,
+    /// The watchdog's accounts of the requests it failed, for `kgpu` to post, and how
+    /// many found no room.
+    hung: [Option<Hung>; HUNG_KEPT],
+    hung_dropped: u32,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -487,6 +499,8 @@ impl Core {
             reset_wanted: false,
             resetting: false,
             warm_step: None,
+            hung: [None; HUNG_KEPT],
+            hung_dropped: 0,
         }
     }
 
@@ -1233,13 +1247,14 @@ impl Core {
                 return;
             }
         }
-        let hung: Vec<u32> = self
+        let hung: Vec<(u64, u32, u64)> = self
             .subs
-            .values()
-            .filter(|s| !s.published && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
-            .map(|s| s.ctx)
+            .iter()
+            .filter(|(_, s)| !s.published && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
+            .map(|(&serial, s)| (serial, s.ctx, s.sent_ns.unwrap_or(now)))
             .collect();
-        for ctx in hung {
+        for (serial, ctx, sent) in hung {
+            self.note_hung(serial, true, ctx, sent, now);
             self.quarantine(ctx, now);
         }
         let late: Vec<u64> = self
@@ -1249,6 +1264,10 @@ impl Core {
             .map(|(&serial, _)| serial)
             .collect();
         for serial in late {
+            if let Some(s) = self.syncs.get(&serial) {
+                let (ctx, sent) = (s.ctx, s.sent_ns.unwrap_or(now));
+                self.note_hung(serial, false, ctx, sent, now);
+            }
             let Some(s) = self.syncs.get_mut(&serial) else { continue };
             s.failed = true;
             s.why = fence_status::DEVICE_HUNG;
@@ -1260,6 +1279,45 @@ impl Core {
                 notify();
             }
         }
+    }
+
+    /// Keep the watchdog's account of request `serial` (a submission when `submit`) of
+    /// device context `ctx`, sent at `sent`, for `kgpu` to post.
+    fn note_hung(&mut self, serial: u64, submit: bool, ctx: u32, sent: u64, now: u64) {
+        let Some(dev) = self.dev.as_ref() else { return };
+        let q = dev.view(|t| match *t {
+            Tag::Sync(s) => !submit && s == serial,
+            Tag::Submit { serial: s, .. } => submit && s == serial,
+            Tag::Background => false,
+        });
+        let (oldest_serial, oldest_sent) = match q.oldest_tag {
+            Some(Tag::Sync(s)) => (s, self.syncs.get(&s).and_then(|x| x.sent_ns)),
+            Some(Tag::Submit { serial: s, .. }) => (s, self.subs.get(&s).and_then(|x| x.sent_ns)),
+            _ => (0, None),
+        };
+        let h = Hung {
+            serial,
+            submit,
+            ctx,
+            age_ms: now.saturating_sub(sent) / 1_000_000,
+            quiet_ms: now.saturating_sub(self.last_progress) / 1_000_000,
+            rung: RUNG.load(Ordering::Acquire),
+            backlog: self.backlog.len() as u32,
+            warm: self.warm_step.as_ref().map(|w| (w.ctx, w.pipeline)),
+            withheld: self.stalled,
+            oldest_serial,
+            oldest_age_ms: oldest_sent.map_or(0, |at| now.saturating_sub(at) / 1_000_000),
+            q,
+        };
+        match self.hung.iter_mut().find(|x| x.is_none()) {
+            Some(slot) => *slot = Some(h),
+            None => self.hung_dropped += 1,
+        }
+    }
+
+    /// Take the watchdog's accounts and the count of those that found no room.
+    fn take_hung(&mut self) -> ([Option<Hung>; HUNG_KEPT], u32) {
+        (core::mem::replace(&mut self.hung, [None; HUNG_KEPT]), core::mem::take(&mut self.hung_dropped))
     }
 
     /// Quarantine context `id`: its pending fences fail with `DEVICE_HUNG`, its targets
@@ -1410,6 +1468,105 @@ impl Core {
             }
             self.free_if_unused(id);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The watchdog's attribution (#2065).
+
+/// Accounts the core keeps between two `kgpu` passes.
+const HUNG_KEPT: usize = 4;
+/// Notice lines per account.
+const HUNG_LINES: usize = 4;
+
+/// The watchdog's account of a request it failed: which request, its place in the control
+/// queue (queue 0), whether a completed doorbell write covered it, and what the device did
+/// while it waited.
+#[derive(Clone, Copy)]
+struct Hung {
+    serial: u64,
+    submit: bool,
+    ctx: u32,
+    age_ms: u64,
+    /// Since the device last returned a request.
+    quiet_ms: u64,
+    /// `RUNG` when the watchdog failed it.
+    rung: u64,
+    backlog: u32,
+    /// The catalogue warm-up step on the device: its context and pipeline.
+    warm: Option<(u32, u32)>,
+    /// Test point 31 is withholding the device's answers.
+    withheld: bool,
+    /// The serial of the oldest request the device holds, and its age.
+    oldest_serial: u64,
+    oldest_age_ms: u64,
+    q: virgl::QueueView,
+}
+
+/// The nodes the accounts are posted through; a node is reused once its line is written.
+static HUNG_NODES: [crate::log_notice::Node; HUNG_KEPT * HUNG_LINES] =
+    [const { crate::log_notice::Node::new() }; HUNG_KEPT * HUNG_LINES];
+
+/// One notice line, composed on the stack.
+struct NoticeText {
+    bytes: [u8; 80],
+    len: usize,
+}
+
+impl core::fmt::Write for NoticeText {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let n = s.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+        self.len += n;
+        Ok(())
+    }
+}
+
+/// Post the watchdog's accounts as log notices, from `kgpu` outside the core's lock: the
+/// UART is written later by a thread that logs, or by the idle loop, rather than by this
+/// GPU path with its interrupts masked (section 1.16). `accounts` found no room in the core; a line
+/// that finds no free node is dropped too, and both are counted.
+fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32) {
+    use core::fmt::Write;
+    let mut lines = 0u32;
+    let mut post = |f: &dyn Fn(&mut NoticeText) -> core::fmt::Result| {
+        let mut t = NoticeText { bytes: [0; 80], len: 0 };
+        let _ = f(&mut t);
+        let text = core::str::from_utf8(&t.bytes[..t.len]).unwrap_or("[gpu] watchdog");
+        if !HUNG_NODES.iter().any(|n| n.post_again(text)) {
+            lines += 1;
+        }
+    };
+    for h in hung.iter().flatten() {
+        let q = &h.q;
+        let what = if h.submit { "submission" } else { "sync" };
+        post(&|t| {
+            write!(t, "[gpu] watchdog: {} {} ctx {} cmd {:#x} unanswered {} ms", what, h.serial, h.ctx, q.cmd, h.age_ms)
+        });
+        let notified = match q.entry {
+            0 => "returned",
+            e if h.rung >= e => "notified",
+            _ => "NOT notified",
+        };
+        post(&|t| {
+            write!(t, "[gpu]  queue 0 entry {} head {} {} rung {}", q.entry, q.head, notified, h.rung)?;
+            if let Some((c, p)) = h.warm {
+                write!(t, " warm {c}.{p}")?;
+            }
+            if h.withheld { write!(t, " withheld") } else { Ok(()) }
+        });
+        post(&|t| {
+            write!(t, "[gpu]  made {} answered {} used {}/{} quiet {} ms", q.made, q.answered, q.used, q.taken, h.quiet_ms)
+        });
+        post(&|t| {
+            write!(t, "[gpu]  out {} oldest {} cmd {:#x} serial {} age {} ms bl {}",
+                q.outstanding, q.oldest, q.oldest_cmd, h.oldest_serial, h.oldest_age_ms, h.backlog)
+        });
+    }
+    if accounts > 0 || lines > 0 {
+        let mut t = NoticeText { bytes: [0; 80], len: 0 };
+        let _ = write!(t, "[gpu] watchdog: {} accounts and {} lines dropped", accounts, lines);
+        let _ = HUNG_NODES.iter().any(|n| n.post_again(core::str::from_utf8(&t.bytes[..t.len]).unwrap_or("")));
     }
 }
 
@@ -1673,11 +1830,12 @@ fn reaper() {
         let seen = EVENTS.load(Ordering::Acquire);
         acknowledge_interrupt();
         let now = now_ns();
-        let (deadline, busy, reset) = with_core(|c| {
+        let (deadline, busy, reset, hung) = with_core(|c| {
             c.pump();
-            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted)
+            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung())
         })
-        .unwrap_or((None, false, false));
+        .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0)));
+        post_hung(&hung.0, hung.1);
         if reset {
             reset_device(tid);
             continue;
