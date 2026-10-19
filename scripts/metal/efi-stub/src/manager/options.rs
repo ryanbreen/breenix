@@ -201,7 +201,7 @@ pub unsafe fn report(runtime: &RuntimeServices) {
     }
 }
 
-/// Probe: every `Boot####` variable the firmware has, in the boot order or not, by number, attributes and
+/// Probe: the `Boot####` variables the firmware has, in the boot order or not, by number, attributes and
 /// description class, so a firmware setup application outside the boot order shows.
 ///
 /// # Safety
@@ -253,17 +253,26 @@ pub unsafe fn report_all(runtime: &RuntimeServices) {
     say!("load options in all: {}", seen);
 }
 
-/// Firmware setup through `OsIndications` and a reset; returns only when the firmware does not offer it.
+/// Whether the firmware offers setup to a boot manager through `OsIndications`.
 ///
 /// # Safety
 /// `runtime` must be the firmware's runtime services table.
-pub unsafe fn firmware_setup(runtime: &RuntimeServices) -> Status {
+pub unsafe fn setup_offered(runtime: &RuntimeServices) -> bool {
     let mut supported = [0u8; 8];
-    if get(runtime, "OsIndicationsSupported", &mut supported) != Ok(8)
-        || u64::from_le_bytes(supported) & OS_INDICATIONS_BOOT_TO_FW_UI == 0
-    {
-        say!("the firmware does not offer firmware setup through OsIndications");
-        return UNSUPPORTED;
+    get(runtime, "OsIndicationsSupported", &mut supported) == Ok(8)
+        && u64::from_le_bytes(supported) & OS_INDICATIONS_BOOT_TO_FW_UI != 0
+}
+
+/// Firmware setup through `OsIndications` and a reset. A firmware that does not offer it (the R240's does not) is
+/// restarted instead, for its own setup key during POST.
+///
+/// # Safety
+/// `runtime` must be the firmware's runtime services table.
+pub unsafe fn firmware_setup(boot: &BootServices, runtime: &RuntimeServices) -> Status {
+    if !setup_offered(runtime) {
+        say!("the firmware does not offer setup to a boot manager; restarting for its setup key (F2 at its logo)");
+        (boot.stall)(5_000_000);
+        (runtime.reset_system)(RESET_WARM, SUCCESS, 0, core::ptr::null())
     }
     let mut current = [0u8; 8];
     let value = match get(runtime, "OsIndications", &mut current) {

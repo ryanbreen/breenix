@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Builds one x86-metal boot's inputs in the metal build container (docs/metal/README.md, "Build").
 
-  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject|testing]
+  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject|block_fence_inject|testing]
               [--suite ID[,ID...]]
   metal-build ... --stub-only --tools-profile disk-readback|boot-manager
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
 (gate-artifacts.py --metal, exact artifacts over leased incremental targets in the container's cache), then the production kernel and its UEFI
-image (a fault-test kernel with --features xhci_fault_inject; the testing kernel with --features testing, as run.sh --tests
+image (a fault-test kernel with --features xhci_fault_inject or block_fence_inject; the testing kernel with --features testing, as run.sh --tests
 builds it, which also delivers the test-binary disk the userspace build made), and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
 commit's kernel is delivered the same way), all under one lease of the container's metal-build slots. A suite boot
 names its suite, or the suites it runs in turn; when they include the Developer SDK suite the same lease also runs the commit's scripts/sdk-suite.py, which builds
@@ -39,7 +39,7 @@ import time
 STUB_TARGET = 'x86_64-unknown-uefi'
 STUB_RELEASE = Path(STUB_TARGET) / 'release'
 # The kernel profile each --features value builds.
-PROFILES = {'': 'production', 'xhci_fault_inject': 'fault-test', 'testing': 'testing'}
+PROFILES = {'': 'production', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'testing': 'testing'}
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
 TOOLS = Path(__file__).resolve().parent
 TOOLS = TOOLS if (TOOLS / 'host-slots.py').exists() else TOOLS.parent

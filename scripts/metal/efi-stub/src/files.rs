@@ -25,6 +25,13 @@ pub struct Open {
     file: *mut File,
 }
 
+impl Open {
+    /// The open file's protocol, for reads at chosen positions.
+    pub fn handle(&self) -> *mut File {
+        self.file
+    }
+}
+
 impl Drop for Open {
     fn drop(&mut self) {
         if !self.file.is_null() {

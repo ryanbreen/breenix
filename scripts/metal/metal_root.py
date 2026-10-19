@@ -40,11 +40,14 @@ SECTOR = 512
 HOSTKEYS = 'xhci-replay'
 
 
-def install_record(boot_id):
-    """The first sector asking the kernel to install this RAM disk on the hardware disk."""
+def install_record(boot_id, partition=None):
+    """The first sector asking the kernel to install this RAM disk on the hardware disk: on the persistent layout,
+    into the test root partition with unique GUID `partition` (kernel/src/block/install.rs)."""
     if not re.fullmatch(r'[A-Za-z0-9-]{1,64}', boot_id or ''):
         raise ValueError('an install needs a boot id')
-    line = RECORD_MAGIC + f'install-root {boot_id}\n'.encode()
+    if partition is not None and not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', partition):
+        raise ValueError('an install partition must be a GUID')
+    line = RECORD_MAGIC + (f'install-root {boot_id} {partition}\n' if partition else f'install-root {boot_id}\n').encode()
     return line + bytes(SECTOR - len(line))
 
 
@@ -54,9 +57,9 @@ def root_record(boot_id, size, digest):
     return line + bytes(SECTOR - len(line))
 
 
-def write_install_record(image, boot_id):
+def write_install_record(image, boot_id, partition=None):
     """Put the install request in sector 0 and return what the kernel will write to the disk."""
-    record = install_record(boot_id)
+    record = install_record(boot_id, partition)
     with open(image, 'r+b') as handle:
         first = handle.read(SECTOR)
         handle.seek(1024 + 56)
@@ -76,6 +79,7 @@ def write_install_record(image, boot_id):
         raise ValueError('the root image is not a whole number of sectors')
     digest = digest.hexdigest()
     return {'installedBy': boot_id, 'lba': 0, 'bytes': size, 'sha256AfterRecord': digest,
+            **({'partition': partition} if partition else {}),
             'rootRecordSha256': hashlib.sha256(root_record(boot_id, size, digest)).hexdigest()}
 
 
@@ -104,7 +108,8 @@ def console_shadow(site, hasher):
     return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
 
 
-def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None):
+def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
+               install_partition=None):
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
                                    or mode != 'console' or install or idle_minutes is not None or replug):
         raise ValueError('invalid xHCI fault-test target')
@@ -228,5 +233,5 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     if mode == 'console':
         facts['consoleIdentity'] = console_identity(site)
     if install:
-        facts['diskWrite'] = write_install_record(image, install)
+        facts['diskWrite'] = write_install_record(image, install, install_partition)
     return facts

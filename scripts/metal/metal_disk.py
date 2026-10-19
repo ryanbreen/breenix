@@ -1,4 +1,8 @@
-"""Suite fixture delivery and cold raw readback through the firmware, without mounting the readback disk."""
+"""Suite fixture delivery and cold raw readback through the firmware, without mounting the readback disk.
+
+Before the persistent install the root is the whole disk, named by its storage record in LBA 0 (request format 1);
+on the persistent layout it is the test root partition, named by its unique GUID (format 2, docs/metal/README.md,
+"Test boots on the persistent layout")."""
 import hashlib
 import json
 import os
@@ -9,10 +13,14 @@ from urllib.parse import urlsplit, urlunsplit
 
 import metal_image
 import metal_lib as m
+import metal_persist
 import metal_root
+import uuid
 
 MAGIC = b'BREENIX-SUITE-1\0'
 HEADER = struct.Struct('<16sQQ512s512s')
+MAGIC_2 = b'BREENIX-SUITE-2\0'
+HEADER_2 = struct.Struct('<16sQQ16s512s512s')
 UPLOAD_PREFIX = '/suite-disk/'
 
 
@@ -28,10 +36,24 @@ def config(action, size, expected, root, url=''):
     return HEADER.pack(MAGIC, action, size, expected, root) + (url.encode('ascii') + b'\0' if url else b'')
 
 
-def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False):
-    """Reset the writable root for each boot, including unchanged userspace builds."""
-    previous = m.read_json(m.STATE / 'disk.json')
-    if not previous:
+def config_2(action, size, partition, expected, root, url=''):
+    """Format 2: the test root partition by unique GUID. Staging needs no earlier record; a readback names the
+    suite's root record, which must still be the partition's first sector."""
+    if action not in (1, 2) or size <= 512 or size % 512 or len(expected) != 512 or len(root) != 512:
+        raise ValueError('invalid suite disk request')
+    if not root.startswith(metal_root.RECORD_MAGIC + b'root ') or (action == 2 and expected != root):
+        raise ValueError('suite disk requests need recorded roots')
+    guid = uuid.UUID(partition).bytes_le
+    return HEADER_2.pack(MAGIC_2, action, size, guid, expected, root) + (url.encode('ascii') + b'\0' if url else b'')
+
+
+def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
+          the_layout=None):
+    """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
+    install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
+    the_layout = the_layout or metal_persist.layout()
+    previous = metal_persist.test_root()
+    if not the_layout and not previous:
         raise ValueError('disk delivery needs a previously verified install to identify its owned disk')
     writer = Path(__file__).with_name('write-boot-target.sh')
     if not writer.is_file():
@@ -50,7 +72,12 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     with image.open('r+b') as handle:
         handle.write(root)
     request = inputs / 'suite-disk.cfg'
-    request.write_bytes(config(1, facts['bytes'], record(previous), root))
+    if the_layout:
+        partition = the_layout['partitions']['test']['guid']
+        request.write_bytes(config_2(1, facts['bytes'], partition, bytes(512), root))
+        facts['partition'] = partition
+    else:
+        request.write_bytes(config(1, facts['bytes'], record(previous), root))
     facts.update(commit=commit, buildDigest=key)
     files = {'suite-disk.cfg': request, 'suite-root.img': image}
     m.write_json(directory / 'suite-disk.json', facts)
@@ -70,14 +97,17 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
             or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') for event in events)):
         raise ValueError('raw readback needs a completed disk suite boot with confirmed power-off and root identity')
     # Another disk user may have acquired the lease between the boots. Refuse a changed disk association.
-    current = m.read_json(m.STATE / 'disk.json', {})
+    current = metal_persist.test_root() or {}
     if record(current) != record(facts) or current.get('lastBoot') != source_id:
         raise ValueError('the owned disk was replaced between the suite and its cold readback')
     url = urlsplit(site['BOOT_URL'])
     route = UPLOAD_PREFIX + secrets.token_hex(32)
     request = stage / 'suite-disk.cfg'
-    request.write_bytes(config(2, facts['bytes'], record(facts), record(facts),
-                              urlunsplit((url.scheme, url.netloc, route, '', ''))))
+    target = urlunsplit((url.scheme, url.netloc, route, '', ''))
+    if facts.get('partition'):
+        request.write_bytes(config_2(2, facts['bytes'], facts['partition'], record(facts), record(facts), target))
+    else:
+        request.write_bytes(config(2, facts['bytes'], record(facts), record(facts), target))
     image = stage / 'readback-disk.img'
     metal_image.assemble(image, {'suite-disk.cfg': request})
     output = stage / 'boot.efi'

@@ -81,6 +81,7 @@ struct Manager<'a> {
     port_len: usize,
     http_option: Option<u16>,
     test_path: TestPath,
+    setup_offered: bool,
 }
 
 fn line(arguments: core::fmt::Arguments) -> Line {
@@ -108,7 +109,8 @@ impl<'a> Manager<'a> {
             }
             Item::Previous => line(format_args!("Breenix (previous kernel: none kept)")),
             Item::TestLoop => line(format_args!("Test loop (network)")),
-            Item::FirmwareSetup => line(format_args!("Firmware setup")),
+            Item::FirmwareSetup if self.setup_offered => line(format_args!("Firmware setup")),
+            Item::FirmwareSetup => line(format_args!("Firmware setup (restarts; press F2 at the firmware logo)")),
         }
     }
 
@@ -214,6 +216,9 @@ impl<'a> Manager<'a> {
             Item::Current | Item::Previous => {
                 let entry = if item == Item::Current { Entry::Current } else { Entry::Previous };
                 let note = if entry == Entry::Current { self.current } else { self.previous };
+                // The screen as it is at the start, read back once more, so a console capture that began late (an
+                // operator's power-on, adopted by the lab) still holds it.
+                self.show(true);
                 say!("booting {} {}", if entry == Entry::Current { "current" } else { "previous" }, note.full());
                 match self.esp.as_ref() {
                     Some(root) => slots::boot(self.boot, self.image, root, entry),
@@ -225,7 +230,7 @@ impl<'a> Manager<'a> {
                 let port = self.port;
                 lab::start_test_loop(self.boot, self.runtime, self.image, &port[..self.port_len], self.http_option, self.test_path)
             }
-            Item::FirmwareSetup => options::firmware_setup(self.runtime),
+            Item::FirmwareSetup => options::firmware_setup(self.boot, self.runtime),
         };
         (self.boot.set_watchdog_timer)(0, 0, 0, core::ptr::null());
         status
@@ -308,6 +313,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         port_len: 0,
         http_option: None,
         test_path: TestPath::BootNext,
+        setup_offered: options::setup_offered(runtime),
     };
     if let Some(config) = config.as_ref() {
         manager.port[..config.port_len].copy_from_slice(config.port());
@@ -403,10 +409,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         }
         lab::report_load_file(boot, port);
         options::report_all(runtime);
-        let mut supported = [0u8; 8];
-        let setup = options::get(runtime, "OsIndicationsSupported", &mut supported) == Ok(8)
-            && u64::from_le_bytes(supported) & OS_INDICATIONS_BOOT_TO_FW_UI != 0;
-        say!("firmware setup through OsIndications: {}", if setup { "offered" } else { "not offered" });
+        say!("firmware setup through OsIndications: {}", if manager.setup_offered { "offered" } else { "not offered" });
         say!("probe complete");
         com1::halt()
     }

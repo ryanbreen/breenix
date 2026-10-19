@@ -14,6 +14,7 @@ import hashlib
 import http.server
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -24,6 +25,7 @@ import metal_lib as m  # noqa: E402
 
 from metal_probe import PROBE_PATH, PROBE_BODY
 import metal_disk
+import metal_persist
 
 CHUNK = 1 << 20
 RANGE = re.compile(r'bytes=(\d*)-(\d*)')
@@ -34,13 +36,47 @@ def log(**fields):
     m.append_jsonl(m.STATE / 'http.jsonl', dict(fields, t=round(m.now(), 3)))
 
 
+def adopt():
+    """No lease: an operator powered the machine on at the machine. Take the lease for a persistent session and
+    start its driver, which captures the console from now on (docs/metal/README.md, "Persistent sessions")."""
+    boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+    unit = 'metal-boot-' + boot_id
+    with m.locked('lease'):
+        if m.read_lease() or not m.machine_ready() or m.boot_dir(boot_id).exists():
+            return None
+        try:
+            if not metal_persist.layout():
+                return None
+        except ValueError:
+            return None
+        m.write_json(m.STATE / m.LEASE, dict(id=boot_id, unit=unit, mode='persistent', payload='persistent',
+                                             kind='persistent', entry='current', slotAction=None, adopted=True,
+                                             state='powered', claimed=m.now(), heartbeat=m.now(),
+                                             queue=m.read_queue()))
+    started = subprocess.run(['systemd-run', '--unit', unit, '--collect', '--property', 'MemoryMax=256M',
+                              '--setenv', 'BREENIX_METAL_SITE=' + str(m.SITE_PATH), sys.executable,
+                              str(m.TOOLS / 'metal-boot'), 'run', '--id', boot_id, '--payload', 'persistent',
+                              '--mode', 'persistent', '--adopt', '--wait', '240'], capture_output=True)
+    if started.returncode != 0:
+        with m.locked('lease'):
+            lease = m.read_lease()
+            if lease and lease.get('id') == boot_id:
+                (m.STATE / m.LEASE).unlink()
+        log(event='manager-adoption-failed', id=boot_id)
+        return None
+    log(event='manager-adopted', id=boot_id)
+    return boot_id
+
+
 def manager_answer():
     """The boot manager's answer from the lease: `test <boot>` for a powered boot, `persistent <boot> <entry>
-    [action]` for a powered persistent session, `busy <boot>` for one not yet powered or quarantined."""
+    [action]` for a powered persistent session, `busy <boot>` for one not yet powered or quarantined. With no lease,
+    the operator's power-on becomes a persistent session."""
     with m.locked('lease'):
         lease = m.read_lease()
     if not lease:
-        return None
+        boot_id = adopt()
+        return f'persistent {boot_id} current' if boot_id else None
     holder = lease.get('id', 'unknown')
     if lease.get('state') != 'powered':
         return f'busy {holder}'

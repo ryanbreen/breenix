@@ -12,7 +12,7 @@ ANNOUNCEMENT = 'kernel::test_exec:'
 
 
 def boot_shape(disk):
-    return {'install': 'install', 'root': 'disk-root', None: 'ramdisk'}[disk]
+    return {'install': 'install', 'root': 'disk-root', 'persistent': 'persistent', None: 'ramdisk'}[disk]
 
 
 def measures(milestone, shape, mode):
@@ -67,9 +67,12 @@ def score(directory):
         if not stages:
             continue
         cursor, reached, unmeasured = 0, 0, 0
+        # A persistent session's operator types when they choose: a typed stage counts once it is there, and until
+        # then it is not measured rather than missed (docs/metal/README.md, "Persistent sessions").
+        operator = run.get('input') == 'operator'
         for stage in stages:
             spec = catalog[stage] if isinstance(stage, str) else stage
-            if spec.get('input') and spec['input'] != run.get('input'):
+            if spec.get('input') and spec['input'] != run.get('input') and not operator:
                 unmeasured += 1  # This boot's input cannot produce it; it stays unreached.
                 continue
             if 'host' in spec:
@@ -82,6 +85,9 @@ def score(directory):
                     reached += 1
                     cursor = index + 1
                     break
+            else:
+                if operator and spec.get('input'):
+                    unmeasured += 1
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
         if unmeasured:
             results[milestone['id']]['inputUnmeasured'] = unmeasured
