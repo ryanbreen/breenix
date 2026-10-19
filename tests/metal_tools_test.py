@@ -1220,6 +1220,22 @@ class DriverTest(StateTest):
             self.assertEqual(d.run(), m.EXIT_SHORT)
         cleanup.assert_called_once_with(m.EXIT_SHORT)
 
+    def test_cancelled_sequence_keeps_cancellation_without_a_readback_boot(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke,files-io'
+        d.kernel_started = 110
+        with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+             patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+             patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+             patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+             patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_STOPPED, 'operator stop')), \
+             patch.object(d, 'power_off', return_value=True), \
+             patch.object(d, 'score_suite') as score, \
+             patch.object(d, 'continue_disk_readback') as readback, patch.object(d, 'cleanup'):
+            self.assertEqual(d.run(), m.EXIT_STOPPED)
+        score.assert_not_called()
+        readback.assert_not_called()
+
     def test_linux_completion_requires_checked_census(self):
         import metal_census
         from metal_census_test import capture
@@ -1333,7 +1349,10 @@ class DriverTest(StateTest):
         self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
         d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
         d.last_serial = 900
+        d.lease_ceiling = 2000
         d.on_line('SUITE processes START cases=154', observed_at=500)
+        d.on_line('SUITE processes CASE fork PASS ms=1', observed_at=910)
+        self.assertEqual(d.lease_ceiling, 2000)
         with patch.object(m, 'now', return_value=920):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=921):

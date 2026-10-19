@@ -324,6 +324,29 @@ SUITE_SEQUENCE FAIL exec <id>
 SUITE_SEQUENCE DONE suites=<n>
 ```
 
+Host launchers collect a requested sequence through `SUITE_SEQUENCE DONE`, a dead
+guest, or a progress/serial stall. A failed case, failed suite, watchdog `STALLED`,
+or failed reset does not end collection. Scoring follows the end of that boot.
+If a boot dies partway through, the launcher boots again with only the suites
+without their own complete `DONE` or `STALLED` record, preserving their order.
+A failed `DONE` still retires that suite. A retry that retires no suite stops and
+names the suite it could not get past and the remaining list. Operator cancellation
+also stops collection. A suite whose binary could not start remains unreached,
+even if the runner subsequently prints sequence DONE.
+
+Each attempt keeps its serial and gets one Vigil boot record with the ordered suite list.
+A suite that never starts gets no figure. Ctrl+C, quitting QEMU, closing its window, or
+a launcher killed by a signal cancels the run without resuming. Ctrl+C waits for the
+launcher to stop and clean up its VM.
+claim-lint:ok: S35; host cancellation replays in tests/suite_resume_test.py and tests/suite_watcher_test.py.
+
+Mac launchers reuse the
+built artifacts on retries and place retry serials in separate `-resume-N`
+directories beside the initial serial. QEMU keeps a boot's writable image beside
+its serial. Metal's detached collector
+pins the commit and submits each retry through `metal-run` and its ordinary lease
+and build path; its sequence log follows the initial boot's log.
+
 Each suite starts from the state its own boot gives it:
 
 - **Processes and descriptors.** Once a suite's DONE is out (and its panel drawn), the runner
@@ -367,12 +390,14 @@ with the cases reported so far and hands off to the next suite from the signal h
 using system calls only. Case processes start with SIGALRM back at its default action, and a
 SIGALRM that arrives before the watchdog's time (a case may signal PID 1) is not the
 watchdog. If the kernel itself stops, no code in the boot can move to the next suite: the
-launcher's stall watchdog ends the boot, and the suites after the stalled one are NOT-RUN.
+launcher's stall watchdog ends the boot. Unreached suites are NOT-RUN in that boot's
+record and are requested again in the next boot.
 
-Each suite has its own DONE deadline, counted from its START (`--gate-timeout` on ARM64
-QEMU, Parallels and VMware, 420 s per suite on x86-metal, whose attempt ceiling grows by
-420 s per suite). The sequence is finished at `SUITE_SEQUENCE DONE`; the last suite keeps its
-final panel. `scripts/suite-sequence.py score LIST SERIAL [--disk IMAGE]` then scores each
+Each suite has a DONE deadline (`--gate-timeout` on ARM64 QEMU, Parallels
+and VMware; 420 s on x86-metal), reset at suite boundaries, never by case progress.
+The independent 120 s inactivity watchdog can stop a boot earlier. Metal's saved
+attempt ceiling is fixed at power-on and includes the requested suites' deadlines.
+The sequence is finished at `SUITE_SEQUENCE DONE`; the last suite keeps its final panel. `scripts/suite-sequence.py score LIST SERIAL [--disk IMAGE]` then scores each
 suite from its own part of the serial (from where it begins to where the next begins, so a
 later kernel panic fails only the suite it happened in) and prints one line per suite:
 
@@ -386,8 +411,8 @@ later kernel panic fails only the suite it happened in) and prints one line per 
 The boot passes when each suite passes. The ARM64 QEMU, Parallels and VMware launchers print
 the table's lines after the boot, even one stopped part way; x86-metal writes them to the
 boot record's `suite-verdict.txt` and names the suites in `run.json` (`suites`; `suite` only
-for a boot of one). `scripts/vigil-record.sh` files a Mac boot of several suites as one
-Vigil record per suite, `<boot id>-<suite>`, over the boot's serial. The retired x86 QEMU
+for a boot of one). `scripts/vigil-record.sh` passes a Mac boot's ordered list to Vigil,
+which records the boot and its per-suite results over that boot's serial. The retired x86 QEMU
 gate runs one suite per boot.
 
 ## The panel

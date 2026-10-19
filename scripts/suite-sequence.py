@@ -3,6 +3,7 @@
 
     scripts/suite-sequence.py resolve SPEC --target TARGET [--gpu-3d]
     scripts/suite-sequence.py score SUITES RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE]
+    scripts/suite-sequence.py run SUITES SERIAL LAUNCHER [ARG ...]
 
 `resolve` prints the suite ids a boot runs, comma-separated, in order. SPEC is a suite id, ids joined by commas, or
 `all`: every suite of docs/efforts/path.json the target runs (x86-metal runs every main-path effort's), in path order,
@@ -18,9 +19,12 @@ verdict follows). The last suite's manifest diskChecks are read from --disk. Exi
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import runpy
+import signal
+import subprocess
 import sys
 import tempfile
 
@@ -104,8 +108,98 @@ def lines(text):
     return [line.rstrip("\r") for line in text.split("\n")[:-1]]
 
 
+def unreached(ids, text):
+    """A failed DONE and a watchdog STALLED both consumed the suite; partial lines did not."""
+    finished = set()
+    for line in lines(text):
+        match = re.fullmatch(r"SUITE ([a-z0-9-]+) DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+", line)
+        stalled = re.fullmatch(r"SUITE_SEQUENCE STALLED ([a-z0-9-]+) cases=\d+/\d+", line)
+        if match or stalled:
+            finished.add((match or stalled)[1])
+    return [suite for suite in ids if suite not in finished]
+
+
+def collect(ids, attempt):
+    """Run boots serially, preserving failure status and retiring only suites with terminal evidence.
+
+    attempt receives the ordered pending ids and attempt number; returns (serial text, exit status).
+    """
+    pending, status, number = list(ids), 0, 1
+    while pending:
+        text, code = attempt(pending, number)
+        code = 128 - code if code < 0 else code
+        status = status or code
+        if 128 < code < 128 + signal.NSIG:
+            print('suite-sequence: cancelled; no suites will resume', flush=True)
+            return code
+        remaining = unreached(pending, text)
+        if not remaining:
+            return status
+        guest_death = any(re.search(r"KERNEL PANIC[:!]", line) or
+                          (not line.startswith(("SUITE ", "SUITE_SEQUENCE ")) and
+                           re.search(r"panicked at kernel/src/|!!! SOFT LOCKUP DETECTED !!!|"
+                                     r"\[(?:DATA|INSTRUCTION)_ABORT\].*from_el0=0|"
+                                     r"memory allocation of \d+ bytes failed|allocation error:", line))
+                          for line in text.splitlines())
+        if remaining == pending or not (code == 124 or guest_death):
+            print(f"suite-sequence: stopped; could not get past {remaining[0]}; unreached: {','.join(remaining)}", flush=True)
+            return status or 1
+        print(f"suite-sequence: resuming unreached suites: {','.join(remaining)}", flush=True)
+        pending, number = remaining, number + 1
+    return status
+
+
+def launch(suites, serial, command):
+    """Supervise existing one-boot launchers; each attempt retains its serial, disk and Vigil filing."""
+    serial = Path(serial).resolve()
+    env = dict(os.environ, BREENIX_SUITE_ATTEMPT="1")
+
+    def attempt(pending, number):
+        log = serial if number == 1 else serial.parent / f"{serial.stem}-resume-{number}" / serial.name
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_bytes(b"")
+        if number > 1:
+            # Vigil owns the initial boot only; resumed boots need their own registrations.
+            env.pop("VIGIL_BOOT_ID", None)
+        args = command + ["--suite", ",".join(pending), "--serial-log", str(log)]
+        if number > 1:
+            args = [arg for arg in args if arg != "--clean"] + ["--no-build"]
+        print(f"suite-sequence: boot {number}: {','.join(pending)}", flush=True)
+        # subprocess.call kills its child on KeyboardInterrupt, before run.sh can
+        # finish its EXIT trap. Forward cancellation and wait for synchronous cleanup.
+        cancelled = 0
+        child = None
+
+        def cancel(signum, frame):
+            nonlocal cancelled
+            if cancelled:
+                return
+            cancelled = 128 + signum
+            if child is not None and child.poll() is None:
+                try:
+                    os.killpg(child.pid, signum)
+                except ProcessLookupError:
+                    pass
+
+        previous = {sig: signal.signal(sig, cancel)
+                    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        try:
+            child = subprocess.Popen(args, env=env, start_new_session=True)
+            if cancelled:
+                os.killpg(child.pid, cancelled - 128)
+            code = child.wait()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        code = cancelled or code
+        text = log.read_bytes().decode("utf-8", errors="replace") if log.exists() else ""
+        return text, code
+
+    return collect(suites.split(","), attempt)
+
+
 def boundaries(text):
-    """How many suites have started or been stopped: each suite's DONE deadline counts from the latest of these."""
+    """Count complete suite START and STALLED records."""
     return sum(bool(re.fullmatch(r"SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+", line))
                for line in lines(text))
 
@@ -189,7 +283,13 @@ def main():
     p.add_argument("suites")
     p.add_argument("logs", nargs="+")
     p.add_argument("--disk")
+    p = sub.add_parser("run")
+    p.add_argument("suites")
+    p.add_argument("serial")
+    p.add_argument("launcher", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.command == "run":
+        return launch(args.suites, args.serial, args.launcher)
     if args.command == "resolve":
         try:
             ids, skipped = resolve(args.spec, args.target, gpu_3d(args.target, args.gpu_3d))
