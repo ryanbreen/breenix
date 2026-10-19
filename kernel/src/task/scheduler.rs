@@ -237,9 +237,14 @@ impl IsrWakeupBuffer {
     }
 
     /// Take each entry out and pass it to `apply`, in place: the scheduler's
-    /// passes call this under their locks, where nothing may allocate.
+    /// passes call this under their locks, where no allocation is allowed. An empty
+    /// slot is only read; an entry written after the read is announced by its
+    /// producer's `ISR_WAKEUP_PENDING` bit, which the next pass takes.
     fn take_each(&self, mut apply: impl FnMut(u64)) {
         for slot in &self.slots {
+            if slot.load(Ordering::Relaxed) == ISR_WAKEUP_EMPTY {
+                continue;
+            }
             let tid = slot.swap(ISR_WAKEUP_EMPTY, Ordering::AcqRel);
             if tid != ISR_WAKEUP_EMPTY {
                 apply(tid);
@@ -257,6 +262,18 @@ impl IsrWakeupBuffer {
 }
 
 static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
+
+/// Bit `n` is set after CPU `n`'s buffer takes an entry and stays set until a
+/// scheduling pass takes it, so a pass reads only the buffers that hold entries.
+/// A pass used to swap the 64 slots of each of the 8 buffers under the
+/// scheduler lock, three quarters of the time that lock was held on Parallels
+/// (#2038).
+///
+/// A producer sets its bit after its entry is written, and a pass takes the
+/// mask before it reads a buffer, so an entry is read by the pass that took its
+/// bit or, written after that pass read its slot, announced by a bit that pass
+/// left set. An entry found already pending was announced when it was written.
+static ISR_WAKEUP_PENDING: AtomicU64 = AtomicU64::new(0);
 
 const WAKE_ATTRIB_MAX_TIDS: usize = 4096;
 const READY_SITE_NONE: u64 = 0;
@@ -6092,8 +6109,13 @@ impl Scheduler {
     /// x86_64: the wakes held because the thread's CPU had its lock held
     /// (`rq::hold`) are applied too.
     fn apply_isr_wakeups(&mut self) {
-        for buf in ISR_WAKEUP_BUFFERS.iter() {
-            buf.take_each(|tid| self.unblock_for_io_from_isr_buffer(tid));
+        let mut pending = ISR_WAKEUP_PENDING.swap(0, Ordering::Acquire);
+        while pending != 0 {
+            let cpu = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            if let Some(buf) = ISR_WAKEUP_BUFFERS.get(cpu) {
+                buf.take_each(|tid| self.unblock_for_io_from_isr_buffer(tid));
+            }
         }
         #[cfg(target_arch = "x86_64")]
         if rq::is_live(self) {
@@ -10017,6 +10039,12 @@ pub fn isr_wakeup_depth(cpu: usize) -> usize {
     }
 }
 
+/// Whether an interrupt-context wake may be waiting in a buffer for a
+/// scheduling pass (`ISR_WAKEUP_PENDING`). Read without a lock.
+pub fn isr_wakeups_pending() -> bool {
+    ISR_WAKEUP_PENDING.load(Ordering::Acquire) != 0
+}
+
 /// Number of interrupt-context wakes that could not be buffered.
 pub fn isr_wakeup_buffer_full() -> u64 {
     ENQUEUE_ISR_BUFFER_FULL.load(Ordering::Relaxed)
@@ -10090,6 +10118,7 @@ fn buffer_isr_wakeup(tid: u64) -> WakeOutcome {
     WAKE_SITE_ISR_UNBLOCK.fetch_add(1, Ordering::Relaxed);
     match ISR_WAKEUP_BUFFERS[cpu].push(tid) {
         IsrWakePush::Inserted => {
+            ISR_WAKEUP_PENDING.fetch_or(1 << cpu, Ordering::Release);
             ENQUEUE_ISR_BUFFER.fetch_add(1, Ordering::Relaxed);
             WakeOutcome::Buffered
         }

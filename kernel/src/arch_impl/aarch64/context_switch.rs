@@ -7278,12 +7278,7 @@ pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 #[inline(always)]
 fn idle_pending_isr_wakeups() -> bool {
-    for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        if crate::task::scheduler::isr_wakeup_depth(cpu) != 0 {
-            return true;
-        }
-    }
-    false
+    crate::task::scheduler::isr_wakeups_pending()
 }
 
 #[inline(always)]
