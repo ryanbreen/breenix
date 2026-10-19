@@ -10,6 +10,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::arm64_fb;
+use super::cursor;
 use super::log_capture;
 use super::terminal::TerminalPane;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +26,9 @@ pub fn start() {
     };
     let mut guard = fb.lock();
     let mut pane = TerminalPane::new(4, 4, guard.width() - 8, guard.height() - 8);
+    cursor::hide(&mut *guard);
     pane.clear(&mut *guard);
+    cursor::show(&mut *guard);
     drop(guard);
     *CONSOLE.lock() = Some(pane);
     log_capture::init();
@@ -61,6 +64,7 @@ pub fn pump() -> bool {
     };
     let mut buf = [0u8; 512];
     let mut drew = false;
+    cursor::hide(&mut *guard);
     while is_active() {
         let n = log_capture::drain(&mut buf);
         if n == 0 {
@@ -69,5 +73,6 @@ pub fn pump() -> bool {
         pane.write_bytes(&mut *guard, &buf[..n]);
         drew = true;
     }
+    cursor::show(&mut *guard);
     drew
 }

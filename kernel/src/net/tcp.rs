@@ -347,16 +347,14 @@ fn tcp_timer_thread() {
         crate::net::drain_loopback_queue();
 
         crate::arch_without_interrupts(|| {
-            crate::task::scheduler::with_scheduler(|sched| match next {
+            crate::task::scheduler::with_current(|sched| match next {
                 Some(deadline) => {
                     sched.block_current_for_timer(deadline.saturating_mul(1_000_000))
                 }
                 None => sched.block_current(),
             });
             if TIMER_KICK.load(Ordering::Acquire) {
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(tid);
-                });
+                crate::task::scheduler::unblock_thread(tid);
             }
         });
         // A halting waiter keeps its CPU until it yields: yield before halting.
@@ -1804,6 +1802,54 @@ fn reap_expired(connections: &mut ConnTable, force: bool) {
     connections.retain(|conn| !conn.expired(now));
 }
 
+/// `/proc/net/tcp`: the first four columns of Linux's format, one line per listener and
+/// per connection: its slot, the local and remote address as hexadecimal IP:port (the IP
+/// as Linux prints its network-order word on a little-endian machine) and the state as
+/// Linux numbers it. Expired connections are reaped first, as a bind does, so one whose
+/// TIME_WAIT has run out is not listed.
+pub fn proc_net_tcp() -> Result<alloc::string::String, i32> {
+    use core::fmt::Write;
+    with_tcp(|tables| {
+        reap_expired(&mut tables.conns, true);
+        let rows = tables.listeners.len() + tables.conns.values().count();
+        let mut text = alloc::string::String::new();
+        // A row is at most 40 bytes; the header 36.
+        text.try_reserve_exact(48 + rows * 48).map_err(|_| ENOMEM)?;
+        text.push_str("  sl  local_address rem_address   st\n");
+        let hex = |ip: [u8; 4]| u32::from_le_bytes(ip);
+        let listening = tables.listeners.iter().map(|l| (l.local_ip, l.local_port, [0; 4], 0, 0x0a));
+        let connected = tables.conns.values().filter_map(|conn| {
+            let state = match conn.state {
+                TcpState::Closed => return None,
+                TcpState::Established => 0x01,
+                TcpState::SynSent => 0x02,
+                TcpState::SynReceived => 0x03,
+                TcpState::FinWait1 => 0x04,
+                TcpState::FinWait2 => 0x05,
+                TcpState::TimeWait => 0x06,
+                TcpState::CloseWait => 0x08,
+                TcpState::LastAck => 0x09,
+                TcpState::Listen => 0x0a,
+                TcpState::Closing => 0x0b,
+            };
+            Some((conn.id.local_ip, conn.id.local_port, conn.id.remote_ip, conn.id.remote_port, state))
+        });
+        for (slot, (local_ip, local_port, remote_ip, remote_port, state)) in listening.chain(connected).enumerate() {
+            let _ = writeln!(
+                text,
+                "{:4}: {:08X}:{:04X} {:08X}:{:04X} {:02X}",
+                slot,
+                hex(local_ip),
+                local_port,
+                hex(remote_ip),
+                remote_port,
+                state
+            );
+        }
+        Ok(text)
+    })
+}
+
 /// The first port an unbound socket is given: the bottom of Linux's default
 /// `ip_local_port_range`, 32768-60999.
 const EPHEMERAL_FIRST: u16 = 32768;
@@ -2694,7 +2740,7 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
             }
 
             // Block until the softirq handler wakes us on state change.
-            crate::task::scheduler::with_scheduler(|sched| {
+            crate::task::scheduler::with_current(|sched| {
                 sched.block_current_for_io();
             });
             crate::task::scheduler::yield_current();

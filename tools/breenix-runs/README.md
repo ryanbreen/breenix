@@ -1,5 +1,10 @@
 # Breenix Runs
 
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](../../docs/x86-execution-policy.md);
+legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+
 SwiftPM command-line tooling for preserving Breenix gate evidence and printing a host-facts trace for ARM (local QEMU) and x86 (beast build environment) gate runs.
 
 ## Build

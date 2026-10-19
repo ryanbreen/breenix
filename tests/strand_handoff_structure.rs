@@ -3193,3 +3193,69 @@ fn code_mask_raw_string_close_preserves_next_byte() {
         assert!(mask[offset], "raw-string close swallowed the next byte");
     }
 }
+
+/// #1862: the strict gate is the completion contract for a focused
+/// `boot_tests,strand_inject_live_outgoing` boot. A serial from that kernel
+/// completes only with exactly one live-outgoing PASS line; other boot_tests
+/// kernels do not need it. A serial that carries the line is scored as that
+/// profile even when no kernel is given, and is refused beside a kernel that
+/// has no print site for it.
+#[test]
+fn strict_scorer_requires_the_live_outgoing_pass_for_its_profile() {
+    let root = repo_root();
+    let fixture = repo_text("tests/fixtures/udp-socket-lock-aarch64-serial.txt");
+    let pass = "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=2:live_outgoing=2:outgoing_tid=14:stranded=0:PASS]";
+    let fail = "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=0:live_outgoing=0:outgoing_tid=0:stranded=0:FAIL]";
+    let dir = std::env::temp_dir().join(format!("strict-live-outgoing-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let plain = dir.join("plain-kernel");
+    fs::write(&plain, "[STRAND_INJECT_ORACLE:aarch64:").unwrap();
+    let live = dir.join("live-kernel");
+    fs::write(&live, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
+    let missing = dir.join("no-kernel");
+    #[cfg(unix)]
+    let unreadable = {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("unreadable-kernel");
+        fs::write(&path, "[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(fs::read(&path).is_err(), "fixture must actually be unreadable");
+        path
+    };
+    for (name, kernel, body, want) in [
+        ("no-kernel-given", None, fixture.clone(), true),
+        ("plain", Some(&plain), fixture.clone(), true),
+        ("live-without-pass", Some(&live), fixture.clone(), false),
+        ("live-with-pass", Some(&live), format!("{fixture}\n{pass}\n"), true),
+        ("live-with-fail", Some(&live), format!("{fixture}\n{pass}\n{fail}\n"), false),
+        ("missing-kernel", Some(&missing), format!("{fixture}\n{pass}\n"), false),
+        ("no-kernel-with-pass", None, format!("{fixture}\n{pass}\n"), true),
+        ("same-line-duplicate", Some(&live), format!("{fixture}\n{pass}{pass}\n"), false),
+        ("no-kernel-with-fail", None, format!("{fixture}\n{fail}\n"), false),
+        ("plain-with-live-line", Some(&plain), format!("{fixture}\n{pass}\n"), false),
+        ("live-with-two-passes", Some(&live), format!("{fixture}\n{pass}\n{pass}\n"), false),
+        #[cfg(unix)]
+        ("unreadable-live-without-pass", Some(&unreadable), fixture.clone(), false),
+        #[cfg(unix)]
+        ("unreadable-live-with-pass", Some(&unreadable), format!("{fixture}\n{pass}\n"), false),
+    ] {
+        let serial = dir.join(name);
+        fs::write(&serial, body).unwrap();
+        let mut command = Command::new("bash");
+        command
+            .arg(root.join("docker/qemu/run-aarch64-boot-test-strict.sh"))
+            .env("BREENIX_STRICT_SCORE_ONLY", &serial)
+            .env_remove("BREENIX_STRICT_SCORE_KERNEL");
+        if let Some(kernel) = kernel {
+            command.env("BREENIX_STRICT_SCORE_KERNEL", kernel);
+        }
+        let result = command.output().unwrap();
+        assert_eq!(
+            result.status.success(),
+            want,
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
+    fs::remove_dir_all(dir).unwrap();
+}

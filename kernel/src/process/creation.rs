@@ -110,28 +110,16 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         Err(error) => return Err(error),
     };
 
-    // Add directly to scheduler - no spawn thread needed!
-    // Note: spawn() internally uses without_interrupts
+    // Creation adopts the new process's group only when the console's
+    // foreground group is missing or dead; a live one belongs to whoever set
+    // it with tcsetpgrp (S21, S25).
+    if let Some(tty) = crate::tty::console() {
+        tty.initialize_foreground_pgrp(pid);
+    }
+
+    // Publish foreground ownership before the new process can run or exit.
     crate::task::scheduler::spawn(scheduler_thread);
     crate::serial_println!("create_user_process: scheduler::spawn completed");
-
-    // Give the console TTY this process as its foreground process group when
-    // it has none, so Ctrl+C (SIGINT) and other TTY signals reach the first
-    // process. A console that has one keeps it: the kernel creating a process
-    // does not move a terminal's foreground group, which belongs to whoever
-    // set it with tcsetpgrp. With several CPUs online a process launched here
-    // used to take it from a running one between that one's tcsetpgrp and
-    // tcgetpgrp.
-    #[cfg(target_arch = "x86_64")]
-    if let Some(tty) = crate::tty::console() {
-        if tty.get_foreground_pgrp().is_none() {
-            tty.set_foreground_pgrp(pid.as_u64());
-            log::debug!(
-                "create_user_process: Set PID {} as foreground pgrp for TTY",
-                pid.as_u64()
-            );
-        }
-    }
 
     // REMOVED: set_next_cr3() call - CR3 switching happens during scheduling,
     // not during process creation. The context_switch.rs::setup_first_userspace_entry()
@@ -257,21 +245,14 @@ pub fn create_user_process_before_run(
 
     before_run(pid);
 
-    // Add directly to scheduler - no spawn thread needed!
+    // Same foreground liveness rule as x86_64 (S21, S25).
+    if let Some(tty) = crate::tty::console() {
+        tty.initialize_foreground_pgrp(pid);
+    }
+
+    // Publish foreground ownership before the new process can run or exit.
     crate::task::scheduler::spawn(scheduler_thread);
     crate::serial_println!("create_user_process: scheduler::spawn completed");
-
-    // Give the console TTY this process as its foreground process group when
-    // it has none; one it has belongs to whoever set it (see the x86_64 arm).
-    if let Some(tty) = crate::tty::console() {
-        if tty.get_foreground_pgrp().is_none() {
-            tty.set_foreground_pgrp(pid.as_u64());
-            log::debug!(
-                "create_user_process: Set PID {} as foreground pgrp for TTY (ARM64)",
-                pid.as_u64()
-            );
-        }
-    }
 
     log::info!(
         "create_user_process: User thread {} enqueued for scheduling",

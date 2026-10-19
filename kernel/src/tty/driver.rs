@@ -24,7 +24,6 @@ use spin::Mutex;
 use super::line_discipline::LineDiscipline;
 use super::termios::Termios;
 use crate::process::ProcessId;
-use crate::signal::constants::{SIGINT, SIGQUIT, SIGTSTP};
 
 /// POSIX error codes
 /// Used by TtyDevice::read() for the line discipline read path.
@@ -59,7 +58,7 @@ pub fn tty_irq_pm_adopted_count() -> u64 {
 ///
 /// 0 of the 3 production writers can produce this value. `tty/ioctl.rs`'s
 /// TIOCSPGRP returns EINVAL for a negative pgrp, so it publishes a value in
-/// `[0, i32::MAX]`; `process/creation.rs`'s 2 sites publish `pid.as_u64()`. A
+/// `[0, i32::MAX]`; `process/creation.rs`'s 2 sites publish a process's pgid. A
 /// ratchet leg pins the TIOCSPGRP refusal for that reason.
 const FOREGROUND_PGRP_UNSET: u64 = u64::MAX;
 
@@ -75,16 +74,16 @@ const FOREGROUND_PGRP_UNSET: u64 = u64::MAX;
 ///
 /// `TTY_IRQ_FG_SNAPSHOT_READS` counts the snapshot reads that replaced those
 /// acquisitions. The `SIGNAL_` three record the last interrupt-side signal
-/// dispatch: how many there have been, the pid it was aimed at, and the signal
-/// number. They are 3 separate relaxed cells rather than one transaction, so a
+/// dispatch: how many there have been, the process group it was aimed at, and
+/// the signal number. They are 3 separate relaxed cells rather than one transaction, so a
 /// reader that samples them while 2 CPUs are dispatching can pair a count with
-/// the other CPU's pid; the oracle reads them after a single injection with
+/// the other CPU's group; the oracle reads them after a single injection with
 /// preemption disabled, where that cannot happen.
 static TTY_IRQ_FG_LOCK_TOUCHES: AtomicU64 = AtomicU64::new(0);
 static TTY_IRQ_FG_BLOCKING_ACQUIRES: AtomicU64 = AtomicU64::new(0);
 static TTY_IRQ_FG_SNAPSHOT_READS: AtomicU64 = AtomicU64::new(0);
 static TTY_IRQ_FG_SIGNAL_CALLS: AtomicU64 = AtomicU64::new(0);
-static TTY_IRQ_FG_SIGNAL_LAST_PID: AtomicU64 = AtomicU64::new(0);
+static TTY_IRQ_FG_SIGNAL_LAST_PGRP: AtomicU64 = AtomicU64::new(0);
 static TTY_IRQ_FG_SIGNAL_LAST_SIG: AtomicU64 = AtomicU64::new(0);
 
 /// Acquisitions of a console `foreground_pgrp` mutex taken inside a TTY
@@ -105,12 +104,12 @@ pub fn tty_irq_fg_snapshot_reads() -> u64 {
     TTY_IRQ_FG_SNAPSHOT_READS.load(Ordering::Relaxed)
 }
 
-/// Interrupt-side signal dispatches, and the pid and signal number of the last
-/// one (#822).
+/// Interrupt-side signal dispatches, and the process group and signal number
+/// of the last one (#822).
 pub fn tty_irq_fg_signal_census() -> (u64, u64, u64) {
     (
         TTY_IRQ_FG_SIGNAL_CALLS.load(Ordering::Relaxed),
-        TTY_IRQ_FG_SIGNAL_LAST_PID.load(Ordering::Relaxed),
+        TTY_IRQ_FG_SIGNAL_LAST_PGRP.load(Ordering::Relaxed),
         TTY_IRQ_FG_SIGNAL_LAST_SIG.load(Ordering::Relaxed),
     )
 }
@@ -129,6 +128,101 @@ fn note_foreground_pgrp_acquisition(blocking: bool) {
             TTY_IRQ_FG_BLOCKING_ACQUIRES.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+/// Whether foreground group `pgrp` is live (S25): an unreaped process
+/// (zombies count, as in POSIX) has it as its pgid, or is the process whose
+/// PID it is. A reaped row awaiting retirement (a tombstone) is no process. A
+/// dead group is no foreground at all; creation replaces it.
+pub(crate) fn foreground_pgrp_is_live(
+    manager: &crate::process::manager::ProcessManager,
+    pgrp: u64,
+) -> bool {
+    manager.iter_processes().any(|(pid, row)| {
+        !row.is_tombstone() && (row.pgid.as_u64() == pgrp || pid.as_u64() == pgrp)
+    })
+}
+
+/// Foreground-group signals the interrupt side has generated and the
+/// foreground signal thread has not yet sent. Each slot holds one group and
+/// signal, packed as `pgrp << 8 | sig`, or 0 when free. A pair already queued
+/// is not queued twice: the second keystroke's signal is the same pending
+/// signal, as a standard signal generated twice before delivery is.
+const FG_SIGNAL_SLOTS: usize = 16;
+static FG_SIGNAL_QUEUE: [AtomicU64; FG_SIGNAL_SLOTS] =
+    [const { AtomicU64::new(0) }; FG_SIGNAL_SLOTS];
+
+/// Signals the interrupt side could not queue: 16 distinct groups and
+/// signals already waiting for the foreground signal thread. A reading above
+/// 0 is a terminal signal that was not sent.
+static FG_SIGNAL_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
+
+/// Starts the timer-driven foreground signal worker exactly once.
+static FG_SIGNAL_THREAD: spin::Once<()> = spin::Once::new();
+
+/// Terminal signals the interrupt side could not queue for sending.
+pub fn foreground_signal_overflows() -> u64 {
+    FG_SIGNAL_OVERFLOWS.load(Ordering::Relaxed)
+}
+
+/// Queue `sig` for the members of `pgrp`; the timer-driven worker drains it.
+/// Lock-free: called from the input interrupt.
+fn queue_foreground_signal_nonblock(pgrp: u64, sig: u32) {
+    let entry = (pgrp << 8) | u64::from(sig);
+    let queued = pgrp >> 56 == 0
+        && sig != 0
+        && sig < 256
+        && (FG_SIGNAL_QUEUE.iter().any(|slot| slot.load(Ordering::Acquire) == entry)
+            || FG_SIGNAL_QUEUE.iter().any(|slot| {
+                slot.compare_exchange(0, entry, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            }));
+    if !queued {
+        FG_SIGNAL_OVERFLOWS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+}
+
+/// Send each queued foreground-group signal, in thread context, where the
+/// process table can be waited for. Sleep on a timer between drains: the
+/// interrupt publishes into the atomic queue, and a queued signal needs no
+/// wake handshake that could race the worker going to sleep.
+fn foreground_signal_thread() {
+    use crate::task::{scheduler, thread::ThreadState};
+
+    let tid = scheduler::current_thread_id().expect("foreground signal worker identity");
+    loop {
+        for slot in &FG_SIGNAL_QUEUE {
+            let entry = slot.swap(0, Ordering::AcqRel);
+            if entry != 0 {
+                TtyDevice::send_signal_to_group(ProcessId::new(entry >> 8), (entry & 0xff) as u32);
+            }
+        }
+        // A byte accepted just after a drain waits at most one 10 ms sleep,
+        // plus scheduling and group-delivery time. Only this thread takes the
+        // scheduler lock; the interrupt side only publishes into the queue.
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        let wake_at = seconds.saturating_mul(1_000_000_000)
+            .saturating_add(nanos).saturating_add(10_000_000);
+        scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
+        scheduler::yield_current();
+        loop {
+            crate::arch_halt_with_interrupts();
+            if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
+                break;
+            }
+        }
+    }
+}
+
+/// Start the foreground signal thread. Called once during boot, once kernel
+/// threads can be created and before a terminal can generate a signal from
+/// user input.
+pub fn start_foreground_signal_thread() {
+    FG_SIGNAL_THREAD.call_once(|| {
+        crate::task::kthread::kthread_run(foreground_signal_thread, "kttysig")
+            .expect("could not spawn the foreground signal thread");
+    });
 }
 
 /// Maximum UART bytes emitted while interrupts are masked for one TTY write.
@@ -192,6 +286,7 @@ pub struct TtyDevice {
 
     /// Line discipline for input processing
     ldisc: Mutex<LineDiscipline>,
+    input_sources: super::input_source::InputSources,
 
     /// Foreground process group ID
     /// Signals (SIGINT, SIGQUIT, SIGTSTP) are sent to this group
@@ -237,6 +332,7 @@ impl TtyDevice {
         Self {
             num,
             ldisc: Mutex::new(LineDiscipline::new()),
+            input_sources: super::input_source::InputSources::new(),
             foreground_pgrp: Mutex::new(None),
             session: Mutex::new(None),
             adopt_pending: AtomicBool::new(false),
@@ -256,10 +352,13 @@ impl TtyDevice {
     /// - Echo it back to the terminal
     ///
     /// This method acquires locks and should not be called from interrupt context
-    /// without care. For interrupt context, use `input_char_nonblock`.
-    #[allow(dead_code)] // Used by push_char in keyboard_task (conditionally compiled)
-    pub fn input_char(&self, c: u8) {
+    /// without care. For interrupt context, use `input_char_from_nonblock`.
+    pub fn input_char_from(&self, c: u8, source: super::InputSource) {
+        if self.num == 0 {
+            super::input_clock::record_input();
+        }
         let mut ldisc = self.ldisc.lock();
+        self.input_sources.record(source);
 
         // Process the character through the line discipline
         // The echo callback writes to serial output
@@ -320,8 +419,10 @@ impl TtyDevice {
     /// (`adopt_deferred_foreground_pgrp`, driven from the stdin read path),
     /// where the reader's own pid is already in hand. The scope below makes a
     /// reintroduction fail loudly rather than silently.
-    #[allow(dead_code)]
     pub fn input_char_nonblock(&self, c: u8) -> bool {
+        if self.num == 0 {
+            super::input_clock::record_input();
+        }
         let _no_blocking_pm = crate::process::NoBlockingProcessManagerScope::enter();
 
         // Owe a foreground process group to the next thread-context reader
@@ -338,10 +439,30 @@ impl TtyDevice {
             TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
         }
 
+        self.input_char_source_nonblock(c, super::InputSource::Other)
+    }
+
+    /// Source-aware entry used by the USB worker. Keep its IRQ-safe naming so
+    /// the same reachable-call census covers it as the untagged entry.
+    pub fn input_char_from_nonblock(&self, c: u8, source: super::InputSource) -> bool {
+        if self.num == 0 {
+            super::input_clock::record_input();
+        }
+        let _no_blocking_pm = crate::process::NoBlockingProcessManagerScope::enter();
+        if self.foreground_pgrp_snapshot().is_none() {
+            self.adopt_pending.store(true, Ordering::Release);
+            TTY_IRQ_PM_DEFERRED.fetch_add(1, Ordering::Relaxed);
+        }
+        self.input_char_source_nonblock(c, source)
+    }
+
+    fn input_char_source_nonblock(&self, c: u8, source: super::InputSource) -> bool {
         let mut ldisc = match self.ldisc.try_lock() {
             Some(guard) => guard,
             None => return false,
         };
+
+        self.input_sources.record(source);
 
         // Process the character through line discipline (echo, signals, line editing)
         let attrs = *ldisc.termios();
@@ -451,7 +572,20 @@ impl TtyDevice {
     /// The foreground process group receives signals generated by the TTY
     /// (e.g., SIGINT from Ctrl+C).
     pub fn set_foreground_pgrp(&self, pgrp: u64) {
-        self.store_foreground_pgrp(Some(pgrp));
+        self.store_foreground_pgrp(Some(pgrp), None);
+    }
+
+    /// Creation fills a missing or dead foreground group without stealing a
+    /// live job (S21, S25). Keep the process table stable through the check
+    /// and publication; the foreground mutex also serializes this with
+    /// tcsetpgrp.
+    pub fn initialize_foreground_pgrp(&self, pid: ProcessId) {
+        let manager = crate::process::manager();
+        if let Some(ref manager) = *manager {
+            if let Some(process) = manager.get_process(pid) {
+                self.store_foreground_pgrp(Some(process.pgid.as_u64()), Some(manager));
+            }
+        }
     }
 
     /// Write `foreground_pgrp` and publish its snapshot, both under the mutex
@@ -461,9 +595,18 @@ impl TtyDevice {
     /// the critical section is what makes the snapshot's value sequence the
     /// field's own: 2 threads writing concurrently serialise here, so they
     /// cannot publish out of the order in which they wrote.
-    fn store_foreground_pgrp(&self, pgrp: Option<u64>) {
+    fn store_foreground_pgrp(
+        &self,
+        pgrp: Option<u64>,
+        creating: Option<&crate::process::manager::ProcessManager>,
+    ) {
         note_foreground_pgrp_acquisition(true);
         let mut guard = self.foreground_pgrp.lock();
+        if creating.is_some_and(|manager| {
+            guard.is_some_and(|existing| foreground_pgrp_is_live(manager, existing))
+        }) {
+            return;
+        }
         *guard = pgrp;
         self.foreground_pgrp_snapshot
             .store(pgrp.unwrap_or(FOREGROUND_PGRP_UNSET), Ordering::Release);
@@ -507,8 +650,15 @@ impl TtyDevice {
         if !self.adopt_pending.swap(false, Ordering::AcqRel) {
             return;
         }
+        // The reader's group, as creation adopts one: foreground signals go
+        // to a group (S25). The process manager is released before the TTY's
+        // own lock is taken. A pid with no process row is adopted as given.
+        let pgrp = crate::process::manager()
+            .as_ref()
+            .and_then(|manager| manager.get_process(pid))
+            .map_or(pid, |process| process.pgid);
         if self.get_foreground_pgrp().is_none() {
-            self.set_foreground_pgrp(pid.as_u64());
+            self.set_foreground_pgrp(pgrp.as_u64());
             TTY_IRQ_PM_ADOPTED.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -529,7 +679,7 @@ impl TtyDevice {
     /// `adopt_deferred_foreground_pgrp`.
     #[cfg(any(feature = "boot_tests", feature = "btrt"))]
     pub fn set_foreground_pgrp_raw_for_test(&self, pgrp: Option<u64>) {
-        self.store_foreground_pgrp(pgrp);
+        self.store_foreground_pgrp(pgrp, None);
     }
 
     /// The published snapshot, read raw (#822 oracle).
@@ -584,6 +734,13 @@ impl TtyDevice {
     /// Set the session leader
     pub fn set_session(&self, session: Option<ProcessId>) {
         *self.session.lock() = session;
+        // While a session other than init's has the console (a getty and its
+        // login), the screen console draws only kernel warnings and errors
+        // among the console's own output.
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::console_session(
+            session.is_some_and(|sid| sid.as_u64() != crate::process::RESERVED_INIT_PID),
+        );
     }
 
     /// Detach the console foreground group while keeping its IRQ snapshot current.
@@ -607,6 +764,40 @@ impl TtyDevice {
     pub fn flush_input(&self) {
         self.ldisc.lock().flush_input();
         crate::ipc::stdin::flush_input();
+    }
+
+    /// The console target has started: from now on the first USB keyboard byte
+    /// is reported, so a key pressed before it cannot be reported first.
+    pub fn arm_first_usb(&self) {
+        if self.num == 0 {
+            self.input_sources.arm_first_usb();
+        }
+    }
+
+    /// Thread-context reporting; the IRQ input path only updates source bits.
+    pub fn report_first_usb(&self) {
+        if self.num == 0 && self.input_sources.take_first_usb() {
+            crate::serial_println!("\n[console] first input byte input=keyboard");
+        }
+    }
+
+    pub fn input_proof(&self, action: u64) -> Result<i32, i32> {
+        if self.num != 0 || action > 2 { return Err(22); }
+        let mut ldisc = self.ldisc.lock();
+        let (event, keyboard) = if action == 0 {
+            ldisc.flush_input();
+            crate::ipc::stdin::flush_input();
+            ("session ended", self.input_sources.begin())
+        } else {
+            (if action == 1 { "login refused" } else { "login accepted" },
+             Some(self.input_sources.authenticate(action == 2)))
+        };
+        drop(ldisc);
+        self.report_first_usb();
+        if let Some(keyboard) = keyboard {
+            crate::serial_println!("\n[console] {} input={}", event, if keyboard { "keyboard" } else { "other" });
+        }
+        Ok(0)
     }
 
     fn transmission_stopped(&self) -> bool {
@@ -647,6 +838,8 @@ impl TtyDevice {
         crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
         #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
         for &byte in unit { let _ = crate::graphics::render_queue::queue_byte(byte); }
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::write_tty(unit);
     }
 
     fn drain_echo(&self) {
@@ -660,6 +853,8 @@ impl TtyDevice {
             crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
             #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
             for &byte in &scratch[..n] { let _ = crate::graphics::render_queue::queue_byte(byte); }
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            crate::fbcon::write_tty(&scratch[..n]);
         }
     }
 
@@ -683,6 +878,8 @@ impl TtyDevice {
         for &byte in unit {
             let _ = crate::graphics::render_queue::queue_byte(byte);
         }
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::write_tty(unit);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -721,6 +918,8 @@ impl TtyDevice {
                             crate::serial::Writer::Tty,
                             &expanded[..expanded_len],
                         );
+                        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+                        crate::fbcon::write_tty(&expanded[..expanded_len]);
                         expanded_len = 0;
                     }
                     if output_len == 2 {
@@ -737,6 +936,8 @@ impl TtyDevice {
                         crate::serial::Writer::Tty,
                         &expanded[..expanded_len],
                     );
+                    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+                    crate::fbcon::write_tty(&expanded[..expanded_len]);
                 }
 
                 // Both architectures use the render queue — it's lock-free on the
@@ -791,6 +992,8 @@ impl TtyDevice {
         for &byte in unit {
             let _ = crate::graphics::render_queue::queue_byte(byte);
         }
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        crate::fbcon::write_tty(unit);
     }
 
     /// Send a signal to the foreground process group
@@ -815,11 +1018,9 @@ impl TtyDevice {
             pgrp
         );
 
-        // For now, treat pgrp as a PID directly
-        // TODO: When process groups are fully implemented, iterate over all
-        // processes in the group
-        let pid = ProcessId::new(pgrp);
-        Self::send_signal_to_process(pid, sig);
+        // To the group's members, as kill(-pgrp) sends it, and not to a
+        // process whose PID merely equals the group number (S25).
+        Self::send_signal_to_group(ProcessId::new(pgrp), sig);
     }
 
     /// Send a signal to the foreground process group (non-blocking)
@@ -829,7 +1030,7 @@ impl TtyDevice {
     /// # Lock ordering
     ///
     /// This runs from IRQ context so must NOT use serial_println! (acquires
-    /// SERIAL1). Uses raw UART for any diagnostic output on ARM64.
+    /// SERIAL1).
     ///
     /// # #822
     ///
@@ -841,170 +1042,45 @@ impl TtyDevice {
     /// interrupt context. Both are gone: a snapshot load has an answer for
     /// each of the 2 field states, so there is no arm to degrade into and no
     /// diagnostic to print.
+    ///
+    /// # S25
+    ///
+    /// The signal goes to the group's members, and not to a process
+    /// whose PID merely equals the group number. Finding the members needs the
+    /// process table, which an interrupt cannot wait for, so the group and
+    /// signal are queued for the foreground signal thread, which sends them
+    /// with `kill(-pgrp)`'s group walk in thread context. The walk this
+    /// replaced ran here under `try_manager` and ended at the first busy
+    /// acquisition, leaving the rest of the group unsignalled.
     #[allow(dead_code)]
     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
-        if let Some(pgrp) = self.foreground_pgrp_snapshot() {
-            let pid = ProcessId::new(pgrp);
-            Self::send_signal_to_process_nonblock(pid, sig);
-        }
-        // No diagnostic for "no pgrp set" -- this is a normal condition
-        // during early boot before any shell sets its foreground pgrp.
-    }
-
-    /// Send a signal to a specific process
-    #[allow(dead_code)] // Used by send_signal_to_foreground (conditionally compiled) and tests
-    fn send_signal_to_process(pid: ProcessId, sig: u32) {
-        // In test mode, record the signal delivery attempt
-        #[cfg(test)]
-        {
-            signal_tracking::record_signal(pid.as_u64(), sig);
-        }
-
-        // In production mode, actually deliver the signal
-        #[cfg(not(test))]
-        {
-            use crate::process;
-
-            // Get the process manager and set the signal pending
-            let mut manager = process::manager();
-            if let Some(ref mut pm) = *manager {
-                // A stop signal is taken, or discarded, as kill() takes it.
-                if crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS
-                    != 0
-                    && crate::signal::delivery::generate_stop_locked(
-                        pm,
-                        pid,
-                        sig,
-                        crate::task::scheduler::current_thread_id(),
-                    )
-                {
-                    return;
-                }
-                let recipient = pm.signal_recipient(pid, sig);
-                if let Some(proc) = pm.get_process_mut(recipient) {
-                    proc.signals.set_process_pending(sig);
-
-                    let sig_name = match sig {
-                        SIGINT => "SIGINT",
-                        SIGQUIT => "SIGQUIT",
-                        SIGTSTP => "SIGTSTP",
-                        _ => "UNKNOWN",
-                    };
-                    log::info!(
-                        "TTY: Sent {} to process {} (PID {})",
-                        sig_name,
-                        proc.name,
-                        pid.as_u64()
-                    );
-
-                    // If process is blocked waiting for signal, wake it. A
-                    // stopped process waits for SIGCONT instead.
-                    if let Some(thread) = proc
-                        .main_thread
-                        .as_ref()
-                        .filter(|_| proc.job.stopped.is_none())
-                    {
-                        let thread_id = thread.id;
-                        drop(manager);
-
-                        // Wake the thread if it's blocked on a signal
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.unblock_for_signal(thread_id);
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    /// Send a signal to a specific process (non-blocking)
-    ///
-    /// Used by send_signal_to_foreground_nonblock in interrupt context.
-    ///
-    /// # Lock ordering
-    ///
-    /// This runs from IRQ context and acquires PROCESS_MANAGER (level 2) and
-    /// SCHEDULER (level 1) via `with_scheduler`. It must NOT use serial_println!
-    /// (acquires SERIAL1, level 4) because SCHEDULER is a higher-priority lock.
-    /// Its diagnostic is written after both guards are released.
-    ///
-    /// The x86_64 arm printed through `serial_println!` until this round --
-    /// `SERIAL1.lock()`, blocking, taken from an interrupt entry while the
-    /// `PROCESS_MANAGER` guard above it is still held, which is the acquisition
-    /// the paragraph above forbids and the one scheduler.rs's lock-order
-    /// comment names ("never acquire SERIAL1 while holding SCHEDULER or
-    /// PROCESS_MANAGER"). It also formatted a string on that path. Both are
-    /// gone; what is left writes one fixed unit after both guards are dropped.
-    /// claim-lint:ok: kernel/src/task/scheduler.rs:21 is the quoted line.
-    #[allow(dead_code)]
-    fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
-        use crate::process;
-
-        // #822 census, recorded before the lookup so it reads the dispatch the
-        // interrupt side actually made rather than only the ones that found a
-        // live row. See the statics' own comment for what a concurrent
-        // dispatch on another CPU can do to the triple.
-        TTY_IRQ_FG_SIGNAL_LAST_PID.store(pid.as_u64(), Ordering::Relaxed);
+        let Some(pgrp) = self.foreground_pgrp_snapshot() else {
+            // No diagnostic for "no pgrp set" -- this is a normal condition
+            // during early boot before any shell sets its foreground pgrp.
+            return;
+        };
+        // #822 census, recorded at the dispatch. See the statics' own comment
+        // for what a concurrent dispatch on another CPU can do to the triple.
+        TTY_IRQ_FG_SIGNAL_LAST_PGRP.store(pgrp, Ordering::Relaxed);
         TTY_IRQ_FG_SIGNAL_LAST_SIG.store(u64::from(sig), Ordering::Relaxed);
         TTY_IRQ_FG_SIGNAL_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        // Set once the signal is pending; the diagnostic below is written
-        // after PROCESS_MANAGER and SCHEDULER are released.
-        let mut sent = false;
+        queue_foreground_signal_nonblock(pgrp, sig);
+    }
 
-        // Try to get the process manager without blocking
-        if let Some(mut manager) = process::try_manager() {
-            if let Some(ref mut pm) = *manager {
-                // A stop signal is taken, or discarded, as kill() takes it;
-                // from an interrupt, no thread here is the generating one.
-                if crate::signal::constants::sig_mask(sig) & crate::signal::constants::STOP_SIGNALS
-                    != 0
-                    && crate::signal::delivery::generate_stop_locked(pm, pid, sig, None)
-                {
-                    return;
-                }
-                let recipient = pm.signal_recipient(pid, sig);
-                if let Some(proc) = pm.get_process_mut(recipient) {
-                    proc.signals.set_process_pending(sig);
-                    sent = true;
-
-                    // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
-                    // Use unblock() instead of unblock_for_signal() because:
-                    // - unblock_for_signal() only handles BlockedOnSignal state
-                    // - unblock() handles BOTH Blocked (stdin read) and BlockedOnSignal
-                    // A stopped process waits for SIGCONT instead.
-                    if let Some(thread) = proc
-                        .main_thread
-                        .as_ref()
-                        .filter(|_| proc.job.stopped.is_none())
-                    {
-                        let thread_id = thread.id;
-                        drop(manager);
-
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.unblock(thread_id);
-                        });
-                    }
-                }
-                // No diagnostic for "process not found" in IRQ context --
-                // this can happen normally during process teardown.
-            }
+    /// Send a signal from the terminal to the members of process group `pgrp`:
+    /// no permission check, SI_KERNEL, and a stop signal discarded for an
+    /// orphaned group, as kill() takes it.
+    #[allow(dead_code)] // Used by send_signal_to_foreground (conditionally compiled) and tests
+    fn send_signal_to_group(pgrp: ProcessId, sig: u32) {
+        // In test mode, record the signal delivery attempt
+        #[cfg(test)]
+        {
+            signal_tracking::record_signal(pgrp.as_u64(), sig);
         }
-        // No diagnostic for "manager lock busy" in IRQ context --
-        // the signal will be retried on next input.
 
-        // Diagnostic output, one unit on both architectures, written with no
-        // PROCESS_MANAGER or SCHEDULER guard held. On x86_64 it takes SERIAL1
-        // the way this path's echo (`output_char_nonblock`) already does. The
-        // signal number and the pid are NOT written here: they are already
-        // published lock-free, by the census stores at the top of this
-        // function, and read back from thread context.
-        if sent {
-            crate::serial::write_bytes_atomic(
-                crate::serial::Writer::Kernel,
-                b"[TTY] sig sent to PID\n",
-            );
-        }
+        #[cfg(not(test))]
+        crate::syscall::signal::signal_pgrp_from_kernel(pgrp, sig);
     }
 
     /// Register a thread as blocked waiting for TTY input
@@ -1044,9 +1120,7 @@ impl TtyDevice {
         let mut readers = BLOCKED_READERS.lock();
         while let Some(thread_id) = readers.pop_front() {
             // Wake the thread using the scheduler
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(thread_id);
-            });
+            crate::task::scheduler::unblock_thread(thread_id);
         }
     }
 
@@ -1065,9 +1139,7 @@ impl TtyDevice {
 
             for thread_id in thread_ids {
                 // Wake without blocking - the with_scheduler closure runs synchronously
-                crate::task::scheduler::with_scheduler(|sched| {
-                    sched.unblock(thread_id);
-                });
+                crate::task::scheduler::unblock_thread(thread_id);
             }
 
             // Trigger reschedule so the woken thread runs soon
@@ -1092,8 +1164,12 @@ pub fn console() -> Option<Arc<TtyDevice>> {
 /// It processes the character through the line discipline.
 #[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
 pub fn push_char(c: u8) {
+    push_char_from(c, super::InputSource::Other);
+}
+
+pub fn push_char_from(c: u8, source: super::InputSource) {
     if let Some(tty) = console() {
-        tty.input_char(c);
+        tty.input_char_from(c, source);
     }
 }
 
@@ -1144,12 +1220,19 @@ pub fn write_unprocessed(buf: &[u8]) {
 /// Used by keyboard interrupt handler when routing through TTY from ISR.
 #[allow(dead_code)]
 pub fn push_char_nonblock(c: u8) -> bool {
+    push_char_nonblock_from(c, super::InputSource::Other)
+}
+
+pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
     // Try to get console without blocking
     if let Some(guard) = CONSOLE_TTY.try_lock() {
         if let Some(ref tty) = *guard {
             let tty = Arc::clone(tty);
             drop(guard);
-            return tty.input_char_nonblock(c);
+            return match source {
+                super::InputSource::Other => tty.input_char_nonblock(c),
+                _ => tty.input_char_from_nonblock(c, source),
+            };
         }
     }
     false
@@ -1181,6 +1264,7 @@ pub fn init_console() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal::constants::{SIGINT, SIGQUIT, SIGTSTP};
 
     // =========================================================================
     // TtyDevice Construction Tests
@@ -1567,12 +1651,12 @@ mod tests {
     }
 
     #[test]
-    fn test_direct_send_signal_to_process() {
+    fn test_direct_send_signal_to_group() {
         signal_tracking::clear_signals();
 
-        // Call send_signal_to_process directly
+        // Call send_signal_to_group directly
         let pid = ProcessId::new(7777);
-        TtyDevice::send_signal_to_process(pid, SIGINT);
+        TtyDevice::send_signal_to_group(pid, SIGINT);
 
         let signals = signal_tracking::take_signals();
         assert_eq!(signals.len(), 1);

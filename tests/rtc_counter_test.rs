@@ -1,7 +1,7 @@
 #[path = "../userspace/programs/src/rtc_counter.rs"]
 mod rtc_counter;
 
-use rtc_counter::{drift_interval, frequency, next_edge, select_edges, RtcEdge, RtcPoll};
+use rtc_counter::{drift_interval, frequency, next_edge, ppm_interval, select_edges, span_edges, RtcEdge, RtcPoll};
 
 #[test]
 fn delayed_old_second_cannot_masquerade_as_a_narrow_edge() {
@@ -181,4 +181,63 @@ fn drift_bounds_round_outward_at_both_tolerance_edges() {
     for (elapsed, cycles, lower, upper) in [(0, 1, 1, 1), (1, 0, 1, 1), (1, 1, 0, 1), (1, 1, 2, 1)] {
         assert!(drift_interval(elapsed, cycles, lower, upper).is_err());
     }
+}
+
+/// span_edges' source: the queued edges in order, recording when each was expected.
+fn queued(edges: Vec<RtcEdge>) -> (impl FnMut(Option<u64>) -> Result<RtcEdge, String>, std::rc::Rc<std::cell::RefCell<Vec<Option<u64>>>>) {
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = asked.clone();
+    let mut edges = edges.into_iter();
+    (move |expected| { log.borrow_mut().push(expected); edges.next().ok_or_else(|| "no more edges".to_string()) }, asked)
+}
+
+#[test]
+fn span_measures_from_a_narrow_edge_to_the_narrow_edge_three_seconds_later() {
+    let (source, asked) = queued(vec![edge(10, 500), edge(13, 500)]);
+    let (first, last, passed) = span_edges(3, 1_000_000, 1000, 2, source).unwrap();
+    assert_eq!((first.second, last.second, passed), (10, 13, 0));
+    assert_eq!(*asked.borrow(), vec![None, Some(13_000_000)]);
+}
+
+#[test]
+fn span_passes_over_wide_edges_at_either_end_and_counts_them() {
+    let (source, asked) = queued(vec![edge(10, 7000), edge(11, 500), edge(14, 7000), edge(15, 500)]);
+    let (first, last, passed) = span_edges(3, 1_000_000, 1000, 2, source).unwrap();
+    assert_eq!((first.second, last.second, passed), (11, 15, 2));
+    assert_eq!(*asked.borrow(), vec![None, Some(11_000_000), Some(14_000_000), Some(15_000_000)]);
+}
+
+#[test]
+fn span_refuses_to_measure_once_too_many_edges_are_wide() {
+    let (source, _) = queued(vec![edge(10, 7000), edge(11, 500), edge(14, 7000), edge(15, 7000)]);
+    let error = span_edges(3, 1_000_000, 1000, 2, source).unwrap_err();
+    assert!(error.starts_with("3 RTC seconds edges were bracketed by reads wider than 1000 counts (the last 7000)"), "{error}");
+    let (source, _) = queued(vec![edge(10, 7000), edge(11, 7000), edge(12, 7000)]);
+    assert!(span_edges(3, 1_000_000, 1000, 2, source).is_err());
+}
+
+#[test]
+fn span_accepts_a_longer_span_when_an_expected_edge_was_missed() {
+    // Woken after the edge expected at 13 s, the source returns the next one.
+    let (source, _) = queued(vec![edge(86_399, 500), edge(86_403, 500)]);
+    let (first, last, passed) = span_edges(3, 1_000_000, 1000, 2, source).unwrap();
+    assert_eq!((first.second, last.second, passed), (86_399, 3, 0));
+    assert_eq!(frequency(first, last).unwrap().0, 1_000_000);
+}
+
+#[test]
+fn span_keeps_reading_past_an_edge_too_early_for_the_span() {
+    let (source, _) = queued(vec![edge(10, 500), edge(12, 500), edge(13, 500)]);
+    let (first, last, passed) = span_edges(3, 1_000_000, 1000, 2, source).unwrap();
+    assert_eq!((first.second, last.second, passed), (10, 13, 0));
+    let (source, _) = queued(vec![]);
+    assert_eq!(span_edges(3, 1_000_000, 1000, 2, source).unwrap_err(), "no more edges");
+}
+
+#[test]
+fn ppm_interval_rounds_outward_at_both_tolerance_edges() {
+    assert_eq!(ppm_interval(998_000_000, 1_002_000_000, 1_000_000_000), (-2000, 2000));
+    assert_eq!(ppm_interval(997_999_999, 1_002_000_001, 1_000_000_000), (-2001, 2001));
+    assert_eq!(ppm_interval(1_000_000_000, 1_000_000_000, 1_000_000_000), (0, 0));
+    assert_eq!(ppm_interval(999_999_999, 1_000_000_001, 1_000_000_000), (-1, 1));
 }

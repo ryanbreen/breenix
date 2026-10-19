@@ -164,7 +164,7 @@ pub async fn keyboard_task() {
                     // - Line editing (backspace, etc.)
                     // - Echo (if enabled)
                     // - Blocking read wakeup
-                    crate::tty::push_char(character as u8);
+                    crate::tty::push_char_from(character as u8, crate::tty::InputSource::Ps2);
 
                     // Also log for debugging (can be removed later for cleaner output)
                     log::debug!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

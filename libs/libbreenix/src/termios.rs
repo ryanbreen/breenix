@@ -12,6 +12,8 @@ use crate::syscall::nr;
 
 /// ioctl request codes
 pub mod request {
+    /// Breenix console input-provenance window and authentication result.
+    pub const CONSOLE_INPUT_PROOF: u64 = 0x425201;
     pub const TCSBRK: u64 = 0x5409;
     pub const TCSBRKP: u64 = 0x5425;
     pub const TCXONC: u64 = 0x540a;
@@ -638,4 +640,11 @@ mod tests {
         assert_eq!(t.c_cc[cc::VEOF], 0x04);
         assert_eq!(t.c_cc[cc::VSUSP], 0x1A);
     }
+}
+
+/// Begin an input-provenance window (0), report refused authentication (1), or
+/// accepted authentication (2). Only console TTYs support this Breenix ioctl.
+/// The kernel reports source metadata only, without retaining input contents.
+pub fn console_input_proof(fd: Fd, action: i32) -> Result<(), Error> {
+    scalar_ioctl(fd, request::CONSOLE_INPUT_PROOF, action)
 }

@@ -140,6 +140,14 @@ pub fn credit_ticks(cpu: usize, idle: bool) {
     }
 }
 
+/// The tick at which logical CPU `cpu` was last credited: its last return from
+/// an interrupt. 0 before its first.
+pub fn credited_to_tick(cpu: usize) -> u64 {
+    CREDITED_TO_TICK
+        .get(cpu)
+        .map_or(0, |tick| tick.load(Ordering::Relaxed))
+}
+
 /// Ticks logical CPU `cpu` has been credited with.
 pub fn cpu_elapsed_ticks(cpu: usize) -> u64 {
     ELAPSED_TICKS
@@ -403,6 +411,9 @@ pub fn report_bring_up() {
             apic_id_of(index).unwrap_or(u32::MAX)
         );
     }
+    if reported > 1 && online == reported {
+        log::info!("[smp] every reported CPU is online ({online} of {reported})");
+    }
     log::info!(
         "[smp] online={} reported={} source={}",
         online,
@@ -413,11 +424,4 @@ pub fn report_bring_up() {
             EnumerationSource::NotRun => "not-run",
         }
     );
-    if reported > 1 && online == reported {
-        log::info!(
-            "[smp] every reported CPU is online ({} of {})",
-            online,
-            reported
-        );
-    }
 }

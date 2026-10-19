@@ -17,6 +17,12 @@ final class VerdictTests: XCTestCase {
         XCTAssertEqual(Verdict.projectGateVerdict("PASS", exitCode: 1, command: []), .fail("PASS"))
     }
 
+    func testStarvedAttemptIsNeitherPassNorFailure() {
+        XCTAssertEqual(Verdict.projectGateVerdict("STARVED", exitCode: 2, command: []), .unknown)
+        XCTAssertEqual(Verdict.projectGateVerdict("INCONCLUSIVE", exitCode: 2, command: []), .unknown)
+        XCTAssertEqual(Verdict.projectGateVerdict("FAIL", exitCode: 2, command: []), .fail("FAIL"))
+    }
+
     func testFailAttributedAndRefusedAreFailures() {
         XCTAssertTrue(Verdict.fail("boom").isFailure)
         XCTAssertTrue(Verdict.stalled("STALLED: stopped_at=2026-10-12T12:00:00Z; last progress: FAIL").isFailure)

@@ -1779,7 +1779,10 @@ pub(crate) fn resolve_page(
     if let Some((_, flags)) = pt.get_page_info(page) {
         if entry_permits(flags, access) {
             // Installed by a racing fault after this one was taken.
-            crate::syscall::memory_common::flush_tlb(page.start_address());
+            crate::memory::tlb::flush_user_page(
+                pt.level_4_frame().start_address().as_u64(),
+                page.start_address(),
+            );
             return FaultOutcome::Resolved;
         }
         return FaultOutcome::NotFile;
@@ -1908,10 +1911,12 @@ pub(crate) fn handle_fault(
 }
 
 /// errno for a failed file write: one that could not allocate cache pages for
-/// the mapped holes it fills is ENOMEM, with the file unchanged; anything else
-/// is EIO.
+/// the mapped holes it fills is ENOMEM, with the file unchanged. A read-only
+/// mount reports EROFS; other storage failures report EIO.
 pub(crate) fn mutation_errno(error: &'static str) -> u64 {
-    if error.starts_with("Out of memory") {
+    if error == crate::fs::ext2::EXT2_READ_ONLY {
+        crate::syscall::errno::EROFS as u64
+    } else if error.starts_with("Out of memory") {
         crate::syscall::errno::ENOMEM as u64
     } else {
         crate::syscall::errno::EIO as u64

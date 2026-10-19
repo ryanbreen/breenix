@@ -1,7 +1,8 @@
 //! The x86 kernel log ring: which lines it takes, whole, and which it drops.
 //!
-//! A kernel log line is appended to a fixed ring and written to COM2 later,
-//! one FIFO's worth at a time (`serial`), so a caller that cannot wait on the
+//! A kernel log line is appended to a fixed ring and written to the log UART
+//! later, one FIFO's worth at a time, or one line at a time into the console's
+//! queue when the log shares it (`serial`), so a caller that cannot wait on the
 //! UART still logs. When the ring is full an ordinary line is dropped whole
 //! and the bytes lost are reported, on a line of their own, once there is room.
 //!
@@ -51,6 +52,17 @@ impl<const N: usize> LogRing<N> {
     /// Bytes ever appended, counting the ones already written out.
     pub fn pushed(&self) -> u64 {
         self.pushed
+    }
+
+    /// Bytes waiting up to and including the first line end, or the whole
+    /// waiting length when no line end is waiting.
+    pub fn line_len(&self) -> usize {
+        for index in 0..self.len {
+            if self.bytes[(self.head + index) % N] == b'\n' {
+                return index + 1;
+            }
+        }
+        self.len
     }
 
     pub fn pop(&mut self, out: &mut [u8]) -> usize {

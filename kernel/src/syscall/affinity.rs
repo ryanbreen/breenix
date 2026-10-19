@@ -63,8 +63,7 @@ fn apply_pin(tid: u64, pin: Option<CpuPin>) -> bool {
 
 /// The CPUs thread `tid` may run on.
 fn allowed(tid: u64) -> Option<u64> {
-    crate::task::scheduler::with_scheduler(|s| s.get_thread(tid).map(|t| t.cpu_affinity))
-        .flatten()
+    crate::task::scheduler::with_thread_mut(tid, |thread| thread.cpu_affinity)
         .map(|pin| pin.map_or_else(online_mask, |pin| pin.allowed & online_mask()))
 }
 

@@ -1,0 +1,17 @@
+{
+  "vigilBoot": "20261018T201339Z-qemu",
+  "baseCommit": "ddfc8d4aaeca9f52fa2fe0bc8e2878099b507ae3",
+  "rawSerialSha256": "1eb2698af6b5f619f0fd441c94c7f86f4082948a982ff7ff6f5e9ad50b79bd1e",
+  "features": [
+    "testing",
+    "boot_tests"
+  ],
+  "acceleration": "tcg",
+  "cpu": "cortex-a72",
+  "vcpus": 4,
+  "memoryMiB": 512,
+  "display": "cocoa",
+  "watcherExit": 0,
+  "overallAcceptanceExit": 1,
+  "unrelatedFailureIssue": 1813
+}

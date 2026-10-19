@@ -20,6 +20,7 @@ class SuppliedDiskTests(unittest.TestCase):
                           'target/release/build/breenix-test/out', 'target/ovmf/x64', 'bin'):
             (self.root / directory).mkdir(parents=True)
         shutil.copyfile(ROOT / 'scripts/ext2-machine.py', self.root / 'scripts/ext2-machine.py')
+        shutil.copyfile(ROOT / 'scripts/x86-qemu-policy.sh', self.root / 'scripts/x86-qemu-policy.sh')
         (self.root / 'scripts/host-slots.sh').write_text('''
 host_slots_start() { :; }
 host_slot_acquire() { :; }
@@ -79,7 +80,7 @@ Path('vm-called').write_text('yes')
         self.write_tool('debugfs', '''import os, struct, sys
 sys.stdout.buffer.write(b'\\x7fELF\\x02\\x01\\x01' + bytes(11) + struct.pack('<H', int(os.environ.get('TEST_MACHINE', '183'))) + bytes(44))
 ''')
-        self.env = {**os.environ, 'CARGO_BUILD_JOBS': '3', 'BREENIX_DEBUGFS': str(self.root / 'bin/debugfs'), 'PATH': str(self.root / 'bin') + ':' + os.environ['PATH']}
+        self.env = {**os.environ, 'BREENIX_ALLOW_X86_QEMU': '1', 'CARGO_BUILD_JOBS': '3', 'BREENIX_DEBUGFS': str(self.root / 'bin/debugfs'), 'PATH': str(self.root / 'bin') + ':' + os.environ['PATH']}
 
     def tearDown(self):
         self.temp.cleanup()

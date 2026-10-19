@@ -34,6 +34,7 @@ struct DaifRestoreGuard(u64);
 
 impl Drop for DaifRestoreGuard {
     fn drop(&mut self) {
+        super::irq_mask_account::restoring(self.0);
         unsafe {
             core::arch::asm!("msr daif, {}", in(reg) self.0, options(nomem, nostack));
         }
@@ -48,6 +49,7 @@ impl CpuOps for Aarch64Cpu {
     #[inline]
     unsafe fn enable_interrupts() {
         // daifclr with #3 clears bits I and F (enables both IRQs and FIQs)
+        super::irq_mask_account::closing();
         core::arch::asm!("msr daifclr, #3", options(nomem, nostack));
     }
 
@@ -56,6 +58,7 @@ impl CpuOps for Aarch64Cpu {
     unsafe fn disable_interrupts() {
         // daifset with #3 sets bits I and F (disables both IRQs and FIQs)
         core::arch::asm!("msr daifset, #3", options(nomem, nostack));
+        super::irq_mask_account::opened();
     }
 
     /// Check if interrupts are enabled (both I and F bits are clear)
@@ -92,6 +95,7 @@ impl CpuOps for Aarch64Cpu {
         unsafe {
             // Enable IRQs/FIQs and immediately wait
             // Any pending interrupt will be taken before WFI completes
+            super::irq_mask_account::closing();
             core::arch::asm!(
                 "msr daifclr, #3", // Enable IRQs and FIQs
                 "wfi",             // Wait for interrupt
@@ -119,6 +123,7 @@ impl CpuOps for Aarch64Cpu {
         unsafe {
             core::arch::asm!("msr daifset, #3", options(nomem, nostack));
         }
+        super::irq_mask_account::opened();
 
         let restore_guard = DaifRestoreGuard(daif);
         // An interval opened on a thread in a GPU path is timed for gpu_irq_masked_max_us.

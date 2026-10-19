@@ -6,7 +6,11 @@
   "fatal": [
     "panicked at kernel/src/",
     "!!! SOFT LOCKUP DETECTED !!!",
-    "\\[(DATA|INSTRUCTION)_ABORT\\].*from_el0=0"
+    "\\[BOOT_TESTS:FAIL:[1-9][0-9]*\\]",
+    "\\[TEST:[^\\]\\r\\n]*:FAIL(?=[:\\]])",
+    "\\[(DATA|INSTRUCTION)_ABORT\\].*from_el0=0",
+    "\\[splash\\] logo read back differs",
+    "\\[console\\] tty[1-6] shown: read back differs"
   ],
   "modes": {
     "tests": {
@@ -147,6 +151,95 @@
         "x86_64": [
           "procfs initialized",
           "Contract tests passed"
+        ]
+      }
+    },
+    {
+      "id": "boot-logo",
+      "title": "Boot logo & progress",
+      "summary": "The Breenix logo and boot progress are drawn on the framebuffer as soon as it exists, the displayed pixels read back identical to the shadow and to the logo's independently computed pixels at two stages of the boot, and the console takes the screen when the system first waits for its user.",
+      "kernel": true,
+      "stub": true,
+      "stages": {
+        "aarch64": [
+          {
+            "name": "Logo drawn",
+            "marker": "[splash] logo drawn: "
+          },
+          {
+            "name": "Boot progress shown",
+            "marker": "[splash] progress shown: "
+          },
+          {
+            "name": "Logo read back",
+            "marker": "[splash] logo read back: "
+          },
+          {
+            "name": "Progress read back as it advanced",
+            "marker": "[splash] progress read back: "
+          }
+        ],
+        "x86_64": [
+          {
+            "name": "Logo drawn",
+            "marker": "[splash] logo drawn: "
+          },
+          {
+            "name": "Boot progress shown",
+            "marker": "[splash] progress shown: "
+          },
+          {
+            "name": "Logo read back",
+            "marker": "[splash] logo read back: "
+          },
+          {
+            "name": "Progress read back as it advanced",
+            "marker": "[splash] progress read back: "
+          }
+        ],
+        "shell": [
+          {
+            "name": "Logo drawn",
+            "marker": "[splash] logo drawn: "
+          },
+          {
+            "name": "Boot progress shown",
+            "marker": "[splash] progress shown: "
+          },
+          {
+            "name": "Logo read back",
+            "marker": "[splash] logo read back: "
+          },
+          {
+            "name": "Progress read back as it advanced",
+            "marker": "[splash] progress read back: "
+          },
+          {
+            "name": "Console took the screen",
+            "marker": "[splash] console took the screen: reader"
+          }
+        ],
+        "default": [
+          {
+            "name": "Logo drawn",
+            "marker": "[splash] logo drawn: "
+          },
+          {
+            "name": "Boot progress shown",
+            "marker": "[splash] progress shown: "
+          },
+          {
+            "name": "Logo read back",
+            "marker": "[splash] logo read back: "
+          },
+          {
+            "name": "Progress read back as it advanced",
+            "marker": "[splash] progress read back: "
+          },
+          {
+            "name": "Console took the screen",
+            "marker": "[splash] console took the screen: kd-text"
+          }
         ]
       }
     },

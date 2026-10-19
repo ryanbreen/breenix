@@ -21,7 +21,7 @@ fn six_gates_source_and_call_the_post_verdict_importer() {
             "run-aarch64-boot-test-strict.sh" => 3,
             "run-aarch64-prod-profile-boot-test.sh" => 1,
             "run-aarch64-testing-profile-boot-test.sh" => 1,
-            "run-x86-boot-tests.sh" => 2,
+            "run-x86-boot-tests.sh" => 3,
             "run-x86-gate.sh" => 1,
             "run-x86-prod-profile-boot-test.sh" => 2,
             _ => panic!("{name}: no expected call count on file for this script"),
@@ -68,6 +68,8 @@ fn six_gates_source_and_call_the_post_verdict_importer() {
                         "if [ \"$SCORE_STATUS\" -eq 2 ]; then",
                     ("run-aarch64-boot-test-strict.sh", "FAIL", "1") =>
                         "report_failure \"$iteration\"",
+                    ("run-x86-boot-tests.sh", "STARVED", "2") =>
+                        "frame-custody gate run $i: STARVED",
                     ("run-x86-boot-tests.sh", "PASS", "0") =>
                         "frame-custody gate run $i: PASS",
                     _ => panic!("{name}:{call_line}: literal outcome needs a placement anchor"),

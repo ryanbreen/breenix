@@ -5,7 +5,6 @@ BREENIX_HOST_ARGS=("$@")
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 source "$SCRIPT_DIR/lib/gate-structure-preflight.sh"
 BREENIX_GATE_TMP="${BREENIX_GATE_TMP:-/tmp}"
 ARCH=""
@@ -37,6 +36,11 @@ while [ "$#" -gt 0 ]; do
         *) echo "FAIL: unknown option $1"; false ;;
     esac
 done
+if [ "$ARCH" = x86_64 ]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
+fi
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
+
 case "$ARCH" in x86_64|aarch64) ;; *) echo "FAIL: --arch x86_64|aarch64 required"; false ;; esac
 # x86 runs the early retirement and stack cohorts before ordinary init. Use
 # the existing full x86 boot gate's 900-second bound for that startup workload.

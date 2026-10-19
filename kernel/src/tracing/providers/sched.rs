@@ -437,25 +437,27 @@ pub enum DispatchAbandonSite {
     RollbackTls = 1,
     /// `restore_userspace_thread_context`: first userspace entry aborted.
     RollbackFirstEntry = 2,
-    /// `switch_to_thread`: the blocked-in-syscall arm could not take the
-    /// process-manager guard.
-    RollbackKernelContextLock = 3,
-    /// `switch_to_thread`, blocked-in-syscall arm: unpublished dispatch.
+    /// `refuse_user_dispatch`: a user thread's page-table root was not
+    /// cached yet and the process manager, which the first lookup needs, was
+    /// busy.
+    RollbackRootLock = 3,
+    /// `refuse_user_dispatch`, for a thread resuming inside the kernel:
+    /// unpublished dispatch.
     IdleUnpublishedBlocked = 4,
-    /// `restore_userspace_thread_context`: unpublished dispatch.
+    /// `refuse_user_dispatch`, for a thread returning to Ring 3: unpublished
+    /// dispatch.
     IdleUnpublishedUser = 5,
-    /// `switch_to_thread`, blocked-in-syscall arm: process has no CR3.
+    /// `refuse_user_dispatch`, for a thread resuming inside the kernel:
+    /// process has no CR3.
     IdleNoCr3Blocked = 6,
-    /// `restore_userspace_thread_context`: process has no CR3.
+    /// `refuse_user_dispatch`, for a thread returning to Ring 3: process has
+    /// no CR3.
     IdleNoCr3User = 7,
-    /// `switch_to_thread`, blocked-in-syscall arm: a signal terminated the
-    /// process during delivery.
-    IdleSignalTerminatedBlocked = 8,
-    /// `restore_userspace_thread_context`: a signal terminated the process
-    /// during delivery.
+    /// `deliver_signals_on_user_return`, for a thread a switch dispatched: a
+    /// signal terminated the process during delivery.
     IdleSignalTerminatedUser = 9,
-    /// `restore_userspace_thread_context`: the process was already terminated
-    /// after a signal was delivered.
+    /// `deliver_signals_on_user_return`, for a thread a switch dispatched:
+    /// the process was already terminated after a signal was delivered.
     IdleProcessTerminatedUser = 10,
     /// `restore_userspace_thread_context`: the saved userspace context was
     /// refused (non-canonical RIP/RSP, or a kernel frame).
@@ -466,12 +468,14 @@ pub enum DispatchAbandonSite {
     /// `kernel/src/interrupts.rs`: the general-protection-fault handler
     /// redirected a terminated thread to idle.
     ExceptionGeneralProtection = 13,
-    /// `check_and_deliver_signals_for_current_thread`: a signal terminated the
-    /// process on an interrupt-return arm that performed no switch -- gate 4's
-    /// `!need_resched && !blocked` return, which calls the same helper.
+    /// `deliver_signals_on_user_return`, for a return with no switch: a
+    /// signal terminated the process on an interrupt-return arm that performed
+    /// no switch -- gate 4's `!need_resched && !blocked` return, which calls
+    /// the same helper.
     IdleSignalTerminatedOnReturn = 14,
-    /// `check_and_deliver_signals_for_current_thread`: the process was already
-    /// terminated after a signal was delivered on a no-switch return arm.
+    /// `deliver_signals_on_user_return`, for a return with no switch: the
+    /// process was already terminated after a signal was delivered on a
+    /// no-switch return arm.
     IdleProcessTerminatedOnReturn = 15,
     /// `kernel/src/interrupts.rs`: a Ring 3 #DE, #UD, #SS, #MF, #AC or #XM
     /// whose signal took its default action redirected the thread to idle.
@@ -489,7 +493,7 @@ impl DispatchAbandonSite {
             Self::RollbackSaveFailed
             | Self::RollbackTls
             | Self::RollbackFirstEntry
-            | Self::RollbackKernelContextLock => &DISPATCH_SWITCH_ROLLED_BACK,
+            | Self::RollbackRootLock => &DISPATCH_SWITCH_ROLLED_BACK,
             Self::ExceptionPageFault
             | Self::ExceptionGeneralProtection
             | Self::ExceptionUserFault => &DISPATCH_EXC_IDLE_REDIRECT,

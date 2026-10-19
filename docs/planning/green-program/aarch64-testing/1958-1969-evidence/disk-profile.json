@@ -1,0 +1,20 @@
+[
+  {
+    "device": "home",
+    "readOnly": true,
+    "cache": {
+      "no-flush": false,
+      "direct": false,
+      "writeback": true
+    }
+  },
+  {
+    "device": "ext2",
+    "readOnly": false,
+    "cache": {
+      "no-flush": false,
+      "direct": false,
+      "writeback": true
+    }
+  }
+]
