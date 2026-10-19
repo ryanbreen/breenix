@@ -274,13 +274,19 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Seed the random pool before the network stack picks ports and IDs.
     let random = kernel::random::init();
     log::info!(
-        "random: pool ready={} rdrand={} rdseed={} hardware_bits={} jitter_samples={} jitter_bits={}",
+        "random: pool ready={} rdrand={} rdseed={} hardware_bits={} device_bits={} jitter_windows={}/{} jitter_bits={} jitter_run={}/{} jitter_common={}/{}",
         random.ready,
         random.rdrand,
         random.rdseed,
         random.hardware_bits,
-        random.jitter_samples,
-        random.jitter_bits
+        random.device_bits,
+        random.jitter.passed,
+        random.jitter.windows,
+        random.jitter.bits,
+        random.jitter.longest_run,
+        kernel::random::JitterReport::RUN_CUTOFF,
+        random.jitter.most_common,
+        kernel::random::JitterReport::COMMON_CUTOFF
     );
 
     // Initialize network stack (after E1000 driver is ready)

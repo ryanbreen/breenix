@@ -1,7 +1,9 @@
-/* Run on a CPU without RNG instructions (for example cortex-a72), with one
- * vCPU. Compile with scripts/breenix-cc and run through probe --run. A busy
- * syscall would prevent the parent from running and fail the boot deadline.
- * Written against Breenix's syscall ABI and C interfaces. */
+/* Run on a boot whose pool earned no credit (its boot line reads
+ * "random: pool ready=false": no CPU RNG instructions, no entropy device, and
+ * a counter that fails the jitter health tests), with one vCPU. Compile with
+ * scripts/breenix-cc and run through probe --run. A busy syscall would prevent
+ * the parent from running and fail the boot deadline. Written against
+ * Breenix's syscall ABI and C interfaces. */
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>

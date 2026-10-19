@@ -166,6 +166,8 @@ impl QemuConfig {
                     ]);
                 }
 
+                args.extend_from_slice(&["-device".to_string(), "virtio-rng-device".to_string()]);
+
                 // Add QMP socket if specified
                 if let Some(qmp) = &self.qmp_socket {
                     args.push("-qmp".to_string());

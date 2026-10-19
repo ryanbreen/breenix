@@ -76,6 +76,7 @@ docker run --rm \
         -machine virt,accel=tcg \
         -cpu cortex-a72 \
         -m 512 \
+        -device virtio-rng-device \
         -kernel /breenix/kernel.elf \
         -nographic \
         -serial file:/output/serial.txt \

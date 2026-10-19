@@ -692,7 +692,8 @@ unsafe fn make_unique(template: *mut u8, suffix: usize, create: &dyn Fn(*const u
     }
     for _ in 0..1000 {
         let mut random = [0u8; 6];
-        if crate::getrandom(random.as_mut_ptr(), 6, 0) != 6 {
+        // Temporary names must work before the entropy pool is ready.
+        if crate::getrandom(random.as_mut_ptr(), 6, libbreenix::syscall::GRND_INSECURE) != 6 {
             return -1;
         }
         for (i, r) in random.iter().enumerate() {

@@ -843,10 +843,17 @@ struct LoginCredentials { password: String, hash: String }
 static LOGIN_CREDENTIALS: std::sync::OnceLock<Verdict<LoginCredentials>> = std::sync::OnceLock::new();
 
 fn login_credentials() -> Verdict<LoginCredentials> {
+    // S41: this throwaway test password is not a secret. It must also work
+    // on platforms whose entropy pool correctly remains unready.
     let mut random = [0; 16];
     let mut at = 0;
     while at < random.len() {
-        let n = libbreenix::crypto::rand::getrandom_bytes(&mut random[at..]).map_err(|e| format!("getrandom: {e}"))?;
+        let n = unsafe {
+            raw::syscall3(nr::GETRANDOM, random[at..].as_mut_ptr() as u64,
+                (random.len() - at) as u64, libbreenix::syscall::GRND_INSECURE as u64)
+        } as i64;
+        require(n >= 0, &format!("getrandom: {n}"))?;
+        let n = n as usize;
         require(n > 0, "getrandom made no progress")?;
         at += n;
     }
