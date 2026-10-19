@@ -1,9 +1,9 @@
-//! Health tests and credit for the timing-jitter source, from NIST SP 800-90B
+//! Health diagnostics for the uncredited timing-jitter source, from NIST SP 800-90B
 //! sections 4.3 and 4.4, on one-byte raw samples.
 //!
-//! The source is assessed at `ASSESSED_BITS` of min-entropy per sample, and the
-//! cutoffs are the document's for that rate and a false-positive probability
-//! of alpha = 2^-20:
+//! The cutoffs use the document's example H = 2 and alpha = 2^-20. This is
+//! not an assessment of this source: passing these tests cannot establish
+//! unpredictability, so timing samples earn no entropy credit.
 //!
 //! - Repetition count test (4.4.1): C = 1 + ceil(-log2(alpha) / H), 11 for
 //!   H = 2 (the document's own example). A run of C identical samples fails.
@@ -17,26 +17,24 @@
 //!   or more, so a clock that alternates or repeats a short pattern fails
 //!   whichever value starts the window.
 //!
-//! Credit (`Credit`): the start-up tests (4.3 item 4) are these tests over the
-//! first `STARTUP_SAMPLES`, and credit waits until they pass. A failure is
-//! treated as persistent (4.3 item 2): the source earns no more credit after
-//! it. A passing window earns `WINDOW_CREDIT_BITS`.
+//! The start-up diagnostics cover `STARTUP_SAMPLES`; a failure is persistent.
+//! `Credit` records these results but keeps passing windows uncredited,
+//! pending an independent assessment of the source and its rate.
 //!
 //! Pure computation, so the host tests compile this file as is.
 
-/// Assessed min-entropy per raw sample, in bits; the cutoffs below are for it.
-pub const ASSESSED_BITS: u32 = 2;
+/// Reference H used to choose diagnostic cutoffs, not assessed source entropy.
+pub const CUTOFF_REFERENCE_BITS: u32 = 2;
 /// Repetition count cutoff: 1 + ceil(20 / 2).
-pub const RCT_CUTOFF: u32 = 11;
+pub const RCT_CUTOFF: u32 = 1 + 20 / CUTOFF_REFERENCE_BITS;
 /// Adaptive proportion window for non-binary samples.
 pub const WINDOW: u32 = 512;
 /// Adaptive proportion cutoff: 1 + CRITBINOM(512, 2^-2, 1 - 2^-20).
 pub const APT_CUTOFF: u32 = 177;
-/// Samples the start-up tests cover before anything is credited.
+/// Samples covered by the start-up diagnostics.
 pub const STARTUP_SAMPLES: u32 = 1024;
-/// Credit for a window that passes: a sixteenth of the assessed rate, 1/8 bit
-/// per sample.
-pub const WINDOW_CREDIT_BITS: u32 = WINDOW * ASSESSED_BITS / 16;
+/// Timing stays uncredited until its source and rate are independently justified.
+pub const WINDOW_CREDIT_BITS: u32 = 0;
 
 /// What a finished window showed, and whether it passes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,8 +118,7 @@ impl HealthTests {
     }
 }
 
-/// The source's credit: held through the start-up tests, stopped for good by
-/// any failure.
+/// Diagnostic start-up and failure state for the uncredited timing source.
 pub struct Credit {
     windows: u32,
     failed: bool,

@@ -4,7 +4,7 @@
 //! to catch.
 
 use crate::health::{
-    Credit, HealthTests, WindowVerdict, APT_CUTOFF, ASSESSED_BITS, RCT_CUTOFF, STARTUP_SAMPLES, WINDOW,
+    Credit, HealthTests, WindowVerdict, APT_CUTOFF, CUTOFF_REFERENCE_BITS, RCT_CUTOFF, STARTUP_SAMPLES, WINDOW,
     WINDOW_CREDIT_BITS,
 };
 
@@ -40,8 +40,8 @@ fn repetition_cutoff_is_the_documents_example_for_two_bits() {
     // samples (alpha = 2^-40).
     assert_eq!(repetition_cutoff(2.0, 20.0), 11);
     assert_eq!(repetition_cutoff(8.0, 40.0), 6);
-    assert_eq!(ASSESSED_BITS, 2);
-    assert_eq!(RCT_CUTOFF, repetition_cutoff(ASSESSED_BITS as f64, 20.0));
+    assert_eq!(CUTOFF_REFERENCE_BITS, 2);
+    assert_eq!(RCT_CUTOFF, repetition_cutoff(CUTOFF_REFERENCE_BITS as f64, 20.0));
 }
 
 #[test]
@@ -54,7 +54,7 @@ fn proportion_cutoffs_match_table_2() {
     }
     // The samples are bytes (non-binary), so the window is 512.
     assert_eq!(WINDOW, 512);
-    assert_eq!(APT_CUTOFF, proportion_cutoff(WINDOW, ASSESSED_BITS as f64));
+    assert_eq!(APT_CUTOFF, proportion_cutoff(WINDOW, CUTOFF_REFERENCE_BITS as f64));
 }
 
 /// Feed `samples` and collect the verdicts of the windows they complete.
@@ -68,7 +68,7 @@ fn credit_for(verdicts: &[WindowVerdict]) -> u32 {
     verdicts.iter().map(|verdict| credit.record(verdict)).sum()
 }
 
-/// Bytes from a fixed-seed xorshift: what a working source looks like to the tests.
+/// Predictable fixed-seed xorshift bytes that pass the health diagnostics.
 fn uniform(count: usize) -> Vec<u8> {
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     (0..count)
@@ -130,7 +130,7 @@ fn a_quantized_instruction_counting_clock_fails() {
 }
 
 #[test]
-fn a_working_source_passes_and_earns_only_after_the_start_up_tests() {
+fn passing_diagnostics_never_establish_entropy_credit() {
     let windows = verdicts(uniform(8 * WINDOW as usize));
     assert!(windows.iter().all(WindowVerdict::passed));
     let mut credit = Credit::new();
@@ -140,9 +140,8 @@ fn a_working_source_passes_and_earns_only_after_the_start_up_tests() {
     assert!(earned[..startup - 1].iter().all(|&bits| bits == 0));
     assert_eq!(earned[startup - 1], startup as u32 * WINDOW_CREDIT_BITS);
     assert!(earned[startup..].iter().all(|&bits| bits == WINDOW_CREDIT_BITS));
-    // 1/8 bit per sample: four windows ready a 256-bit pool.
-    assert_eq!(WINDOW_CREDIT_BITS * 8, WINDOW);
-    assert_eq!(earned.iter().take(4).sum::<u32>(), 256);
+    assert_eq!(WINDOW_CREDIT_BITS, 0, "no independent entropy assessment");
+    assert!(earned.iter().all(|&bits| bits == 0));
 }
 
 #[test]
@@ -208,4 +207,16 @@ fn the_adaptive_proportion_test_fails_at_its_cutoff() {
         assert_eq!(window.proportion_failed(), fails);
         assert!(!window.repetition_failed());
     }
+}
+
+#[test]
+fn a_predictable_three_value_cycle_passes_but_earns_nothing() {
+    let windows = verdicts((0..8 * WINDOW).map(|i| 100 + (i % 3) as u8));
+    assert_eq!(windows.len(), 8);
+    for window in &windows {
+        assert_eq!(window.longest_run, 1);
+        assert_eq!(window.most_common, 171);
+        assert!(window.passed());
+    }
+    assert_eq!(credit_for(&windows), 0);
 }

@@ -16,10 +16,9 @@
 //! The pool is ready once `READY_BITS` have been credited. Credit is
 //! conservative: a full word per RDSEED or RNDRRS word, half a word per RDRAND
 //! or RNDR word (each is a generator's output, not raw entropy), 8 bits per
-//! byte from an entropy device (it exists to supply them), and 1/8 bit per
-//! jitter sample once the NIST SP 800-90B health tests pass (`health.rs`):
-//! nothing before the start-up tests pass, nothing after any failure.
-//! Device events add input but no credit: their timing is not assessed.
+//! byte from an entropy device (it exists to supply them). Timer jitter and
+//! device events add input but no credit: their entropy is not independently
+//! assessed. Passing health diagnostics (`health.rs`) does not establish it.
 //! Without any credited source the pool stays unready.
 
 mod blake2s;
@@ -224,7 +223,7 @@ pub fn add_event(event: Event, value: u64) {
 
 /// Take jitter windows: the start-up windows first, then more until the pool
 /// is ready, up to `JITTER_MAX_WINDOWS`, stopping at the first failure. Each
-/// window is mixed in; `health::Credit` decides what it earns.
+/// window is mixed in without entropy credit; health tests are diagnostics.
 fn collect_jitter() -> JitterReport {
     let mut report = JitterReport::default();
     let Some(mut source) = jitter::Jitter::new() else {
@@ -245,7 +244,6 @@ fn collect_jitter() -> JitterReport {
         report.most_common = report.most_common.max(verdict.most_common);
         let bits = earned.record(&verdict);
         report.bits += bits;
-        credit(bits);
     }
     erase::wipe(&mut digest);
     report

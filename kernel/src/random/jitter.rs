@@ -9,7 +9,7 @@
 //! such a clock (tools/random-host-tests/src/health_checks.rs).
 //!
 //! The raw sample is the low byte of a walk's tick count. Each window's tick
-//! counts are hashed into the pool; `health::Credit` decides what it earns.
+//! counts are hashed into the pool without entropy credit.
 
 use alloc::vec::Vec;
 
