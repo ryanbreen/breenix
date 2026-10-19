@@ -398,6 +398,10 @@ KERNEL_HAS_CAPTURE_SELFTEST=0
 # kernel's userspace report. strand_inject_live_outgoing adds its oracle. Live
 # boots read the profile from $KERNEL below; scoring-only mode reads it from
 # BREENIX_STRICT_SCORE_KERNEL, the kernel that produced the serial, when given.
+# The serial names the profile too: a serial that carries the oracle's line is
+# scored as that profile whether or not its kernel was given, and a serial that
+# carries it beside a kernel without its print site is not that kernel's serial.
+# The oracle reports once per boot, so its evidence is exactly one PASS line.
 STRAND_LIVE_OUTGOING_ORACLE_PATTERN='\[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=[1-9][0-9]*:live_outgoing=[1-9][0-9]*:outgoing_tid=[0-9]+:stranded=0:PASS\]'
 kernel_has_live_outgoing() {
     # Read through EOF: grep -q can hide a later read error after a match.
@@ -410,11 +414,13 @@ kernel_has_live_outgoing() {
     esac
 }
 KERNEL_HAS_LIVE_OUTGOING=0
+KERNEL_PROFILE_KNOWN=0
 if [ -n "${BREENIX_STRICT_SCORE_KERNEL:-}" ]; then
     if [ ! -f "$BREENIX_STRICT_SCORE_KERNEL" ]; then
         echo "SCORE: FAIL - BREENIX_STRICT_SCORE_KERNEL names no readable kernel ($BREENIX_STRICT_SCORE_KERNEL)"
         exit 1
     fi
+    KERNEL_PROFILE_KNOWN=1
     if kernel_has_live_outgoing "$BREENIX_STRICT_SCORE_KERNEL"; then
         KERNEL_HAS_LIVE_OUTGOING=1
     fi
@@ -511,6 +517,7 @@ KERNEL_HAS_CAPTURE_SELFTEST=0
 if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
     KERNEL_HAS_CAPTURE_SELFTEST=1
 fi
+KERNEL_PROFILE_KNOWN=1
 if kernel_has_live_outgoing "$KERNEL"; then
     KERNEL_HAS_LIVE_OUTGOING=1
 fi
@@ -696,12 +703,23 @@ score_serial() {
         echo "Scheduler strand injection oracle marker missing or failed"
         return 1
     fi
-    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ]; then
-        if grep -qE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
+    local live_outgoing_reports
+    live_outgoing_reports=$(grep -aoF '[STRAND_LIVE_OUTGOING_ORACLE:' "$serial_file" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${live_outgoing_reports:-0}" -gt 0 ] && [ "$KERNEL_PROFILE_KNOWN" = "1" ] \
+        && [ "$KERNEL_HAS_LIVE_OUTGOING" = "0" ]; then
+        echo "Live-outgoing strand oracle line from a kernel without its print site; the serial is not this kernel's"
+        return 1
+    fi
+    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ] || [ "${live_outgoing_reports:-0}" -gt 0 ]; then
+        if grep -aqE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
             echo "Live-outgoing strand oracle reported failure ($(grep -aoE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
             return 1
         fi
-        if ! grep -qE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        if [ "${live_outgoing_reports:-0}" -gt 1 ]; then
+            echo "Live-outgoing strand oracle reported $live_outgoing_reports times; it reports once per boot"
+            return 1
+        fi
+        if ! grep -aqE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
             echo "Live-outgoing strand oracle marker missing or failed"
             return 1
         fi
