@@ -50,7 +50,7 @@ sudo -n incus exec "$METAL_INSTANCE" -- sh -c "DEBIAN_FRONTEND=noninteractive ap
 echo "metal-deploy: service container ready"'
 fi
 
-pack . -C "$HERE/.." write-boot-target.sh | remote '
+pack . -C "$HERE/.." write-boot-target.sh hostkeys.py | remote '
 sudo -n incus exec "$METAL_INSTANCE" -- sh -c "rm -rf /opt/breenix-metal.new && mkdir -p /opt/breenix-metal.new && \
     tar -C /opt/breenix-metal.new --no-same-owner -xf - && rm -rf /opt/breenix-metal && \
     mv /opt/breenix-metal.new /opt/breenix-metal"'

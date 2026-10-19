@@ -19,12 +19,21 @@ keyboard and the case reads the screen back. The runner never reports success: t
 evidence is in the guest. A line that is not at the start of a serial line (the
 kernel's announcement lines) is never a request.
 
-Backends, one per way the target takes keys:
+Backends for the standalone `send` and `watch` commands:
 
     qmp:<socket>          QEMU's QMP send-key (ARM64 and x86-64 QEMU)
     prlsdk:<vm>           Parallels Virtualization SDK key and pointer events (Parallels)
     vnc:<host>:<port>     RFB key events (VMware Fusion's built-in VNC server)
     none                  nothing: every request is answered "no host key path"
+
+The x86-metal boot loop reaches the machine only through power control and the serial
+console, so it has no virtual keyboard to press. It declares `xhci-replay` and answers each
+request by typing `BXKEY <report>[,<report>...]` lines, one per chord, on the serial console
+(ReplayKeys); the kernel replays each report through its USB boot keyboard's interrupt-IN
+completion path (kernel/src/drivers/xhci/host_keys.rs).
+This is a library transport: `metal-boot` supplies its serial writer to `ReplayKeys`
+and passes that instance to `Watcher`. `declare --backend xhci-replay` returns the
+suite declaration, but `xhci-replay` is not a standalone `send` or `watch` backend.
 
 Parallels (27.0.3): the Parallels Virtualization SDK ships inside Parallels Desktop and
 this script calls its published C API through ctypes. Keys are Parallels virtual key
@@ -350,6 +359,43 @@ class NoKeys:
         raise NoPath(self.why)
 
 
+class ReplayKeys:
+    """HID boot keyboard reports (HID 1.11 B.1) for the kernel's xHCI replay, one line per chord.
+
+    A chord is pressed as a keyboard reports it: each modifier in order, then the key, released
+    in reverse, one report per change. `write` takes one line; the kernel replays its reports
+    HOST_KEY_GAP_MS apart, so each chord waits that long per report before the next is written.
+    """
+    # Modifier bits of the report's first byte; usages of the Keyboard/Keypad page (HID Usage Tables 1.12, 10).
+    BITS = {'ctrl': 0x01, 'shift': 0x02, 'alt': 0x04, 'super': 0x08, 'rctrl': 0x10, 'ralt': 0x40}
+    USAGES = {**{chr(ord('a') + i): 0x04 + i for i in range(26)}, **{str(i): 0x1D + i for i in range(1, 10)},
+              '0': 0x27, 'enter': 0x28, 'esc': 0x29, 'backspace': 0x2A, 'tab': 0x2B, 'space': 0x2C,
+              'capslock': 0x39, **{'f%d' % i: 0x39 + i for i in range(1, 13)}, 'insert': 0x49, 'home': 0x4A,
+              'pageup': 0x4B, 'delete': 0x4C, 'end': 0x4D, 'pagedown': 0x4E, 'right': 0x4F, 'left': 0x50,
+              'down': 0x51, 'up': 0x52}
+    HOST_KEY_GAP_MS = 10
+
+    def __init__(self, write, pace=time.sleep):
+        self.write, self.pace = write, pace
+
+    @classmethod
+    def reports(cls, mods, key):
+        held, steps = 0, []
+        for mod in mods:
+            held |= cls.BITS[mod]
+            steps.append(bytes([held, 0, 0, 0, 0, 0, 0, 0]))
+        steps.append(bytes([held, 0, cls.USAGES[key], 0, 0, 0, 0, 0]))
+        return steps + steps[-2::-1] + [bytes(8)]
+
+    @classmethod
+    def line(cls, mods, key):
+        return 'BXKEY ' + ','.join(report.hex() for report in cls.reports(mods, key))
+
+    def send(self, mods, key):
+        self.write(self.line(mods, key))
+        self.pace(len(self.reports(mods, key)) * self.HOST_KEY_GAP_MS / 1000)
+
+
 def backend(spec):
     kind, _, rest = spec.partition(':')
     if kind == 'qmp' and rest:
@@ -424,7 +470,7 @@ class Watcher:
 def declaration(spec):
     """The contract's `<method>[;missing=<key>,...]` string for a backend; empty when there is no path."""
     kind = spec.partition(':')[0]
-    return kind if kind in ('qmp', 'prlsdk', 'vnc') else ''
+    return kind if kind in ('qmp', 'prlsdk', 'vnc', 'xhci-replay') else ''
 
 
 def watch(args):
@@ -468,6 +514,14 @@ def selftest_parse():
         except ValueError:
             continue
         raise AssertionError(bad)
+    # The chord grammar's keys (26 letters, 10 digits, 12 F-keys, NAMED) are the usages' keys.
+    keys = [chr(c) for c in range(ord('a'), ord('z') + 1)] + [str(d) for d in range(10)] + \
+        ['f%d' % n for n in range(1, 13)] + list(NAMED)
+    assert sorted(ReplayKeys.USAGES) == sorted(keys)
+    assert ReplayKeys.line(*parse_chord('ctrl-alt-f2')) == \
+        'BXKEY 0100000000000000,0500000000000000,05003b0000000000,0500000000000000,0100000000000000,0000000000000000'
+    assert ReplayKeys.line(*parse_chord('a')) == 'BXKEY 0000040000000000,0000000000000000'
+    assert ReplayKeys.reports((), '0')[0][2] == 0x27 and ReplayKeys.reports((), 'f12')[0][2] == 0x45
     sent = []
 
     class Recorder:

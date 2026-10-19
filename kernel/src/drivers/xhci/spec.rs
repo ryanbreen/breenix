@@ -98,7 +98,7 @@ impl Posted {
     /// The posted TD the controller reaches first among those `completed`
     /// does not name, and its slot: the oldest, in a ring at `base` whose
     /// producer's next TRB is `enqueue`.
-    #[cfg(any(test, feature = "usb_pointer_replay"))]
+    #[cfg(any(test, target_arch = "x86_64", feature = "usb_pointer_replay"))]
     pub fn oldest_uncompleted(&self, completed: &[u64], base: u64, enqueue: (u64, bool)) -> Option<(usize, u64)> {
         self.tds
             .iter()
@@ -122,7 +122,7 @@ impl Posted {
 
 /// How many TRBs before the producer's `enqueue` the TRB at `at` was queued,
 /// in a ring at `base` whose last TRB is the Link: larger is older.
-#[cfg(any(test, feature = "usb_pointer_replay"))]
+#[cfg(any(test, target_arch = "x86_64", feature = "usb_pointer_replay"))]
 pub fn ring_age(base: u64, enqueue: (u64, bool), at: u64) -> usize {
     let lap = TRBS - 1;
     let to = ((enqueue.0 - base) / 16) as usize;
@@ -133,7 +133,7 @@ pub fn ring_age(base: u64, enqueue: (u64, bool), at: u64) -> usize {
 /// The TRB after index `index` (whose cycle bit is `cycle`) and its cycle bit,
 /// following the Link TRB, which toggles the cycle (4.9.2): a Set TR Dequeue
 /// Pointer target past a one-TRB TD.
-#[cfg(any(test, feature = "usb_pointer_replay"))]
+#[cfg(any(test, target_arch = "x86_64", feature = "usb_pointer_replay"))]
 pub fn ring_next(base: u64, index: usize, cycle: bool) -> (u64, bool) {
     if index + 1 == TRBS - 1 {
         (base, !cycle)
