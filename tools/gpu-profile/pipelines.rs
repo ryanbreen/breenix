@@ -29,7 +29,6 @@ fn shape(pipe: u32) -> (String, u32) {
         10 => c.line(&[x, y, a[0], a[1], a[2], a[3]]),
         11 | 12 => c.circle(&[x, y, a[0], a[1], a[2]], pipe == 12),
         13 => c.rounded(&[x, y, a[0], a[1], a[2], a[3], a[4]]),
-        15 => c.triangle(&[x, y, a[0], a[1], a[2], a[3], a[4], a[5]]),
         _ => unreachable!(),
     };
     let (text, tokens, registers) = tgsi(&c, &[result]);
@@ -56,6 +55,8 @@ pub fn generate(destination: &std::path::Path) {
     for pipe in 2..16 {
         let (text, tokens) = if pipe == 8 {
             spans()
+        } else if pipe == 15 {
+            triangle()
         } else if pipe == 14 {
             gradient()
         } else if pipe >= 10 {
@@ -143,6 +144,23 @@ impl Asm {
         self.op("UADD", "TEMP[52].x", "TEMP[52].x", &minus);
         self.emit("UIF TEMP[52].x\nELSE\nBRK\nENDIF\nENDLOOP");
         self.mov(d, "TEMP[51].y");
+    }
+    /// Run `body` `n` times, in a loop whose bound is computed from `CONST[4].x`, which the
+    /// encoder's catalogue and warm-up draws supply as 0 (`kernel/src/gpu/virgl/encode.rs`):
+    /// the bound is not known when the program is compiled, so the program carries one
+    /// copy of the body. This reduces the emitted arithmetic without relying on
+    /// historical compile timings from uncommitted diagnostics. The 2 s watchdog
+    /// bounds each fenced request, including any compilation it triggers.
+    fn passes(&mut self, n: u32, body: impl FnOnce(&mut Self)) {
+        let one = self.k(1);
+        let count = self.k(n);
+        self.op("UADD", "TEMP[57].x", "CONST[4].x", &count);
+        self.mov("TEMP[57].y", "CONST[4].x");
+        self.emit("BGNLOOP");
+        body(self);
+        self.op("UADD", "TEMP[57].y", "TEMP[57].y", &one);
+        self.op("USLT", "TEMP[2].x", "TEMP[57].y", "TEMP[57].x");
+        self.emit("UIF TEMP[2].x\nELSE\nBRK\nENDIF\nENDLOOP");
     }
     fn kill_zero(&mut self, condition: &str) {
         self.emit(format!("UIF {condition}"));
@@ -345,6 +363,9 @@ fn sampled(pipe: u32) -> (String, u32) {
         // 5x7 table's left pixel is bit width-1.
         s.sub("TEMP[2].y", "CONST[1].x", &one);
         s.sub("TEMP[2].x", "TEMP[2].y", "TEMP[2].x");
+        // A variable shift count is masked explicitly, as math.rs's emitters do.
+        let k31 = s.k(31);
+        s.op("AND", "TEMP[2].x", "TEMP[2].x", &k31);
         s.op("USHR", "TEMP[10].x", "TEMP[10].x", "TEMP[2].x");
         s.op("AND", "TEMP[10].x", "TEMP[10].x", &one);
         s.op("UMUL", "TEMP[10].x", "TEMP[10].x", &ff);
@@ -494,6 +515,49 @@ impl Asm {
     }
 }
 
+/// `triangle`: the model's area test, then its edge test run three times (`Asm::passes`),
+/// the vertices rotating between passes. Both are `Code::triangle`'s own helpers, so the
+/// program computes the predicate the probe's routine 23 does; it is about half the
+/// length of one with three edge copies, which on Parallels compiled for 0.43 to 0.75 s.
+fn triangle() -> (String, u32) {
+    let mut s = Asm::new();
+    let z = s.k(0);
+    let one = s.k(1);
+    s.mov("TEMP[0]", &z);
+    s.emit("F2I TEMP[0].xy, IN[0]");
+    // Nonzero area in bit 0 and negative area in bit 1.
+    let mut c = Code::default();
+    let v: Vec<_> = (0..6).map(|i| c.input(i)).collect();
+    let w: Vec<_> = v.iter().map(|&a| c.wide(a)).collect();
+    let (valid, negative) = c.triangle_area(&w[0], &w[1], &w[2], &w[3], &w[4], &w[5]);
+    let negative = c.shlk(negative, 1);
+    let packed = c.or(valid, negative);
+    s.block(c, packed, &["CONST[0].x", "CONST[0].y", "CONST[0].z", "CONST[0].w", "CONST[1].x", "CONST[1].y"], "TEMP[20].x");
+    s.op("AND", "TEMP[20].y", "TEMP[20].x", &one);
+    s.op("USHR", "TEMP[20].z", "TEMP[20].x", &one);
+    // Edge a to b, then the vertices after it: (v0, v1), (v1, v2), (v2, v0).
+    for (d, from) in [("TEMP[21].x", "CONST[0].x"), ("TEMP[21].y", "CONST[0].y"), ("TEMP[21].z", "CONST[0].z"),
+        ("TEMP[21].w", "CONST[0].w"), ("TEMP[22].x", "CONST[1].x"), ("TEMP[22].y", "CONST[1].y"),
+        ("TEMP[22].z", "CONST[0].x"), ("TEMP[22].w", "CONST[0].y")] {
+        s.mov(d, from);
+    }
+    s.passes(3, |s| {
+        let mut c = Code::default();
+        let a: Vec<_> = (0..7).map(|i| c.input(i)).collect();
+        let (px, py) = c.centre(a[0], a[1]);
+        let w: Vec<_> = a[2..6].iter().map(|&v| c.wide(v)).collect();
+        let accept = c.triangle_edge(&px, &py, &w[0], &w[1], &w[2], &w[3], a[6]);
+        s.block(c, accept, &["TEMP[0].x", "TEMP[0].y", "TEMP[21].x", "TEMP[21].y", "TEMP[21].z", "TEMP[21].w", "TEMP[20].z"], "TEMP[23].x");
+        s.op("AND", "TEMP[20].y", "TEMP[20].y", "TEMP[23].x");
+        for (d, from) in [("TEMP[21].x", "TEMP[21].z"), ("TEMP[21].y", "TEMP[21].w"), ("TEMP[21].z", "TEMP[22].x"),
+            ("TEMP[21].w", "TEMP[22].y"), ("TEMP[22].x", "TEMP[22].z"), ("TEMP[22].y", "TEMP[22].w")] {
+            s.mov(d, from);
+        }
+    });
+    s.emit("UIF TEMP[20].y\nMOV OUT[0], CONST[5]\nELSE\nKILL\nENDIF\nEND");
+    s.finish()
+}
+
 fn spans() -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
@@ -591,18 +655,19 @@ fn spans() -> (String, u32) {
     s.mov("TEMP[15].x", &fone);
     s.mov("TEMP[15].y", &z);
     s.emit("ENDIF\nENDIF\nENDIF");
-    let mut c = Code::default();
-    let a = c.input(0);
-    let b = c.input(1);
-    let sign = c.k(0x80000000);
-    let b = c.xor(b, sign);
-    let out = c.float_add(a, b);
-    s.block(c, out, &["TEMP[15].x", "TEMP[15].y"], "TEMP[16].x");
-    let mut c = Code::default();
-    let a = c.input(0);
-    let b = c.input(1);
-    let out = c.float_add(a, b);
-    s.block(c, out, &["TEMP[6].x", "TEMP[16].x"], "TEMP[6].x");
+    // The span's length, then the running sum: one binary32 addition, run twice.
+    s.op("XOR", "TEMP[16].y", "TEMP[15].y", &sign);
+    s.mov("TEMP[16].x", "TEMP[15].x");
+    s.passes(2, |s| {
+        let mut c = Code::default();
+        let a = c.input(0);
+        let b = c.input(1);
+        let out = c.float_add(a, b);
+        s.block(c, out, &["TEMP[16].x", "TEMP[16].y"], "TEMP[16].z");
+        s.mov("TEMP[16].x", "TEMP[6].x");
+        s.mov("TEMP[16].y", "TEMP[16].z");
+    });
+    s.mov("TEMP[6].x", "TEMP[16].z");
     s.emit("ENDIF\nENDIF\nENDIF\nENDIF");
     s.op("USEQ", "TEMP[2].x", "TEMP[8].x", "TEMP[8].y");
     s.emit("UIF TEMP[2].x\nBRK\nENDIF");
@@ -611,17 +676,26 @@ fn spans() -> (String, u32) {
     s.op("UADD", "TEMP[5].x", "TEMP[5].x", &one);
     s.op("USLT", "TEMP[2].x", "TEMP[5].x", &eight);
     s.emit("UIF TEMP[2].x\nELSE\nBRK\nENDIF\nENDLOOP");
+    // The sum times 1/8, then times 255: one binary32 multiplication, run twice.
+    let eighth = s.k(0.125f32.to_bits());
+    let scale = s.k(255f32.to_bits());
+    s.mov("TEMP[16].x", "TEMP[6].x");
+    s.mov("TEMP[16].y", &eighth);
+    s.passes(2, |s| {
+        let mut c = Code::default();
+        let a = c.input(0);
+        let b = c.input(1);
+        let out = c.float_mul(a, b);
+        s.block(c, out, &["TEMP[16].x", "TEMP[16].y"], "TEMP[16].x");
+        s.mov("TEMP[16].y", &scale);
+    });
     let mut c = Code::default();
     let a = c.input(0);
-    let inv = c.k(0.125f32.to_bits());
-    let v = c.float_mul(a, inv);
-    let ff = c.k(255f32.to_bits());
-    let v = c.float_mul(v, ff);
-    let v = c.float_trunc(v);
+    let v = c.float_trunc(a);
     let ff = c.k(255);
     let hi = c.lt(ff, v);
     let v = c.sel(hi, ff, v);
-    s.block(c, v, &["TEMP[6].x"], "TEMP[10].x");
+    s.block(c, v, &["TEMP[16].x"], "TEMP[10].x");
     s.mov("TEMP[10]", "TEMP[10].xxxx");
     s.mov("TEMP[0].zw", &z);
     s.fetch("TEMP[20]", "TEMP[0]", 1);

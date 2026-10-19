@@ -13,8 +13,8 @@
 //!
 //! `CONTEXT_CREATE` sends only the context's fixed state; `kgpu` warms the fixed rendering
 //! catalogue afterwards, one pipeline per step and one step on the device at a time, and
-//! not while a process is creating a context or resource, so creation and other requests wait
-//! behind at most one step. A draw whose pipeline has not warmed creates its programs in its
+//! after a process-local grace for successful creations, so other requests wait behind
+//! at most one step. A draw whose pipeline has not warmed creates its programs in its
 //! own submission and waits for no other pipeline (ruling 33, #1725).
 //!
 //! A fence's result reaching its callers and the device's use of the memory behind it
@@ -55,8 +55,7 @@ use gpu_abi::{self as abi, readback_reason, capability, fence_status, format, ki
 
 use crate::syscall::SyscallResult;
 use crate::tracing::providers::gpu::{gauge, GpuPath, GPU_CONTEXTS, GPU_RESOURCES};
-use crate::task::thread::ThreadState;
-use crate::task::waitqueue::WaitQueueHead;
+use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
 use dma::{Pages, WordBuf, PAGE};
 use virgl::{encode, wire, Device, Done, Reap, Request, Tag};
 
@@ -77,6 +76,8 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
+/// Initial context grace before catalogue warm-up. Resource creation does not extend it.
+const WARM_GRACE_NS: u64 = 20_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
@@ -87,11 +88,14 @@ static ISR: AtomicU64 = AtomicU64::new(0);
 /// was last written: see [`ring_doorbell`].
 static DOORBELL: AtomicU64 = AtomicU64::new(0);
 static KICK: AtomicBool = AtomicBool::new(false);
-/// The ISR's configuration-change bit was seen: the device may have set DEVICE_NEEDS_RESET.
+/// A configuration change was signalled: the device may have set DEVICE_NEEDS_RESET.
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 /// The level interrupt is masked until normal GPU work reads its ISR byte.
 static IRQ_PENDING: AtomicBool = AtomicBool::new(false);
+/// The control queue's interrupt (or the INTx line), and with MSI-X the configuration
+/// change interrupt.
 static INTID: AtomicU32 = AtomicU32::new(0);
+static CONFIG_INTID: AtomicU32 = AtomicU32::new(0);
 static REAPER: AtomicU64 = AtomicU64::new(0);
 static REAPER_STARTING: AtomicBool = AtomicBool::new(false);
 
@@ -128,10 +132,22 @@ fn ring_doorbell() {
     }
 }
 
-/// Tell the waiters and `kgpu` that something changed.
+/// Tell the waiters and `kgpu` that something changed. The waiters come off the queue
+/// before they are woken, so no wake waits for the scheduler's lock while the queue's lock
+/// is held with interrupts masked (section 1.16, #2003); `wait_event` publishes a wait
+/// that this order cannot miss.
 fn notify() {
     EVENTS.fetch_add(1, Ordering::AcqRel);
-    WAITERS.wake_up();
+    let mut taken = [0u64; 8];
+    loop {
+        let n = WAITERS.take_waiters(&mut taken);
+        for &tid in &taken[..n] {
+            crate::task::scheduler::wake_waitqueue_thread(tid);
+        }
+        if n < taken.len() {
+            break;
+        }
+    }
     wake_reaper();
 }
 
@@ -203,6 +219,8 @@ struct Ctx {
     /// The rendering pipelines whose warm-up step completed, one bit each
     /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
     warm: u32,
+    /// Initial grace deadline; later resource creations do not postpone it.
+    warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
     /// Device errors in a row, in fence order.
@@ -215,10 +233,10 @@ struct Ctx {
 }
 
 impl Ctx {
-    /// Programs whose warm-up completed: two per warmed rendering pipeline, and
-    /// `probe_int`'s pair from its first PROBE.
+    /// Programs whose warm-up completed: two per warmed rendering pipeline, and each
+    /// `probe_int` routine's pair from its first PROBE.
     fn warmed(&self) -> u32 {
-        2 * self.warm.count_ones() + if self.objects.has_probe() { encode::PROBE_PROGRAMS } else { 0 }
+        2 * self.warm.count_ones() + self.objects.probe_programs()
     }
 }
 
@@ -262,7 +280,7 @@ struct Sub {
     /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
     present: Option<display::Presenting>,
     /// The charge for its translated device chunks, released when it retires.
-    _charge: Option<Charge>,
+    _charge: Option<alloc::sync::Arc<Charge>>,
 }
 
 /// A synchronous request a thread waits on.
@@ -367,10 +385,11 @@ struct Core {
 // ---------------------------------------------------------------------------------------
 // Initialisation and the profile.
 
-/// Find and initialise the GPU on QEMU's PCI bus, read its profile, and route its
-/// interrupt. Called once from driver initialisation; an absent or failing device leaves
-/// a core that refuses every op naming why.
-pub fn init_qemu() {
+/// Find and initialise the virtio-gpu PCI device (QEMU's virtio-gpu-gl-pci, or Parallels'
+/// virtio-gpu when the launcher selects the core), read its profile, and route its
+/// interrupts. Called once from driver initialisation; an absent or failing device leaves
+/// a core that refuses its ops naming why.
+pub fn init() {
     let mut core = Core::empty();
     match Device::probe() {
         Ok(dev) => {
@@ -395,10 +414,24 @@ pub fn init_qemu() {
                     core::str::from_utf8(&core.caps.renderer).unwrap_or("").trim_end_matches('\0')
                 );
             }
-            ISR.store(dev.isr, Ordering::Release);
             DOORBELL.store(dev.doorbell(), Ordering::Release);
-            INTID.store(dev.intid, Ordering::Release);
-            crate::arch_impl::aarch64::gic::configure_spi_level_triggered(dev.intid);
+            use crate::arch_impl::aarch64::gic;
+            match dev.irq {
+                virgl::Irq::Intx(intid) => {
+                    ISR.store(dev.isr, Ordering::Release);
+                    INTID.store(intid, Ordering::Release);
+                    gic::configure_spi_level_triggered(intid);
+                }
+                virgl::Irq::Msix { queue, config } => {
+                    crate::serial_println!("[gpu] MSI-X: queue SPI {} config SPI {}", queue, config);
+                    INTID.store(queue, Ordering::Release);
+                    CONFIG_INTID.store(config, Ordering::Release);
+                    for spi in [queue, config] {
+                        gic::configure_spi_edge_triggered(spi);
+                        gic::clear_spi_pending(spi);
+                    }
+                }
+            }
             core.queue_size = dev.queue_size();
             core.dev = Some(dev);
         }
@@ -1254,8 +1287,12 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        let at = hangs.chain(waits).chain(progress).min()?;
-        Some((at + limits::WATCHDOG_NS).min(now + EXAMINE_NS))
+        // Grace deadlines are independent across processes.
+        let grace = self.contexts.values()
+            .filter(|x| x.state == CtxState::Live && !x.dropped && x.warm != encode::ALL_WARM)
+            .map(|x| x.warm_after).filter(|&g| g > now).min();
+        let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
+        watchdog.into_iter().chain(grace).min()
     }
 
     /// The reset decision, on `kgpu`: every context fails with `DEVICE_RESET` and every
@@ -1414,10 +1451,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         if unheld {
             crate::per_cpu::preempt_disable();
         }
-        let outcome = WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, wake, || {
-            EVENTS.load(Ordering::Acquire) == seen
-        });
-        let woke = crate::syscall::blocking_io::wait_prepared(&WAITERS, outcome);
+        let woke = wait_event(seen, wake);
         if unheld {
             crate::per_cpu::preempt_enable();
         }
@@ -1425,6 +1459,32 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             return Err(Stop::Interrupted);
         }
     }
+}
+
+/// Sleep until a GPU event after `seen`, the absolute `wake`, or a signal, holding a
+/// preemption level. The thread joins `WAITERS`, publishes its blocked state, then reads
+/// `EVENTS` again, each step in a section of its own, so no step waits for the scheduler's
+/// lock while it holds the queue's lock with interrupts masked (section 1.16, #2003).
+/// `notify` advances `EVENTS` before it takes waiters off the queue: a thread that joins
+/// after the take reads the new count, and one taken before it publishes reads it too,
+/// because its wake reached it running.
+fn wait_event(seen: u64, wake: Option<u64>) -> Result<(), i32> {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return Err(crate::syscall::errno::ESRCH);
+    };
+    if !WAITERS.add_waiter(tid) {
+        return Err(crate::syscall::errno::ENOMEM);
+    }
+    let published = crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_io_with_timeout(wake)).unwrap_or(false);
+    if !published {
+        WAITERS.finish_wait_for(tid);
+        return Err(crate::syscall::errno::ESRCH);
+    }
+    if EVENTS.load(Ordering::Acquire) != seen {
+        WAITERS.finish_wait_for(tid);
+        return Ok(());
+    }
+    crate::syscall::blocking_io::wait_prepared(&WAITERS, PrepareOutcome::Queued)
 }
 
 /// Send synchronous request `serial` (built with `Tag::Sync(serial)`) in device context
@@ -1479,7 +1539,8 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
 // ---------------------------------------------------------------------------------------
 // The interrupt and the reaper thread.
 
-/// The GIC interrupt id of the GPU's INTx line, once the device is up.
+/// The GIC interrupt id of the GPU's INTx line, or of its control queue's MSI-X vector,
+/// once the device is up.
 pub fn irq() -> Option<u32> {
     match INTID.load(Ordering::Acquire) {
         0 => None,
@@ -1487,24 +1548,46 @@ pub fn irq() -> Option<u32> {
     }
 }
 
-/// Mask the level interrupt and wake consumers. Reading the PCI ISR byte can wait
-/// on the device model, so acknowledgement belongs to the IRQ-enabled GPU worker.
-pub fn handle_interrupt() {
-    // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
-    let start = crate::tracing::providers::gpu::interrupt_begin();
-    if let Some(id) = irq() {
-        crate::arch_impl::aarch64::gic::disable_spi(id);
+/// The GIC interrupt id of the GPU's configuration-change MSI-X vector, when it uses MSI-X.
+pub fn config_irq() -> Option<u32> {
+    match CONFIG_INTID.load(Ordering::Acquire) {
+        0 => None,
+        id => Some(id),
     }
-    IRQ_PENDING.store(true, Ordering::Release);
+}
+
+/// Defer INTx acknowledgement to the IRQ-enabled worker; MSI-X needs no ISR read
+/// (VirtIO 1.3 section 4.1.4.5.2). Wake consumers with bounded, nonblocking queue work.
+pub fn handle_interrupt() {
+    let start = crate::tracing::providers::gpu::interrupt_begin();
+    if ISR.load(Ordering::Acquire) != 0 {
+        if let Some(id) = irq() {
+            crate::arch_impl::aarch64::gic::disable_spi(id);
+        }
+        IRQ_PENDING.store(true, Ordering::Release);
+    }
+    signal(1);
+    crate::tracing::providers::gpu::interrupt_end(start);
+}
+
+/// The configuration-change MSI-X vector needs no ISR read.
+pub fn handle_config_interrupt() {
+    let start = crate::tracing::providers::gpu::interrupt_begin();
+    signal(2);
+    crate::tracing::providers::gpu::interrupt_end(start);
+}
+
+/// Wake for a used buffer or configuration change, using the ISR byte's bit meanings.
+fn signal(status: u8) {
+    if status & 2 != 0 {
+        CONFIG_CHANGED.store(true, Ordering::Release);
+    }
     EVENTS.fetch_add(1, Ordering::AcqRel);
-    // Preserve direct wakes for synchronous requests, with a bounded, nonblocking
-    // queue acquisition. Completion publication wakes any remaining waiters.
     WAITERS.try_wake_up_n_from_irq(limits::IN_FLIGHT as u32);
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
         crate::task::scheduler::wake_thread_any_context(tid);
     }
-    crate::tracing::providers::gpu::interrupt_end(start);
 }
 
 fn acknowledge_interrupt() {
@@ -1514,8 +1597,6 @@ fn acknowledge_interrupt() {
     let _access = panic::Access::enter();
     let isr = ISR.load(Ordering::Acquire);
     let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
-    // Reading the ISR deasserts INTx; bit 1 reports a configuration change
-    // (VirtIO 1.3 section 4.1.4.5). Preserve the interrupt's existing affinity.
     if status & 2 != 0 {
         CONFIG_CHANGED.store(true, Ordering::Release);
     }
@@ -1534,7 +1615,7 @@ fn ensure_reaper() -> bool {
             let started = match crate::task::kthread::kthread_run(reaper, "kgpu") {
                 Ok(handle) => {
                     REAPER.store(handle.tid(), Ordering::Release);
-                    if let Some(id) = irq() {
+                    for id in [irq(), config_irq()].into_iter().flatten() {
                         crate::arch_impl::aarch64::gic::enable_spi_on_cpu(id, 0);
                     }
                     true
@@ -1554,14 +1635,12 @@ fn ensure_reaper() -> bool {
 /// the device's answers waiting for the next deadline. Once woken it returns without
 /// halting for a further interrupt.
 fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
-    crate::arch_without_interrupts(|| {
-        crate::task::scheduler::with_scheduler(|sched| {
-            sched.block_current_for_io_with_timeout(wake);
-        });
+    // One scheduler section publishes the block and checks for an event since `seen`, so
+    // the lock is taken once and waited for with interrupts enabled (section 1.16, #2003).
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_io_with_timeout(wake);
         if EVENTS.load(Ordering::Acquire) != seen {
-            crate::task::scheduler::with_scheduler(|sched| {
-                sched.unblock(tid);
-            });
+            sched.unblock(tid);
         }
     });
     crate::task::scheduler::yield_current();
@@ -1626,9 +1705,9 @@ fn reset_device(tid: u64) {
 
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
-/// device at a time, and no step starts while a process is creating a context or resource,
-/// or while the device is resetting or suspected hung, so other requests wait behind at
-/// most one step. The step takes the context's submission slot while it is encoded and
+/// device at a time, after the context's process-local grace and while the device is
+/// neither resetting nor suspected hung, so other requests wait behind at most one step.
+/// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
 /// context under the watchdog that nobody waits on; their answers go to `warm_returned`.
@@ -1640,9 +1719,8 @@ fn warm_next() {
             && !c.resetting
             && !c.stalled
             && c.quarantined_at.is_none()
-            && !c.procs.values().any(|p| p.creating)
     };
-    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM;
+    let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
     if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
         return;
     }
@@ -1846,7 +1924,9 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// Serialize a process's context/resource creation through device attachment and
 /// handle publication, so their snapshots cannot both miss each other.
-struct CreationGuard(u64);
+struct CreationGuard {
+    owner: u64,
+}
 
 impl CreationGuard {
     fn acquire(tgid: u64) -> Result<Self, i64> {
@@ -1858,14 +1938,14 @@ impl CreationGuard {
             p.creating = true;
             Some(())
         }).map_err(|_| EINTR)?;
-        Ok(Self(tgid))
+        Ok(Self { owner: tgid })
     }
 }
 
 impl Drop for CreationGuard {
     fn drop(&mut self) {
         with_core(|c| {
-            if let Some(p) = c.procs.get_mut(&self.0) {
+            if let Some(p) = c.procs.get_mut(&self.owner) {
                 p.creating = false;
             }
         });
@@ -2002,6 +2082,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
                 scratch,
                 scratch_texture,
                 warm: 0,
+                warm_after: 0,
                 warm_failures: 0,
                 errors_in_row: 0,
                 depth: None,
@@ -2032,6 +2113,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
             c.proc_mut(tgid).contexts.insert(h, id);
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
             ctx.state = CtxState::Live;
+            ctx.warm_after = now_ns().saturating_add(WARM_GRACE_NS);
             Ok((h, ctx.warmed()))
         })
         .unwrap_or(Err(ENODEV))
@@ -2056,7 +2138,7 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
 
 /// Create device context `id` with its internal resources and the process's resources
 /// attached, then send its fixed state and wait for its fence. The catalogue's programs
-/// are warmed afterwards on `kgpu` (`warm_next`), and `probe_int` by the first PROBE. Each
+/// are warmed afterwards on `kgpu` (`warm_next`), and each `probe_int` routine by its first PROBE. Each
 /// wait here is a synchronous device request under the watchdog, ended by a kill (section
 /// 1.4.1, program warm-up).
 fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<Pages>, scratch_pages: &Arc<Pages>) -> Result<(), i64> {
@@ -2922,6 +3004,23 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         release_slot(false);
         return Err(EIO);
     };
+    // Size first-use programs and user commands before sending either.
+    // The sizing object state includes the programs the warm-up will create.
+    let mut sized_objects = objects.clone();
+    let warm_bytes = (|| -> Result<u64, i64> {
+        let mut bytes = 0u64;
+        let mut at = 0;
+        while at < words.len() {
+            if words.word(at) == stream::cmd::PROBE
+                && sized_objects.probe[words.word(at + 2) as usize].1 == 0 {
+                let mut enc = encode::Enc::size_only();
+                encode::warm_probe(&mut enc, &mut sized_objects, default_vb, scratch, &words, at, FLIP_Y);
+                bytes = bytes.checked_add(enc.backing_bytes().ok_or(ENOMEM)?).ok_or(ENOMEM)?;
+            }
+            at += words.word(at + 1) as usize;
+        }
+        Ok(bytes)
+    })();
     let stale: Vec<u32> = objects.resources().filter(|&rid| rid != scratch && rid != scratch_texture && !view.has_id(rid)).collect();
     let mut suppression = None;
     let mut suppress = None;
@@ -2974,16 +3073,54 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         });
     };
     let mut sizing = encode::Enc::size_only();
-    translate(&mut sizing, &mut objects.clone());
-    let chunk_charge = match sizing.backing_bytes().ok_or(ENOMEM)
-        .and_then(|bytes| Charge::new(tgid, bytes, true)) {
-        Ok(charge) => Some(charge),
+    translate(&mut sizing, &mut sized_objects);
+    let chunk_charge = match warm_bytes.and_then(|warm| {
+        sizing.backing_bytes().and_then(|bytes| bytes.checked_add(warm)).ok_or(ENOMEM)
+    }).and_then(|bytes| Charge::new(tgid, bytes, true)) {
+        Ok(charge) => alloc::sync::Arc::new(charge),
         Err(e) => {
             drop_vertex_buffer();
             release_slot(false);
             return if e == ENOMEM { refuse(&mut a, 0, stream::error::NO_MEMORY, ENOMEM) } else { Err(e) };
         }
     };
+    // Warm each pair separately; command backing retains the reservation even if the
+    // waiter leaves while the device still owns it. Publish programs after their chunks succeed.
+    let mut warm_sent = false;
+    let prewarm = (|| -> Result<(), i64> {
+        let mut at = 0;
+        while at < words.len() {
+            if words.word(at) == stream::cmd::PROBE
+                && objects.probe[words.word(at + 2) as usize].1 == 0 {
+                let mut enc = encode::Enc::new();
+                encode::warm_probe(&mut enc, &mut objects, default_vb, scratch, &words, at, FLIP_Y);
+                let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
+                for mut chunk in chunks {
+                    chunk.charge_copy(chunk_charge.clone());
+                    let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                    let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
+                    warm_sent = true;
+                    let done = exec_req(serial, req, id, &[default_vb, scratch, scratch_texture], &[])?;
+                    if !virgl::ok(done.answer) || done.echoed != fence {
+                        return Err(EIO);
+                    }
+                }
+                with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects.clone(); });
+            }
+            at += words.word(at + 1) as usize;
+        }
+        Ok(())
+    })();
+    if let Err(error) = prewarm {
+        if warm_sent {
+            // A partial shader or an interrupted fence has ambiguous device state.
+            // Do not let a subsequent call bind it or reuse its object handles.
+            with_core(|c| c.quarantine(id, now_ns()));
+        }
+        drop_vertex_buffer();
+        release_slot(false);
+        return Err(error);
+    }
     // Command frames and device requests come only after the quota reservation.
     let mut enc = encode::Enc::new();
     translate(&mut enc, &mut objects);
@@ -3118,7 +3255,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             whole,
             held,
             present: None,
-            _charge: chunk_charge,
+            _charge: Some(chunk_charge),
         });
         let epoch = c.epoch;
         c.backlog.extend(reqs.into_iter().map(|r| (epoch, r)));

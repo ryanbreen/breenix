@@ -18,6 +18,10 @@ use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 #[cfg(target_arch = "aarch64")]
 static GICV2M_NEXT_SPI: AtomicU64 = AtomicU64::new(0);
 
+/// `arm64_boot_contract::BOOT_FLAG_*` bits from the loader (0 on QEMU).
+#[cfg(target_arch = "aarch64")]
+static BOOT_FLAGS: AtomicU64 = AtomicU64::new(0);
+
 // =============================================================================
 // Hardware address atomics with QEMU virt defaults
 // =============================================================================
@@ -552,6 +556,26 @@ pub fn is_parallels() -> bool {
     !is_qemu() && ram_base_offset() == 0 && gicr_base_phys() != 0
 }
 
+/// Whether the launcher asked for the GPU core (`kernel/src/gpu/`) to own the display
+/// device on a UEFI target (`arm64_boot_contract::BOOT_FLAG_GPU_CORE`).
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn gpu_core_requested() -> bool {
+    BOOT_FLAGS.load(Ordering::Relaxed) & arm64_boot_contract::BOOT_FLAG_GPU_CORE as u64 != 0
+}
+
+/// The GICv2m doorbell (MSI_SETSPI_NS, frame offset 0x40) for MSI and MSI-X messages,
+/// probing Parallels' frame when no driver has found it yet.
+#[cfg(target_arch = "aarch64")]
+pub fn gicv2m_doorbell() -> Option<u64> {
+    const PARALLELS_GICV2M_BASE: u64 = 0x0225_0000;
+    let base = gicv2m_base_phys();
+    if base != 0 {
+        return Some(base + 0x40);
+    }
+    probe_gicv2m(PARALLELS_GICV2M_BASE).then_some(PARALLELS_GICV2M_BASE + 0x40)
+}
+
 /// Returns true if the physical timer (CNTP) should be used instead of the
 /// virtual timer (CNTV). VMware Fusion doesn't deliver virtual timer (PPI 27)
 /// interrupts to EL1 guests; use the physical timer (PPI 30) instead.
@@ -716,6 +740,8 @@ pub struct HardwareConfig {
     pub runtime_region_count: u32,
     pub _pad8: u32,
     pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
+    pub boot_flags: u32,
+    pub _pad9: u32,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -786,6 +812,7 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     }
 
     RAM_BASE_OFFSET.store(config.ram_base_offset, Ordering::Relaxed);
+    BOOT_FLAGS.store(config.boot_flags as u64, Ordering::Relaxed);
 
     // HardwareConfig v5 carries only EfiConventionalMemory from the final
     // ExitBootServices map (UEFI 2.10 section 7.2, Tables 7.5 and 7.6).

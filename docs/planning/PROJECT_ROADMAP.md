@@ -11,6 +11,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+PR #2054 carries the GPU-core handoff and repairs ARM64 scheduler-lock holds
+and GPU suite memory accounting (#2056). S37 updates the self-death receipt
+contract (#2058) to require one deferral and one reclaim on both architectures.
+Idle timer scheduling remains tracked in #2053; #2043's late completion was
+measured at the host device in the PR.
+
 Testing-boot work for #2009, #2012 and #1982 waits for BCM5720 DHCP before
 loading userspace tests, continuing with a warning if no lease arrives within
 60 seconds. Noninteractive tests prefer the attached home disk and use an

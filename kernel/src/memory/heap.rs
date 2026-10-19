@@ -1,8 +1,9 @@
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 use core::alloc::{GlobalAlloc, Layout};
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use linked_list_allocator::LockedHeap;
+use linked_list_allocator::{Heap, LockedHeap};
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
@@ -50,6 +51,13 @@ pub const QEMU_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 /// Keep the masked region limited to one inner heap operation.  In particular,
 /// never acquire another lock, allocate, or format output while the inner heap
 /// mutex is held.
+///
+/// On aarch64 a caller that runs with interrupts enabled waits for a busy heap
+/// with them enabled, and masks them only to take the mutex and for its own
+/// operation, so this CPU does not wait out another CPU's heap operation with
+/// its interrupts masked (`gpu_irq_masked_max_us`, #2003).  A caller that
+/// already masked interrupts may hold an interrupt-safe lock, so it keeps
+/// waiting masked.
 struct IrqSafeLockedHeap {
     inner: LockedHeap,
 }
@@ -62,13 +70,30 @@ impl IrqSafeLockedHeap {
     }
 
     #[inline(always)]
-    fn with_inner<R>(&self, operation: impl FnOnce(&LockedHeap) -> R) -> R {
-        crate::arch_without_interrupts(|| operation(&self.inner))
+    fn with_inner<R>(&self, operation: impl FnOnce(&mut Heap) -> R) -> R {
+        #[cfg(target_arch = "aarch64")]
+        if crate::arch_interrupts_enabled() {
+            let mut operation = Some(operation);
+            loop {
+                let done = crate::arch_without_interrupts(|| {
+                    self.inner
+                        .try_lock()
+                        .map(|mut heap| (operation.take().expect("heap operation runs once"))(&mut heap))
+                });
+                if let Some(result) = done {
+                    return result;
+                }
+                while self.inner.is_locked() {
+                    core::hint::spin_loop();
+                }
+            }
+        }
+        crate::arch_without_interrupts(|| operation(&mut self.inner.lock()))
     }
 
     unsafe fn init(&self, heap_bottom: *mut u8, heap_size: usize) {
-        self.with_inner(|inner| unsafe {
-            inner.lock().init(heap_bottom, heap_size);
+        self.with_inner(|heap| unsafe {
+            heap.init(heap_bottom, heap_size);
         });
     }
 }
@@ -79,17 +104,17 @@ static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.with_inner(|inner| {
-            let mut heap = inner.lock();
-            let ptr = heap.allocate_first_fit(layout).ok().map_or(core::ptr::null_mut(), |allocation| allocation.as_ptr());
+        self.with_inner(|heap| {
+            let ptr = heap.allocate_first_fit(layout)
+                .map_or(core::ptr::null_mut(), |allocation| allocation.as_ptr());
             HIGH_WATER.fetch_max(heap.used(), Ordering::Relaxed);
             ptr
         })
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.with_inner(|inner| unsafe {
-            GlobalAlloc::dealloc(inner, ptr, layout);
+        self.with_inner(|heap| unsafe {
+            heap.deallocate(NonNull::new_unchecked(ptr), layout);
         });
     }
 
@@ -202,7 +227,7 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 /// Bytes free in the kernel heap. Physical frames are not heap and are
 /// counted by the frame allocator instead.
 pub fn free_bytes() -> usize {
-    ALLOCATOR.with_inner(|inner| inner.lock().free())
+    ALLOCATOR.with_inner(|heap| heap.free())
 }
 
 /// The most bytes the kernel heap has had in use at once since boot.

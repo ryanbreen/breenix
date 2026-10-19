@@ -13,7 +13,9 @@ assert grammar('G4 bounded loop syntax', base.replace('U2F OUT', 'BGNLOOP\nBRK\n
 assert grammar('G4 unsigned inequality', base.replace('UADD TEMP[0].x', 'USNE TEMP[0].x'), 25) == 0
 root = Path(__file__).resolve().parents[2]
 source = root / 'kernel/src/gpu/virgl/profile'
-text = (source / 'profile.tgsi').read_bytes().rstrip(b'\0').decode()
-tokens = int(re.search(r'tokens: (\d+)', (source / 'mod.rs').read_text()).group(1))
-assert grammar('G4 combined baseline', text, tokens) == 0
-assert grammar('G4 missing immediate type', text.replace('IMM[0] UINT32', 'IMM[0]', 1), tokens) == 22
+counts = [int(t) for t in re.findall(r'tokens: (\d+)', (source / 'mod.rs').read_text())]
+for routine, tokens in enumerate(counts):
+    text = (source / f'r{routine:02}.tgsi').read_bytes().rstrip(b'\0').decode()
+    assert grammar(f'G4 routine {routine} baseline', text, tokens) == 0
+text = (source / 'r00.tgsi').read_bytes().rstrip(b'\0').decode()
+assert grammar('G4 missing immediate type', text.replace('IMM[0] UINT32', 'IMM[0]', 1), counts[0]) == 22
