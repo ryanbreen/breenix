@@ -2624,9 +2624,9 @@ fn panic(info: &PanicInfo) -> ! {
     kernel::tracing::output::trace_dump_counters();
 
     // Show the panic on screen after the serial records above, so drawing and
-    // GPU commands cannot delay or lose them. It does not print or block on a
-    // lock: skipped if the framebuffer lock is held, and left for the render or
-    // presenter thread if the GPU lock stays held (possibly by this CPU).
+    // GPU commands cannot delay or lose them. After GPU handoff the terminal
+    // path uses preallocated commands and reserved descriptors, without taking
+    // the core, console or framebuffer locks.
     boot_screen::show_panic(info);
 
     loop {

@@ -594,8 +594,16 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
-    let saved = with_core(|c| c.display.stack.last().and_then(|o| o.last)).flatten();
+    let (saved, current) = with_core(|c| {
+        let current = c.display.binding.filter(|_| c.display.known);
+        (c.display.stack.last().and_then(|o| o.last), current)
+    })
+    .unwrap_or((None, None));
     match saved {
+        // The top owner presented after the exit that asked for this restore, and that
+        // frame is already bound and complete. Binding it again would only make the
+        // binding unknown meanwhile, refusing the owner's readbacks with reason 10.
+        Some(b) if current.is_some_and(|c| c.id == b.id) => Ok(()),
         Some(b) => super::console::bind_saved(b),
         None => super::console::redraw(),
     }
