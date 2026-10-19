@@ -754,7 +754,10 @@ fn with_scheduler_lock<R>(f: impl FnOnce(&mut SchedulerGuard) -> R) -> R {
             }
         }
     }
-    without_interrupts(|| f(&mut lock_scheduler()))
+    without_interrupts(|| {
+        let mut scheduler_lock = lock_scheduler();
+        f(&mut scheduler_lock)
+    })
 }
 
 #[inline(always)]
