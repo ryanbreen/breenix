@@ -17,7 +17,7 @@
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
 
-# Preserve the launcher through command substitutions and recursive registrations.
+# Preserve the launcher through command substitutions.
 export BREENIX_LAUNCHER_PID=${BREENIX_LAUNCHER_PID:-$PPID}
 
 [ "$(uname -s)" = Darwin ] || exit 0
@@ -68,7 +68,7 @@ case "${1:-}" in
         fi
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
-        [ -n "$id" ] || id=$(date -u +%Y%m%dT%H%M%SZ)-$platform
+        [ -n "$id" ] || id=$(date -u +%Y%m%dT%H%M%SZ)-$platform-$$
         provenance || exit 0
         args=(breenix start --arch "$arch" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
         [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
