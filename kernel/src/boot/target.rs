@@ -1,10 +1,11 @@
 //! The boot-target file: which PID 1 a production boot runs when the QEMU command
 //! line does not say (docs/boot-path.md, "Boot modes").
 //!
-//! The runner writes `suite <id>`, `suite <id> case <category>/<case>` or `probe` to
-//! `/etc/breenix/boot-target`, words separated by single spaces. It is
-//! written onto a copy of the disk image by `./run.sh --parallels|--vmware --suite <id>`
-//! (with `--case <category>/<case>` for one case) or `--probe`, and by
+//! The runner writes `suite <id>`, `suite <id> case <category>/<case>`, `probe` or
+//! `program <path> [<word>]` to `/etc/breenix/boot-target`, words separated by single
+//! spaces. It is written onto a copy of the disk image by `./run.sh --parallels|--vmware
+//! --suite <id>` (with `--case <category>/<case>` for one case), `--probe` or
+//! `--program <path>` (with `--program-arg <word>`), and by
 //! `BREENIX_BOOT_SUITE=<id>` in `docker/qemu/run-x86-gate.sh`; disks built by
 //! `scripts/create_ext2_disk.sh` carry no boot target. QEMU's fw_cfg mode is read first;
 //! without either, the default `/sbin/init` runs.
@@ -66,6 +67,15 @@ pub enum Target {
     Console { idle_minutes: u16, replug: bool },
     Probe,
     Suite(SuiteTarget),
+    /// ARM64 program mode: probe runs `path`, with `arg` when given (`probe --run`).
+    Program { path: String, arg: Option<String> },
+}
+
+/// A program path the boot target may name: absolute, of `A-Za-z0-9_./-`.
+fn is_program_path(path: &str) -> bool {
+    path.starts_with('/')
+        && path.len() > 1
+        && path.bytes().all(|b| b.is_ascii_alphanumeric() || b"_./-".contains(&b))
 }
 
 /// Parse one `suite <id> [case <category>/<case>]` or `probe` line.
@@ -104,11 +114,24 @@ pub fn parse(text: &str) -> Result<Target, String> {
                 _ => Err(String::from("console idle must be 1 through 240 minutes")),
             }
         }
+        ["program", path] if is_program_path(path) => Ok(Target::Program {
+            path: String::from(*path),
+            arg: None,
+        }),
+        ["program", path, arg] if is_program_path(path) && is_suite_id(arg) => {
+            Ok(Target::Program {
+                path: String::from(*path),
+                arg: Some(String::from(*arg)),
+            })
+        }
         ["suite", id] => SuiteTarget::new(String::from(*id), None).map(Target::Suite),
         ["suite", id, "case", case] => {
             SuiteTarget::new(String::from(*id), Some(String::from(*case))).map(Target::Suite)
         }
-        _ => Err(format!("expected \"suite <id> [case <category>/<case>]\" or \"probe\", found {:?}", line)),
+        _ => Err(format!(
+            "expected \"suite <id> [case <category>/<case>]\", \"probe\" or \"program <path> [<word>]\", found {:?}",
+            line
+        )),
     }
 }
 

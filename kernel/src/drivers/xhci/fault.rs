@@ -118,7 +118,7 @@ impl super::Controller {
             let pipe = device.keyboard.as_ref().ok_or("no keyboard")?;
             if !self.completions.iter().any(|e| e.kind() == 32 && e.slot() == device.slot
                 && (e.control >> 16) & 31 == pipe.dci as u32
-                && Some(e.parameter & !15) == pipe.outstanding) {
+                && pipe.posted.slot(e.parameter & !15).is_some()) {
                 return Err("no HID completion retained across short read");
             }
         }
@@ -127,7 +127,7 @@ impl super::Controller {
             self.dispatch();
             let pipe = self.devices.iter().find(|d| d.port == port).and_then(|d| d.keyboard.as_ref())
                 .ok_or("keyboard lost after recovery")?;
-            if pipe.reports > before && pipe.outstanding.is_some() { break; }
+            if pipe.reports > before && pipe.posted.full() { break; }
             if !self.wait_work(Some(deadline), false)? { return Err("no input report after recovery"); }
             self.service()?;
         }

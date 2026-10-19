@@ -9,7 +9,11 @@
 //! The pure modules' host tests: `rustc --edition=2021 --test <file>.rs`.
 
 pub mod interface;
+pub mod pointer;
 pub mod report;
+
+/// Nonempty USB boot-keyboard reports observed by the production completion path.
+pub static NONZERO_KBD_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Where boot keyboard input meets the input core.
 pub struct Console {
@@ -38,6 +42,9 @@ impl Console {
     }
 
     pub fn note_report(&mut self, summary: &report::Summary) {
+        if summary.nonempty {
+            NONZERO_KBD_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         if self.armed && summary.nonempty && !self.first_report {
             self.first_report = true;
             log::info!("[hid] first key report");
@@ -46,7 +53,25 @@ impl Console {
 
     /// One key event for the input core.
     pub fn event(&mut self, port: u8, code: u16, value: i32) {
-        let sent = crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
+        let sent =
+            crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
+        // The USB worker may wake the compositor's waitqueue; the shared input
+        // path also runs in interrupt context and must not take that lock.
+        // Ctrl counts as Super for the launcher gesture (`input::report_key`),
+        // so its press wakes the compositor too.
+        #[cfg(target_arch = "aarch64")]
+        if value == report::PRESS
+            && matches!(
+                code,
+                crate::input::event::KEY_LEFTMETA
+                    | crate::input::event::KEY_RIGHTMETA
+                    | crate::input::event::KEY_LEFTCTRL
+                    | crate::input::event::KEY_RIGHTCTRL
+            )
+            && crate::input::has_pending_super_tap()
+        {
+            crate::syscall::graphics::wake_compositor_if_waiting();
+        }
         if sent == 0 {
             return;
         }

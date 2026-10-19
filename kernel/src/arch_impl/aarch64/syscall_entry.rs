@@ -62,6 +62,27 @@ fn emit_el0_syscall_marker() {
     }
 }
 
+/// Tracks this thread across blocking syscalls without depending on CPU residency.
+struct SyscallScope(Option<&'static AtomicBool>);
+
+impl SyscallScope {
+    fn enter() -> Self {
+        let flag = crate::task::thread::current_thread_signals().map(|signals| &signals.in_syscall);
+        if let Some(flag) = flag {
+            flag.store(true, Ordering::Release);
+        }
+        Self(flag)
+    }
+}
+
+impl Drop for SyscallScope {
+    fn drop(&mut self) {
+        if let Some(flag) = self.0 {
+            flag.store(false, Ordering::Release);
+        }
+    }
+}
+
 /// Main syscall handler called from assembly.
 ///
 /// This is the ARM64 equivalent of `rust_syscall_handler` for x86_64.
@@ -87,6 +108,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         Aarch64PerCpu::preempt_enable();
         return;
     }
+
+    let _syscall_scope = SyscallScope::enter();
 
     // One-time marker for first syscall from EL0 (userspace confirmed)
     // This is the ARM64 equivalent of x86_64's RING3_CONFIRMED marker

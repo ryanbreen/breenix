@@ -5758,7 +5758,7 @@ fn virgl_composite_single_quad(
         let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
             crate::drivers::virtio::input_mmio::mouse_position()
         } else {
-            crate::drivers::usb::hid::mouse_position()
+            crate::input::pointer::mouse_position()
         };
 
         let shape = CURSOR_SHAPE
@@ -5961,7 +5961,7 @@ pub fn virgl_composite_windows(
     let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_position()
     } else {
-        crate::drivers::usb::hid::mouse_position()
+        crate::input::pointer::mouse_position()
     };
     let cur_x = mouse_x as i32;
     let cur_y = mouse_y as i32;

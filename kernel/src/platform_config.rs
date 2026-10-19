@@ -430,6 +430,19 @@ pub fn probe_gicv2m(phys_base: u64) -> bool {
     true
 }
 
+/// Install a firmware-described non-secure MSI frame whose MADT range
+/// overrides MSI_TYPER (ACPI 6.4, GIC MSI Frame Flags bit 0).
+#[cfg(target_arch = "aarch64")]
+pub fn install_msi_frame(base: u64, spi_base: u32, count: u32) -> bool {
+    if base == 0 || base & 4095 != 0 || spi_base < 32 || count == 0
+        || spi_base.checked_add(count).is_none_or(|end| end > 1020)
+        || GICV2M_BASE_PHYS.load(Ordering::Acquire) != 0 { return false; }
+    GICV2M_SPI_BASE.store(spi_base as u64, Ordering::Relaxed);
+    GICV2M_SPI_COUNT.store(count as u64, Ordering::Relaxed);
+    GICV2M_BASE_PHYS.store(base, Ordering::Release);
+    true
+}
+
 /// Allocate the next available GICv2m MSI SPI.
 ///
 /// Returns the SPI number (GIC INTID) for use with `configure_msi()` and
