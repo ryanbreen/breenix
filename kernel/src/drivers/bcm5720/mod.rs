@@ -139,7 +139,11 @@ fn delay_us(us: u64) {
     }
 }
 
-/// Block the network worker on the scheduler timer.
+/// Block the network worker on the scheduler timer, releasing its CPU while it
+/// sleeps. Halting as the current thread instead kept the CPU, counted busy and
+/// passed over by placement, for up to a whole one-second sleep whenever the
+/// switch away was declined; the processes suite's idle-CPU case found no idle
+/// processor on the R240 (#1999).
 pub(crate) fn sleep_ms(ms: u64) {
     use crate::task::{scheduler, thread::ThreadState};
     let tid = scheduler::current_thread_id().expect("network worker has a scheduler identity");
@@ -149,7 +153,7 @@ pub(crate) fn sleep_ms(ms: u64) {
     scheduler::with_current(|sched| sched.block_current_for_timer(deadline));
     scheduler::yield_current();
     while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
     }
 }
 
