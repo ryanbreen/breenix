@@ -3551,7 +3551,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         elf: &[u8],
         with_argv: bool,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<crate::process::RetirementReceipt>, &'static str> {
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
             let cred = manager
@@ -3569,7 +3569,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             )?);
             manager
                 .exec_process_with_argv(pid, &mut prepared, closes)
-                .map(|(_, _, commit)| {
+                .map(|(_, _, commit, superseded)| {
                     // #721 m1: deliberately not applied. This oracle reads exec
                     // state straight off the process rows, whose threads are not scheduled,
                     // and tears them down through retire_and_remove_owned_row or
@@ -3577,11 +3577,20 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                     // the scheduler-side commit to matter to — unlike the exec
                     // system calls, which apply it (3 of 3: one ARM64, two x86).
                     let _ = commit;
+                    superseded
                 })
         } else {
             manager
                 .exec_process(pid, elf, Some("exec_detach_oracle"), closes)
-                .map(|_| ())
+                .map(|_| None)
+        }
+    }
+
+    /// Queue the roots a fixture exec superseded once PM is released, as the
+    /// exec system calls do.
+    fn queue_superseded(receipt: Option<crate::process::RetirementReceipt>) {
+        if let Some(reclaim) = receipt.and_then(|mut receipt| receipt.take_contents()) {
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
         }
     }
 
@@ -3745,6 +3754,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             };
             invoke_exec(manager, member_pid, &corrupt, with_argv, &mut closes)
         };
+        let failed_exec = failed_exec.map(queue_superseded);
         let (failed_inherited_cr3, failed_thread_group_id) = member_fields(member_pid);
         let failure_error_exact = matches!(failed_exec, Err("Segment data out of bounds"));
         if failure_error_exact {
@@ -3792,6 +3802,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             };
             invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
         };
+        let waited_exec = waited_exec.map(queue_superseded);
         let (waited_inherited_cr3, waited_thread_group_id) = member_fields(member_pid);
         let wait_error_exact = matches!(waited_exec, Err(error) if error == crate::process::manager::EXEC_GROUP_RUNNING);
         if wait_error_exact {
@@ -3935,6 +3946,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             };
             invoke_exec(manager, process_pid, &valid, with_argv, &mut closes)
         };
+        let successful_exec = successful_exec.map(queue_superseded);
         if successful_exec.is_ok() {
             roots_created = roots_created.saturating_add(1);
         }
@@ -4035,6 +4047,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             };
             invoke_exec(manager, leader_pid, &valid, with_argv, &mut closes)
         };
+        let shared_exec = shared_exec.map(queue_superseded);
         if shared_exec.is_ok() {
             roots_created = roots_created.saturating_add(1);
         }

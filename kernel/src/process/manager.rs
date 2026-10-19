@@ -19,7 +19,7 @@ use crate::memory::arch_stub::VirtAddr;
 use super::{Process, ProcessId};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
-use crate::memory::process_memory::{AbandonReason, ProcessPageTable};
+use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
 
 /// The process ID reserved for init. Never handed out by ordinary allocation.
@@ -2155,23 +2155,19 @@ impl ProcessManager {
                 already_terminated && core::mem::take(&mut process.address_space_release_deferred);
             if already_terminated && !deferred_release {
                 // Preserve the single-CoW-decref invariant: external terminate()
-                // already walked these mappings, so raw-drop them without ever
-                // routing the page table through another reclaim/decref path.
-                // File bindings leave with the mappings, so a zombie row does
-                // not keep their files open.
-                process.vmas.clear();
-                process.memory_locks.clear();
-                if let Some(page_table) = process.page_table.take() {
-                    page_table.abandon(AbandonReason::AlreadyTerminated);
-                }
-                drop(process.stack.take());
-                process.pending_old_page_tables.clear();
-                // P6a condition C2, path (b): this arm produces no receipt, so
-                // no `record_reclaim` will ever arrive for the work it just did.
-                // The latch is still refused while a receipt from this row's
+                // already released these leaves, and the table's released mark
+                // keeps the receipt's walk from releasing them again. Its tables
+                // retire through the receipt; file bindings go with the table.
+                receipt = crate::task::process_task::defer_remaining_tables(process)
+                    .map(super::RetirementReceipt::from_reclaim);
+                // P6a condition C2, path (b): a row holding no tables (its first
+                // exit took them) gets no receipt here, so no `record_reclaim`
+                // arrives for this arm. The latch is still refused while a receipt from this row's
                 // first exit is outstanding, so a repeat exit cannot retire a row
                 // whose resources are still in flight.
-                process.note_resources_absent();
+                if receipt.is_none() {
+                    process.note_resources_absent();
+                }
             } else {
                 // Fault exits always defer: the two-epoch grace covers both a
                 // peer's pre-shadow-stamp dispatch window and hardware root lag.
@@ -4651,7 +4647,15 @@ impl ProcessManager {
         pid: ProcessId,
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<
+        (
+            u64,
+            u64,
+            crate::task::scheduler::ExecSchedCommit,
+            Option<super::RetirementReceipt>,
+        ),
+        &'static str,
+    > {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         let is_current_process = self.current_pid == Some(pid);
@@ -4896,20 +4900,30 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        if let Some(process) = self.processes.live_row_mut(&pid) {
+        // The roots this exec superseded retire through a receipt the caller
+        // queues once PM is released, as an exit's do.
+        let superseded = self.processes.live_row_mut(&pid).and_then(|process| {
             for old_pt in &mut process.pending_old_page_tables {
                 old_pt.release_exec_file_vmas();
             }
-        }
+            crate::task::process_task::defer_superseded_roots(process)
+        });
 
-        Ok((new_entry_point, initial_rsp, sched_commit))
+        Ok((
+            new_entry_point,
+            initial_rsp,
+            sched_commit,
+            superseded.map(super::RetirementReceipt::from_reclaim),
+        ))
     }
 
     /// Replace a process's address space with a new program (exec) with argv support (ARM64)
     ///
-    /// Returns the entry point, stack pointer, and a scheduler commit receipt on success.
-    /// The caller must release the process-manager lock before applying the receipt so the
-    /// scheduler and process-manager locks are never nested in either direction.
+    /// Returns the entry point, stack pointer, a scheduler commit receipt, and the
+    /// retirement receipt for the roots exec superseded on success. The caller must
+    /// release the process-manager lock before applying the commit, so the scheduler
+    /// and process-manager locks do not nest in either direction, and before
+    /// queueing the retirement receipt.
     /// Build an unpublished image with interrupts enabled and no manager guard.
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn prepare_exec_image(
@@ -5060,7 +5074,15 @@ impl ProcessManager {
         pid: ProcessId,
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<
+        (
+            u64,
+            u64,
+            crate::task::scheduler::ExecSchedCommit,
+            Option<super::RetirementReceipt>,
+        ),
+        &'static str,
+    > {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
@@ -5304,13 +5326,21 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        if let Some(process) = self.processes.live_row_mut(&pid) {
+        // The roots this exec superseded retire through a receipt the caller
+        // queues once PM is released, as an exit's do.
+        let superseded = self.processes.live_row_mut(&pid).and_then(|process| {
             for old_pt in &mut process.pending_old_page_tables {
                 old_pt.release_exec_file_vmas();
             }
-        }
+            crate::task::process_task::defer_superseded_roots(process)
+        });
 
-        Ok((new_entry_point, initial_rsp, sched_commit))
+        Ok((
+            new_entry_point,
+            initial_rsp,
+            sched_commit,
+            superseded.map(super::RetirementReceipt::from_reclaim),
+        ))
     }
 
     /// Replace a process's address space with a new program (exec) for ARM64

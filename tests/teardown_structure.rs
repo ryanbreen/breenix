@@ -4219,6 +4219,11 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
+    // The roots an exec superseded (`defer_superseded_roots`), queued by the
+    // exec system calls once PM is released, and by the exec-detach oracle's
+    // fixture execs the same way.
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_exec_aarch64", 1),
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_execv_with_frame", 2),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
     // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
@@ -4228,6 +4233,7 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn queue_superseded", 1),
     // The kernel-stack ownership oracle now retires its owned fixture row through the same deferred-reclaim helper shape as the existing oracles.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
@@ -4454,11 +4460,13 @@ const TABLE_RECORDER_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked => AbandonReason::AlreadyTerminated", 1),
+    // An exit whose leaves are released (a non-live ARM64 root, or an earlier
+    // terminate) retires its tables through a receipt, so production abandons a
+    // table only when a receipt cannot be queued; the release helper that still
+    // abandons is a boot-test fixture.
     ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoArchPipeline", 1),
     ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoProofPipeline", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(any(target_arch=aarch64,feature=boot_tests))] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit => AbandonReason::AlreadyTerminated", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
@@ -11707,10 +11715,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     }
     let process_task = source(&sources, "kernel/src/task/process_task.rs");
     let wrong_reason = process_task.replacen(
-        "page_table.abandon(AbandonReason::AlreadyTerminated);",
         "page_table.abandon(AbandonReason::NoProofPipeline);",
+        "page_table.abandon(AbandonReason::AlreadyTerminated);",
         1,
     );
+    assert_ne!(wrong_reason, process_task, "wrong-reason mutation must apply");
     let wrong_reason =
         with_replaced_source(&sources, "kernel/src/task/process_task.rs", wrong_reason);
     assert!(validate_process_page_table_dispositions(&wrong_reason).is_err());

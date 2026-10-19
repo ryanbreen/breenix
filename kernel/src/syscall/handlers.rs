@@ -2197,7 +2197,7 @@ pub fn sys_execv_with_frame(
                 return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) =
+            let (new_entry_point, new_rsp, commit, superseded) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
                     Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
@@ -2258,6 +2258,10 @@ pub fn sys_execv_with_frame(
 
             // The new image starts from the initial x87/SSE state, not the old one's.
             crate::arch_impl::x86_64::fpu::reset_current();
+            // The roots exec superseded retire once no CPU can still walk them.
+            if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+                crate::task::process_task::enqueue_process_reclaim(reclaim);
+            }
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
@@ -2376,7 +2380,7 @@ pub fn sys_execv_with_frame(
                 return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) =
+            let (new_entry_point, new_rsp, commit, superseded) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
                     Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
@@ -2440,6 +2444,10 @@ pub fn sys_execv_with_frame(
 
             // The new image starts from the initial x87/SSE state, not the old one's.
             crate::arch_impl::x86_64::fpu::reset_current();
+            // The roots exec superseded retire once no CPU can still walk them.
+            if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+                crate::task::process_task::enqueue_process_reclaim(reclaim);
+            }
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",

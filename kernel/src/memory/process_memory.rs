@@ -638,6 +638,10 @@ pub(crate) enum AbandonReason {
     NoProofPipeline,
     #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
     NoArchPipeline,
+    /// The disposition gate's fixture. An exit whose leaves `terminate`
+    /// released retires its tables through a receipt
+    /// (`process_task::defer_remaining_tables`) instead.
+    #[cfg(feature = "boot_tests")]
     AlreadyTerminated,
 }
 
@@ -2863,6 +2867,7 @@ impl ProcessPageTable {
             AbandonReason::NoArchPipeline => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_ABANDONED_NO_ARCH);
             }
+            #[cfg(feature = "boot_tests")]
             AbandonReason::AlreadyTerminated => {
                 crate::trace_count!(
                     crate::tracing::providers::teardown::PT_ROOT_ABANDONED_TERMINATED
@@ -2959,9 +2964,9 @@ impl Drop for ProcessPageTable {
             }
             Disposition::Retired => {}
             Disposition::Abandoned(reason) => match reason {
-                AbandonReason::NoProofPipeline
-                | AbandonReason::NoArchPipeline
-                | AbandonReason::AlreadyTerminated => {}
+                AbandonReason::NoProofPipeline | AbandonReason::NoArchPipeline => {}
+                #[cfg(feature = "boot_tests")]
+                AbandonReason::AlreadyTerminated => {}
             },
         }
     }

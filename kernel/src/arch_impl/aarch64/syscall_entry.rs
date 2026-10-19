@@ -1465,7 +1465,7 @@ fn sys_exec_aarch64(
             manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes)
         };
 
-        let (new_entry_point, new_rsp, commit) = match exec_result {
+        let (new_entry_point, new_rsp, commit, superseded) = match exec_result {
             Ok(value) => {
                 // Trace: exec_process_with_argv succeeded
                 super::trace::trace_exec(b'S');
@@ -1509,6 +1509,10 @@ fn sys_exec_aarch64(
         crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(new_ttbr0);
         // Trace: TTBR0 page table switched
         super::trace::trace_exec(b'P');
+        // The roots exec superseded retire once no CPU can still walk them.
+        if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
+        }
 
         frame.elr = new_entry_point;
 
