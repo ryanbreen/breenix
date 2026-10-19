@@ -201,6 +201,58 @@ pub unsafe fn report(runtime: &RuntimeServices) {
     }
 }
 
+/// Probe: every `Boot####` variable the firmware has, in the boot order or not, by number, attributes and
+/// description class, so a firmware setup application outside the boot order shows.
+///
+/// # Safety
+/// `runtime` must be the firmware's runtime services table.
+pub unsafe fn report_all(runtime: &RuntimeServices) {
+    let mut name = [0u16; 128];
+    let mut guid = Guid(0, 0, 0, [0; 8]);
+    let mut seen = 0;
+    for _ in 0..4096 {
+        let mut size = core::mem::size_of_val(&name);
+        if (runtime.get_next_variable_name)(&mut size, name.as_mut_ptr(), &mut guid) != SUCCESS {
+            break;
+        }
+        let units = name.iter().position(|&unit| unit == 0).unwrap_or(0);
+        if guid != GLOBAL_VARIABLE || units != 8 || &name[..4] != &[b'B' as u16, b'o' as u16, b'o' as u16, b't' as u16] {
+            continue;
+        }
+        let mut number = 0u16;
+        let mut valid = true;
+        for &unit in &name[4..8] {
+            match (unit as u8 as char).to_digit(16) {
+                Some(digit) if unit < 0x80 && (unit as u8).is_ascii_hexdigit() && !(unit as u8).is_ascii_lowercase() => {
+                    number = number << 4 | digit as u16
+                }
+                _ => valid = false,
+            }
+        }
+        if !valid {
+            continue;
+        }
+        seen += 1;
+        let mut text = [0u8; 8];
+        let mut bytes = [0u8; OPTION_MAX];
+        match get(runtime, option_name(number, &mut text), &mut bytes).ok().and_then(|len| parse(&bytes[..len])) {
+            Some(option) => {
+                let (class, class_len) = description_class(&option);
+                say!(
+                    "load option {}: attributes {:#x}{}{}, \"{}\"",
+                    option_name(number, &mut text),
+                    option.attributes,
+                    if option.attributes & LOAD_OPTION_HIDDEN != 0 { " hidden" } else { "" },
+                    if option.attributes & LOAD_OPTION_CATEGORY != 0 { " application" } else { "" },
+                    core::str::from_utf8(&class[..class_len]).unwrap_or("?")
+                );
+            }
+            None => say!("load option {} unreadable", option_name(number, &mut text)),
+        }
+    }
+    say!("load options in all: {}", seen);
+}
+
 /// Firmware setup through `OsIndications` and a reset; returns only when the firmware does not offer it.
 ///
 /// # Safety

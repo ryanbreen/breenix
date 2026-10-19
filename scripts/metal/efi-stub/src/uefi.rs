@@ -53,6 +53,8 @@ pub const RESET_COLD: u32 = 0;
 pub const RESET_WARM: u32 = 1;
 /// Load option attributes (section 3.1.3).
 pub const LOAD_OPTION_ACTIVE: u32 = 1;
+pub const LOAD_OPTION_HIDDEN: u32 = 8;
+pub const LOAD_OPTION_CATEGORY: u32 = 0x1f00;
 /// `EFI_OS_INDICATIONS_BOOT_TO_FW_UI` (section 8.5.4).
 pub const OS_INDICATIONS_BOOT_TO_FW_UI: u64 = 1;
 /// File open modes (section 13.5).
@@ -183,7 +185,7 @@ pub struct RuntimeServices {
     pub set_virtual_address_map: usize,
     pub convert_pointer: usize,
     pub get_variable: unsafe extern "efiapi" fn(*const u16, *const Guid, *mut u32, *mut usize, *mut c_void) -> Status,
-    pub get_next_variable_name: usize,
+    pub get_next_variable_name: unsafe extern "efiapi" fn(*mut usize, *mut u16, *mut Guid) -> Status,
     pub set_variable: unsafe extern "efiapi" fn(*const u16, *const Guid, u32, usize, *const c_void) -> Status,
     pub get_next_high_monotonic_count: usize,
     pub reset_system: unsafe extern "efiapi" fn(u32, Status, usize, *const c_void) -> !,

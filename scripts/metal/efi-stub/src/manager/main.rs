@@ -75,7 +75,7 @@ struct Manager<'a> {
     status: Line,
     detail: Line,
     countdown: Line,
-    /// The HTTP boot port's device path (a site value: never shown), the HTTP boot option, and how the test loop
+    /// The HTTP boot port's device path (a site value, kept off COM1 and the screen), the HTTP boot option, and how the test loop
     /// is started.
     port: [u8; slots::PATH_MAX],
     port_len: usize,
@@ -402,6 +402,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             None => say!("BootCurrent is not set"),
         }
         lab::report_load_file(boot, port);
+        options::report_all(runtime);
         let mut supported = [0u8; 8];
         let setup = options::get(runtime, "OsIndicationsSupported", &mut supported) == Ok(8)
             && u64::from_le_bytes(supported) & OS_INDICATIONS_BOOT_TO_FW_UI != 0;

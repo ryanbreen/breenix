@@ -26,7 +26,7 @@ pub struct Config {
     pub url_len: usize,
     pub countdown: u32,
     /// The device path the firmware's HTTP boot loaded the install's stub from: the network port, its address and
-    /// the boot URL. A site value: never shown.
+    /// the boot URL. A site value, kept off COM1 and the screen.
     pub port: [u8; PATH_MAX],
     pub port_len: usize,
     pub http_option: Option<u16>,
