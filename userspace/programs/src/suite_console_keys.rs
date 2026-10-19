@@ -315,15 +315,20 @@ pub fn keys_report_joins_typed_line() -> CaseResult {
         switch_to(2)?;
         let seq = keys("a,b")?;
         crate::wait_vt(2, "ab").map_err(|e| format!("{e}: {}", late(seq)))?;
-        term.write(b"\x1b[6n")?;
-        sleep(200);
+        // Eleven six-byte replies cross the delivery buffer's 64-byte edge.
+        // Ask in one write, and press Enter as soon as the write returns.
+        term.write(&b"\x1b[6n".repeat(11))?;
         let early = term.available();
         require(early == 0, &format!("the report overtook the typed line: {early} bytes readable before Enter"))?;
         let seq = keys("enter")?;
         require(within(KEY_MS, || term.available() > 0), &late(seq))?;
-        let mut got = [0u8; 64];
+        let mut got = [0u8; 128];
         let count = io::read(term.fd, &mut got).map_err(|e| format!("read tty2: {e}"))?;
-        require(&got[..count] == b"ab\x1b[1;3R\n", &format!("tty2 read {:?}", &got[..count]))
+        let mut expected = b"ab".to_vec();
+        expected.extend_from_slice(&b"\x1b[1;3R".repeat(11));
+        expected.push(b'\n');
+        require(got[..count] == expected, &format!("tty2 read {:?}", &got[..count]))?;
+        require(term.available() == 0, "report bytes remained after the canonical line")
     })
 }
 

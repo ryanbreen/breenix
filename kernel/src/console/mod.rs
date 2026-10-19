@@ -50,6 +50,9 @@ pub mod boxdraw;
 pub mod display;
 pub mod grid;
 mod records;
+mod replies;
+use replies::{deliver_replies, REPLY_QUEUED};
+pub use replies::deliver_queued_replies;
 #[cfg(target_arch = "x86_64")]
 pub use records::log_record;
 #[cfg(target_arch = "aarch64")]
@@ -68,7 +71,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use display::{Display, Source};
 use raster::Layout;
 use spin::Mutex;
@@ -362,65 +365,6 @@ pub fn write_vt(number: usize, bytes: &[u8]) {
             }
         });
     });
-}
-
-/// A reply was queued since a delivery last started (`deliver_replies`).
-static REPLY_QUEUED: AtomicBool = AtomicBool::new(false);
-/// Held by the one context handing replies to input: the render thread at
-/// each pass, or a writer whose output asked for a report.
-static REPLY_DELIVERY: AtomicBool = AtomicBool::new(false);
-/// Per terminal, reply bytes its input took that a grid lock attempt failed
-/// to remove from the reply queue. Used only under `REPLY_DELIVERY`.
-static REPLIES_TAKEN: [AtomicUsize; vt::VT_COUNT] = [const { AtomicUsize::new(0) }; vt::VT_COUNT];
-
-/// Hand the replies a write just queued to their terminals' input before the
-/// write returns, so a report joins the input behind the keys already typed
-/// and ahead of any typed after the request (contract section 5.4). Waiting
-/// for the render thread's next pass let later keys overtake it: on the R240
-/// a pass spends half a second reading the screen back after a switch. Called
-/// by a terminal writer in thread context, holding no terminal lock.
-pub fn deliver_queued_replies() {
-    if REPLY_QUEUED.load(Ordering::SeqCst) {
-        deliver_replies();
-    }
-}
-
-/// Hand each terminal's replies to its input, outside the grid's lock: the
-/// line discipline echoes into the grid. Replies are input, independent of
-/// which owner currently draws. A byte the input cannot take yet stays queued,
-/// with those behind it, for the next pass, so contention loses no CPR byte.
-/// One context delivers at a time; a reply queued while another holds the
-/// delivery is handed over by that holder before it lets go.
-fn deliver_replies() {
-    loop {
-        if REPLY_DELIVERY.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-            return;
-        }
-        REPLY_QUEUED.store(false, Ordering::SeqCst);
-        for (index, taken_before) in REPLIES_TAKEN.iter().enumerate() {
-            // A failed lock attempt must not make bytes already accepted by
-            // the input eligible again.
-            let unacknowledged = taken_before.load(Ordering::Relaxed);
-            if unacknowledged != 0 {
-                if with_grid(|console| console.vts[index].replies.consume(unacknowledged)).is_none() {
-                    continue;
-                }
-                taken_before.store(0, Ordering::Relaxed);
-            }
-            let mut bytes = [0u8; 64];
-            let Some(n) = with_grid(|console| console.vts[index].replies.peek(&mut bytes)) else {
-                continue;
-            };
-            let taken = bytes[..n].iter().take_while(|&&byte| crate::tty::driver::push_reply(index + 1, byte)).count();
-            if taken != 0 && with_grid(|console| console.vts[index].replies.consume(taken)).is_none() {
-                taken_before.store(taken, Ordering::Relaxed);
-            }
-        }
-        REPLY_DELIVERY.store(false, Ordering::SeqCst);
-        if !REPLY_QUEUED.load(Ordering::SeqCst) {
-            return;
-        }
-    }
 }
 
 /// A process has the display: stop drawing on it. Returns once no row of the
