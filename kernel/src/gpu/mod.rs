@@ -1500,12 +1500,25 @@ fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32])
 /// the wait, `DEVICE_RESET` when a reset was decided with the request outstanding or the
 /// device is out after one, else 0.
 fn exec_req_why(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, (i64, u32)> {
+    send_sync(serial, req, ctx, holds, reading)?;
+    await_sync(serial)
+}
+
+/// The sending half of [`exec_req_why`]: queue synchronous request `serial` with its holds
+/// and `reading` marks. Its answer is taken with [`await_sync`], or left with
+/// `Core::abandon` by a caller that stops waiting.
+fn send_sync(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<(), (i64, u32)> {
     if !ensure_reaper() {
         return Err((ENOMEM, 0));
     }
     with_core(|c| c.start_sync(serial, req, ctx, holds, reading))
         .unwrap_or(Err(ENODEV))
-        .map_err(|e| (e, if e == EIO { fence_status::DEVICE_RESET } else { 0 }))?;
+        .map_err(|e| (e, if e == EIO { fence_status::DEVICE_RESET } else { 0 }))
+}
+
+/// The waiting half of [`exec_req_why`]: the answer to sent request `serial`, or its EIO
+/// cause, or EINTR. A request that ends without its answer is abandoned.
+fn await_sync(serial: u64) -> Result<Done, (i64, u32)> {
     let outcome = wait_for(None, true, |c| {
         if let Some(d) = c.done.remove(&serial) {
             return Some(Ok(d));
@@ -3847,17 +3860,20 @@ const STAGING_CHUNK: usize = 512;
 
 
 /// The bytes that differ between two observations of the same span.
+/// Equal words, the case of a written target, cost one comparison each; only a word that
+/// differs has its bytes counted.
 fn differing(a: &[u8], b: &[u8]) -> u32 {
     let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
     let tail = wa.remainder().iter().zip(wb.remainder()).filter(|(p, q)| p != q).count() as u32;
-    wa.zip(wb)
-        .map(|(x, y)| {
-            let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
-                ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
-            d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32
-        })
-        .sum::<u32>()
-        + tail
+    let mut count = tail;
+    for (x, y) in wa.zip(wb) {
+        let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
+            ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
+        if d != 0 {
+            count += d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32;
+        }
+    }
+    count
 }
 
 struct Observation {
@@ -3886,12 +3902,38 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
     .flatten()
 }
 
+/// A transfer of [`observe`] the device has: the request, the fence it carries, its place
+/// in band-then-pass order, and test point 21's other resource when it names one.
+#[derive(Clone, Copy)]
+struct Sent {
+    serial: u64,
+    fence: u64,
+    order: usize,
+    other: Option<u32>,
+}
+
+/// A band of [`observe`]'s rectangle: its first row and row count, the pass it is on
+/// (0 the poison, 1 its complement) and that pass's transfer, unless test point 22
+/// skipped it.
+#[derive(Clone, Copy)]
+struct Band {
+    index: usize,
+    by: usize,
+    rows: usize,
+    pass: usize,
+    sent: Option<Sent>,
+}
+
 /// Read a rectangle of target `id` into `staging`, band by band: each band is transferred
 /// twice, into the poison and into its complement, and the bytes that differ between the
 /// two are counted as unwritten (section 1.8). A transfer is a synchronous request
 /// under the watchdog that holds the resource it names and the backing the device writes,
-/// until the device returns it. Returns that count and the first transfer's fence and
-/// answer. The reason of an EIO comes only from what the kernel observes.
+/// until the device returns it. Two bands are observed at once, so the CPU fills, reads and
+/// compares one band while the device transfers the other; within a band the two passes stay
+/// in order. Bands begin on row boundaries and `op_resource_create` rounds a pitch up to a
+/// multiple of 256 bytes, so two bands share no cache line. Returns the unwritten count and the fence and answer of the
+/// first transfer in band-then-pass order. The reason of an EIO comes only from what the
+/// kernel observes.
 #[allow(clippy::too_many_arguments)]
 fn observe(
     tgid: u64,
@@ -3927,125 +3969,189 @@ fn observe(
     })?;
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
-    let band_rows = (READBACK_BAND / pitch as usize)
-        .max(1)
-        .min(a.height as usize);
+    let height = a.height as usize;
+    let band_rows = (READBACK_BAND / pitch as usize).max(1).min(height);
+    let bands = height.div_ceil(band_rows);
+    let offset = |b: &Band| (a.y as usize + b.by) * pitch as usize + a.x as usize * px;
+    // Poison band `b` with its pass's pattern and send its transfer, unless test point 22
+    // skips it.
+    let start = |b: &mut Band| -> Result<(), (i64, u32)> {
+        let pattern = if b.pass == 0 { POISON } else { !POISON };
+        let at = offset(b);
+        for r in 0..b.rows {
+            backing.fill(at + r * pitch as usize, row, pattern);
+        }
+        backing.maintain(at, (b.rows - 1) * pitch as usize + row, false);
+        b.sent = None;
+        if crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some() {
+            return Ok(());
+        }
+        let ty = (a.y as usize + b.by) as u32;
+        let other = wrong_resource(tgid, id, pitch, a.x, ty, a.width, b.rows as u32, a.target);
+        let other_id = other.as_ref().map(|(rid, _)| *rid);
+        let (named, written) = other.unwrap_or((id, backing.clone()));
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence()))
+            .ok_or((ENODEV, readback_reason::NONE))?;
+        let req = virgl::transfer_from_host(
+            Tag::Sync(serial),
+            ctx,
+            fence,
+            named,
+            written,
+            a.x,
+            ty,
+            a.width,
+            b.rows as u32,
+            at as u64,
+            pitch,
+        );
+        // The target, and the other resource when the transfer names one.
+        let both = [id, named];
+        let marks = if named == id { &both[..1] } else { &both[..] };
+        let sent = send_sync(serial, req, ctx, marks, marks);
+        if sent.is_err() {
+            release_other(other_id);
+        }
+        sent.map_err(device_reason)?;
+        b.sent = Some(Sent { serial, fence, order: 2 * b.index + b.pass, other: other_id });
+        Ok(())
+    };
+    let mut first: Option<(usize, u64, u32)> = None;
+    // Take band `b`'s transfer back from the device and check its answer.
+    let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
+        let Some(s) = b.sent.take() else { return Ok(()) };
+        let done = await_sync(s.serial);
+        release_other(s.other);
+        let mut d = done.map_err(device_reason)?;
+        // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
+        if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
+            d.echoed = d.echoed.wrapping_add(1);
+        }
+        if !virgl::ok(d.answer) {
+            return Err((EIO, readback_reason::DEVICE_ERROR));
+        }
+        if d.echoed != s.fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+            return Err((EIO, readback_reason::FENCE_MISMATCH));
+        }
+        if first.is_none_or(|(order, _, _)| s.order < order) {
+            first = Some((s.order, s.fence, d.answer));
+        }
+        Ok(())
+    };
     let mut seen = [0u8; PAGE];
     let mut chunk = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
-    let mut first: Option<(u64, u32)> = None;
-    let mut by = 0usize;
-    while by < a.height as usize {
-        let rows = band_rows.min(a.height as usize - by);
-        let ty = a.y as usize + by;
-        let offset = ty * pitch as usize + a.x as usize * px;
-        for (pass, pattern) in [POISON, !POISON].into_iter().enumerate() {
-            for r in 0..rows {
-                backing.fill(offset + r * pitch as usize, row, pattern);
+    // The first observation lands straight in the staging; the second is compared with it
+    // a frame at a time.
+    let mut read = |b: &Band| {
+        let at = offset(b);
+        for r in 0..b.rows {
+            let src = at + r * pitch as usize;
+            let _ = staging.try_spans((b.by + r) * row, row, |done, ptr, n| {
+                // SAFETY: the span lies inside one of the staging's frames, which only
+                // this call uses.
+                let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
+                if b.pass == 0 {
+                    observation::read(backing.as_ref(), src + done, kept);
+                } else {
+                    observation::read(backing.as_ref(), src + done, &mut seen[..n]);
+                    unwritten += differing(&seen[..n], kept);
+                }
+                Ok::<(), ()>(())
+            });
+        }
+    };
+    let mut lanes: [Option<Band>; 2] = [None, None];
+    let mut next = 0usize;
+    let outcome = (|| -> Result<(), (i64, u32)> {
+        // Start the next band, if any, in `lane`.
+        let mut open = |lane: &mut Option<Band>| -> Result<(), (i64, u32)> {
+            if next < bands {
+                let by = next * band_rows;
+                let b = lane.insert(Band { index: next, by, rows: band_rows.min(height - by), pass: 0, sent: None });
+                next += 1;
+                start(b)?;
             }
-            backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
-            let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
-            if !skip {
-                let other = wrong_resource(
-                    tgid,
-                    id,
-                    pitch,
-                    a.x,
-                    ty as u32,
-                    a.width,
-                    rows as u32,
-                    a.target,
-                );
-                let (named, written) = other.clone().unwrap_or((id, backing.clone()));
-                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence()))
-                    .ok_or((ENODEV, readback_reason::NONE))?;
-                let req = virgl::transfer_from_host(
-                    Tag::Sync(serial),
-                    ctx,
-                    fence,
-                    named,
-                    written,
-                    a.x,
-                    ty as u32,
-                    a.width,
-                    rows as u32,
-                    offset as u64,
-                    pitch,
-                );
-                // The target, and the other resource when the transfer names one.
-                let both = [id, named];
-                let marks = if named == id { &both[..1] } else { &both[..] };
-                let done = exec_req_why(serial, req, ctx, marks, marks);
-                if let Some((rid, _)) = other {
-                    // The mark stays with the request if its waiter left before the answer.
-                    with_core(|c| {
-                        if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
-                            if let Some(r) = c.resources.get_mut(&rid) {
-                                r.reading = false;
-                            }
-                            c.free_if_unused(rid);
+            Ok(())
+        };
+        for lane in lanes.iter_mut() {
+            open(lane)?;
+        }
+        loop {
+            let mut active = false;
+            for lane in lanes.iter_mut() {
+                let Some(b) = lane.as_mut() else { continue };
+                active = true;
+                finish(b)?;
+                read(b);
+                if b.pass == 0 {
+                    b.pass = 1;
+                    start(b)?;
+                    continue;
+                }
+                if fmt == format::R8G8B8A8 {
+                    // Canonical bytes are BGRA (record v2's `canonical` 0).
+                    let bytes = b.rows * row;
+                    let mut done = 0;
+                    while done < bytes {
+                        let n = (bytes - done).min(STAGING_CHUNK);
+                        let at = b.by * row + done;
+                        staging.read(at, &mut chunk[..n]);
+                        for px in chunk[..n].chunks_exact_mut(4) {
+                            px.swap(0, 2);
                         }
-                    });
-                    notify();
-                }
-                let mut d = done.map_err(|(e, status)| match status {
-                    fence_status::DEVICE_HUNG => (e, readback_reason::DEVICE_HUNG),
-                    fence_status::DEVICE_RESET => (e, readback_reason::DEVICE_RESET),
-                    _ => (e, readback_reason::DEVICE_ERROR),
-                })?;
-                // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
-                if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
-                    d.echoed = d.echoed.wrapping_add(1);
-                }
-                if !virgl::ok(d.answer) {
-                    return Err((EIO, readback_reason::DEVICE_ERROR));
-                }
-                if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
-                    return Err((EIO, readback_reason::FENCE_MISMATCH));
-                }
-                first.get_or_insert((fence, d.answer));
-            }
-            // The first observation lands straight in the staging; the second is compared
-            // with it a frame at a time.
-            for r in 0..rows {
-                let src = offset + r * pitch as usize;
-                let _ = staging.try_spans((by + r) * row, row, |done, ptr, n| {
-                    // SAFETY: the span lies inside one of the staging's frames, which only
-                    // this call uses.
-                    let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
-                    if pass == 0 {
-                        observation::read(backing.as_ref(), src + done, kept);
-                    } else {
-                        observation::read(backing.as_ref(), src + done, &mut seen[..n]);
-                        unwritten += differing(&seen[..n], kept);
+                        staging.write(at, &chunk[..n]);
+                        done += n;
                     }
-                    Ok::<(), ()>(())
-                });
-            }
-        }
-        if fmt == format::R8G8B8A8 {
-            // Canonical bytes are BGRA (record v2's `canonical` 0).
-            let bytes = rows * row;
-            let mut done = 0;
-            while done < bytes {
-                let n = (bytes - done).min(STAGING_CHUNK);
-                let at = by * row + done;
-                staging.read(at, &mut chunk[..n]);
-                for px in chunk[..n].chunks_exact_mut(4) {
-                    px.swap(0, 2);
                 }
-                staging.write(at, &chunk[..n]);
-                done += n;
+                *lane = None;
+                open(lane)?;
+            }
+            if !active {
+                return Ok(());
             }
         }
-        by += rows;
+    })();
+    if let Err(e) = outcome {
+        // A transfer still with the device keeps its marks and holds until it returns.
+        for b in lanes.iter_mut().flatten() {
+            if let Some(s) = b.sent.take() {
+                with_core(|c| c.abandon(s.serial));
+                release_other(s.other);
+            }
+        }
+        return Err(e);
     }
-    let (fence, answer) = first.unwrap_or((0, 0));
+    let (_, fence, answer) = first.unwrap_or((0, 0, 0));
     Ok(Observation {
         unwritten,
         fence,
         answer,
     })
+}
+
+/// An EIO's readback reason from a synchronous request's failure status.
+fn device_reason((e, status): (i64, u32)) -> (i64, u32) {
+    match status {
+        fence_status::DEVICE_HUNG => (e, readback_reason::DEVICE_HUNG),
+        fence_status::DEVICE_RESET => (e, readback_reason::DEVICE_RESET),
+        _ => (e, readback_reason::DEVICE_ERROR),
+    }
+}
+
+/// Clear test point 21's mark on resource `rid` once no request reads it. The mark stays
+/// with a request whose waiter left before the answer.
+fn release_other(rid: Option<u32>) {
+    let Some(rid) = rid else { return };
+    with_core(|c| {
+        if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
+            if let Some(r) = c.resources.get_mut(&rid) {
+                r.reading = false;
+            }
+            c.free_if_unused(rid);
+        }
+    });
+    notify();
 }
 
 fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {

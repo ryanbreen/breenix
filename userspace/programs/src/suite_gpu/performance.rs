@@ -70,8 +70,14 @@ fn colour(n: u64) -> u32 {
 /// Read back the rectangle `r` of target `t` (0 for the current scanout).
 fn read_rect(t: u64, r: [u32; 4]) -> R<Vec<u8>> {
     let mut px = vec![0u8; (r[2] * r[3] * 4) as usize];
+    read_into(t, r, &mut px)?;
+    Ok(px)
+}
+
+/// Read back the rectangle `r` of target `t` into `px`, rows packed.
+fn read_into(t: u64, r: [u32; 4], px: &mut [u8]) -> R<()> {
     let mut rec = [0u8; record::SIZE];
-    let (ret, a) = gpu::readback_why(t, r, &mut px, r[2] * 4, &mut rec);
+    let (ret, a) = gpu::readback_why(t, r, px, r[2] * 4, &mut rec);
     ensure(ret == 0, || {
         format!(
             "READBACK returned {} (reason {}, failed submission {}, unwritten {})",
@@ -80,8 +86,7 @@ fn read_rect(t: u64, r: [u32; 4]) -> R<Vec<u8>> {
             a.failed_submission,
             u32_at(&rec, record::UNWRITTEN)
         )
-    })?;
-    Ok(px)
+    })
 }
 
 /// `Ok` when each pixel of `px` is `c`, else the first that differs.
@@ -307,8 +312,10 @@ pub fn readback_time_2560() -> CaseResult {
     let ctx = context()?;
     let t = target(format::B8G8R8A8, W, H)?;
     frame(ctx, &scene(t, FG, &[]))?;
+    // The caller's buffer exists before the timed window, which holds only the readback.
+    let mut px = vec![0u8; (W * H * 4) as usize];
     let start = now_ns();
-    let px = read_rect(t, [0, 0, W, H])?;
+    read_into(t, [0, 0, W, H], &mut px)?;
     let us = us_since(start);
     value("readback-us", us as i64, "us", Some((0, READBACK_US as i64)));
     ensure(us <= READBACK_US, || format!("a full 2560x1600 readback took {us} us"))?;
