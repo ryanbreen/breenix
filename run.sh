@@ -239,6 +239,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
+            echo "  BREENIX_VMWARE_POINTER=relative  VMware: tablet disabled, VNC buttons and wheel go to the USB mouse"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -1449,6 +1450,16 @@ RemoteDisplay.vnc.enabled = "TRUE"
 RemoteDisplay.vnc.port = "$BREENIX_VMWARE_VNC_PORT"
 RemoteDisplay.vnc.ip = "127.0.0.1"
 VMXEOF
+    fi
+    # A pointer measurement of the relative interface: with Fusion's absolute USB tablet
+    # disabled, its VNC server sends the USB mouse the pointer's buttons and wheel. It sends
+    # that mouse no motion (two measurement boots, with and without the gaming-mouse policy).
+    if [ "${BREENIX_VMWARE_POINTER:-}" = relative ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
+mouse.vusb.absDisabled = "TRUE"
+VMXEOF
+    elif [ -n "${BREENIX_VMWARE_POINTER:-}" ]; then
+        echo "BREENIX_VMWARE_POINTER takes only 'relative'"; exit 2
     fi
 
     # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
