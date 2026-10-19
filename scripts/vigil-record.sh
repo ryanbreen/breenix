@@ -135,7 +135,7 @@ case "${1:-}" in
         [ -n "${2:-}" ] || exit 0
         IFS=',' read -r -a filed <<< "$2"
         for id in "${filed[@]}"; do
-            if [ -n "${BREENIX_HOST_RENDERER_JSON:-}" ]; then
+            if [ -n "${BREENIX_HOST_RENDERER_JSON:-}${BREENIX_GPU_TIME_JSONL:-}" ]; then
                 python3 "$ROOT/scripts/vigil-boot-metadata.py" finish "$id" "$ROOT" >&2 || true
             fi
             "$CLI" breenix finish --id "$id" --exit-status "${3:-0}" >/dev/null 2>&1 || true

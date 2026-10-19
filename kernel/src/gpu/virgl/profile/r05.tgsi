@@ -1,0 +1,43 @@
+FRAG
+DCL IN[0], POSITION, LINEAR
+DCL OUT[0], COLOR
+DCL CONST[0..4]
+DCL TEMP[0..10]
+IMM[0] UINT32 {31, 0, 1, 32}
+IMM[1] UINT32 {0, 2, 3, 4}
+IMM[2] UINT32 {5, 8, 16, 24}
+IMM[3] UINT32 {96, 255, 998277249, 0}
+IMM[4] UINT32 {65535, 65535, 16, 0}
+UADD TEMP[10].x, CONST[4].zzzz, IMM[4].xxxx
+SHL TEMP[10].x, TEMP[10].xxxx, IMM[4].zzzz
+OR TEMP[10].x, TEMP[10].xxxx, IMM[4].yyyy
+F2I TEMP[0].xy, IN[0]
+AND TEMP[1].x, CONST[0].yyyy, IMM[0].xxxx
+USHR TEMP[1].x, CONST[0].xxxx, TEMP[1].xxxx
+USHR TEMP[2].x, CONST[0].xxxx, IMM[0].xxxx
+XOR TEMP[3].x, TEMP[2].xxxx, TEMP[10].xxxx
+UADD TEMP[2].x, TEMP[3].xxxx, IMM[0].zzzz
+XOR TEMP[3].x, CONST[0].yyyy, TEMP[10].xxxx
+UADD TEMP[4].x, IMM[0].zzzz, TEMP[3].xxxx
+UADD TEMP[3].x, IMM[0].wwww, TEMP[4].xxxx
+AND TEMP[4].x, TEMP[3].xxxx, IMM[0].xxxx
+SHL TEMP[4].x, TEMP[2].xxxx, TEMP[4].xxxx
+USEQ TEMP[3].x, CONST[0].yyyy, IMM[1].xxxx
+AND TEMP[3].x, TEMP[3].xxxx, IMM[0].zzzz
+USNE TEMP[8].x, TEMP[3].xxxx, IMM[1].xxxx
+XOR TEMP[9].x, IMM[1].xxxx, TEMP[4].xxxx
+AND TEMP[9].x, TEMP[9].xxxx, TEMP[8].xxxx
+XOR TEMP[2].x, TEMP[9].xxxx, TEMP[4].xxxx
+OR TEMP[4].x, TEMP[1].xxxx, TEMP[2].xxxx
+UADD TEMP[5].x, TEMP[4].xxxx, IMM[1].xxxx
+USHR TEMP[7].x, TEMP[5].xxxx, IMM[2].zzzz
+AND TEMP[7].x, TEMP[7].xxxx, IMM[3].yyyy
+USHR TEMP[7].y, TEMP[5].xxxx, IMM[2].yyyy
+AND TEMP[7].y, TEMP[7].yyyy, IMM[3].yyyy
+USHR TEMP[7].z, TEMP[5].xxxx, IMM[1].xxxx
+AND TEMP[7].z, TEMP[7].zzzz, IMM[3].yyyy
+USHR TEMP[7].w, TEMP[5].xxxx, IMM[2].wwww
+AND TEMP[7].w, TEMP[7].wwww, IMM[3].yyyy
+U2F TEMP[7], TEMP[7]
+MUL OUT[0], TEMP[7], IMM[3].zzzz
+END

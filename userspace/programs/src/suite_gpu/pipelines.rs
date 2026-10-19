@@ -1,6 +1,6 @@
 //! G5 expectations from the contract's tables and formulas, independently of TGSI.
 use super::common::*;
-use gpu::abi::draw::{self, Instance};
+use gpu::abi::{draw::{self, Instance}, Plain};
 use libbreenix::gpu;
 use libbreenix::suite::{value, CaseResult};
 type R<T> = Result<T, libbreenix::suite::CaseError>;
@@ -100,11 +100,7 @@ fn expect_draw(
 
 fn observe(ctx: u64, t: u64, want: &Canvas, what: &str) -> R<[u8; record::SIZE]> {
     let rec = super::common::expect(t, want, what)?;
-    libbreenix::graphics::take_over_display()
-        .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0, || format!("PRESENT: {}", errno(r)))?;
-    wait_ok(ctx, p.fence, 2_000)?;
+    present_view(ctx, t)?;
     Ok(rec)
 }
 
@@ -1214,6 +1210,18 @@ pub fn coverage_spans_corpus() -> CaseResult {
     let ctx = context()?;
     let t = scanout_target(format::B8G8R8A8, 72, 72)?;
     let buffer = gpu::buffer_create(256 * 1024).map_err(|e| fail_msg(errno(e)))?;
+    // The corpus overwrites the same 72x72 source. Keep one display-sized view:
+    // its remainder needs clearing only once, rather than once per glyph.
+    libbreenix::graphics::take_over_display()
+        .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    let mut modes = gpu::abi::Modes::ZERO;
+    let ret = gpu::call_with(gpu::abi::op::MODES, &mut modes);
+    ensure(ret == 0, || format!("MODES: {}", errno(ret)))?;
+    let mode = modes.modes[modes.current as usize];
+    ensure(mode.width >= 72 && mode.height >= 72,
+        || "corpus source exceeds display".to_string())?;
+    let view = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
+    frame(ctx, &scene(view, 0xff181512, &[]))?;
     let mut glyphs = 0;
     for name in ["DejaVuSansMono.ttf", "DejaVuSans.ttf"] {
         let bytes = std::fs::read(format!("/usr/share/fonts/{name}"))
@@ -1239,10 +1247,11 @@ pub fn coverage_spans_corpus() -> CaseResult {
                             );
                         }
                     }
-                    observe(ctx, t, &want, &format!("{name} {size} U+{cp:04x}"))?;
+                    corpus_view(ctx, t, view, &mode, &want, &format!("{name} {size} U+{cp:04x}"))?;
                 } else {
                     frame(ctx, &scene(t, BG, &[]))?;
-                    expect_draw(ctx,t,72,72,|_,_| BG,&format!("{name} {size} U+{cp:04x} empty glyph"))?;
+                    let want = scene_canvas(72, 72, BG, &[]);
+                    corpus_view(ctx, t, view, &mode, &want, &format!("{name} {size} U+{cp:04x} empty glyph"))?;
                 }
                 glyphs += 1;
             }
@@ -1251,6 +1260,27 @@ pub fn coverage_spans_corpus() -> CaseResult {
     value("glyphs", glyphs, "glyphs", Some((950, 950)));
     value("corpus-ms", ms_since(start) as i64, "ms", None);
     ensure(glyphs == 950, || format!("{glyphs} glyphs checked"))
+}
+
+fn corpus_view(ctx: u64, source: u64, view: u64, mode: &gpu::abi::Mode,
+    want: &Canvas, what: &str) -> R<()> {
+    let rec = super::common::expect(source, want, what)?;
+    let mut stream = Vec::new();
+    encode::copy(&mut stream, source, [0, 0, want.w, want.h], view, [0, 0]);
+    frame(ctx, &stream)?;
+    let (ret, present) = gpu::present(ctx, view);
+    ensure(ret == 0 && present.fence != 0 && present.answer == native_success()?,
+        || format!("PRESENT corpus view: {} answer {:#x}", errno(ret), present.answer))?;
+    wait_ok(ctx, present.fence, 0)?;
+    let (pixels, actual) = read(0, 1, 1)?;
+    ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
+        && u32_at(&actual, record::TARGET_HEIGHT) == mode.height
+        && u32_at(&actual, record::FLAGS) & 1 == 1
+        && u64_at(&actual, record::PRESENT_FENCE) == present.fence
+        && u32_at(&rec, record::FLAGS) & 1 == 0
+        && u64_at(&rec, record::RESOURCE) != u64_at(&actual, record::RESOURCE),
+        || "corpus view lost display geometry, identities or completed present".to_string())?;
+    ensure(pixels == want.px[..4], || "corpus view lost source origin pixel".to_string())
 }
 
 // Literal first-octant table from breengel-cpu-393, §5.5.

@@ -10,6 +10,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::primitives::{Canvas, Color};
+use super::firmware_writes::BufferMut;
 use crate::drivers::virtio::gpu_mmio;
 use conquer_once::spin::OnceCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -188,9 +189,13 @@ pub fn is_gop_active() -> bool {
     GOP_ACTIVE.load(Ordering::Relaxed)
 }
 
-/// Get the GOP framebuffer as a mutable byte slice.
-/// Returns None if GOP is not initialized.
-pub fn gop_framebuffer() -> Option<&'static mut [u8]> {
+/// GOP mutation access; each nonempty store or copy is counted when it occurs.
+pub fn gop_framebuffer() -> Option<BufferMut<'static>> {
+    Some(BufferMut::new(gop_framebuffer_mut()?, true))
+}
+
+/// The GOP framebuffer as a mutable byte slice; the caller counts its own stores.
+fn gop_framebuffer_mut() -> Option<&'static mut [u8]> {
     let ptr = GOP_FB_PTR.load(Ordering::Relaxed);
     let len = GOP_FB_LEN.load(Ordering::Relaxed);
     if ptr == 0 || len == 0 {
@@ -237,6 +242,7 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
 
     GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
     GOP_FB_LEN.store(size, Ordering::Relaxed);
+    super::firmware_writes::register(virt_ptr as usize, size as usize);
     GOP_ACTIVE.store(true, Ordering::Relaxed);
 
     crate::serial_println!(
@@ -330,6 +336,7 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
     // Update GOP globals with the new (larger) dimensions
     GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
     GOP_FB_LEN.store(needed as u64, Ordering::Relaxed);
+    super::firmware_writes::register(virt_ptr as usize, needed);
     GOP_ACTIVE.store(true, Ordering::Relaxed);
 
     // Create framebuffer with GPU PCI dimensions but GOP backend
@@ -389,6 +396,12 @@ impl Arm64FrameBuffer {
         let (width, height) =
             crate::drivers::virtio::gpu_pci::dimensions().or_else(|| gpu_mmio::dimensions())?;
 
+        let bytes = if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer()?
+        } else {
+            gpu_mmio::framebuffer()?
+        };
+        super::firmware_writes::register(bytes.as_ptr() as usize, bytes.len());
         Some(Self {
             width: width as usize,
             height: height as usize,
@@ -460,28 +473,12 @@ impl Canvas for Arm64FrameBuffer {
             return;
         }
 
-        let buffer = if self.is_gop {
-            match gop_framebuffer() {
-                Some(b) => b,
-                None => return,
-            }
-        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
-            match crate::drivers::virtio::gpu_pci::framebuffer() {
-                Some(b) => b,
-                None => return,
-            }
-        } else {
-            match gpu_mmio::framebuffer() {
-                Some(b) => b,
-                None => return,
-            }
-        };
-
         let pixel_bytes = color.to_pixel_bytes(self.bytes_per_pixel, self.is_bgr_flag);
-        let offset = (y * self.stride + x) * self.bytes_per_pixel;
-        if offset + self.bytes_per_pixel <= buffer.len() {
-            buffer[offset..offset + self.bytes_per_pixel]
-                .copy_from_slice(&pixel_bytes[..self.bytes_per_pixel]);
+        let bpp = self.bytes_per_pixel;
+        let offset = (y * self.stride + x) * bpp;
+        let mut buffer = self.buffer_mut();
+        if offset + bpp <= buffer.len() {
+            buffer.copy_from_slice(offset, &pixel_bytes[..bpp]);
         }
     }
 
@@ -514,14 +511,16 @@ impl Canvas for Arm64FrameBuffer {
         ))
     }
 
-    fn buffer_mut(&mut self) -> &mut [u8] {
-        if self.is_gop {
-            gop_framebuffer().unwrap_or(&mut [])
+    /// The display memory with accounting at each actual mutation.
+    fn buffer_mut(&mut self) -> BufferMut<'_> {
+        let bytes = if self.is_gop {
+            gop_framebuffer_mut().unwrap_or(&mut [])
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::framebuffer().unwrap_or(&mut [])
         } else {
             gpu_mmio::framebuffer().unwrap_or(&mut [])
-        }
+        };
+        BufferMut::new(bytes, true)
     }
 
     fn buffer(&self) -> &[u8] {
@@ -875,9 +874,9 @@ impl Canvas for ShellFrameBuffer {
         }
     }
 
-    fn buffer_mut(&mut self) -> &mut [u8] {
+    fn buffer_mut(&mut self) -> BufferMut<'_> {
         if let Some(ref mut db) = self.double_buffer {
-            db.buffer_mut()
+            BufferMut::new(db.buffer_mut(), false)
         } else {
             self.fb.buffer_mut()
         }
