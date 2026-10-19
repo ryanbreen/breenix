@@ -852,7 +852,9 @@ persistent install with one leased run of two boots:
    the test root as root and the system partition at `/home`. `/sbin/persistent-install` replaces each top-level
    directory of the system partition with the new root's copy, except `/etc`, `/root`, `/home` and `lost+found`,
    which it copies only when the system partition lacks them (the one-time install), syncs, and prints
-   `[persistent] install complete: ...`. The home partition is not mounted.
+   `[persistent] install complete: ...`. The home partition is not mounted. The kernel's path calls refuse names
+   that are not UTF-8 (#2102), so such a name is reported (`[persistent] left out ...`) and counted (`left-out=`);
+   the root image's one such name is the rust-std suite's second link to a file the migration copies.
 2. **The verification boot**, under the same lease: a persistent session whose answer is `persistent <boot> current
    commit`. The manager commits `NEXT` to `CURRENT` (the old current becomes `PREVIOUS`) and boots it; the boot
    passes at the login prompt with the persistent stages below.

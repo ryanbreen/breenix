@@ -5,7 +5,10 @@
 //! `/etc` and `/root`, which are copied only when the system partition lacks them (the one-time install) and are
 //! otherwise kept. `/home` (the home partition's mount point in a persistent boot), `lost+found` and the virtual
 //! filesystems are not touched, nor are top-level directories the new root does not have. Ownership, modes,
-//! symbolic links and hard links are kept. It syncs, prints `[persistent] install complete: ...` and then waits.
+//! symbolic links and hard links are kept. The kernel's path system calls take only UTF-8 names (they return EINVAL
+//! for others, #2102), so a name that is not UTF-8 is reported and left out; the image's one such name is the rust-std
+//! suite's second link to a file that is copied under its first name. It syncs, prints `[persistent] install
+//! complete: ...` and then waits.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -24,6 +27,17 @@ struct Totals {
     links: u64,
     hard_links: u64,
     bytes: u64,
+    left_out: u64,
+}
+
+/// Whether the kernel can act on `name` by name: its path system calls refuse names that are not UTF-8.
+fn usable(name: &std::ffi::OsStr, parent: &Path, totals: &mut Totals) -> bool {
+    if name.to_str().is_some() {
+        return true;
+    }
+    println!("[persistent] left out {}: the name is not UTF-8", parent.join(name).display());
+    totals.left_out += 1;
+    false
 }
 
 struct Copier {
@@ -64,7 +78,9 @@ impl Copier {
                 .map_err(|error| fail("read directory", source, error))?;
             names.sort();
             for name in names {
-                self.copy_tree(&source.join(&name), &target.join(&name))?;
+                if usable(&name, source, &mut self.totals) {
+                    self.copy_tree(&source.join(&name), &target.join(&name))?;
+                }
             }
             fs::set_permissions(target, fs::Permissions::from_mode(meta.mode() & 0o7777))
                 .map_err(|error| fail("chmod", target, error))?;
@@ -123,13 +139,16 @@ fn install() -> Result<Totals, String> {
     if root_dev == target_dev {
         return Err(String::from("the system partition is not mounted at /home"));
     }
-    let mut names: Vec<String> = fs::read_dir("/")
-        .map_err(|error| fail("read directory", Path::new("/"), error))?
-        .filter_map(|entry| entry.ok().and_then(|entry| entry.file_name().into_string().ok()))
-        .filter(|name| !UNTOUCHED.contains(&name.as_str()))
-        .collect();
-    names.sort();
     let mut copier = Copier { totals: Totals::default(), linked: HashMap::new(), buffer: vec![0u8; 64 * 1024] };
+    let mut names = Vec::new();
+    for entry in fs::read_dir("/").map_err(|error| fail("read directory", Path::new("/"), error))? {
+        let name = entry.map_err(|error| fail("read directory", Path::new("/"), error))?.file_name();
+        if usable(&name, Path::new("/"), &mut copier.totals) {
+            names.push(name.into_string().unwrap_or_default());
+        }
+    }
+    names.retain(|name| !UNTOUCHED.contains(&name.as_str()));
+    names.sort();
     for name in &names {
         let source = Path::new("/").join(name);
         let target = Path::new(TARGET).join(name);
@@ -159,8 +178,8 @@ fn main() {
             // SAFETY: sync takes no arguments and only flushes filesystem state.
             unsafe { libbreenix::syscall::raw::syscall0(libbreenix::syscall::nr::SYNC) };
             println!(
-                "[persistent] install complete: files={} dirs={} links={} hard-links={} bytes={}",
-                totals.files, totals.dirs, totals.links, totals.hard_links, totals.bytes
+                "[persistent] install complete: files={} dirs={} links={} hard-links={} bytes={} left-out={}",
+                totals.files, totals.dirs, totals.links, totals.hard_links, totals.bytes, totals.left_out
             );
         }
         Err(why) => println!("[persistent] install failed: {}", why),
