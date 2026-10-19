@@ -1085,6 +1085,8 @@ impl ProcessScheduler {
             scheduler::charge_current_cpu();
         }
         // Phase 1: Under PM lock — minimal work only
+        #[cfg(target_arch = "aarch64")]
+        let mut gpu_owner = None;
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
                 let designated_init = manager.designated_init();
@@ -1210,6 +1212,10 @@ impl ProcessScheduler {
                     // per row: a signal death has already terminated the row
                     // (`already_terminated`), and this is still its first ask.
                     let orphaned_groups = manager.groups_orphaned_by_exit(pid, &children);
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        gpu_owner = crate::gpu::exited_locked(manager, pid);
+                    }
                     // A thread's row, or a child whose parent declines
                     // zombies, is reaped now; it is dropped after PM is
                     // released.
@@ -1239,6 +1245,10 @@ impl ProcessScheduler {
                 None
             }
         }; // PM lock dropped here
+        #[cfg(target_arch = "aarch64")]
+        if let Some(owner) = gpu_owner {
+            crate::gpu::owner_ended(owner);
+        }
 
         // Phase 2: No PM lock — safe to do pipe wakeups, scheduler calls, logging
         if let Some((
@@ -1557,8 +1567,8 @@ fn reclaim_work_queued() -> bool {
         || crate::arch_without_interrupts(|| !PARKED_PROCESS_RECLAIMS.lock().is_empty())
 }
 
-/// Block on the scheduler's timer heap for `interval_ns`: the block, yield and
-/// halt sequence of `sys_nanosleep` and `net::rx_poll`'s `sleep_one_tick`.
+/// Block on the scheduler's timer heap for `interval_ns`, releasing the CPU
+/// immediately rather than retaining it in HLT until the next timer tick.
 fn reclaim_daemon_sleep(interval_ns: u64) {
     use crate::task::thread::ThreadState;
 
@@ -1574,7 +1584,7 @@ fn reclaim_daemon_sleep(interval_ns: u64) {
     scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
     scheduler::yield_current();
     loop {
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }

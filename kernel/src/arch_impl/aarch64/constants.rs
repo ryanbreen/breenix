@@ -290,7 +290,7 @@ pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
 /// - +0x0400_0000 - end:          Heap and dynamic allocations
 ///
 /// IMPORTANT: Must be kept in sync with:
-///   - FRAME_ALLOC_START in platform_config.rs (starts at ram_base + 0x0400_0000)
+///   - KERNEL_FIXED_RANGES in platform_config.rs (reserves the per-CPU stacks)
 ///   - stack_base_phys in main_aarch64.rs (set_stack_base_phys call)
 ///
 /// Platform-dependent physical base:

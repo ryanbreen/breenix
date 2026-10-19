@@ -900,6 +900,19 @@ pub fn configure_spi_edge_triggered(irq: u32) {
     gicd_write(GICD_ICFGR + (reg_index as usize * 4), new_val);
 }
 
+/// Configure an SPI as level-sensitive (a PCI INTx line), clearing its edge bit.
+///
+/// GICD_ICFGR has 2 bits per IRQ: 0b00 = level, 0b10 = edge.
+pub fn configure_spi_level_triggered(irq: u32) {
+    if irq < 32 {
+        return; // Only SPIs (32+)
+    }
+    let reg_index = irq / 16;
+    let field = (irq % 16) * 2;
+    let current = gicd_read(GICD_ICFGR + (reg_index as usize * 4));
+    gicd_write(GICD_ICFGR + (reg_index as usize * 4), current & !(0b10 << field));
+}
+
 /// Return true when an SPI is configured as level-triggered.
 ///
 /// GICD_ICFGR has 2 bits per IRQ: 0b00 = level, 0b10 = edge.
@@ -1195,6 +1208,18 @@ pub fn disable_spi(irq: u32) {
     // DSB ensures the GICD write has completed (drained from write buffer)
     // before we return. This is critical in interrupt handlers where
     // subsequent MMIO to other devices (xHC) could generate new MSIs.
+    unsafe {
+        core::arch::asm!("dsb sy", options(nomem, nostack));
+        core::arch::asm!("isb", options(nomem, nostack));
+    }
+}
+
+/// Unmask an SPI without changing its routing or clearing a pending level.
+pub fn unmask_spi(irq: u32) {
+    if irq < 32 {
+        return;
+    }
+    gicd_write(GICD_ISENABLER + (irq as usize / 32 * 4), 1 << (irq % 32));
     unsafe {
         core::arch::asm!("dsb sy", options(nomem, nostack));
         core::arch::asm!("isb", options(nomem, nostack));

@@ -383,8 +383,8 @@ in "Measured".
 | Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or boot progress returning to a state other than `OSBootStarted` or `OSRunning` (which the firmware reports once a boot option runs) | 124, 1, 1 |
-| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes, and in a multi-suite boot 7 minutes from each suite's START | 0, else 1 |
-| Whole attempt | — | 15 minutes from power-on, 22 for a suite and 7 more for each further suite of a multi-suite boot (enforced by the reaper as well) | 124 |
+| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted (tests mode: `USERSPACE TEST REPORT DONE`) | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes, and in a multi-suite boot 7 minutes from each suite's START; tests mode: 10 minutes | 0, else 1 |
+| Whole attempt | — | 15 minutes from power-on, 22 for a suite and 7 more for each further suite of a multi-suite boot, 25 for tests mode (enforced by the reaper as well) | 124 |
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice
 the longest of them (`post-times.json` in the boot store; the measured values are in "Measured", below). A POST
@@ -500,6 +500,31 @@ the SDK suite's host side when the list includes it. The final marker is `SUITE_
 power-off, whether or not the sequence finished, the commit's `scripts/suite-sequence.py score` scores each suite
 from its own part of the serial into `suite-verdict.txt`, one line per suite (PASS, FAIL, STALLED with its reported
 cases, NOT-RUN or NOT-ISOLATED). `run.json` lists the suites in `suites`, and keeps `suite` for a boot of one.
+
+## Tests mode
+
+`metal-run boot --mode tests` measures the main path's boot-path milestones (`docs/boot-path.json`) on this machine
+the way the ARM64 targets measure them: from the testing kernel's own boot. `metal-run` passes `--features testing` to
+the build, and `metal-build` builds the kernel exactly as `run.sh --tests` does for its targets (`cargo build --release
+--bin qemu-uefi --features testing`; `profile` `testing` in `build.json`). The x86-64 testing kernel reads its test
+binaries from a BXTEST disk, which the QEMU launchers attach as a second drive; this machine has one hardware disk,
+which holds the root. So the build also delivers the userspace build's `target/test_binaries.img` (`testBinaries` in
+`build.json`), and the driver hands it to the kernel as the bootloader's RAM disk in place of the boot intent. The
+kernel takes a RAM disk that starts with the BXTEST header as its test disk and not as a root
+(`kernel/src/block/ramdisk.rs`), so the root is the physical disk, installed for this boot as in the default, shell, probe,
+suite and console modes; staging writes it as a default boot's root; the testing kernel has production init compiled out, so it does not read
+that boot target (`kernel/src/main.rs`).
+
+The boot ends at the testing kernel's last report line, `USERSPACE TEST REPORT DONE`, or at the first `fatal` pattern
+of the commit's `docs/boot-path.json`, as `scripts/wait-boot-done.py` ends a Parallels or VMware testing boot. Completion first validates the test-binary loader totals, rejects skips and failed canonical programs, and checks
+process exits against the existing exit contracts with complete publication accounting. The shared validator is
+`scripts/test-report-verdict.py`; the build record includes it, the canonical test list, and the exit classifier's
+contracts from the boot commit. `milestone-verdict.json` records its result under `testReport`; a failed or incomplete
+report makes the boot fall short even when its milestone markers are present. It waits for no metal-path stage: after power-off,
+`milestone-verdict.json` scores each milestone of the boot's own copy of `docs/boot-path.json` (`definition` names
+it) by its `x86_64` stage list against `xtask/src/boot_stages.rs`'s markers, a stage reached when one of its marker's
+alternatives appears on a serial line other than the test runner's announcements, and lists each milestone's
+`missing` stages. A milestone with a missing stage makes the boot fall short (exit 1). `run.json` records mode `tests`.
 
 ## The disks
 
@@ -777,6 +802,7 @@ python3 ~/.local/share/breenix-metal/metal-run boot                      # physi
 python3 ~/.local/share/breenix-metal/metal-run boot --mode shell
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite smoke
 python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite time
+python3 ~/.local/share/breenix-metal/metal-run boot --mode tests        # the testing kernel, scored against docs/boot-path.json
 python3 ~/.local/share/breenix-metal/metal-run boot --mode probe --disk install   # copy the RAM-disk root onto the disk
 python3 ~/.local/share/breenix-metal/metal-run boot --mode probe --disk root      # boot from the disk the install wrote
 python3 ~/.local/share/breenix-metal/metal-run boot --branch NAME        # a pushed branch (in-progress evidence)

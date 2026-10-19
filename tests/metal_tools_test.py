@@ -784,8 +784,9 @@ class RootStagingTest(unittest.TestCase):
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
             site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
+            # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
-                                          ('suite', 'smoke', 'suite smoke')]:
+                                          ('suite', 'smoke', 'suite smoke'), ('tests', None, 'default')]:
                 facts = metal_root.stage_root(image, mode, suite, site)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):

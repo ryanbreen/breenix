@@ -1,0 +1,508 @@
+{
+  "source_tree_commit": "8b4e5e6f1a36884af03193b57b14f65d592e1b29",
+  "targets": [
+    {
+      "target": "aarch64_testing_profile_structure",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "block_request_lifetime_structure",
+      "passed": 12,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "target": "blocking_fd_eagain_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "bssh_auth_close_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "capture_bxcap_schema_structure",
+      "passed": 31,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "capture_path_lock_free_structure",
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "console_read_structure",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "context_restore_structure",
+      "passed": 106,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "coreproof_component_h_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "coreproof_coverage_structure",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "coreproof_mutation_register_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "coreproof_sites_structure",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "critical_path_logging_census_structure",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "ctx_diag_ring_sample_structure",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "degenerate_transfer_fd_validation_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "dispatch_fact_census_structure",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "dispatch_path_lock_free_structure",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "dispatch_strand_census_structure",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "dma_and_log_sink_structure",
+      "passed": 4,
+      "failed": 2,
+      "ignored": 0
+    },
+    {
+      "target": "entry_point_df_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "exec_lock_order_structure",
+      "passed": 46,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "exit_tally_structure",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "ext2_disk_size_structure",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "ext2_lock_structure",
+      "passed": 37,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "fcntl_pm_contention_gate_structure",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "fork_lock_order_structure",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "frame_allocator_contiguous",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gate_boot_facts_pipefail_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gate_boot_facts_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gate_capture_drain_structure",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gate_qmp_backstop_structure",
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gate_structure_preflight_wiring_structure",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gpu_completion",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gpu_fault_reservation",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gpu_observation",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gpu_present_answers",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gpu_shader_chunks",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "gpu_staging",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "green_program_envelope_structure",
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "launcher_smoke_xhci_evidence_structure",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "lockup_capture_guard_structure",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "log_notice",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "loopback_pump_structure",
+      "passed": 131,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "masked_binary_load_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "mmap_floor_structure",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "net_lock_structure",
+      "passed": 18,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "parallels_capture_structure",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "parallels_kill_by_name_structure",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "pipe_fifo_blocking_structure",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "poll_tcp_gate_wiring_structure",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "preempt_bracket_structure",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "qemu_host_lock_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "qemu_kill_by_name_structure",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "ring_span_report_site_structure",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "ring_span_unfiltered_report_site_structure",
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "run_inspector_import_structure",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "serial_line_atomicity_structure",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "softirq_deferral_structure",
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "strand_handoff_structure",
+      "passed": 40,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "structure_preflight_parallel_structure",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "suite_manifests",
+      "passed": 14,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "target": "syscall_return_register_structure",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "teardown_rustfmt_structure",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "teardown_structure",
+      "passed": 108,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "terminal_edge_capture_structure",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "timer_wake_dispatch_structure",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "trace_ring_depth_structure",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "tracing_provider_gate_structure",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "ttbr0_shadow_reconciliation_structure",
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "tty_irq_fg_structure",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "tty_irq_pm_structure",
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "tty_oracle_structure",
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "udp_ports_lock_irq_structure",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "udp_socket_lock_irq_structure",
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "unix_stream_blocking_structure",
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "x86_boot_tests_profile_structure",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "x86_qemu_profiles_structure",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "x86_smp_enum_structure",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "xhci_wait_irq_order_structure",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "target": "rust_vendor_test",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "subsequent_scoped_checks": [
+    {
+      "commit": "65c7cc37",
+      "target": "block_request_lifetime_structure",
+      "passed": 12,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "commit": "53371a0f",
+      "target": "teardown_structure",
+      "passed": 108,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "commit": "0c55e0eb",
+      "target": "teardown_structure",
+      "passed": 108,
+      "failed": 0,
+      "ignored": 0
+    }
+  ]
+}

@@ -430,6 +430,7 @@ STD_BINARIES=(
     "suite-utilities"
     "suite-sdk"
     "suite-gpu"
+    "gpu-exec-probe"
     "suite-console"
     "files-io-exec_test"
     "processes-exec_test"

@@ -19,9 +19,12 @@ exists), and those that answer the request for real text and display scale, whic
 (section 5, R3 and R4, both granted).
 
 **Status.** A plan and a frozen contract. G0's host stack, provenance audit and Parallels and VMware spikes
-have run; the effort's own code has not been written. Sections 1.3 to 1.10 are the contract, frozen after
-the spikes reported. Section 1.12 records what the spikes changed and why. A later change to a frozen section
-is a contract change: it is made in its own PR, with its reason, before the lane that needs it. The suite,
+have run; the effort's lanes land into `gpu/integration` (section 1.11). Sections 1.3 to 1.10 are the
+contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, section
+1.13 the amendment G1's review required, section 1.14 the amendment G2's review required, and section 1.15
+the interface G3 needs, and section 1.16 the interfaces G6 needs. A later change to a frozen section is a contract change: it is made
+in its own PR, with its reason, before the lane that needs it, separately from the code,
+checks or thresholds that conform to it. The suite,
 `docs/suites/gpu.json` and `/sbin/suite-gpu`, measures this contract; its 170 cases fail, each naming the
 layer it needs, until that layer exists.
 
@@ -104,14 +107,21 @@ apps, bwm, the suite stage
        └─ BGL (libs/bgl): Breenix's GL-style API: contexts, targets, textures, pipelines, draws, fences
             └─ syscall 416 `gpu(op, arg, len)` (new; 416 to 419 are free on both architectures)
                  └─ kernel/src/gpu/: handles, quotas, validation, work bounds, fences, watchdog, readback, present, display ownership
-                      ├─ kernel/src/gpu/virgl/: VirGL + TGSI encoder → drivers/virtio/gpu_pci.rs (PCI virtio-gpu)
+                      ├─ kernel/src/gpu/virgl/: VirGL + TGSI encoder, virtio-gpu commands and queue → the kernel's virtio PCI transport
                       │      ARM64 QEMU (virtio-gpu-gl-pci), Parallels (its virtio-gpu PCI)
-                      └─ kernel/src/gpu/svga/: SVGA3D DX + shader-token encoder → drivers/vmware/svga3.rs (VMware)
+                      └─ kernel/src/gpu/svga/: SVGA3D DX + shader-token encoder and SVGA3 command path (VMware, catch-up)
 ```
 
 The effort renders full-screen under one display owner (the suite runner, or a case it gives the display
 to). Windows, composition of several clients and the window interface stay in `breengel`; nothing here
 waits on bwm.
+
+**The core is clean-room only.** Everything under `kernel/src/gpu/` is written from section 1.9's allowed
+sources. It never calls, wraps or copies `drivers/virtio/gpu_pci.rs`, `drivers/virtio/virgl.rs` or
+`drivers/vmware/svga3.rs`; those drivers serve the existing display path until BreenGL deletes the software
+compositor (section 2.6). The in-place rewrite of those drivers (#1673) is closed. On ARM64 QEMU the existing
+display (the boot console and main's programs through `fb_mmap` and `fb_draw`) stays on the MMIO
+`virtio-gpu-device` until G7; the core drives `virtio-gpu-gl-pci` beside it.
 
 ### 1.3 BGL, the GL-style API
 
@@ -174,29 +184,40 @@ width 64 uses 64-byte rows on VMware. The kernel copies rows between the backend
 supplies the backend's layout.
 
 **Copies.** A `copy` between two rectangles of one resource that overlap gives the result of copying the
-source as it was before the copy; the kernel stages it through a scratch texture.
+source as it was before the copy; the kernel stages it through a scratch texture. A region copy moves bytes
+unchanged, so its source and destination have the same format; converting between formats is the `copy`
+pipeline's work.
+
+**Sampling.** A pipeline that samples a texture reads each texel by integer fetch at the coordinates its
+rule gives and converts it channel by channel into the target's format: B8G8R8A8 and R8G8B8A8 texels keep
+their four channels, and an R8 texel `r` reads as R `r`, G 0, B 0 and A 255, the value OpenGL ES 3.0 and
+Direct3D 10 both give a one-channel texture's missing channels. A rectangle drawn from a texture is clipped
+to the texels the texture has, so no pixel reads outside it.
 
 ### 1.4 Syscall 416
 
 `gpu(op: u32, arg: *mut u8, len: usize) -> isize`, numbered the same on both architectures, with the window
 interface's conventions (§17.1): `len` must equal the argument size, reserved fields zero, negative errno
-returns, `copy_from_user`/`copy_to_user` everywhere with no side effect on EFAULT, and no kernel output on
-any path (§22). An op number the table does not list returns EINVAL. The GPU-era targets dispatch it on
+returns, `copy_from_user`/`copy_to_user` everywhere, and no kernel output on any path (§22). EFAULT is atomic
+only as far as the kernel can guarantee it: a fault reading the argument returns EFAULT before the op does
+anything, but results are written back after the op acts, and the kernel cannot hold the caller's pages
+against the caller's own threads, so what an EFAULT while writing them leaves behind is stated per op in
+`docs/gui/gpu-abi.md`. An op number the table does not list returns EINVAL. The GPU-era targets dispatch it on
 ARM64; x86-64's dispatch arrives when x86-64 joins (section 1.6.4).
 
 | Op | Name | Notes |
 |---|---|---|
 | 0 | `VERSION` | returns 1 |
 | 1 | `CAPS` | the profile record: backend, feature bits, formats, maximum sizes, catalogue version, the device's host renderer string where its capability set carries one |
-| 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation compiles and warms every catalogue program (section 1.4.1) |
-| 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
-| 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`; visible to later submissions only |
+| 2, 3 | `CONTEXT_CREATE`, `CONTEXT_DESTROY` | per-process; EAGAIN past the quota; creation queues asynchronous warm-up of the fixed rendering catalogue on the GPU worker and returns; `probe_int` routines warm on their first PROBE (section 1.4.1) |
+| 4, 5 | `RESOURCE_CREATE`, `RESOURCE_DESTROY` | targets, textures, buffers; a scanout flag declares scanout targets at creation (section 1.7); ENOMEM against the GPU memory quota and `RLIMIT_AS` for guest backing; destroy drops the handle, and storage is freed when the resource's hold set is empty (section 1.4.1) |
+| 6 | `UPLOAD` | user bytes to a texture or buffer rectangle, clipped, with its `purpose`, sent in a named context; visible to later submissions only; EINTR on an interrupted wait, ENOMEM if staging cannot be allocated or charged to the process's guest-backing quota or `RLIMIT_AS` |
 | 7 | `SUBMIT` | a BGL command stream, validated whole before anything is sent (EINVAL with the failing command's index), with its work estimate checked (EDQUOT past the cap); returns a fence |
 | 8 | `WAIT` | fence wait with timeout; ETIMEDOUT, EINTR, EIO for an errored or reset fence; killable within 250 ms |
-| 9 | `READBACK` | a target rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2 (section 1.8) |
+| 9 | `READBACK` | a target or texture rectangle into user memory, with a 1,024-byte `ObservationRecord` version 2; ENOMEM if staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS` (section 1.8) |
 | 10, 11 | `MODES`, `SET_MODE` | display owner only for `SET_MODE` |
-| 12 | `PRESENT` | display owner only; returns the present fence |
-| 13 | `COUNTERS` | per-context submissions, draws, instances, fragment area, work estimate, uploads by purpose, readbacks |
+| 12 | `PRESENT` | display owner only; EINVAL for a never-written target or one created without the scanout flag; returns a fence of the context it names, never a raw device fence number (section 1.7) |
+| 13 | `COUNTERS` | per-context submissions, draws, instances, fragment area, work estimate, uploads by purpose, readbacks, catalogue warm-up state |
 
 **Dispatch without a Tier-1 edit.** 416 is not added to `SyscallNumber`; it is dispatched in
 `dispatch_numbered` (`kernel/src/syscall/mod.rs`, about line 889), which both architectures' entry paths
@@ -211,22 +232,64 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   validation only; it says nothing about execution.
 - **Foreign handles are the validator's to refuse.** A stream naming a resource or context the process does
   not own is refused with EINVAL before anything is sent. The device gives no such error: a VirGL command on
-  a resource not attached to the submitting context is answered `OK_NODATA` and does nothing (section 1.12).
-  No case expects a device error code for a foreign handle.
-- **Program warm-up.** `CONTEXT_CREATE` creates every catalogue program in the new device context and draws
-  each once into a 1×1 scratch target, waiting for its fence. This is an explicit pre-measurement condition:
-  the performance bounds measure already-warmed contexts, not application startup. Creation, including all
-  warm-up, must finish within the suite runner's existing 10 s case deadline (`submit/context-create`).
+  a resource not attached to the submitting context is answered `OK_NODATA` and does nothing (section 1.12),
+  and disables its context as the next item states. No case expects a device error code for a foreign handle.
+- **Two commands answer OK and silently disable their context.** These are device facts, observed on ARM64
+  QEMU's VirGL device (`docs/gui/provenance/gpu-core.md`, experiments B1 to B4), not rules Breenix chose:
+  - a `SUBMIT_3D` naming a resource not attached to the submitting context;
+  - a transfer whose box extends past the resource (observed with a `TRANSFER_FROM_HOST_3D` box one pixel
+    past the resource's width).
+
+  Each is answered `OK_NODATA`, and from then on every command in that device context, transfers included,
+  is answered `OK_NODATA` and does nothing. The device reports no error, so no fence status,
+  `COUNTERS` state or quarantine can show it; only an observation can. A readback in such a context leaves the
+  target's poisoned backing unwritten (`READBACK` reason 1, section 1.8). The kernel therefore never sends
+  either command: the validator refuses foreign handles, every resource is attached to every context of its
+  process, and every transfer box the kernel builds (`READBACK`'s rectangle, its bands, test-control point
+  21's transfer, `UPLOAD` from G3) is checked against the resource it names before it is sent.
+<!-- claim-lint:ok: Normative asynchronous warm-up requirements from coordinator ruling 33 (#1725), not measured results. -->
+- **Program warm-up (ruling 33, #1725).** `CONTEXT_CREATE` queues the fixed rendering catalogue's
+  compilation and warm-up on the GPU worker and returns without waiting for it. The worker draws each
+  rendering program once into a 1×1 scratch target and waits for its fence. A draw whose pipeline is
+  still warming waits only for that pipeline, never for the remaining catalogue; a ready pipeline can
+  draw while other pipelines warm. `WAIT` and fence ordering and completion retain their existing rules.
+  The context reports progress through `COUNTERS`: state 3 is live with catalogue warm-up in progress;
+  state 0 is live with catalogue warm-up complete. Quarantined and reset states keep their meanings
+  (`docs/gui/gpu-abi.md`). Performance bounds, including `performance/first-draw-latency`, measure draws
+  issued after that context reports warm-up complete, excluding application startup and warm-up.
+  The profile-only `probe_int` measuring programs are excluded from catalogue warm-up; each compiles and
+  warms on its routine's first PROBE in that context. That first-use cost is excluded from performance bounds;
+  later PROBEs use the warmed program for that routine. `probe_int` is a family with one
+  program per routine (ruling 48), compiled on that routine's first use. Each compilation remains
+  subject to the unchanged 2 s watchdog on every target.
+  `submit/context-create` retains the suite runner's existing 10 s case deadline. Except for the
+  timed-window start of `textures/upload-visibility` (ruling 52, below), case deadlines and work-estimate
+  weights do not change, including for cases waiting for warm-up completion.
   Each warm-up fence is subject to the same 2 s watchdog as any submission; compile time is not exempt
-  from hang recovery. A kill during creation must end the caller within 250 ms, without waiting for all
-  programs to compile (`isolation/killable-wait`); queued work retains its resources until completion or
-  reset. The spike measured compilation of only its own programs, not the full catalogue (section 1.12).
-- **Execution and publication.** Every target a submission writes is *pending* until the submission's fence
+  from hang recovery. A kill during creation or a wait for a warming pipeline must end the caller within
+  250 ms, without waiting for remaining programs to compile (`isolation/killable-wait`); the first PROBE
+  has the same watchdog and kill bounds. Queued work retains its resources until completion or reset.
+  The spike measured compilation of only its own programs, not the full catalogue (section 1.12).
+- **Execution and publication.** Each target a submission writes is *pending* until the submission's fence
   completes. Completed OK, the target's generation advances and its contents are published. Completed with a
-  device error, or lost to a watchdog reset, every target the submission wrote is marked *invalid*: readback
+  device error, or lost to a watchdog reset, each target the submission wrote is marked *invalid*: readback
   returns EIO naming the submission, sampling it in a later submission is refused, and it becomes valid again
-  only when a later submission writes it whole (a full clear, a full copy or a full upload). No partial result
-  of a failed submission is ever observed as valid.
+  only when a later submission that writes it whole (a full clear, a full copy or a full upload) completes
+  OK. Drawing into an invalid target is allowed: the validator refuses only a command that samples one. A
+  draw that does not write the whole target leaves it invalid. A partial result of a failed submission is
+  invalid. An `UPLOAD` the device answers with an error, or that the watchdog or a reset
+  ends, leaves its texture invalid the same way, until an upload of the whole texture completes OK.
+  An interrupted upload wait returns EINTR; if its request has been sent, it leaves its texture invalid
+  with the same recovery rule, even if the device later completes that upload OK. Interruption before
+  sending leaves the resource unchanged. Temporary upload staging is charged like `READBACK` staging
+  (section 1.8), including `RLIMIT_AS` and `COUNTERS.resource_bytes`; inability to allocate or charge it
+  returns ENOMEM before device work is sent or the resource is changed.
+- **Uploads are ordered, not blocking.** An `UPLOAD` is sent behind everything its context sent before it, and
+  the device executes one context's commands in the order they were sent (which
+  `textures/immutable-while-pinned` checks), so a submission of that context sent before the upload samples
+  the texture as it was before, and the submissions sent after the upload returns see it. It waits for a
+  readback or upload of the same resource in progress and for submissions of the process's other contexts that
+  name the resource, whose order against it the device does not state.
 - **The work estimate.** For each draw the validator computes fragments × per-fragment steps, where the
   per-fragment steps are a constant of the pipeline, except `coverage_spans`, whose steps for a row are the
   number of crossings on that row's 8 sub-scanlines (read from the buffer's per-sub-scanline offsets in
@@ -236,24 +299,93 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
 - **The watchdog.** A submission whose fence has not completed 2 s after it was sent is treated as hung: its
   context is quarantined (its pending fences complete with EIO `device-hung`, its targets become invalid,
   further submissions to it are refused) and the kernel destroys the device context. If the device's queue
-  makes no progress for another 2 s, the kernel resets the device (virtio-gpu reset and reinitialization; the
-  SVGA3 restart path the VMware corrections already carry), every context gets EIO `device-reset`, and the
+  makes no progress for another 2 s after that quarantine, the kernel resets the device (virtio-gpu reset and
+  reinitialization; SVGA3's restart in the VMware backend), every context gets EIO `device-reset`, and the
   display owner and compositor recreate their resources; the console is redrawn. virtio-gpu defines no
-  per-context cancellation, so destroying a context is not assumed to stop host work; only the reset is.
+  per-context cancellation, so destroying a context is not assumed to stop host work. Completing a fence
+  with EIO reports failure to callers; it does not prove that device access has ended. DMA backing remains
+  held until actual device completion or a successfully confirmed reset proves that the device can no
+  longer access it. A reset request or an unsuccessful reset supplies no such proof; if reset fails, the
+  backing stays held, even after callers have received EIO. The watchdog examines the outstanding
+  submissions at least once every 250 ms.
+- **Device errors quarantine one context; resets are for the device.** A submission the device answers with
+  an error completes its fence with EIO `device-error`, and its targets become invalid. Two consecutive
+  submissions of one context completing with device errors (no OK completion between them, in fence order)
+  quarantine that context and no other: further submissions to it return EIO, its submissions already sent
+  complete with the device's own answers, and the kernel then destroys its device context. Other contexts,
+  of the same process or another, stay live. The device is reset only for a device fault or the watchdog's
+  no-progress condition above, never because one process's submissions fail. A device fault is a failure of
+  the device rather than of one context's stream: on virtio-gpu, the device setting `DEVICE_NEEDS_RESET`
+  (VirtIO 1.3 section 2.1), a used-ring entry naming a descriptor the kernel did not post or a length past
+  its buffer, or the failure of a command the kernel issues on its own behalf outside any process's context
+  (a capability-set read, a display-information query). The VMware backend states SVGA3's device faults in
+  the same terms when the catch-up writes it. Test-control point 27 follows the same rule (section 1.8).
+<!-- claim-lint:ok: Normative watchdog and backing-lifetime requirements of section 1.4.1, extended to asynchronous warm-up by ruling 33 (#1725), not measured results. -->
+- **Synchronous device work.** Every device wait the kernel makes on a caller's behalf, not only `WAIT`, is
+  enrolled in the watchdog and ends within 250 ms of a kill: a draw waiting for its warming pipeline,
+  `READBACK`'s transfers from G2, and every later one. Asynchronous catalogue warm-up on the GPU worker
+  is also enrolled in the watchdog. Its DMA backing stays held until actual device
+  completion or a successfully confirmed reset proves that device access has ended. Reporting EIO, a
+  timeout or a kill to the caller does not release that backing; a failed reset leaves it held.
+- **Buffers are snapshotted at submission.** `SUBMIT` copies each buffer range the stream names once, before
+  validation; validation, the work estimate and translation read only that copy, so neither a later
+  `UPLOAD` (from G3) nor a concurrent write can change what was validated. Charging that copy against a
+  per-submission quota is G6 work (section 1.11).
+- **Timing bounds.** Let W = 2,000 ms (the watchdog period above), K = 250 ms (the kill bound below, which is
+  also the longest a blocked GPU path may take to observe any event that ends it: its fence completing, its
+  timeout, a signal, a kill, its context's quarantine or a device reset) and R = 100 ms (the reset budget:
+  from the reset decision to the device reinitialized, its control queue published again and every fence
+  outstanding at the reset completed EIO `device-reset`). Intervals are measured on the suite's monotonic
+  clock, from the start of the first call or action a row names to the return of the call that observes the
+  result. In the two stalled-`SUBMIT` rows the upper bound starts at that `SUBMIT`'s return instead, because
+  the submission is sent somewhere between the call's start and its return:
+
+  | Case | Interval | Bound | Derivation |
+  |---|---|---|---|
+  | `submit/wait-timeout` | `WAIT` with timeout T on a fence that cannot complete in time, to its ETIMEDOUT | [T, T + K]; [50, 300] ms for T = 50 ms | never early; the expiry is observed within K |
+  | `submit/wait-eintr` | arming a timer that signals the waiter after s, to `WAIT`'s EINTR | [s, s + K]; [30, 280] ms for s = 30 ms | no EINTR before the signal; the signal is observed within K |
+  | `submit/watchdog-quarantine` | the stalled `SUBMIT`, to a `WAIT` blocked on its fence returning EIO `device-hung` | [W, W + 2K] = [2,000, 2,500] ms | hung at W after sending; the next watchdog scan within K; the waiter within K |
+  | `submit/device-reset-recovers` | the stalled `SUBMIT`, to a `WAIT` blocked across the reset returning EIO `device-reset` | [2W, 2W + 3K + R] = [4,000, 4,850] ms | quarantine by W + K; no queue progress for W more, seen by a scan within K; reset in R; the waiter within K |
+
+  The suite checks these bounds as written; changing one is a contract change. They bound recovery and
+  wakeups and do not extend the 250 ms kill requirement. `submit/ring-backpressure` proves four submissions
+  in flight by their fences, never by host GPU speed: with point 31's fence-depth mode (section 1.8) it
+  finds all four fences incomplete (`WAIT` with timeout 0 returns ETIMEDOUT for each) before it submits the
+  fifth, the fifth `SUBMIT` waits for room, and then all five complete OK in order.
 - **Kills.** `WAIT` returns within 250 ms of a kill, but the killed process's queued GPU work is not cancelled:
-  its contexts are quarantined, and its resources stay held until their fences complete or the watchdog
-  resets the device, and are freed then (`isolation/killed-work-drains`).
+  its contexts are quarantined, and its resources stay held until actual device completion or a
+  successfully confirmed reset proves that device access has ended (`isolation/killed-work-drains`).
+  Caller-visible fence errors do not drain this work or release its holds; a failed reset leaves them held.
+  Resources are freed only when the handle is dropped and all holds have ended.
 - **Hold sets.** A resource is freed only when its handle is dropped and its hold set is empty. Holders: each
   submission that reads or writes it (until its fence), a committed window buffer and a remnant (until
   retired), the compositor's sampling submission (until its fence), the scanout binding (until another
-  target is presented and that present's fence completes), a capture or readback (until its transfer fence),
-  and an `ACQUIRE` replay copy (until its fence).
+  target is presented and that present's fence completes), a capture, readback or texture upload (until
+  its transfer fence), and an `ACQUIRE` replay copy (until its fence). For each device-access hold above,
+  "until its fence" requires both publication of the fence and the end of device access, by actual device
+  completion or a successfully confirmed reset. Device completion with the fence still unpublished keeps
+  the hold. A caller-visible error synthesized at quarantine or reset does not establish the end of
+  device access; merely requesting reset or failing to reset cannot retire the hold. Reporting EIO or
+  EINTR does not by itself empty a hold set. After the final hold ends, device unref is
+  asynchronous: backing remains allocated and charged until the device answers that unref
+  (ruling 49), or a confirmed reset ends device access.
 - **The render-completion handoff** (used by BreenGL's windows, section 2.1): each target records the fence of
   the last accepted submission that writes it. `COMMIT` records that fence with the commit and from then on
   refuses submissions that write the committed buffer. The compositor samples a commit only after that fence
   has completed OK; the kernel waits for it on the CPU before sending the compositor's submission, because
   fences on different device contexts are not ordered against each other. A commit whose fence completes with
   an error is refused (the window keeps its previous front and the client gets the commit's failure).
+
+<!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
+**Catch-up check windows (rulings 49, 50 and 52).** `textures/destroy-deferred` waits at
+most one second after its sampling fence completes for the asynchronous device unref to release the
+backing charge, then requires exactly the original expected `resource_bytes`, not a tolerance.
+`present/firmware-handoff` requires zero kernel writes to the firmware framebuffer after handoff on
+every target, using the MODES counter defined in `gpu-abi.md`; firmware memory hashes remain diagnostic.
+A device can rewrite its own firmware framebuffer while driving the display, so hash equality cannot
+prove kernel non-interference. `textures/upload-visibility` starts its 10 s timed window only once
+all contexts it needs report catalogue warm-up complete. Warm-up retains the per-compilation watchdog
+and kill bounds above; the runner and host still bound unfinished setup. Other case deadlines are unchanged.
 
 ### 1.5 The deterministic rendering profile
 
@@ -288,8 +420,13 @@ The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1
      `h − 1 < 2³¹`: two words. (`255 × h` alone overflows 32 bits.)
    - `triangle`: edge functions of i32 vertices are below 2⁶⁵ in magnitude: three words.
    - `box_filter`: a bin sum is at most `2²⁸ × 255`: two words.
-   Floats carry only integers below 2²⁴ (the fragment position, before `floor`) and the final conversion of an
-   8-bit value `k` as `k / 255`, which both APIs' UNORM conversion rules round back to `k`.
+   <!-- claim-lint:ok: Normative arithmetic and conversion requirements in docs/gui/gpu.md section 1.5, proposed by #1714. -->
+   Native floats are confined to fragment/vertex positions below 2²⁴, the UNORM fetch boundary and the
+   final conversion of an 8-bit value `k` as `k / 255`, which both APIs' UNORM conversion rules round back
+   to `k`. A fetched UNORM channel `v` is converted to its integer byte by `floor(v * 255 + 0.5)`;
+   subsequent blending and coverage accumulation use integer words. This boundary conversion does not
+   change the required texel byte or permit a tolerance. `coverage_spans` uses native float conversion
+   only for its integer pixel coordinates and parameter-buffer texel fetches, not coverage arithmetic.
    `profile/unorm-roundtrip` checks all 256 values per channel; `profile/integer-ops` and
    `profile/wide-arithmetic` run every routine through `probe_int` against literal results, including the
    extremes of each range; `profile/large-coordinates` runs each shape's predicate routine through `probe_int`
@@ -320,12 +457,41 @@ The G0 spikes exercised a subset; binary32 emulation remains unproved (section 1
 
 A profile violation is a failing case to fix, never a reason for a tolerance.
 
+#### 1.5.1 Closed forms for G5
+
+<!-- claim-lint:ok: Algebraic derivation of docs/gui/gpu.md section 1.5 item 5; input domain and formula stated here. -->
+For a line, let M be the larger absolute endpoint displacement, m the smaller, and k
+its major-axis step from the first endpoint. For M > 0 the minor displacement is
+`floor((2*k*m + M)/(2*M))`, for `0 <= k <= M`, with each axis following its endpoint's
+sign. M = 0 writes the one endpoint. This is the unclipped walk: clipping intersects
+its pixel set and never restarts its error accumulator.
+
+<!-- claim-lint:ok: Inductive derivation for docs/gui/gpu.md section 1.5 item 5, with base and recurrence stated here. -->
+To prove the formula, write `k*m = q*M + r`, with `0 <= r < M`. The midpoint decision
+chooses q when `2*r < M`, otherwise q+1. The initial step has q=r=0. Advancing k adds m
+to r, subtracts M at a carry and advances q; its midpoint comparison is exactly the
+walk's error comparison, including its equality choice. Induction establishes the
+formula for every step and either choice of major axis. The doubled product fits
+three words even when both displacements approach 2^32; clipping does not narrow
+those operands before the predicate is evaluated.
+
+For the circle outline, reflect the candidate into the first octant, `X >= Y >= 0`.
+For radius r >= 1 its membership is
+`X*X - X + Y*Y <= r*r < (X+1)*(X+1) - (X+1) + Y*Y`.
+At Y=0 the largest satisfying X is r. The expression is strictly increasing in X
+for X >= 1, so there is a unique largest satisfying X. Incrementing Y changes it
+by `2*Y+1`; decrementing X changes it by `-2*X+2`. Those are the outline walk's
+midpoint-error increments, with its equality retained on the lower side. Induction
+therefore gives the same recorded X at each Y until X < Y. Reflection gives exactly
+the walk's eight symmetric pixels. Radius 0 writes the centre; negative radii are
+empty. Both inequalities use two words after bounding |dx| and |dy| by r.
+
 ### 1.6 Per-target backends
 
 | Target | Device | Guest backend | Host renderer | Readback (section 1.8) |
 |---|---|---|---|---|
 | ARM64 QEMU (macOS host) | `virtio-gpu-gl-pci` | VirGL over the PCI transport; the kernel has an ECAM PCI enumeration path on ARM64 (`kernel/src/drivers/mod.rs`, about line 169), which G1 confirms on QEMU's `virt` machine | virglrenderer on ANGLE's Metal backend in UTM's stack (section 1.6.1) | fenced `TRANSFER_FROM_HOST_3D` |
-| Parallels | its virtio-gpu PCI device with VirGL | the same VirGL backend, on `gpu_pci.rs`'s transport once the parts the provenance audit names are re-authored (section 1.9) | Parallels' own, on the host's GPU | the same |
+| Parallels | its virtio-gpu PCI device with VirGL | the same clean-room VirGL backend and virtio-gpu command path as ARM64 QEMU (`kernel/src/gpu/virgl/`), in the catch-up (section 1.9) | Parallels' own, on the host's GPU | the same |
 | VMware Fusion | SVGA3 | SVGA3D DX contexts, objects and SM4 programs on SVGA3 command buffers, MOBs and GB surfaces (section 1.6.3) | Fusion's own, on the host's GPU | GPU copy of the target into a dedicated readback surface, then `READBACK_GB_SURFACE` |
 
 **VirGL object handles (both VirGL targets).** virglrenderer keeps one object-handle space per context,
@@ -406,22 +572,22 @@ work is milestone G0.
 
 #### 1.6.2 Parallels
 
-The smallest guest change. `gpu_pci.rs` and `virgl.rs` already encode surfaces, shaders, vertex state,
-viewports, scissors, draws, samplers and blits, and read back the scanout with a fenced transfer. The work:
-per-process VirGL contexts with only that process's resources attached (`CTX_ATTACH_RESOURCE`), owned
-render-target and texture resources on frame-allocated backing with the 256-byte pitch (section 1.3), the
-catalogue's TGSI programs, atomic validation in place of the encoder's silent stop at capacity, the profile
-checks against Parallels' capset, and the 2560×1600 display setting in `scripts/parallels/` (the spike ran
-2560×1600 targets off-screen; the VM's display mode stayed 1280×960). Parallels is treated as hardware:
+The smallest guest change. Parallels runs the clean-room VirGL backend the ARM64 QEMU lanes build, with its
+per-process contexts, owned resources on frame-allocated backing with the 256-byte pitch (section 1.3), the
+catalogue's TGSI programs and atomic validation; `gpu_pci.rs` and `virgl.rs` are not used (section 1.2). The
+catch-up's work: the profile checks against Parallels' capset, and the 2560×1600 display setting in
+`scripts/parallels/` (the spike ran 2560×1600 targets off-screen; the VM's display mode stayed 1280×960). Parallels is treated as hardware:
 behaviour that looks wrong is first reproduced on a Linux guest used as a black-box probe, and a Breenix
 defect is assumed until the probe shows otherwise. The 256-byte pitch rule is still to be reproduced on that
 probe; the kernel aligns every pitch either way, so the result changes no rule here.
 
 #### 1.6.3 VMware Fusion
 
-The largest guest change: `svga3.rs` has command buffers, object tables, MOBs, GB surfaces and screen
-targets, and no DX context, shader, view or draw. The G0 spike exercised the path below, with the
-present-readback limitation stated in section 1.12. The backend, in order:
+The largest guest change: the catch-up writes the SVGA3D DX backend and its SVGA3 command path clean-room in
+`kernel/src/gpu/svga/`. `svga3.rs`, which has command buffers, object tables, MOBs, GB surfaces and screen
+targets for the existing display and no DX context, shader, view or draw, is not used (section 1.2). The G0
+spike exercised the path below, with the present-readback limitation stated in section 1.12. The backend,
+in order:
 
 1. **Admission by the device-capability entries.** Read the DX-context entry (index 95) and the entry for
    every profile format: `B8G8R8A8_UNORM` (surface format 141, entry 240) and `R8G8B8A8_UNORM` (68, entry
@@ -463,8 +629,8 @@ counts toward them nor holds them back.
 x86-64 joins those efforts when a dedicated Breenix hardware box replaces the current x86 gate host. Its GPU
 path is designed for that box then, to the bar every other target meets: a hardware GPU, a host renderer
 attestation (section 1.6.5) that refuses a software renderer, and an x86-64 spike whose acceptance is G0's,
-item for item. The guest side it will need is known now: `gpu_pci.rs`'s modern PCI transport, queues, DMA
-allocation and cache handling, ARM64-gated today, generalized to x86-64, with the kernel kept free of FPU use
+item for item. The guest side it will need is known now: the gpu core's virtio-gpu command path, queues, DMA
+allocation and cache handling, ARM64-only today, generalized to x86-64, with the kernel kept free of FPU use
 (section 1.3). Until the box is in place no x86-64 GPU work runs, on effort lanes or on `scratch/*` branches.
 
 #### 1.6.5 Host renderer attestation
@@ -482,11 +648,15 @@ rests on host-side evidence that the gate checks, recorded with every run:
   (llvmpipe, softpipe, lavapipe, SwiftShader, or any renderer string containing "Software"), or names a
   renderer other than the target's declared one, and requires the guest's capset renderer string, where the
   capset carries one, to agree.
+<!-- claim-lint:ok: Normative renderer attestation threshold amended by ruling 51 (#1814); no measured result claimed. -->
 - **Parallels.** There is no host hook, but macOS's accelerator statistics attribute GPU time to each
   client process, and every GPU client the VM opens belongs to its VM process. The gate checks the VM's
   configuration has 3D acceleration on, reads that process's accumulated GPU time over an idle window just
   before the `performance` category and over the category itself, and requires the category's reading to
-  exceed the idle one by at least 10% of the category's length. This is a required acceptance threshold;
+  have a host GPU time rate at least ten times the idle window's rate (ruling 51). Compare
+  GPU-time deltas divided by their respective wall-time windows, not absolute deltas or a
+  percentage of wall time. A zero idle rate requires a positive category GPU-time delta.
+  This is a required acceptance threshold;
   the spike serial does not establish host GPU-time deltas (section 1.12). The negative control,
   the same boot with 3D acceleration off, runs in the Parallels catch-up; the device is expected then not to
   offer VirGL, and initialization refuses naming the missing feature.
@@ -507,21 +677,85 @@ rests on host-side evidence that the gate checks, recorded with every run:
 - **Scale.** The scale factor is published with the mode. BreenGL lays out in logical units and multiplies by
   the scale. UI text is DejaVu Sans (ruling R3), rasterized from outlines at the physical pixel size (a 16 px
   string at scale 2 from the outline at 32 px, never replicated from a 16 px raster).
-- **Present.** Two scanout targets per display owner. `PRESENT` binds the drawn one (`SET_SCANOUT` and
+<!-- claim-lint:ok: Normative presentation requirements amended by ruling 53, #1956; no measured result claimed. -->
+- **Present.** Two scanout targets per display owner. Scanout targets are declared at creation:
+  `RESOURCE_CREATE` gains a scanout flag (`docs/gui/gpu-abi.md`); only targets created with it get the
+  device's `SCANOUT` bind. `PRESENT` refuses a target created without it with EINVAL. `PRESENT` of a
+  never-written target is refused with EINVAL: after waiting for its accepted writers, the target must
+  have a completed write. `PRESENT` binds the drawn one (`SET_SCANOUT` and
   `RESOURCE_FLUSH` on virtio-gpu; the screen-target update on SVGA3) and returns a fence that completes when
-  the device has answered. There is no vblank on these devices; the present rate is measured, not assumed.
-  A minimal scanout bind of the current case's target arrives in G2 (section 1.11), so runs are watchable from
-  then; modes, flipping and the ownership stack arrive in G7.
+  the device has answered. That fence is a context fence: `PRESENT` names one of the caller's live contexts,
+  and its fence is `ns << 32 | n` in that context's fence sequence, shared with its `SUBMIT`s, so `WAIT` on
+  that context accepts it and it orders after the context's earlier fences. `PRESENT` never returns a raw
+  device-wide fence number, and neither does the observation record (offset 184, section 1.8). There is no vblank on these devices; the present rate is measured, not assumed.
+  The display keeps the selected mode when a suite case renders a differently sized target (ruling 53,
+  #1956). A smaller target is presented by GPU-copying its whole contents, without scaling, to origin
+  (0,0) of a separate display-sized scanout target, clearing the remainder first. Only that
+  display-sized target is bound. A target wider or taller than the display is observed by full device
+  readback and is never bound as a scanout. These viewing operations do not change the case's source
+  dimensions, pixel expectations, work bounds or performance intervals.
+  The source observation names the case target and its device resource; the scanout observation names
+  the actual display-sized resource and checks the same source pixels at (0,0). They are distinct
+  identities when a copy is needed, never an offscreen source reported as the bound resource.
+  A minimal scanout bind arrives in G2 (section 1.11), so runs are watchable from then; modes,
+  flipping and the ownership stack arrive in G7.
 - **Ownership.** The display ownership stack (`take_over_display` 431, `give_back_display` 432, §18) keeps
   each owner's last presented target; giving the display back presents the previous owner's target again,
   exactly. After the GPU driver starts, the kernel's console is drawn by the GPU from a glyph atlas uploaded
   from its built-in font tables (`purpose` `Fixture`) through `bitmap_text`. Before it starts, the boot
   console and panic screen are CPU-written on the firmware framebuffer, and nowhere else (ruling R7).
 
+G7's argument layouts, ownership transitions, console observation, firmware write count and
+present fault effects are defined in `gpu-abi.md`, "G7 display interface". These definitions
+supply the observability for the existing present cases; their case counts and expectations stay fixed.
+
+Under `--gpu-gl`, G7 shows the GPU kernel console until E17 migrates bwm from the legacy
+compositor interface. Boots without `--gpu-gl` retain bwm's existing desktop behavior.
+G7 does not restore legacy takeover bookkeeping (ruling 39).
+
+#### 1.7.1 Terminal panic display after GPU handoff
+
+<!-- claim-lint:ok: Normative post-handoff panic requirements for #1749, separated under coordinator ruling 9; not measured results. -->
+Serial remains the authoritative panic record (ruling 40). Before GPU handoff, the
+firmware diagnostics screen follows R7. After handoff, a kernel panic or fatal EL1
+fault attempts a GPU-drawn red diagnostics screen containing the headline, location
+or fault details, boot stage and recent kernel log. Recoverable EL0 faults do not
+enter terminal display mode. The kernel must not write the firmware framebuffer
+after handoff, including when the GPU attempt fails.
+
+<!-- claim-lint:ok: Normative terminal ownership and deadlines for #1749; not measured results. -->
+The first fatal caller latches terminal mode for the rest of the boot. Normal GPU
+producers stop without releasing backing the device may still access; later fatal
+callers cannot become another queue writer. The attempt uses prepared, pinned
+resources and requests, without allocating or waiting for the ordinary core,
+console or framebuffer locks. Other CPUs' active queue accesses have at most
+100 ms to drain. If they do not, the GPU attempt ends. After that drain, queue
+drain, draw, bind, flush and any capture-profile device observation share one
+2 s deadline measured by the architectural counter, independent of interrupts.
+Timeout, unavailable preparation, reset-invalidated state or a device error leaves
+serial as the record; it does not permit a CPU-rendered fallback or a retry on the
+normal queue. Requests and DMA backing stay pinned after a timeout.
+
+<!-- claim-lint:ok: Normative terminal-stop and acceptance requirements for #1749; not measured results. -->
+Terminal mode does not resume scheduling or display ownership. CPUs parked by this
+fatal stop mask interrupts; the soft-lockup detector must recognize that intentional
+terminal state and must not append a LOCKUP capture to the panic record. This does
+not exempt a lockup before terminal mode or change ordinary lockup detection. The
+panic capture profiles must read the bound panic target through both complementary
+poisons, require exact equality to the expected diagnostics pixels, and end with
+no subsequent soft-lockup capture. Screen failure never suppresses the serial
+panic record. This terminal path adds no syscall, userspace recovery operation or
+change to the ordinary watchdog, fence, readback or IRQ-masking bounds.
+
 ### 1.8 Observation by device readback
 
 `READBACK` and BreenGL's `SCANOUT_READBACK` share one record, `ObservationRecord` version 2: 1,024 bytes,
 little-endian, reserved bytes zero, produced atomically with the pixels it describes.
+
+`READBACK` allocates temporary whole-rectangle staging in guest-backing frames. The staging is charged
+to the process's 192 MiB guest-backing quota and `RLIMIT_AS`, and `COUNTERS` reports the staging under
+`resource_bytes` while it is held. `READBACK` may fail with ENOMEM when staging cannot be charged to
+the process's guest-backing quota or `RLIMIT_AS`. The charge is released when the staging is freed.
 
 | Offset | Field |
 |---|---|
@@ -533,7 +767,7 @@ little-endian, reserved bytes zero, produced atomically with the pixels it descr
 | 28 | `format: u32`: the target's format (0 `B8G8R8A8`, 1 `R8G8B8A8`) |
 | 32 | `x, y, width, height: u32`: the rectangle read |
 | 48 | `target_width, target_height: u32` |
-| 56 | `stride: u32`: of the caller's buffer; `canonical: u32`: 0, BGRA bytes |
+| 56 | `stride: u32`: of the caller's buffer; `canonical: u32`: 0, BGRA bytes; 1, one byte per pixel (an R8 texture) |
 | 64 | `context: u64`: the device context that last wrote the target (the compositor's for a composite) |
 | 72 | `target: u64`: the caller's handle; `resource: u64` at 80: the device's resource or surface id |
 | 88 | `generation: u64`: the target's published generation (section 1.4.1) |
@@ -544,15 +778,55 @@ little-endian, reserved bytes zero, produced atomically with the pixels it descr
 | 152 | `copy_kind: u32`, `copy_status: u32`: VMware's host copy into the readback surface; 0 on VirGL |
 | 160 | `poison: u32`: the first observation's poison pattern (the second's is its complement); `unwritten: u32` at 164: bytes whose two observations differ, which must be 0 |
 | 168 | `commit: u64`, `composite_serial: u64` at 176: for a window or composite observation, else 0 |
-| 184 | `present_fence: u64`; `present_status: u32`, `window_count: u32` at 192 |
+| 184 | `present_fence: u64`: when bit 0 of `flags` is set, the context fence `PRESENT` returned for the completed binding that made the observed target the scanout (section 1.7), never a raw device fence number; else 0. `present_status: u32`, `window_count: u32` at 192 |
 | 200 | `windows: [(window: u64, commit: u64, render_fence: u64, generation: u64); 16]`: every window in the composite, the commit sampled, the render fence that commit carried and the generation sampled |
 | 712 | `renderer: [u8; 64]`: the device's renderer string from its capability set, NUL-padded, empty if none |
 | 776 | reserved |
 
-A readback refuses with EIO and a named reason when a composed window's render fence had not completed OK
-before the composite was sent, when any recorded fence belongs to another submission, when the device's
-binding differs from the observed resource, or when the target is invalid (section 1.4.1). More than 16
-windows in a composite returns EIO without a partial record, as v1 does.
+<!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
+**Backend-specific observations (ruling 47).** A record's backend must match `CAPS.backend`;
+checks select the following native values by that backend, never accept a value from the other one.
+These are interface identifiers from VirtIO section 5.7.6.7 and VMware's published
+`svga3d_cmd.h` and `svga_reg.h` (section 1.9), not rendering-policy sources.
+
+| Field | Backend 4 (VirGL) | Backend 5 (SVGA3D DX) |
+|---|---|---|
+| Successful render, readback, copy and present status | `OK_NODATA` 0x1100 (copy fields remain 0) | `SVGA_CB_STATUS_COMPLETED` 1 |
+| Render kind after drawing | `SUBMIT_3D` 0x207 | `DX_DRAW` 1152 |
+| Render kind after texture upload | `TRANSFER_TO_HOST_3D` 0x205 | `UPDATE_GB_SURFACE` 1102 |
+| Readback kind | `TRANSFER_FROM_HOST_3D` 0x206 | `READBACK_GB_SURFACE` 1104 |
+| Readback surface and MOB | both 0 | both nonzero; dedicated readback surface differs from the judged resource |
+| Copy kind | 0 | `SURFACE_COPY` 1042 |
+| Forced device-error answer | VirtIO error response 0x1200 through 0x12ff | `SVGA_CB_STATUS_COMMAND_ERROR` 3 |
+
+<!-- claim-lint:ok: Normative catch-up contract amendment, rulings 47-52 (#1814), not measured results. -->
+Pixel equality, both complementary poisons, fence and resource identities, all performance bounds,
+and the same 170 cases with zero skips remain required on both backends.
+
+A readback refuses with EIO and a named reason (the codes are in `docs/gui/gpu-abi.md`) when the two
+complementary-poison observations differ (unwritten), when any recorded fence belongs to another submission
+(fence mismatch), when a composed window's render fence had not completed OK before the composite was sent
+(its code is assigned with composite observations, which come after G2), when
+an observation claiming the scanout (record `flags` bit 0 set) names a resource that differs from the
+device's confirmed scanout binding (resource mismatch), when the target is invalid (section 1.4.1; the
+reason names the submission that invalidated it), when the device
+answers a readback transfer with an error, when the watchdog ends a transfer the device has not answered
+(device hung), when a device reset is decided while a transfer is outstanding, whether the reset then
+completes or fails (device reset), when the target was lost to an earlier device reset (target lost), when
+the target's handle was destroyed while the readback waited for its writers (target dropped), and when the
+target may be the scanout but the scanout's binding is not known because a `PRESENT` that binds it or
+replaces it was sent and has not completed, or failed (binding unknown), and when a composite has more than
+16 windows (composite-overflow; its code is assigned with composite observations, which come after G2).
+Every EIO a readback returns names one of these reasons; none is reported under another's name.
+Composite overflow returns no partial record, as v1 does.
+
+**A fault is detected from what can be observed, never from the fault variable.** A readback's reason comes
+from what the kernel observes: the two observations, the answer and fence echo the device returns, and the
+kernel's own record of the target and the binding. It never comes from knowing that a test-control point
+fired. The device's transfer answer carries no resource identity, so the kernel cannot know which resource
+the device copied from: a transfer that names the wrong resource writes that resource's backing, the
+observed target's poisoned backing stays unwritten, and the readback refuses with reason unwritten (1).
+Resource mismatch (3) is not observable for that fault.
 
 | Target | Sequence the guest runs |
 |---|---|
@@ -570,17 +844,33 @@ The VMware row extends the sequence BreenGL recorded for host-modified contents 
 writes nothing for a surface whose contents came only from guest uploads, and a host copy first makes it write
 the whole surface. The VMware spike read shader-rendered targets back exactly through this sequence.
 
+<!-- claim-lint:ok: Normative one-shot fault requirements from docs/gui/breengl.md section 21 and the GPU contract #1709, not measured results. -->
 **Planted faults** (test controls, §21, new points 19 to 31), each with a `gpu` case that requires the exact
-reason and then the clean result once disarmed: 19 `skip-transfer` (a skipped transfer-back), 20
-`stale-fence` (a fence answered for another submission), 21 `wrong-resource` (readback of another resource),
-22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability`, 24
-`profile-violation` (one draw with filtered sampling), 25 `skip-present-flush`, 26 `wrong-scanout`, 27
-`device-error` (a forced device error, escalating to a reset when armed twice), 28 `suppress-draw` (the
-translator drops one draw from the device stream while the fence still completes), 29 `wrong-texture` (one
-draw binds another texture the same process owns), 30 `skip-upload-visibility` (one upload's transfer to the
-host is omitted), 31 `withhold-fence` (one fence's completion is ignored, so the watchdog fires; a real host
-hang cannot be induced from inside the profile, whose shader loops are all bounded, so this point simulates
-one).
+reason and then the clean result once disarmed. Every point is one-shot, as every point of §21 is: arming it
+affects the next occurrence of its event, the point then counts one firing and disarms itself, and a check
+that needs the fault on several operations arms it before each. 19 `skip-transfer` (a skipped transfer-back),
+20 `stale-fence` (a fence answered for another submission), 21 `wrong-resource` (the next readback transfer
+names another target of the same process that contains the transfer's box, so the box never extends past the
+resource it names, section 1.4.1; the case creates that target, and with none the point does not fire and
+stays armed. The device writes that target's backing, the observed target's poisoned backing stays
+unwritten, and the readback refuses with reason unwritten (1), the reason `readback/fault-wrong-resource`
+requires; resource mismatch (3) is not observable for this fault, as stated above), 22 `corrupt-pixel` (a pixel outside the draw corrupted on the device), 23 `mask-capability` (the
+next admission decision, made by a `CAPS` query or by any other op that admission gates, counts the named
+capability as absent, so that op fails naming it; the op after it sees the device's real capabilities, with no
+`DISARM_ALL`), 24 `profile-violation` (the next DRAW, DRAW_BUFFER or DRAW_SAMPLED is refused by validation
+for filtered sampling; arm with target 0 and parameter 0, with no BEGIN-target filter, as defined in
+`docs/gui/gpu-abi.md`), 25 `skip-present-flush`, 26
+`wrong-scanout`, 27 `device-error` (the next submission is answered with a device error; armed before each of
+two consecutive submissions of one context, it quarantines that context only and never resets the device,
+section 1.4.1), 28 `suppress-draw` (the translator drops one draw from the device stream while the fence still
+completes), 29 `wrong-texture` (one draw binds another texture the same process owns), 30
+`skip-upload-visibility` (one upload's transfer to the host is omitted), 31 `withhold-fence` (one fence's
+completion is ignored, so the watchdog fires; a real host hang cannot be induced from inside the profile,
+whose shader loops are all bounded, so this point simulates one). Point 31 also has a fence-depth mode: the
+device's answers to the next context's first four submissions are taken and kept but not published, so their
+fences stay incomplete, until a fifth submission on that context waits at the four-in-flight limit; then the
+four kept answers are published in fence order and the fifth is admitted. It invents no completion and changes
+no watchdog deadline (`submit/ring-backpressure`, section 1.4.1).
 
 There is no planted missing-cache-invalidation fault: on every target the "device" is host software
 writing guest memory through the host's coherent memory system, so omitting the invalidation changes no
@@ -589,8 +879,12 @@ it between the transfer fence and the first read.
 
 ### 1.9 Clean room and provenance
 
-The rule is the libc rule applied to graphics. **Allowed:** the VirtIO 1.3 specification; the VirGL protocol
-definition header as interface facts (command numbers, field layouts); Gallium's published
+The rule is the libc rule applied to graphics. **Allowed:** the VirtIO 1.3 specification; the VirGL
+protocol's public interface definitions, `virgl_protocol.h` (command numbers, field layouts), `virgl_hw.h`
+(the capability-set layout and format numbers), and `p_defines.h` and `p_shader_tokens.h` (the
+enumeration values and token layouts the VirGL wire carries), used for numeric values, enumerations and
+structure layouts only, never for code, control flow or policy; for four virtio-gpu requests only, the
+BSD-licensed `virtio_gpu.h` interface header (below); Gallium's published
 [Tungsten Graphics Shader Infrastructure documentation](https://docs.mesa3d.org/gallium/tgsi.html), solely
 its language and instruction definitions, not Gallium implementation code; VMware's published interface
 headers (`svga3d_cmd.h`, `svga3d_dx.h`, `svga3d_devcaps.h` and siblings) in the
@@ -607,24 +901,52 @@ virglrenderer, ANGLE, Mesa as the host renderer) runs unmodified or with Breenix
 never linked into the guest. Host-stack work reads only build files and QEMU's and UTM's display and
 frontend integration code, and its lanes do not author guest GPU code.
 
+**virtio-gpu commands cite the specification.** Every virtio-gpu command, structure and flag the core uses
+cites its VirtIO 1.3 section, with one exception. VirtIO 1.3 section 5.7.6.9 names `CTX_ATTACH_RESOURCE`,
+`RESOURCE_CREATE_3D`, `TRANSFER_TO_HOST_3D`, `TRANSFER_FROM_HOST_3D` and `SUBMIT_3D` but gives no request
+layout for them, as it does for `CTX_CREATE`. For those four request layouts only (attach, 3D resource
+creation, the 3D transfer layout both transfer directions use, and 3D submission), the field names, order and
+widths come from the Linux uapi `virtio_gpu.h`, the BSD-licensed interface definition of the device, treated
+exactly like `virgl_protocol.h`: interface facts only, never code, control flow or policy. Each field is
+recorded with its line, and each layout is confirmed black-box on the device (it accepts the request and
+returns the expected data). `virtio_gpu.h` is not a source for any other command.
+
+**Shader text.** The kernel's programs are written from the TGSI documentation's instruction
+descriptions. The text form virglrenderer accepts is learned black-box: a candidate is submitted and
+accepted or refused, and each grammar fact (the label format among them) is recorded with the experiment
+that showed it. A minimal program that comes out identical to an older one in the tree, such as a
+pass-through, is acceptable when its derivation is recorded that way; no older program is a template.
+
+**The provenance record.** Every value the core uses (a number, an enumeration, a structure layout, a
+grammar fact) names its source in `docs/gui/provenance/gpu-core.md`: the specification section, or the
+interface header and its line range at a pinned revision, or the black-box experiment, or Breenix's own
+design. A value with no recorded source is not landed.
+
+Every black-box experiment records the commit, the Vigil run id or harness invocation, and the serial
+or output excerpt that showed the fact. Reproduce commands match the runs they cite: the provenance
+record's commands use exactly the flags the cited runs used, run folders keep `host-renderer.json`, and
+`scripts/vigil-record.sh` records whether the boot had a display window.
+
 `docs/planning/gpu-rendering-attack-plan.md` proposes capturing and porting exact byte sequences; that
 approach is void.
 
 **The provenance audit comes first and gates reuse.** It is the first G0 task, and it covers every file the
-effort or the harvest reuses: `virgl.rs`, `gpu_pci.rs`, `svga3.rs` and the rest of `drivers/vmware/`, every
-shader program text or token array already in the tree, the libgfx algorithms that move to `libgfx-ref`, and
-libfont's rasterizer. Each encoding, structure layout, shader and algorithm gets its source (a section of an
-allowed document, or Breenix's own design); anything whose only source is a captured stream or a forbidden
-implementation is rewritten from an allowed source before reuse. The audit's record per file lives in
-`docs/gui/provenance/`. A harvest PR merges only after its files' audit record has merged, and every PR in the
-effort lists the sources its new code was written from, which review checks against the forbidden list.
+harvest or BreenGL's rebuild reuses: `virgl.rs`, `gpu_pci.rs`, `svga3.rs` and the rest of `drivers/vmware/`,
+every shader program text or token array already in the tree, the libgfx algorithms that move to `libgfx-ref`,
+and libfont's rasterizer. The gpu core reuses none of the driver files (section 1.2). Each encoding, structure
+layout, shader and algorithm gets its source (a section of an allowed document, or Breenix's own design);
+anything whose only source is a captured stream or a forbidden implementation is rewritten from an allowed
+source before reuse. The audit's record per file lives in `docs/gui/provenance/`. A harvest PR merges only
+after its files' audit record has merged, and every PR in the effort lists the sources its new code was
+written from, which review checks against the forbidden list.
 
 The audit of the four driver files (`virgl.rs`, `gpu_pci.rs`, `svga3.rs`, `drivers/vmware/mod.rs`) ran in
 G0. It keeps their published protocol facts (command numbers, wire layouts, enumerations) and Breenix's own
 code, and names six parts to re-author from allowed sources before any reuse: VirGL's fixed pipeline state
 (#1659), the embedded TGSI programs and their token counts (#1660), the VirGL batch and quirk policy
 (#1661), the VirtIO owned-command DMA layer (#1662), SVGA command submission and recovery (#1663), and the
-SVGA object tables' sizes and capacities (#1664). libgfx, libfont's rasterizer and any shader outside those
+SVGA object tables' sizes and capacities (#1664). These concern the drivers' own uses (the existing display
+path and the harvest); the gpu core writes its equivalents from the allowed sources. libgfx, libfont's rasterizer and any shader outside those
 files still get their own audit before they move. The spikes' new code was written from the allowed list
 only: the VirGL protocol's interface facts and Gallium's TGSI language documentation for Parallels, and
 the VMware interface headers and Microsoft token-format header named above for VMware. These are
@@ -646,11 +968,19 @@ saying so. A lane writes each case's check in its own commit, from this contract
 it measures; `device/version` is already its real check. ARM64 QEMU boots of the suite use the GL QEMU
 (`scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl`).
 
+<!-- claim-lint:ok: Normative suite viewing requirements amended by ruling 53, #1956; no measured result claimed. -->
 **No CPU canvas in the suite.** The suite does not use `Suite::gui()`, `suite_stage` or
 `suite::judged(&FrameBuf)`, which rasterize and compare CPU framebuffers. It judges with
 `suite::judged_readback(&Readback, &Expected)` over read-back bytes and their record (comparison, not
-rendering). From G2 each rendering case binds its target to the scanout while it owns the display, and the
-runner draws a status strip of solid tiles (one per case, pass or fail colour) with BGL's `solid` pipeline;
+rendering). From G2 each rendering case shows its result while it owns the display, using section 1.7's
+viewing path (ruling 53, #1956). A smaller case target is GPU-copied at origin (0,0) into a
+separate display-sized scanout; an oversized case retains its full offscreen readback and never binds
+that target. Source and scanout observations retain their actual resource identities; scanout checks
+judge the source pixels at that origin and the completed present fence of the display-sized resource.
+The 17x9 record-fields source remains 17x9 with scanout bit clear, and its separate scanout record has
+the display dimensions, scanout bit set and the present fence. A viewing copy consumes its own SUBMIT
+fence before PRESENT; fence-sequence checks include that operation. Direct scanout fault and ownership
+checks use display-sized targets. The runner draws a status strip of solid tiles (one per case, pass or fail colour) with BGL's `solid` pipeline;
 case names stay on serial. Text on the stage arrives with BreenGL's GPU stage. Until G2 the shared runner
 draws its usual scored panel through the existing display path, as every program on main does (section 1.1),
 and judges nothing with it.
@@ -681,6 +1011,13 @@ Notes on the cases that carry the most weight:
   the latter over every printable glyph of the pinned fonts at the five reviewed reference sizes.
 - `readback/fault-suppress-draw` and `textures/fault-wrong-texture` show a completed fence is not proof the
   intended command ran: each must fail the exact comparison.
+- `readback/owner-only` checks that a live non-owner gets EPERM for READBACK target 0
+  while another process owns the display. After the child owner exits, the restored parent
+  can read back target 0; the restored parent is not the non-owner probe (ruling 37).
+- `isolation/client-cannot-scanout` expects EPERM from a non-owner SET_MODE with valid
+  arguments. Ownership is checked before argument validation, so malformed arguments also
+  return EPERM for a non-owner. The current owner's SET_MODE(NULL, 0) returns EINVAL
+  (ruling 38); ENOSYS is no longer the G7 expectation.
 - `readback/poison-unwritten` checks the two complementary observations of section 1.8, and
   `fault-skip-transfer` shows a skipped transfer is refused through them. `textures/upload-visibility` reads
   an upload back as well as sampling it, because a dropped upload samples as a texture of zeros.
@@ -696,20 +1033,23 @@ Notes on the cases that carry the most weight:
   existing `irq-hold` point has shown the gauge reads a 2 ms hold, as `breengel`'s
   `composition/flush-irq-bound` does.
 
+<!-- claim-lint:ok: Normative performance measurement requirements in docs/gui/gpu.md sections 1.4.1 and 1.10, amended by contract #1709, not measured results. -->
 **Performance bounds,** in the contract from G0 and held on every target. G8 may tighten a bound from
 measurement and never loosens one; a target that misses a bound has a slow path to fix. A device's answer to
 a submission is not proof the GPU did the work: opaque overdraw may be culled, and a response need not
 prove pixel completion. Every measured interval ends with a dependent observation (a readback, or a draw
 that reads the result), and throughput cases use blended or discarding draws wherever
-opaque overdraw could be culled. Every bound is measured after context creation has warmed the programs
-(section 1.4.1).
+opaque overdraw could be culled. Every bound is measured after the context reports its asynchronous fixed
+rendering-catalogue warm-up complete through `COUNTERS` (ruling 33, #1725). Each profile-only routine's program warms
+on that routine's first PROBE in its context; that first-use cost is excluded from performance
+bounds (section 1.4.1, ruling 48).
 
 | Case | Bound |
 |---|---|
 | `clear-rate-2560` | at least 60 full-screen 2560×1600 clears, each presented, per second |
 | `rect-throughput` | 10,000 solid 16×16 rectangles in one submission complete within 50 ms |
 | `submit-latency` | an empty submission's fence: median at most 2 ms, maximum at most 10 ms over 1,000 |
-| `first-draw-latency` | a new context's first draw with each catalogue pipeline, each completing within 10 ms |
+| `first-draw-latency` | a new context's first draw with each fixed rendering-catalogue pipeline (excluding `probe_int`), issued after that context reports warm-up complete, each completing within 10 ms |
 | `readback-time-2560` | a full 2560×1600 readback within 100 ms |
 | `upload-bandwidth` | a 16 MiB texture upload visible to the next submission within 100 ms |
 | `coverage-throughput` | a full-screen 2560×1600 `coverage` blend from an R8 mask within 16.7 ms |
@@ -740,26 +1080,37 @@ order where one depends on another:
 The `gpu` entry in `docs/efforts/path.json` (section 3.2) landed with this document.
 
 **Lanes on ARM64 QEMU (in order; each milestone is its category passing on ARM64 QEMU, and each step supplies
-everything its category's cases use):**
+everything its category's cases use).** Lanes land into the integration branch `gpu/integration`, cut from
+main after the `gpu` suite merged, never into main; main receives the effort once it passes on ARM64 QEMU,
+Parallels and VMware. A contract amendment a lane needs lands in its own PR into `gpu/integration` before
+that lane, and the lane then conforms to it.
 
 | Step | Milestone | Work |
 |---|---|---|
-| G1 | `device`, `submit` | `virtio-gpu-gl-pci` on the PCI transport; the existing PCI virtio-gpu display path (the one Parallels uses) running on QEMU so main's programs keep working; the kernel GPU core (`kernel/src/gpu/`): contexts, handles, validation, the work estimate, fences, waits, the watchdog and reset; syscall 416 on ARM64; test points 20, 23, 27, 31 and the PID 1 guard for every reserved point 19–31 |
+| G1 | `device`, `submit` | `virtio-gpu-gl-pci` on the PCI transport, beside the MMIO `virtio-gpu-device` that keeps the existing display until G7; the clean-room kernel GPU core (`kernel/src/gpu/`, section 1.2): contexts, handles, validation, buffer snapshots, the work estimate, fences, waits, the watchdog over every synchronous device wait, per-context quarantine and device reset (section 1.4.1); syscall 416 on ARM64; test points 20, 23, 27, 31 (with its fence-depth mode) and the PID 1 guard for every reserved point 19–31; the provenance record `docs/gui/provenance/gpu-core.md` for every value the core uses |
 | G2 | `readback` | `READBACK` with record v2 and points 19, 21, 22, 28 (reusing point 20 from G1); `solid`; target invalidation; single-target `PRESENT`, its fence and killable blocking path, scanout bind and status strip |
 | G3 | `textures` | uploads with purposes, region copies, `copy`; points 29, 30 |
 | G4 | `profile` | `probe_int` with the integer, multi-word, binary32 and shape-predicate routines; the profile checks; point 24 |
 | G5 | `pipelines` | the rest of the catalogue in TGSI, the destination copy and hazard rule, BGL's draw API |
-| G6 | `isolation` | quotas, reclamation at exit/exec/kill, the fuzzer, quiet errors, no addresses, the IRQ gauge over the GPU paths |
+| G6 | `isolation` | quotas, including the per-submission copy quotas (the private copy of the command stream, the buffer snapshots, the translated device chunks and device vertex storage), reclamation at exit/exec/kill, the fuzzer, quiet errors, no addresses, the IRQ gauge over the GPU paths |
 | G7 | `present` | modes, scale, two-target present, the ownership stack on the GPU, the kernel console on the GPU, the firmware handoff; points 25, 26 |
 | G8 | `performance` | measure against the bounds, fix the slow paths |
 
-G1 reserves points 19–31 and checks the latched PID 1 before decoding any of them, including points
-whose implementation is supplied later. `isolation/test-hooks-absent` checks that guard in G6 without
-requiring G7's present fault implementations. `isolation/killable-wait` uses G2's single-target PRESENT;
+Deferred by name, not dropped: per-submission copy quota charging is G6's (above). G1 supplies the
+buffer snapshots and the watchdog over warm-up waits now, and G2 enrolls `READBACK`'s transfers when it adds
+them, because those bound the work and the kill path from the first lane that has them.
+
+<!-- claim-lint:ok: Normative test-control guard required by ruling 34 for contract PR #1729, not a measured result. -->
+G1 reserves points 19–31 and checks the boot latch plus a root caller before decoding any argument,
+including for points whose implementation is supplied later. `isolation/test-hooks-absent` requires these
+points to be refused to every non-root process: STATE, ARM, FIRED and DISARM_ALL return EPERM to a
+non-root caller, even with malformed arguments. The boot latch is set when the first PID 1 is a
+`/sbin/suite-*` binary; the caller need not be PID 1. G6 checks this guard without requiring G7's present
+fault implementations. `isolation/killable-wait` uses G2's single-target PRESENT;
 G7 adds two-target flipping and mode changes, not the first PRESENT operation.
 
-**Catch-up (each target until all 170 pass there, with its attestation):** Parallels (the same backend;
-Parallels capset and display configuration), then VMware (the SVGA3D DX backend and its programs, designed
+**Catch-up (each target until all 170 pass there, with its attestation):** Parallels (the same clean-room
+backend; Parallels capset and display configuration), then VMware (the SVGA3D DX backend and its programs, designed
 against the G0 spike). x86-64 is not in the catch-up (section 1.6.4). The effort is done when one run per
 target has all 170 passing with an accepted attestation; `gpu`'s landing PR also switches every ARM64 gate to
 the GL binary (section 1.6.1, ruling R5).
@@ -813,12 +1164,12 @@ no profile requirement is relaxed by these experiments.
 | Every readback has complementary-poison observations; offset 164 is `unwritten` | section 1.8; `readback/poison-unwritten` | VMware's `judge` compares both observations; a single poison cannot distinguish an unwritten byte equal to that poison. The record change strengthens detection. |
 | Uploads are proved by reading them back | `textures/upload-visibility` | Parallels' `r8-64-pitch64-transfer` both samples zeros and leaves poisoned readback bytes. |
 | Foreign handles are refused by the validator | section 1.4.1; `isolation/foreign-target-draw` | Parallels' foreign-context probe receives `OK_NODATA` without the intended drawing. |
-| Context creation warms every catalogue program | sections 1.4, 1.4.1; `performance/first-draw-latency` | Parallels' `sceneA` first submission takes 28,365 µs, and `sceneA-again` takes 349 µs. These are the spike's programs, not the whole catalogue. Creation has its own deadline and kill requirement. |
+| Context creation queues asynchronous rendering-catalogue warm-up (ruling 33, #1725); `probe_int` warms on its first PROBE | sections 1.4, 1.4.1; `performance/first-draw-latency` | Parallels' `sceneA` first submission takes 28,365 µs, and `sceneA-again` takes 349 µs. These are the spike's programs, not the whole catalogue. Creation has its own deadline and kill requirement; the first PROBE's cost is excluded from performance bounds. |
 | Timed work ends with a dependent observation | section 1.10 | A command response alone cannot establish completed pixel work. Opaque overdraw may be culled; blended or discarding workloads must measure the required work. |
 | VirGL requires `VIRGL` and `VERSION_1`, deduplicating capability set IDs | section 1.6 | Parallels' capability enumeration lacks blob, context-init and EDID and repeats its VirGL 2 set at multiple indices. |
 | VMware admits by capability entries | section 1.6.3 | The 3D-off control refuses at `DXCONTEXT=0`; the register's DX bit alone is insufficient. |
 | VMware uses queue 0, page-table-backed tables, version 1 surfaces and bare SM4 tokens with signatures | section 1.6.3 | The cited rendering commit submits and reads these primitives back; present command completion is not scanout verification. |
-| Attestation remains mandatory for implemented GPU layers | section 1.6.5 | The Parallels spike includes idle/load phases, but the cited serial alone does not establish host GPU-time deltas. The at-least-10% threshold is a required acceptance criterion, not a result proved by this spike. VMware's attestation remains configuration-based under R6. |
+| Attestation remains mandatory for implemented GPU layers | section 1.6.5 | The Parallels spike includes idle/load phases, but the cited serial alone does not establish host GPU-time deltas. The rate-ratio threshold of section 1.6.5 (amended by ruling 51) is a required acceptance criterion, not a measurement from this spike. VMware's attestation remains configuration-based under R6. |
 
 The suite has 170 cases rather than the outline's 168. `textures/unaligned-pitch` requires exact
 round trips at widths that exercise the backend layouts. `performance/first-draw-latency` adds a
@@ -827,6 +1178,140 @@ strides state the checks now required; main's ID-only outline cannot establish t
 The offset-164 meaning and warm-up measurement condition are explicit contract changes, not
 wording-only edits. The Parallels pitch behaviour still needs a black-box Linux probe; its 3D-off
 control belongs to catch-up. Neither pending experiment changes the frozen pixel requirements.
+
+### 1.13 What G1's review changed
+
+G1's review (#1677, #1678) found places where the code and the contract disagreed. The coordinator ruled on
+2026-10-16 that the contract's semantics win and that the contract is amended first, in its own PR, with G1
+conforming to it. The amendment:
+
+| Rule | Where |
+|---|---|
+| The VirGL interface headers (`virgl_protocol.h`, `virgl_hw.h`, `p_defines.h`, `p_shader_tokens.h`) are sources for values, enumerations and layouts only; virtio-gpu cites the VirtIO specification, except the four request layouts the specification omits, which come from the `virtio_gpu.h` interface header and are confirmed black-box; every value is recorded in `docs/gui/provenance/gpu-core.md` | section 1.9 |
+| Programs are written from the TGSI documentation; the accepted text form is learned black-box and each grammar fact is recorded with its experiment | section 1.9 |
+| Drawing into an invalid target is allowed; only sampling one is refused | section 1.4.1 |
+| Every test-control point, 23 included, is one-shot | section 1.8 |
+| Repeated device errors quarantine one context; the device is reset only for a device fault or the watchdog | sections 1.4.1, 1.8 |
+| On ARM64 QEMU the existing display stays on the MMIO virtio-gpu until G7; the core is clean-room and never uses `gpu_pci.rs`, `virgl.rs` or `svga3.rs` | sections 1.2, 1.6, 1.11, 2.5, 2.6 |
+| The wait, quarantine and reset tolerances, derived from the watchdog period, the kill bound and the reset budget; ring backpressure proved by fences | sections 1.4.1, 1.8 |
+| Per-submission copy quotas are G6's; buffer snapshots and the watchdog over synchronous device waits are G1's | sections 1.4.1, 1.11 |
+
+`docs/gui/gpu-abi.md`, the layouts and codes of syscall 416, follows the same rules.
+
+### 1.14 What G2's review changed
+
+G2's review (#1687, #1688, #1694) and G1's black-box experiments (#1684) found device behaviour and readback
+semantics the contract did not state. The coordinator ruled on 2026-10-17 (rulings 13 to 15 and 17 to 20)
+that they enter the contract in contract PRs, before G2's code conforms to it, and never together with
+code, checks or thresholds. The amendment:
+
+| Rule | Where |
+|---|---|
+| A `SUBMIT_3D` naming an unattached resource, or a transfer box past the resource, is answered OK and silently disables its device context; the kernel never sends either | section 1.4.1 |
+| A fault is detected from what can be observed, never from the fault variable; fault-wrong-resource is detected as unwritten backing, reason 1, and `readback/fault-wrong-resource` requires reason 1 | section 1.8; `docs/gui/gpu-abi.md` |
+| Readback names every EIO it returns, including a lost or dropped target, a transfer ended by a device reset (completed or failed), a transfer the watchdog ended and an unknown scanout binding | section 1.8; `docs/gui/gpu-abi.md` |
+| EFAULT is atomic only as far as the kernel can guarantee it; what an EFAULT while writing results leaves behind is stated per op | section 1.4; `docs/gui/gpu-abi.md` |
+| `PRESENT` and record offset 184 carry a context fence, never a raw device-wide fence number | sections 1.4, 1.7, 1.8; `docs/gui/gpu-abi.md` |
+| `PRESENT` of a never-written target is refused with EINVAL | sections 1.4, 1.7; `docs/gui/gpu-abi.md` |
+| `READBACK` may fail with ENOMEM when staging cannot be charged to the process's guest-backing quota or `RLIMIT_AS`; `COUNTERS` reports the staging under `resource_bytes` | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
+| `RESOURCE_CREATE` declares scanout intent with a flag; only targets created with it get the device's `SCANOUT` bind, and `PRESENT` refuses other targets with EINVAL | sections 1.4, 1.7; `docs/gui/gpu-abi.md` |
+| Reproduce commands use exactly the cited runs' flags, run folders keep `host-renderer.json`, and `scripts/vigil-record.sh` records whether the boot had a display window | section 1.9; `docs/gui/gpu-abi.md` |
+
+### 1.15 What G3 needs
+
+G3 (`textures`) is the first lane to upload, copy and sample. Sections 1.3, 1.4 and 1.8 named those
+operations and left their interface to `docs/gui/gpu-abi.md`, which did not define it yet. This amendment
+defines it, in its own PR before the lane's code (ruling 9):
+
+| Rule | Where |
+|---|---|
+| `UPLOAD` names a live context, a texture or buffer, a clipped rectangle, the caller's stride, one of five source layouts (two 4-byte, two 3-byte with alpha 255, and R8) and a purpose; `COUNTERS` counts the source bytes read per purpose | sections 1.3, 1.4; `docs/gui/gpu-abi.md` |
+| Uploads are ordered behind their own context's earlier commands rather than blocking on them, and wait for other contexts' submissions naming the resource; a failed upload leaves its texture invalid until a whole upload completes OK | section 1.4.1; `docs/gui/gpu-abi.md` |
+| An interrupted upload wait returns EINTR; after sending, it leaves the texture invalid like EIO. Upload staging is charged like readback staging and may return ENOMEM. Device-access holds require fence publication as well as device completion or a successfully confirmed reset (ruling 24) | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
+| `READBACK` reads textures as well as targets; an R8 texture reads back one byte per pixel (`canonical` 1); a texture's record describes its last completed upload | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
+| The stream gains `COPY`, a region copy between resources of one format into a target, staged when the rectangles overlap in one resource, and `DRAW_SAMPLED`, whose instances name a destination rectangle and a source origin; refusal codes 15 to 17 | section 1.3; `docs/gui/gpu-abi.md` |
+| Sampling converts by channel, with an R8 texel `r` read as (`r`, 0, 0, 255), and clips each rectangle to the texels the texture has | section 1.3; `docs/gui/gpu-abi.md` |
+| Points 29 (`wrong-texture`) and 30 (`skip-upload-visibility`) take a texture handle and are defined in full | section 1.8; `docs/gui/gpu-abi.md` |
+
+### 1.16 What G6 needs
+
+G6 (`isolation`) measures what one process can do to another and to the kernel through syscall 416.
+Sections 1.4, 1.4.1, 1.10 and 1.11 name its cases and leave how several of them are observed to the
+implementation. This amendment states those interfaces, in its own PR before the lane's code (ruling 9):
+
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Reclamation at exit, exec and kill.** When the last thread of a process exits, normally or by a signal,
+  the GPU core drops every handle the process holds, as `CONTEXT_DESTROY` and `RESOURCE_DESTROY` of each
+  would. A successful exec does the same before the new image runs. Dropping a
+  handle does not cancel work: a context's device context is destroyed once its submitted work has completed,
+  and a resource is freed when its hold set is empty (section 1.4.1, kills and hold sets). The new image of an
+  exec holds no GPU handles: every handle from before the exec is EINVAL, and `COUNTERS` for the process
+  reports no contexts, no resources and no resource bytes until the new image creates some.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Global GPU counters.** `/proc/trace/counters` reports three gauges over every process and the kernel:
+  `gpu_contexts`, the contexts the core holds, including destroyed handles whose work is outstanding;
+  `gpu_resources`, the resources it holds, including the kernel's own per-context and per-submission
+  resources and dropped resources still held; and `gpu_resource_bytes`, the bytes charged to processes' GPU
+  memory quotas (below) that have not been released. After a process with no work outstanding exits and its
+  parent has reaped it, the three return to their values from before its first GPU call within 250 ms (K,
+  section 1.4.1). After a process with work outstanding is killed, they stay above those values until that
+  work's fences complete, by the device or by the watchdog, and return to them within 250 ms after.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Per-submission copy quotas.** `SUBMIT`'s private copies (the copy of the stream, the snapshot of the
+  buffer ranges it names and the translated device command chunks) and the device vertex storage it creates
+  are charged to the process's 192 MiB GPU memory quota and to `RLIMIT_AS` while they are held, like `UPLOAD`
+  and `READBACK` staging. `COUNTERS` reports them in their own field, `copy_bytes` at offset 136, so
+  `resource_bytes` keeps its meaning (guest backing and staging), and `gpu_resource_bytes` includes both. The
+  quota limits the sum of `resource_bytes` and `copy_bytes`. The stream copy
+  and the snapshot are released when `SUBMIT` returns; the chunks and the vertex storage when the device has
+  returned the submission's requests or a confirmed reset has ended them. A charge that cannot be made returns
+  ENOMEM, with error code 22 at index 0, before anything is sent.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **No addresses.** A handle is a 64-bit value whose top byte is neither 0x00 nor 0xFF, so no handle has the
+  form of a user, kernel or physical address on either architecture. Each value an op writes back is a handle,
+  a context fence (`ns << 32 | n`), a device id below 2³², a count, a size, a serial, a generation, a status,
+  an answer or a reason, a capability value, a string, or bytes of the caller's own pixels.
+  G7 also exposes the current scanout's pixels to its display owner and the FNV memory fingerprints
+  specified in `gpu-abi.md`, G7 display interface.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **`SET_MODE` before G7.** Until G7 builds it, `SET_MODE` refuses a caller that is not the display owner
+  with EPERM before its argument is decoded and returns ENOSYS to the owner; `MODES` returns ENOSYS.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Bounded validation.** Validation does work proportional to the stream's length, with the buffer
+  ranges it reads bounded by the snapshot limits of section 1.4.1. The `coverage_spans` crossing tables one
+  submission names in a buffer, each distinct table counted once, total at most that buffer's `data_bytes`
+  (EINVAL, code 8, otherwise), so overlapping tables cannot make validation read the snapshot again for
+  each instance. `isolation/bounded-validation` builds
+  streams of 1 MiB and 16 MiB from the same mix of commands, each refused at its last command, and requires
+  the 16 MiB stream's time per word to be at most twice the 1 MiB stream's (each the least of three runs),
+  and a stream of the 80 MiB maximum to be refused within 1 s.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **Quiet errors.** Kernel output is accounted per thread as BreenGL's contract, section 22, defines:
+  `/proc/<pid>/task/<tid>/kernel_output` is the decimal count of bytes the kernel committed for output on
+  that thread's behalf. `isolation/quiet-errors` makes 1,000 failing GPU calls, covering each op's refusals,
+  and requires the calling thread's count to stay unchanged; test-control point 3, `emit-diagnostic`, shows
+  first that a GPU call's output does reach the count.
+<!-- claim-lint:ok: Normative G6 interface requirement stated by this amendment, docs/gui/gpu.md section 1.16, not a measured result. -->
+- **The IRQ gauge over the GPU paths.** The trace counter `gpu_irq_masked_max_us` is the longest interval,
+  in microseconds, that a CPU held IRQs masked while it ran a GPU path, since boot or the last `DISARM_ALL`,
+  which restarts it at 0. A GPU path is a thread inside syscall 416, the GPU worker `kgpu`, the exit and exec
+  reclamation above, or the GPU's interrupt handler. Every interval opened by the kernel's IRQ-masking
+  primitives (`without_interrupts` and the IRQ-safe locks) on a thread in a GPU path counts, from the mask to
+  the restore, as does the GPU interrupt handler from its entry to its return. The context switch itself is
+  the scheduler's and is not a GPU path. Test-control point 2, `irq-hold` (BreenGL's contract, section 21),
+  makes the next `SUBMIT` hold IRQs masked for 2 ms during its validation, through the same primitive, so
+  `isolation/irq-masked-bound` first shows the gauge reads that hold.
+
+| Rule | Where |
+|---|---|
+| Exit, kill and exec drop the process's GPU handles, without cancelling its work; the exec'd image starts with no handles | section 1.4.1; `docs/gui/gpu-abi.md` |
+| `gpu_contexts`, `gpu_resources` and `gpu_resource_bytes` in `/proc/trace/counters`, with the 250 ms return after exit and after killed work drains | section 1.4.1; `docs/gui/gpu-abi.md` |
+| `SUBMIT`'s copies and vertex storage are charged to the GPU memory quota and `RLIMIT_AS`, reported as `COUNTERS.copy_bytes`; ENOMEM, code 22 | sections 1.4, 1.4.1; `docs/gui/gpu-abi.md` |
+| Handles have no address's form; returned values are of stated kinds | section 1.4; `docs/gui/gpu-abi.md` |
+| `SET_MODE` refuses non-owners with EPERM before G7 | section 1.4; `docs/gui/gpu-abi.md` |
+| The bounded-validation measurement; one submission's distinct coverage tables in a buffer total at most its `data_bytes` (code 8) | section 1.10; `docs/gui/gpu-abi.md` |
+| Per-thread kernel output, and point 3 `emit-diagnostic` for the GPU core | sections 1.4, 1.8; `docs/gui/gpu-abi.md` |
+| `gpu_irq_masked_max_us`, the GPU paths it covers, and point 2 `irq-hold` | sections 1.8, 1.10; `docs/gui/gpu-abi.md` |
 
 ## 2. BreenGL rebuilt on the GPU
 
@@ -991,9 +1476,16 @@ Only as test oracle, and only where an independent expectation has to be compute
 1. **The suites' formula expectations**, as today: the suite crates compute expected pixels from the
    contract's formulas and literal tables on the CPU, the oracle plan §2.5 requires. It shares no code with
    BGL, the kernel's programs or BreenGL.
-2. **`libs/libgfx-ref`**: libgfx's CPU primitives, blits and alpha, and libfont's coverage rasterizer, moved
-   without change. The move is checked as a pure rename (no content change in the diff), so the evidence of
-   393/393 on ARM64 QEMU, Parallels and VMware at #1655's merge (`4e855bb6`) applies to exactly this code. It
+2. **`libs/libgfx-ref`**: the full move of libgfx's CPU primitives, blits and alpha, and libfont's coverage
+   rasterizer belongs to the BreenGL rebuild, not G5 (ruling 32, #1722b). G5 keeps only the frozen coverage
+   reference from `breengel-cpu-393`, used solely by suite expectation modules, with no programs-wide
+   dependency. Under ruling 30 (#1719), the four byte-for-byte reference copies stay byte-identical to
+   their source tag. A frozen-copy manifest lists each path, source tag and SHA-256. Prose lint and
+   whitespace checks skip exactly those listed files; a check fails if a listed file's bytes differ
+   from its recorded SHA-256. No other file is exempted.
+
+   During the BreenGL rebuild the full CPU reference moves without change. The move is checked as a pure
+   rename (no content change in the diff), so the evidence of 393/393 on ARM64 QEMU, Parallels and VMware at #1655's merge (`4e855bb6`) applies to exactly this code. It
    also gains host tests against the contract's literal tables (§5's lines and circles, §8.3's square). Its
    consumers are `tools/gfx-refgen` (authoring references on the host, which plan §2.3 allows), host tests,
    and the suites' expectation code (`coverage-spans-winding`, `coverage-spans-corpus`). The reviewed text
@@ -1029,17 +1521,17 @@ driver runs, and nowhere else (ruling R7); after the driver starts, the console 
 | `libimg` (inflate, deflate, CRC-32, Adler-32, PNG decode and encode, BMP) and its fixtures | `libfont` (parsing, hardening, flattening and crossings kept; span accumulation to the GPU) | the software compositor in `kernel/src/graphics/display.rs` and its backends |
 | `libfont` parsing, the 64-file corpus, work and allocation bounds | `libgfx` drawing → BGL pipelines; its CPU code → `libs/libgfx-ref` | `libgfx::diagnostics` (R3) |
 | `libs/breengel-abi`, `kernel/src/window/` registry, commit protocol, damage log, events, authority, claims, remnants | `kernel/src/window/mem.rs` buffer storage → GPU targets; `present.rs` → GPU composition | `fb_info`, `fb_mmap`, `fb_draw` and the version 1 window ops |
-| syscall 415 test controls, the PID-1 latch, kernel output accounting | `svga3.rs` and `gpu_pci.rs`/`virgl.rs`: their transport, fencing and readback code becomes the backends' base, after the audit | the DISPI 1280×800 mode set and GOP compositor work in #1654 |
+| syscall 415 test controls, the PID-1 latch, kernel output accounting | | the DISPI 1280×800 mode set and GOP compositor work in #1654 |
 | `libbui` widget logic, `FocusChain`, the file picker, `libicon`, the UI clock, `FontWatcher` | widget and stage drawing → BreenGL on BGL; `libgfx::font` and `bitmap_font` → `bitmap_text` | |
 | `libpixcheck`'s comparison core, `suite::spawn`, `kiosk_test`, `raw-window_test`, the suite harness and its split | `suite::judged(&FrameBuf)` → `judged_readback`; the run stage (`libgfx/stage.rs`, `suite_stage`) → BreenGL at display scale | |
 | the showcase contract (§23.2–§23.8), Vigil's showcase pacing and evidence (#1658) | | |
-| general kernel fixes found on the branch (for example `a9fd021d`, fw_cfg read serialization) | | |
+| general kernel fixes found on the branch (for example `a9fd021d`, fw_cfg read serialization) | | `svga3.rs`, `gpu_pci.rs` and `virgl.rs` as a base for the GPU backends: the gpu core is clean-room (section 1.2), and those drivers serve only the existing display path |
 
 ### 2.6 The graphical programs
 
 Fourteen installed programs use `FrameBuf`, `fb_mmap` or `libgfx` today, on main and on `breengel/suite`
 (found by search on 2026-10-16). Between `gpu`'s landing and BreenGL's they keep running on the existing
-display path, which G1 keeps working on QEMU's PCI device. In the BreenGL rebuild each is either ported to
+display path, which on ARM64 QEMU stays on the MMIO `virtio-gpu-device` until G7. In the BreenGL rebuild each is either ported to
 BreenGL on BGL, in a new `breengel/gpu-apps` lane, or retired from the tree and the image:
 
 | Program | What it is | Disposition |
@@ -1147,6 +1639,8 @@ is authored: bwm composes through BGL, and every app draws through BreenGL on th
    commands on context 0 after `START_STOP_CONTEXT`, `SET_OTABLE_BASE64`, the version 1
    `DEFINE_GB_SURFACE`, restart after `COMMAND_ERROR`) and the host-copy readback sequence.
 5. The Parallels driver's fenced `TRANSFER_FROM_HOST_3D` readback and texture-slot allocation.
+
+   Items 4 and 5 correct the existing display drivers; the gpu core does not use them (section 1.2).
 6. The display ownership stack (§18: `GIVE_DISPLAY` semantics, exact restore, the four-owner bound).
 7. General kernel fixes found on the branch that are not BreenGL-specific, `a9fd021d` first.
 

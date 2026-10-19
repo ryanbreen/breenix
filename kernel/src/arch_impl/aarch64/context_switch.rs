@@ -4155,7 +4155,7 @@ fn restore_kernel_context_inline(
     // On QEMU, kernel code runs from HHDM (>= 0xFFFF_0000_0000_0000).
     // On Parallels, the UEFI loader jumps to kernel_main at a physical
     // address and the kernel runs identity-mapped, so function pointers
-    // resolve to physical addresses in the RAM range (0x40080000+).
+    // resolve to physical addresses in the RAM range (0x40200000+).
     let resume_pc = if thread.saved_by_inline_schedule {
         // Inline save captures only x19..x30 + SP, so x30 is its sole valid
         // architectural resume point. Exception-saved contexts keep ELR_EL1.

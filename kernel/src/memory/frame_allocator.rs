@@ -1,3 +1,6 @@
+#[path = "contiguous.rs"]
+mod contiguous;
+
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
@@ -890,39 +893,26 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     }
 }
 
-/// Initialize the frame allocator for ARM64 with a simple memory range
-/// This is used during ARM64 boot where we don't have bootloader memory info.
-///
-/// # Arguments
-/// * `start` - Start address of usable memory (must be page-aligned)
-/// * `end` - End address of usable memory (exclusive)
+/// Initialize the frame allocator for ARM64 from the frame pool's ranges:
+/// page-aligned, ascending and disjoint (see `platform_config::frame_pool`).
 #[cfg(target_arch = "aarch64")]
-pub fn init_aarch64(start: u64, end: u64) {
+pub fn init_aarch64(ranges: &[arm64_boot_contract::phys_memory::PhysRange]) {
     let mut regions = [None; MAX_REGIONS];
-
-    // Page-align the start address (round up)
-    let aligned_start = (start + 0xFFF) & !0xFFF;
-    debug_assert_eq!(aligned_start % 4096, 0);
-    debug_assert_eq!(end % 4096, 0);
-
-    regions[0] = Some(UsableRegion {
-        start: aligned_start,
-        end,
-    });
-
-    let total_memory = end - aligned_start;
+    let mut region_count = 0;
+    for range in ranges.iter().take(MAX_REGIONS) {
+        debug_assert_eq!(range.start % 4096, 0);
+        debug_assert_eq!(range.end % 4096, 0);
+        regions[region_count] = Some(UsableRegion {
+            start: range.start,
+            end: range.end,
+        });
+        region_count += 1;
+    }
 
     MEMORY_INFO.call_once(|| MemoryInfo {
         regions,
-        region_count: 1,
+        region_count,
     });
-
-    log::info!(
-        "ARM64 frame allocator initialized: {:#x}..{:#x} ({} MiB)",
-        aligned_start,
-        end,
-        total_memory / (1024 * 1024)
-    );
 }
 
 /// Allocate a physical frame
@@ -1029,11 +1019,6 @@ pub fn allocate_frame() -> Option<PhysFrame> {
     allocate_claimed().map(|(frame, _)| frame)
 }
 
-/// Bounded retries for a contiguous reservation. Every retry either lost the
-/// frontier compare-exchange or stepped past a usable-region boundary, so a
-/// small cap cannot turn a satisfiable request into a spurious failure.
-const MAX_CONTIGUOUS_ATTEMPTS: usize = 16;
-
 /// Reserve `count` physically contiguous frames, writing them in ascending
 /// address order into `out[..count]`, and return the base frame.
 ///
@@ -1064,72 +1049,16 @@ pub fn allocate_contiguous_frames(
         return None;
     }
 
-    for _ in 0..MAX_CONTIGUOUS_ATTEMPTS {
-        let base = NEXT_FREE_FRAME.load(Ordering::SeqCst);
-
-        // Measure how many frames at the frontier are physically adjacent.
-        let first = BootInfoFrameAllocator::get_usable_frame(base)?;
-        let mut run = 1usize;
-        let mut prev = first.start_address().as_u64();
-        while run < count {
-            let Some(frame) = BootInfoFrameAllocator::get_usable_frame(base + run) else {
-                break;
-            };
-            let address = frame.start_address().as_u64();
-            if address != prev + 4096 {
-                break;
-            }
-            prev = address;
-            run += 1;
-        }
-
-        // Ledger capacity for every ordinal must exist before the frontier moves.
-        if !prepare_contiguous_run(base, run) {
-            return None;
-        }
-
-        if NEXT_FREE_FRAME
-            .compare_exchange(base, base + run, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            // Another allocation took the frontier; re-measure and retry.
-            continue;
-        }
-
-        // The ordinals are reserved; take one ledger generation for each.
-        let mut claimed = 0usize;
-        while claimed < run {
-            let Some(frame) = BootInfoFrameAllocator::get_usable_frame(base + claimed) else {
-                break;
-            };
-            if claim_frame(frame).is_err() {
-                break;
-            }
-            out[claimed] = Some(frame);
-            claimed += 1;
-        }
-
-        if claimed == count {
-            return Some(first);
-        }
-
-        // Short run (region boundary) or a refused claim: return everything
-        // claimed here through the fail-closed path and never keep a partial,
-        // non-contiguous run.
-        for slot in out[..claimed].iter_mut() {
-            if let Some(frame) = slot.take() {
-                deallocate_frame(frame);
-            }
-        }
-
-        if claimed != run {
-            // A refusal means the ledger disagrees about ownership of a frontier
-            // frame. Do not spin on it - fail the caller instead.
-            return None;
-        }
-    }
-
-    None
+    contiguous::allocate(
+        count,
+        out,
+        &NEXT_FREE_FRAME,
+        BootInfoFrameAllocator::get_usable_frame,
+        |frame| frame.start_address().as_u64(),
+        prepare_contiguous_run,
+        |frame| claim_frame(frame).is_ok(),
+        deallocate_frame,
+    )
 }
 
 /// Prepare ledger and free-list capacity for every ordinal in a contiguous run.
