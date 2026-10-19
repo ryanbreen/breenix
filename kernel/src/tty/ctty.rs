@@ -8,15 +8,22 @@ use crate::process::{Process, ProcessId, ProcessManager};
 use crate::syscall::errno::{EFAULT, EIO, ENOTTY, EPERM, ESRCH};
 use alloc::sync::Arc;
 
+/// A terminal a session can control: a virtual terminal (1-based; tty1 is
+/// the console) or a pseudo-terminal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TtyId {
-    Console,
+    Vt(u8),
     Pty(u32),
+}
+
+impl TtyId {
+    /// The console, tty1.
+    pub const CONSOLE: TtyId = TtyId::Vt(1);
 }
 
 #[derive(Clone)]
 pub enum TtyRef {
-    Console(Arc<TtyDevice>),
+    Vt(Arc<TtyDevice>),
     Pty(Arc<PtyPair>),
 }
 
@@ -50,37 +57,37 @@ impl TermCtl {
 impl TtyRef {
     pub fn id(&self) -> TtyId {
         match self {
-            Self::Console(_) => TtyId::Console,
+            Self::Vt(t) => TtyId::Vt(t.vt() as u8),
             Self::Pty(p) => TtyId::Pty(p.pty_num),
         }
     }
     pub fn resolve(id: TtyId) -> Option<TtyRef> {
         match id {
-            TtyId::Console => super::driver::console().map(Self::Console),
+            TtyId::Vt(n) => super::driver::vt(usize::from(n)).map(Self::Vt),
             TtyId::Pty(n) => super::pty::get(n).map(Self::Pty),
         }
     }
     pub fn session(&self) -> Option<ProcessId> {
         match self {
-            Self::Console(t) => t.get_session(),
+            Self::Vt(t) => t.get_session(),
             Self::Pty(p) => p.ctl.lock().session,
         }
     }
     pub fn fg_pgrp(&self) -> Option<ProcessId> {
         match self {
-            Self::Console(t) => t.get_foreground_pgrp().map(ProcessId::new),
+            Self::Vt(t) => t.get_foreground_pgrp().map(ProcessId::new),
             Self::Pty(p) => p.ctl.lock().fg_pgrp,
         }
     }
     pub fn termios(&self) -> super::termios::Termios {
         match self {
-            Self::Console(t) => t.get_termios(),
+            Self::Vt(t) => t.get_termios(),
             Self::Pty(p) => p.termios_snapshot(),
         }
     }
     fn attach(&self, sid: ProcessId, pgid: ProcessId) {
         match self {
-            Self::Console(t) => {
+            Self::Vt(t) => {
                 t.set_session(Some(sid));
                 t.set_foreground_pgrp(pgid.as_u64());
             }
@@ -89,7 +96,7 @@ impl TtyRef {
     }
     fn detach(&self) -> Option<ProcessId> {
         match self {
-            Self::Console(t) => {
+            Self::Vt(t) => {
                 t.set_session(None);
                 t.clear_foreground_pgrp()
             }
@@ -250,7 +257,15 @@ pub fn ioctl_with_access(t: &TtyRef, side: Side, request: u64, arg: u64, readabl
     }
 }
 
+/// What an exit leaves for after descriptor retirement: the session it
+/// controlled, and, when the process's last row exits, its group, whose
+/// virtual-terminal modes and display the console resets.
 pub struct LeaderExit {
+    session: Option<SessionExit>,
+    group: Option<u64>,
+}
+
+struct SessionExit {
     tty: TtyRef,
     sid: ProcessId,
     fg: Option<ProcessId>,
@@ -260,13 +275,19 @@ pub struct LeaderExit {
 /// Snapshot only: descriptors must close before terminal disassociation.
 pub fn on_exit_locked(pm: &mut ProcessManager, pid: ProcessId) -> Option<LeaderExit> {
     let group = pm.thread_group_of(pid)?;
-    let leader = pm.get_process(ProcessId::new(group))?;
-    if leader.sid.as_u64() != group {
+    // A leader's row can exit while its other threads still run. The process
+    // exits only with its last live row.
+    if pm.group_rows(group).any(|row| row.id != pid) {
         return None;
     }
-    // A leader's row can exit while its other threads still run. The
-    // controlling process exits only with its last live row.
-    if pm.group_rows(group).any(|row| row.id != pid) {
+    let session = leader_exit_locked(pm, group);
+    Some(LeaderExit { session, group: Some(group) })
+}
+
+/// The controlling process's exit: the session it leads and its terminal.
+fn leader_exit_locked(pm: &mut ProcessManager, group: u64) -> Option<SessionExit> {
+    let leader = pm.get_process(ProcessId::new(group))?;
+    if leader.sid.as_u64() != group {
         return None;
     }
     let sid = leader.sid;
@@ -279,10 +300,19 @@ pub fn on_exit_locked(pm: &mut ProcessManager, pid: ProcessId) -> Option<LeaderE
     // Claim the exiting process once without detaching the terminal before
     // fd close. Retain the object so numeric PTY reuse cannot change it.
     set_group_ctty(pm, group, None);
-    Some(LeaderExit { tty, sid, fg })
+    Some(SessionExit { tty, sid, fg })
 }
 
 pub fn finish_exit(exit: LeaderExit) {
+    if let Some(session) = exit.session {
+        finish_session_exit(session);
+    }
+    if let Some(group) = exit.group {
+        crate::syscall::handlers::console_owner_exited(group);
+    }
+}
+
+fn finish_session_exit(exit: SessionExit) {
     // Descriptor retirement may have hung up the master. Complete a deferred
     // hangup too, before deciding whether Linux's saved-pgrp path applies.
     if matches!(&exit.tty, TtyRef::Pty(pair) if pair.master_closed()) {
@@ -298,7 +328,7 @@ pub fn finish_exit(exit: LeaderExit) {
             } else {
                 let saved = match &exit.tty {
                     TtyRef::Pty(pair) => pair.ctl.lock().last_hangup_fg,
-                    TtyRef::Console(_) => exit.fg,
+                    TtyRef::Vt(_) => exit.fg,
                 };
                 (false, saved)
             }
@@ -306,7 +336,7 @@ pub fn finish_exit(exit: LeaderExit) {
             (false, exit.fg)
         }
     };
-    if detached && exit.tty.id() == TtyId::Console {
+    if detached && matches!(exit.tty.id(), TtyId::Vt(_)) {
         // Linux's non-PTY exit hangs up the session: clear every association,
         // signal the session leader, then SIGHUP the foreground group.
         crate::syscall::signal::signal_process_from_kernel(exit.sid, crate::signal::constants::SIGHUP);
@@ -345,7 +375,7 @@ fn hangup_ref(tty: &TtyRef) {
             let fg = ctl.detach();
             ctl.last_hangup_fg = fg;
         }
-        TtyRef::Console(_) => { tty.detach(); }
+        TtyRef::Vt(_) => { tty.detach(); }
     }
     clear_session(pm, sid, tty.id());
     drop(guard);

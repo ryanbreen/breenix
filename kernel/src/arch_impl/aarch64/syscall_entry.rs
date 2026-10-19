@@ -62,6 +62,27 @@ fn emit_el0_syscall_marker() {
     }
 }
 
+/// Tracks this thread across blocking syscalls without depending on CPU residency.
+struct SyscallScope(Option<&'static AtomicBool>);
+
+impl SyscallScope {
+    fn enter() -> Self {
+        let flag = crate::task::thread::current_thread_signals().map(|signals| &signals.in_syscall);
+        if let Some(flag) = flag {
+            flag.store(true, Ordering::Release);
+        }
+        Self(flag)
+    }
+}
+
+impl Drop for SyscallScope {
+    fn drop(&mut self) {
+        if let Some(flag) = self.0 {
+            flag.store(false, Ordering::Release);
+        }
+    }
+}
+
 /// Main syscall handler called from assembly.
 ///
 /// This is the ARM64 equivalent of `rust_syscall_handler` for x86_64.
@@ -87,6 +108,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         Aarch64PerCpu::preempt_enable();
         return;
     }
+
+    let _syscall_scope = SyscallScope::enter();
 
     // One-time marker for first syscall from EL0 (userspace confirmed)
     // This is the ARM64 equivalent of x86_64's RING3_CONFIRMED marker
@@ -690,12 +713,7 @@ fn dispatch_syscall_enum(
             arg3,
             arg4 as u32,
         )),
-        SyscallNumber::Yield => {
-            // Behind the other threads of its priority, then to the scheduler.
-            crate::task::scheduler::note_sched_yield();
-            crate::task::scheduler::yield_current();
-            0
-        }
+        SyscallNumber::Yield => result_to_u64(crate::syscall::handlers::sys_yield()),
         SyscallNumber::GetTime => sys_get_time(),
         SyscallNumber::ClockGetTime => sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec),
         SyscallNumber::ClockGetRes => result_to_u64(crate::syscall::clocks::sys_clock_getres(arg1 as u32, arg2)),
@@ -1412,7 +1430,7 @@ fn sys_exec_aarch64(
         }
     };
 
-    log::info!(
+    log::debug!(
         "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
         current_pid.as_u64(),
         current_thread_id
@@ -1465,7 +1483,7 @@ fn sys_exec_aarch64(
             manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes)
         };
 
-        let (new_entry_point, new_rsp, commit) = match exec_result {
+        let (new_entry_point, new_rsp, commit, superseded) = match exec_result {
             Ok(value) => {
                 // Trace: exec_process_with_argv succeeded
                 super::trace::trace_exec(b'S');
@@ -1483,7 +1501,7 @@ fn sys_exec_aarch64(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
             new_entry_point
         );
@@ -1498,7 +1516,7 @@ fn sys_exec_aarch64(
 
         commit.apply();
 
-        log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
+        log::debug!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
         // Installing through the shared discipline publishes `saved_process_cr3`,
         // which the `.Lrestore_saved_ttbr` arm of `syscall_entry.S` would
         // otherwise use to switch TTBR0 back to the pre-exec page table that
@@ -1509,6 +1527,10 @@ fn sys_exec_aarch64(
         crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(new_ttbr0);
         // Trace: TTBR0 page table switched
         super::trace::trace_exec(b'P');
+        // The roots exec superseded retire once no CPU can still walk them.
+        if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
+        }
 
         frame.elr = new_entry_point;
 
@@ -1560,7 +1582,7 @@ fn sys_exec_aarch64(
         // Trace: frame registers zeroed, SPSR set
         super::trace::trace_exec(b'F');
 
-        log::info!(
+        log::debug!(
             "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
             frame.elr,
             new_rsp

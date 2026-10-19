@@ -93,6 +93,8 @@ pub enum ProcEntryType {
     BreenixTesting,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
+    /// /proc/breenix/frames - allocated physical frames by allocation site
+    Frames,
     /// /proc/pids - list of all process IDs
     Pids,
     /// /proc/kmsg - kernel log messages
@@ -103,18 +105,26 @@ pub enum ProcEntryType {
     XhciTrace,
     /// /proc/xhci/counters - xHCI trace counters
     XhciCounters,
+    /// /proc/xhci/pointers - attached USB HID pointer interfaces
+    XhciPointers,
     /// /proc/net - network directory
     NetDir,
     /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
     NetPnp,
     /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
     NetTcp,
-    /// /proc/fbcon - screen console directory
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    /// /proc/console - screen console directory
+    ConsoleDir,
+    /// /proc/console/check - the screen read back against the console's shadow
+    /// and font, where it was read, and the text rows it shows
+    ConsoleCheck,
+    /// /proc/fbcon - the x86-64 screen console's directory under the name the
+    /// x86-metal boot path reads
+    #[cfg(target_arch = "x86_64")]
     FbconDir,
     /// /proc/fbcon/check - the screen read back against the console's shadow
     /// and font, and the text rows it shows
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    #[cfg(target_arch = "x86_64")]
     FbconCheck,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
@@ -163,17 +173,21 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "breenix",
             ProcEntryType::BreenixTesting => "testing",
             ProcEntryType::Ext2 => "ext2",
+            ProcEntryType::Frames => "frames",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
+            ProcEntryType::XhciPointers => "pointers",
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::ConsoleDir => "console",
+            ProcEntryType::ConsoleCheck => "check",
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "fbcon",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => "check",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
@@ -212,17 +226,21 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => "/proc/breenix",
             ProcEntryType::BreenixTesting => "/proc/breenix/testing",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
+            ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
+            ProcEntryType::XhciPointers => "/proc/xhci/pointers",
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::ConsoleDir => "/proc/console",
+            ProcEntryType::ConsoleCheck => "/proc/console/check",
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "/proc/fbcon",
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => "/proc/fbcon/check",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
@@ -262,18 +280,22 @@ impl ProcEntryType {
             ProcEntryType::BreenixDir => 200,
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::Ext2 => 202,
+            ProcEntryType::Frames => 203,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
+            ProcEntryType::XhciPointers => 303,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             ProcEntryType::NetTcp => 402,
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => 500,
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => 501,
+            ProcEntryType::ConsoleDir => 502,
+            ProcEntryType::ConsoleCheck => 503,
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
             ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
             ProcEntryType::PidExe(pid) => pid_inode(*pid, 2),
@@ -293,7 +315,10 @@ impl ProcEntryType {
 
     /// Check if this is a directory
     pub fn is_directory(&self) -> bool {
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        if matches!(self, ProcEntryType::ConsoleDir) {
+            return true;
+        }
+        #[cfg(target_arch = "x86_64")]
         if matches!(self, ProcEntryType::FbconDir) {
             return true;
         }
@@ -386,6 +411,7 @@ pub fn init() {
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SelfLink));
@@ -398,14 +424,19 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::XhciCounters));
+    procfs
+        .entries
+        .push(ProcEntry::new(ProcEntryType::XhciPointers));
 
     // Register /proc/net directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
 
-    // Register /proc/fbcon directory and entries
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    // Register the screen console's directories and entries
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleCheck));
+    #[cfg(target_arch = "x86_64")]
     {
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
         procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
@@ -520,11 +551,13 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
+                    | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
+                    | ProcEntryType::XhciPointers
                     | ProcEntryType::NetPnp
                     | ProcEntryType::NetTcp
-            ) && !is_fbcon_file(&e.entry_type)
+            ) && !is_console_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
             let mut text = String::new();
@@ -641,21 +674,23 @@ pub fn list_xhci_entries() -> Vec<String> {
         .filter(|e| {
             matches!(
                 e.entry_type,
-                ProcEntryType::XhciTrace | ProcEntryType::XhciCounters
+                ProcEntryType::XhciTrace
+                    | ProcEntryType::XhciCounters
+                    | ProcEntryType::XhciPointers
             )
         })
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
 
-/// Whether `entry` lives inside /proc/fbcon rather than in /proc itself.
-fn is_fbcon_file(entry: &ProcEntryType) -> bool {
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+/// Whether `entry` lives inside a screen console directory rather than in
+/// /proc itself.
+fn is_console_file(entry: &ProcEntryType) -> bool {
+    #[cfg(target_arch = "x86_64")]
     if matches!(entry, ProcEntryType::FbconCheck) {
         return true;
     }
-    let _ = entry;
-    false
+    matches!(entry, ProcEntryType::ConsoleCheck)
 }
 
 /// List entries in the /proc/net directory
@@ -708,7 +743,21 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Stat => text(generate_stat()),
         ProcEntryType::CowInfo => text(generate_cowinfo()),
         ProcEntryType::Pids => text(generate_pids()),
-        ProcEntryType::Kmsg => text(generate_kmsg()),
+        ProcEntryType::Kmsg => {
+            // The serial ring can contain privileged TTY output. Authorize
+            // before generating the open-time snapshot, as for console/check.
+            let root = crate::task::scheduler::current_thread_id().is_some_and(|tid| {
+                let guard = crate::process::manager();
+                guard.as_ref().is_some_and(|manager| {
+                    manager.find_process_by_thread(tid)
+                        .is_some_and(|(_, process)| process.cred.euid == 0)
+                })
+            });
+            if !root {
+                return Err(-13);
+            }
+            text(generate_kmsg())
+        },
         ProcEntryType::Mounts => text(generate_mounts()),
         ProcEntryType::XhciDir => {
             let entries = list_xhci_entries();
@@ -722,7 +771,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::XhciTrace => text(String::from("")),
         #[cfg(not(target_arch = "aarch64"))]
         ProcEntryType::XhciCounters => text(String::from("")),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
+        #[cfg(not(target_arch = "aarch64"))]
+        ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
+        ProcEntryType::Frames => generate_frames().map(String::into_bytes),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
             listing.try_reserve_exact(8).map_err(|_| -12)?;
@@ -731,13 +785,15 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        ProcEntryType::ConsoleDir => text(String::from("check\n")),
+        ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
+        #[cfg(target_arch = "x86_64")]
         ProcEntryType::FbconDir => text(String::from("check\n")),
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        ProcEntryType::FbconCheck => crate::fbcon::proc_check().map(String::into_bytes),
+        #[cfg(target_arch = "x86_64")]
+        ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\n"))
+            text(String::from("testing\next2\nframes\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]
@@ -849,6 +905,34 @@ fn generate_version() -> String {
     )
 }
 
+/// Generate /proc/breenix/frames: the frame census, then what became of process
+/// page tables (`teardown` counters) and the reclaim receipts still queued.
+fn generate_frames() -> Result<String, i32> {
+    use crate::tracing::providers::teardown;
+    use core::fmt::Write;
+
+    let mut text = crate::memory::frame_allocator::frame_census()?;
+    let (pending, parked) = crate::task::process_task::reclaim_queue_lengths();
+    let _ = write!(
+        text,
+        "tables recorded={} returned={} lost={}\n\
+         roots retired={} no_proof={} no_arch={} terminated={} undecided={} mid_retire={}\n\
+         receipts pending={} parked={}\n",
+        teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
+        teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
+        teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
+        teardown::PT_ROOTS_RETIRED.aggregate(),
+        teardown::PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
+        teardown::PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
+        teardown::PT_ROOT_ABANDONED_TERMINATED.aggregate(),
+        teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
+        teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
+        pending,
+        parked
+    );
+    Ok(text)
+}
+
 /// Generate /proc/meminfo content
 fn generate_meminfo() -> String {
     use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
@@ -900,7 +984,8 @@ fn generate_meminfo() -> String {
          Committed_AS:   {:>8} kB\n\
          VmallocTotal:   {:>8} kB\n\
          VmallocUsed:    {:>8} kB\n\
-         KernelHeapFree: {:>8} kB\n",
+         KernelHeapFree: {:>8} kB\n\
+         KernelHeapPeak: {:>8} kB\n",
         total_kb,
         free_kb,
         free_kb, // Available ~= free (no page cache pressure)
@@ -919,6 +1004,7 @@ fn generate_meminfo() -> String {
         0u64,     // No vmalloc tracking
         0u64,     // No vmalloc tracking
         crate::memory::heap::free_bytes() / 1024,
+        crate::memory::heap::high_water_bytes() / 1024,
     )
 }
 
@@ -1594,7 +1680,9 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
         pgrp: process.pgid.as_u64(),
         session: sid.as_u64(),
         tty_nr: match ctty {
-            Some(crate::tty::ctty::TtyId::Console) => pid_stat::tty_nr(5, 1),
+            // tty1 is the console, which processes reach as /dev/console.
+            Some(crate::tty::ctty::TtyId::Vt(1)) => pid_stat::tty_nr(5, 1),
+            Some(crate::tty::ctty::TtyId::Vt(n)) => pid_stat::tty_nr(4, u32::from(n)),
             Some(crate::tty::ctty::TtyId::Pty(n)) => pid_stat::tty_nr(136, n),
             None => 0,
         },

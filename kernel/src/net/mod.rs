@@ -955,10 +955,10 @@ fn init_common() {
         gateway[2],
         gateway[3]
     );
-    if let Err(e) = arp::request(&gateway) {
-        net_log!("NET: Failed to send ARP request: {}", e);
+    match arp::request(&gateway) {
+        Ok(()) => net_log!("ARP request sent successfully"),
+        Err(e) => net_log!("NET: Failed to send ARP request: {}", e),
     }
-    net_log!("ARP request sent successfully");
 
     // ARP resolution completes through interrupt-driven RX after init. Do not
     // spin-poll here; that hides whether MSI-X/softirq networking works.
@@ -1309,6 +1309,7 @@ pub fn current_packet_src_mac() -> [u8; 6] {
 /// Process a received Ethernet frame
 /// Source-MAC state is also read from thread context, so its NetRx write is guarded.
 fn process_packet(data: &[u8]) {
+    crate::random::add_event(crate::random::Event::NetRx, data.len() as u64);
     if let Some(frame) = ethernet::EthernetFrame::parse(data) {
         crate::tracing::providers::net_rx::count_frame();
         // Save source MAC so TCP can use it for SYN-ACK routing

@@ -209,7 +209,8 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)` or `.defer_display()`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)` or `.defer_display()`, each category optionally followed \
+         by `.idle_before(N)`, with no attributes inside it"
     )
 }
 
@@ -260,6 +261,67 @@ fn id_and_title(args: &[&syn::Expr], name: &str, arity: usize) -> Result<Entry, 
     Ok(Entry { id: string(args[0])?, title: string(args[1])? })
 }
 
+/// Setup may prepare cases, but cannot print or bypass the suite runner.
+/// Follow local functions (including callbacks) so a helper cannot hide output
+/// or process termination. Returns and `?` in helpers return to their caller;
+/// either in main would instead bypass the runner.
+struct SetupCheck<'a> {
+    file: &'a syn::File,
+    active: HashSet<String>,
+    errors: Vec<String>,
+    in_main: bool,
+}
+impl<'ast> syn::visit::Visit<'ast> for SetupCheck<'ast> {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if self.in_main && matches!(expr, syn::Expr::Return(_) | syn::Expr::Try(_)) {
+            self.errors.push("setup can return before SUITE.run()".into());
+        }
+        if let syn::Expr::Call(call) = expr {
+            if matches!(&*call.func, syn::Expr::Path(p) if p.path.is_ident("sc"))
+                && !matches!(call.args.first(), Some(syn::Expr::Path(p)) if
+                    p.path.segments.last().is_some_and(|s| s.ident == "CLOCK_GETTIME" || s.ident == "NANOSLEEP"))
+            {
+                self.errors.push("setup syscall is not proven silent and non-exiting".into());
+            }
+        }
+        if let syn::Expr::MethodCall(call) = expr {
+            if call.method == "unwrap" || call.method == "expect" {
+                self.errors.push("setup can panic".into());
+            }
+        }
+        syn::visit::visit_expr(self, expr);
+    }
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let name = mac.path.segments.last().unwrap().ident.to_string();
+        // The networking setup reads monotonic time and sleeps through sc().
+        // Its one-instruction syscall assembly is silent and returns; calls
+        // from setup are limited below to those two non-exiting syscalls.
+        let syscall = name == "asm"
+            && mac.tokens.to_string().starts_with("\"syscall\" ,")
+            && !mac.tokens.to_string().contains("noreturn");
+        if name != "format" && !syscall {
+            self.errors.push(format!("setup macro {name} is not proven silent and non-exiting"));
+        }
+    }
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        let name = path.path.segments.last().unwrap().ident.to_string();
+        if ["exit", "abort", "_exit", "panic", "print", "println", "eprint", "eprintln"].contains(&name.as_str()) {
+            self.errors.push(format!("setup calls {name}"));
+        }
+        if self.active.insert(name.clone()) {
+            if let Some(function) = self.file.items.iter().find_map(|item| match item {
+                syn::Item::Fn(f) if f.sig.ident == name => Some(f), _ => None,
+            }) {
+                let in_main = self.in_main;
+                self.in_main = false;
+                self.visit_block(&function.block);
+                self.in_main = in_main;
+            }
+            self.active.remove(&name);
+        }
+    }
+}
+
 /// The suite id, title and categories in the table the suite's `main` runs:
 /// `main` must be `NAME.run()`, and `static NAME: Suite` is read from the parsed
 /// source, so comments, disabled code and calls outside the table play no part.
@@ -273,8 +335,8 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
             _ => None,
         })
         .ok_or_else(|| table_error("no fn main"))?;
-    let run_target = match main.block.stmts.as_slice() {
-        [syn::Stmt::Expr(syn::Expr::MethodCall(method), _)] if method.method == "run" && method.args.is_empty() => {
+    let run_target = match main.block.stmts.last() {
+        Some(syn::Stmt::Expr(syn::Expr::MethodCall(method), _)) if method.method == "run" && method.args.is_empty() => {
             match &*method.receiver {
                 syn::Expr::Path(path) if path.path.get_ident().is_some() => path.path.get_ident().cloned(),
                 _ => None,
@@ -282,6 +344,11 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
         }
         _ => None,
     };
+    let mut setup = SetupCheck { file: &file, active: HashSet::new(), errors: Vec::new(), in_main: true };
+    for stmt in main.block.stmts.iter().take(main.block.stmts.len().saturating_sub(1)) {
+        syn::visit::Visit::visit_stmt(&mut setup, stmt);
+    }
+    if !setup.errors.is_empty() { return Err(table_error(&setup.errors.join("; "))); }
     let name = run_target.ok_or_else(|| table_error("fn main is not `NAME.run()`"))?;
     if has_attributes(&main.attrs) {
         return Err(table_error("fn main has attributes"));
@@ -311,6 +378,13 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
     let suite = id_and_title(&suite_args, "suite", 3)?;
     let mut categories = Vec::new();
     for category_expr in slice(suite_args[2])? {
+        let mut category_expr = category_expr;
+        if let syn::Expr::MethodCall(method) = category_expr {
+            if method.method != "idle_before" || method.args.len() != 1 || !method.attrs.is_empty() {
+                return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
+            }
+            category_expr = &method.receiver;
+        }
         let args = call(category_expr, "category")?;
         let entry = id_and_title(&args, "category", 3)?;
         let mut cases = Vec::new();
@@ -443,12 +517,10 @@ fn suite_manifests_match_their_binaries() {
         }
     }
 
-    for entry in fs::read_dir(root.join("userspace/programs/src")).unwrap() {
-        let name = entry.unwrap().file_name().to_string_lossy().to_string();
-        if let Some(module) = name.strip_prefix("suite_").and_then(|rest| rest.strip_suffix(".rs")) {
-            let id = module.replace('_', "-");
-            if !manifest_ids.contains(&id) {
-                errors.push(format!("userspace/programs/src/{name} has no manifest docs/suites/{id}.json"));
+    for (name, _) in &bins {
+        if let Some(id) = name.strip_prefix("suite-") {
+            if !manifest_ids.contains(id) {
+                errors.push(format!("Cargo binary {name} has no manifest docs/suites/{id}.json"));
             }
         }
     }
@@ -712,6 +784,9 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     for effort in path["efforts"].as_array().into_iter().flatten() {
         let id = effort["id"].as_str().unwrap_or("?");
+        if effort.get("needsGpu").is_some_and(|value| value != &Value::Bool(true)) {
+            errors.push(format!("{id}: \"needsGpu\" must be true or omitted"));
+        }
         let note = effort.get("targetsNote");
         let Some(targets) = effort.get("targets") else {
             if note.is_some() {
@@ -768,6 +843,10 @@ fn effort_targets_are_known_and_ordered() {
 #[test]
 fn effort_target_lists_are_checked() {
     let check = |effort: Value| effort_target_errors(&serde_json::json!({ "efforts": [effort] }));
+    assert!(check(serde_json::json!({"needsGpu": true})).is_empty());
+    for value in [serde_json::json!(false), serde_json::json!("true"), Value::Null, serde_json::json!(1)] {
+        assert_eq!(check(serde_json::json!({"needsGpu": value})).len(), 1);
+    }
     let profiles = serde_json::json!([{ "id": "hw", "measure": { "profiles": "first-userspace" } }]);
     assert!(check(serde_json::json!({ "id": "a" })).is_empty());
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
@@ -1049,5 +1128,14 @@ fn metal_definition_contract_rejects_invalid_inputs() {
         let mut bad = boot.clone();
         *bad.pointer_mut(pointer).unwrap() = value;
         assert!(!metal_definition_errors(&root, &main, &metal, &bad).is_empty(), "{pointer}");
+    }
+}
+
+#[test]
+fn setup_is_silent_and_cannot_bypass_the_table() {
+    let table = r#"static S: Suite = suite("d", "D", &[]);"#;
+    assert!(source_suite(&format!("{table} fn prepare() -> Result<(), ()> {{ Ok(()) }} fn main() {{ let _ = prepare(); S.run() }}")).is_ok());
+    for setup in ["return;", r#"println!("early");"#, "std::process::exit(0);", "let _ = prepare()?;", "prepare();"] {
+        assert!(source_suite(&format!(r#"{table} fn prepare() {{ eprintln!("hidden"); }} fn main() {{ {setup} S.run() }}"#)).is_err(), "{setup}");
     }
 }

@@ -6,19 +6,16 @@
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod bcm5720;
+pub mod device_class;
 pub mod e1000;
 pub mod fw_cfg;
-#[cfg(target_arch = "x86_64")]
 pub mod hid_boot;
 #[cfg(target_arch = "x86_64")]
 pub mod nvme;
 pub mod pci;
-#[cfg(target_arch = "x86_64")]
 pub mod xhci;
 #[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
-#[cfg(target_arch = "aarch64")]
-pub mod usb;
 pub mod virtio; // Now available on both x86_64 and aarch64
 #[cfg(target_arch = "aarch64")]
 pub mod vmware;
@@ -104,6 +101,14 @@ pub fn init() -> usize {
         log::info!("BCM5720 driver attached {bcm5720_ports} port(s)");
     }
 
+    if e1000::is_initialized()
+        || bcm5720::is_initialized()
+        || virtio::net_legacy::is_initialized()
+        || rtl8139::is_initialized()
+    {
+        log::info!("[devices] network initialized: driver attached");
+    }
+
     // Initialize VirtIO sound driver
     match virtio::sound::init() {
         Ok(()) => {
@@ -179,6 +184,7 @@ pub fn run_post_init_self_tests() {
         }
     }
 
+
     if virtio::sound::is_initialized() {
         if let Err(e) = virtio::sound::test_silence() {
             log::warn!("VirtIO sound test failed: {}", e);
@@ -245,7 +251,10 @@ pub fn init() -> usize {
         }
 
         // The GPU core's device: QEMU's virtio-gpu-gl-pci, when the boot attaches one.
-        crate::gpu::init_qemu();
+        crate::gpu::init();
+
+        // An entropy device on PCI, when the boot attaches virtio-rng-pci rather than the MMIO one.
+        init_entropy_pci();
 
         // Initialize AHCI from PCI
         match ahci::init() {
@@ -298,26 +307,12 @@ pub fn init() -> usize {
             virtio_devices.len()
         );
 
-        match virtio::gpu_pci::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
-                // Attempt to initialize VirGL 3D acceleration if the device supports it
-                match virtio::gpu_pci::virgl_init() {
-                    Ok(()) => {
-                        serial_println!("[drivers] VirGL 3D acceleration active");
-                        crate::graphics::set_compositor_backend(
-                            crate::graphics::CompositorBackend::VirGL,
-                        );
-                        serial_println!("[drivers] Compositor backend: VirGL");
-                        // Enable yielding during GPU command waits now that init is complete.
-                        // During runtime, GPU poll loops yield to the scheduler instead of
-                        // spinning, letting other tasks run during ~3.4ms GPU processing.
-                        virtio::gpu_pci::enable_gpu_yield();
-                    }
-                    Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
-                }
-            }
-            Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
+        // The launcher's GPUCORE marker gives the virtio-gpu device to the GPU core
+        // (`kernel/src/gpu/`); otherwise the legacy display driver keeps it.
+        if crate::platform_config::gpu_core_requested() {
+            crate::gpu::init();
+        } else {
+            init_legacy_gpu_pci();
         }
 
         // Initialize VirtIO network driver (PCI transport) — Parallels
@@ -332,6 +327,8 @@ pub fn init() -> usize {
                 }
             }
         }
+
+        init_entropy_pci();
 
         // Device-layer experiments must not displace the working desktop by default.
         if crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
@@ -350,42 +347,6 @@ pub fn init() -> usize {
                 }
                 Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
             }
-        }
-
-        // EHCI USB 2.0 controller — initialization is handled inside xhci::init()
-        // as a prerequisite for Parallels USB device routing (companion controller model).
-        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c at PCI 00:02.0
-
-        // Initialize XHCI USB host controller (keyboard + mouse)
-        // Find by class code (0x0C/0x03/0x30 = USB XHCI), then fall back to known device IDs.
-        // Parallels NEC uPD720200: 0x1033:0x0194, VMware: 0x15ad:0x077a
-        if let Some(xhci_dev) = pci::find_by_class(pci::DeviceClass::SerialBus, 0x03, 0x30)
-            .or_else(|| pci::find_device(0x1033, 0x0194))
-            .or_else(|| pci::find_device(0x15ad, 0x077a))
-        {
-            serial_println!(
-                "[drivers] Found XHCI at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
-                xhci_dev.bus,
-                xhci_dev.device,
-                xhci_dev.function,
-                xhci_dev.vendor_id,
-                xhci_dev.device_id
-            );
-            #[cfg(feature = "xhci_linux_harness")]
-            let xhci_result = usb::xhci_linux::init(&xhci_dev);
-            #[cfg(not(feature = "xhci_linux_harness"))]
-            let xhci_result = usb::xhci::init(&xhci_dev);
-
-            match xhci_result {
-                Ok(()) => {
-                    serial_println!("[drivers] XHCI USB controller initialized");
-                }
-                Err(e) => {
-                    serial_println!("[drivers] XHCI USB init failed: {}", e);
-                }
-            }
-        } else {
-            serial_println!("[drivers] No XHCI USB controller found");
         }
 
         // Initialize AHCI storage driver.
@@ -420,6 +381,42 @@ pub fn init() -> usize {
     }
 }
 
+/// The legacy virtio-gpu PCI display driver (Parallels without the GPUCORE marker).
+#[cfg(target_arch = "aarch64")]
+fn init_legacy_gpu_pci() {
+    use crate::serial_println;
+
+    match virtio::gpu_pci::init() {
+        Ok(()) => {
+            serial_println!("[drivers] VirtIO GPU (PCI) initialized");
+            // Attempt to initialize VirGL 3D acceleration if the device supports it
+            match virtio::gpu_pci::virgl_init() {
+                Ok(()) => {
+                    serial_println!("[drivers] VirGL 3D acceleration active");
+                    crate::graphics::set_compositor_backend(
+                        crate::graphics::CompositorBackend::VirGL,
+                    );
+                    serial_println!("[drivers] Compositor backend: VirGL");
+                    // Enable yielding during GPU command waits now that init is complete.
+                    // During runtime, GPU poll loops yield to the scheduler instead of
+                    // spinning, letting other tasks run during ~3.4ms GPU processing.
+                    virtio::gpu_pci::enable_gpu_yield();
+                }
+                Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
+            }
+        }
+        Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
+    }
+}
+
+/// The virtio-pci entropy device, unless an MMIO one is already set up.
+#[cfg(target_arch = "aarch64")]
+fn init_entropy_pci() {
+    if let Err(e) = virtio::rng::init_pci() {
+        crate::serial_println!("[drivers] VirtIO entropy (PCI): {}", e);
+    }
+}
+
 /// Initialize VirtIO MMIO devices (QEMU virt platform).
 #[cfg(target_arch = "aarch64")]
 fn init_virtio_mmio() -> usize {
@@ -435,6 +432,17 @@ fn init_virtio_mmio() -> usize {
             device.device_id(),
             device.version()
         );
+        let class = match device.device_id() {
+            virtio::mmio::device_id::BLOCK => Some(device_class::Class::Storage),
+            virtio::mmio::device_id::NETWORK => Some(device_class::Class::Network),
+            _ => None,
+        };
+        if let Some(class) = class {
+            device_class::found(
+                class,
+                format_args!("virtio-mmio {} (version {})", type_name, device.version()),
+            );
+        }
         device_count += 1;
     }
 
@@ -475,6 +483,11 @@ fn init_virtio_mmio() -> usize {
         Err(e) => {
             serial_println!("[drivers] VirtIO GPU driver init failed: {}", e);
         }
+    }
+
+    // The entropy device seeds the kernel's random pool (crate::random).
+    if let Err(e) = virtio::rng::init_mmio() {
+        serial_println!("[drivers] VirtIO entropy (MMIO): {}", e);
     }
 
     // Initialize VirtIO sound driver

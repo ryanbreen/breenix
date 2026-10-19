@@ -258,16 +258,6 @@ pub(crate) fn report_userspace_completion() {
         // No more userspace threads remaining
         report_line!(info, "No more userspace threads remaining");
 
-        // Wake the keyboard task to ensure it can process any pending input
-        #[cfg(target_arch = "x86_64")]
-        {
-            crate::keyboard::stream::wake_keyboard_task();
-            report_line!(
-                info,
-                "Woke keyboard task to ensure input processing continues"
-            );
-        }
-
         // Signal that userspace testing is complete with clear markers
         report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
         let (exited, nonzero) = crate::task::exit_tally::totals();
@@ -658,6 +648,19 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     // Write to console/tty
                     write_to_stdio(fd, &buffer)
                 }
+                // A virtual terminal: tty1 has serial and the screen, the
+                // others the screen. /dev/tty0 is the foreground one now.
+                DeviceType::Tty0 | DeviceType::Vt(_) => {
+                    match device_type.terminal().and_then(crate::tty::driver::vt) {
+                        Some(tty) => {
+                            tty.write_bytes(&buffer);
+                            SyscallResult::Ok(buffer.len() as u64)
+                        }
+                        None => SyscallResult::Err(6), // ENXIO
+                    }
+                }
+                // The screens are read-only.
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) => SyscallResult::Err(22),
             }
         }
         WriteOperation::RegularFile {
@@ -1580,6 +1583,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
                 }
+                // A virtual terminal reads its own input queue; /dev/tty0 the
+                // foreground terminal's at the time of the read.
+                crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_) => {
+                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking).map_err(|e| -e)
+                }
                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
             };
             match result {
@@ -1677,18 +1685,21 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
-    // x86_64: with another CPU online and no thread queued on any CPU there
-    // is nothing to yield to, and the scheduling pass would pick this thread
-    // again (#1172). That pass runs under PROCESS_MANAGER and the scheduler
-    // lock, which every CPU's timer expiry and dispatch need: a process
-    // polling with sched_yield kept them held much of the time, and a timed
-    // wake waited out any stall of the polling CPU there (#1401). With one
+    // With another CPU online and no thread queued on any CPU, there is no
+    // thread to yield to, and the scheduling pass would pick this thread
+    // again (#1172). That pass runs under the scheduler lock (x86_64: and
+    // PROCESS_MANAGER), which timer expiry and dispatch on each CPU need: a
+    // process polling with sched_yield kept it held much of the time, and a
+    // timed wake waited out any stall of the polling CPU there (#1401). On
+    // aarch64 the suite runner's wait for each case yields this way, and its
+    // passes were most of the scheduler lock's hold time (#2038). With one
     // CPU online the pass is kept: it switches this thread to idle, the only
     // place idle's housekeeping runs there.
     #[cfg(target_arch = "x86_64")]
-    if crate::arch_impl::x86_64::smp::cpus_online() > 1
-        && !crate::task::scheduler::thread_queued_anywhere()
-    {
+    let other_cpu_online = crate::arch_impl::x86_64::smp::cpus_online() > 1;
+    #[cfg(target_arch = "aarch64")]
+    let other_cpu_online = crate::arch_impl::aarch64::smp::cpus_online() > 1;
+    if other_cpu_online && !crate::task::scheduler::thread_queued_anywhere() {
         return SyscallResult::Ok(0);
     }
 
@@ -2157,7 +2168,7 @@ pub fn sys_execv_with_frame(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_execv: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
             current_thread_id
@@ -2197,7 +2208,7 @@ pub fn sys_execv_with_frame(
                 return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) =
+            let (new_entry_point, new_rsp, commit, superseded) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
                     Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
@@ -2217,7 +2228,7 @@ pub fn sys_execv_with_frame(
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
-            log::info!(
+            log::debug!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
                 new_entry_point,
                 new_rsp
@@ -2258,6 +2269,10 @@ pub fn sys_execv_with_frame(
 
             // The new image starts from the initial x87/SSE state, not the old one's.
             crate::arch_impl::x86_64::fpu::reset_current();
+            // The roots exec superseded retire once no CPU can still walk them.
+            if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+                crate::task::process_task::enqueue_process_reclaim(reclaim);
+            }
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
@@ -2300,16 +2315,9 @@ pub fn sys_execv_with_frame(
 
         // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
         // before exec runs, mirroring sys_spawn's identical ordering (#713 precheck C8).
-        // This mirrors, but does not fix, two separately-filed pools exec_process_with_argv
-        // touches on every call: it allocates a fresh GuardedStack for its manually-mapped
-        // user stack (manager.rs, "Create a dummy stack object since we manually mapped the
-        // stack") from #720's never-reclaiming NEXT_USER_STACK_ADDR bump allocator, and the
-        // previous GuardedStack it replaces is dropped into #583's no-op Drop (the frames
-        // are never returned). reclaim_deferred_process_resources()/reclaim_terminated_threads()
-        // reclaim kernel stacks and dead-process resources — neither touches either pool.
-        // Before this PR, production x86 exec consumed nothing (ENOSYS); it is now a new
-        // per-call consumer of #720's finite VA budget and #583's frame leak. The PM lock is
-        // not held across either reclaim call.
+        // exec maps its user stack as pages the new page table owns (#583), so it takes no
+        // stack address range and leaves no stack frames behind. The PM lock is not held
+        // across either reclaim call.
         crate::task::process_task::reclaim_deferred_process_resources();
         crate::task::scheduler::reclaim_terminated_threads();
 
@@ -2337,7 +2345,7 @@ pub fn sys_execv_with_frame(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_execv: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
             current_thread_id
@@ -2376,7 +2384,7 @@ pub fn sys_execv_with_frame(
                 return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) =
+            let (new_entry_point, new_rsp, commit, superseded) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
                     Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
@@ -2398,7 +2406,7 @@ pub fn sys_execv_with_frame(
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
-            log::info!(
+            log::debug!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
                 new_entry_point,
                 new_rsp
@@ -2440,6 +2448,10 @@ pub fn sys_execv_with_frame(
 
             // The new image starts from the initial x87/SSE state, not the old one's.
             crate::arch_impl::x86_64::fpu::reset_current();
+            // The roots exec superseded retire once no CPU can still walk them.
+            if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+                crate::task::process_task::enqueue_process_reclaim(reclaim);
+            }
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
@@ -3510,6 +3522,37 @@ pub struct CowStatsResult {
 pub fn sys_take_over_display() -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() { return crate::gpu::take_display(); }
+    // The display goes with the caller's terminal, its controlling terminal
+    // when that is a virtual terminal, else tty1; EBUSY while that terminal
+    // is not in the foreground (`docs/console/contract.md` section 4.2).
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    let owner = {
+        let guard = crate::process::manager();
+        guard.as_ref().and_then(|manager| {
+            let (pid, row) = manager.find_process_by_thread(tid)?;
+            let group = manager.thread_group_of(pid).unwrap_or(pid.as_u64());
+            let vt = match row.ctty {
+                Some(crate::tty::ctty::TtyId::Vt(n)) => usize::from(n),
+                _ => 1,
+            };
+            Some((group, vt))
+        })
+    };
+    let Some((group, vt)) = owner else {
+        return SyscallResult::Err(3);
+    };
+    if let Err(errno) = crate::console::vt::take_display(group, vt) {
+        return SyscallResult::Err(errno as u64);
+    }
+    // Quiesce the console before publishing authority to the new owner's
+    // other threads, which can issue framebuffer syscalls concurrently.
+    crate::console::take_display();
+    // Quiesce the boot screen before publishing authority to either the
+    // owner's other threads or the cursor presenter.
+    #[cfg(target_arch = "aarch64")]
+    let _ = crate::graphics::boot_screen::stop_drawing();
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3528,19 +3571,6 @@ pub fn sys_take_over_display() -> SyscallResult {
             }
         }
 
-        // The kernel stops drawing its boot screen but leaves it up until the new
-        // owner draws, so an owner that fails first does not blank the screen.
-        #[cfg(target_arch = "aarch64")]
-        let _ = crate::graphics::boot_screen::stop_drawing();
-
-        // Tell the render thread to stop flushing the framebuffer.
-        // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-        crate::graphics::render_task::set_display_taken();
-
-        // The x86_64 screen console stops drawing.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::take_display();
     }
     SyscallResult::Ok(0)
 }
@@ -3550,7 +3580,32 @@ pub fn sys_take_over_display() -> SyscallResult {
 pub fn sys_give_back_display() -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() { return crate::gpu::give_display(); }
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    {
+        let mut guard = crate::process::manager();
+        let Some((pid, process)) = guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(tid)) else {
+            return SyscallResult::Err(3);
+        };
+        let owner = &crate::syscall::graphics::DISPLAY_OWNER_PID;
+        if owner.load(core::sync::atomic::Ordering::Acquire) != pid.as_u64() && process.cred.euid != 0 {
+            return SyscallResult::Err(1);
+        }
+        process.has_display_ownership = false;
+        owner.store(u64::MAX, core::sync::atomic::Ordering::Release);
+    }
+    crate::console::give_back_display();
     SyscallResult::Ok(0)
+}
+
+/// Process group `group`'s last row exited: its virtual terminals return to
+/// `VT_AUTO` and `KD_TEXT`, and a display it held is given back.
+pub(crate) fn console_owner_exited(group: u64) {
+    if crate::console::vt::process_exited(group) {
+        crate::syscall::graphics::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
+        crate::console::give_back_display();
+    }
 }
 
 /// sys_cow_stats - Get Copy-on-Write statistics (for testing)

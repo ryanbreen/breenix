@@ -34,8 +34,12 @@ class VmSuiteDiskTest(unittest.TestCase):
                                 'diskChecks': [{'path': '/written', 'byte': 65, 'length': 64}]}
                     (root / 'docs/suites/disk.json').write_text(json.dumps(manifest))
                     serial = root / 'serial'
-                    serial.write_text('SUITE disk START cases=1\nSUITE disk CASE writes/sync PASS ms=1\n'
-                                      'SUITE disk DONE passed=1 failed=0 skipped=0 total=1\n')
+                    owners = 'user_stacks=17 user_pages=300 page_tables=13 page_cache=0 kernel_stacks=40 buffers=8 other=2 receipts=0 settle_ms=100'
+                    serial.write_text(f'SUITE disk START cases=1\nSUITE disk MEMORY before free=1000 heap_free_kb=500 {owners}\n'
+                                      'SUITE disk CASE writes/sync PASS ms=1\n'
+                                      'SUITE disk DONE passed=1 failed=0 skipped=0 total=1\n'
+                                      f'SUITE disk MEMORY after free=990 heap_free_kb=496 {owners}\n'
+                                      'SUITE disk MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n')
                     files = root / 'files'
                     files.mkdir()
                     (files / 'written').write_bytes((b'B' if outcome == 'wrong-bytes' else b'A') * 64)

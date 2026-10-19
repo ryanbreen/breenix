@@ -262,6 +262,7 @@ if [ "$ARCH" = "aarch64" ]; then
         -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$OUTPUT_DIR/ext2-writable.img" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &

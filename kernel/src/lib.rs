@@ -11,6 +11,8 @@ extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
 pub mod serial;
+#[cfg(target_arch = "x86_64")]
+mod serial_tx_queue;
 #[cfg(target_arch = "aarch64")]
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
@@ -54,6 +56,8 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
+// Kernel random-number pool behind getrandom
+pub mod random;
 // Kernel output accounting per thread (docs/gui/breengel.md section 22)
 pub mod output_accounting;
 // Socket module - enabled for both architectures
@@ -72,16 +76,16 @@ pub mod time;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-pub mod fbcon;
+pub mod console;
+pub mod input;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]
 pub mod platform_config;
-// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+// Graphics module: the ARM64 framebuffer, boot screen and display owners' drawing
+#[cfg(target_arch = "aarch64")]
 pub mod graphics;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
@@ -95,6 +99,8 @@ pub mod capture;
 // of it: that directory forbids `panic!` and this module's job is to raise one.
 #[cfg(feature = "capture_panic_oracle")]
 pub mod capture_oracle;
+#[cfg(all(target_arch = "aarch64", feature = "gpu_fault_acceptance"))]
+pub mod gpu_fault_acceptance;
 // The BXCAP `edge=LOCKUP` oracle. AArch64 only: the soft-lockup detector it
 // drives, and the CPU-pinned spawn it needs, exist on that arch alone.
 #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
@@ -196,10 +202,6 @@ pub mod macros;
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub mod clock_gettime_test;
-
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-#[allow(dead_code)]
-pub mod terminal_emulator;
 
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 #[allow(dead_code)]

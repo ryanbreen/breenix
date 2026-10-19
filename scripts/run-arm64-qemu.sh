@@ -129,6 +129,7 @@ python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -m 512M \
     $DISPLAY_OPTS \
     $VIRTIO_DISPLAY_OPTS \
+    -device virtio-rng-device \
     -kernel "$KERNEL" \
     $DISK_OPTS \
     $NET_OPTS \

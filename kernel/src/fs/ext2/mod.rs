@@ -2812,6 +2812,8 @@ pub fn init_root_fs() -> Result<(), &'static str> {
         })
         .ok_or("No mountable 512-byte-sector ext2 block device")?;
 
+    crate::drivers::device_class::storage_read();
+
     // Read packed struct fields safely before logging
     let blocks_count =
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count)) };
@@ -2996,6 +2998,7 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// Initialize the home ext2 filesystem
 ///
 /// Mounts a second ext2 disk as the /home filesystem.
+/// Noninteractive testing kernels use an embedded fixture when no disk is attached.
 /// Device layout:
 ///   - x86_64: Device 3 (boot=0, test=1, root=2, home=3)
 ///   - ARM64: Device 1 (root=0, home=1)
@@ -3003,20 +3006,32 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// This is non-fatal — if no home disk is attached, /home falls through
 /// to the root ext2 filesystem (backward compatible).
 pub fn init_home_fs() -> Result<(), &'static str> {
+    // Prefer the attached home device so VM acceptance boots exercise the
+    // transport's read-only feature. Physical disks remain protected by the
+    // hardware write-refusal policy rather than selected by index here.
     #[cfg(target_arch = "x86_64")]
-    let device: alloc::boxed::Box<dyn BlockDevice> = crate::block::disk(3)
-        .or_else(|| crate::block::disk(1))
-        .ok_or("No home block device available (expected at disk index 3 or 1)")?;
-
-    // Try device index 3, then the ARM64 layout's device index 1.
-    #[cfg(target_arch = "aarch64")]
-    let device: alloc::boxed::Box<dyn BlockDevice> = {
-        use crate::block::virtio::VirtioBlockWrapper;
-        let dev = VirtioBlockWrapper::new(3)
-            .or_else(|| VirtioBlockWrapper::new(1))
-            .ok_or("No home block device available (expected at device index 3 or 1)")?;
-        alloc::boxed::Box::new(dev)
+    let device = if crate::block::hardware_read_only() {
+        None
+    } else {
+        crate::block::disk(3).or_else(|| crate::block::disk(1))
     };
+
+    #[cfg(target_arch = "aarch64")]
+    let device = {
+        use crate::block::virtio::VirtioBlockWrapper;
+        VirtioBlockWrapper::new(3)
+            .or_else(|| VirtioBlockWrapper::new(1))
+            .map(|dev| alloc::boxed::Box::new(dev) as alloc::boxed::Box<dyn BlockDevice>)
+    };
+
+    // Interactive includes testing, but must retain its writable home disk.
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    let device = device.or_else(|| {
+        log::info!("ext2: using embedded read-only home fixture");
+        Some(alloc::boxed::Box::new(crate::block::testing_fixture::ReadOnlyFixture)
+            as alloc::boxed::Box<dyn BlockDevice>)
+    });
+    let device = device.ok_or("No home block device available")?;
 
     // Register with VFS mount system
     let mount_id = crate::fs::vfs::mount("/home", "ext2");

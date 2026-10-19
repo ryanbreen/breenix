@@ -21,6 +21,9 @@ static DRAWN: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: AtomicU64 = AtomicU64::new(0);
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
 static PANIC_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
+static PANIC_ATTEMPT_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
+static PANIC_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+const PANIC_MAX_ATTEMPTS: u64 = 3;
 static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
@@ -70,6 +73,7 @@ pub(super) fn describe(a: &mut abi::Modes) {
     } else {
         0
     };
+    a.firmware_writes_after_handoff = crate::graphics::firmware_writes::count();
 }
 
 /// Inspect the actual framebuffer memory while its writer lock is held.
@@ -85,8 +89,8 @@ fn quiesce() {
     if RETIRED.load(Ordering::Acquire) {
         return;
     }
+    // Stops the screen console's splash and terminals too (`console::take_display`).
     crate::graphics::boot_screen::stop_drawing();
-    crate::graphics::log_console::stop();
     // Quiesce direct canvas writers under the framebuffer lock before retiring it.
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         let _guard = fb.lock();
@@ -98,6 +102,7 @@ fn quiesce() {
 }
 
 fn handoff() {
+    crate::graphics::firmware_writes::handoff();
     HANDOFF.store(true, Ordering::Release);
     crate::graphics::log_capture::init();
 }
@@ -216,7 +221,7 @@ impl Console {
             WIDTH,
             HEIGHT,
             true,
-            counted || cfg!(feature = "capture_panic_oracle"),
+            counted || cfg!(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")),
         )?;
         build.ids.push(target);
         let atlas = resource(ctx, kind::TEXTURE, format::R8, gw * 95, 16, false, true)?;
@@ -575,9 +580,17 @@ pub fn pump() {
         if let Some(epoch) = with_core(|c| {
             (!c.stalled && !c.resetting && !c.reset_wanted).then_some(c.epoch)
         }).flatten() {
-            if PANIC_EPOCH.swap(epoch, Ordering::AcqRel) != epoch {
-                let _ = super::panic::prepare();
-                #[cfg(feature = "capture_panic_oracle")]
+            if PANIC_ATTEMPT_EPOCH.swap(epoch, Ordering::AcqRel) != epoch {
+                PANIC_ATTEMPTS.store(0, Ordering::Release);
+            }
+            if PANIC_EPOCH.load(Ordering::Acquire) != epoch
+                && PANIC_ATTEMPTS.load(Ordering::Acquire) < PANIC_MAX_ATTEMPTS
+            {
+                PANIC_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+                if super::panic::prepare().is_ok() {
+                    PANIC_EPOCH.store(epoch, Ordering::Release);
+                }
+                #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
                 super::panic::preparation_finished();
             }
         }
@@ -607,7 +620,7 @@ pub fn pump() {
     }
 }
 
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub(super) fn panic_with_lock(f: impl FnOnce()) {
     if !HANDOFF.load(Ordering::Acquire) {
         return;

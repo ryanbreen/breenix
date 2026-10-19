@@ -56,6 +56,11 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         return super::handlers::arm_pipe_wake_hold(arg);
     }
 
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+    if request == crate::drivers::xhci::replay::POINTER_REPLAY {
+        return crate::drivers::xhci::replay::ioctl(arg);
+    }
+
     #[cfg(feature = "boot_tests")]
     if request == super::blocking_io_oracle::QUERY
         || request == super::blocking_io_oracle::FIFO_FIXTURE
@@ -82,6 +87,9 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
             FdKind::PtyMaster(p) => Some(p.slave_to_master.lock().available()),
             FdKind::PtySlave(p) => Some(p.ldisc.lock().bytes_available()),
             FdKind::StdIo(_) | FdKind::Device(crate::fs::devfs::DeviceType::Tty | crate::fs::devfs::DeviceType::Console) => Some(crate::ipc::stdin::available()),
+            FdKind::Device(device @ (crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_))) => {
+                device.terminal().and_then(crate::tty::driver::vt).map(|tty| tty.input_available())
+            }
             FdKind::PipeRead(p) | FdKind::PipeWrite(p) | FdKind::FifoRead(_, p, _) | FdKind::FifoWrite(_, p, _) => Some(p.lock().available()),
             _ => None,
         };
@@ -120,6 +128,13 @@ fn resolve_terminal(kind: FdKind) -> Result<(crate::tty::ctty::TtyRef, crate::tt
         FdKind::PtySlave(pair) => Ok((TtyRef::Pty(pair), Side::Slave)),
         FdKind::Device(crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty)
             | FdKind::StdIo(_) => console().map(|tty| (tty, Side::Console)),
+        // A virtual terminal; /dev/tty0 is the foreground one at this call.
+        FdKind::Device(device @ (crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_))) => {
+            match device.terminal().and_then(crate::tty::driver::vt) {
+                Some(tty) => Ok((TtyRef::Vt(tty), Side::Console)),
+                None => Err(SyscallResult::Err(ENOTTY)),
+            }
+        }
         _ => Err(SyscallResult::Err(ENOTTY)),
     }
 }
@@ -173,7 +188,7 @@ fn fd_kind(table: &crate::ipc::fd::FdTableInner, fd: u64) -> Option<FdKind> {
 /// The console terminal.
 fn console() -> Result<crate::tty::ctty::TtyRef, SyscallResult> {
     match crate::tty::console() {
-        Some(tty) => Ok(crate::tty::ctty::TtyRef::Console(tty)),
+        Some(tty) => Ok(crate::tty::ctty::TtyRef::Vt(tty)),
         None => {
             log::warn!("sys_ioctl: TTY subsystem not initialized");
             Err(SyscallResult::Err(EBADF))

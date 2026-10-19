@@ -277,11 +277,14 @@ mod signal_tracking {
 
 /// TTY device structure
 ///
-/// Each TtyDevice represents a single terminal device (e.g., /dev/tty0).
-/// It contains a line discipline for input processing and tracks the
-/// foreground process group for signal delivery.
+/// Each TtyDevice is one virtual terminal: TTY 0 is tty1, the console, with
+/// serial and the screen as its sinks and serial and the keyboard as its
+/// sources; TTY 1 to 5 are tty2 to tty6, with the screen and the keyboard only
+/// (`docs/console/contract.md` section 1.2). It contains a line discipline for
+/// input processing, its own input queue, and tracks the foreground process
+/// group for signal delivery.
 pub struct TtyDevice {
-    /// TTY number (0 for console)
+    /// TTY number: the virtual terminal's number less one (0 for the console)
     pub num: u32,
 
     /// Line discipline for input processing
@@ -343,6 +346,55 @@ impl TtyDevice {
         }
     }
 
+    /// The virtual terminal this device is (1-based).
+    pub fn vt(&self) -> usize {
+        self.num as usize + 1
+    }
+
+    /// Whether this device is the console, which has serial as well as the screen.
+    fn is_console(&self) -> bool {
+        self.num == 0
+    }
+
+    /// Queue a byte the line discipline released for this terminal's readers.
+    fn push_input(&self, byte: u8) -> bool {
+        match crate::ipc::stdin::vt_input(self.num as usize) {
+            Some(input) => input.push_byte_from_irq(byte),
+            None => crate::ipc::stdin::push_byte_from_irq(byte),
+        }
+    }
+
+    /// Queue an end-of-file boundary for this terminal's readers.
+    fn push_input_eof(&self) -> bool {
+        match crate::ipc::stdin::vt_input(self.num as usize) {
+            Some(input) => input.push_eof_from_irq(),
+            None => crate::ipc::stdin::push_eof_from_irq(),
+        }
+    }
+
+    /// Bytes waiting for this terminal's readers.
+    pub fn input_available(&self) -> usize {
+        match crate::ipc::stdin::vt_input(self.num as usize) {
+            Some(input) => input.available(),
+            None => crate::ipc::stdin::available(),
+        }
+    }
+
+    /// Whether this terminal's readers have input waiting.
+    pub fn input_ready(&self) -> bool {
+        match crate::ipc::stdin::vt_input(self.num as usize) {
+            Some(input) => input.has_data(),
+            None => crate::ipc::stdin::has_data(),
+        }
+    }
+
+    /// Publish this terminal's transmit flow state to serial (the console only).
+    fn publish_serial_flow(&self) {
+        if self.is_console() {
+            crate::serial::set_output_stopped(self.transmission_stopped());
+        }
+    }
+
     /// Process an input character from the keyboard
     ///
     /// This is the main entry point for keyboard input. The character is processed
@@ -354,6 +406,7 @@ impl TtyDevice {
     /// This method acquires locks and should not be called from interrupt context
     /// without care. For interrupt context, use `input_char_from_nonblock`.
     pub fn input_char_from(&self, c: u8, source: super::InputSource) {
+        crate::random::add_event(crate::random::Event::TtyInput, u64::from(c));
         if self.num == 0 {
             super::input_clock::record_input();
         }
@@ -367,7 +420,7 @@ impl TtyDevice {
             self.echo_char(echo_c, &attrs);
         });
         self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
-        crate::serial::set_output_stopped(self.transmission_stopped());
+        self.publish_serial_flow();
 
         // If a signal was generated, send it to the foreground process group
         if let Some(sig) = signal {
@@ -385,11 +438,11 @@ impl TtyDevice {
                     Ok(n) => {
                         // Push each byte to stdin (no echo - TTY already handled that)
                         for &byte in &buf[..n] {
-                            crate::ipc::stdin::push_byte_from_irq(byte);
+                            self.push_input(byte);
                         }
                     }
                     Err(super::line_discipline::EOF_MARKER) => {
-                        crate::ipc::stdin::push_eof_from_irq();
+                        self.push_input_eof();
                         break;
                     }
                     Err(_) => break, // Other error, stop reading
@@ -457,6 +510,7 @@ impl TtyDevice {
     }
 
     fn input_char_source_nonblock(&self, c: u8, source: super::InputSource) -> bool {
+        crate::random::add_event(crate::random::Event::TtyInput, u64::from(c));
         let mut ldisc = match self.ldisc.try_lock() {
             Some(guard) => guard,
             None => return false,
@@ -470,7 +524,7 @@ impl TtyDevice {
             self.echo_char(echo_c, &attrs);
         });
         self.input_flow_stopped.store(ldisc.flow_stopped(), Ordering::Release);
-        crate::serial::set_output_stopped(self.transmission_stopped());
+        self.publish_serial_flow();
 
         // Transfer data from line discipline to stdin buffer when available
         // This bridges the TTY layer (which handles line editing, echo, signals)
@@ -484,11 +538,11 @@ impl TtyDevice {
                     Ok(n) => {
                         // Push each byte to stdin (no echo - TTY already handled that)
                         for &byte in &buf[..n] {
-                            crate::ipc::stdin::push_byte_from_irq(byte);
+                            self.push_input(byte);
                         }
                     }
                     Err(super::line_discipline::EOF_MARKER) => {
-                        crate::ipc::stdin::push_eof_from_irq();
+                        self.push_input_eof();
                         break;
                     }
                     Err(_) => break, // Other error, stop reading
@@ -737,10 +791,11 @@ impl TtyDevice {
         // While a session other than init's has the console (a getty and its
         // login), the screen console draws only kernel warnings and errors
         // among the console's own output.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::console_session(
-            session.is_some_and(|sid| sid.as_u64() != crate::process::RESERVED_INIT_PID),
-        );
+        if self.is_console() {
+            crate::console::console_session(
+                session.is_some_and(|sid| sid.as_u64() != crate::process::RESERVED_INIT_PID),
+            );
+        }
     }
 
     /// Detach the console foreground group while keeping its IRQ snapshot current.
@@ -763,7 +818,10 @@ impl TtyDevice {
     #[allow(dead_code)]
     pub fn flush_input(&self) {
         self.ldisc.lock().flush_input();
-        crate::ipc::stdin::flush_input();
+        match crate::ipc::stdin::vt_input(self.num as usize) {
+            Some(input) => input.flush(),
+            None => crate::ipc::stdin::flush_input(),
+        }
     }
 
     /// The console target has started: from now on the first USB keyboard byte
@@ -782,7 +840,10 @@ impl TtyDevice {
     }
 
     pub fn input_proof(&self, action: u64) -> Result<i32, i32> {
-        if self.num != 0 || action > 2 { return Err(22); }
+        if action > 2 { return Err(22); }
+        // tty2 to tty6 take keyboard input only: they keep no source window,
+        // so getty and login on them get success with no report.
+        if self.num != 0 { return Ok(0); }
         let mut ldisc = self.ldisc.lock();
         let (event, keyboard) = if action == 0 {
             ldisc.flush_input();
@@ -807,21 +868,25 @@ impl TtyDevice {
 
     pub fn set_output_stopped(&self, stopped: bool) {
         self.output_stopped.store(stopped, Ordering::Release);
-        crate::serial::set_output_stopped(self.transmission_stopped());
+        self.publish_serial_flow();
         if !stopped { self.drain_echo(); }
     }
 
+    /// TCXONC's STOP and START characters go to the far end of the line:
+    /// serial, which only the console has.
     pub fn output_flow_character(&self, stop: bool) {
         let attrs = self.get_termios();
         let c = attrs.c_cc[if stop { super::termios::VSTOP } else { super::termios::VSTART }];
-        if c != 0 { crate::serial::write_byte(crate::serial::Writer::Tty, c); }
+        if c != 0 && self.is_console() { crate::serial::write_byte(crate::serial::Writer::Tty, c); }
     }
 
     pub fn flush_output(&self) {
         let mut pending = self.pending_echo.lock();
         let mut scratch = [0; 256];
         while pending.read(&mut scratch) != 0 {}
-        crate::serial::flush_output();
+        if self.is_console() {
+            crate::serial::flush_output();
+        }
     }
 
     /// Echo has fixed storage and never allocates in interrupt context.
@@ -835,11 +900,17 @@ impl TtyDevice {
             if let Some(mut pending) = self.pending_echo.try_lock() { pending.write(unit); }
             return;
         }
-        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        for &byte in unit { let _ = crate::graphics::render_queue::queue_byte(byte); }
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::write_tty(unit);
+        self.to_sinks(unit);
+    }
+
+    /// Output to this terminal's sinks: its screen grid and, for the console,
+    /// serial, which carries what the console's grid forwards to it.
+    fn to_sinks(&self, unit: &[u8]) {
+        if self.is_console() {
+            crate::console::write_tty(unit, |bytes| crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, bytes));
+        } else {
+            crate::console::write_vt(self.vt(), unit);
+        }
     }
 
     fn drain_echo(&self) {
@@ -850,19 +921,12 @@ impl TtyDevice {
         loop {
             let n = pending.read(&mut scratch);
             if n == 0 { break; }
-            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, &scratch[..n]);
-            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-            for &byte in &scratch[..n] { let _ = crate::graphics::render_queue::queue_byte(byte); }
-            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-            crate::fbcon::write_tty(&scratch[..n]);
+            self.to_sinks(&scratch[..n]);
         }
     }
 
-    /// Write a character to the terminal output
-    ///
-    /// This writes to serial immediately and queues for deferred framebuffer rendering.
-    /// The render queue is drained by a dedicated kernel task with its own stack,
-    /// avoiding the stack overflow that occurred with direct framebuffer calls.
+    /// Write a character to the terminal output: to serial, and to the screen
+    /// console's grid, which its render thread draws.
     #[allow(dead_code)] // Used by input_char (conditionally compiled)
     pub fn output_char(&self, c: u8) {
         // Handle NL -> CR-NL translation if ONLCR is set
@@ -873,13 +937,7 @@ impl TtyDevice {
         } else {
             &crlf[1..]
         };
-        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        for &byte in unit {
-            let _ = crate::graphics::render_queue::queue_byte(byte);
-        }
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::write_tty(unit);
+        self.to_sinks(unit);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -888,18 +946,20 @@ impl TtyDevice {
     /// settings once and processes all bytes with those settings. This avoids
     /// the lock acquire/release overhead per character that output_char() has.
     ///
-    /// Framebuffer rendering is deferred to a separate kernel task via the
-    /// render queue, avoiding the stack overflow from deep rendering call stacks.
+    /// The screen console's grid gets the same bytes; its render thread draws them.
     ///
     /// # Arguments
     /// * `buf` - Buffer of bytes to write
     pub fn write_bytes(&self, buf: &[u8]) {
         while self.transmission_stopped() { crate::arch_halt(); }
+        // Thread-side output orders suite records after older log evidence.
+        // IRQ echo uses to_sinks directly and does not wait on the log ring.
+        #[cfg(target_arch = "x86_64")]
+        if self.is_console() { crate::serial::sync_log_to_console(); }
         self.drain_echo();
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
-
         // Each lock acquisition covers at most one line and one bounded UART
         // chunk, never the whole userspace buffer. Build ONLCR expansion before
         // entering the serial primitive so CR-LF stays in the same atomic write.
@@ -914,12 +974,7 @@ impl TtyDevice {
                     let output_len = if do_onlcr && c == b'\n' { 2 } else { 1 };
                     if expanded_len + output_len > expanded.len() {
                         while self.transmission_stopped() { crate::arch_halt(); }
-                        crate::serial::write_bytes_atomic(
-                            crate::serial::Writer::Tty,
-                            &expanded[..expanded_len],
-                        );
-                        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-                        crate::fbcon::write_tty(&expanded[..expanded_len]);
+                        self.to_sinks(&expanded[..expanded_len]);
                         expanded_len = 0;
                     }
                     if output_len == 2 {
@@ -932,26 +987,13 @@ impl TtyDevice {
 
                 if expanded_len != 0 {
                     while self.transmission_stopped() { crate::arch_halt(); }
-                    crate::serial::write_bytes_atomic(
-                        crate::serial::Writer::Tty,
-                        &expanded[..expanded_len],
-                    );
-                    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-                    crate::fbcon::write_tty(&expanded[..expanded_len]);
-                }
-
-                // Both architectures use the render queue — it's lock-free on the
-                // producer side and never drops data unless the buffer overflows.
-                for &c in line {
-                    if do_onlcr && c == b'\n' {
-                        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                        let _ = crate::graphics::render_queue::queue_byte(b'\r');
-                    }
-                    #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-                    let _ = crate::graphics::render_queue::queue_byte(c);
+                    self.to_sinks(&expanded[..expanded_len]);
                 }
             });
         });
+        // A report the output asked for is input now, behind the keys
+        // already typed, not at the render thread's next pass.
+        crate::console::deliver_queued_replies();
     }
 
     /// Write a character to the terminal output (non-blocking)
@@ -984,16 +1026,8 @@ impl TtyDevice {
         // UART ownership on ARM64, locked on x86_64
         let crlf = [b'\r', c];
         let unit = if do_crlf { &crlf[..] } else { &crlf[1..] };
-        crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, unit);
-
-        // Queue for deferred framebuffer rendering
-        // This is lock-free and safe for interrupt context
-        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-        for &byte in unit {
-            let _ = crate::graphics::render_queue::queue_byte(byte);
-        }
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::write_tty(unit);
+        // The console's grid takes writes from interrupt context.
+        self.to_sinks(unit);
     }
 
     /// Send a signal to the foreground process group
@@ -1151,6 +1185,9 @@ impl TtyDevice {
 /// Global console TTY device
 static CONSOLE_TTY: Mutex<Option<Arc<TtyDevice>>> = Mutex::new(None);
 
+/// tty2 to tty6 (TTY 1 to 5), made with the console.
+static OTHER_VTS: spin::Once<[Arc<TtyDevice>; 5]> = spin::Once::new();
+
 /// Get a reference to the console TTY device
 ///
 /// Returns None if the TTY subsystem has not been initialized.
@@ -1158,11 +1195,49 @@ pub fn console() -> Option<Arc<TtyDevice>> {
     CONSOLE_TTY.lock().clone()
 }
 
-/// Push a character to the console TTY
-///
-/// This is the main entry point for keyboard input.
-/// It processes the character through the line discipline.
-#[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
+/// Virtual terminal `number` (1-based): tty1 is the console.
+pub fn vt(number: usize) -> Option<Arc<TtyDevice>> {
+    match number {
+        1 => console(),
+        2..=6 => OTHER_VTS.get().map(|vts| Arc::clone(&vts[number - 2])),
+        _ => None,
+    }
+}
+
+/// A terminal-input reply (a DSR answer) for virtual terminal `number`: it
+/// joins the terminal's keyboard queue behind the keys already there and goes
+/// through its line discipline as they do, so in canonical mode it is part of
+/// the line being typed. Returns false if the TTY lookup is unavailable or
+/// bounded keyboard-queue admission fails; delivery retries after yielding.
+/// Until admission succeeds, keyboard input may enter the queue first.
+pub fn push_reply(number: usize, byte: u8) -> bool {
+    // Delivery holds REPLY_DELIVERY with interrupts masked. A console lookup
+    // holder may have been preempted while holding CONSOLE_TTY, so retain the
+    // reply in the delivery queue rather
+    // than waiting for that holder with interrupts disabled.
+    let tty = if number == 1 {
+        CONSOLE_TTY.try_lock().and_then(|guard| guard.clone())
+    } else {
+        vt(number)
+    };
+    let Some(tty) = tty else {
+        return false;
+    };
+    crate::arch_without_interrupts(|| {
+        for _ in 0..KEY_QUEUE_SPINS {
+            if let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() {
+                let accepted = keys.push(byte, super::InputSource::Other);
+                keys.drain(|byte, source| tty.admit_key(byte, source));
+                return accepted;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    })
+}
+
+/// Push a character to the console TTY, through its line discipline.
+#[allow(dead_code)] // Used by the TTY tests (conditionally compiled)
 pub fn push_char(c: u8) {
     push_char_from(c, super::InputSource::Other);
 }
@@ -1203,6 +1278,8 @@ pub fn write_output(buf: &[u8]) -> usize {
 /// processing, a line segment (at most one bounded chunk) per serial unit,
 /// holding `serial_writer::exclusive` for the whole write.
 pub fn write_unprocessed(buf: &[u8]) {
+    #[cfg(target_arch = "x86_64")]
+    crate::serial::sync_log_to_console();
     crate::serial_writer::exclusive(|| {
         for_each_line_segment(buf, |line| {
             for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {
@@ -1212,30 +1289,78 @@ pub fn write_unprocessed(buf: &[u8]) {
     });
 }
 
-/// Push a character to the console TTY (non-blocking)
+/// Push a keyboard character to the foreground virtual terminal (non-blocking)
 ///
 /// This version is safe for interrupt context.
 /// Returns true if the character was processed, false otherwise.
 ///
-/// Used by keyboard interrupt handler when routing through TTY from ISR.
+/// Used by the console's key consumer (`console::keys`) and the ARM64 USB HID
+/// driver, in interrupt context or a driver thread. Serial input reaches the
+/// console alone (`push_char`, and the ARM64 UART's input ring). A key returns
+/// the foreground terminal's view to the live screen.
 #[allow(dead_code)]
 pub fn push_char_nonblock(c: u8) -> bool {
     push_char_nonblock_from(c, super::InputSource::Other)
 }
 
 pub fn push_char_nonblock_from(c: u8, source: super::InputSource) -> bool {
-    // Try to get console without blocking
-    if let Some(guard) = CONSOLE_TTY.try_lock() {
-        if let Some(ref tty) = *guard {
-            let tty = Arc::clone(tty);
-            drop(guard);
-            return match source {
-                super::InputSource::Other => tty.input_char_nonblock(c),
-                _ => tty.input_char_from_nonblock(c, source),
-            };
+    // A key press while the boot splash is up ends it and is not delivered.
+    if crate::console::splash::key() {
+        return true;
+    }
+    let foreground = crate::console::vt::foreground();
+    crate::console::vt::input_returns_view(foreground);
+    // Admit to the destination's queue before looking up its TTY. In particular,
+    // contention on CONSOLE_TTY must not discard a USB key or retarget it after a switch.
+    crate::arch_without_interrupts(|| {
+        for _ in 0..KEY_QUEUE_SPINS {
+            if let Some(mut keys) = PENDING_KEYS[foreground - 1].try_lock() {
+                let accepted = keys.push(c, source);
+                let tty = if foreground == 1 {
+                    CONSOLE_TTY.try_lock().and_then(|guard| guard.clone())
+                } else {
+                    vt(foreground)
+                };
+                if let Some(tty) = tty {
+                    keys.drain(|byte, source| tty.admit_key(byte, source));
+                }
+                return accepted;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    })
+}
+
+/// Attempts at a terminal's keyboard queue before a key byte is dropped. Its
+/// holders mask interrupts for a few bytes' processing; this is far longer.
+const KEY_QUEUE_SPINS: usize = 100_000;
+
+// These queues exist independently of the TTY lookup lock and retain their destination.
+static PENDING_KEYS: [Mutex<super::keyboard_input::PendingInput>; 6] =
+    [const { Mutex::new(super::keyboard_input::PendingInput::new()) }; 6];
+
+impl TtyDevice {
+    fn admit_key(&self, byte: u8, source: super::InputSource) -> bool {
+        match source {
+            super::InputSource::Other => self.input_char_nonblock(byte),
+            _ => self.input_char_from_nonblock(byte, source),
         }
     }
-    false
+}
+
+/// Retry deferred keyboard bytes without holding the console grid lock, on
+/// each terminal, including terminals left by a switch.
+pub fn drain_keyboard_input() {
+    for number in 1..=crate::console::vt::VT_COUNT {
+        if let Some(tty) = vt(number) {
+            crate::arch_without_interrupts(|| {
+                if let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() {
+                    keys.drain(|byte, source| tty.admit_key(byte, source));
+                }
+            });
+        }
+    }
 }
 
 /// Take any foreground-pgrp adoption the input IRQ entry deferred (#821).
@@ -1254,7 +1379,8 @@ pub fn init_console() {
     let tty = Arc::new(TtyDevice::new(0));
     tty.set_session(Some(ProcessId::new(crate::process::RESERVED_INIT_PID)));
     *CONSOLE_TTY.lock() = Some(tty);
-    log::info!("Console TTY initialized");
+    OTHER_VTS.call_once(|| core::array::from_fn(|index| Arc::new(TtyDevice::new(index as u32 + 1))));
+    log::info!("Console TTY initialized, with tty2 to tty6");
 }
 
 // =============================================================================

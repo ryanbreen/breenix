@@ -3,8 +3,7 @@
 //! Captures serial output bytes into a lock-free ring buffer so that userspace
 //! programs can read kernel logs via /proc/kmsg.
 //!
-//! On ARM64, this reuses the existing `graphics::log_capture` buffer.
-//! On x86_64, this module provides its own capture ring buffer.
+//! Both architectures feed it from their serial log writers.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
@@ -56,6 +55,50 @@ pub fn capture_byte(byte: u8) {
 
     LOG_BUFFER[tail].store(byte, Ordering::Relaxed);
     LOG_TAIL.store(next_tail, Ordering::Release);
+}
+
+/// Held by whoever captures through `capture_bytes` or `capture_fmt`: x86 has
+/// two log paths (COM1's queue, and the log UART's ring), each under a lock of
+/// its own, so `capture_byte`'s single writer is made here. Taken with
+/// interrupts masked, for one record.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+
+fn capturing(f: impl FnOnce()) {
+    while CAPTURING
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    f();
+    CAPTURING.store(false, Ordering::Release);
+}
+
+/// Capture one record's bytes, uninterrupted by another record.
+/// Call with interrupts masked.
+pub fn capture_bytes<'a>(bytes: impl IntoIterator<Item = &'a u8>) {
+    if is_ready() {
+        capturing(|| bytes.into_iter().copied().for_each(capture_byte));
+    }
+}
+
+/// Capture the line `args` formats to, uninterrupted by another record: the
+/// x86 log's records, as they enter the ring the log UART is written from,
+/// so `/proc/kmsg` has a record as soon as its call returns, as on ARM64.
+/// Call with interrupts masked.
+pub fn capture_fmt(args: core::fmt::Arguments) {
+    struct Capture;
+    impl core::fmt::Write for Capture {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            s.bytes().for_each(capture_byte);
+            Ok(())
+        }
+    }
+    if is_ready() {
+        capturing(|| {
+            let _ = core::fmt::Write::write_fmt(&mut Capture, args);
+        });
+    }
 }
 
 /// Read available log data into a String.

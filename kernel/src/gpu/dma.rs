@@ -356,13 +356,19 @@ impl Drop for Pages {
 pub struct WordBuf {
     pages: Vec<Pages>,
     words: usize,
+    _charge: Option<alloc::sync::Arc<super::quota::Charge>>,
 }
 
 const WORDS_PER_PAGE: usize = PAGE / 4;
 
 impl WordBuf {
     pub fn new() -> WordBuf {
-        WordBuf { pages: Vec::new(), words: 0 }
+        WordBuf { pages: Vec::new(), words: 0, _charge: None }
+    }
+
+    /// Keep the submission reservation with commands still owned by the device.
+    pub(super) fn charge_copy(&mut self, charge: alloc::sync::Arc<super::quota::Charge>) {
+        self._charge = Some(charge);
     }
 
     pub fn len(&self) -> usize {

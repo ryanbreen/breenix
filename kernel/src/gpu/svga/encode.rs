@@ -28,11 +28,12 @@ use super::{wire, Builder, What};
 use crate::gpu::dma::{Pages, WordBuf, PAGE};
 use crate::gpu::virgl::encode::{self as venc, Bindings, SourceRes, TargetRes};
 
-/// Shader pairs: one per rendering pipeline, and `probe_int`'s.
-pub const PAIRS: u32 = venc::RENDERING_PIPELINES + 1;
+/// Shader pairs: one per rendering pipeline and one per `probe_int` routine.
+pub const PAIRS: u32 = venc::RENDERING_PIPELINES + venc::PROFILE_PROGRAMS.len() as u32;
+const _: () = assert!(PAIRS <= u64::BITS);
 /// Shader ids a context's shader table holds: a vertex and a fragment program per pair.
 pub const SHADER_IDS: u32 = 2 * PAIRS;
-const PROBE_PAIR: u32 = venc::RENDERING_PIPELINES;
+const PROBE_FIRST: u32 = venc::RENDERING_PIPELINES;
 
 /// The SVGA shader types (`SVGA3dShaderType`).
 const VS: u32 = 1;
@@ -47,12 +48,12 @@ const STRIDE: u32 = 8;
 const CHUNK_BYTES: usize = 64 * 1024;
 
 /// The fragment programs' TGSI texts, in program-MOB order after the vertex program: the
-/// rendering pipelines' (`solid`, `copy`, then the catalogue's), then `probe_int`'s.
+/// rendering pipelines' (`solid`, `copy`, then the catalogue's), then each `probe_int` routine's.
 pub fn fragment_texts() -> impl Iterator<Item = &'static [u8]> {
     [venc::SOLID_FS.text, venc::COPY_FS.text]
         .into_iter()
         .chain(venc::PIPELINE_PROGRAMS.iter().map(|(_, p)| p.text))
-        .chain(core::iter::once(venc::PROFILE_FS.text))
+        .chain(venc::PROFILE_PROGRAMS.iter().map(|p| p.text))
 }
 
 /// A context's DX objects: the views it keeps for resources, which shader pairs it has
@@ -86,9 +87,9 @@ impl Objects {
     pub fn resources(&self) -> impl Iterator<Item = u32> + '_ {
         self.rtv.keys().chain(self.srv.keys()).copied()
     }
-    /// Whether a PROBE has defined `probe_int`'s pair in this context.
-    pub fn has_probe(&self) -> bool {
-        self.shaders & (1 << PROBE_PAIR) != 0
+    /// Programs created by the first PROBE of each routine in this context.
+    pub fn probe_programs(&self) -> u32 {
+        2 * (self.shaders >> PROBE_FIRST).count_ones()
     }
     fn take_rtv(&mut self) -> Option<u32> {
         take(&mut self.free_rtv, &mut self.next_rtv)
@@ -875,9 +876,9 @@ pub fn translate(
                 };
                 let r = [4, 5, 6, 7].map(|k| words.word(at + k) as i32);
                 if let Some(r) = stream::clipped(r, t.info.width, t.info.height, scissor) {
-                    // The context's first PROBE defines `probe_int`'s pair; this draw warms it.
+                    // Each routine's first PROBE defines its pair; this draw warms it.
                     // The objects are kept only if the submission is sent.
-                    tx.programs(PROBE_PAIR);
+                    tx.programs(PROBE_FIRST + words.word(at + 2));
                     tx.sample([wire::INVALID; 3]);
                     let mut constants = [0u32; 20];
                     for (k, c) in constants[..16].iter_mut().enumerate() {

@@ -60,8 +60,6 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 extern crate kernel;
 
 // Re-import commonly used kernel modules for unqualified access
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-use kernel::graphics;
 // Unqualified `test_framework::` appears in exactly one place: the staged
 // registry dispatch below. Every other reference is fully qualified, so this
 // import's cfg has to match that block exactly or a `btrt`-only build warns on
@@ -124,6 +122,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Now we can use log! macros immediately - they'll be buffered
     log::info!("Kernel entry point reached");
+    kernel::console::splash::stage(kernel::console::splash::Stage::KernelEntry);
     log::debug!("Boot info address: {:p}", boot_info);
 
     // The console rule picks the log's UART before the buffered lines are
@@ -158,6 +157,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         apic_handoff.msr
     );
     log::info!("Serial port initialized and buffer flushed");
+    kernel::console::splash::stage(kernel::console::splash::Stage::SerialPort);
     if !qemu {
         let mcfg = boot_info.physical_memory_offset.into_option().and_then(|offset| {
             kernel::arch_impl::x86_64::acpi::read_mcfg(boot_info.rsdp_addr.into_option(), offset, |entry| {
@@ -182,6 +182,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize GDT and IDT
     interrupts::init();
     log::info!("GDT and IDT initialized");
+    kernel::console::splash::stage(kernel::console::splash::Stage::GdtIdt);
 
     // Run GDT validation tests (after GDT/IDT init, before per-CPU setup)
     #[cfg(feature = "testing")]
@@ -218,6 +219,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let rsdp_addr = boot_info.rsdp_addr.into_option();
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+    kernel::console::splash::stage(kernel::console::splash::Stage::Heap);
 
     // BootInfo owns this writable mapping for the kernel lifetime.
     unsafe { kernel::block::ramdisk::init(boot_info.ramdisk_addr.into_option(), boot_info.ramdisk_len) }
@@ -246,74 +248,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         btrt::pass(catalog::FRAME_ALLOC_INIT);
     }
 
-    // Upgrade framebuffer to double buffering now that heap is available
-    #[cfg(feature = "interactive")]
-    logger::upgrade_to_double_buffer();
-
-    // Initialize multi-terminal split-screen mode:
-    // - Left side: Graphics demo (static)
-    // - Right side: Tabbed terminals (Shell, Logs)
-    // - F1/F2 to switch between terminals
-    #[cfg(feature = "interactive")]
-    {
-        log::info!("Initializing multi-terminal display...");
-        if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
-            let mut fb_guard = fb.lock();
-
-            use kernel::graphics::primitives::Canvas;
-            let width = Canvas::width(&*fb_guard);
-            let height = Canvas::height(&*fb_guard);
-
-            // Calculate layout: 50% left for demo, 50% right for terminals
-            let divider_x = width / 2;
-            let divider_width = 4;
-            // Clear entire screen with dark background
-            graphics::primitives::fill_rect(
-                &mut *fb_guard,
-                graphics::primitives::Rect {
-                    x: 0,
-                    y: 0,
-                    width: width as u32,
-                    height: height as u32,
-                },
-                graphics::primitives::Color::rgb(20, 30, 50),
-            );
-
-            // Draw graphics demo on left pane
-            let left_region = graphics::split_screen::ClippedRegion {
-                offset_x: 0,
-                offset_y: 0,
-                width: divider_x as u32,
-                height: height as u32,
-            };
-            graphics::demo::run_demo_in_region(&mut *fb_guard, &left_region);
-
-            // Draw vertical divider
-            for i in 0..divider_width {
-                graphics::primitives::draw_vline(
-                    &mut *fb_guard,
-                    (divider_x + i) as i32,
-                    0,
-                    height as i32 - 1,
-                    graphics::primitives::Color::rgb(60, 80, 100),
-                );
-            }
-
-            // Initialize the render queue for deferred framebuffer rendering
-            graphics::render_queue::init();
-
-            // Initialize log capture ring buffer for serial output tee
-            graphics::log_capture::init();
-
-            // Flush to screen
-            if let Some(db) = fb_guard.double_buffer_mut() {
-                db.flush_full();
-            }
-
-            log::info!("Split-screen display ready");
-        }
-    }
-
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 
@@ -325,6 +259,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // command deadlines on it. time::init() keeps this calibration.
     time::tsc::calibrate();
     kernel::arch_impl::x86_64::irq::init(rsdp_addr, physical_memory_offset.as_u64());
+    kernel::console::splash::stage(kernel::console::splash::Stage::InterruptController);
 
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
@@ -332,11 +267,31 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         "PCI subsystem initialized: {} devices found",
         pci_device_count
     );
+    kernel::console::splash::stage(kernel::console::splash::Stage::PciEnumerated);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
+    // Seed the random pool before the network stack picks ports and IDs.
+    let random = kernel::random::init();
+    log::info!(
+        "random: pool ready={} rdrand={} rdseed={} hardware_bits={} device_bits={} jitter_windows={}/{} jitter_bits={} jitter_run={}/{} jitter_common={}/{}",
+        random.ready,
+        random.rdrand,
+        random.rdseed,
+        random.hardware_bits,
+        random.device_bits,
+        random.jitter.passed,
+        random.jitter.windows,
+        random.jitter.bits,
+        random.jitter.longest_run,
+        kernel::random::JitterReport::RUN_CUTOFF,
+        random.jitter.most_common,
+        kernel::random::JitterReport::COMMON_CUTOFF
+    );
+
     // Initialize network stack (after E1000 driver is ready)
     net::init();
+    kernel::console::splash::stage(kernel::console::splash::Stage::NetworkStack);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
@@ -363,6 +318,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     log::info!("procfs initialized at /proc");
+    kernel::console::splash::stage(kernel::console::splash::Stage::Procfs);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
@@ -411,7 +367,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("SWAPGS support enabled");
     }
 
-    // Initialize keyboard queue
+    // Reset the PS/2 keyboard's decoder before its interrupt is enabled
     keyboard::init();
     log::info!("Keyboard queue initialized");
 
@@ -421,6 +377,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Configure the scheduler tick before interrupts are enabled.
     time::init();
     log::info!("Timer initialized");
+    kernel::console::splash::stage(kernel::console::splash::Stage::Timer);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TIMER_INIT);
 
@@ -490,8 +447,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // The screen console's display BAR, its write-combining mapping and shadow:
     // after PCI enumeration and the boot CPU's PAT, before the other CPUs run.
-    #[cfg(not(feature = "interactive"))]
-    kernel::fbcon::attach();
+    kernel::console::attach();
 
     // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
@@ -622,6 +578,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // This follows Linux where the boot thread becomes the idle task
     task::scheduler::init_with_current(init_task);
     log::info!("Threading subsystem initialized with init_task (swapper/0)");
+    kernel::console::splash::stage(kernel::console::splash::Stage::Threading);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
@@ -635,6 +592,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     log::info!("Initializing process management...");
     process::init();
     log::info!("Process management initialized");
+    kernel::console::splash::stage(kernel::console::splash::Stage::ProcessManagement);
 
     // Start the application processors now that the scheduler and process
     // manager exist, then report what came online.
@@ -709,8 +667,10 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::fault_inject::run_fs_fault_leg();
-    // Initialize ext2 home filesystem only when the x86 home disk is attached.
-    if !kernel::block::hardware_read_only() && kernel::block::disk(3).is_some() {
+    // Noninteractive testing can supply a fixture; interactive needs a home disk.
+    if cfg!(all(feature = "testing", not(feature = "interactive")))
+        || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
+    {
         match kernel::fs::ext2::init_home_fs() {
             Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
             Err(e) => log::warn!("No home filesystem: {}", e),
@@ -837,23 +797,9 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     x86_64::instructions::interrupts::disable();
     log::info!("Driver post-init self-tests complete; interrupts disabled for remaining init");
 
-    // Spawn render thread for deferred framebuffer rendering (interactive mode only)
-    // This must be done after kthread infrastructure is ready.
-    //
-    // Boot graphics architecture (shared with ARM64):
-    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
-    // - Both use SHELL_FRAMEBUFFER (logger.rs on x86_64, arm64_fb.rs on ARM64)
-    // - Both use graphics::render_queue for lock-free echo from interrupt context
-    // - BWM (userspace window manager) handles terminal rendering
-    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
-    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
-    #[cfg(feature = "interactive")]
-    if let Err(e) = graphics::render_task::spawn_render_thread() {
-        log::error!("Failed to spawn render thread: {}", e);
-    }
-    // Without `interactive`, the screen console's render thread.
-    #[cfg(not(feature = "interactive"))]
-    kernel::fbcon::start();
+    // The screen console's render thread: after the kthread infrastructure is
+    // ready. It draws the kernel log and the console TTY on the screen.
+    kernel::console::start();
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -1246,6 +1192,18 @@ fn launch_x86_production_init(
     if console_mode.is_some() {
         serial::command::use_tty_input();
     }
+    let hostkeys = if name.starts_with("suite-") {
+        kernel::drivers::fw_cfg::read_string("opt/breenix/hostkeys").or_else(|| {
+            match kernel::boot::target::read() {
+                Ok(Some(kernel::boot::target::Target::Suite(suite))) => suite.hostkeys,
+                _ => None,
+            }
+        })
+    } else { None };
+    // The bare-metal boot loop answers host keys over the serial console.
+    if hostkeys.as_deref().is_some_and(|value| value.split(';').next() == Some("xhci-replay")) {
+        kernel::drivers::xhci::arm_host_keys();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1259,6 +1217,9 @@ fn launch_x86_production_init(
         }
         if let Some(case) = only {
             argv.extend_from_slice(&[b"--case", case.as_bytes()]);
+        }
+        if let Some(value) = &hostkeys {
+            argv.extend_from_slice(&[b"--hostkeys", value.as_bytes()]);
         }
         let ticket = manager.create_init_process_with_argv(
             String::from(name), exe_path, elf_data, &argv,
@@ -1280,7 +1241,7 @@ fn launch_x86_production_init(
         reserved_collisions
     );
 
-    if let Some(X86ConsoleMode::Console { idle_minutes, replug, from }) = console_mode {
+    if let Some(X86ConsoleMode::Console { idle_minutes, replug, from, .. }) = console_mode {
         // Input preparation begins here, once init has been read and
         // published, so an init read or launch failure returns above
         // without a keyboard request (#1893).
@@ -1335,15 +1296,19 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
+            Ok(Some(target::Target::Default | target::Target::Desktop | target::Target::Shell | target::Target::Console { .. })) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
+            Ok(Some(target::Target::Program { .. })) => {
+                log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
+                None
+            }
             Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
                 None
             }
         },
-        Some("default" | "shell" | "console") => None,
+        Some("default" | "shell" | "console" | "desktop") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1378,7 +1343,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     }
 }
 
-/// Init's interactive argument and, for the console, what input preparation
+/// Init's boot argument and, for the console, what input preparation
 /// it needs. Selection only reads fw_cfg and the boot target;
 /// `launch_x86_production_init` starts the input clock and the xHCI request
 /// once init is published (#1893).
@@ -1386,9 +1351,9 @@ fn x86_boot_target() -> Option<X86BootTarget> {
 #[derive(Clone, Copy)]
 enum X86ConsoleMode {
     Shell,
-    /// `from` names where `replug` came from: "fw_cfg", "intent" (the
-    /// per-boot payload) or "target" (the boot-target file).
-    Console { idle_minutes: Option<u16>, replug: bool, from: &'static str },
+    /// `full_boot` retains default services and checks before gettys. `from`
+    /// records the selection source, including default and fallback selection.
+    Console { full_boot: bool, idle_minutes: Option<u16>, replug: bool, from: &'static str },
 }
 
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
@@ -1396,6 +1361,7 @@ impl X86ConsoleMode {
     fn arg(self) -> &'static str {
         match self {
             Self::Shell => "shell",
+            Self::Console { full_boot: true, .. } => "default",
             Self::Console { .. } => "console",
         }
     }
@@ -1405,12 +1371,25 @@ impl X86ConsoleMode {
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
 fn x86_console_mode() -> Option<X86ConsoleMode> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        Some("desktop") => {
+            serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
+            Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "fw_cfg" })
+        }
+        Some("default") => Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "fw_cfg" }),
         Some("shell") => Some(X86ConsoleMode::Shell),
-        Some("console") => Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "fw_cfg" }),
+        Some("console") => Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "fw_cfg" }),
         None | Some("") => match kernel::boot::target::read() {
+            Ok(Some(kernel::boot::target::Target::Desktop)) => {
+                serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
+                Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "target" })
+            }
+            Ok(None | Some(kernel::boot::target::Target::Default)) => {
+                Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "default" })
+            }
             Ok(Some(kernel::boot::target::Target::Shell)) => Some(X86ConsoleMode::Shell),
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 Some(X86ConsoleMode::Console {
+                    full_boot: false,
                     idle_minutes: Some(idle_minutes),
                     replug,
                     from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
@@ -1447,6 +1426,7 @@ fn read_x86_production_init(
             {
                 Ok((elf_data, exe_path)) => {
                     log::info!("[boot] Boot mode: probe");
+                    kernel::console::splash::set_mode(format_args!("probe"));
                     return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, None));
                 }
                 Err(e) => log::warn!("[boot] Ignoring boot mode \"probe\": /sbin/probe could not be loaded ({})", e),
@@ -1464,8 +1444,10 @@ fn read_x86_production_init(
             Ok((elf_data, exe_path)) => {
                 if let Some(case) = &suite.case {
                     log::info!("[boot] Boot mode: suite {} case {}", id, case);
+                    kernel::console::splash::set_mode(format_args!("suite {} case {}", id, case));
                 } else {
                     log::info!("[boot] Boot mode: suite {}", id);
+                    kernel::console::splash::set_mode(format_args!("suite {}", id));
                 }
                 return Ok((alloc::format!("suite-{}", id), exe_path, elf_data, suite.case, None));
             }
@@ -1490,8 +1472,13 @@ fn read_x86_production_init(
 ))]
 fn read_default_x86_init(
 ) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
-    let mode = x86_console_mode();
-    log::info!("[boot] Boot mode: {}", mode.map_or("default", X86ConsoleMode::arg));
+    // Prepare terminal input and the keyboard when falling back to init.
+    let mode = Some(x86_console_mode().unwrap_or(X86ConsoleMode::Console {
+        full_boot: true, idle_minutes: None, replug: false, from: "fallback",
+    }));
+    let mode_name = mode.map_or("default", X86ConsoleMode::arg);
+    log::info!("[boot] Boot mode: {}", mode_name);
+    kernel::console::splash::set_mode(format_args!("{}", mode_name));
     kernel::boot::init_image::read_init_from_ext2("/sbin/init")
         .map(|(elf_data, exe_path)| (alloc::string::String::from("init"), exe_path, elf_data, None, mode))
 }
@@ -1557,7 +1544,26 @@ fn kernel_main_continue() -> ! {
     // how the two blocking defects are reproduced; leaving it off keeps the
     // shipped x86 boot identical to what it was before this work.
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    task::userspace_completion::begin_loading();
+    {
+        // BCM5720 brings carrier and DHCP up on its worker. Do not race the
+        // userspace network cases against that asynchronous configuration.
+        if drivers::bcm5720::is_initialized() {
+            let interrupts_were_enabled = x86_64::instructions::interrupts::are_enabled();
+            x86_64::instructions::interrupts::enable();
+            let started = time::get_monotonic_time();
+            while net::dhcp::lease().is_none() {
+                if time::get_monotonic_time() - started >= 60_000 {
+                    log::warn!("testing network did not acquire a DHCP lease; continuing tests");
+                    break;
+                }
+                x86_64::instructions::interrupts::enable_and_hlt();
+            }
+            if !interrupts_were_enabled {
+                x86_64::instructions::interrupts::disable();
+            }
+        }
+        task::userspace_completion::begin_loading();
+    }
 
     #[cfg(all(feature = "boot_tests", feature = "x86_staged_registry"))]
     {
@@ -2098,11 +2104,15 @@ fn kernel_main_continue() -> ! {
         loop {
             match image {
                 Ok((name, exe_path, elf_data, only, mode)) => {
+                    kernel::console::splash::set_status(format_args!("Starting {}", name));
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
                         launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), mode)
                     });
                     match launched {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            kernel::console::splash::stage(kernel::console::splash::Stage::StartingPid1);
+                            kernel::console::splash::first_process_started();
+                        }
                         Err(e) if name != "init" => {
                             log::error!(
                                 "PRODUCTION INIT: failed to launch {}: {}; running /sbin/init",
@@ -2590,6 +2600,7 @@ fn kernel_main_continue() -> ! {
     // Once interrupts are enabled, the scheduler will preempt to userspace
     // and kernel_main may never execute again
     log::info!("✅ Kernel initialization complete!");
+    kernel::console::splash::stage(kernel::console::splash::Stage::KernelInitComplete);
 
     // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
     // In testing mode, auto-finalize happens via on_process_exit() when all
@@ -2664,7 +2675,6 @@ fn kernel_main_continue() -> ! {
     ))]
     let mut executor = {
         let mut executor = task::executor::Executor::new();
-        executor.spawn(task::Task::new(keyboard::keyboard_task()));
         executor.spawn(task::Task::new(serial::command::serial_command_task()));
         executor
     };
@@ -2757,7 +2767,6 @@ fn kernel_main_continue() -> ! {
                 );
 
                 let mut executor = task::executor::Executor::new();
-                executor.spawn(task::Task::new(keyboard::keyboard_task()));
                 executor.spawn(task::Task::new(serial::command::serial_command_task()));
                 executor.run()
             },
@@ -2779,7 +2788,7 @@ fn kernel_main_continue() -> ! {
             log::info!("[metal] kernel idle");
         }
         // The screen console reads the screen back once boot is idle.
-        kernel::fbcon::request_idle_check();
+        kernel::console::request_idle_check();
 
         kernel::per_cpu::preempt_enable();
 
@@ -2874,16 +2883,6 @@ fn idle_thread_fn() {
             if has_work {
                 // Yield to let scheduler pick a ready thread
                 task::scheduler::yield_current();
-            }
-        }
-
-        // Periodically wake keyboard task to ensure responsiveness
-        // This helps when returning from userspace execution
-        static mut WAKE_COUNTER: u64 = 0;
-        unsafe {
-            WAKE_COUNTER += 1;
-            if WAKE_COUNTER % 100 == 0 {
-                keyboard::stream::wake_keyboard_task();
             }
         }
     }

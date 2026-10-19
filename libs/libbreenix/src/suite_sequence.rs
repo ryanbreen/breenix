@@ -9,6 +9,7 @@
 //! SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
 //! SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 //! SUITE_SEQUENCE RESET <id> FAIL <why>
+//! SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
 //! SUITE_SEQUENCE READY <id>
 //! SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
 //! SUITE_SEQUENCE FAIL exec <id>
@@ -33,7 +34,8 @@
 //!   Exec gives the next suite a fresh address space and the environment the kernel gave
 //!   the first. PID numbers, the page cache and kernel memory carry over. BEGIN and RESET report the free memory and kernel heap
 //!   `/proc/meminfo` shows as each suite starts, so memory an earlier suite left
-//!   allocated is visible.
+//!   allocated is visible, and the FRAMES lines after them name the code that
+//!   allocated the frames in use and what became of process page tables.
 //! - A watchdog ends a suite that makes no progress (no case starts or finishes) for
 //!   [`STALL_MS`]: SIGALRM from ITIMER_REAL prints STALLED with the cases reported so far
 //!   and hands off to the next suite. The handler uses system calls only, since the
@@ -84,6 +86,7 @@ static TOTAL: AtomicU32 = AtomicU32::new(0);
 /// This suite's id, and the suites after it as (id, NUL-terminated binary path).
 static ID: OnceLock<String> = OnceLock::new();
 static AFTER: OnceLock<Vec<(String, Vec<u8>)>> = OnceLock::new();
+static HOSTKEYS: OnceLock<Vec<u8>> = OnceLock::new();
 /// The number of suites in the sequence.
 static COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -99,6 +102,11 @@ pub fn read(id: &str) -> Option<(Vec<String>, usize)> {
 /// Before the suite's START: record the baseline (the first suite) or put the root back
 /// to it (any later one), then arm the watchdog for a suite of `total` cases.
 pub fn prepare(ids: &[String], index: usize, total: usize) {
+    if let Some(method) = super::hostkey_method() {
+        let mut bytes = method.as_bytes().to_vec();
+        bytes.push(0);
+        let _ = HOSTKEYS.set(bytes);
+    }
     let _ = ID.set(ids[index].clone());
     let _ = AFTER.set(ids[index + 1..].iter()
         .map(|id| (id.clone(), std::format!("/sbin/suite-{id}\0").into_bytes()))
@@ -111,6 +119,7 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
     if index == 0 {
         let entries = record_baseline();
         emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
+        frames(&ids[index]);
     } else {
         emit(&match reset() {
             Ok(reset) => {
@@ -120,6 +129,7 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
             }
             Err(why) => std::format!("SUITE_SEQUENCE RESET {} FAIL {why}", ids[index]),
         });
+        frames(&ids[index]);
     }
     // The walk is not the suite's progress: its own watchdog period starts at START.
     progress();
@@ -149,6 +159,15 @@ fn memory() -> String {
     match (field("MemFree:"), field("KernelHeapFree:")) {
         (Some(free), Some(heap)) => std::format!(" memfree={free}kB heapfree={heap}kB"),
         _ => String::new(),
+    }
+}
+
+/// `SUITE_SEQUENCE FRAMES <id> ...`: the frames in use as the suite starts and the code
+/// that allocated them, one record per line of `/proc/breenix/frames`.
+fn frames(id: &str) {
+    let Ok(text) = std::fs::read_to_string("/proc/breenix/frames") else { return };
+    for line in text.lines() {
+        emit(&std::format!("SUITE_SEQUENCE FRAMES {id} {line}"));
     }
 }
 
@@ -231,7 +250,12 @@ fn hand_off() {
     }
     for (id, path) in after {
         // Exec returns only when the next suite could not start; try the one after it.
-        let _ = process::exec(path);
+        let mut argv = [path.as_ptr(), core::ptr::null(), core::ptr::null(), core::ptr::null()];
+        if let Some(method) = HOSTKEYS.get() {
+            argv[1] = b"--hostkeys\0".as_ptr();
+            argv[2] = method.as_ptr();
+        }
+        let _ = process::execv(path, argv.as_ptr());
         let mut line = Line::new();
         line.text("SUITE_SEQUENCE FAIL exec ").text(id);
         line.emit();

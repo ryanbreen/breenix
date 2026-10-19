@@ -35,6 +35,9 @@ def require_e2fsprogs(*commands):
 
 RECORD_MAGIC = b'BREENIX-STORAGE 1\n'
 SECTOR = 512
+# A suite boot's host-key path (docs/console/contract.md section 10): the boot loop types HID boot reports on the
+# serial console and the kernel replays them through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys).
+HOSTKEYS = 'xhci-replay'
 
 
 def install_record(boot_id):
@@ -135,7 +138,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         url = urlsplit(site['BOOT_URL'])
         lines += ['METAL_FETCH_URL=' + urlunsplit((url.scheme, url.netloc, PROBE_PATH, '', '')) + '\n',
                   'METAL_FETCH_SHA256=' + PROBE_SHA256 + '\n']
-    shadow = console_shadow(site, hasher) if mode == 'console' else None
+    # Default boots use the same getty login as explicit console boots.
+    shadow = console_shadow(site, hasher) if mode in ('default', 'console') else None
     debugfs, = require_e2fsprogs('debugfs')
     image = Path(image).resolve()
     packaged = Path(__file__).resolve().with_name('write-boot-target.sh')
@@ -147,7 +151,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
                        env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
                                 BREENIX_CONSOLE_IDLE_MINUTES='' if idle_minutes is None else str(idle_minutes),
-                                BREENIX_CONSOLE_REPLUG='1' if replug else '0'))
+                                BREENIX_CONSOLE_REPLUG='1' if replug else '0',
+                                BREENIX_HOSTKEYS=HOSTKEYS if mode == 'suite' else ''))
     except subprocess.CalledProcessError as error:
         raise ValueError('RAM-disk boot-target staging failed') from error
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
@@ -177,7 +182,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)
-        expected_target = ('suite ' + first if mode == 'suite' else staged)
+        expected_target = ('suite ' + first + ' hostkeys ' + HOSTKEYS if mode == 'suite' else staged)
         if replug:
             expected_target += ' replug'
         if idle_minutes is not None:

@@ -1188,11 +1188,12 @@ impl Thread {
         self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
     }
 
-    /// x86_64: cache `root` as the page-table root this user thread is
-    /// dispatched on: the dispatch's first lookup and exec's commit set it.
-    #[cfg(target_arch = "x86_64")]
+    /// Cache `root` as the page-table root this user thread is dispatched on:
+    /// x86_64's dispatch sets it at its first lookup, and exec's commit sets
+    /// it on both architectures.
     pub(crate) fn set_dispatch_root(&mut self, root: u64) {
         self.cached_ttbr0 = root;
+        #[cfg(target_arch = "x86_64")]
         if self.state != ThreadState::Terminated {
             crate::task::scheduler::publish_cached_root(self, root);
         }

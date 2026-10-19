@@ -98,6 +98,7 @@ docker run --rm \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -no-reboot \

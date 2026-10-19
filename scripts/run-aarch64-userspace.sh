@@ -86,6 +86,7 @@ python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -blockdev driver=file,node-name=testfile,filename="$TEST_DISK" \
     -blockdev driver=raw,node-name=testdisk,file=testfile \
     -device virtio-keyboard-device \
+    -device virtio-rng-device \
     -kernel "$KERNEL" \
     0<&0 &
 QEMU_PID=$!

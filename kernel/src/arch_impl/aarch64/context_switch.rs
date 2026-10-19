@@ -918,7 +918,7 @@ pub fn emit_resume_pc_census() {
     }
 }
 
-/// Emit non-zero producer-classification rows with whole-line serialization.
+/// Emit the routing total, then the producer-classification rows that have counts.
 pub fn emit_resume_pc_census_locked() {
     // The selection-side custody total, and the only reader it has in a boot
     // that does not fault. Work-stealing declines a stack-pinned thread without
@@ -931,30 +931,9 @@ pub fn emit_resume_pc_census_locked() {
         crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
     }
 
-    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
-            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
-            let text = row[0].load(Ordering::Relaxed);
-            let kstack = row[1].load(Ordering::Relaxed);
-            let uva = row[2].load(Ordering::Relaxed);
-            let smallint = row[3].load(Ordering::Relaxed);
-            let other = row[4].load(Ordering::Relaxed);
-            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
-                continue;
-            }
-
-            crate::serial_println!(
-                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]",
-                cpu_id,
-                source_name,
-                text,
-                kstack,
-                uva,
-                smallint,
-                other,
-            );
-        }
-    }
+    // The rows go to serial as raw records, kept out of the log rings and off
+    // the screen console: a burst of them would scroll tty1's text away (#2037).
+    emit_resume_pc_census();
 }
 
 fn emit_resume_pc_census_if_due() {
@@ -6150,7 +6129,7 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
         .thread_id
         .store(thread_id, Ordering::Release);
 
-    let _ = spin::MutexGuard::leak(guard);
+    guard.leak();
     let pivot_cpu = CpuId::current_checked(cpu_id);
     let scheduler_top = pivot_destination(
         pivot_cpu,
@@ -6330,7 +6309,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
-            crate::task::scheduler::force_unlock_scheduler();
+            crate::task::scheduler::force_unlock_scheduler(None);
         }
 
         let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
@@ -6551,7 +6530,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 0);
-            crate::task::scheduler::force_unlock_scheduler();
+            crate::task::scheduler::force_unlock_scheduler(Some(sched));
         }
 
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
@@ -6674,7 +6653,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     unsafe {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
-        crate::task::scheduler::force_unlock_scheduler();
+        crate::task::scheduler::force_unlock_scheduler(Some(sched));
     }
 
     // Capture what CPU 0 is dispatching via ERET and where it's going
@@ -6988,7 +6967,7 @@ pub fn schedule_from_kernel() {
         .should_requeue_old
         .store(should_requeue_old, Ordering::Relaxed);
 
-    let _ = spin::MutexGuard::leak(guard);
+    guard.leak();
 
     // Re-read the identity at the point it is spent on a stack. Masked since
     // the mint above, so this can only disagree if something re-enabled
@@ -7299,12 +7278,7 @@ pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 #[inline(always)]
 fn idle_pending_isr_wakeups() -> bool {
-    for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        if crate::task::scheduler::isr_wakeup_depth(cpu) != 0 {
-            return true;
-        }
-    }
-    false
+    crate::task::scheduler::isr_wakeups_pending()
 }
 
 #[inline(always)]

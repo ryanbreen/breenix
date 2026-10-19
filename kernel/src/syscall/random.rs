@@ -1,105 +1,118 @@
 //! getrandom syscall implementation
 //!
-//! Provides random bytes to userspace using a TSC-seeded xorshift64* PRNG.
-//! This is adequate for a single-user OS running under QEMU. Not
-//! cryptographically secure, but sufficient for HashMap seeding and
-//! general-purpose randomness.
+//! Draws from the kernel pool in `crate::random`, which keeps its state across
+//! calls and CPUs and is seeded at boot and by device events.
 
 use super::{ErrorCode, SyscallResult};
 
-/// Read the x86_64 Time Stamp Counter (TSC).
-/// Returns a high-resolution, monotonically increasing value.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-fn read_tsc() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
-}
+/// Return without waiting when the pool is not initialized (EAGAIN).
+const GRND_NONBLOCK: u32 = 0x0001;
+/// Draw from the "random" source. It is the same pool, and like the default
+/// source it waits until the pool is initialized.
+const GRND_RANDOM: u32 = 0x0002;
+/// Return at once, even before the pool is initialized.
+const GRND_INSECURE: u32 = 0x0004;
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn read_tsc() -> u64 {
-    let val: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, cntvct_el0", out(reg) val);
-    }
-    val
-}
-
-/// xorshift64* PRNG - fast, decent quality for non-crypto use
-struct Xorshift64Star {
-    state: u64,
-}
-
-impl Xorshift64Star {
-    fn new(seed: u64) -> Self {
-        // Ensure non-zero state
-        Self {
-            state: if seed == 0 { 0xdeadbeefcafe1234 } else { seed },
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.state = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
-    }
-}
+/// Most bytes one call returns, as getrandom(2) documents for the urandom source.
+const MAX_BYTES: u64 = 33_554_431;
 
 /// sys_getrandom - fill a userspace buffer with random bytes
 ///
 /// Arguments:
 ///   buf_ptr: userspace buffer address
 ///   buflen:  number of bytes to fill
-///   flags:   GRND_RANDOM (1), GRND_NONBLOCK (2), GRND_INSECURE (4)
-///            (all flags accepted but treated identically)
+///   flags:   GRND_NONBLOCK, GRND_RANDOM, GRND_INSECURE
 ///
-/// Returns: number of bytes written on success, or negative errno
-pub fn sys_getrandom(buf_ptr: u64, buflen: u64, _flags: u32) -> SyscallResult {
+/// Returns: number of bytes written (at most `MAX_BYTES`; fewer if the buffer
+/// faults part way through), or negative errno: EINVAL for unknown flags or
+/// GRND_INSECURE with GRND_RANDOM, EAGAIN with GRND_NONBLOCK before the pool
+/// is initialized, EINTR if a signal interrupts initialization, EFAULT if no
+/// byte could be written.
+pub fn sys_getrandom(buf_ptr: u64, buflen: u64, flags: u32) -> SyscallResult {
+    if flags & !(GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE) != 0
+        || flags & (GRND_INSECURE | GRND_RANDOM) == (GRND_INSECURE | GRND_RANDOM)
+    {
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    }
+    if flags & GRND_INSECURE == 0 && !crate::random::is_ready() {
+        if flags & GRND_NONBLOCK != 0 {
+            return SyscallResult::Err(ErrorCode::TryAgain as u64);
+        }
+        if let Err(error) = wait_ready() {
+            return SyscallResult::Err(error as u64);
+        }
+    }
     if buflen == 0 {
         return SyscallResult::Ok(0);
     }
 
-    if buf_ptr == 0 {
-        return SyscallResult::Err(ErrorCode::Fault as u64);
-    }
-
-    let len = buflen as usize;
-
-    // Seed from TSC - each call gets a different seed
-    let seed = read_tsc();
-    let mut rng = Xorshift64Star::new(seed);
-
-    // Write random bytes directly to userspace buffer
-    // We write 8 bytes at a time for efficiency, then handle remainder
-    let buf = buf_ptr as *mut u8;
-
-    // Validate the userspace pointer range
-    if let Err(_) = crate::syscall::userptr::validate_user_ptr_write(buf) {
-        return SyscallResult::Err(ErrorCode::Fault as u64);
-    }
-
-    unsafe {
-        let mut offset = 0usize;
-
-        // Write 8 bytes at a time
-        while offset + 8 <= len {
-            let val = rng.next_u64();
-            core::ptr::write_volatile(buf.add(offset) as *mut u64, val);
-            offset += 8;
+    let len = buflen.min(MAX_BYTES) as usize;
+    let mut chunk = [0u8; crate::random::CHUNK];
+    let mut written = 0usize;
+    while written < len {
+        let take = chunk.len().min(len - written);
+        // fill_chunk releases the pool's lock before this copy, which may fault.
+        crate::random::fill_chunk(&mut chunk[..take], written == 0);
+        let copied = crate::syscall::userptr::write_user_prefix(
+            buf_ptr.wrapping_add(written as u64),
+            chunk.as_ptr(),
+            take,
+        );
+        written += copied;
+        if copied < take {
+            break;
         }
+    }
+    crate::random::erase::wipe(&mut chunk);
 
-        // Write remaining bytes
-        if offset < len {
-            let val = rng.next_u64();
-            let bytes = val.to_le_bytes();
-            for i in 0..(len - offset) {
-                core::ptr::write_volatile(buf.add(offset + i), bytes[i]);
+    if written == 0 {
+        SyscallResult::Err(ErrorCode::Fault as u64)
+    } else {
+        SyscallResult::Ok(written as u64)
+    }
+}
+
+/// Sleep between bounded retries of the sources that can be asked again (the
+/// CPU's instructions and the entropy device). A machine whose sources earned
+/// no credit at boot may wait indefinitely, but it must leave the CPU
+/// available and let caught/fatal signals end the call.
+fn wait_ready() -> Result<(), i32> {
+    use crate::task::thread::ThreadState;
+    use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
+    static WAITERS: WaitQueueHead = WaitQueueHead::new();
+
+    while !crate::random::is_ready() {
+        if let Some(error) = super::check_signals_for_wait() {
+            return Err(error);
+        }
+        crate::random::reseed();
+        let deadline = crate::signal::monotonic_nanos().saturating_add(10_000_000);
+        let outcome =
+            WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(deadline), || {
+                !crate::random::is_ready()
+            });
+        match outcome {
+            PrepareOutcome::Mismatch => {
+                WAITERS.finish_wait();
+            }
+            PrepareOutcome::PublishFailed => {
+                WAITERS.finish_wait();
+                return Err(super::errno::ESRCH);
+            }
+            PrepareOutcome::OutOfMemory => return Err(super::errno::ENOMEM),
+            PrepareOutcome::Queued => {
+                // Recheck after publication: a signal that arrived before it
+                // already spent its wake and must not be slept through.
+                let interrupted = super::check_signals_for_wait();
+                if interrupted.is_none() {
+                    crate::task::waitqueue::schedule_current_wait();
+                }
+                WAITERS.finish_wait();
+                if let Some(error) = interrupted.or_else(super::check_signals_for_wait) {
+                    return Err(error);
+                }
             }
         }
     }
-
-    SyscallResult::Ok(buflen)
+    Ok(())
 }

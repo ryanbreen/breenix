@@ -2,7 +2,7 @@
 """One x86-metal boot, end to end (docs/metal/README.md, "One boot").
 
   metal-boot launch [run options]   start the driver as its own transient unit; prints {"id", "status"} once the
-                                    unit holds or waits for the lease (exit 75 if busy with --no-wait, or quarantined)
+                                    unit holds or waits for the lease (exit 75 if the queue wait expires, or quarantined)
   metal-boot run --id ID [options]  the driver itself (what the unit runs)
   metal-boot stop ID                ask a running boot to stop (exit 130 before power-on, 143 after)
   metal-boot inputs-ready ID        the image build for ID has delivered its inputs
@@ -40,6 +40,10 @@ import metal_score  # noqa: E402
 import metal_attended  # noqa: E402
 import metal_disk  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
+# Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
+if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+import hostkeys  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default', 'shell', 'probe', 'suite', 'console', 'tests')
@@ -161,7 +165,7 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
-        # In a multi-suite boot, when the running suite started (its START, or the previous one's STALLED).
+        # The latest suite progress record; failed cases and resets are progress too.
         self.suite_started = None
         self.input_clock_alive = None
         self.last_stage = None
@@ -189,6 +193,8 @@ class Driver:
         self.shell_ready = False
         self.shell_sent = False
         self.attended_challenge = None
+        # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
+        self.hostkey_watcher = None
         self.console_step = 0
         self.console_done = False
         self.delivery = {}
@@ -224,6 +230,7 @@ class Driver:
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
         kind = 'fault-test' if xhci_fault(self.args) else 'console-session' if session(self.args) else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
+               'catchup': bool(getattr(self.args, 'catchup', False)),
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
                # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
@@ -244,19 +251,25 @@ class Driver:
         self.event('created', payload=self.args.payload, mode=self.args.mode, inject=self.args.inject or 'none',
                    nmi=bool(getattr(self.args, 'nmi', False)))
 
-    def claim_status(self, status, text=''):
-        m.write_json(self.dir / 'claim.json', {'status': status, 'text': text, 't': m.now()})
+    def claim_status(self, status, text='', **fields):
+        m.write_json(self.dir / 'claim.json', dict(status=status, text=text, t=m.now(), **fields))
 
     def claim(self):
         holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload,
                   'kind': 'console-session' if session(self.args) else 'boot'}
+        def waiting(state):
+            text = f"Waiting for holder={state['holder']} queue position={state['position']}"
+            self.claim_status('waiting', text, **state)
+            self.phase(text)
+
+        wait = getattr(self.args, 'wait', None)
+        queue_minutes = 240 if attended(self.args) or wait is None else wait
         try:
-            m.claim_lease(holder, wait=not self.args.no_wait, checkpoint=self.checkpoint,
-                          on_wait=lambda lease: (self.claim_status('waiting'),
-                                                 self.phase('Waiting for the machine to finish another boot')))
+            m.claim_lease(holder, wait=True, checkpoint=self.checkpoint,
+                          wait_seconds=queue_minutes * 60, on_wait=waiting)
         except m.Busy:
             self.claim_status('busy')
-            raise Finish(m.EXIT_BUSY, 'the machine is busy with another boot')
+            raise Finish(m.EXIT_BUSY, 'the bounded machine queue wait expired')
         except m.Quarantined:
             self.claim_status('quarantined')
             raise Finish(m.EXIT_BUSY, 'the machine may still be on: power-off failed and the lease is quarantined')
@@ -408,7 +421,8 @@ class Driver:
         if disk == 'root':
             target = self.args.mode
             if target == 'suite':
-                target += ' ' + suites(self.args)[0]
+                # The intent replaces the root's boot target, so it carries the same host-key declaration.
+                target += ' ' + suites(self.args)[0] + ' hostkeys ' + metal_root.HOSTKEYS
             elif target == 'console':
                 self.console_intent = 'session' if session(self.args) else 'measure'
                 self.delivery['consoleIntent'] = self.console_intent
@@ -474,8 +488,9 @@ class Driver:
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
-            # Several suites finish when the last has handed off.
-            self.final_marker = (('SUITE ' + self.args.suite + ' DONE ', 'contains') if len(suites(self.args)) == 1
+            # One suite finishes at its READY, after its DONE and memory record (docs/suites/README.md,
+            # "Memory record"); several suites when the last has handed off.
+            self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
                                  else ('SUITE_SEQUENCE DONE ', 'contains'))
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
@@ -624,6 +639,13 @@ class Driver:
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
+        # getty leaves its prompt unterminated while waiting for login input.
+        if self.args.mode == "default" and self.line.strip("\r") == "Breenix login: ":
+            try:
+                self.on_line(self.line, observed_at=arrived)
+            except Finish as finish:
+                if decision is None or finish.status != m.EXIT_DONE:
+                    decision = finish
         try:
             self.challenge_shell(self.line)
             self.challenge_console(self.line)
@@ -865,10 +887,14 @@ class Driver:
             self.event('payload-started', observed_at=observed_at, seconds=seconds)
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
-        if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
+        suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
+        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        if (self.kernel_started and self.fatal_at is None
+                and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
+                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if len(suites(self.args)) > 1 and re.search(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED ', line):
+        if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
@@ -886,12 +912,16 @@ class Driver:
             raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
+        self.on_hostkey_line(line)
         self.challenge_shell(line)
         self.challenge_console(line, complete=True)
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line, input_kind(self.args)):
                 stages.pop(0)
-        if (self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+        suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
+                      else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
+                      ) if self.args.mode == 'suite' else True
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         if (self.final_marker and self.final_seen and not any(self.required_stages)
@@ -916,6 +946,17 @@ class Driver:
         if self.console_intent:
             needed.add('console-intent')
         return needed <= self.seen
+
+    def on_hostkey_line(self, line):
+        """A suite case's HOSTKEY record: type its chords on the serial console as HID boot reports, which the
+        kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
+        once; what was sent goes to the boot's events, never to the guest's serial."""
+        if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
+            return
+        if self.hostkey_watcher is None:
+            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.console_send), metal_root.HOSTKEYS,
+                                                    log=lambda message: self.event('hostkeys', message=message))
+        self.hostkey_watcher.line(line)
 
     def on_intent_line(self, line, observed_at):
         """A disk-root console boot's replug choice must come from its staged intent, not the installed target."""
@@ -1143,7 +1184,7 @@ class Driver:
             if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
                 raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
             return
-        # Each suite of a multi-suite boot has the deadline from when it started.
+        # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
 
@@ -1286,7 +1327,8 @@ class Driver:
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
                 # the cases it reported.
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
-                if self.args.mode == 'suite' and (status == m.EXIT_DONE or several):
+                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
+                        and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
                     if self.gap:
@@ -1437,6 +1479,7 @@ def launch(args, extra):
     claim = m.boot_dir(boot_id) / 'claim.json'
     deadline = m.now() + 30
     status = 'starting'
+    state = None
     while m.now() < deadline:
         state = m.read_json(claim)
         if state:
@@ -1446,7 +1489,7 @@ def launch(args, extra):
             status = 'ended'
             break
         time.sleep(0.25)
-    print(json.dumps({'id': boot_id, 'unit': unit, 'status': status}))
+    print(json.dumps(dict(state or {}, id=boot_id, unit=unit, status=status)))
     return {'claimed': 0, 'waiting': 0, 'busy': 75, 'quarantined': 75, 'not-ready': 75}.get(status, 1)
 
 
@@ -1460,7 +1503,7 @@ def status():
             directory = m.boot_dir(entry['id'])
             entry['exit'] = (directory / 'exit-status').read_text().strip() if (directory / 'exit-status').exists() else None
             finished.append(entry)
-    print(json.dumps({'lease': m.read_lease(), 'machine': m.read_json(m.STATE / 'machine.json'),
+    print(json.dumps({'lease': m.read_lease(), 'queue': m.read_queue(), 'machine': m.read_json(m.STATE / 'machine.json'),
                       'finished': finished}, indent=1))
     return 0
 
@@ -1475,13 +1518,14 @@ def main():
         p.add_argument('--mode', choices=MODES, default='default')
         p.add_argument('--input', choices=('sol',))
         p.add_argument('--attended', action='store_true', help='score the operator challenge without sending input')
-        p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
+        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
         p.add_argument('--source-boot')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
+        p.add_argument('--catchup', action='store_true')
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))
@@ -1527,8 +1571,10 @@ def main():
             parser.error('--idle-minutes needs a console session and 1 through 240 minutes')
         if args.attended and (args.session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
             parser.error('--attended needs a console boot, without --session or --input')
-        if not 0 < args.wait <= 240 or (args.wait != 30 and not args.attended):
-            parser.error('--wait needs --attended and more than 0 through 240 minutes')
+        if args.wait is None:
+            args.wait = 30 if args.attended else 240
+        if not 0 < args.wait <= 240:
+            parser.error('--wait needs more than 0 through 240 minutes')
         if args.mode == 'console' and not args.session and not args.attended and args.input != 'sol':
             parser.error('console typing waits for the injector; development boots require --input sol')
         if args.input and args.mode != 'console':
@@ -1539,6 +1585,8 @@ def main():
         parser.error('disk-before-mount needs a disk-root image boot')
     if args.command == 'launch':
         extra = sys.argv[2:]
+        if '--wait' not in extra:
+            extra += ['--wait', str(args.wait)]
         if args.disk and '--disk' not in extra:
             extra += ['--disk', args.disk]
         if args.id:

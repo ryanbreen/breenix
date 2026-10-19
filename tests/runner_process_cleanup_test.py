@@ -1,5 +1,6 @@
 """Exercise run.sh's EXIT and signal cleanup with an actual log watcher."""
 
+import json
 import os
 import re
 import signal
@@ -16,33 +17,127 @@ MONITOR = ROOT / "scripts" / "vm-log-monitor.py"
 
 
 class RunnerProcessCleanupTest(unittest.TestCase):
-    def test_parallels_sweep_finishes_before_runner_exits(self):
+    def test_owned_parallels_deletion_finishes_before_runner_exits(self):
         source = RUNNER.read_text()
-        sweep = source.split('    PARALLELS_VM="breenix-$(date +%s)"', 1)[1]
-        sweep = sweep.split('    echo "Creating fresh VM', 1)[0]
+        functions = dict(re.findall(r'(?ms)^(\w+)\(\) \{\n(.*?)^\}', source))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             child_pid = root / "delete.pid"
-            script = f"""
-set -e
-PARALLELS_VM=breenix-new
+            script = "\n".join(f"{name}() {{\n{functions[name]}}}" for name in
+                               ("finish_vm_boot", "delete_parallels_vm", "install_vm_boot_traps"))
+            script += f"""
 bounded_vm_command() {{ "$@"; }}
 prlctl() {{
     if [ "$1" = list ]; then
-        printf 'stopped breenix-123\\n'
+        printf '  hdd0 (+) image\\n  hdd1 (+) image\\n'
     elif [ "$1" = delete ]; then
         sleep 1 &
         echo "$!" > {child_pid}
         wait "$!"
     fi
 }}
-{sweep}
+host_slot_header() {{ :; }}
+host_slot_release() {{ :; }}
+BREENIX_ROOT={ROOT}
+PARALLELS=true
+PARALLELS_VM=breenix-owned
+SERIAL_LOG={root / 'serial'}
+install_vm_boot_traps
+exit 0
 """
-            with (root / "runner.out").open("w") as output:
-                process = subprocess.Popen(["/bin/bash", "-c", script], stdout=output, stderr=output)
-                self.assertEqual(process.wait(timeout=5), 0)
+            process = subprocess.Popen(["/bin/bash", "-c", script])
+            self.assertEqual(process.wait(timeout=5), 0)
             pid = int(child_pid.read_text())
-            self.assertFalse(self.is_alive(pid), f"Parallels sweep left PID {pid} alive")
+            self.assertFalse(self.is_alive(pid), f"Owned Parallels deletion left PID {pid} alive")
+
+    def test_dead_owner_sweeps_preserve_live_owners_and_reap_deletion(self):
+        source = RUNNER.read_text()
+        functions = dict(re.findall(r'(?ms)^(\w+)\(\) \{\n(.*?)^\}', source))
+        names = ("vm_run_owner", "delete_parallels_vm", "sweep_parallels_vms",
+                 "vmware_bundle_stopped", "delete_vmware_bundle", "sweep_vmware_bundles")
+        definitions = "\n".join(f"{name}() {{\n{functions[name]}}}" for name in names)
+        for platform in ("parallels", "vmware"):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                markers = root / "owners"
+                markers.mkdir()
+                vmrun = root / "vmrun"
+                vmrun.write_text('#!/bin/bash\n' + f"""
+if [ "$1" = list ]; then exit 0; fi
+[ "$1" = deleteVM ] || exit 1
+sleep 1 &
+echo "$!" > {root / 'delete.pid'}
+wait "$!"
+echo "$2" >> {root / 'deleted'}
+rm -f "$2"
+""")
+                vmrun.chmod(0o755)
+                dead = subprocess.Popen(["sleep", "30"])
+                try:
+                    for name, pid in (("live", os.getpid()), ("dead", dead.pid),
+                                      ("running", dead.pid), ("reused", os.getpid())):
+                        vm = "breenix-" + name
+                        if platform == "parallels":
+                            marker = markers / (vm + ".json")
+                        else:
+                            bundle = root / (vm + ".vmwarevm")
+                            bundle.mkdir()
+                            (bundle / ".breenix-run-owner").write_text(vm + "\n")
+                            (bundle / (vm + ".vmx")).write_text("guest")
+                            marker = bundle / ".breenix-run-process"
+                        subprocess.run(["python3", str(ROOT / "scripts/vm-run-owner.py"),
+                                        "record", str(marker), str(pid)], check=True)
+                        if name == "reused":
+                            owner = json.loads(marker.read_text())
+                            owner["started"] = "previous process"
+                            marker.write_text(json.dumps(owner))
+                    dead.terminate()
+                    dead.wait(timeout=3)
+                    script = definitions + f"""
+set -e
+BREENIX_ROOT={ROOT}
+PARALLELS_OWNER_DIR={markers}
+VM_MACHINES={root}
+VMRUN={vmrun}
+bounded_vm_command() {{ "$@"; }}
+prlctl() {{
+    if [ "$1" = status ]; then
+        if [ "$2" = breenix-running ]; then echo "$2 running"; else echo "$2 stopped"; fi
+    elif [ "$1" = list ]; then
+        printf '  hdd0 (+) image\\n  hdd1 (+) image\\n'
+    elif [ "$1" = delete ]; then
+        sleep 1 &
+        echo "$!" > {root / 'delete.pid'}
+        wait "$!"
+        echo "$2" >> {root / 'deleted'}
+    fi
+}}
+"""
+                    # Report the dead owner's running VM as still running on Fusion.
+                    if platform == "vmware":
+                        text = vmrun.read_text().replace('then exit 0; fi',
+                            f'then echo "{root}/breenix-running.vmwarevm/breenix-running.vmx"; exit 0; fi', 1)
+                        vmrun.write_text(text)
+                    result = subprocess.run(["/bin/bash", "-c", script + f"sweep_{platform}_" +
+                                             ("vms" if platform == "parallels" else "bundles")],
+                                            capture_output=True, text=True, timeout=8)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    deleted = (root / "deleted").read_text().splitlines()
+                    self.assertEqual(len(deleted), 2, deleted)
+                    self.assertTrue(any("breenix-dead" in line for line in deleted), deleted)
+                    self.assertTrue(any("breenix-reused" in line for line in deleted), deleted)
+                    self.assertFalse(any("breenix-live" in line or "breenix-running" in line for line in deleted))
+                    self.assertFalse(self.is_alive(int((root / "delete.pid").read_text())))
+                    if platform == "parallels":
+                        self.assertTrue((markers / "breenix-live.json").exists())
+                        self.assertFalse((markers / "breenix-dead.json").exists())
+                    else:
+                        self.assertTrue((root / "breenix-live.vmwarevm/breenix-live.vmx").exists())
+                        self.assertFalse((root / "breenix-dead.vmwarevm").exists())
+                finally:
+                    if dead.poll() is None:
+                        dead.terminate()
+                        dead.wait(timeout=3)
 
     def test_exit_and_interruption_reap_log_monitor(self):
         source = RUNNER.read_text()
@@ -72,6 +167,7 @@ prlctl() {{
                 log = root / "vmware.log"
                 log.write_text("started\n")
                 pid_file = root / "monitor.pid"
+                keys_pid_file = root / "hostkeys.pid"
                 deleted = root / "deleted"
                 script = f"""
 finish_vm_boot() {{
@@ -88,7 +184,8 @@ prlctl() {{ :; }}
 host_slot_header() {{ :; }}
 vmware_check_network_log() {{ :; }}
 vmware_network_summary() {{ :; }}
-sweep_vmware_bundles() {{ :; }}
+delete_parallels_vm() {{ :; }}
+prune_vmware_inventory() {{ :; }}
 host_slot_release() {{ :; }}
 delete_vmware_bundle() {{ echo "$1" > {deleted}; }}
 PARALLELS={'true' if platform == 'parallels' else 'false'}
@@ -101,11 +198,15 @@ SERIAL_LOG={root / 'serial.log'}
 python3 -u {MONITOR} {platform} {log} "$$" &
 LOGMON_PID=$!
 echo "$LOGMON_PID" > {pid_file}
+python3 {ROOT / "scripts/hostkeys.py"} watch --serial "$SERIAL_LOG" --backend none --parent "$$" &
+HOSTKEYS_PID=$!
+echo "$HOSTKEYS_PID" > {keys_pid_file}
 install_vm_boot_traps
 {f'wait "$LOGMON_PID"' if name in {'int', 'term'} else f'exit {exit_code}'}
 """
                 process = subprocess.Popen(["/bin/bash", "-c", script])
                 pid = self.read_pid(pid_file)
+                keys_pid = self.read_pid(keys_pid_file)
                 if name in {"int", "term"}:
                     process.send_signal(signal.SIGINT if name == "int" else signal.SIGTERM)
                 self.assertEqual(process.wait(timeout=5), exit_code)
@@ -113,6 +214,7 @@ install_vm_boot_traps
                 while self.is_alive(pid) and time.monotonic() < deadline:
                     time.sleep(0.02)
                 self.assertFalse(self.is_alive(pid), f"{name} left monitor PID {pid} alive")
+                self.assertFalse(self.is_alive(keys_pid), f"{name} left hostkeys PID {keys_pid} alive")
                 if platform == "vmware":
                     self.assertEqual(deleted.read_text().strip(), str(root), f"{name} kept its VM")
                 else:

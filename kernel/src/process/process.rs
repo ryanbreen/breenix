@@ -4,7 +4,6 @@ use crate::ipc::FdTable;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
 use crate::memory::process_memory::ProcessPageTable;
-use crate::memory::stack::GuardedStack;
 use crate::signal::SignalState;
 use crate::task::thread::Thread;
 use alloc::boxed::Box;
@@ -334,9 +333,6 @@ pub struct Process {
     /// Memory usage statistics
     pub memory_usage: MemoryUsage,
 
-    /// Stack allocated for this process
-    pub stack: Option<Box<GuardedStack>>,
-
     /// One reference per row that can use this address space. Serialized by PM;
     /// exit releases it only after handing table custody to a remaining owner.
     pub(crate) address_space_lifetime: Option<alloc::sync::Arc<AddressSpaceLifetime>>,
@@ -509,7 +505,7 @@ impl Process {
             // fork, spawn and clone give a child its parent's instead.
             pgid: ProcessId(super::RESERVED_INIT_PID),
             sid: ProcessId(super::RESERVED_INIT_PID),
-            ctty: Some(crate::tty::ctty::TtyId::Console),
+            ctty: Some(crate::tty::ctty::TtyId::CONSOLE),
             cred: super::credentials::ProcessCredentials::root(),
             nice: 0,
             cpu: alloc::sync::Arc::new(crate::task::thread::CpuAccount::new(id.as_u64())),
@@ -535,7 +531,6 @@ impl Process {
             retirement_receipts: 0,
             exit_notifications: ExitNotificationObligations::new(),
             memory_usage: MemoryUsage::default(),
-            stack: None,
             page_table: None,
             address_space_lifetime: Some(alloc::sync::Arc::new(AddressSpaceLifetime::new())),
             heap_start: 0,

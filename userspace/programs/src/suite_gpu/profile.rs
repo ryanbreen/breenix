@@ -1,8 +1,7 @@
 //! Profile checks from gpu.md section 1.5. Expected pixels are constructed here;
 //! drawing and device readback use the public GPU interface.
 use super::common::*;
-use libbreenix::gpu::{self, abi, abi::Plain};
-use libbreenix::graphics;
+use libbreenix::gpu::{self, abi};
 use libbreenix::suite::{CaseError, CaseResult};
 
 type R<T> = Result<T, CaseError>;
@@ -32,21 +31,8 @@ impl Run {
         Ok(t)
     }
     fn show(&self, t: u64) -> CaseResult {
-        graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-        // Ruling 53 keeps a target wider or taller than the display off the scanout;
-        // its case has already judged its full readback.
-        let mut modes = abi::Modes::ZERO;
-        let r = gpu::call_with(abi::op::MODES, &mut modes);
-        ensure(r == 0, || format!("MODES: {}", errno(r)))?;
-        ensure((modes.current as usize) < modes.modes.len() && modes.current < modes.count, || "MODES: invalid current mode".to_string())?;
-        let mode = modes.modes[modes.current as usize];
-        let (_, rec) = read(t, 1, 1)?;
-        if u32_at(&rec, record::TARGET_WIDTH) > mode.width || u32_at(&rec, record::TARGET_HEIGHT) > mode.height {
-            return ensure(u32_at(&rec, record::FLAGS) & 1 == 0, || "oversized target was bound as scanout".to_string());
-        }
-        let (r, p) = gpu::present(self.ctx, t);
-        ensure(r == 0, || format!("PRESENT: {}", errno(r)))?;
-        wait_ok(self.ctx, p.fence, 2_000)
+        present_view(self.ctx, t)?;
+        Ok(())
     }
 }
 impl Drop for Run {

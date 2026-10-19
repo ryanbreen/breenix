@@ -7,8 +7,12 @@
 //!
 //! - `/dev/null` - Discards all writes, reads return EOF
 //! - `/dev/zero` - Discards all writes, reads return zero bytes
-//! - `/dev/console` - System console (serial output)
+//! - `/dev/console` - System console: tty1 (serial and the screen)
 //! - `/dev/tty` - Current process's controlling terminal
+//! - `/dev/tty0` - The foreground virtual terminal
+//! - `/dev/tty1` .. `/dev/tty6` - The virtual terminals
+//! - `/dev/vcs`, `/dev/vcsa` and their numbered forms - The terminals' screens
+//!   (`docs/console/contract.md` section 3)
 //!
 //! # Architecture
 //!
@@ -47,7 +51,19 @@ pub enum DeviceType {
     Rtc,
     /// /dev/ptmx - pseudo-terminal multiplexor: each open makes a new master
     Ptmx,
+    /// /dev/tty0 - the foreground virtual terminal at each operation
+    Tty0,
+    /// /dev/tty1 .. /dev/tty6 - a virtual terminal (1-based)
+    Vt(u8),
+    /// /dev/vcs, /dev/vcs1 .. 6 - a terminal's screen text (0: the foreground)
+    Vcs(u8),
+    /// /dev/vcsa, /dev/vcsa1 .. 6 - the screen with attributes (0: the foreground)
+    Vcsa(u8),
 }
+
+const VT_NAMES: [&str; 7] = ["tty0", "tty1", "tty2", "tty3", "tty4", "tty5", "tty6"];
+const VCS_NAMES: [&str; 7] = ["vcs", "vcs1", "vcs2", "vcs3", "vcs4", "vcs5", "vcs6"];
+const VCSA_NAMES: [&str; 7] = ["vcsa", "vcsa1", "vcsa2", "vcsa3", "vcsa4", "vcsa5", "vcsa6"];
 
 impl DeviceType {
     /// Get the device name (without /dev/ prefix)
@@ -59,6 +75,10 @@ impl DeviceType {
             DeviceType::Tty => "tty",
             DeviceType::Rtc => "rtc0",
             DeviceType::Ptmx => "ptmx",
+            DeviceType::Tty0 => VT_NAMES[0],
+            DeviceType::Vt(n) => VT_NAMES[*n as usize],
+            DeviceType::Vcs(n) => VCS_NAMES[*n as usize],
+            DeviceType::Vcsa(n) => VCSA_NAMES[*n as usize],
         }
     }
 
@@ -72,6 +92,21 @@ impl DeviceType {
             DeviceType::Tty => 5,
             DeviceType::Rtc => 6,
             DeviceType::Ptmx => 7,
+            DeviceType::Tty0 => 8,
+            DeviceType::Vt(n) => 10 + *n as u64,
+            DeviceType::Vcs(n) => 20 + *n as u64,
+            DeviceType::Vcsa(n) => 30 + *n as u64,
+        }
+    }
+
+    /// The virtual terminal (1-based) a terminal device names now: tty1 for
+    /// /dev/console, the foreground for /dev/tty0. No terminal for other devices.
+    pub fn terminal(&self) -> Option<usize> {
+        match self {
+            DeviceType::Console => Some(1),
+            DeviceType::Vt(n) => Some(*n as usize),
+            DeviceType::Tty0 => Some(crate::console::vt::foreground()),
+            _ => None,
         }
     }
 
@@ -151,6 +186,16 @@ pub fn init() {
         .push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
     devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
     devfs.devices.push(DeviceNode::new(DeviceType::Ptmx, 5, 2)); // /dev/ptmx
+
+    // Major 4 = virtual terminals, major 7 = their screens (`devices.txt`).
+    devfs.devices.push(DeviceNode::new(DeviceType::Tty0, 4, 0));
+    for n in 1..=6u8 {
+        devfs.devices.push(DeviceNode::new(DeviceType::Vt(n), 4, u32::from(n)));
+    }
+    for n in 0..=6u8 {
+        devfs.devices.push(DeviceNode::new(DeviceType::Vcs(n), 7, u32::from(n)));
+        devfs.devices.push(DeviceNode::new(DeviceType::Vcsa(n), 7, 128 + u32::from(n)));
+    }
 
     #[cfg(target_arch = "aarch64")]
     let has_rtc = crate::platform_config::is_qemu() || crate::time::firmware_rtc::available();
@@ -248,6 +293,16 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
             // This device API is non-sleeping; sys_read owns the blocking adapter.
             crate::ipc::stdin::read_bytes(buf).map_err(|e| -e)
         }
+        DeviceType::Tty0 | DeviceType::Vt(_) => match device_type.terminal() {
+            Some(1) => crate::ipc::stdin::read_bytes(buf).map_err(|e| -e),
+            Some(number) => match crate::ipc::stdin::vt_input(number - 1) {
+                Some(input) => input.read_or_prepare(buf, true).map_err(|_| -11),
+                None => Err(-6),
+            },
+            None => Err(-6),
+        },
+        // The screens are read through their own descriptors (`console::vcs`).
+        DeviceType::Vcs(_) | DeviceType::Vcsa(_) => Err(-22),
     }
 }
 
@@ -265,5 +320,13 @@ pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
             crate::tty::driver::write_unprocessed(buf);
             Ok(buf.len())
         }
+        DeviceType::Tty0 | DeviceType::Vt(_) => match device_type.terminal().and_then(crate::tty::driver::vt) {
+            Some(tty) => {
+                tty.write_bytes(buf);
+                Ok(buf.len())
+            }
+            None => Err(6),
+        },
+        DeviceType::Vcs(_) | DeviceType::Vcsa(_) => Err(22),
     }
 }

@@ -882,13 +882,55 @@ const RESOURCE_WIN_TEX_BASE: u32 = 10;
 /// Maximum number of per-window texture slots.
 const MAX_WIN_TEX_SLOTS: usize = 8;
 
-/// Per-slot backing buffer pointer and length.
-static mut WIN_TEX_BACKING: [(*mut u8, usize); MAX_WIN_TEX_SLOTS] =
-    [(core::ptr::null_mut(), 0); MAX_WIN_TEX_SLOTS];
+/// Per-slot physical page addresses and backing length.
+static mut WIN_TEX_BACKING: [(alloc::vec::Vec<u64>, usize); MAX_WIN_TEX_SLOTS] =
+    [const { (alloc::vec::Vec::new(), 0) }; MAX_WIN_TEX_SLOTS];
 /// Width/height of each slot's texture.
 static mut WIN_TEX_DIMS: [(u32, u32); MAX_WIN_TEX_SLOTS] = [(0, 0); MAX_WIN_TEX_SLOTS];
 /// Whether each slot has been initialized.
 static mut WIN_TEX_INITIALIZED: [bool; MAX_WIN_TEX_SLOTS] = [false; MAX_WIN_TEX_SLOTS];
+
+/// Allocate zeroed texture pages outside the kernel heap. Individual frames
+/// reuse the allocator's free list; DMA attachment accepts scattered pages.
+fn alloc_window_texture_backing(size: usize) -> Result<alloc::vec::Vec<u64>, &'static str> {
+    use crate::memory::frame_allocator;
+    let pages = size.div_ceil(4096);
+    let mut frames = alloc::vec::Vec::new();
+    frames
+        .try_reserve_exact(pages)
+        .map_err(|_| "no heap for a window texture's frame list")?;
+    for _ in 0..pages {
+        let Some(frame) = frame_allocator::allocate_frame() else {
+            free_window_texture_backing(&frames);
+            return Err("no frames for a window texture backing");
+        };
+        let phys = frame.start_address().as_u64();
+        // SAFETY: this frame was just claimed and is direct-mapped.
+        unsafe { core::ptr::write_bytes(phys_to_kern_virt(phys) as *mut u8, 0, 4096) };
+        frames.push(phys);
+    }
+    Ok(frames)
+}
+
+/// Return backing pages, including a partial allocation on failure.
+fn free_window_texture_backing(pages: &[u64]) {
+    use crate::memory::arch_stub::{PhysAddr, PhysFrame};
+    for &phys in pages {
+        crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+            PhysAddr::new(phys),
+        ));
+    }
+}
+
+fn clean_window_texture_backing(pages: &[u64], len: usize) {
+    for (page, &phys) in pages.iter().enumerate() {
+        let remaining = len.saturating_sub(page * 4096);
+        if remaining == 0 {
+            break;
+        }
+        dma_cache_clean(phys_to_kern_virt(phys) as *const u8, remaining.min(4096));
+    }
+}
 
 /// Create a per-window VirGL texture for GPU compositing.
 ///
@@ -911,7 +953,11 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
         if width <= old_w && height <= old_h {
             return Ok(res_id);
         }
-        // Window grew beyond existing texture — destroy and recreate at new size
+    }
+    // Recreate a grown texture or a slot whose previous window was destroyed.
+    // clear_window_texture_slot defers this work out of process cleanup.
+    if unsafe { !WIN_TEX_BACKING[slot].0.is_empty() } {
+        let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
         crate::serial_println!(
             "[virgl-win-tex] Resize: slot={} {}x{} -> {}x{}",
             slot,
@@ -920,29 +966,19 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
             width,
             height
         );
-        with_device_state(|state| virgl_detach_backing_cmd(state, res_id)).ok();
-        with_device_state(|state| virgl_resource_unref_cmd(state, res_id)).ok();
-        let (old_ptr, old_size) = unsafe { WIN_TEX_BACKING[slot] };
-        if !old_ptr.is_null() && old_size > 0 {
-            let old_layout = alloc::alloc::Layout::from_size_align(old_size, 4096).unwrap();
-            unsafe {
-                alloc::alloc::dealloc(old_ptr, old_layout);
-            }
-        }
+        with_device_state(|state| virgl_detach_backing_cmd(state, res_id))?;
+        with_device_state(|state| virgl_resource_unref_cmd(state, res_id))?;
+        let (old_pages, _) = unsafe { &WIN_TEX_BACKING[slot] };
+        free_window_texture_backing(old_pages);
         unsafe {
             WIN_TEX_INITIALIZED[slot] = false;
-            WIN_TEX_BACKING[slot] = (core::ptr::null_mut(), 0);
+            WIN_TEX_BACKING[slot] = (alloc::vec::Vec::new(), 0);
             WIN_TEX_DIMS[slot] = (0, 0);
         }
     }
 
     let tex_size = (width as usize) * (height as usize) * 4;
-    let layout = alloc::alloc::Layout::from_size_align(tex_size, 4096)
-        .map_err(|_| "invalid window texture layout")?;
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if ptr.is_null() {
-        return Err("failed to allocate window texture backing");
-    }
+    let pages = alloc_window_texture_backing(tex_size)?;
 
     // RESOURCE_CREATE_3D — same bind flags as COMPOSITE_TEX
     with_device_state(|state| {
@@ -960,17 +996,17 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
     })?;
 
     // ATTACH_BACKING (paged scatter-gather)
-    with_device_state(|state| virgl_attach_backing_paged(state, res_id, ptr, tex_size))?;
+    with_device_state(|state| virgl_attach_backing_from_pages(state, res_id, &pages, tex_size))?;
 
     // CTX_ATTACH_RESOURCE
     with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
 
     // Prime with TRANSFER_TO_HOST_3D
-    dma_cache_clean(ptr, tex_size);
+    clean_window_texture_backing(&pages, tex_size);
     with_device_state(|state| transfer_to_host_3d(state, res_id, 0, 0, width, height, width * 4))?;
 
     unsafe {
-        WIN_TEX_BACKING[slot] = (ptr, tex_size);
+        WIN_TEX_BACKING[slot] = (pages, tex_size);
         WIN_TEX_DIMS[slot] = (width, height);
         WIN_TEX_INITIALIZED[slot] = true;
     }
@@ -990,11 +1026,8 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
 /// This prevents stale texture data from bleeding into new windows
 /// that reuse the same slot index.
 ///
-/// NOTE: Does NOT zero the backing buffer here. This function is called from
-/// remove_for_pid() which runs in the process cleanup path (including from
-/// context_switch.rs). Zeroing a large buffer (e.g. 750×550×4 = 1.6MB) in
-/// that path corrupts other threads' contexts due to timing/memory issues.
-/// The backing buffer is zeroed lazily in create_window_texture's reuse path.
+/// Called from process cleanup (including context_switch.rs). Defer backing
+/// release and replacement to create_window_texture to keep that path short.
 pub fn clear_window_texture_slot(slot: usize) {
     if slot >= MAX_WIN_TEX_SLOTS {
         return;
@@ -1006,7 +1039,7 @@ pub fn clear_window_texture_slot(slot: usize) {
 }
 
 /// Upload dirty window pixels to GPU texture via TRANSFER_TO_HOST_3D.
-/// Copies scattered MAP_SHARED pages to contiguous backing, then uploads.
+/// Copies MAP_SHARED pages to scattered texture backing, then uploads.
 fn upload_window_texture(
     slot: usize,
     width: u32,
@@ -1017,8 +1050,9 @@ fn upload_window_texture(
     if slot >= MAX_WIN_TEX_SLOTS {
         return Err("slot out of range");
     }
-    let (backing_ptr, backing_len) = unsafe { WIN_TEX_BACKING[slot] };
-    if backing_ptr.is_null() {
+    let (backing_pages, backing_len) = unsafe { &WIN_TEX_BACKING[slot] };
+    let backing_len = *backing_len;
+    if backing_pages.is_empty() {
         return Err("backing not allocated");
     }
 
@@ -1046,12 +1080,17 @@ fn upload_window_texture(
                 break;
             }
             let page_off = src_off % 4096;
-            let chunk = (4096 - page_off).min(row_bytes - copied_in_row);
+            let dst_off = row * dst_stride + copied_in_row;
+            let dst_page_off = dst_off % 4096;
+            let dst = phys_to_kern_virt(backing_pages[dst_off / 4096]) as *mut u8;
+            let chunk = (4096 - page_off)
+                .min(4096 - dst_page_off)
+                .min(row_bytes - copied_in_row);
             let virt = phys_to_kern_virt(page_phys_addrs[page_idx]);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     (virt as *const u8).add(page_off),
-                    backing_ptr.add(row * dst_stride + copied_in_row),
+                    dst.add(dst_page_off),
                     chunk,
                 );
             }
@@ -1066,7 +1105,7 @@ fn upload_window_texture(
         .saturating_add(row_bytes)
         .min(backing_len);
     if clean_len > 0 {
-        dma_cache_clean(backing_ptr, clean_len);
+        clean_window_texture_backing(backing_pages, clean_len);
     }
     with_device_state(|state| {
         transfer_to_host_3d(state, res_id, 0, 0, width, height, tex_width * 4)
@@ -1166,12 +1205,7 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         let tex_size = (max_w as usize) * (max_h as usize) * 4;
         let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
 
-        let layout = alloc::alloc::Layout::from_size_align(tex_size, 4096)
-            .map_err(|_| "invalid pre-alloc texture layout")?;
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            return Err("failed to allocate pre-alloc texture backing");
-        }
+        let pages = alloc_window_texture_backing(tex_size)?;
 
         with_device_state(|state| {
             virgl_resource_create_3d_cmd(
@@ -1186,15 +1220,15 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
                 1,
             )
         })?;
-        with_device_state(|state| virgl_attach_backing_paged(state, res_id, ptr, tex_size))?;
+        with_device_state(|state| virgl_attach_backing_from_pages(state, res_id, &pages, tex_size))?;
         with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
-        dma_cache_clean(ptr, tex_size);
+        clean_window_texture_backing(&pages, tex_size);
         with_device_state(|state| {
             transfer_to_host_3d(state, res_id, 0, 0, max_w, max_h, max_w * 4)
         })?;
 
         unsafe {
-            WIN_TEX_BACKING[slot] = (ptr, tex_size);
+            WIN_TEX_BACKING[slot] = (pages, tex_size);
             WIN_TEX_DIMS[slot] = (max_w, max_h);
             WIN_TEX_INITIALIZED[slot] = true;
         }
@@ -1484,6 +1518,8 @@ fn init_dimmer_texture() -> Result<(), &'static str> {
 const VIRTIO_GPU_FLAG_FENCE: u32 = 1;
 const GPU_MSIX_CONFIG_VECTOR: u16 = 0;
 const GPU_MSIX_QUEUE_VECTOR: u16 = 1;
+/// The vector value that routes a virtqueue or config change to no MSI-X vector.
+const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 
 #[derive(Clone, Copy)]
 struct GpuMsiConfig {
@@ -1519,9 +1555,12 @@ struct GpuPciDeviceState {
 static mut GPU_PCI_STATE: Option<GpuPciDeviceState> = None;
 static GPU_PCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector.
+/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector, or
+/// the device's INTx line on QEMU.
 static GPU_IRQ: AtomicU32 = AtomicU32::new(0);
 static GPU_CONFIG_IRQ: AtomicU32 = AtomicU32::new(0);
+/// With INTx, the ISR status byte the handler reads to lower the line; 0 with MSI-X.
+static GPU_INTX_ISR: AtomicU64 = AtomicU64::new(0);
 
 const GPU_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
 
@@ -1657,6 +1696,19 @@ pub fn disable_virgl() {
 // =============================================================================
 // MSI Interrupt Support
 // =============================================================================
+
+/// The GIC INTID of the device's INTx line on QEMU's virt machine, whose
+/// device tree maps slot `s` pin `p` (1-4) to SPI `3 + (s + p - 1) % 4`; 0
+/// when the device has no INTx pin.
+#[cfg(target_arch = "aarch64")]
+fn qemu_virt_intx(pci_dev: &crate::drivers::pci::Device) -> u32 {
+    let pin = pci_dev.interrupt_pin as u32;
+    if pin == 0 || pin > 4 {
+        return 0;
+    }
+    pci_dev.enable_intx();
+    32 + 3 + (pci_dev.device as u32 + pin - 1) % 4
+}
 
 /// Set up PCI MSI-X for the VirtIO GPU through GICv2m.
 ///
@@ -1794,12 +1846,19 @@ fn trace_gpu_msix_programming(
     }
 }
 
-/// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.
+/// Handle a GPU virtqueue interrupt (MSI-X, or INTx on QEMU) — called from exception.rs IRQ dispatch.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
     let irq = GPU_IRQ.load(Ordering::Relaxed);
     if irq == 0 {
         return;
+    }
+
+    // An INTx line stays raised until the ISR status byte is read.
+    let isr = GPU_INTX_ISR.load(Ordering::Acquire);
+    if isr != 0 {
+        // SAFETY: the device's ISR byte, mapped for the kernel's lifetime.
+        unsafe { core::ptr::read_volatile(isr as *const u8) };
     }
 
     // MSI-X delivery is edge-like. Do not mask or clear the SPI here: a new
@@ -1912,17 +1971,27 @@ pub fn init() -> Result<(), &'static str> {
     // enables MSI-X first, then sets up queues with MSI-X vectors. The VirtIO
     // spec requires MSI-X to be enabled at the PCI level before writing
     // queue_msix_vector in the common config.
+    // QEMU's virt machine with GICv3 has no GICv2m: there the device signals
+    // completions on its INTx line instead.
     #[cfg(target_arch = "aarch64")]
-    let msi_config = setup_gpu_msi(virtio.pci_device());
+    let intx = if crate::platform_config::is_qemu() { qemu_virt_intx(virtio.pci_device()) } else { 0 };
+    #[cfg(not(target_arch = "aarch64"))]
+    let intx = 0;
+    #[cfg(target_arch = "aarch64")]
+    let msi_config = if intx == 0 { setup_gpu_msi(virtio.pci_device()) } else { GpuMsiConfig::NONE };
     #[cfg(not(target_arch = "aarch64"))]
     let msi_config = GpuMsiConfig::NONE;
 
-    if !msi_config.is_enabled() {
-        return Err("VirtIO GPU requires MSI-X interrupt completion");
+    if intx == 0 && !msi_config.is_enabled() {
+        return Err("VirtIO GPU requires MSI-X (INTx on QEMU) interrupt completion");
     }
 
-    let queue_vector = GPU_MSIX_QUEUE_VECTOR;
-    let config_vector = GPU_MSIX_CONFIG_VECTOR;
+    // Without MSI-X the device raises INTx for vectors left at NO_VECTOR.
+    let (queue_vector, config_vector) = if intx != 0 {
+        (VIRTIO_MSI_NO_VECTOR, VIRTIO_MSI_NO_VECTOR)
+    } else {
+        (GPU_MSIX_QUEUE_VECTOR, GPU_MSIX_CONFIG_VECTOR)
+    };
 
     // Write config_msix_vector (Linux does this in vp_find_vqs_msix)
     let readback = virtio.set_config_msix_vector(config_vector);
@@ -2077,7 +2146,20 @@ pub fn init() -> Result<(), &'static str> {
     // Queue completion interrupts are enabled now so init commands use the same
     // interrupt-driven completion path as runtime commands.
     #[cfg(target_arch = "aarch64")]
-    {
+    if intx != 0 {
+        use crate::arch_impl::aarch64::gic;
+
+        let isr = unsafe { (*(&raw const GPU_PCI_STATE)).as_ref().and_then(|state| state.device.isr_address()) };
+        GPU_INTX_ISR.store(isr.ok_or("VirtIO GPU PCI: no ISR capability for INTx")?, Ordering::Release);
+        GPU_IRQ.store(intx, Ordering::Release);
+        GPU_COMPLETED_USED_IDX.store(0, Ordering::Release);
+        GPU_COMPLETION.reset();
+
+        gic::configure_spi_level_triggered(intx);
+        gic::clear_spi_pending(intx);
+        gic::enable_spi(intx);
+        crate::serial_println!("[virtio-gpu-pci] INTx active: spi={}", intx);
+    } else {
         use crate::arch_impl::aarch64::gic;
 
         GPU_CONFIG_IRQ.store(msi_config.config_spi, Ordering::Release);
@@ -2344,8 +2426,36 @@ fn virtgpu_note_resource2_submit(cmd_type: u32, resource_id: u32) {
     }
 }
 
+/// The resource the device last accepted for scanout 0 (SET_SCANOUT answered
+/// OK), or 0.
+static SCANOUT_RESOURCE: AtomicU32 = AtomicU32::new(0);
+
+#[inline(always)]
+fn note_scanout(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    if cmd_type == cmd::SET_SCANOUT && resp_type == cmd::RESP_OK_NODATA {
+        SCANOUT_RESOURCE.store(resource_id, Ordering::Release);
+    }
+}
+
+/// The resource the device last accepted for scanout 0, and its guest backing:
+/// what the display shows, for a read-back of the kernel's screen.
+pub fn scanout_binding() -> Option<(u32, *const u8, usize)> {
+    let resource = SCANOUT_RESOURCE.load(Ordering::Acquire);
+    // SAFETY: the backings are set once, at init, before any SET_SCANOUT names
+    // their resource.
+    let (pixels, len) = unsafe {
+        match resource {
+            RESOURCE_3D_ID => (PCI_3D_FB_PTR, PCI_3D_FB_LEN),
+            RESOURCE_ID => (PCI_FB_PTR, PCI_FB_LEN),
+            _ => return None,
+        }
+    };
+    (!pixels.is_null()).then_some((resource, pixels as *const u8, len))
+}
+
 #[inline(always)]
 fn virtgpu_note_resource2_response(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    note_scanout(cmd_type, resource_id, resp_type);
     if cmd_type == cmd::RESOURCE_FLUSH && resource_id == RESOURCE_3D_ID {
         if resp_type == cmd::RESP_OK_NODATA {
             virtgpu::VIRTGPU_R2_FLUSH_OK.increment();
@@ -3782,7 +3892,6 @@ fn attach_backing_simple(
 /// Unlike `virgl_attach_backing_paged` which computes sequential physical addresses
 /// from a contiguous kernel allocation, this takes a list of arbitrary physical page
 /// addresses — used for MAP_SHARED window buffers where pages may not be contiguous.
-#[allow(dead_code)]
 fn virgl_attach_backing_from_pages(
     state: &mut GpuPciDeviceState,
     resource_id: u32,
@@ -4251,6 +4360,12 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     })
 }
 
+/// Present backing pixels and wait for fenced transfer, scanout and flush
+/// responses. The console uses this before releasing its presentation token.
+pub fn flush_rect_sync(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+    present_3d(x, y, width, height)
+}
+
 /// Send only a RESOURCE_FLUSH command without TRANSFER_TO_HOST_2D.
 ///
 /// Used in GOP hybrid mode where pixels are already in BAR0 (the display
@@ -4415,10 +4530,16 @@ fn present_polled(
     h: u32,
     deadline: u64,
 ) -> bool {
+    let first_fence = state.next_fence_id;
+    state.next_fence_id += 3;
     let hdr = |type_: u32, ctx_id: u32| VirtioGpuCtrlHdr {
         type_,
-        flags: 0,
-        fence_id: 0,
+        flags: VIRTIO_GPU_FLAG_FENCE,
+        fence_id: first_fence + match type_ {
+            cmd::SET_SCANOUT => 1,
+            cmd::RESOURCE_FLUSH => 2,
+            _ => 0,
+        },
         ctx_id,
         padding: 0,
     };
@@ -4488,6 +4609,12 @@ const NO_POLLED_TIMEOUT: u32 = u32::MAX;
 fn ctrlq_in_flight() -> u16 {
     let avail_idx = unsafe { read_volatile(&raw const PCI_CTRL_QUEUE.avail.idx) };
     avail_idx.wrapping_sub(virtgpu_trace_used_idx())
+}
+
+/// Whether a published presentation can still touch its backing. Used after
+/// stopping the console producer, before transferring display ownership.
+pub fn presentation_pending() -> bool {
+    ctrlq_in_flight() != 0
 }
 
 /// Whether a polled command that timed out is still owned by the device. The
@@ -4566,11 +4693,20 @@ fn submit_polled<T>(
         }
         core::hint::spin_loop();
     }
-    unsafe {
+    let resp_type = unsafe {
         core::arch::asm!("dc civac, {}", in(reg) resp as usize, options(nostack));
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        core::ptr::read_volatile(resp as *const u32) == cmd::RESP_OK_NODATA
+        core::ptr::read_volatile(resp as *const u32)
+    };
+    let (cmd_type, resource_id) = virtgpu_decode_command(page);
+    let request = unsafe { &*(page as *const VirtioGpuCtrlHdr) };
+    let response = unsafe { core::ptr::read_volatile(resp as *const VirtioGpuCtrlHdr) };
+    let fenced = request.flags & VIRTIO_GPU_FLAG_FENCE == 0
+        || (response.flags & VIRTIO_GPU_FLAG_FENCE != 0 && response.fence_id == request.fence_id);
+    if fenced {
+        note_scanout(cmd_type, resource_id, resp_type);
     }
+    resp_type == cmd::RESP_OK_NODATA && fenced
 }
 
 // =============================================================================
@@ -5622,7 +5758,7 @@ fn virgl_composite_single_quad(
         let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
             crate::drivers::virtio::input_mmio::mouse_position()
         } else {
-            crate::drivers::usb::hid::mouse_position()
+            crate::input::pointer::mouse_position()
         };
 
         let shape = CURSOR_SHAPE
@@ -5825,7 +5961,7 @@ pub fn virgl_composite_windows(
     let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_position()
     } else {
-        crate::drivers::usb::hid::mouse_position()
+        crate::input::pointer::mouse_position()
     };
     let cur_x = mouse_x as i32;
     let cur_y = mouse_y as i32;
@@ -6046,7 +6182,7 @@ fn copy_3d_framebuffer_to_bar0(width: u32, height: u32) {
         }
         let copy_len = fb_bytes.min(bar0.len()).min(fb_len);
         unsafe {
-            core::ptr::copy_nonoverlapping(fb_ptr, bar0.as_mut_ptr(), copy_len);
+            { bar0 }.copy_from_slice(0, core::slice::from_raw_parts(fb_ptr, copy_len));
         }
     }
 }

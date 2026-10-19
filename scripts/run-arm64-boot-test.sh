@@ -154,6 +154,7 @@ python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -m 512M \
     -nographic \
     -no-reboot \
+    -device virtio-rng-device \
     -kernel "$KERNEL_PATH" \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \

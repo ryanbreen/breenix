@@ -390,7 +390,7 @@ fn sys_open_write_path(
                     // uid and gid), so a restrictive mode still lets it reopen it.
                     match fs.create_file(parent, filename, file_mode, cred.euid, gid) {
                         Ok(new_inode) => {
-                            log::info!(
+                            log::debug!(
                                 "sys_open: created file {} with inode {}",
                                 resolved.path,
                                 new_inode
@@ -803,7 +803,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             };
             match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
                 Ok(fd) => {
-                    log::info!(
+                    log::debug!(
                         "sys_open: opened directory {} as fd {} (inode {})",
                         path,
                         fd,
@@ -1144,6 +1144,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         PtySlave(alloc::sync::Arc<crate::tty::pty::PtyPair>),
         Fifo(alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>),
         ProcfsFile {
+            mode: u32,
             size: i64,
             owner: (u32, u32),
         },
@@ -1224,7 +1225,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::FifoRead(_, _, entry)
                 | FdKind::FifoWrite(_, _, entry)
                 | FdKind::FifoReadWrite(_, _, entry) => FstatKind::Fifo(entry.clone()),
-                FdKind::ProcfsFile { ref content, owner, .. } => FstatKind::ProcfsFile {
+                FdKind::ProcfsFile { ref content, owner, mode, .. } => FstatKind::ProcfsFile {
+                    mode: *mode,
                     size: content.len() as i64,
                     owner: *owner,
                 },
@@ -1343,10 +1345,10 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 return SyscallResult::Err(e);
             }
         }
-        FstatKind::ProcfsFile { size, owner } => {
+        FstatKind::ProcfsFile { size, owner, mode } => {
             stat.st_dev = 0xffff0004;
             stat.st_ino = 0;
-            stat.st_mode = S_IFREG | 0o444;
+            stat.st_mode = S_IFREG | mode;
             stat.st_nlink = 1;
             stat.st_size = size;
             (stat.st_uid, stat.st_gid) = owner;
@@ -1867,7 +1869,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     match unlink_result {
         Ok(()) => {
-            log::info!("sys_unlink: successfully unlinked {}", path);
+            log::debug!("sys_unlink: successfully unlinked {}", path);
             SyscallResult::Ok(0)
         }
         Err(e) => {
@@ -2133,7 +2135,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     match rmdir_result {
         Ok(()) => {
-            log::info!(
+            log::debug!(
                 "sys_rmdir: successfully removed directory {}",
                 resolved.path
             );
@@ -2793,6 +2795,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     };
 
     let fd_kind = FdKind::ProcfsFile {
+        mode: if matches!(normalized, "/proc/console/check" | "/proc/fbcon/check" | "/proc/kmsg") { 0o400 } else { 0o444 },
         content,
         position: 0,
         owner: crate::fs::procfs::owner(path),
@@ -2854,7 +2857,7 @@ fn handle_devfs_open(
     }
 
     // Look up the device in static devfs
-    let device = match devfs::lookup(device_name) {
+    let mut device = match devfs::lookup(device_name) {
         Some(d) => d,
         None => {
             log::debug!("handle_devfs_open: device not found: {}", device_name);
@@ -2867,6 +2870,10 @@ fn handle_devfs_open(
     }
     if device.device_type == devfs::DeviceType::Ptmx {
         return open_ptmx(flags, native_inode, reserved);
+    }
+    if let devfs::DeviceType::Vcs(n) | devfs::DeviceType::Vcsa(n) = device.device_type {
+        let attributes = matches!(device.device_type, devfs::DeviceType::Vcsa(_));
+        return open_vcs(usize::from(n), attributes, flags, native_inode, reserved);
     }
 
     // Get current process and allocate fd
@@ -2911,7 +2918,10 @@ fn handle_devfs_open(
                 drop(manager_guard);
                 return open_tty_slave(&pair, flags, native_inode, reserved);
             }
-            (TtyId::Console, TtyRef::Console(_)) => {
+            // A virtual terminal: its own device, so reads, writes and the
+            // open count are that terminal's (`docs/console/contract.md` 1.1).
+            (TtyId::Vt(number), TtyRef::Vt(_)) => {
+                device.device_type = devfs::DeviceType::Vt(number);
                 let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
                     Ok(entry) => entry.with_inode(native_inode),
                     Err(e) => return SyscallResult::Err(e),
@@ -2923,6 +2933,24 @@ fn handle_devfs_open(
             }
             _ => SyscallResult::Err(6), // ENXIO
         };
+    }
+
+    // Numbered terminals may expose input only to their controlling session.
+    // tty0 follows the foreground dynamically, so an unprivileged reader
+    // cannot retain it across a switch to another session's login prompt.
+    if flags & 3 != 1 && process.cred.euid != 0 {
+        let permitted = match device.device_type {
+            devfs::DeviceType::Tty0 => false,
+            devfs::DeviceType::Console | devfs::DeviceType::Vt(_) => {
+                device.device_type.terminal().is_some_and(|number| {
+                    process.ctty == Some(crate::tty::ctty::TtyId::Vt(number as u8))
+                })
+            }
+            _ => true,
+        };
+        if !permitted {
+            return SyscallResult::Err(13); // EACCES
+        }
     }
 
     // Allocate file descriptor with Device kind
@@ -3105,6 +3133,39 @@ fn open_ptmx(
             crate::tty::pty::close_master_ref(&pair);
             SyscallResult::Err(e as u64)
         }
+    }
+}
+
+/// Open a virtual terminal's screen, `/dev/vcs*` (`attributes` false) or
+/// `/dev/vcsa*`, for terminal `vt` (1-based; 0 the foreground at each read).
+/// Root only: the screens are owned by root with mode 0600.
+fn open_vcs(
+    vt: usize,
+    attributes: bool,
+    flags: u32,
+    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    reserved: Option<ReservedSlot>,
+) -> SyscallResult {
+    use super::errno::EACCES;
+    use crate::ipc::fd::FileDescriptor;
+    if current_file_credentials().euid != 0 {
+        return SyscallResult::Err(EACCES as u64);
+    }
+    let object = alloc::sync::Arc::new(crate::console::vcs::VcsFile::new(vt, attributes));
+    let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
+        Ok(entry) => entry.with_inode(native_inode),
+        Err(e) => return SyscallResult::Err(e),
+    };
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let mut manager_guard = crate::process::manager();
+    match manager_guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(thread_id)) {
+        Some((_, process)) => match install_descriptor(&mut process.fd_table, reserved, entry) {
+            Ok(fd) => SyscallResult::Ok(fd as u64),
+            Err(e) => SyscallResult::Err(e as u64),
+        },
+        None => SyscallResult::Err(3), // ESRCH
     }
 }
 
@@ -3518,7 +3579,7 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
-    } else if cfg!(all(target_arch = "x86_64", not(feature = "interactive"))) && dir_path == "/proc/fbcon" {
+    } else if dir_path == "/proc/console" || (cfg!(target_arch = "x86_64") && dir_path == "/proc/fbcon") {
         alloc::vec![String::from("check")]
     } else {
         Vec::new()
@@ -3527,7 +3588,13 @@ fn handle_procfs_getdents64(
     let pid_dir = dir_path
         .strip_prefix("/proc/")
         .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
-    let fixed: &[&str] = if pid_dir { &crate::fs::procfs::PID_DIR_ENTRIES } else { &[] };
+    let fixed: &[&str] = if pid_dir {
+        &crate::fs::procfs::PID_DIR_ENTRIES
+    } else if dir_path == "/proc/breenix" {
+        &["testing", "ext2", "frames"]
+    } else {
+        &[]
+    };
     let names = || [".", ".."].into_iter().chain(listed.iter().map(String::as_str)).chain(fixed.iter().copied());
 
     // The records are built in one buffer, no larger than the caller's.
