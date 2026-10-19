@@ -138,7 +138,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         url = urlsplit(site['BOOT_URL'])
         lines += ['METAL_FETCH_URL=' + urlunsplit((url.scheme, url.netloc, PROBE_PATH, '', '')) + '\n',
                   'METAL_FETCH_SHA256=' + PROBE_SHA256 + '\n']
-    shadow = console_shadow(site, hasher) if mode == 'console' else None
+    # Default boots use the same getty login as explicit console boots.
+    shadow = console_shadow(site, hasher) if mode in ('default', 'console') else None
     debugfs, = require_e2fsprogs('debugfs')
     image = Path(image).resolve()
     packaged = Path(__file__).resolve().with_name('write-boot-target.sh')

@@ -64,6 +64,7 @@ impl SuiteTarget {
 pub enum Target {
     Default,
     Shell,
+    Desktop,
     Console { idle_minutes: u16, replug: bool },
     Probe,
     Suite(SuiteTarget),
@@ -86,6 +87,7 @@ pub fn parse(text: &str) -> Result<Target, String> {
         return Err(String::from("it has more than one line"));
     }
     if line.trim() == "default" { return Ok(Target::Default); }
+    if line.trim() == "desktop" { return Ok(Target::Desktop); }
     if line.trim() == "shell" { return Ok(Target::Shell); }
     if line.trim() == "console" { return Ok(Target::Console { idle_minutes: 30, replug: false }); }
     if line.trim() == "probe" {
