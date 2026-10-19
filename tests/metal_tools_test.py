@@ -786,7 +786,7 @@ class RootStagingTest(unittest.TestCase):
             site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
-                                          ('suite', 'smoke', 'suite smoke'), ('tests', None, 'default')]:
+                                          ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:
                 facts = metal_root.stage_root(image, mode, suite, site)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):
@@ -819,12 +819,12 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
             # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
             metal_root.stage_root(image, 'suite', 'smoke,time', site)
-            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('boot-target'), 'suite smoke hostkeys xhci-replay\n')
             self.assertEqual(read('suite-sequence'), 'smoke,time\n')
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'suite', 'smoke,absent', site)
             metal_root.stage_root(image, 'suite', 'time', site)
-            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('boot-target'), 'suite time hostkeys xhci-replay\n')
             self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
@@ -1116,6 +1116,31 @@ class DriverTest(StateTest):
         d.on_line('SUITE processes MEMORY reclaimed=PASS free_before=9 free_after=9 allowance=64')
         self.assertFalse(d.completion_reported)
         self.finish(lambda: d.on_line('SUITE_SEQUENCE READY processes'), m.EXIT_DONE)
+
+    def test_suite_answers_each_host_key_record_once_with_boot_reports_on_the_serial_console(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'console'
+        d.console_send = Mock()
+        record = 'SUITE console HOSTKEY keys/alt-fn seq=4 keys=alt-f2,a'
+        with patch.object(boot.hostkeys.time, 'sleep'):
+            d.on_line(record)  # before the kernel starts: not a case's record
+            self.assertFalse(d.console_send.called)
+            d.kernel_started = 120
+            d.on_line(record)
+            d.on_line(record)  # a serial replay of the same record is answered once
+            d.on_line('SUITE console HOSTKEY keys/alt-fn seq=5 keys=alt-f2')
+        self.assertEqual([c.args[0] for c in d.console_send.call_args_list], [
+            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000',
+            'BXKEY 0000040000000000,0000000000000000',
+            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
+        logged = [c.kwargs['message'] for c in d.event.call_args_list if c.args[0] == 'hostkeys']
+        self.assertEqual(len(logged), 2)
+        self.assertIn('seq=4 keys=alt-f2,a sent via xhci-replay', logged[0])
+        # A console boot types no host keys.
+        d.args.mode, d.hostkey_watcher = 'console', None
+        d.console_send.reset_mock()
+        d.on_line('SUITE console HOSTKEY keys/alt-fn seq=6 keys=alt-f2')
+        self.assertFalse(d.console_send.called)
 
     def test_failed_probe_keeps_failure_and_waits_for_kernel_producers(self):
         d = self.driver

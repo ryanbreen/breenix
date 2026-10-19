@@ -40,6 +40,10 @@ import metal_score  # noqa: E402
 import metal_attended  # noqa: E402
 import metal_disk  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
+# Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
+if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+import hostkeys  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default', 'shell', 'probe', 'suite', 'console', 'tests')
@@ -189,6 +193,8 @@ class Driver:
         self.shell_ready = False
         self.shell_sent = False
         self.attended_challenge = None
+        # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
+        self.hostkey_watcher = None
         self.console_step = 0
         self.console_done = False
         self.delivery = {}
@@ -888,6 +894,7 @@ class Driver:
             raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
+        self.on_hostkey_line(line)
         self.challenge_shell(line)
         self.challenge_console(line, complete=True)
         for stages in self.required_stages:
@@ -918,6 +925,17 @@ class Driver:
         if self.console_intent:
             needed.add('console-intent')
         return needed <= self.seen
+
+    def on_hostkey_line(self, line):
+        """A suite case's HOSTKEY record: type its chords on the serial console as HID boot reports, which the
+        kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
+        once; what was sent goes to the boot's events, never to the guest's serial."""
+        if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
+            return
+        if self.hostkey_watcher is None:
+            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.console_send), metal_root.HOSTKEYS,
+                                                    log=lambda message: self.event('hostkeys', message=message))
+        self.hostkey_watcher.line(line)
 
     def on_intent_line(self, line, observed_at):
         """A disk-root console boot's replug choice must come from its staged intent, not the installed target."""

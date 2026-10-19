@@ -1182,6 +1182,10 @@ fn launch_x86_production_init(
             }
         })
     } else { None };
+    // The bare-metal boot loop answers host keys over the serial console.
+    if hostkeys.as_deref().is_some_and(|value| value.split(';').next() == Some("xhci-replay")) {
+        kernel::drivers::xhci::arm_host_keys();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard

@@ -22,6 +22,10 @@ use core::sync::atomic::{fence, Ordering};
 const ERRORS_BEFORE_TEARDOWN: u32 = 3;
 /// Detach and reattach rounds in a console boot's replug exercise.
 const REPLUG_ROUNDS: u32 = 10;
+/// Between replayed host-key reports: one polling interval of a low-speed
+/// boot keyboard (bInterval 10, USB 2.0 9.6.6), so no key is held for less.
+#[cfg(target_arch = "x86_64")]
+const HOST_KEY_GAP_NS: u64 = 10_000_000;
 const CCS: u32 = 1;
 const PED: u32 = 1 << 1;
 const PP: u32 = 1 << 9;
@@ -85,6 +89,8 @@ impl Controller {
             if LEDS.swap(false, Ordering::SeqCst) {
                 self.sync_leds();
             }
+            #[cfg(target_arch = "x86_64")]
+            self.replay_keys();
             #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if super::REPLAY.swap(false, Ordering::SeqCst) {
                 let pending = super::pointer::replay::PENDING.lock().take();
@@ -112,15 +118,98 @@ impl Controller {
         }
     }
 
-    /// Now, when events are already waiting; else the next repeat.
+    /// Now, when events are already waiting; else the next repeat or, on
+    /// x86, the next host-key report.
     fn next_deadline(&self) -> Option<u64> {
         if !self.completions.is_empty() || !self.port_events.is_empty() {
             return Some(now());
         }
-        self.devices
+        let repeat = self
+            .devices
             .iter()
             .filter_map(|d| d.keyboard.as_ref()?.state.repeat_due())
-            .min()
+            .min();
+        #[cfg(target_arch = "x86_64")]
+        if !self.host_keys.is_empty() {
+            return Some(repeat.map_or(self.next_host_key, |due| due.min(self.next_host_key)));
+        }
+        repeat
+    }
+
+    /// Take the reports the serial host-key channel queued, and replay the
+    /// next one when its gap has passed (`host_keys`, `replay_key`).
+    #[cfg(target_arch = "x86_64")]
+    fn replay_keys(&mut self) {
+        if super::HOST_KEYS.swap(false, Ordering::SeqCst) {
+            self.host_keys.extend(super::HOST_KEY_REPORTS.lock().drain(..));
+        }
+        let now = now();
+        if now < self.next_host_key {
+            return;
+        }
+        let Some(report) = self.host_keys.pop_front() else {
+            return;
+        };
+        self.next_host_key = now + HOST_KEY_GAP_NS;
+        if let Err(error) = self.replay_key(&report) {
+            // The rest of the line would act on a keyboard state this report did not make.
+            let dropped = self.host_keys.len();
+            self.host_keys.clear();
+            log::warn!("[usb] host key report refused: {error}; {dropped} queued reports dropped");
+        }
+    }
+
+    /// Replay one boot report on the first attached boot keyboard, through the
+    /// path a device's report takes: a Transfer Event for a posted TD, the
+    /// report read from that TD's buffer by `keyboard_event`. The endpoint is
+    /// stopped first (4.6.9), so the controller has given its TDs back; the
+    /// oldest TD it did not complete takes the report, and the endpoint's
+    /// dequeue moves past it (4.6.10). `keyboard_event` posts the freed TD
+    /// again and rings the doorbell, which restarts the endpoint.
+    #[cfg(target_arch = "x86_64")]
+    fn replay_key(&mut self, report: &[u8; super::host_keys::REPORT_LEN]) -> Result<(), &'static str> {
+        let index = self
+            .devices
+            .iter()
+            .position(|d| d.keyboard.is_some())
+            .ok_or("no boot keyboard attached")?;
+        let (slot, dci, request) = {
+            let device = &self.devices[index];
+            let pipe = device.keyboard.as_ref().ok_or("no boot keyboard attached")?;
+            (device.slot, pipe.dci, pipe.request)
+        };
+        match self.command_code(spec::stop_endpoint(slot, dci))? {
+            1 | 19 => {}
+            _ => return Err("Stop Endpoint refused"),
+        }
+        // The TD the controller was working on reports Stopped (26-28); it
+        // goes back to software with the others. Completions it posted before
+        // stopping stay queued for `dispatch`.
+        let ours = |e: &Trb| e.kind() == 32 && e.slot() == slot && (e.control >> 16) & 31 == dci as u32;
+        self.completions.retain(|e| !(ours(e) && matches!(e.code(), 26..=28)));
+        let completed: Vec<u64> = self.completions.iter().filter(|e| ours(e)).map(|e| e.parameter & !15).collect();
+        let pipe = self.devices[index].keyboard.as_mut().ok_or("no boot keyboard attached")?;
+        let ring = pipe.ring.memory.phys;
+        let (buffer_slot, at) = pipe
+            .posted
+            .oldest_uncompleted(&completed, ring, pipe.ring.enqueue())
+            .ok_or("no posted TD to replay into")?;
+        for (i, byte) in report.iter().enumerate() {
+            pipe.buffer.put8(buffer_slot * pipe.stride + i, *byte);
+        }
+        let at_index = ((at - ring) / 16) as usize;
+        let cycle = pipe.ring.memory.get32(at_index * 16 + 12) & 1 != 0;
+        self.set_dequeue(slot, dci, spec::ring_next(ring, at_index, cycle))?;
+        // `request` is at least a boot report's length (`configure_keyboard`).
+        let residual = request - report.len() as u32;
+        let code = if residual == 0 { 1u32 } else { 13 };
+        self.completions.push_back(Trb::new(
+            32,
+            at,
+            code << 24 | residual,
+            (slot as u32) << 24 | (dci as u32) << 16,
+        ));
+        Ok(())
     }
 
     pub(super) fn dispatch(&mut self) {

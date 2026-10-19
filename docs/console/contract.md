@@ -744,7 +744,14 @@ case reads its effect back in the guest. The host key is the input; the in-guest
 - **The launcher** watches the serial for HOSTKEY records of its run and injects each within one second: QMP
   `send-key` on ARM64 and x86-64 QEMU, `prlctl send-key-event` on Parallels, and the result of the VMware VNC
   spike on VMware (Q5, recorded here by V6). It logs each injection in its own records, not on the guest's
-  serial.
+  serial. The x86-metal boot loop has no virtual keyboard it may press (it reaches the machine through power
+  control and the serial console only), so it declares `xhci-replay`: for each chord it types
+  `BXKEY <report>[,<report>...]` on the serial console, the HID boot keyboard reports of the modifiers pressed in
+  order, the key, and their release in reverse. The kernel, armed by that declaration, takes serial input as these
+  lines only and replays each report, 10 ms apart, on the attached boot keyboard through the path a device's report
+  takes: the endpoint is stopped, the report is written to the buffer of its oldest posted TD, the dequeue moves
+  past that TD, and a Transfer Event for it is dispatched to the keyboard driver
+  (`kernel/src/drivers/xhci/host_keys.rs`). The device's own DMA write is the one step this replaces.
 - **The launcher declares its path before the suite starts**, so a case knows what to expect: QEMU passes
   `-fw_cfg name=opt/breenix/hostkeys,string=<method>[;missing=<key>,...]`, the disk launchers write the same
   value as a `hostkeys` field of `/etc/breenix/boot-target`, and the kernel passes it to the suite as
