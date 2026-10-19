@@ -300,6 +300,11 @@ pub fn show_panic(info: &core::panic::PanicInfo) {
 pub fn show_fault(esr: u64, far: u64, elr: u64) {
     fault_diagnostics(esr, far, elr, true);
     if crate::gpu::console::active() {
+        // Handoff can finish while the firmware attempt misses its lock. The
+        // core owns its own terminal latch, independent of firmware ownership.
+        if !crate::gpu::panic::terminal() {
+            fault_diagnostics(esr, far, elr, true);
+        }
         crate::gpu::panic::park();
     }
 }
@@ -418,11 +423,6 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     {
         return;
     }
-    if (terminal && DIAG_CLAIMED.swap(true, Ordering::AcqRel))
-        || (!terminal && DIAG_CLAIMED.load(Ordering::Acquire))
-    {
-        return;
-    }
     let show_gpu = || {
         if terminal {
             let mut tail = [0u8; DIAG_LOG_BYTES];
@@ -432,6 +432,11 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     };
     if crate::gpu::console::active() {
         show_gpu();
+        return;
+    }
+    if (terminal && DIAG_CLAIMED.swap(true, Ordering::AcqRel))
+        || (!terminal && DIAG_CLAIMED.load(Ordering::Acquire))
+    {
         return;
     }
     let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() else {

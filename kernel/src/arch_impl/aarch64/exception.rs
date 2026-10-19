@@ -828,6 +828,26 @@ mod exception_class {
     pub const BRK_AARCH64: u32 = 0b111100; // BRK instruction
 }
 
+/// Only a user-address fault during a user thread's syscall can abandon that
+/// task. IRQ/softirq faults and kernel-address faults belong to the kernel.
+fn route_el1_abort(esr: u64, far: u64, elr: u64) {
+    let recoverable = !crate::per_cpu_aarch64::in_interrupt()
+        && far < crate::memory::layout::USER_STACK_REGION_END
+        && current_thread_lock_free().is_some_and(|thread| {
+            thread.privilege == crate::task::thread::ThreadPrivilege::User
+                && thread.signals.in_syscall.load(Ordering::Acquire)
+        });
+    if recoverable {
+        crate::graphics::boot_screen::show_recoverable_fault(esr, far, elr);
+    } else {
+        crate::graphics::boot_screen::show_fault(esr, far, elr);
+        // Park rather than abandoning the active IRQ frame or signaling its task.
+        if crate::per_cpu_aarch64::in_interrupt() {
+            crate::gpu::panic::park();
+        }
+    }
+}
+
 /// Handle synchronous exceptions (syscalls, page faults, etc.)
 ///
 /// Called from assembly with:
@@ -1271,14 +1291,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
-            // A user thread can fault in EL1 through an unprotected syscall
-            // pointer. Preserve task recovery for this case.
-            if !from_el0
-                && !current_thread_lock_free().is_some_and(|thread| {
-                    thread.privilege == crate::task::thread::ThreadPrivilege::User
-                })
-            {
-                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            if !from_el0 {
+                route_el1_abort(esr, far, frame_ref.elr);
             }
 
             // Recover task faults and pre-handoff faults at a safe scheduling point.
@@ -1625,14 +1639,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             drop(fatal_uart_guard);
 
-            // A user thread can fault in EL1 through an unprotected syscall
-            // pointer. Preserve task recovery for this case.
-            if !from_el0
-                && !current_thread_lock_free().is_some_and(|thread| {
-                    thread.privilege == crate::task::thread::ThreadPrivilege::User
-                })
-            {
-                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            if !from_el0 {
+                route_el1_abort(esr, far, frame_ref.elr);
             }
 
             if from_el0 {
