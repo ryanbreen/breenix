@@ -121,14 +121,20 @@ fn the_surviving_record_census_in_the_dispatch_path_is_pinned() {
     // first-userspace-entry dispatch: each new process's first dispatch spent
     // about 370 bytes of COM2 output there with interrupts masked. 14 -> 10,
     // and the `info` row is gone.
+    // Moved again by #1635, which took the process manager out of the
+    // dispatch: the process-row save and restore code went, and with it the
+    // `error` record for a restore that could not take the lock and five
+    // `trace` records, and two more `trace` records went with the scheduler
+    // lookups the dispatch no longer makes. 10 -> 2, and the `error` row is
+    // gone.
     assert_eq!(
         records.len(),
-        10,
+        2,
         "context_switch.rs record census moved: {histogram:?}"
     );
     assert_eq!(
         histogram,
-        vec![("error".to_string(), 1), ("trace".to_string(), 9),],
+        vec![("trace".to_string(), 2),],
         "context_switch.rs record level histogram moved"
     );
 }
@@ -211,8 +217,9 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
     // scripts/x86-strand-census.sh read keep their names, their order and
     // their position, which is what lets the committed #775 round-4 captures
     // still be replayed by tests/x86_gate_verdict_test.rs. The ten appended
-    // fields are pinned by tests/dispatch_fact_census_structure.rs.
-    assert!(census.contains(":tid_overflow={}:ledger_overflow={}{}]"));
+    // fields are pinned by tests/dispatch_fact_census_structure.rs. #1885
+    // appends `waiting` after them.
+    assert!(census.contains(":tid_overflow={}:ledger_overflow={}{}:waiting={}]"));
     assert!(census.contains("FactFields(fact_counts()),"));
     assert!(census.contains("const STRANDED_TID_CAPACITY: usize = 16;"));
     assert!(census.contains("if !crate::arch_interrupts_enabled()"));

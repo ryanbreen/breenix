@@ -1133,7 +1133,7 @@ discovering it at review; the size is not what decides the seam — rule 4 is de
 
 **Gate extras.** New `sigkill_teardown_test` (userspace): parent forks a child spinning at EL0;
 parent `kill(child, SIGKILL)`. Assert (a) `waitpid` reaps **-9**; (b) SIGCHLD arrived at kill time
-(parent's `pause()` returns); (c) `TEARDOWN_QUARANTINE`/`TEARDOWN_DEFER`/`TEARDOWN_RECLAIM` all
+(parent's `pause()` returns); (c) `TEARDOWN_QUARANTINE`/`TEARDOWN_DEFER`/`TEARDOWN_RECLAIM` each
 increment for that pid; (d) `TEARDOWN_MASKED_FRAMES_WALKED == 0` **for kill paths** (the baseline
 recorded in P0 must drop, not merely stay flat); (e) **(v3 — closure F; the observation half specified by the v3
 tranche pass)** `EXIT_SGI_SENT{pid}` is nonzero **for the test's own victim pid**, recorded by the new
@@ -1142,8 +1142,26 @@ peer's observation is recorded with the same pid as `EXIT_KICK_OBSERVED{pid}`, v
 bucket table of DESIGN §2.7** — published by the helper before the broadcast, consumed by one
 `compare_exchange` at the peer scheduler pass that declines to dispatch the quarantined victim; and
 the send→observe interval carried by that CAS is **measured strictly shorter than the victim's tick
-period**. A bare "`EXIT_SGI_SENT > 0`" gate is explicitly rejected, because the P0 baseline proves the
-generic reschedule IPIs alone would satisfy it. Three sub-assertions keep the proxy honest:
+period**: `0 < interval < tick_period` on the free-running counter (CNTVCT on ARM64, TSC on
+x86-64). An interval of a tick or more is a failure unless the window was starved by the host. The
+guest's counters are necessary for that verdict: the counter advanced more than 60 ms per delivered
+timer tick (SOFTIRQ_DEFERRAL_ORACLE's threshold, 15 s over 250 ticks) both on the observing CPU and
+averaged over the online CPUs, counting ticks from a per-CPU baseline sampled with the send timestamp
+and protected by the publication generation. They are not sufficient, because a guest that masked
+interrupts or stalled on a lock produces the same counters, so the verdict also needs evidence the
+guest cannot fake (#1715). On the x86 gate it is the host's record of the boot
+(`scripts/x86-gate-host-stall-sampler.py`, kept as `host-stall.jsonl` beside the serials): the
+samples around the window must show the observing and sending vCPUs kept from running for more than
+a tick and for at least the time the window exceeded a tick; a window the record does not show, or a
+boot without a record, fails. On a kernel without that record (ARM64) every online CPU must have taken
+no tick in the window and the kernel's own per-CPU masking accounting
+(`arch_impl/aarch64/irq_mask_account.rs`) must show no CPU masked from one tick after the window
+opened until it closed; otherwise the window fails. A starved window is reported as `STARVED` with
+its numbers; it is neither a pass nor a kernel failure, and the boot is rerun. An observing CPU with
+a masked or stopped timer while the other CPUs ticked is not starved and fails. <!-- claim-lint:ok:
+this paragraph lists the P2 gate's required assertions, not measured results; the bound and
+starvation verdict are ruled on #1682 and the evidence it needs on #1715 --> A bare "`EXIT_SGI_SENT > 0`" gate is explicitly rejected, because the P0
+baseline shows the generic reschedule IPIs alone would satisfy it. Three sub-assertions keep the proxy honest:
 `EXIT_KICK_PUBLISHED == EXIT_KICK_OBSERVED == 1` for this single-victim workload;
 `EXIT_KICK_BUCKET_COLLISION == 0`; and `EXIT_REQUEST_OBSERVED == 0`, since the boundary hook does not
 exist until P8 and any nonzero value would mean the gate is reading a counter it was told is

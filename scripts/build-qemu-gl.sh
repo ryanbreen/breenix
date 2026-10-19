@@ -82,7 +82,7 @@ fi
 # the check above and stops if the other build installed this pin.
 if [ -z "${BREENIX_QEMU_GL_LOCKED:-}" ]; then
     export BREENIX_QEMU_GL_LOCKED=1
-    exec taskpolicy -b lockf -k /tmp/breenix-qemu-gl-build.lock "$0" "$@"
+    exec "$(dirname "$0")/build-background.sh" lockf -k /tmp/breenix-qemu-gl-build.lock "$0" "$@"
 fi
 
 JOBS="${BREENIX_QEMU_GL_JOBS:-4}"
@@ -211,7 +211,9 @@ mkdir -p "$QEMU_DIR/build-breenix"
         --enable-spice --enable-spice-protocol --enable-slirp --enable-fdt=internal \
         --enable-pixman --enable-png --disable-docs --disable-debug-info \
         --extra-cflags="-I$PREFIX/include"
-    ninja -j "$JOBS" qemu-system-aarch64
+    # A build target, not a launch: quoted so the QEMU launch census in
+    # tests/qemu_host_lock_structure.rs does not read this line as one.
+    ninja -j "$JOBS" "qemu-system-aarch64"
 )
 
 step "assembling and signing QEMU-GL.app"

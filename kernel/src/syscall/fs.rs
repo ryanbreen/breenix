@@ -329,6 +329,7 @@ fn sys_open_write_path(
         bool,
         usize,
         Option<crate::fs::ext2::live_inode::FileHandle>,
+        Option<crate::fs::ext2::ShrinkTicket>,
     ),
     SyscallResult,
 > {
@@ -339,6 +340,7 @@ fn sys_open_write_path(
     let want_creat = (flags & O_CREAT) != 0;
     let want_excl = (flags & O_EXCL) != 0;
     let want_trunc = (flags & O_TRUNC) != 0;
+    let mut shrink = None;
 
     let (ino, file_created) = match resolved.target {
         Target::Inode { ino, .. } => {
@@ -421,6 +423,9 @@ fn sys_open_write_path(
     let ft = inode.file_type();
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
+    if is_reg && flags & 3 != 0 {
+        fs.ensure_writable().map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+    }
 
     // A file this open created is opened with the requested access whatever
     // its new mode; an existing one must grant that access first.
@@ -430,15 +435,11 @@ fn sys_open_write_path(
 
     if want_trunc && is_reg && !file_created {
         log::debug!("sys_open: truncating file inode {}", ino);
-        let result = if cred.euid == 0 {
-            fs.truncate_file(ino)
-        } else {
-            fs.resize_file_as(ino, 0, true)
+        let result = fs.begin_resize_file_as(ino, 0, cred.euid != 0);
+        shrink = match result {
+            Ok(ticket) => ticket,
+            Err(e) => return Err(SyscallResult::Err(crate::fs::namei::fs_errno(e))),
         };
-        if let Err(e) = result {
-            log::error!("sys_open: failed to truncate file: {}", e);
-            return Err(SyscallResult::Err(5)); // EIO
-        }
     }
 
     let mid = fs.mount_id;
@@ -457,7 +458,7 @@ fn sys_open_write_path(
     } else {
         None
     };
-    Ok((ino, ft, is_dir, is_reg, mid, handle))
+    Ok((ino, ft, is_dir, is_reg, mid, handle, shrink))
 }
 
 /// A descriptor slot held in the calling thread's table for an open that
@@ -557,6 +558,9 @@ fn sys_open_read_path(
     let ft = inode.file_type();
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
+    if is_reg && flags & 3 != 0 {
+        fs.ensure_writable().map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+    }
     if open_is_access_checked(is_reg, is_dir, flags) {
         check_open_access(&inode, flags, &cred)?;
     }
@@ -691,7 +695,10 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     // Use read lock for non-modifying opens, write lock only for O_CREAT/O_TRUNC.
     // This allows concurrent exec, file reads, and directory listings without
     // being blocked by another process creating or writing files.
-    let needs_write = want_creat || want_trunc;
+    if want_creat && want_excl && matches!(resolved.target, Target::Inode { .. }) {
+        return SyscallResult::Err(EEXIST as u64);
+    }
+    let needs_write = (want_creat && matches!(resolved.target, Target::Absent { .. })) || want_trunc;
     // Read before taking a filesystem lock; the process manager is not
     // acquired under one.
     let cred = current_file_credentials();
@@ -721,6 +728,13 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
                 return SyscallResult::Err(ENOENT as u64);
             }
         }
+        .and_then(|(ino, ft, is_dir, is_reg, mid, handle, ticket)| {
+            if let Some(ticket) = ticket {
+                fs_guard.finish_shrink(ticket)
+                    .map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+            }
+            Ok((ino, ft, is_dir, is_reg, mid, handle))
+        })
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
         let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
@@ -3504,6 +3518,8 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
+    } else if cfg!(all(target_arch = "x86_64", not(feature = "interactive"))) && dir_path == "/proc/fbcon" {
+        alloc::vec![String::from("check")]
     } else {
         Vec::new()
     };
@@ -3854,7 +3870,7 @@ fn handle_fifo_open(
                 // 2. If a context switch happens while in HLT, the scheduler sees
                 //    from_userspace=false (kernel mode) but blocked_in_syscall tells
                 //    it to save/restore kernel context, not userspace context
-                crate::task::scheduler::with_scheduler(|sched| {
+                crate::task::scheduler::with_current(|sched| {
                     sched.block_current_in_syscall();
                 });
 
@@ -3875,7 +3891,7 @@ fn handle_fifo_open(
                         thread_id
                     );
                     // Other end opened during the race window - unblock and complete
-                    crate::task::scheduler::with_scheduler(|sched| {
+                    crate::task::scheduler::with_current(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.blocked_in_syscall = false;
                             thread.set_ready();
@@ -3893,7 +3909,7 @@ fn handle_fifo_open(
                     // Check for pending signals that should interrupt this syscall
                     if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                         // Signal pending - clean up thread state and return EINTR
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                                 thread.set_ready();
@@ -3923,7 +3939,7 @@ fn handle_fifo_open(
                     crate::per_cpu::preempt_disable();
 
                     // Check if we were unblocked (thread state changed from Blocked)
-                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                    let still_blocked = crate::task::scheduler::with_current(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
                             thread.state == crate::task::thread::ThreadState::Blocked
                         } else {
@@ -3940,17 +3956,18 @@ fn handle_fifo_open(
                 }
 
                 // Clear blocked_in_syscall now that we're resuming normal syscall execution
-                crate::task::scheduler::with_scheduler(|sched| {
+                crate::task::scheduler::with_current(|sched| {
                     if let Some(thread) = sched.current_thread_mut() {
                         thread.blocked_in_syscall = false;
                     }
                 });
-                // Reset quantum to prevent immediate preemption after long blocking wait
+                // Start a fresh quantum after a long blocking wait. A
+                // reschedule requested since the wake stays pending for the
+                // syscall return (#1753).
                 #[cfg(target_arch = "x86_64")]
                 crate::interrupts::timer::reset_quantum();
                 #[cfg(target_arch = "aarch64")]
                 {}
-                crate::task::scheduler::check_and_clear_need_resched();
 
                 let checked = recheck_fifo_open(&entry, for_write, partner_opens_seen);
                 if let FifoOpenResult::Error(e) = checked {
@@ -3982,7 +3999,7 @@ fn fail_pending_fifo_open(
     entry: &alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
     error: u64,
 ) -> SyscallResult {
-    crate::task::scheduler::with_scheduler(|sched| {
+    crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
             thread.set_ready();
@@ -4508,7 +4525,7 @@ fn update_inode_timestamps(
 
     let mut fs_guard = match ext2::write_mount(handle.object.mount) {
         Ok(guard) => guard,
-        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
     };
     match fs_guard.as_mut() {
         Some(fs) => do_update(fs),
@@ -4570,11 +4587,8 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
         };
     }
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    let guard = if is_home {
-        ext2::home_fs_read()
-    } else {
-        ext2::root_fs_read()
-    };
+    // Wait for a live shrink without requiring write permission on the mount.
+    let guard = ext2::fs_sync_guard(is_home);
     let guard = match guard { Ok(guard) => guard, Err(_) => return SyscallResult::Err(super::errno::EINTR as u64) };
     if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
         return SyscallResult::Err(super::errno::EIO as u64);
@@ -4630,7 +4644,7 @@ fn ext2_statfs(mount: crate::fs::namei::Mount) -> Result<Statfs, u64> {
         fsid: [fs.mount_id as i32, 0],
         namelen: crate::fs::namei::NAME_MAX as u64,
         frsize: stats.block_size,
-        flags: 0x20, // Linux ST_VALID; writable, no NOSUID mount policy
+        flags: 0x20 | u64::from(fs.is_read_only()), // ST_VALID and ST_RDONLY.
         spare: [0; 4],
     })
 }
@@ -4765,7 +4779,7 @@ pub fn sys_sync() -> SyscallResult {
     for mount in [Mount::Root, Mount::Home] {
         let handles = {
             let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
-            guard.as_ref().map(|fs| fs.dirty_handles()).transpose()
+            guard.as_ref().filter(|fs| !fs.is_read_only()).map(|fs| fs.dirty_handles()).transpose()
         };
         let _sync = handles
             .as_ref()
@@ -4778,6 +4792,7 @@ pub fn sys_sync() -> SyscallResult {
                     crate::memory::file_map::stage_range_with_buffer(handle, 0, u64::MAX, buffer);
             }
         }
+        if matches!(handles, Ok(None)) { continue; }
         // Exclude snapshots between the barrier and dirty-custody completion.
         let guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         if let Some(fs) = guard.as_ref() {
@@ -4800,24 +4815,35 @@ fn resize_inode(
     unprivileged: bool,
     limit: u64,
     exceeded: &mut bool,
-) -> SyscallResult {
+) -> Result<Option<crate::fs::ext2::ShrinkTicket>, u64> {
     use super::errno::{EFBIG, EINVAL, EIO, EISDIR};
     match fs.read_inode(ino) {
-        Ok(inode) if inode.is_dir() => return SyscallResult::Err(EISDIR as u64),
-        Ok(inode) if !inode.is_file() => return SyscallResult::Err(EINVAL as u64),
-        Err(_) => return SyscallResult::Err(EIO as u64),
+        Ok(inode) if inode.is_dir() => return Err(EISDIR as u64),
+        Ok(inode) if !inode.is_file() => return Err(EINVAL as u64),
+        Err(_) => return Err(EIO as u64),
         Ok(inode) if length > inode.size() && length > limit => {
             *exceeded = true;
-            return SyscallResult::Err(EFBIG as u64);
+            return Err(EFBIG as u64);
         }
         _ => {}
     }
     if length > fs.max_file_size() {
-        return SyscallResult::Err(EFBIG as u64);
+        return Err(EFBIG as u64);
     }
-    match fs.resize_file_as(ino, length, unprivileged) {
-        Ok(()) => SyscallResult::Ok(0),
-        Err(_) => SyscallResult::Err(EIO as u64),
+    fs.begin_resize_file_as(ino, length, unprivileged).map_err(crate::fs::namei::fs_errno)
+}
+
+fn finish_resize(
+    guard: crate::fs::ext2::Ext2WriteGuard,
+    result: Result<Option<crate::fs::ext2::ShrinkTicket>, u64>,
+) -> SyscallResult {
+    match result {
+        Ok(Some(ticket)) => match guard.finish_shrink(ticket) {
+            Ok(_) => SyscallResult::Ok(0),
+            Err(e) => SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+        },
+        Ok(None) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno),
     }
 }
 
@@ -4866,7 +4892,7 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     let unprivileged = current_file_credentials().euid != 0;
     let mut guard = match ext2::write_mount(handle.object.mount) {
         Ok(guard) => guard,
-        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
     };
     let result = match guard.as_mut() {
         Some(fs) if handle.verify(fs).is_ok() => resize_inode(
@@ -4877,9 +4903,9 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
             size_limit,
             &mut exceeded,
         ),
-        _ => SyscallResult::Err(super::errno::EIO as u64),
+        _ => Err(super::errno::EIO as u64),
     };
-    drop(guard);
+    let result = finish_resize(guard, result);
     if exceeded {
         super::resource::signal_fsize();
     }
@@ -4945,7 +4971,7 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         size_limit,
         &mut exceeded,
     );
-    drop(guard);
+    let result = finish_resize(guard, result);
     if exceeded {
         super::resource::signal_fsize();
     }
@@ -4956,11 +4982,5 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
 pub(super) fn update_read_atime(ino: u32, mount_id: usize) -> Result<(), u64> {
     use crate::fs::ext2;
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    let mut guard = if is_home {
-        ext2::home_fs_write()
-    } else {
-        ext2::root_fs_write()
-    }.map_err(|_| super::errno::EINTR as u64)?;
-    let fs = guard.as_mut().ok_or(super::errno::EIO as u64)?;
-    fs.update_atime(ino).map_err(|_| super::errno::EIO as u64)
+    ext2::update_read_atime(ino, is_home).map_err(crate::fs::namei::fs_errno)
 }

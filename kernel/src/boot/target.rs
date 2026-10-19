@@ -60,6 +60,9 @@ impl SuiteTarget {
 
 /// A production PID 1 selected by the boot-target file.
 pub enum Target {
+    Default,
+    Shell,
+    Console { idle_minutes: u16, replug: bool },
     Probe,
     Suite(SuiteTarget),
 }
@@ -71,12 +74,23 @@ pub fn parse(text: &str) -> Result<Target, String> {
     if line.contains(['\n', '\r']) {
         return Err(String::from("it has more than one line"));
     }
+    if line.trim() == "default" { return Ok(Target::Default); }
+    if line.trim() == "shell" { return Ok(Target::Shell); }
+    if line.trim() == "console" { return Ok(Target::Console { idle_minutes: 30, replug: false }); }
     if line.trim() == "probe" {
         return Ok(Target::Probe);
     }
     // Single spaces only, as the runner writes: a tab or a doubled space is refused.
     let words: alloc::vec::Vec<&str> = line.trim().split(' ').collect();
     match words.as_slice() {
+        ["console", "replug"] => Ok(Target::Console { idle_minutes: 30, replug: true }),
+        ["console", idle] if idle.starts_with("idle=") => {
+            match idle[5..].parse::<u16>() {
+                Ok(idle_minutes @ 1..=240) if idle[5..].bytes().all(|b| b.is_ascii_digit()) =>
+                    Ok(Target::Console { idle_minutes, replug: false }),
+                _ => Err(String::from("console idle must be 1 through 240 minutes")),
+            }
+        }
         ["suite", id] => SuiteTarget::new(String::from(*id), None).map(Target::Suite),
         ["suite", id, "case", case] => {
             SuiteTarget::new(String::from(*id), Some(String::from(*case))).map(Target::Suite)
@@ -88,6 +102,10 @@ pub fn parse(text: &str) -> Result<Target, String> {
 /// Read the boot target from the mounted ext2 root. `Ok(None)` when there is no
 /// file (or no root filesystem); `Err` when the file exists but cannot be used.
 pub fn read() -> Result<Option<Target>, String> {
+    if let Some(bytes) = crate::boot::intent::get() {
+        let text = core::str::from_utf8(bytes).map_err(|_| String::from("boot intent is not text"))?;
+        return parse(text).map(Some);
+    }
     let fs_guard = crate::fs::ext2::root_fs_read().map_err(String::from)?;
     let Some(fs) = fs_guard.as_ref() else {
         return Ok(None);

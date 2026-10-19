@@ -12,7 +12,7 @@
 //! paths that must not wait.
 //!
 //! Lines posted on paths that may not log (`log_notice`) are written here from
-//! thread context only: by the next record a thread writes, and by the idle
+//! thread context only: by the next logged record a thread writes, and by the idle
 //! loop ([`write_notices_from_thread`]). Each is a whole line of its own.
 use crate::serial_writer::Writer;
 use crate::uart_owner::{self, Kind, Port};
@@ -56,13 +56,16 @@ impl Port for Uart {
         ticks
     }
 
+    /// Divides only by a constant: the soft-lockup report reaches this through
+    /// `Ownership::acquire`, and dividing by `ns` links a panic into it
+    /// whenever this is not inlined (`scripts/check-aarch64-lockup-no-alloc.sh`).
     fn ticks(ns: u64) -> u64 {
         let frequency: u64;
         unsafe {
             core::arch::asm!("mrs {}, cntfrq_el0", out(reg) frequency, options(nomem, nostack, preserves_flags));
         }
         // A zero CNTFRQ (misconfigured firmware) still gets a finite wait.
-        frequency.max(1_000_000) / (1_000_000_000 / ns)
+        frequency.max(1_000_000).saturating_mul(ns) / 1_000_000_000
     }
 
     /// Masks IRQs and FIQs.
@@ -72,10 +75,12 @@ impl Port for Uart {
             core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack, preserves_flags));
             core::arch::asm!("msr daifset, #0x3", options(nomem, nostack, preserves_flags));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         daif
     }
 
     fn restore_interrupts(daif: u64) {
+        crate::arch_impl::aarch64::irq_mask_account::restoring(daif);
         unsafe {
             core::arch::asm!("msr daif, {}", in(reg) daif, options(nomem, nostack, preserves_flags));
         }
@@ -122,7 +127,14 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], attributed: bool) {
     if writer == Writer::Kernel {
         crate::output_accounting::count(bytes.len(), attributed);
     }
-    write_notices_from_thread();
+    // Raw diagnostics (including the timer's lockup capture) must stay on
+    // their fixed-width writer path. Notice draining tees into the log rings
+    // and can reach bounds-panic formatting, even though its runtime context
+    // check refuses to drain from an IRQ. Keep that call out of raw records'
+    // linked call graph; logged records and the idle loop drain the list.
+    if TEE {
+        write_notices_from_thread();
+    }
     uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
 }
 
@@ -171,8 +183,10 @@ pub fn try_write(bytes: &[u8]) -> bool {
 
 /// A record assembled on the stack. A newline completes the record and writes
 /// it; dropping the buffer writes any unterminated remainder.
+/// Raw records do not drain deferred log notices.
 pub type Line = Buffer<false>;
-/// A [`Line`] whose bytes also go to the kernel log capture rings.
+/// A [`Line`] whose bytes also go to the kernel log capture rings, draining
+/// deferred notices first when written from thread context.
 pub type TeeLine = Buffer<true>;
 
 pub struct Buffer<const TEE: bool> {

@@ -73,6 +73,24 @@ pub(super) fn lock<T>(mutex: &spin::Mutex<T>) -> spin::MutexGuard<'_, T> {
     }
 }
 
+/// Acquire an IRQ-safe console lock without spinning past terminal takeover.
+pub(super) fn lock_irq<T>(
+    mutex: &crate::irq_safe_mutex::IrqSafeMutex<T>,
+) -> crate::irq_safe_mutex::IrqSafeMutexGuard<'_, T> {
+    loop {
+        if TERMINAL.load(Ordering::SeqCst) {
+            park();
+        }
+        if let Some(guard) = mutex.try_lock() {
+            if TERMINAL.load(Ordering::SeqCst) {
+                park();
+            }
+            return guard;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Count raw queue/transport accesses and state publication, outside allocating
 /// operations. Nesting is counted; preemption pins the counter to its CPU.
 /// A panicking CPU can abandon its own operation partway through publication:

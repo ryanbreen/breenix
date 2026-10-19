@@ -249,7 +249,7 @@ pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
             // the departure comes with it: the primitive removes the current
             // thread from every per-CPU ready queue in the same acquisition, so
             // there is no longer a caller-side dequeue to forget.
-            scheduler::with_scheduler(|sched| {
+            scheduler::with_current(|sched| {
                 // Serialize the final sleep decision with unpark's flag clear.
                 if handle.inner.parked.load(Ordering::Acquire) {
                     sched.block_current();
@@ -272,6 +272,14 @@ pub fn kthread_park_if(should_park: impl FnOnce() -> bool) {
 
 /// Unpark a parked thread (wake)
 pub fn kthread_unpark(handle: &KthreadHandle) {
+    // x86_64: under the lock of the CPU that owns the thread, or held for it
+    // (`scheduler::unblock_thread`), not the whole scheduler (#1649).
+    #[cfg(target_arch = "x86_64")]
+    {
+        handle.inner.parked.store(false, Ordering::Release);
+        let _ = scheduler::unblock_thread(handle.inner.tid);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     scheduler::with_scheduler(|sched| {
         handle.inner.parked.store(false, Ordering::Release);
         sched.unblock(handle.inner.tid);
@@ -355,7 +363,7 @@ pub fn kthread_exit(code: i32) -> ! {
     // one already-masked scheduler-lock acquisition, so interrupt latency is
     // unaffected.
     without_interrupts(|| {
-        scheduler::with_scheduler(|sched| {
+        scheduler::with_current(|sched| {
             if let Some(thread) = sched.current_thread_mut() {
                 thread.set_terminated();
             }

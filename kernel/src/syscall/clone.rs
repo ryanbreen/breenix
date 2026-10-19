@@ -241,6 +241,19 @@ pub fn sys_clone_thread(
         Some(id) => id,
         None => return SyscallResult::Err(super::errno::ESRCH as u64),
     };
+
+    // A joined thread's kernel stack stays scheduler-owned until its retirement
+    // grace elapses. Drain before consuming another finite stack slot: busy CPUs
+    // need not enter idle housekeeping between clones (#1975). As in fork, no
+    // process-manager guard may be held across the scheduler harvest and release.
+    // ARM64 retains its existing schedule-context drain.
+    #[cfg(target_arch = "x86_64")]
+    crate::task::scheduler::reclaim_terminated_threads();
+
+    // The new thread's thread-index slot, held until it is published.
+    let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
+    };
     let mut manager_guard = crate::process::manager();
     let manager = match manager_guard.as_mut() {
         Some(m) => m,
@@ -446,6 +459,7 @@ pub fn sys_clone_thread(
         privilege: ThreadPrivilege::User,
         has_started: false, // Will be set up via first_userspace_entry
         blocked_in_syscall: false,
+        uninterruptible_io: false,
         saved_by_inline_schedule: false,
         inline_schedule_spsr: 0,
         inline_schedule_prev_elr: 0,
@@ -465,6 +479,7 @@ pub fn sys_clone_thread(
         cached_ttbr0: 0,
         wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
         kill_custody: core::sync::atomic::AtomicU64::new(0),
+        futex_group: core::sync::atomic::AtomicU64::new(0),
         cpu_affinity: None,
     };
 
@@ -602,9 +617,12 @@ pub fn sys_clone_thread(
             .state = crate::task::thread::ThreadState::Ready;
     }
 
-    // Add child process as parent's child
-    if let Some(parent) = manager.get_process_mut(parent_pid) {
-        parent.children.push(child_pid);
+    // A new process is its creator's child. A thread is not, so wait does not
+    // select it; its exit hook reaps its row (`reap_if_unwaited`, #1712).
+    if flags & CLONE_THREAD == 0 {
+        if let Some(parent) = manager.get_process_mut(parent_pid) {
+            parent.children.push(child_pid);
+        }
     }
 
     // Get the thread from the newly inserted process to add to scheduler

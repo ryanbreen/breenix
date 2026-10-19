@@ -32,66 +32,53 @@ static SNAPSHOT_SEQ: AtomicU64 = AtomicU64::new(0);
 /// The dispatch-path facts that used to be published by a `log::*!` call in
 /// `interrupts::context_switch` and now have no other publication at all.
 ///
-/// PR-1 of the critical-path logging drain deletes 16 `log::*!` calls from
+/// PR-1 of the critical-path logging drain deleted 16 `log::*!` calls from
 /// `kernel/src/interrupts/context_switch.rs`. Six of them stood beside a
 /// `trace_dispatch_abandon(DispatchAbandonSite::…)` that already counts the
-/// same arm, so deleting them drops no fact. The other ten had no counter of
-/// any kind, and each one gets a variant here: one relaxed `fetch_add` on the
+/// same arm, so deleting them dropped no fact. The other ten had no counter
+/// of any kind, and each got a variant here: one relaxed `fetch_add` on the
 /// dispatch path, read back and printed from ordinary thread context by
 /// `report_snapshot()` below, which is the emission boundary that already
-/// refuses to run with interrupts disabled.
+/// refuses to run with interrupts disabled. Five of those arms went with the
+/// dispatch's process-manager dependency (#1635): the context saves no longer
+/// look a thread up in the process manager, and the blocked-in-syscall
+/// signal-delivery arm, which no x86 wait armed, is gone.
 ///
 /// This is a SIBLING of `tracing::providers::sched::DispatchAbandonSite`, not
-/// an extension of it, and deliberately so: four of the ten arms
-/// (`SignalPendingBlocked`, `SignalContextBlocked`, `SignalDeliveredBlocked`,
-/// `SignalDeliverableUser`) do NOT abandon the dispatch, so folding them into
-/// that enum would add them to the `DISPATCH_SWITCH_IDLE_REDIRECT` aggregate
-/// whose ten contributing arms that counter's own documentation enumerates.
+/// an extension of it, and deliberately so: `SignalDeliverableUser` does NOT
+/// abandon the dispatch, so folding it into that enum would add it to the
+/// `DISPATCH_SWITCH_IDLE_REDIRECT` aggregate whose contributing arms that
+/// counter's own documentation enumerates.
 ///
 /// The discriminants index `DISPATCH_LOG_FACTS`, and the order here is the
 /// order the fields appear in the census line.
-/// claim-lint:ok: the 16/6/10 split is the per-site table in
-/// docs/planning/green-program/gates/CRITICAL-PATH-DEBT-PR1-2026-09-06.md and
-/// is pinned site by site by tests/dispatch_fact_census_structure.rs.
+/// claim-lint:ok: the per-site table is pinned site by site by
+/// tests/dispatch_fact_census_structure.rs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(usize)]
 pub(crate) enum DispatchLogFact {
-    /// `save_current_thread_context_with_guard`: the process was found but
-    /// carries no `main_thread`, so no context was saved.
-    SaveNoMainThread = 0,
-    /// `save_current_thread_context_with_guard`: no process in the manager
-    /// owns the thread being saved.
-    SaveProcessNotFound = 1,
-    /// `save_current_thread_context_with_guard`: the guard was taken but the
-    /// manager option it wraps is unset.
-    SaveManagerNone = 2,
-    /// `switch_to_thread`, blocked-in-syscall arm: the thread has deliverable
-    /// signals and a saved userspace context, so delivery runs on that context.
-    SignalPendingBlocked = 3,
-    /// `switch_to_thread`, blocked-in-syscall arm: the saved userspace context
-    /// was installed into the interrupt frame for that delivery.
-    SignalContextBlocked = 4,
-    /// `switch_to_thread`, blocked-in-syscall arm: delivery returned
-    /// `Delivered`.
-    SignalDeliveredBlocked = 5,
+    /// `save_current_thread_context`: the scheduler has no row for the user
+    /// thread being saved, so no context was saved.
+    SaveNoThread = 0,
     /// `setup_idle_return`: the idle thread has no kernel stack, so the
     /// per-CPU fallback was used for the return frame.
-    IdleStackMissing = 6,
+    IdleStackMissing = 1,
     /// `setup_kernel_thread_return`: the scheduler has no thread info for the
     /// thread being dispatched, so no context was restored.
-    KernelThreadInfoMissing = 7,
+    KernelThreadInfoMissing = 2,
     /// `restore_userspace_thread_context`: the userspace thread has no kernel
     /// stack, so `TSS.RSP0` was left as it stood.
-    UserKernelStackMissing = 8,
-    /// `restore_userspace_thread_context`: the process has deliverable signals
-    /// at the point the userspace context has been restored.
-    SignalDeliverableUser = 9,
+    UserKernelStackMissing = 3,
+    /// `deliver_signals_on_user_return`, for a thread a switch dispatched: the
+    /// process has deliverable signals at the point the userspace context has
+    /// been restored.
+    SignalDeliverableUser = 4,
 }
 
 /// The number of `DispatchLogFact` variants. A variant added without widening
 /// this does not compile (`DISPATCH_LOG_FACTS[fact as usize]` is a constant
 /// index into a fixed array, and `FACT_FIELD_NAMES` below is the same length).
-pub(crate) const DISPATCH_LOG_FACT_COUNT: usize = 10;
+pub(crate) const DISPATCH_LOG_FACT_COUNT: usize = 5;
 
 /// One whole-machine relaxed counter per fact. Relaxed and unsynchronised on
 /// purpose: these are counts read once a second from thread context, not
@@ -107,11 +94,6 @@ static DISPATCH_LOG_FACTS: [AtomicU64; DISPATCH_LOG_FACT_COUNT] =
 /// The census-line field name of each fact, in discriminant order.
 const FACT_FIELD_NAMES: [&str; DISPATCH_LOG_FACT_COUNT] = [
     "save_no_thread",
-    "save_no_proc",
-    "save_no_pm",
-    "sig_pending_blocked",
-    "sig_ctx_blocked",
-    "sig_delivered_blocked",
     "idle_no_stack",
     "kthread_no_info",
     "user_no_kstack",
@@ -119,13 +101,13 @@ const FACT_FIELD_NAMES: [&str; DISPATCH_LOG_FACT_COUNT] = [
 ];
 
 /// Record one occurrence of `fact`. Called from the dispatch path with
-/// interrupts disabled and, at several sites, with `PROCESS_MANAGER` held.
+/// interrupts disabled and, at one site, with `PROCESS_MANAGER` held.
 #[inline(always)]
 pub(crate) fn note_fact(fact: DispatchLogFact) {
     DISPATCH_LOG_FACTS[fact as usize].fetch_add(1, Ordering::Relaxed);
 }
 
-/// The ten totals, in the order the census line prints them.
+/// The five totals, in the order the census line prints them.
 pub(crate) fn fact_counts() -> [u64; DISPATCH_LOG_FACT_COUNT] {
     let mut out = [0u64; DISPATCH_LOG_FACT_COUNT];
     for (index, slot) in DISPATCH_LOG_FACTS.iter().enumerate() {
@@ -134,7 +116,7 @@ pub(crate) fn fact_counts() -> [u64; DISPATCH_LOG_FACT_COUNT] {
     out
 }
 
-/// The ten `name=value` fields, rendered for the census line.
+/// The five `name=value` fields, rendered for the census line.
 struct FactFields([u64; DISPATCH_LOG_FACT_COUNT]);
 
 impl fmt::Display for FactFields {
@@ -230,13 +212,21 @@ impl fmt::Display for TidList<'_> {
 /// Fields, in emission order: `seq` (1-based, unique within a boot, strictly
 /// increasing), `tick` (the raw PIT tick counter), `ms` (milliseconds on the
 /// monotonic clock the rate limiter reads), `saved`, `stranded`, `tids`,
-/// `tid_overflow`, `ledger_overflow`, then the ten `DispatchLogFact` totals in
-/// discriminant order (`FACT_FIELD_NAMES`).
+/// `tid_overflow`, `ledger_overflow`, then the five `DispatchLogFact` totals in
+/// discriminant order (`FACT_FIELD_NAMES`), then `waiting`.
 ///
-/// The ten fact fields are APPENDED, so every consumer that reads the first
-/// eight by name keeps working on a capture recorded before this PR;
-/// `scripts/x86-strand-census.sh`'s shape check accepts the eight-field and
-/// the eighteen-field forms alike, which is what lets the committed #775
+/// `stranded` and `waiting` split the threads whose saved kernel context was
+/// not restored and that did not exit: `waiting` holds the ones still parked in
+/// a wait (`parked_in_wait`), `stranded` and `tids` the rest. Before #1885 they
+/// were one count. Concurrent restores and exits may be discarded by a second
+/// ledger read, so their sum need not equal that earlier count. A production boot
+/// listed its blocked init and getty as
+/// stranded for the whole session.
+///
+/// The fact fields are APPENDED, so every consumer that reads the first
+/// eight by name keeps working on a capture recorded before them;
+/// `scripts/x86-strand-census.sh`'s shape check accepts the eight-field form
+/// and any number of appended fact fields alike, which is what lets the committed #775
 /// round-4 captures under
 /// `docs/planning/green-program/sockets/serials/775/` still be replayed by
 /// tests/x86_gate_verdict_test.rs.
@@ -245,18 +235,43 @@ pub(crate) fn report_snapshot() {
     snapshot(false);
 }
 
+/// A blocked timer needs an unexpired deadline; a missing or expired deadline
+/// is a lost wake, not a legitimate indefinite wait. Other blocked states may
+/// wait indefinitely for an external event. An unavailable scheduler sample is
+/// conservatively left stranded so contention cannot hide a lost dispatch.
+fn parked_in_wait(tid: u64, now_ns: u64) -> bool {
+    use super::thread::ThreadState;
+
+    match super::scheduler::thread_wait(tid) {
+        Some((state, Some(wake_ns))) if state.is_blocked() => wake_ns > now_ns,
+        Some((state, None)) => state.is_blocked() && state != ThreadState::BlockedOnTimer,
+        _ => false,
+    }
+}
+
 fn snapshot(deferred: bool) {
     let mut threads_saved_blocked = 0u64;
     let mut stranded = 0u64;
+    let mut waiting = 0u64;
     let mut stranded_tids = [0u64; STRANDED_TID_CAPACITY];
     let mut stranded_tid_count = 0usize;
-    for (tid, state) in LEDGER.iter().enumerate() {
-        let state = state.load(Ordering::Acquire);
+    let now_ns = monotonic_now_ns();
+    for (tid, slot) in LEDGER.iter().enumerate() {
+        let state = slot.load(Ordering::Acquire);
         if state & EVER_SAVED == 0 {
             continue;
         }
         threads_saved_blocked += 1;
         if state & (EXITED | LAST_EVENT_RESTORED) == 0 {
+            if parked_in_wait(tid as u64, now_ns) {
+                waiting += 1;
+                continue;
+            }
+            // Restored or exited after the first read: the thread ran, and the
+            // state just read (Running, or no row) is the run, not a strand.
+            if slot.load(Ordering::Acquire) & (EXITED | LAST_EVENT_RESTORED) != 0 {
+                continue;
+            }
             stranded += 1;
             if stranded_tid_count < stranded_tids.len() {
                 stranded_tids[stranded_tid_count] = tid as u64;
@@ -275,16 +290,17 @@ fn snapshot(deferred: bool) {
         }
     };
     emit(format_args!(
-        concat!("[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}]", "\n"),
+        concat!("[DISPATCH_STRAND_CENSUS:seq={}:tick={}:ms={}:saved={}:stranded={}:tids={}:tid_overflow={}:ledger_overflow={}{}:waiting={}]", "\n"),
         seq,
         crate::time::get_ticks(),
-        monotonic_now_ns() / 1_000_000,
+        now_ns / 1_000_000,
         threads_saved_blocked,
         stranded,
         TidList(&stranded_tids[..stranded_tid_count]),
         tid_overflow,
         OVERFLOW_EVENTS.load(Ordering::Acquire),
         FactFields(fact_counts()),
+        waiting,
     ));
 }
 
@@ -418,22 +434,12 @@ fn sleep_one_interval(interval_ns: u64) {
         return;
     };
     let wake_at = monotonic_now_ns().saturating_add(interval_ns);
-    super::scheduler::with_scheduler(|scheduler| {
-        if scheduler.get_thread(tid).is_some() {
-            scheduler.block_current_for_timer(wake_at);
-        }
-    });
+    super::scheduler::with_current(|scheduler| scheduler.block_current_for_timer(wake_at));
     super::scheduler::yield_current();
 
     loop {
         crate::arch_halt_with_interrupts();
-        let still_blocked = super::scheduler::with_scheduler(|scheduler| {
-            scheduler
-                .get_thread(tid)
-                .is_some_and(|thread| thread.state == ThreadState::BlockedOnTimer)
-        })
-        .unwrap_or(false);
-        if !still_blocked {
+        if super::scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }
     }

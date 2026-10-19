@@ -28,7 +28,9 @@ struct BinaryEntry {
 
 const SECTOR_SIZE: usize = 512;
 
-/// Identify the 512-byte-sector BXTEST disk once and retain its header.
+/// Identify the 512-byte-sector BXTEST disk once and retain its header: an
+/// attached disk (the QEMU launchers), or the bootloader's RAM disk (a physical
+/// machine, whose one hardware disk holds the root).
 fn get_test_disk() -> Option<&'static (
     alloc::boxed::Box<dyn crate::block::BlockDevice>,
     [u8; SECTOR_SIZE],
@@ -40,7 +42,7 @@ fn get_test_disk() -> Option<&'static (
         )>,
     > = spin::Once::new();
     DISK.call_once(|| {
-        crate::block::devices().into_iter().find_map(|disk| {
+        crate::block::devices().into_iter().chain(crate::block::ramdisk::test_device()).find_map(|disk| {
             let mut header = [0u8; SECTOR_SIZE];
             if disk.block_size() == SECTOR_SIZE
                 && disk.read_block(0, &mut header).is_ok()
@@ -901,7 +903,7 @@ fn test_exec_on_process(pid: crate::process::ProcessId) {
 
     let mut manager_guard = crate::process::manager();
     if let Some(ref mut manager) = *manager_guard {
-        match manager.exec_process(pid, &exec_elf_data, None, &mut closes) {
+        match crate::test_exec::exec_legacy(manager, pid, &exec_elf_data, None, &mut closes) {
             Ok(entry_point) => {
                 log::info!(
                     "🎉 EXEC SUCCESS: Process {} replaced with entry point {:#x}",

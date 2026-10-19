@@ -129,9 +129,10 @@ fn trace_wait_timeout_stage(stage: u16) {
 /// that does arrive later finds the thread running and does nothing.
 #[inline]
 fn finish_wait_current() {
-    crate::task::scheduler::with_scheduler(|sched| {
+    crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
+            thread.uninterruptible_io = false;
             if thread.state == crate::task::thread::ThreadState::BlockedOnIO {
                 thread.set_running();
                 thread.wake_time_ns = None;
@@ -172,7 +173,7 @@ fn idle_halt_wait_available(tid: Option<u64>) -> bool {
     #[cfg(target_arch = "aarch64")]
     let idle_poll_available = crate::arch_impl::aarch64::timer_interrupt::is_initialized();
     idle_poll_available
-        && crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid)
+        && crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid)
             == Some(true)
 }
 
@@ -244,6 +245,7 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
             if secs * 1_000_000_000 + nanos >= deadline {
                 break false;
             }
+            crate::arch_impl::aarch64::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!(
                     "wfi",
@@ -253,6 +255,7 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
                     options(nostack)
                 );
             }
+            crate::arch_impl::aarch64::irq_mask_account::opened();
         };
         crate::per_cpu_aarch64::preempt_enable();
         completed
@@ -459,10 +462,13 @@ impl Completion {
                     // the ISR already set done=expected_token (don't block)
                     // or we call
                     // block_current_for_io() (sets state=BlockedOnIO).
-                    let already_done = crate::task::scheduler::with_scheduler(|sched| {
+                    let already_done = crate::task::scheduler::with_current(|sched| {
                         if self.done.load(Ordering::Acquire) == expected_token {
                             true
                         } else {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.uninterruptible_io = !interruptible;
+                            }
                             sched.block_current_for_io_with_timeout(Some(deadline_ns));
                             false
                         }

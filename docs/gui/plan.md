@@ -1,5 +1,10 @@
 # The GUI efforts after the Developer SDK: plan of record
 
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](../x86-execution-policy.md);
+legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+
 Written 2026-10-15 against `origin/main` `53efe72e`; third and final revision the same day. This plan replaces
 the first design as the plan of record and is the basis for authoring the `breengel` effort. It takes the first
 design, four recon reports (graphics, the window manager, the applications and the test infrastructure), the
@@ -1934,7 +1939,7 @@ or misbehave, on every target."*
 - `two-readers` — Two readers of the event stream each receive every event.
 - `syn-dropped` — A reader that falls behind receives SYN_DROPPED, and each dropped serial is recorded as lost.
 - `poll` — The event device reports POLLIN through poll when events are queued.
-- `grab` — While the compositor holds the grab, the console sees no key events.
+- `grab` — While the compositor holds the grab, the console sees no key events except the reserved console chords, Ctrl+Alt+F1 to F12 (`docs/console/contract.md` section 9), which go to the console and which the grab holder sees neither pressed nor released.
 - `grab-select` — Events from a device outside the session's selection reach no client and are recorded as not-selected.
 - `grab-drain` — Taking the grab drains queued events and resets pressed state.
 - `device-removal` — Closing a device with keys and buttons held delivers their releases.

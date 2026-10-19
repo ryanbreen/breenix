@@ -23,6 +23,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::arm64_fb;
+use super::cursor;
 use super::primitives::{draw_char, draw_rect, fill_rect, Canvas, Color, Rect, TextStyle};
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
@@ -234,6 +235,12 @@ impl Layout {
     fn status_y(&self) -> i32 {
         self.height - 72
     }
+    /// The bottom edge of the lower of the two stage columns.
+    fn stages_bottom(&self) -> i32 {
+        let left = self.stage_pos(GROUPS[2].1 + GROUPS[2].2 - 1).1;
+        let right = self.stage_pos(STAGE_COUNT - 1).1;
+        left.max(right) + LINE
+    }
 
     /// Top-left of stage `index`'s row. Groups 0-2 fill the left column, 3-5 the right.
     fn stage_pos(&self, index: usize) -> (i32, i32) {
@@ -307,6 +314,7 @@ pub fn show() {
     if crate::gpu::console::active() { return; }
     let canvas = &mut *guard;
     let layout = Layout::of(canvas);
+    cursor::hide(canvas);
     fill_rect(
         canvas,
         Rect {
@@ -333,6 +341,7 @@ pub fn show() {
     screen.mode_dirty = true;
     screen.status_dirty = true;
     draw_changes(canvas, &layout, &mut screen, true);
+    cursor::show(canvas);
     present(guard);
     ACTIVE.store(true, Ordering::Release);
 }
@@ -356,7 +365,9 @@ fn refresh() {
         return;
     }
     let layout = Layout::of(&*guard);
+    cursor::hide(&mut *guard);
     draw_changes(&mut *guard, &layout, &mut screen, false);
+    cursor::show(&mut *guard);
     present(guard);
 }
 
@@ -470,6 +481,34 @@ fn clear_line(canvas: &mut impl Canvas, layout: &Layout, y: i32) {
     );
 }
 
+/// The part of the screen the boot screen leaves free while it is up: the band
+/// between the stage rows and the status line, across the content width. A
+/// kernel panel that shares the screen with the boot screen (the boot-test
+/// runner) draws only there, and only while this returns `Some`.
+///
+/// Call with the framebuffer lock held, so the answer stays true while drawing:
+/// `hand_over` and the diagnostics screen take the screen under that lock.
+pub fn runner_area(canvas: &impl Canvas) -> Option<Rect> {
+    if !ACTIVE.load(Ordering::Acquire)
+        || HANDED_OVER.load(Ordering::Acquire)
+        || DIAG_CLAIMED.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    let layout = Layout::of(canvas);
+    let top = layout.stages_bottom() + 8;
+    let bottom = layout.status_y() - 8;
+    if bottom <= top {
+        return None;
+    }
+    Some(Rect {
+        x: layout.left,
+        y: top,
+        width: (layout.col_width * 2) as u32,
+        height: (bottom - top) as u32,
+    })
+}
+
 /// Userspace has taken the display: stop drawing the boot screen (or log
 /// console), leaving its pixels up until userspace draws (`hand_over`). If the
 /// new owner fails before it draws, the boot screen stays on screen.
@@ -507,6 +546,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
     let log_console_up = LOG_CONSOLE_UP.swap(false, Ordering::AcqRel);
     if boot_screen_up || log_console_up {
         let (width, height) = (fb.width(), fb.height());
+        cursor::hide(fb);
         fill_rect(
             fb,
             Rect {
@@ -517,6 +557,7 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
             },
             BG,
         );
+        cursor::show(fb);
         if let Some(db) = fb.double_buffer_mut() {
             db.flush_if_dirty();
         }
@@ -854,6 +895,7 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     super::log_console::stop();
     let canvas = &mut *guard;
     let (width, height) = (canvas.width() as i32, canvas.height() as i32);
+    cursor::hide(canvas);
     fill_rect(
         canvas,
         Rect {
@@ -943,6 +985,7 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
         draw_str(canvas, left, y, shown, &text);
         y += LINE;
     }
+    cursor::show(canvas);
 
     if let Some(db) = guard.double_buffer_mut() {
         db.flush_if_dirty();

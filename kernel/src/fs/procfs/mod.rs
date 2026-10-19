@@ -107,6 +107,15 @@ pub enum ProcEntryType {
     NetDir,
     /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
     NetPnp,
+    /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
+    NetTcp,
+    /// /proc/fbcon - screen console directory
+    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    FbconDir,
+    /// /proc/fbcon/check - the screen read back against the console's shadow
+    /// and font, and the text rows it shows
+    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    FbconCheck,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
     /// /proc/[pid]/status - per-process status (dynamic, not registered)
@@ -161,6 +170,11 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => "counters",
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
+            ProcEntryType::NetTcp => "tcp",
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::FbconDir => "fbcon",
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::FbconCheck => "check",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
             ProcEntryType::PidExe(_) => "exe",
@@ -205,6 +219,11 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
+            ProcEntryType::NetTcp => "/proc/net/tcp",
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::FbconDir => "/proc/fbcon",
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::FbconCheck => "/proc/fbcon/check",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
             ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
@@ -250,6 +269,11 @@ impl ProcEntryType {
             ProcEntryType::XhciCounters => 302,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
+            ProcEntryType::NetTcp => 402,
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::FbconDir => 500,
+            #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+            ProcEntryType::FbconCheck => 501,
             ProcEntryType::PidDir(pid) => pid_inode(*pid, 0),
             ProcEntryType::PidStatus(pid) => pid_inode(*pid, 1),
             ProcEntryType::PidExe(pid) => pid_inode(*pid, 2),
@@ -269,6 +293,10 @@ impl ProcEntryType {
 
     /// Check if this is a directory
     pub fn is_directory(&self) -> bool {
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        if matches!(self, ProcEntryType::FbconDir) {
+            return true;
+        }
         matches!(
             self,
             ProcEntryType::TraceDir
@@ -374,6 +402,14 @@ pub fn init() {
     // Register /proc/net directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
+
+    // Register /proc/fbcon directory and entries
+    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    {
+        procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
+        procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
+    }
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -487,7 +523,8 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::NetPnp
-            )
+                    | ProcEntryType::NetTcp
+            ) && !is_fbcon_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
             let mut text = String::new();
@@ -611,6 +648,16 @@ pub fn list_xhci_entries() -> Vec<String> {
         .collect()
 }
 
+/// Whether `entry` lives inside /proc/fbcon rather than in /proc itself.
+fn is_fbcon_file(entry: &ProcEntryType) -> bool {
+    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    if matches!(entry, ProcEntryType::FbconCheck) {
+        return true;
+    }
+    let _ = entry;
+    false
+}
+
 /// List entries in the /proc/net directory
 pub fn list_net_entries() -> Result<Vec<String>, i32> {
     net::list_entries()
@@ -678,11 +725,16 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
-            listing.try_reserve_exact(4).map_err(|_| -12)?;
-            listing.extend_from_slice(b"pnp\n");
+            listing.try_reserve_exact(8).map_err(|_| -12)?;
+            listing.extend_from_slice(b"pnp\ntcp\n");
             Ok(listing)
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
+        ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        ProcEntryType::FbconDir => text(String::from("check\n")),
+        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+        ProcEntryType::FbconCheck => crate::fbcon::proc_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
             text(String::from("testing\next2\n"))
@@ -1482,6 +1534,7 @@ fn generate_pid_stat(pid: u64) -> Result<Vec<u8>, i32> {
     } else {
         match scheduler_state {
             Some("Running") | Some("Ready") => b'R',
+            Some("Disk sleep") => b'D',
             Some("Blocked") => b'S',
             _ => match process.state {
                 ProcessState::Blocked => b'S',

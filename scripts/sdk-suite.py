@@ -1148,7 +1148,8 @@ def main():
     # background priority. The boot that follows it is a separate process and keeps its own.
     if sys.platform == 'darwin' and os.environ.get('BREENIX_SDK_SUITE_BACKGROUND') != '1' and shutil.which('taskpolicy'):
         os.environ['BREENIX_SDK_SUITE_BACKGROUND'] = '1'
-        os.execvp('taskpolicy', ['taskpolicy', '-b', sys.executable, *sys.argv])
+        launcher = Path(__file__).with_name('build-background.sh')
+        os.execv(str(launcher), [str(launcher), sys.executable, *sys.argv])
     harness = Harness(args.arch, args.rebuild)
     harness.build()
     if args.image:

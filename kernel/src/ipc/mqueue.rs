@@ -208,12 +208,10 @@ impl MqInner {
 
 /// Thread `tid`'s scheduling rank now (`SchedPolicy::rank`), which decides
 /// the order waiters are served in; 0 for a thread the scheduler no longer
-/// has. It takes the scheduler's lock, so it is never called under
+/// has. It can take the scheduler's lock, so it is never called under
 /// PROCESS_MANAGER.
 fn rank_of(tid: u64) -> u8 {
-    crate::task::scheduler::with_scheduler(|sched| sched.get_thread(tid).map(|t| t.sched.rank()))
-        .flatten()
-        .unwrap_or(0)
+    crate::task::scheduler::sched_policy(tid).map_or(0, |sched| sched.rank())
 }
 
 fn realtime_ns() -> i64 {

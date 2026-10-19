@@ -1498,7 +1498,7 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     let mut returning_to_idle_kernel = false;
     if !returning_to_userspace {
         let current_tid = crate::task::scheduler::current_thread_id();
-        let idle_tid = crate::task::scheduler::with_scheduler(|s| s.idle_thread());
+        let idle_tid = crate::task::scheduler::with_current(|s| s.idle_thread());
         if let (Some(cur), Some(idle)) = (current_tid, idle_tid) {
             returning_to_idle_kernel = cur == idle;
         }
@@ -1561,7 +1561,7 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // When a thread terminates, it sets need_resched and expects immediate switch.
     // The timer interrupt should be able to switch to another thread.
     let current_thread_blocked_or_terminated =
-        crate::task::scheduler::with_scheduler(|sched| {
+        crate::task::scheduler::with_current(|sched| {
             if let Some(current) = sched.current_thread_mut() {
                 current.state == crate::task::thread::ThreadState::BlockedOnSignal
                     || current.state == crate::task::thread::ThreadState::BlockedOnChildExit

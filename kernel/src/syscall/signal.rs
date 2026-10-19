@@ -102,6 +102,22 @@ fn send_signal_to_thread(tgid: Option<u64>, tid: i64, sig: i32) -> SyscallResult
     if tid <= 0 || (sig != 0 && !is_valid_signal(sig)) {
         return SyscallResult::Err(EINVAL as u64);
     }
+    // x86_64: the thread's row from the thread index, without
+    // PROCESS_MANAGER (#1650), when its identity names the thread group.
+    #[cfg(target_arch = "x86_64")]
+    if sig != 0 {
+        if let Some((row, signals)) = crate::task::scheduler::thread_signals(tid as u64) {
+            let group = signals.mirror.identity().map(|identity| identity.tgid as u64);
+            if group.is_some() && tgid.map_or(true, |tgid| Some(tgid) == group) {
+                let sender = current_sender();
+                if let Some(result) =
+                    send_signal_lockless(ProcessId::new(row), sig, &sender, &sender.info(SI_TKILL), Recipient::Thread)
+                {
+                    return result;
+                }
+            }
+        }
+    }
     let row = {
         let manager_guard = manager();
         let Some(ref manager) = *manager_guard else {
@@ -163,15 +179,20 @@ pub(crate) fn kill_process_now(victim: ProcessId, exit_code: i32, claimed: Optio
         // Deferred: wake. A thread that has blocked is woken here, and one
         // about to block refuses to (`Thread::mark_kill_pending`), so its
         // signal check runs and finds SIGKILL.
-        crate::task::scheduler::with_scheduler(|scheduler| {
-            scheduler.wake_process_threads_for_kill(victim.as_u64());
-        });
+        crate::task::scheduler::wake_process_threads_for_kill(victim.as_u64());
         return;
     }
     crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-    crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.terminate_process_threads(victim.as_u64());
-    });
+    // x86_64: each thread under the lock of the CPU that owns it (#1649).
+    #[cfg(target_arch = "x86_64")]
+    let quarantined = crate::task::scheduler::terminate_process_threads(victim.as_u64());
+    #[cfg(not(target_arch = "x86_64"))]
+    let quarantined = false;
+    if !quarantined {
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            scheduler.terminate_process_threads(victim.as_u64());
+        });
+    }
 
     let batch = crate::task::scheduler::GroupBatchId::for_single_victim(victim.as_u64());
     crate::task::scheduler::Scheduler::send_exit_expedite_sgi(victim.as_u64(), batch);
@@ -203,11 +224,11 @@ fn claim_kill_locked(
         // A deferred kill reports this status, not SIGKILL's own.
         process.group_exit_code.get_or_insert(exit_code);
         process.signals.set_pending(SIGKILL);
+        if process.exec_owner_pending {
+            return false;
+        }
     }
-    let claimed = crate::task::scheduler::with_scheduler(|scheduler| {
-        scheduler.claim_process_threads_for_kill(victim.as_u64())
-    })
-    .unwrap_or(true);
+    let claimed = crate::task::scheduler::claim_process_threads_for_kill(victim.as_u64());
     if claimed {
         if let Some(process) = manager.get_process_mut(victim) {
             process.signals.clear_pending(SIGKILL);
@@ -295,6 +316,10 @@ impl Sender {
 
 /// The calling thread's process as a signal sender.
 fn current_sender() -> Sender {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(sender) = current_sender_lockless() {
+        return sender;
+    }
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return Sender::Kernel;
     };
@@ -310,6 +335,118 @@ fn current_sender() -> Sender {
             sid: process.sid,
         })
         .unwrap_or(Sender::Kernel)
+}
+
+/// x86_64: the calling thread's process as a signal sender, from the identity
+/// its row publishes (`Process::publish_identity`), without PROCESS_MANAGER
+/// (#1650). None while it is unpublished.
+#[cfg(target_arch = "x86_64")]
+fn current_sender_lockless() -> Option<Sender> {
+    let thread = crate::per_cpu::current_thread()?;
+    let row = thread.owner_pid?;
+    let identity = thread.signals.mirror.identity()?;
+    Some(Sender::Process {
+        row,
+        tgid: identity.tgid as u64,
+        uid: identity.uid,
+        euid: identity.euid,
+        sid: ProcessId::new(identity.sid as u64),
+    })
+}
+
+/// x86_64: `send_signal` without PROCESS_MANAGER (#1650), for a standard
+/// signal a process sends to a live process or thread with kill or tgkill's
+/// siginfo, other than SIGKILL, SIGCONT and the stop signals, which act on
+/// the whole process. The target's identity and the recipients' masks and
+/// dispositions are read from what their rows publish, and the signal is
+/// generated into the recipient's `ThreadSignals::sent`, which its next
+/// signal check folds into its row. None when the process-manager path is
+/// needed: another kind of signal or sender, a target the thread index does
+/// not hold live, an identity or a disposition not readable without the lock.
+#[cfg(target_arch = "x86_64")]
+fn send_signal_lockless(target: ProcessId, sig: u32, sender: &Sender, info: &SigInfo, to: Recipient) -> Option<SyscallResult> {
+    use core::sync::atomic::Ordering;
+    let Sender::Process { uid, euid, .. } = *sender else {
+        return None;
+    };
+    let bit = sig_mask(sig);
+    if sig == 0
+        || !is_valid_signal(sig)
+        || crate::signal::types::is_realtime(sig)
+        || sig == SIGKILL
+        || sig == SIGCONT
+        || bit & STOP_SIGNALS != 0
+        || (info.code != SI_USER && info.code != SI_TKILL)
+    {
+        return None;
+    }
+    let tid = crate::task::scheduler::row_thread(target.as_u64())?;
+    let (_, signals) = crate::task::scheduler::thread_signals(tid)?;
+    let identity = signals.mirror.identity()?;
+    // `Sender::may_signal`; SIGCONT, the session exception, takes the other path.
+    if euid != 0 && ![uid, euid].iter().any(|&id| id == identity.uid || id == identity.suid) {
+        return Some(SyscallResult::Err(EPERM as u64));
+    }
+    let accepts = |signals: &crate::signal::ThreadSignals| {
+        (!signals.blocked.load(Ordering::Relaxed) | signals.wait_set.load(Ordering::Acquire)) & bit != 0
+    };
+    let (recipient, signals, fallback) = match to {
+        Recipient::Thread => (tid, signals, false),
+        Recipient::Process => crate::task::scheduler::group_signals(tid)
+            .into_iter()
+            .find(|(_, member)| accepts(member))
+            .map_or((tid, signals, true), |(member, signals)| (member, signals, false)),
+    };
+    if to == Recipient::Process && signals.exec_victim.load(Ordering::Acquire) {
+        return None;
+    }
+    // Read before the dispositions: an unchanged count after the post shows
+    // that no ignore was installed, and the signal discarded, meanwhile.
+    let generation = signals.mirror.generation()?;
+    // Discarded at generation when ignored, unless it is blocked and its
+    // action is the default (`SignalState::discards`).
+    if signals.mirror.ignored() & bit != 0 {
+        let action = signals.mirror.action(sig)?;
+        if !(signals.blocked.load(Ordering::Relaxed) & bit != 0 && action.is_default()) {
+            return Some(SyscallResult::Ok(0));
+        }
+    }
+    let word = info.fields[0];
+    let posted = signals.post_sent(sig, word as u32, (word >> 32) as u32, to == Recipient::Thread);
+    // What the choice and the discard check read may have changed before the
+    // post was visible: a sibling's sigaction installed ignore, whose discard
+    // missed this signal, or, when no thread accepted it, another thread
+    // registered a wait for it and found nothing pending (`sys_sigtimedwait`,
+    // whose registration is ordered against this post by the same kind of
+    // fence). Then the signal is taken back, if it is still there, and the
+    // process-manager path, which serializes with both, generates it.
+    core::sync::atomic::fence(Ordering::SeqCst);
+    if to == Recipient::Process && signals.exec_victim.load(Ordering::Acquire) {
+        // If exec already drained our post it preserved the signal. Otherwise
+        // withdraw it and let PM select the survivor, even if it blocks sig.
+        if !posted || signals.take_sent(sig).is_some() {
+            return None;
+        }
+        return Some(SyscallResult::Ok(0));
+    }
+    if posted
+        && (signals.mirror.generation() != Some(generation)
+            || (fallback
+                && crate::task::scheduler::group_signals(tid)
+                    .iter()
+                    .any(|(member, other)| *member != recipient && accepts(other))))
+        && signals.take_sent(sig).is_some()
+    {
+        return None;
+    }
+    // A stopped process runs nothing until SIGCONT; otherwise the recipient
+    // is woken when the signal interrupts it or it waits for it.
+    if !signals.mirror.job_stopped()
+        && (signals.mirror.interrupting(&signals) || signals.wait_set.load(Ordering::Acquire) & bit != 0)
+    {
+        crate::task::scheduler::wake_for_signal(recipient, true);
+    }
+    Some(SyscallResult::Ok(0))
 }
 
 /// Which thread of its target's thread group a signal is for.
@@ -359,6 +496,10 @@ pub(crate) fn send_kernel_signal(pid: ProcessId, sig: u32, info: SigInfo, exec_i
 /// row's thread. Signal 0 only checks that the target exists and that the
 /// sender may signal it.
 fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: Recipient) -> SyscallResult {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(result) = send_signal_lockless(target, sig, &sender, &info, to) {
+        return result;
+    }
     let caller_tid = crate::task::scheduler::current_thread_id();
     let mut manager_guard = manager();
 
@@ -387,6 +528,20 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                     Some(live) => (group, live),
                 }
             }
+        };
+
+        // Process signals belong to the surviving row once exec has marked
+        // its peers, even while the old leader remains inside a syscall.
+        let target = if to == Recipient::Process || sig == SIGKILL {
+            match manager.get_process(target) {
+                Some(row) if row.killed_by_exec => manager
+                    .group_rows(group)
+                    .find(|row| !row.killed_by_exec)
+                    .map_or(target, |row| row.id),
+                _ => target,
+            }
+        } else {
+            target
         };
 
         // SIGKILL cannot be caught or blocked, and ends every thread of the
@@ -424,6 +579,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                 .iter_processes()
                 .find(|(pid, p)| {
                     !p.is_terminated()
+                        && !p.killed_by_exec
                         && p.thread_group_id.unwrap_or(pid.as_u64()) == group
                         && (!p.signals.is_blocked(sig)
                             || p.signals
@@ -499,13 +655,7 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
                 // Release the manager lock before acquiring the scheduler lock
                 // to avoid deadlock
                 drop(manager_guard);
-                crate::task::scheduler::with_scheduler(|sched| {
-                    // Wake thread if it's blocked on pause()/sigsuspend()
-                    sched.unblock_for_signal(thread_id);
-                    // Also wake thread if it's blocked on waitpid() - signals should
-                    // interrupt waitpid with EINTR so the signal can be delivered
-                    sched.unblock_for_child_exit(thread_id);
-                });
+                crate::task::scheduler::wake_for_signal(thread_id, true);
                 return SyscallResult::Ok(0);
             } else {
                 log::warn!(
@@ -529,6 +679,12 @@ fn send_signal(target: ProcessId, sig: u32, sender: Sender, info: SigInfo, to: R
 /// This implements kill(0, sig) - sends the signal to all processes
 /// that belong to the same process group as the calling process.
 fn send_signal_to_caller_process_group(sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    // x86_64: the caller's process group from the identity its row publishes,
+    // without PROCESS_MANAGER (#1650).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(identity) = crate::per_cpu::current_thread().and_then(|thread| thread.signals.mirror.identity()) {
+        return send_signal_to_process_group(ProcessId::new(identity.pgid as u64), sig, sender, info);
+    }
     let Some(current_thread_id) = crate::task::scheduler::current_thread_id() else {
         return SyscallResult::Err(ESRCH as u64);
     };
@@ -554,7 +710,76 @@ fn send_signal_to_caller_process_group(sig: u32, sender: Sender, info: SigInfo) 
 /// * -EPERM (1) if the sender may signal no member
 /// * -ESRCH (3) if no process is in the group
 fn send_signal_to_process_group(pgid: ProcessId, sig: u32, sender: Sender, info: SigInfo) -> SyscallResult {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(result) = send_signal_to_group_lockless(pgid, sig, sender, info) {
+        return result;
+    }
     send_signal_to_each(|p| p.pgid == pgid, sig, sender, info)
+}
+
+/// x86_64: `send_signal_to_process_group` without PROCESS_MANAGER (#1650):
+/// the group's processes from the identities their live rows publish, each
+/// sent the signal once, through its leader's row when that is live, and as
+/// `send_signal_lockless` sends it, or under the lock where that declines.
+/// None, sending nothing, when the signal or the sender needs the
+/// process-manager path, or no live process is in the group: zombies are
+/// members too, and only the process table knows them.
+#[cfg(target_arch = "x86_64")]
+fn send_signal_to_group_lockless(pgid: ProcessId, sig: u32, sender: Sender, info: SigInfo) -> Option<SyscallResult> {
+    let bit = sig_mask(sig);
+    if sig == 0
+        || !is_valid_signal(sig)
+        || crate::signal::types::is_realtime(sig)
+        || sig == SIGKILL
+        || sig == SIGCONT
+        || bit & STOP_SIGNALS != 0
+        || !matches!(sender, Sender::Process { .. })
+    {
+        return None;
+    }
+    // One row per process: the leader's when it is live, else the lowest.
+    let mut targets: alloc::vec::Vec<(u32, u64)> = alloc::vec::Vec::new();
+    for (_, row, signals) in crate::task::scheduler::live_signals() {
+        if row == 0 {
+            // A kernel thread: no process.
+            continue;
+        }
+        let Some(identity) = signals.mirror.identity() else {
+            return None;
+        };
+        if identity.pgid as u64 != pgid.as_u64() {
+            continue;
+        }
+        match targets.iter_mut().find(|(tgid, _)| *tgid == identity.tgid) {
+            Some(target) => {
+                if row == identity.tgid as u64 || (target.1 != identity.tgid as u64 && row < target.1) {
+                    target.1 = row;
+                }
+            }
+            None => targets.push((identity.tgid, row)),
+        }
+    }
+    if targets.is_empty() {
+        return None;
+    }
+    targets.sort_unstable();
+    let (mut sent, mut refused) = (false, false);
+    for (_, row) in targets {
+        let pid = ProcessId::new(row);
+        let result = send_signal_lockless(pid, sig, &sender, &info, Recipient::Process)
+            .unwrap_or_else(|| send_signal_to_process(pid, sig, sender, info));
+        match result {
+            SyscallResult::Ok(_) => sent = true,
+            SyscallResult::Err(e) => refused |= e == EPERM as u64,
+        }
+    }
+    Some(if sent {
+        SyscallResult::Ok(0)
+    } else if refused {
+        SyscallResult::Err(EPERM as u64)
+    } else {
+        SyscallResult::Err(ESRCH as u64)
+    })
 }
 
 /// Send a signal to all processes the caller can signal (except the designated init)
@@ -982,7 +1207,7 @@ fn wait_for_signal(thread_id: u64) {
         if super::check_signals_for_wait().is_some() {
             break;
         }
-        crate::task::scheduler::with_scheduler(|sched| {
+        crate::task::scheduler::with_current(|sched| {
             sched.block_current_for_signal();
         });
         let eligible = super::check_signals_for_wait().is_some();
@@ -998,17 +1223,17 @@ fn wait_for_signal(thread_id: u64) {
 }
 
 fn finish_signal_wait(thread_id: u64) {
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.get_thread_mut(thread_id) {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-            thread.wake_time_ns = None;
-            thread
-                .signals
-                .wait_set
-                .store(0, core::sync::atomic::Ordering::Release);
-            thread.set_running();
-        }
+    // The calling thread: under the lock of the CPU that owns it, this one on
+    // x86_64 (#1649).
+    crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        thread.blocked_in_syscall = false;
+        thread.saved_userspace_context = None;
+        thread.wake_time_ns = None;
+        thread
+            .signals
+            .wait_set
+            .store(0, core::sync::atomic::Ordering::Release);
+        thread.set_running();
     });
 }
 
@@ -1218,7 +1443,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64, user_sp: u64) -> SyscallResult {
             }
         };
 
-        let alt = &process.signals.alt_stack;
+        let alt = process.signals.alt_stack();
         (alt.stack_t(user_sp), alt.on_stack(user_sp))
     };
 
@@ -1267,7 +1492,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64, user_sp: u64) -> SyscallResult {
             }
         };
 
-        process.signals.alt_stack = next_alt_stack;
+        process.signals.set_alt_stack(next_alt_stack);
     }
 
     SyscallResult::Ok(0)
@@ -1328,11 +1553,11 @@ fn alt_stack_from(new_stack: &StackT) -> Result<crate::signal::types::AltStack, 
 /// changed) is installed, unless the thread, at `sp`, is running on the
 /// current one. A `uc_stack` sigaltstack would refuse leaves it unchanged.
 fn restore_alt_stack(process: &mut crate::process::Process, uc_stack: &StackT, sp: u64) {
-    if process.signals.alt_stack.on_stack(sp) {
+    if process.signals.alt_stack().on_stack(sp) {
         return;
     }
     if let Ok(alt) = alt_stack_from(uc_stack) {
-        process.signals.alt_stack = alt;
+        process.signals.set_alt_stack(alt);
     }
 }
 
@@ -1415,41 +1640,45 @@ fn sigsuspend(mask_ptr: u64, sigsetsize: u64) -> SyscallResult {
 /// - SIGALRM's default action is to terminate the process
 /// - The alarm is delivered asynchronously via the signal delivery mechanism
 pub fn sys_alarm(seconds: u64) -> SyscallResult {
-    let Some(tid) = crate::task::scheduler::current_thread_id() else {
-        return SyscallResult::Err(3);
-    };
-    let mut guard = manager();
-    let Some(m) = guard.as_mut() else {
-        return SyscallResult::Err(3);
-    };
-    let Some((_, p)) = m.find_process_by_thread_mut(tid) else {
+    let Some((timers, cpu)) = caller_timers() else {
         return SyscallResult::Err(3);
     };
     let value = crate::signal::Itimerval {
         it_interval: crate::signal::Timeval::zero(),
         it_value: crate::signal::Timeval::from_micros(seconds.saturating_mul(1_000_000)),
     };
-    let old = p
-        .itimers
-        .real
-        .set_value(&value, crate::signal::monotonic_micros());
-    let timers = p.itimers.clone();
-    let cpu = p.cpu.clone();
-    drop(guard);
-    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
+    let old = timers.real.set_value(&value, crate::signal::monotonic_micros());
+    crate::task::scheduler::register_signal_timers(&timers, &cpu);
     SyscallResult::Ok(old.it_value.to_micros().div_ceil(1_000_000))
 }
 
-fn timer_clock(process: &crate::process::Process, which: i32) -> u64 {
+/// The calling process's interval timers and the CPU account they count.
+/// x86_64: from the calling thread, which holds both, without the process
+/// manager (#1650); elsewhere from its row, under it.
+fn caller_timers() -> Option<(
+    alloc::sync::Arc<crate::signal::IntervalTimers>,
+    alloc::sync::Arc<crate::task::thread::CpuAccount>,
+)> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(found) = crate::task::scheduler::current_signal_timers() {
+        return Some(found);
+    }
+    let tid = crate::task::scheduler::current_thread_id()?;
+    let guard = manager();
+    let (_, process) = guard.as_ref()?.find_process_by_thread(tid)?;
+    Some((process.itimers.clone(), process.cpu.clone()))
+}
+
+fn timer_clock(cpu: &crate::task::thread::CpuAccount, which: i32) -> u64 {
     use core::sync::atomic::Ordering;
     if which == crate::signal::itimer::ITIMER_REAL {
         return crate::signal::monotonic_micros();
     }
-    // getitimer and setitimer charged the process's running threads before
-    // they took the process manager (`charge_current_process_cpu`).
-    let user = process.cpu.user_ns.load(Ordering::Relaxed);
+    // getitimer and setitimer charged the process's running threads first
+    // (`charge_current_process_cpu`).
+    let user = cpu.user_ns.load(Ordering::Relaxed);
     let system = if which == crate::signal::itimer::ITIMER_PROF {
-        process.cpu.system_ns.load(Ordering::Relaxed)
+        cpu.system_ns.load(Ordering::Relaxed)
     } else {
         0
     };
@@ -1486,38 +1715,16 @@ pub fn sys_getitimer(which: i32, curr_value: u64) -> SyscallResult {
     };
 
     // A CPU-time timer reads the process's account: charge its running
-    // threads, this one's time in this call included, before the process
-    // manager is taken.
+    // threads, this one's time in this call included.
     if which != ITIMER_REAL {
         crate::task::scheduler::charge_current_process_cpu();
     }
 
-    let value = {
-        let manager_guard = manager();
-        let manager_ref = match manager_guard.as_ref() {
-            Some(m) => m,
-            None => {
-                log::error!("sys_getitimer: process manager not initialized");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        let (_, process) = match manager_ref.find_process_by_thread(current_thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!(
-                    "sys_getitimer: process not found for thread {}",
-                    current_thread_id
-                );
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        process
-            .itimers
-            .timer(which)
-            .get_value(timer_clock(process, which))
+    let Some((timers, cpu)) = caller_timers() else {
+        log::error!("sys_getitimer: process not found for thread {}", current_thread_id);
+        return SyscallResult::Err(3); // ESRCH
     };
+    let value = timers.timer(which).get_value(timer_clock(&cpu, which));
 
     // Write to userspace
     if curr_value != 0 {
@@ -1605,40 +1812,18 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
         crate::task::scheduler::charge_current_process_cpu();
     }
 
-    let (old_itimerval, timers, cpu) = {
-        let mut manager_guard = manager();
-        let manager_ref = match manager_guard.as_mut() {
-            Some(m) => m,
-            None => {
-                log::error!("sys_setitimer: process manager not initialized");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        let (_, process) = match manager_ref.find_process_by_thread_mut(current_thread_id) {
-            Some(p) => p,
-            None => {
-                log::error!(
-                    "sys_setitimer: process not found for thread {}",
-                    current_thread_id
-                );
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        let now = timer_clock(process, which);
-        let timer = process.itimers.timer(which);
-        let old_itimerval = if let Some(new_val) = new_itimerval {
-            timer.set_value(&new_val, now)
-        } else {
-            timer.get_value(now)
-        };
-
-        (old_itimerval, process.itimers.clone(), process.cpu.clone())
+    let Some((timers, cpu)) = caller_timers() else {
+        log::error!("sys_setitimer: process not found for thread {}", current_thread_id);
+        return SyscallResult::Err(3); // ESRCH
     };
-    // The scheduler lock ranks above the process manager's, so the timers are
-    // registered after the manager is released, as alarm() does.
-    crate::task::scheduler::with_scheduler(|s| s.register_signal_timers(&timers, &cpu));
+    let now = timer_clock(&cpu, which);
+    let timer = timers.timer(which);
+    let old_itimerval = if let Some(new_val) = new_itimerval {
+        timer.set_value(&new_val, now)
+    } else {
+        timer.get_value(now)
+    };
+    crate::task::scheduler::register_signal_timers(&timers, &cpu);
 
     // Write old value to userspace (if requested)
     if old_value != 0 {
@@ -1813,6 +1998,128 @@ pub fn sys_sigsuspend_with_frame_aarch64(
     sigsuspend(mask_ptr, sigsetsize)
 }
 
+/// Where rt_sigtimedwait took the signal it accepts from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Accepted {
+    /// The row's pending set, under PROCESS_MANAGER; taken after the copy.
+    Row,
+    /// An interval timer's expiry (`ThreadSignals::timer_pending`).
+    #[cfg(target_arch = "x86_64")]
+    Timer,
+    /// A signal kill sent without PROCESS_MANAGER (`ThreadSignals::sent`),
+    /// and whether it was sent to the process.
+    #[cfg(target_arch = "x86_64")]
+    Sent(bool),
+    /// A POSIX timer's signal, taken off its timer once the siginfo was
+    /// copied out.
+    #[cfg(target_arch = "x86_64")]
+    Posix,
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Accepted {
+    /// Put back a signal taken without the lock whose siginfo could not be
+    /// copied out, so EFAULT does not consume it.
+    fn give_back(self, signals: &crate::signal::ThreadSignals, sig: u32, info: &SigInfo) {
+        match self {
+            Accepted::Row => {}
+            Accepted::Timer => {
+                signals.timer_pending.fetch_or(sig_mask(sig), core::sync::atomic::Ordering::AcqRel);
+            }
+            Accepted::Sent(process) => signals.restore_sent(sig, info, process),
+            Accepted::Posix => {}
+        }
+    }
+}
+
+/// x86_64: whether no other thread of `tid`'s process holds a signal in
+/// `set` that it may hand over (`ProcessManager::route_pending_signals_to`),
+/// read without PROCESS_MANAGER: then there is nothing to route.
+#[cfg(target_arch = "x86_64")]
+fn siblings_hold_none_of(tid: u64, set: u64) -> bool {
+    use core::sync::atomic::Ordering;
+    crate::task::scheduler::group_signals(tid).iter().all(|(member, signals)| {
+        *member == tid
+            || (signals.mirror.pending()
+                | signals.sent.load(Ordering::Acquire)
+                | signals.timer_pending.load(Ordering::Acquire)
+                | signals.posix_pending.load(Ordering::Acquire))
+                & set
+                == 0
+    })
+}
+
+/// x86_64: rt_sigtimedwait's acceptance of a POSIX timer's signal of `set`
+/// due for the calling thread, without PROCESS_MANAGER: claimed from the
+/// process's timer table, its siginfo written to `info_ptr` with a copy that
+/// refuses rather than resolves a fault, as the table is held meanwhile, and
+/// the claim committed only once the copy succeeded. None when the table is
+/// busy, the due signal is not in `set` or the copy would fault: the
+/// process-manager path decides, the signal still due.
+#[cfg(target_arch = "x86_64")]
+fn accept_posix_lockless(signals: &crate::signal::ThreadSignals, set: u64, info_ptr: u64) -> Option<u32> {
+    let (timers, _) = crate::task::scheduler::current_signal_timers()?;
+    let claim = timers.posix.try_claim_due(signals, set)?;
+    let sig = claim.sig();
+    if sig_mask(sig) & set == 0 {
+        return None;
+    }
+    if info_ptr != 0 {
+        let info = claim.info().to_linux(sig);
+        let bytes = core::mem::size_of::<crate::signal::LinuxSigInfo>();
+        super::userptr::write_user_bytes_nofault(info_ptr, &info as *const _ as *const u8, bytes).ok()?;
+    }
+    claim.commit();
+    Some(sig)
+}
+
+/// x86_64: rt_sigtimedwait's acceptance from the thread's own state, without
+/// PROCESS_MANAGER: the lowest signal of `set` that an interval timer, a
+/// POSIX timer or a lock-free kill made pending here, taken with its siginfo;
+/// a POSIX timer's is only named here (`Accepted::Posix`) and claimed from
+/// its table by `accept_posix_lockless`. Some(None) when none of `set` is
+/// pending; None when the row holds one of them, a POSIX timer's signal and
+/// another instance of the same signal are both due, or one is ignored,
+/// which the process-manager path decides.
+#[cfg(target_arch = "x86_64")]
+fn accept_lockless(signals: &crate::signal::ThreadSignals, set: u64) -> Option<Option<(u32, SigInfo, Accepted)>> {
+    use core::sync::atomic::Ordering;
+    if signals.mirror.pending() & set != 0 || signals.posix_retry.load(Ordering::Acquire) {
+        return None;
+    }
+    let posix = signals.posix_pending.load(Ordering::Acquire) & set;
+    let timers = signals.timer_pending.load(Ordering::Acquire) & set;
+    let sent = signals.sent.load(Ordering::Acquire) & set;
+    let due = posix | timers | sent;
+    if due == 0 {
+        return Some(None);
+    }
+    if due & signals.mirror.ignored() != 0 {
+        return None;
+    }
+    let sig = due.trailing_zeros() + 1;
+    let bit = sig_mask(sig);
+    if posix & bit != 0 {
+        if (timers | sent) & bit != 0 {
+            return None;
+        }
+        return Some(Some((sig, SigInfo::kernel(), Accepted::Posix)));
+    }
+    // The timer's and a kill's instance of one standard signal coalesce into
+    // the first. A kill does not generate a signal a timer already has due
+    // (`ThreadSignals::post_sent`), so when both are here the kill's came
+    // first, as `collect_timer_signals` also takes it.
+    if sent & bit != 0 {
+        let (info, process) = signals.take_sent(sig)?;
+        signals.timer_pending.fetch_and(!bit, Ordering::AcqRel);
+        return Some(Some((sig, info, Accepted::Sent(process))));
+    }
+    if signals.timer_pending.fetch_and(!bit, Ordering::AcqRel) & bit == 0 {
+        return None;
+    }
+    Some(Some((sig, SigInfo::kernel(), Accepted::Timer)))
+}
+
 /// Linux rt_sigtimedwait: accept one signal without invoking its handler.
 /// Register the set before publishing the sleep so generation wakes it even
 /// though the signal remains blocked for asynchronous delivery.
@@ -1845,7 +2152,27 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return SyscallResult::Err(3);
     };
-    {
+    // x86_64: the registration and the acceptance read and take the signal
+    // from the thread's own state without PROCESS_MANAGER when it is a timer
+    // signal or one kill sent without that lock (#1650); a signal on the row,
+    // or one another thread of the process holds, takes the lock.
+    #[cfg(target_arch = "x86_64")]
+    let own = crate::per_cpu::current_thread()
+        .filter(|thread| thread.id == tid)
+        .map(|thread| thread.signals.clone());
+    #[cfg(target_arch = "x86_64")]
+    let registered = own.as_ref().is_some_and(|signals| {
+        signals.wait_set.store(set, Ordering::Release);
+        // Ordered against a lock-free kill's post and its second look at the
+        // threads' wait sets (`send_signal_lockless`): either the kill sees
+        // this wait and takes the process-manager path, or this scan sees
+        // the signal it posted on another thread.
+        core::sync::atomic::fence(Ordering::SeqCst);
+        siblings_hold_none_of(tid, set)
+    });
+    #[cfg(not(target_arch = "x86_64"))]
+    let registered = false;
+    if !registered {
         let mut guard = manager();
         let Some(m) = guard.as_mut() else {
             return SyscallResult::Err(3);
@@ -1854,44 +2181,72 @@ pub fn sys_sigtimedwait(set_ptr: u64, info_ptr: u64, timeout_ptr: u64, size: u64
             return SyscallResult::Err(3);
         };
         p.signals.thread.wait_set.store(set, Ordering::Release);
+        // As on the lock-free registration above: a lock-free kill's second
+        // look at the wait sets, or this routing's look at what it posted.
+        core::sync::atomic::fence(Ordering::SeqCst);
         m.route_pending_signals_to(tid);
     }
     let result = loop {
         // Stops resume this wait rather than returning a spurious EINTR.
         let interrupted = super::check_signals_for_wait().is_some();
-        crate::task::scheduler::with_scheduler(|sched| {
+        crate::task::scheduler::with_current(|sched| {
             if let Some(deadline) = deadline {
                 sched.block_current_for_timer(deadline);
             } else {
                 sched.block_current_for_signal();
             }
         });
-        let accepted = {
-            let mut guard = manager();
-            let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
-                break SyscallResult::Err(3);
-            };
-            p.signals.collect_timer_signals(&p.itimers);
-            let pending = p.signals.pending & set;
-            if pending == 0 {
-                None
-            } else {
-                let sig = pending.trailing_zeros() + 1;
-                let info = p.signals.next_info(sig);
-                Some((sig, info))
+        // x86_64: a POSIX timer's signal is claimed from the process's timer
+        // table, which holds it until the siginfo is written out, as the
+        // lock-free delivery does (`PosixTimers::try_claim_due`).
+        #[cfg(target_arch = "x86_64")]
+        let quick = match own.as_ref().and_then(|signals| accept_lockless(signals, set)) {
+            Some(Some((sig, _, Accepted::Posix))) => {
+                match own.as_ref().and_then(|signals| accept_posix_lockless(signals, sig_mask(sig), info_ptr)) {
+                    Some(sig) => break SyscallResult::Ok(sig as u64),
+                    None => None,
+                }
+            }
+            other => other,
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let quick: Option<Option<(u32, SigInfo, Accepted)>> = None;
+        let accepted = match quick {
+            Some(found) => found,
+            None => {
+                let mut guard = manager();
+                let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) else {
+                    break SyscallResult::Err(3);
+                };
+                p.signals.collect_timer_signals(&p.itimers);
+                let pending = p.signals.pending() & set;
+                if pending == 0 {
+                    None
+                } else {
+                    let sig = pending.trailing_zeros() + 1;
+                    let info = p.signals.next_info(sig);
+                    Some((sig, info, Accepted::Row))
+                }
             }
         };
-        if let Some((sig, info)) = accepted {
+        if let Some((sig, info, source)) = accepted {
             if info_ptr != 0 {
                 if let Err(e) = copy_to_user(info_ptr as *mut crate::signal::LinuxSigInfo, &info.to_linux(sig)) {
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(signals) = own.as_ref() {
+                        source.give_back(signals, sig, &info);
+                    }
                     break SyscallResult::Err(e);
                 }
             }
-            // Keep it pending through the copy so EFAULT never consumes it.
-            // wait_set prevents another accepting thread from retargeting it.
-            let mut guard = manager();
-            if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
-                p.signals.take(sig);
+            // A signal on the row is kept pending through the copy so EFAULT
+            // never consumes it. wait_set prevents another accepting thread
+            // from retargeting it.
+            if source == Accepted::Row {
+                let mut guard = manager();
+                if let Some((_, p)) = guard.as_mut().and_then(|m| m.find_process_by_thread_mut(tid)) {
+                    p.signals.take(sig);
+                }
             }
             break SyscallResult::Ok(sig as u64);
         }

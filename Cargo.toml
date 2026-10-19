@@ -4,6 +4,11 @@ name = "breenix"
 version = "0.1.0"
 edition = "2021"
 
+# The x86 kernel is a target artifact in build-dependencies. Cargo otherwise
+# gives it the unoptimized build-dependency profile even for --release.
+[profile.release.package.kernel]
+opt-level = 3
+
 [features]
 gpu_svga_experimental = ["kernel/gpu_svga_experimental"]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
@@ -27,6 +32,7 @@ fs_fault_inject = ["kernel/fs_fault_inject"]  # ext2/VFS fault-injection leg, se
 fs_fault_disarm_short_read = ["fs_fault_inject", "kernel/fs_fault_disarm_short_read"]
 fs_fault_disarm_eio = ["fs_fault_inject", "kernel/fs_fault_disarm_eio"]
 fs_fault_disarm_corrupt_inode = ["fs_fault_inject", "kernel/fs_fault_disarm_corrupt_inode"]
+xhci_fault_inject = ["kernel/xhci_fault_inject"]  # x86-metal xHCI recovery exercise, see kernel/Cargo.toml
 ext2_lock_race = ["boot_tests", "kernel/ext2_lock_race"]  # #728 lock-discipline repro oracle, see kernel/Cargo.toml
 capture_selftest = ["boot_tests", "kernel/capture_selftest"]  # failure-capture PR-3, see kernel/Cargo.toml
 capture_panic_oracle = ["boot_tests", "kernel/capture_panic_oracle"]  # failure-capture PR-4, see kernel/Cargo.toml

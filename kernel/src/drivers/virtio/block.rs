@@ -165,6 +165,8 @@ mod features {
     pub const SIZE_MAX: u32 = 1 << 1;
     /// Maximum number of segments in a request is in seg_max
     pub const SEG_MAX: u32 = 1 << 2;
+    /// Device is read-only.
+    pub const RO: u32 = 1 << 5;
     /// Cache flush command support
     pub const FLUSH: u32 = 1 << 9;
 }
@@ -386,6 +388,7 @@ pub struct VirtioBlockDevice {
     /// Disk capacity in sectors
     capacity: u64,
     flush_supported: bool,
+    read_only: bool,
     max_transfer_bytes: usize,
     writes_pending: AtomicBool,
     /// Number of completed operations (for stats)
@@ -399,7 +402,7 @@ pub struct VirtioBlockDevice {
 impl VirtioBlockDevice {
     /// Initialize a VirtIO block device from a PCI device
     pub fn new(pci_dev: &PciDevice) -> Result<Self, &'static str> {
-        let requested = features::SIZE_MAX | features::SEG_MAX | features::FLUSH;
+        let requested = features::SIZE_MAX | features::SEG_MAX | features::RO | features::FLUSH;
         pci_dev.enable_intx();
         let (device, queue, capacity, flush_supported) =
             if pci_dev.device_id == crate::drivers::pci::VIRTIO_BLOCK_DEVICE_ID_MODERN {
@@ -511,6 +514,10 @@ impl VirtioBlockDevice {
 
         log::info!("VirtIO block: Device initialization complete (with cached DMA buffers)");
 
+        let read_only = match &device {
+            BlockTransport::Legacy(d) => d.read_device_features() & features::RO != 0,
+            BlockTransport::Modern(d) => d.device_features() & features::RO as u64 != 0,
+        };
         Ok(VirtioBlockDevice {
             device,
             interrupt_line: pci_dev.interrupt_line,
@@ -523,6 +530,7 @@ impl VirtioBlockDevice {
             completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
             flush_supported,
+            read_only,
             max_transfer_bytes,
             writes_pending: AtomicBool::new(true),
             ops_completed: AtomicU64::new(0),
@@ -535,6 +543,12 @@ impl VirtioBlockDevice {
     #[allow(dead_code)] // Part of public block device API
     pub fn capacity(&self) -> u64 {
         self.capacity
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only || crate::block::hardware_disk_read_only(
+            crate::block::HardwareDisk::Virtio(self as *const Self as usize),
+        )
     }
 
     /// Allocate a DMA buffer of the given size
@@ -796,6 +810,7 @@ impl VirtioBlockDevice {
     }
 
     fn write_chunk(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        if self.is_read_only() { return Err("Read-only filesystem"); }
         if buffer.len() < SECTOR_SIZE {
             return Err("Buffer too small");
         }
@@ -883,6 +898,7 @@ impl VirtioBlockDevice {
     /// Flush the device cache using a header/status-only request. A device
     /// without FLUSH advertises writethrough operation by the VirtIO block ABI.
     pub fn flush(&self) -> Result<(), &'static str> {
+        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Virtio(self as *const Self as usize)) { return Ok(()); }
         if !self.flush_supported {
             return Ok(());
         }

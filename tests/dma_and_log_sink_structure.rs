@@ -293,15 +293,19 @@ fn validate_virtqueue_source(source: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_logger_source(source: &str) -> Result<(), &'static str> {
-    let source_mask = code_mask(source);
-    if !identifier_offsets(source, &source_mask, "LockedLogger").is_empty() {
+/// The kernel log's screen sink (`kernel/src/fbcon`) takes records from
+/// interrupt handlers as well as threads, so it must not block or be
+/// strandable: its grid lock is only tried, with interrupts masked, and the
+/// record path writes text into the grid and does not touch the framebuffer,
+/// which the render thread draws.
+fn validate_logger_source(logger: &str, fbcon: &str, records: &str) -> Result<(), &'static str> {
+    let logger_mask = code_mask(logger);
+    if !identifier_offsets(logger, &logger_mask, "LockedLogger").is_empty() {
         return Err("logger still uses the upstream blocking LockedLogger");
     }
 
-    let record_writer = function_body(source, "write_framebuffer_record")
-        .ok_or("missing write_framebuffer_record")?;
-    let interrupt_masked = call_arguments(record_writer, "arch_without_interrupts")
+    let grid_writer = function_body(fbcon, "with_grid").ok_or("missing with_grid")?;
+    let interrupt_masked = call_arguments(grid_writer, "arch_without_interrupts")
         .into_iter()
         .any(|arguments| {
             arguments.first().is_some_and(|closure| {
@@ -311,54 +315,35 @@ fn validate_logger_source(source: &str) -> Result<(), &'static str> {
             })
         });
     if !interrupt_masked {
-        return Err("framebuffer try_lock is not inside arch_without_interrupts");
+        return Err("console grid try_lock is not inside arch_without_interrupts");
     }
 
-    let combined_log_impl = impl_body(source, "impl Log for CombinedLogger")
+    let combined_log_impl = impl_body(logger, "impl Log for CombinedLogger")
         .ok_or("missing CombinedLogger Log implementation")?;
     let log_body = function_body(combined_log_impl, "log").ok_or("missing CombinedLogger::log")?;
     let log_mask = code_mask(log_body);
-    if identifier_offsets(log_body, &log_mask, "write_framebuffer_record").is_empty() {
-        return Err("CombinedLogger::log does not use the nonblocking framebuffer helper");
+    if identifier_offsets(log_body, &log_mask, "log_record").is_empty() {
+        return Err("CombinedLogger::log does not use the nonblocking console sink");
     }
-    if has_whole_framebuffer_clear(log_body) || has_whole_framebuffer_clear(record_writer) {
+    let record_writer = function_body(records, "log_record").ok_or("missing log_record")?;
+    let record_mask = code_mask(record_writer);
+    if identifier_offsets(record_writer, &record_mask, "with_grid").is_empty() {
+        return Err("log_record does not write through with_grid");
+    }
+    if has_whole_framebuffer_clear(log_body) {
         return Err("logger hot path clears the whole framebuffer");
     }
-
-    let framebuffer_impl =
-        impl_body(source, "impl LogFrameBuffer").ok_or("missing LogFrameBuffer implementation")?;
-    let framebuffer_mask = code_mask(framebuffer_impl);
-    for function in identifier_offsets(framebuffer_impl, &framebuffer_mask, "fn") {
-        let mut cursor = function + 2;
-        while cursor < framebuffer_impl.len()
-            && (!framebuffer_mask[cursor]
-                || framebuffer_impl.as_bytes()[cursor].is_ascii_whitespace())
-        {
-            cursor += 1;
-        }
-        let name_start = cursor;
-        while cursor < framebuffer_impl.len()
-            && framebuffer_mask[cursor]
-            && identifier_byte(framebuffer_impl.as_bytes()[cursor])
-        {
-            cursor += 1;
-        }
-        let name = &framebuffer_impl[name_start..cursor];
-        if name == "new" {
-            continue;
-        }
-        let Some(body) = function_body(&framebuffer_impl[function..], name) else {
-            continue;
-        };
+    for (source, writer) in [(fbcon, "with_grid"), (records, "log_record"), (records, "write_tty")] {
+        let body = function_body(source, writer).ok_or("missing console writer")?;
         if has_whole_framebuffer_clear(body) {
-            return Err("LogFrameBuffer clears the whole framebuffer after initialization");
+            return Err("logger hot path clears the whole framebuffer");
         }
-    }
-
-    let framebuffer_write_impl = impl_body(source, "impl fmt::Write for LogFrameBuffer")
-        .ok_or("missing LogFrameBuffer fmt::Write implementation")?;
-    if has_whole_framebuffer_clear(framebuffer_write_impl) {
-        return Err("LogFrameBuffer fmt::Write path clears the whole framebuffer");
+        let mask = code_mask(body);
+        if !identifier_offsets(body, &mask, "DISPLAY").is_empty()
+            || !identifier_offsets(body, &mask, "copy_lines").is_empty()
+        {
+            return Err("a console writer touches the framebuffer");
+        }
     }
     Ok(())
 }
@@ -391,35 +376,61 @@ fn virtqueue_validator_rejects_log_and_continue_shape() {
 
 #[test]
 fn framebuffer_log_sink_is_nonblocking_and_bounded() {
-    let source = repo_text("kernel/src/logger.rs");
-    assert_eq!(validate_logger_source(&source), Ok(()));
+    let logger = repo_text("kernel/src/logger.rs");
+    let fbcon = repo_text("kernel/src/fbcon/mod.rs");
+    let records = repo_text("kernel/src/fbcon/records.rs");
+    assert_eq!(validate_logger_source(&logger, &fbcon, &records), Ok(()));
 }
 
 #[test]
 fn logger_validator_rejects_blocking_framebuffer_lock() {
-    let synthetic = r#"
-        struct LogFrameBuffer;
-        impl LogFrameBuffer {
-            fn new() -> Self { Self }
-            fn write_record(&mut self) {}
-        }
-
-        fn write_framebuffer_record(record: &Record) {
-            let Some(framebuffer) = LOG_FRAMEBUFFER.get() else { return; };
-            crate::arch_without_interrupts(|| {
-                let mut framebuffer = framebuffer.lock();
-                framebuffer.write_record(record);
-            });
-        }
-
+    let logger = r#"
         struct CombinedLogger;
         impl Log for CombinedLogger {
             fn log(&self, record: &Record) {
-                write_framebuffer_record(record);
+                crate::fbcon::log_record(record.level(), record.args());
             }
         }
     "#;
-    assert!(validate_logger_source(synthetic).is_err());
+    let blocking = r#"
+        fn with_grid<R>(f: impl FnOnce(&mut Grid) -> R) -> Option<R> {
+            crate::arch_without_interrupts(|| Some(f(&mut GRID.lock())))
+        }
+        pub fn log_record(level: Level, args: &Arguments) {
+            with_grid(|grid| grid.write(b"x"));
+        }
+        pub fn write_tty(bytes: &[u8]) {
+            with_grid(|grid| grid.write(bytes));
+        }
+    "#;
+    assert!(validate_logger_source(logger, blocking, blocking).is_err());
+    let drawing = r#"
+        fn with_grid<R>(f: impl FnOnce(&mut Grid) -> R) -> Option<R> {
+            crate::arch_without_interrupts(|| GRID.try_lock().map(|mut grid| f(&mut grid)))
+        }
+        pub fn log_record(level: Level, args: &Arguments) {
+            with_grid(|grid| grid.write(b"x"));
+            let display = DISPLAY.get();
+        }
+        pub fn write_tty(bytes: &[u8]) {
+            with_grid(|grid| grid.write(bytes));
+        }
+    "#;
+    assert!(validate_logger_source(logger, drawing, drawing).is_err());
+}
+
+#[test]
+fn logger_validator_rejects_framebuffer_clear_in_shared_grid_writer() {
+    let logger = repo_text("kernel/src/logger.rs");
+    let fbcon = repo_text("kernel/src/fbcon/mod.rs");
+    let records = repo_text("kernel/src/fbcon/records.rs");
+    let anchor = "fn with_grid<R>(f: impl FnOnce(&mut Grid) -> R) -> Option<R> {";
+    for clear in ["framebuffer.fill(0);", "core::ptr::write_bytes(buffer, 0, buffer_len);"] {
+        let mutated = fbcon.replacen(anchor, &format!("{anchor}\n    {clear}"), 1);
+        assert_ne!(mutated, fbcon, "mutation must reach with_grid");
+        assert_eq!(validate_logger_source(&logger, &mutated, &records),
+            Err("logger hot path clears the whole framebuffer"));
+    }
 }
 
 #[test]

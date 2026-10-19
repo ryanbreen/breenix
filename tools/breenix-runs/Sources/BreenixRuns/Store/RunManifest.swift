@@ -302,6 +302,9 @@ extension Verdict {
     public static func projectGateVerdict(_ verdict: String, exitCode: Int, command: [String]) -> Verdict {
         if verdict == "PASS-WITH-ATTRIBUTED-LOCKUP" { return .attributed(verdict) }
         if verdict.hasPrefix("REFUSED") { return .refused(verdict) }
+        // Retain the gate's raw STARVED provenance, but project no kernel
+        // verdict: this attempt is neither passing nor failing evidence.
+        if exitCode == 2 && (verdict == "STARVED" || verdict == "INCONCLUSIVE") { return .unknown }
         if exitCode != 0 { return .fail(verdict) }
         if verdict == "PASS" { return .gateScript(command: command, exitCode: exitCode) }
         // Keep qualified successes (e.g. feature-mutated builds) visibly qualified.

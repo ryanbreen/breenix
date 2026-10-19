@@ -31,6 +31,7 @@ impl IrqState {
                 core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
                 core::arch::asm!("msr daifset, #3", options(nomem, nostack));
             }
+            crate::arch_impl::aarch64::irq_mask_account::opened();
             Self { daif, gauge: crate::tracing::providers::gpu::masked_begin(daif) }
         }
         #[cfg(target_arch = "x86_64")]
@@ -51,6 +52,7 @@ impl IrqState {
         {
             crate::tracing::providers::gpu::masked_end(self.gauge);
             unsafe {
+                crate::arch_impl::aarch64::irq_mask_account::restoring(self.daif);
                 core::arch::asm!("msr daif, {}", in(reg) self.daif, options(nomem, nostack));
             }
         }

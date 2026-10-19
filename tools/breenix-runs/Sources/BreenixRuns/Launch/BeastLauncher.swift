@@ -115,6 +115,7 @@ public struct BeastLauncher {
     public var treeHelperBase64: String?
     var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
     public var quietOverride: String?
+    public let x86QemuEnvironment: [String: String]
     public var serialStreaming: X86SerialStreaming
     var reconnectLimit = 60
     var reconnectDelay: ((Int) -> Void)? = nil
@@ -130,7 +131,8 @@ public struct BeastLauncher {
         vigilScript: URL? = nil,
         serialStreaming: X86SerialStreaming = SSHSerialStreaming(),
         quietOverride: String? = ProcessInfo.processInfo.environment["BREENIX_QUIET"],
-        targetGuard: URL?
+        targetGuard: URL?,
+        x86QemuEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.store = store
         self.runner = runner
@@ -142,6 +144,7 @@ public struct BeastLauncher {
         self.progressBundleBase64 = progressBundleBase64
         self.treeHelperBase64 = treeHelperBase64
         self.vigilScript = vigilScript
+        self.x86QemuEnvironment = x86QemuEnvironment
         self.targetGuard = targetGuard
         self.serialStreaming = serialStreaming
         self.quietOverride = quietOverride
@@ -220,7 +223,8 @@ public struct BeastLauncher {
             slotHelperBase64: slotHelperBase64,
             progressBundleBase64: progressBundleBase64,
             treeHelperBase64: treeHelperBase64,
-            quietOverride: quietOverride
+            quietOverride: quietOverride,
+            allowX86Qemu: x86QemuEnvironment["BREENIX_ALLOW_X86_QEMU"] == "1"
         )
     }
 
@@ -240,6 +244,7 @@ public struct BeastLauncher {
     }
 
     public func runX86(options: BeastLaunchOptions) throws -> BeastLaunchResult {
+        try X86QemuPolicy.requireOperatorOverride(environment: x86QemuEnvironment)
         let startedAt = Date()
         let id = options.runID ?? RunManifest.makeID(startedAt: startedAt, arch: .x86_64, profile: "gate")
         var plannedOptions = options

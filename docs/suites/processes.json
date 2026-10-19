@@ -173,6 +173,10 @@
           "title": "The process ID, parent, process group and session are kept"
         },
         {
+          "id": "from-thread",
+          "title": "exec from a thread other than the first runs the new image as the process, under its process ID, and ends its other threads"
+        },
+        {
           "id": "keeps-cwd-umask",
           "title": "The working directory and umask are kept"
         },

@@ -468,6 +468,7 @@ static COMPLETIONS: [BlockMmioCompletion; MAX_BLOCK_DEVICES] =
 mod request_type {
     pub const IN: u32 = 0; // Read from device
     pub const OUT: u32 = 1; // Write to device
+    pub const FLUSH: u32 = 4; // Persist prior writes
 }
 
 /// VirtIO block feature bits
@@ -476,6 +477,8 @@ mod features {
     pub const SIZE_MAX: u64 = 1 << 1;
     /// Device is read-only (VIRTIO_BLK_F_RO, bit 5)
     pub const RO: u64 = 1 << 5;
+    /// Device supports cache flush requests (VIRTIO_BLK_F_FLUSH, bit 9)
+    pub const FLUSH: u64 = 1 << 9;
 }
 
 /// VirtIO block status codes
@@ -776,8 +779,9 @@ fn init_device(
     }
 
     // Initialize the device (reset, ack, driver, features)
-    // Leave FLUSH unnegotiated to preserve the device's writethrough mode.
-    device.init(0)?;
+    // Let cached devices batch writes between filesystem durability barriers.
+    // Without FLUSH negotiation, even each 512-byte bitmap write is durable.
+    device.init(features::RO | features::FLUSH)?;
 
     // Get device features to check for read-only flag
     let device_features = device.device_features();
@@ -1180,16 +1184,16 @@ fn submit_write_sector(
     Ok(())
 }
 
-fn finish_write_sector(device_index: usize) -> Result<(), &'static str> {
+fn finish_write_or_flush(device_index: usize) -> Result<(), &'static str> {
     let completion = &COMPLETIONS[device_index];
     let (completed_desc, status) = completion.take_completed_request()?;
     if completed_desc != 0 {
         completion.clear();
-        return Err("Block MMIO write completed unexpected descriptor");
+        return Err("Block MMIO write/flush completed unexpected descriptor");
     }
     if status != status_code::OK {
         completion.clear();
-        return Err("Block MMIO write failed");
+        return Err("Block MMIO write/flush failed");
     }
 
     dsb_sy();
@@ -1206,6 +1210,7 @@ pub fn write_sector(
     buffer: &[u8; SECTOR_SIZE],
 ) -> Result<(), &'static str> {
     let state = block_device_state(device_index)?;
+    if state.device_features & features::RO != 0 { return Err("Read-only filesystem"); }
     if sector >= state.capacity {
         return Err("Sector out of range");
     }
@@ -1222,20 +1227,74 @@ pub fn write_sector(
         return Err(e);
     }
 
-    if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::OUT) {
+    wait_for_write_or_flush(device_index, state, request_guard, completion_token, request_type::OUT)
+}
+
+// Both mutations share the existing completion and DMA-abandonment policy.
+fn wait_for_write_or_flush(
+    device_index: usize,
+    state: &BlockDeviceState,
+    request_guard: BlockMmioRequestGuard<'_>,
+    completion_token: u32,
+    request: u32,
+) -> Result<(), &'static str> {
+    let completion = &COMPLETIONS[device_index];
+    if let Err(e) = completion.wait_for_completion(completion_token, state, request) {
         request_guard.wedge();
         return Err(e);
     }
 
-    finish_write_sector(device_index)?;
+    finish_write_or_flush(device_index)?;
     drop(request_guard);
     Ok(())
 }
 
-/// MMIO devices are initialized in writethrough mode, without FLUSH negotiation.
+/// Persist prior writes before reporting a filesystem durability barrier.
+/// Devices without FLUSH remain in writethrough mode.
 pub fn flush(device_index: usize) -> Result<(), &'static str> {
-    block_device_state(device_index)?;
-    Ok(())
+    let state = block_device_state(device_index)?;
+    if state.device_features & features::RO != 0 || state.device_features & features::FLUSH == 0 {
+        return Ok(());
+    }
+    if !irq_completion_available() {
+        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+    }
+    let request_guard = REQUEST_GATES[device_index].lock()?;
+    let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
+    let completion = &COMPLETIONS[device_index];
+    let completion_token = completion.prepare_wait();
+    let bufs = device_buffers(device_index);
+    let (_, req_const, _, status_const) = device_buffers_const(device_index);
+    // FLUSH has no data descriptor: header -> status. It shares the write
+    // request gate, so no write can overtake this barrier on the device queue.
+    unsafe {
+        (*bufs.req_header).req = VirtioBlkReq {
+            type_: request_type::FLUSH,
+            reserved: 0,
+            sector: 0,
+        };
+        (*bufs.status_buf).status = 0xff;
+        (*bufs.queue_mem).desc[0] = VirtqDesc {
+            addr: virt_to_phys(req_const as u64),
+            len: core::mem::size_of::<VirtioBlkReq>() as u32,
+            flags: DESC_F_NEXT,
+            next: 1,
+        };
+        (*bufs.queue_mem).desc[1] = VirtqDesc {
+            addr: virt_to_phys(status_const as u64),
+            len: 1,
+            flags: DESC_F_WRITE,
+            next: 0,
+        };
+        let avail_idx = (*bufs.queue_mem).avail.idx;
+        (*bufs.queue_mem).avail.ring[(avail_idx % 16) as usize] = 0;
+        fence(Ordering::SeqCst);
+        (*bufs.queue_mem).avail.idx = avail_idx.wrapping_add(1);
+        fence(Ordering::SeqCst);
+    }
+    dsb_sy();
+    device.notify_queue(0);
+    wait_for_write_or_flush(device_index, state, request_guard, completion_token, request_type::FLUSH)
 }
 
 /// Return the GIC SPI assigned to a VirtIO MMIO block device.

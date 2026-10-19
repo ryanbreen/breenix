@@ -43,7 +43,7 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         if let Some(error) = crate::syscall::check_signals_for_restartable_wait() {
             break Some(error);
         }
-        let waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let waiting = crate::task::scheduler::with_current(|sched| {
             sched
                 .current_thread_mut()
                 .map(|thread| thread.state == ThreadState::BlockedOnIO)

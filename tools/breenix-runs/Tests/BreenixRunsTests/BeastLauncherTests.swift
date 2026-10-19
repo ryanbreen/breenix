@@ -159,7 +159,7 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
         XCTAssertEqual(request.arguments, [
             "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2", "beast",
-            #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
+            #"sudo -n incus exec breenix-x86 -- bash -lc 'mkdir -p /root/breenix-testclone/gate-tmp && python3 -c "import json,pathlib,sys;pid=int(sys.argv[1]);birth=pathlib.Path(\"/proc/%d/stat\"%pid).read_text().rsplit(\")\",1)[1].split()[19];pathlib.Path(sys.argv[2]).write_text(json.dumps([pid,birth,sys.argv[3]]))" "$$" /root/breenix-testclone/gate-tmp/launcher-gate.json /root/breenix/scripts/host-slots.py && source /root/.cargo/env && exec env BREENIX_GATE_TMP=/root/breenix-testclone/gate-tmp BREENIX_REPO_DIR=/root/breenix-testclone BREENIX_RUST_FORK=/root/breenix/rust-fork-real BREENIX_GATE_TIMEOUT=900 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=4 python3 /root/breenix/scripts/host-slots.py supervise -- bash -c "if [ ! -f /root/breenix-testclone/scripts/host-slots.py ]; then python3 /root/breenix/scripts/host-slots.py acquire x86-build && python3 /root/breenix/scripts/host-slots.py acquire x86-boot || exit 1; fi; exec /root/breenix-testclone/docker/qemu/run-x86-gate.sh 3 kthread"'"#
         ])
         XCTAssertTrue(request.combineOutput)
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
@@ -170,11 +170,11 @@ final class BeastLauncherTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")),
-                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming(), quietOverride: nil, targetGuard: nil)
+                                     runner: runner, timeoutSecs: 180, serialStreaming: NoSerialStreaming(), quietOverride: nil, targetGuard: nil, x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
         var selected = options(runID: "q35-run")
         selected.qemuProfile = .q35
         let plan = try launcher.plan(options: selected)
-        XCTAssertTrue(plan.runGate.arguments.last!.contains("BREENIX_GATE_TIMEOUT=180 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=6 BREENIX_QEMU_PROFILE=q35"))
+        XCTAssertTrue(plan.runGate.arguments.last!.contains("BREENIX_GATE_TIMEOUT=180 BREENIX_FULL_BACKSTOP=1800 CARGO_BUILD_JOBS=4 BREENIX_QEMU_PROFILE=q35"))
         selected.catchup = true
         let result = try launcher.runX86(options: selected)
         XCTAssertEqual(result.manifest.env["BREENIX_CATCHUP"], "1")
@@ -189,7 +189,8 @@ final class BeastLauncherTests: XCTestCase {
         runner.policyResult = ProcessResult(stderr: Data("Refusing x86 for effort lane breengel/window\n".utf8), exitCode: 1)
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
                                      serialStreaming: NoSerialStreaming(),
-                                     targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"))
+                                     targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"),
+                                     x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "refused"))) { error in
             XCTAssertEqual(error as? BeastLauncherError, .targetPolicyRefused("Refusing x86 for effort lane breengel/window"))
         }
@@ -204,7 +205,8 @@ final class BeastLauncherTests: XCTestCase {
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
                                      serialStreaming: NoSerialStreaming(), quietOverride: nil,
-                                     targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"))
+                                     targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"),
+                                     x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
         var selected = options(runID: "accepted")
         selected.catchup = true
         let result = try launcher.runX86(options: selected)
@@ -315,7 +317,7 @@ final class BeastLauncherTests: XCTestCase {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
         let runner = BeastScriptedProcessRunner()
         runner.prepareResult = ProcessResult(stdout: Data("fetch failed\n".utf8), exitCode: 1)
-        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil)
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil, x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "prepare-fails"))) { error in
             guard case BeastLauncherError.prepareCloneFailed(let exitCode, _) = error else {
@@ -405,7 +407,7 @@ final class BeastLauncherTests: XCTestCase {
             return ProcessResult(exitCode: 0)
         }
         let launcher = BeastLauncher(store: RunStore(root: root.appendingPathComponent("store")), runner: runner,
-                                     vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming(), targetGuard: nil)
+                                     vigilScript: URL(fileURLWithPath: "/record.sh"), serialStreaming: NoSerialStreaming(), targetGuard: nil, x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
         let result = try launcher.runX86(options: options(runID: "file-finished"))
         XCTAssertTrue(result.manifest.captures.contains { $0.path == "screen-1-files-io.png" })
         let filings = runner.calls.filter { $0.executable == "/record.sh" && $0.arguments.first == "record" }
@@ -447,7 +449,7 @@ final class BeastLauncherTests: XCTestCase {
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
             runner: runner,
-            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), serialStreaming: NoSerialStreaming(), targetGuard: nil)
+            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), serialStreaming: NoSerialStreaming(), targetGuard: nil, x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
 
         XCTAssertThrowsError(try launcher.runX86(options: options(runID: "bad-host"))) { error in
             XCTAssertEqual(error as? BeastLauncherError, .unsupportedHost("localhost"))
@@ -462,7 +464,7 @@ final class BeastLauncherTests: XCTestCase {
         let runner = BeastScriptedProcessRunner()
         let launcher = BeastLauncher(
             store: RunStore(root: root.appendingPathComponent("store", isDirectory: true)),
-            runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil)
+            runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil, x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
         let launchOptions = options(runID: runID)
         let plan = try launcher.plan(options: launchOptions)
 
@@ -489,7 +491,7 @@ final class BeastLauncherTests: XCTestCase {
 
     private func runSuccessfulX86(root: URL, runner: BeastScriptedProcessRunner, runID: String) throws -> BeastLaunchResult {
         let store = RunStore(root: root.appendingPathComponent("store", isDirectory: true))
-        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil)
+        let launcher = BeastLauncher(store: store, runner: runner, serialStreaming: NoSerialStreaming(), targetGuard: nil, x86QemuEnvironment: ["BREENIX_ALLOW_X86_QEMU": "1"])
         return try launcher.runX86(options: options(runID: runID))
     }
 

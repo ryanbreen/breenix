@@ -10,7 +10,7 @@ const FG: u32 = 0xffe8edf2;
 const LINES: usize = 16;
 const COLUMNS: usize = 96;
 const VB_BYTES: u32 = 128 * 1024;
-static CONSOLE: spin::Mutex<Option<Console>> = spin::Mutex::new(None);
+static CONSOLE: crate::irq_safe_mutex::IrqSafeMutex<Option<Console>> = crate::irq_safe_mutex::IrqSafeMutex::new(None);
 static RESTORE: AtomicBool = AtomicBool::new(false);
 /// The owner sequence a pending restore was requested for.
 static RESTORE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -526,7 +526,7 @@ impl encode::Bindings for Console {
 struct ConsoleLease(Option<Console>);
 impl ConsoleLease {
     fn take() -> Self {
-        Self(super::panic::lock(&CONSOLE).take())
+        Self(super::panic::lock_irq(&CONSOLE).take())
     }
     fn ensure(&mut self) -> Result<&mut Console, i64> {
         if self.0.as_ref().is_none_or(|c| !c.live()) {
@@ -542,7 +542,13 @@ impl ConsoleLease {
 }
 impl Drop for ConsoleLease {
     fn drop(&mut self) {
-        *super::panic::lock(&CONSOLE) = self.0.take();
+        // Releasing resources may wait for the device. Move the displaced
+        // console out while masked, then destroy it after the guard restores IRQs.
+        let displaced = {
+            let mut slot = super::panic::lock_irq(&CONSOLE);
+            core::mem::replace(&mut *slot, self.0.take())
+        };
+        drop(displaced);
     }
 }
 pub(super) fn redraw() -> Result<(), i64> {

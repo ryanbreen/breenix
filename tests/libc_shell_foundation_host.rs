@@ -120,6 +120,7 @@ pub mod dns {
         SendError,
         RecvError,
         Timeout,
+        ResolutionDeadline,
         ParseError,
         ServerError(u8),
         NoAddress,
@@ -143,6 +144,9 @@ pub mod dns {
         }
         Err(match name {
             "temporary.example" => DnsError::Timeout,
+            // Exercise libc's error mapping; resolve_all currently uses an
+            // unbounded deadline, so this does not test DNS deadline execution.
+            "deadline.example" => DnsError::ResolutionDeadline,
             "noaddress.example" => DnsError::NoAddress,
             _ => DnsError::ServerError(3),
         })
@@ -457,6 +461,16 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         assert_eq!(*pthread::__h_errno_location(), 1);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
+        assert!(netdb::gethostbyname(b"deadline.example\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 2);
+        for name in [b"temporary.example\0".as_slice(), b"deadline.example\0".as_slice()] {
+            let mut result = std::ptr::null_mut();
+            assert_eq!(
+                netdb::getaddrinfo(name.as_ptr(), std::ptr::null(), std::ptr::null(), &mut result),
+                -3 // EAI_AGAIN
+            );
+            assert!(result.is_null());
+        }
         assert!(netdb::gethostbyname(b"noaddress.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 4);
         let mut crowded = b"192.0.2.5 crowded".to_vec();

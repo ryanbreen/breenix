@@ -17,6 +17,10 @@ use alloc::sync::Arc;
 // ioctl Request Codes (matching Linux/libbreenix values)
 // =============================================================================
 
+/// Breenix console source window: begin (0), authentication refused (1), accepted (2).
+/// Root only.
+pub const CONSOLE_INPUT_PROOF: u64 = 0x425201;
+
 /// Get termios structure
 pub const TCGETS: u64 = 0x5401;
 /// Drain output or transmit a break.
@@ -73,6 +77,9 @@ pub const TIOCGPTLCK: u64 = 0x80045439;
 // =============================================================================
 // Error Codes
 // =============================================================================
+
+/// Operation not permitted
+const EPERM: i32 = 1;
 
 /// Invalid argument
 const EINVAL: i32 = 22;
@@ -212,7 +219,26 @@ pub fn handle_tiocspgrp(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
         return Err(EINVAL);
     }
 
+    // POSIX tcsetpgrp: the group must be the process group of a process in
+    // the caller's session, or the call fails with EPERM (S29). A zombie is a
+    // process until it is reaped. The process table stays held through the
+    // store, so creation cannot find the group dead in between.
+    let tid = crate::task::scheduler::current_thread_id();
+    let manager = crate::process::manager();
+    let member_in_session = manager.as_ref().is_some_and(|pm| {
+        let Some((_, me)) = tid.and_then(|tid| pm.find_process_by_thread(tid)) else {
+            return false;
+        };
+        pm.iter_processes().any(|(_, p)| {
+            !p.is_tombstone() && p.pgid.as_u64() == pgrp as u64 && p.sid == me.sid
+        })
+    });
+    if !member_in_session {
+        return Err(EPERM);
+    }
+
     tty.set_foreground_pgrp(pgrp as u64);
+    drop(manager);
 
     log::debug!("TTY{}: Set foreground pgrp to {}", tty.num, pgrp);
 
@@ -363,6 +389,13 @@ fn pty_termios_ioctl(
 /// * `Err(errno)` on failure
 pub fn tty_ioctl(tty: &Arc<TtyDevice>, request: u64, arg: u64) -> Result<i32, i32> {
     match request {
+        CONSOLE_INPUT_PROOF => {
+            // It flushes input and reports authentication: getty and login only.
+            if crate::fs::permissions::Credentials::current(false).euid != 0 {
+                return Err(EPERM);
+            }
+            tty.input_proof(arg)
+        }
         TCGETS => {
             handle_tcgets(tty, arg)?;
             Ok(0)

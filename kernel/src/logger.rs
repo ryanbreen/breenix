@@ -9,35 +9,25 @@ use crate::graphics::primitives::{Canvas, Color};
 #[cfg(feature = "interactive")]
 use crate::graphics::DoubleBufferedFrameBuffer;
 use crate::log_serial_println;
+#[cfg(feature = "interactive")]
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
+#[cfg(feature = "interactive")]
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
-#[cfg(not(feature = "interactive"))]
-use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 use log::{Level, LevelFilter, Log, Metadata, Record};
+#[cfg(feature = "interactive")]
 use noto_sans_mono_bitmap::{
     get_raster, get_raster_width, FontWeight, RasterHeight, RasterizedChar,
 };
 use spin::Mutex;
 
-static LOG_FRAMEBUFFER: OnceCell<Mutex<LogFrameBuffer>> = OnceCell::uninit();
-
-/// The bootloader framebuffer's layout, readable without the log sink's lock.
-#[cfg(not(feature = "interactive"))]
-static DISPLAY_INFO: OnceCell<FrameBufferInfo> = OnceCell::uninit();
-
-/// Set once a userspace process takes the display (`sys_take_over_display`):
-/// from then on the log sink stops drawing on the framebuffer, so it cannot
-/// write over what that process shows. Serial logging is unaffected.
-#[cfg(not(feature = "interactive"))]
-static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
-
 /// Shell framebuffer for direct shell output (interactive mode only)
 #[cfg(feature = "interactive")]
 pub static SHELL_FRAMEBUFFER: OnceCell<Mutex<ShellFrameBuffer>> = OnceCell::uninit();
 
-/// Font constants shared by the diagnostic log and interactive shell consoles.
+/// Font constants for the interactive shell console.
+#[cfg(feature = "interactive")]
 mod shell_font {
     use super::*;
 
@@ -64,169 +54,23 @@ enum AnsiState {
 }
 
 /// Additional vertical space between lines
+#[cfg(feature = "interactive")]
 const LINE_SPACING: usize = 2;
 /// Additional horizontal space between characters
+#[cfg(feature = "interactive")]
 const LETTER_SPACING: usize = 0;
 /// Padding from the border
+#[cfg(feature = "interactive")]
 const BORDER_PADDING: usize = 1;
 
 /// Returns the raster of the given char or a backup char
+#[cfg(feature = "interactive")]
 fn get_char_raster(c: char) -> RasterizedChar {
     fn get(c: char) -> Option<RasterizedChar> {
         get_raster(c, shell_font::FONT_WEIGHT, shell_font::CHAR_RASTER_HEIGHT)
     }
     get(c)
         .unwrap_or_else(|| get(shell_font::BACKUP_CHAR).expect("Should get raster of backup char"))
-}
-
-/// Minimal direct framebuffer console for the diagnostic log sink.
-struct LogFrameBuffer {
-    buffer_ptr: *mut u8,
-    buffer_len: usize,
-    info: FrameBufferInfo,
-    x_pos: usize,
-    y_pos: usize,
-}
-
-unsafe impl Send for LogFrameBuffer {}
-unsafe impl Sync for LogFrameBuffer {}
-
-impl LogFrameBuffer {
-    fn new(buffer_ptr: *mut u8, buffer_len: usize, info: FrameBufferInfo) -> Self {
-        let framebuffer = Self {
-            buffer_ptr,
-            buffer_len,
-            info,
-            x_pos: BORDER_PADDING,
-            y_pos: BORDER_PADDING,
-        };
-        unsafe {
-            core::ptr::write_bytes(buffer_ptr, 0, buffer_len);
-        }
-        framebuffer
-    }
-
-    fn width(&self) -> usize {
-        self.info.width
-    }
-
-    fn height(&self) -> usize {
-        self.info.height
-    }
-
-    fn newline(&mut self) {
-        let next_y = self.y_pos.saturating_add(Self::line_height());
-        self.y_pos = if next_y
-            .saturating_add(shell_font::CHAR_RASTER_HEIGHT.val())
-            .saturating_add(BORDER_PADDING)
-            >= self.height()
-        {
-            BORDER_PADDING
-        } else {
-            next_y
-        };
-        self.carriage_return();
-        self.clear_current_line();
-    }
-
-    fn carriage_return(&mut self) {
-        self.x_pos = BORDER_PADDING;
-    }
-
-    const fn line_height() -> usize {
-        shell_font::CHAR_RASTER_HEIGHT.val() + LINE_SPACING
-    }
-
-    /// Clear only the destination text line. This bounds every log-path clear
-    /// independently of total framebuffer size.
-    fn clear_current_line(&mut self) {
-        let Some(row_bytes) = self.info.stride.checked_mul(self.info.bytes_per_pixel) else {
-            return;
-        };
-        let rows = Self::line_height().min(self.height().saturating_sub(self.y_pos));
-        let Some(start) = self.y_pos.checked_mul(row_bytes) else {
-            return;
-        };
-        let Some(line_bytes) = rows.checked_mul(row_bytes) else {
-            return;
-        };
-        let clear_len = line_bytes.min(self.buffer_len.saturating_sub(start));
-        if clear_len == 0 || start >= self.buffer_len {
-            return;
-        }
-        unsafe {
-            core::ptr::write_bytes(self.buffer_ptr.add(start), 0, clear_len);
-        }
-    }
-
-    fn write_char(&mut self, character: char) {
-        match character {
-            '\n' => self.newline(),
-            '\r' => self.carriage_return(),
-            character => {
-                let new_x = self.x_pos.saturating_add(shell_font::CHAR_RASTER_WIDTH);
-                if new_x >= self.width() {
-                    self.newline();
-                }
-                self.write_rendered_char(get_char_raster(character));
-            }
-        }
-    }
-
-    fn write_rendered_char(&mut self, rendered_char: RasterizedChar) {
-        for (y, row) in rendered_char.raster().iter().enumerate() {
-            for (x, intensity) in row.iter().enumerate() {
-                self.write_pixel(self.x_pos + x, self.y_pos + y, *intensity);
-            }
-        }
-        self.x_pos = self
-            .x_pos
-            .saturating_add(rendered_char.width() + LETTER_SPACING);
-    }
-
-    fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
-        if x >= self.width() || y >= self.height() {
-            return;
-        }
-        let color = match self.info.pixel_format {
-            PixelFormat::Rgb => [intensity, intensity, intensity / 2, 0],
-            PixelFormat::Bgr => [intensity / 2, intensity, intensity, 0],
-            PixelFormat::U8 => [if intensity > 200 { 0xf } else { 0 }, 0, 0, 0],
-            _ => [intensity, intensity, intensity / 2, 0],
-        };
-        let bytes_per_pixel = self.info.bytes_per_pixel;
-        if bytes_per_pixel == 0 || bytes_per_pixel > color.len() {
-            return;
-        }
-        let Some(pixel_offset) = y
-            .checked_mul(self.info.stride)
-            .and_then(|row| row.checked_add(x))
-        else {
-            return;
-        };
-        let Some(byte_offset) = pixel_offset.checked_mul(bytes_per_pixel) else {
-            return;
-        };
-        if byte_offset.saturating_add(bytes_per_pixel) > self.buffer_len {
-            return;
-        }
-        unsafe {
-            for (index, byte) in color[..bytes_per_pixel].iter().copied().enumerate() {
-                self.buffer_ptr
-                    .add(byte_offset + index)
-                    .write_volatile(byte);
-            }
-        }
-    }
-}
-
-impl fmt::Write for LogFrameBuffer {
-    fn write_str(&mut self, string: &str) -> fmt::Result {
-        for character in string.chars() {
-            self.write_char(character);
-        }
-        Ok(())
-    }
 }
 
 /// Shell framebuffer writer for direct text output
@@ -967,28 +811,6 @@ impl CombinedLogger {
     }
 }
 
-/// Diagnostic-only framebuffer sink.
-///
-/// COM2 holds the authoritative log, so this sink must never block and must
-/// never be strandable: `try_lock` means no caller can ever wait on it, and
-/// masking interrupts across the critical section means the holder can never
-/// be preempted while it is held. Dropping a framebuffer copy under contention
-/// is correct; deadlocking the machine to render a diagnostic is not.
-#[cfg(not(feature = "interactive"))]
-fn write_framebuffer_record(record: &Record) {
-    if DISPLAY_TAKEN.load(Ordering::Acquire) {
-        return;
-    }
-    let Some(framebuffer) = LOG_FRAMEBUFFER.get() else {
-        return;
-    };
-    crate::arch_without_interrupts(|| {
-        if let Some(mut framebuffer) = framebuffer.try_lock() {
-            let _ = writeln!(framebuffer, "{:>5}: {}", record.level(), record.args());
-        }
-    });
-}
-
 impl Log for CombinedLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= Level::Trace
@@ -1086,27 +908,10 @@ impl Log for CombinedLogger {
                         );
                     }
 
-                    // In non-interactive mode, also write to framebuffer
+                    // In non-interactive mode, also put the record on the
+                    // screen console, which takes records from any context.
                     #[cfg(not(feature = "interactive"))]
-                    {
-                        // Write to framebuffer
-                        // CRITICAL: Don't write to framebuffer if we're in interrupt/exception context
-                        // or using a process page table, as the framebuffer might not be mapped
-                        // Check if we're in interrupt context (IRQ) or exception context (preempt disabled)
-                        // But only if per-CPU is initialized (otherwise assume we're safe)
-                        let skip_framebuffer = if crate::per_cpu::is_initialized() {
-                            // Skip if in IRQ context OR if preemption is disabled (exception context)
-                            crate::per_cpu::in_interrupt()
-                                || crate::per_cpu::in_softirq()
-                                || crate::per_cpu::preempt_count() > 0
-                        } else {
-                            false // Early boot, safe to use framebuffer
-                        };
-
-                        if !skip_framebuffer {
-                            write_framebuffer_record(record);
-                        }
-                    }
+                    crate::fbcon::log_record(record.level(), record.args());
                 }
             }
         }
@@ -1139,105 +944,25 @@ pub fn serial_ready() {
 /// Call `upgrade_to_double_buffer()` after heap is initialized to enable
 /// double buffering for tear-free rendering.
 pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::FrameBufferInfo) {
-    let buffer_ptr = buffer.as_mut_ptr();
-    let buffer_len = buffer.len();
-
     // In interactive mode, store framebuffer info for later double buffer upgrade
     // We can't allocate the shadow buffer yet because the heap isn't initialized
     #[cfg(feature = "interactive")]
     {
+        let buffer_ptr = buffer.as_mut_ptr();
+        let buffer_len = buffer.len();
         // Initialize with direct hardware writes (no double buffering yet)
         let _ = SHELL_FRAMEBUFFER
             .get_or_init(|| Mutex::new(ShellFrameBuffer::new_direct(buffer_ptr, buffer_len, info)));
     }
 
+    // Otherwise the screen console keeps log records from here.
     #[cfg(not(feature = "interactive"))]
-    let _ = DISPLAY_INFO.get_or_init(|| info);
-
-    // Initialize framebuffer logger (used for non-interactive mode)
-    let _ = LOG_FRAMEBUFFER
-        .get_or_init(|| Mutex::new(LogFrameBuffer::new(buffer_ptr, buffer_len, info)));
+    crate::fbcon::init_early(buffer, info);
 
     // Mark logger as fully ready
     COMBINED_LOGGER.fully_ready();
 
     log::info!("Logger fully initialized - output to both framebuffer and serial");
-}
-
-/// The framebuffer's layout: width, height and stride in pixels, bytes per
-/// pixel, and whether pixels are BGR. `None` without a framebuffer, or one whose
-/// pixels are not 3- or 4-byte RGB or BGR.
-#[cfg(not(feature = "interactive"))]
-pub fn display_geometry() -> Option<(usize, usize, usize, usize, bool)> {
-    let info = DISPLAY_INFO.get()?;
-    let is_bgr = match info.pixel_format {
-        PixelFormat::Rgb => false,
-        PixelFormat::Bgr => true,
-        _ => return None,
-    };
-    if !(3..=4).contains(&info.bytes_per_pixel) {
-        return None;
-    }
-    Some((info.width, info.height, info.stride, info.bytes_per_pixel, is_bgr))
-}
-
-/// A userspace process has the display: stop drawing log records on it.
-#[cfg(not(feature = "interactive"))]
-pub fn take_display() {
-    DISPLAY_TAKEN.store(true, Ordering::Release);
-}
-
-/// Copy rows `rows` and columns `columns` of a pane that starts at x 0 onto the
-/// framebuffer. `pane` is the pane's first byte and `pane_stride` its row length
-/// in bytes; its pixels are in the framebuffer's own format. Returns false when
-/// the log sink holds the framebuffer (the caller reports EBUSY and the owner
-/// flushes again).
-///
-/// # Safety
-/// `pane` must point at `rows.end` readable rows of `pane_stride` bytes, each at
-/// least `columns.end` pixels wide.
-#[cfg(not(feature = "interactive"))]
-pub unsafe fn copy_to_display(
-    pane: *const u8,
-    pane_stride: usize,
-    rows: core::ops::Range<usize>,
-    columns: core::ops::Range<usize>,
-) -> bool {
-    let Some(framebuffer) = LOG_FRAMEBUFFER.get() else {
-        return false;
-    };
-    // Only one row is copied with IRQs masked. A whole-screen flush can
-    // otherwise defer a timer or wake IPI for the duration of an 8 MiB copy.
-    // Each guard is released before IRQs reopen, so no continuation can be
-    // switched out holding the framebuffer lock.
-    let height = crate::arch_without_interrupts(|| {
-        framebuffer.try_lock().map(|framebuffer| framebuffer.height())
-    });
-    let Some(height) = height else { return false; };
-    for y in rows.start..rows.end.min(height) {
-        let copied = crate::arch_without_interrupts(|| {
-            let Some(framebuffer) = framebuffer.try_lock() else {
-                return false;
-            };
-            let bpp = framebuffer.info.bytes_per_pixel;
-            let row_bytes = framebuffer.info.stride * bpp;
-            let columns = columns.start.min(framebuffer.width())..columns.end.min(framebuffer.width());
-            let len = columns.len() * bpp;
-            let target = y * row_bytes + columns.start * bpp;
-            if len != 0 && target + len <= framebuffer.buffer_len {
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        pane.add(y * pane_stride + columns.start * bpp),
-                        framebuffer.buffer_ptr.add(target),
-                        len,
-                    );
-                }
-            }
-            true
-        });
-        if !copied { return false; }
-    }
-    true
 }
 
 /// Write raw text to framebuffer console (for shell output in interactive mode)

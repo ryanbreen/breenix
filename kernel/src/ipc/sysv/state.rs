@@ -709,6 +709,16 @@ impl UndoLists {
         self.tasks.insert(child, list)
     }
 
+    /// Task `row` is now task `to` (an exec moved its row to its process's
+    /// ID, `ProcessManager::exec_take_over_group`): the list it refers to, if
+    /// any, goes with it. The task that was `to` has left, so the entry
+    /// removed leaves room for the one inserted and the move needs no memory.
+    pub fn rename(&mut self, row: u64, to: u64) {
+        if let Some(list) = self.tasks.remove(row) {
+            let _ = self.tasks.insert(to, list);
+        }
+    }
+
     /// The adjustments list `list` holds for set `semid` of `nsems`
     /// semaphores, made all zero if it has none.
     pub fn adjustments(&mut self, list: u64, semid: i32, nsems: usize) -> Result<&mut Vec<i16>, i32> {

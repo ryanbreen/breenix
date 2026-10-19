@@ -93,21 +93,6 @@ impl LockOwner {
             release_owner(self.id);
         }
     }
-
-    /// A row left the group to become a process of its own, now owner `id`
-    /// (exec). If it was the group's last live row, the group's locks are its
-    /// own and move to `id`; otherwise this is an ordinary `leave`.
-    pub fn hand_over(&self, id: u64) {
-        if self
-            .members
-            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            rekey(self.id, id);
-        } else {
-            self.leave();
-        }
-    }
 }
 
 /// The file a lock is on.
@@ -480,23 +465,6 @@ fn release_owner(owner: u64) {
     if changed {
         wake_waiters();
     }
-}
-
-/// Move every lock and wait recorded under `from` to `to`.
-fn rekey(from: u64, to: u64) {
-    with_table(|t| {
-        for l in t.locks.iter_mut().filter(|l| l.owner == from) {
-            l.owner = to;
-        }
-        for b in t.blocked.iter_mut() {
-            if b.owner == from {
-                b.owner = to;
-            }
-            if b.blocker == from {
-                b.blocker = to;
-            }
-        }
-    });
 }
 
 /// Thread `tid` terminated. If it was killed in `F_SETLKW` it never runs the

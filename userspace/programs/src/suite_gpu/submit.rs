@@ -382,7 +382,7 @@ pub fn ring_backpressure() -> CaseResult {
     let t = target(format::B8G8R8A8, 64, 64)?;
     let rects = [([3, 5, 40, 30], GREY)];
     let colours: Vec<u32> = (0..5u8).map(|i| bgra(i * 50, 0x30, 0xFF - i * 50, 0xFF)).collect();
-    // Four in flight, proved by their fences rather than by host GPU speed
+    // Queue four jobs, then check their fences before releasing their resources
     // (`docs/gui/gpu.md` section 1.4.1): point 31's fence-depth mode keeps the answers to
     // the context's first four submissions unpublished until a fifth SUBMIT waits for room.
     arm(test_point::WITHHOLD_FENCE, test_point::WITHHOLD_DEPTH)?;

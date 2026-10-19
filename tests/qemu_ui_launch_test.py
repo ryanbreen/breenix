@@ -10,9 +10,11 @@ unittest discovery; what QEMU's own threads get is checked by a real boot.
 import os
 from pathlib import Path
 import platform
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +112,7 @@ class LauncherTest(unittest.TestCase):
         cls.probe = Path(cls.tmp.name) / "probe"
         source = Path(cls.tmp.name) / "probe.c"
         source.write_text(PROBE)
-        subprocess.run(["cc", "-Wall", "-Werror", "-o", str(cls.probe), str(source)], check=True)
+        subprocess.run(["taskpolicy", "-b", "cc", "-Wall", "-Werror", "-o", str(cls.probe), str(source)], check=True)
         cls.launcher = helper()
 
     @classmethod
@@ -142,6 +144,80 @@ class LauncherTest(unittest.TestCase):
     def test_a_thread_created_with_its_own_class_keeps_it(self):
         _, values = self.run_probe(self.launcher)
         self.assertEqual(int(values["utility"], 16), 0x11)  # QOS_CLASS_UTILITY
+
+    def test_background_parent_does_not_background_the_boot(self):
+        pid, values = self.run_probe("taskpolicy", "-b", self.launcher)
+        for name in ("main", "child", "grandchild"):
+            self.assertEqual(values[name], "46", name)
+        self.assertEqual(values["pid"], str(pid))
+
+    def test_clamped_parent_does_not_clamp_the_boot(self):
+        for clamp in ("utility", "background", "maintenance"):
+            with self.subTest(clamp=clamp):
+                _, values = self.run_probe("taskpolicy", "-b", "-c", clamp,
+                                           "-t", "5", "-l", "5", self.launcher)
+                for name in ("main", "child", "grandchild"):
+                    self.assertEqual(values[name], "46", name)
+                self.assertEqual(values["inserted"], "")
+
+    def test_niced_parent_does_not_lower_boot_priority(self):
+        _, values = self.run_probe("nice", "-n", "10", self.launcher)
+        for name in ("main", "child", "grandchild"):
+            self.assertEqual(values[name], "46", name)
+
+    def test_clamped_wrapper_preserves_payload_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload = Path(directory) / "payload"
+            payload.write_text(f"#!{sys.executable}\nimport sys; sys.exit(37)\n")
+            payload.chmod(0o755)
+            result = subprocess.run(["taskpolicy", "-c", "background", sys.executable,
+                                     str(ROOT / "scripts/qemu-arm64.py"), "--launcher", self.launcher,
+                                     str(payload)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 37, result.stderr)
+
+    def test_clamped_launch_preserves_payload_signal(self):
+        for number in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=number):
+                result = subprocess.run(["taskpolicy", "-c", "background", self.launcher,
+                                         sys.executable, "-c", f"import os; os.kill(os.getpid(), {number})"],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, -number, result.stderr)
+
+    def test_killed_clamped_supervisor_stops_its_payload(self):
+        before = set(Path("/tmp").glob("breenix-qos-*"))
+        process = subprocess.Popen(["taskpolicy", "-c", "background", self.launcher,
+                                    sys.executable, "-c",
+                                    "import os,time; print(os.getpid(), flush=True); time.sleep(60)"],
+                                   stdout=subprocess.PIPE, text=True)
+        payload = None
+        try:
+            import select
+            self.assertTrue(select.select([process.stdout], [], [], 30)[0], "payload never started")
+            payload = int(process.stdout.readline())
+            directories = set(Path("/tmp").glob("breenix-qos-*")) - before
+            self.assertEqual(len(directories), 1)
+            process.kill()
+            process.wait(timeout=10)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(payload, 0)
+                except ProcessLookupError:
+                    if all(not directory.exists() for directory in directories):
+                        break
+                time.sleep(0.1)
+            else:
+                self.fail("orphaned payload after supervisor SIGKILL")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if payload is not None:
+                try:
+                    os.kill(payload, 9)
+                except ProcessLookupError:
+                    pass
+            process.stdout.close()
 
     def test_the_program_keeps_the_launcher_process_id(self):
         pid, values = self.run_probe(self.launcher)
