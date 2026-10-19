@@ -431,6 +431,7 @@ STD_BINARIES=(
     "suite-utilities"
     "suite-sdk"
     "suite-gpu"
+    "gpu-exec-probe"
     "suite-console"
     "console-login-shell"
     "files-io-exec_test"

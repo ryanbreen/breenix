@@ -571,6 +571,8 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     // consulted while PM is held.
     let report_claimer = crate::task::scheduler::current_thread_id().unwrap_or(0);
     let mut fifo_opens = alloc::vec::Vec::new();
+    #[cfg(target_arch = "aarch64")]
+    let mut gpu_owner = None;
     let locked = with_process_manager(|pm| {
         // A FIFO open the row's thread was parked in when a kill terminated
         // it still holds its reader or writer reference; take it here and
@@ -599,6 +601,10 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         let children = process.children.clone();
         let terminal_exit = crate::tty::ctty::on_exit_locked(pm, pid);
         let (receipt, signal_wake) = pm.exit_process_locked(pid, exit_code);
+        #[cfg(target_arch = "aarch64")]
+        {
+            gpu_owner = crate::gpu::exited_locked(pm, pid);
+        }
         let reported_exit_code = pm
             .get_process(pid)
             .and_then(|process| process.exit_code)
@@ -623,6 +629,11 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             report_claimed,
         )
     });
+
+    #[cfg(target_arch = "aarch64")]
+    if let Some(owner) = gpu_owner {
+        crate::gpu::owner_ended(owner);
+    }
 
     for open in &fifo_opens {
         crate::ipc::fifo::abandon_fifo_open(open);

@@ -3574,6 +3574,11 @@ fn handle_procfs_getdents64(
             Ok(entries) => entries,
             Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
         }
+    } else if let Some(listed) = crate::fs::procfs::list_task_entries(dir_path) {
+        match listed {
+            Ok(entries) => entries,
+            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        }
     } else if dir_path == "/proc/console" || (cfg!(target_arch = "x86_64") && dir_path == "/proc/fbcon") {
         alloc::vec![String::from("check")]
     } else {

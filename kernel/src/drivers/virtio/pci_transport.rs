@@ -629,6 +629,11 @@ impl VirtioPciDevice {
         offset + 2 <= self.notify.length as u64
     }
 
+    /// The cached notify address of `queue`, once `cache_queue_notify_addr` has run for it.
+    pub fn cached_notify_address(&self, queue: u32) -> Option<u64> {
+        self.cached_notify_addrs.get(queue as usize).copied().filter(|&a| a != 0)
+    }
+
     /// Notify device using the cached notify address — single MMIO write.
     ///
     /// Falls back to `notify_queue()` if the address hasn't been cached.

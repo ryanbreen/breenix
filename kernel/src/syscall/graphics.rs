@@ -46,6 +46,12 @@ pub static FB_FLUSH_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::A
 pub(crate) static DISPLAY_OWNER_PID: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(u64::MAX);
 
+/// The thread group of the process in `DISPLAY_OWNER_PID`, stored with it, so the GPU
+/// core can test ownership by thread group without the process manager's lock (a take-over
+/// from any thread of a process makes the whole process the owner).
+pub(crate) static DISPLAY_OWNER_GROUP: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(u64::MAX);
+
 /// Whether `process` (whose PID is `pid`) owns the display now.
 fn owns_display(
     pid: crate::process::process::ProcessId,

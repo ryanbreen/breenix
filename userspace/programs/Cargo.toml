@@ -8,6 +8,8 @@ description = "Userspace programs and utilities for Breenix"
 # It links against libbreenix-libc (libc.a) for system calls
 
 [dependencies]
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
+bgl = { path = "../../libs/bgl" }
 libbreenix = { path = "../../libs/libbreenix", features = ["std", "suite"] }
 breengel = { path = "../../libs/breengel" }
 libcollab = { path = "../../libs/libcollab" }
@@ -761,6 +763,10 @@ path = "src/suite_console.rs"
 [[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
+
+[[bin]]
+name = "gpu-exec-probe"
+path = "src/gpu_exec_probe.rs"
 
 [[bin]]
 name = "getty"

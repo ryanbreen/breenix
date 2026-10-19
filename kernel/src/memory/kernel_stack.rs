@@ -782,13 +782,13 @@ mod aarch64 {
     use core::sync::atomic::Ordering;
 
     /// ARM64 kernel stack base (in high-half direct map)
-    /// Physical range: 0x5420_0000 .. 0x5620_0000 (32MB for kernel stacks)
+    /// Physical range: 0x5820_0000 .. 0x5A20_0000 (32MB for kernel stacks)
     ///
     /// IMPORTANT: This must be AFTER the heap region to avoid collision!
-    /// - Heap: 0x5020_0000 to 0x541F_FFFF (64 MB)
-    /// - Kernel stacks: 0x5420_0000 to 0x561F_FFFF (32 MB)
-    const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5420_0000;
-    const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5620_0000;
+    /// - Heap: 0x5020_0000 to 0x581F_FFFF (128 MB)
+    /// - Kernel stacks: 0x5820_0000 to 0x5A1F_FFFF (32 MB)
+    const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5820_0000;
+    const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5A20_0000;
     pub(crate) const ARM64_KERNEL_STACK_BASE: u64 =
         crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_BASE;
     pub(crate) const ARM64_KERNEL_STACK_END: u64 =

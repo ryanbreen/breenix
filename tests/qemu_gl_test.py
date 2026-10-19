@@ -170,9 +170,10 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         self.assertEqual(argv[2], "/stub/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64")
         self.assertEqual(argv[argv.index("-display") + 1], "cocoa,gl=es")
         self.assertNotIn("-spice", argv)
-        self.assertIn("virtio-gpu-device", argv)
-        self.assertIn("virtio-gpu-gl-pci", argv)
-        self.assertLess(argv.index("virtio-gpu-gl-pci"), argv.index("virtio-gpu-device"))
+        # Ruling 21 (#1697): PRESENT must update console 0 in the watched window,
+        # so the GL PCI display is registered before the MMIO framebuffer display.
+        self.assertEqual(argv[argv.index("virtio-gpu-gl-pci") + 1:argv.index("virtio-gpu-gl-pci") + 3],
+                         ["-device", "virtio-gpu-device"])
         self.assertEqual(launch["angle"], "metal")
         self.assertEqual(launch["record"], str(self.root / "run/host-renderer.json"))
         self.assertIn("host renderer: accepted", result.stdout)

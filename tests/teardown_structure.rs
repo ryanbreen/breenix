@@ -4339,7 +4339,12 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
 /// would arrive here as a new row.
 #[rustfmt::skip]
 const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
-    // The socket's guard receiver is opaque to the local struct-field resolver.
+    // GPU ABI Counters.state is the u64 LIVE/WARMING/QUARANTINED/RESET
+    // context-state output, not thread state (#1909, S27).
+    ("kernel/src/gpu/mod.rs", "fn op_counters", 1),
+    // A TCP socket's own state machine (`TcpSockState`), returned to Bound or
+    // Unbound by `connect(AF_UNSPEC)`; no thread is involved. The socket's guard
+    // receiver is opaque to the local struct-field resolver.
     ("kernel/src/socket/tcp.rs", "impl TcpSock::fn disconnect", 1),
     // The #647 departure probe restores the state it snapshotted rather than
     // naming a variant, so its restore is an opaque store by construction. It is

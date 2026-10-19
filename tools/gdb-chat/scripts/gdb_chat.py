@@ -58,7 +58,7 @@ class GDBChat:
     GDB_PROMPT = "(gdb)"
     # x86_64: Breenix kernel is loaded at 1 TiB (PIE binary)
     KERNEL_BASE_X86 = 0x10000000000
-    # ARM64: kernel has split layout - boot code at phys 0x40080000,
+    # ARM64: kernel has split layout - boot code at phys 0x40200000,
     # main kernel at high-half 0xFFFF000040000000+. ELF VMAs are correct,
     # so no base address adjustment is needed for symbol loading.
     # Serial output file for capturing kernel print statements
@@ -167,7 +167,7 @@ class GDBChat:
 
         # Note: QEMU starts halted when using -S flag.
         # x86_64: halted at reset vector (0xFFF0), bootloader loads kernel on continue
-        # ARM64: halted at _start (0x40080000), kernel runs directly on continue
+        # ARM64: halted at _start (0x40200000), kernel runs directly on continue
 
         # Get any initial serial output
         initial_serial = self.get_new_serial_output()
@@ -419,7 +419,7 @@ class GDBChat:
         """Load symbols for ARM64 kernel.
 
         The ARM64 kernel has a split layout:
-        - Boot code (.text.boot) at physical VMA 0x40080000
+        - Boot code (.text.boot) at physical VMA 0x40200000
         - Main kernel (.text, .rodata, .data, .bss) at high-half VMA 0xFFFF0000_40099000+
 
         The ELF VMAs are already correct for post-MMU execution, so GDB's

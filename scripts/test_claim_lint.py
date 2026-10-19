@@ -37,7 +37,9 @@ commits they read are outside this tool's control.
 
 Run: python3 scripts/test_claim_lint.py [-v]
 """
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -431,6 +433,26 @@ class MechanicsTests(unittest.TestCase):
         self.assertTrue(cl.overlaps(f, [(1, 10)]))
         self.assertFalse(cl.overlaps(f, [(13, 20)]))
         self.assertFalse(cl.overlaps(f, [(1, 9)]))
+
+    def test_frozen_copies_skip_exactly_the_manifest(self):
+        # Ruling 30 (#1719): a file the frozen-copy manifest lists is skipped;
+        # the same bytes at any other path are linted.
+        text = "# Notes\n\nThis covers every case.\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "scripts"))
+            with open(os.path.join(tmp, "scripts", "frozen-copies.json"), "w") as fh:
+                json.dump({"copies": [{"path": "frozen.md", "source_tag": "t", "sha256": ""}]}, fh)
+            for name in ("frozen.md", "other.md"):
+                with open(os.path.join(tmp, name), "w") as fh:
+                    fh.write(text)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cl.main(["--repo-root", tmp, "--files",
+                              os.path.join(tmp, "frozen.md"), os.path.join(tmp, "other.md")])
+        self.assertEqual(rc, 1)
+        self.assertIn("other.md", out.getvalue())
+        self.assertIn("1 frozen reference cop(ies) not linted", out.getvalue())
+        self.assertNotIn("frozen.md:", out.getvalue())
 
 
 class AutoCloseKeywordTests(unittest.TestCase):

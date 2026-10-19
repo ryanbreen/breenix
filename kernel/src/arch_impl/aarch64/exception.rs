@@ -487,6 +487,7 @@ pub(crate) fn set_idle_stack_for_eret() {
 
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let idle_stack = super::constants::percpu_kernel_stack_top(cpu_id);
+    crate::gpu::panic::abandon_accesses();
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
@@ -1279,7 +1280,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
             if !from_el0 {
-                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+                crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
             }
 
             // EL1 may have faulted while holding SCHEDULER, so termination is
@@ -1422,7 +1423,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
 
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
-                    crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+                    crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -2225,7 +2226,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             drop(fatal_uart_guard);
-            crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -2539,6 +2540,12 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
             if let Some(gpu_irq) = crate::drivers::virtio::gpu_pci::get_irq() {
                 if irq_id == gpu_irq {
                     crate::drivers::virtio::gpu_pci::handle_interrupt();
+                }
+            }
+            // GPU core interrupt dispatch (virtio-gpu-gl-pci INTx on QEMU)
+            if let Some(gpu_core_irq) = crate::gpu::irq() {
+                if irq_id == gpu_core_irq {
+                    crate::gpu::handle_interrupt();
                 }
             }
             // VirtIO network PCI interrupt dispatch (GICv2m MSI)
