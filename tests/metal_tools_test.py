@@ -1608,6 +1608,11 @@ class CatchupTest(StateTest):
 
 class BuildPolicyTest(unittest.TestCase):
     def test_guard_comes_from_origin_main_instead_of_the_target_tree(self):
+        for catchup in (False, True):
+            with self.subTest(catchup=catchup):
+                self.guard_from_main(catchup)
+
+    def guard_from_main(self, catchup):
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1629,7 +1634,7 @@ class BuildPolicyTest(unittest.TestCase):
             git('-C', repo, 'commit', '-am', 'Attempt to bypass the policy')
             sha = git('-C', repo, 'rev-parse', 'HEAD')
             args = SimpleNamespace(id='20261017T000011Z-metal', root=str(root), repo=str(repo), sha=sha,
-                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'), catchup=False)
+                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'), catchup=catchup)
             self.assertEqual(build.outer(args), 3)
 
 

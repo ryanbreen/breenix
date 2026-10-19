@@ -3,10 +3,9 @@
 
 Main-path effort history runs on x86-64, Parallels and VMware only for the catch-up
 (--catchup or BREENIX_CATCHUP=1). Metal effort history may also run there for landing
-checks. On x86-metal, catch-up admits pushed branch history for effort landing.
-Without catch-up, commits outside origin/main must be first-parent reachable from
-metal-* lanes on origin and may not carry main-path effort history. Origin is read
-live; unavailable origin means unknown policy and refusal.
+checks. On x86-metal, main-path effort history is refused even during catch-up, and
+commits outside origin/main must be first-parent reachable from metal-* lanes on
+origin. Origin is read live; unavailable origin means unknown policy and refusal.
 
 A launcher that has already checked a commit exports BREENIX_TARGET_POLICY_CHECKED=<target>:<sha>;
 nested launchers of the same target and commit (host-slot re-exec, the beast gate) skip the check.
@@ -147,8 +146,6 @@ def check(root, commit, target, catchup):
                       if name.removeprefix('origin/').startswith('metal-') and name.count('/') >= 2}
         main = heads['origin/main']
         wanted = sorted({main, *(tip for tip, home in lanes.values()), *metal_tips})
-        if target == 'x86-metal' and catchup:
-            wanted = sorted(set(wanted) | set(heads.values()))
         missing = sorted(set(wanted) - present(root, wanted))
         if missing:
             fetch_objects(root, missing)
@@ -157,11 +154,6 @@ def check(root, commit, target, catchup):
                          'this commit carries effort work is unknown. Retry once origin is reachable.')
     own = git(root, 'rev-list', sha, '--not', main).splitlines()
     if not own:
-        return sha
-    if target == 'x86-metal' and catchup:
-        published = set(git(root, 'rev-list', *sorted(set(heads.values())), '--not', main).splitlines())
-        if sha not in published:
-            raise ValueError('Refusing x86-metal catch-up: push the requested branch before booting')
         return sha
     prohibited = {}
     for name, (tip, (file, targets)) in lanes.items():

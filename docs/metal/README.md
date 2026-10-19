@@ -319,11 +319,11 @@ the initiator's value.
 
 ## One boot
 
-For an authorized effort landing, `metal-run boot --branch BRANCH --catchup`
-(or `BREENIX_CATCHUP=1`) admits pushed branch history and records `catchup: true`
-in `run.json`. The catch-up uses the deployed tools' guard; ordinary boots keep
-using origin/main's policy. Deploy the landing branch's tools immediately before
-its catch-up boot and restore origin/main's tools immediately afterwards.
+`metal-run boot --branch BRANCH --catchup` (or `BREENIX_CATCHUP=1`) records
+`catchup: true` in `run.json`; it does not override metal ancestry or permit
+main-path effort history. `metal-build` fetches the guard from origin/main for
+both ordinary and catch-up boots, so the target branch cannot supply its own
+admission policy.
 
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
 soon as the unit holds, or waits for, the machine lease, so the caller's ssh session can end. The driver then:
