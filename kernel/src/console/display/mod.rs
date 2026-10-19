@@ -11,6 +11,10 @@
 //! - `virgl_backing` (ARM64 Parallels with VirGL): the guest backing of the
 //!   resource the kernel's screens present through the virtio-gpu PCI driver,
 //!   until userspace takes the display.
+//! - `gpu_core` (ARM64, when the GPU core owns the display: Parallels with the
+//!   core, and QEMU's `virtio-gpu-gl-pci`): the guest backing of the kernel's
+//!   display-sized scanout target, which the core uploads, binds and flushes
+//!   (`gpu::screen`).
 //!
 //! Rows are written one text row's band at a time, with interrupts masked and
 //! the screen held (`holding_screen`), so a display owner's flush, a read and
@@ -20,8 +24,12 @@
 //!
 //! A read-back reads what the display shows: the scanout memory itself, or on
 //! virtio-gpu the backing of the resource the device last accepted for scanout
-//! 0, after a transfer and flush of the whole screen completed (`settle`).
+//! 0, after a transfer and flush of the whole screen completed (`settle`). On
+//! the GPU core that backing is first poisoned and then transferred back from
+//! the device, so it holds what the device scans out.
 
+#[cfg(target_arch = "aarch64")]
+pub mod gpu_core;
 pub mod linear;
 #[cfg(target_arch = "aarch64")]
 pub mod virgl_backing;
@@ -77,6 +85,19 @@ pub fn wait_until_idle() {
 /// # Safety
 /// `target` must map `layout.bytes()` writable bytes.
 unsafe fn write_bands(target: *mut u8, layout: &Layout, shadow: &[u8], lines: Range<usize>, allowed: fn() -> bool) -> bool {
+    copy_bands(layout, shadow, lines, allowed, |bytes, from| {
+        // SAFETY: inside the mapping, which holds `layout.bytes()` bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(from.as_ptr(), target.add(bytes.start), bytes.len());
+            #[cfg(target_arch = "aarch64")]
+            crate::graphics::firmware_writes::note_range(target.add(bytes.start), bytes.len());
+        }
+    })
+}
+
+/// `write_bands` with `copy` putting each band's bytes (their range in a frame
+/// laid out as `layout`, and the shadow's bytes there) on the screen.
+fn copy_bands(layout: &Layout, shadow: &[u8], lines: Range<usize>, allowed: fn() -> bool, copy: impl Fn(Range<usize>, &[u8])) -> bool {
     let line_height = layout.font.line_height();
     let mut y = lines.start;
     while y < lines.end {
@@ -87,12 +108,7 @@ unsafe fn write_bands(target: *mut u8, layout: &Layout, shadow: &[u8], lines: Ra
             if !allowed() {
                 return;
             }
-            // SAFETY: inside the mapping, which holds `layout.bytes()` bytes.
-            unsafe {
-                core::ptr::copy_nonoverlapping(shadow[bytes.clone()].as_ptr(), target.add(bytes.start), bytes.len());
-                #[cfg(target_arch = "aarch64")]
-                crate::graphics::firmware_writes::note_range(target.add(bytes.start), bytes.len());
-            }
+            copy(bytes.clone(), &shadow[bytes.clone()]);
             drawn = true;
         });
         if !held || !drawn {
@@ -109,6 +125,8 @@ pub enum Display {
     Virtio2d(virtio_2d::Virtio2d),
     #[cfg(target_arch = "aarch64")]
     VirglBacking(virgl_backing::VirglBacking),
+    #[cfg(target_arch = "aarch64")]
+    GpuCore(gpu_core::GpuCore),
 }
 
 /// What a read-back read.
@@ -119,6 +137,11 @@ pub enum Source {
     /// transfer and flush of the whole screen completed.
     #[cfg(target_arch = "aarch64")]
     Backing { resource: u32, phys: u64, flush: u64 },
+    /// The backing of the GPU core's target bound to scanout 0, poisoned and
+    /// then transferred back from the device after a present of the whole
+    /// screen completed.
+    #[cfg(target_arch = "aarch64")]
+    Device { resource: u32, flush: u64 },
 }
 
 impl fmt::Display for Source {
@@ -130,6 +153,12 @@ impl fmt::Display for Source {
                 f,
                 "backing after flush {} of resource {} bound to scanout 0, at {:#x}",
                 flush, resource, phys
+            ),
+            #[cfg(target_arch = "aarch64")]
+            Source::Device { resource, flush } => write!(
+                f,
+                "backing after flush {} of resource {} bound to scanout 0, transferred back from the device",
+                flush, resource
             ),
         }
     }
@@ -143,6 +172,8 @@ impl Display {
             Display::Virtio2d(display) => display.layout(),
             #[cfg(target_arch = "aarch64")]
             Display::VirglBacking(display) => display.layout(),
+            #[cfg(target_arch = "aarch64")]
+            Display::GpuCore(display) => display.layout(),
         }
     }
 
@@ -155,7 +186,20 @@ impl Display {
             Display::Virtio2d(_) => "virtio-gpu 2D resource",
             #[cfg(target_arch = "aarch64")]
             Display::VirglBacking(_) => "virtio-gpu PCI scanout backing",
+            #[cfg(target_arch = "aarch64")]
+            Display::GpuCore(_) => "GPU core scanout target",
         }
+    }
+
+    /// Whether the boot thread may draw on it before the render thread runs.
+    /// The GPU core's presents wait on the device, which only a thread the
+    /// scheduler can block may do.
+    pub fn boot_drawable(&self) -> bool {
+        #[cfg(target_arch = "aarch64")]
+        if let Display::GpuCore(_) = self {
+            return false;
+        }
+        true
     }
 
     /// Write pixel rows `lines` of `shadow` to the screen, band by band. Each
@@ -169,6 +213,8 @@ impl Display {
             Display::Virtio2d(display) => display.write(shadow, lines, allowed),
             #[cfg(target_arch = "aarch64")]
             Display::VirglBacking(display) => display.write(shadow, lines, allowed),
+            #[cfg(target_arch = "aarch64")]
+            Display::GpuCore(display) => display.write(shadow, lines, allowed),
         }
     }
 
@@ -183,6 +229,8 @@ impl Display {
             Display::Virtio2d(display) => display.flush(lines),
             #[cfg(target_arch = "aarch64")]
             Display::VirglBacking(display) => display.flush(lines),
+            #[cfg(target_arch = "aarch64")]
+            Display::GpuCore(display) => display.flush(lines),
         }
     }
 
@@ -195,6 +243,8 @@ impl Display {
             Display::Virtio2d(display) => display.settle(),
             #[cfg(target_arch = "aarch64")]
             Display::VirglBacking(display) => display.settle(),
+            #[cfg(target_arch = "aarch64")]
+            Display::GpuCore(display) => display.settle(),
         }
     }
 
@@ -207,6 +257,8 @@ impl Display {
             Display::Virtio2d(display) => display.read_line(y, out),
             #[cfg(target_arch = "aarch64")]
             Display::VirglBacking(display) => display.read_line(y, out),
+            #[cfg(target_arch = "aarch64")]
+            Display::GpuCore(display) => display.read_line(y, out),
         }
     }
 }

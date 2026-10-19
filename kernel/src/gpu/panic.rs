@@ -167,8 +167,8 @@ pub(super) fn prepare() -> Result<(), i64> {
     if VALID.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut c = console::Console::new(false)?;
-    c.draw(false)?;
+    let mut c = console::Console::new()?;
+    c.draw()?;
     let (mut objects, queue) = with_core(|core| {
         Some((
             core.contexts.get(&c.context)?.objects.clone(),

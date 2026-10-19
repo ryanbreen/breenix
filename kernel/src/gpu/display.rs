@@ -8,6 +8,15 @@ use abi::errno::EPERM;
 
 const EBUSY: i64 = 16;
 
+/// The display's modes (section 1.7): 1280x800 at scale 1 and 2560x1600 at scale 2.
+pub(super) const MODES: [abi::Mode; 2] = [
+    abi::Mode { width: 1280, height: 800, scale: 1, reserved: 0 },
+    abi::Mode { width: 2560, height: 1600, scale: 2, reserved: 0 },
+];
+/// The mode the display returns to when no process owns it (`publish_owner`), which the
+/// kernel's screen is drawn at.
+pub(super) const KERNEL_MODE: usize = 1;
+
 #[derive(Clone, Copy)]
 pub(super) struct Binding {
     pub id: u32,
@@ -47,7 +56,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             stack: Vec::new(),
-            mode: 1,
+            mode: KERNEL_MODE as u32,
             changing: false,
             owner_sequence: 0,
             binding: None,
@@ -420,20 +429,7 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
         a.max_height = c.caps.max_height;
         a.owner_depth = c.display.stack.len() as u32;
         a.binding_known = c.display.known as u32;
-        a.modes = [
-            abi::Mode {
-                width: 1280,
-                height: 800,
-                scale: 1,
-                reserved: 0,
-            },
-            abi::Mode {
-                width: 2560,
-                height: 1600,
-                scale: 2,
-                reserved: 0,
-            },
-        ];
+        a.modes = MODES;
         a.scanout_resource = c
             .display
             .binding
@@ -477,7 +473,7 @@ fn publish_owner(c: &mut Core) {
         .display
         .stack
         .last()
-        .map_or((u64::MAX, u64::MAX, 1), |o| (o.group, o.pid, o.mode));
+        .map_or((u64::MAX, u64::MAX, KERNEL_MODE as u32), |o| (o.group, o.pid, o.mode));
     c.display.mode = mode;
     crate::syscall::graphics::DISPLAY_OWNER_GROUP.store(group, Ordering::Release);
     crate::syscall::graphics::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
@@ -492,9 +488,15 @@ impl Transition {
         }
         Ok(guard)
     }
+    /// A transition for the kernel's screen: while no process owns the display, or while
+    /// the owner's terminal is released and the kernel draws the foreground one (contract
+    /// section 4.2).
     pub(super) fn for_console() -> Option<Self> {
         with_core(|c| {
-            if c.display.changing || c.display.outstanding != 0 || !c.display.stack.is_empty() {
+            if c.display.changing
+                || c.display.outstanding != 0
+                || !(c.display.stack.is_empty() || crate::console::vt::presentation_suspended())
+            {
                 return None;
             }
             c.display.changing = true;
@@ -594,18 +596,21 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
-    let (saved, current) = with_core(|c| {
+    let (saved, current, owned) = with_core(|c| {
         let current = c.display.binding.filter(|_| c.display.known);
-        (c.display.stack.last().and_then(|o| o.last), current)
+        (c.display.stack.last().and_then(|o| o.last), current, !c.display.stack.is_empty())
     })
-    .unwrap_or((None, None));
+    .unwrap_or((None, None, false));
     match saved {
         // The top owner presented after the exit that asked for this restore, and that
         // frame is already bound and complete. Binding it again would only make the
         // binding unknown meanwhile, refusing the owner's readbacks with reason 10.
         Some(b) if current.is_some_and(|c| c.id == b.id) => Ok(()),
-        Some(b) => super::console::bind_saved(b),
-        None => super::console::redraw(),
+        Some(b) => super::screen::bind_saved(b),
+        // An owner that has not presented yet sees the kernel's screen as it was left.
+        None if owned => super::screen::show(),
+        // No owner: the screen console has the display again (ruling F25).
+        None => super::screen::restore(),
     }
 }
 

@@ -794,6 +794,12 @@ pub fn display_owner() -> Option<(u64, usize)> {
     with_terminals(|terminals, _| terminals.sw.display_owner.map(|(pid, vt)| (pid, vt + 1)))
 }
 
+/// The display owner's terminal is not in the foreground: the owner keeps the display
+/// but not the screen, which the kernel draws (contract section 4.2).
+pub fn presentation_suspended() -> bool {
+    PRESENTATION_SUSPENDED.load(Ordering::SeqCst)
+}
+
 /// `sys_give_back_display`.
 pub fn give_back_display() {
     with_terminals(|terminals, effects| terminals.give_back_display(effects));

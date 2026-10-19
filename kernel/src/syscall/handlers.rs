@@ -3520,8 +3520,6 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
-    #[cfg(target_arch = "aarch64")]
-    if crate::gpu::display_active() { return crate::gpu::take_display(); }
     // The display goes with the caller's terminal, its controlling terminal
     // when that is a virtual terminal, else tty1; EBUSY while that terminal
     // is not in the foreground (`docs/console/contract.md` section 4.2).
@@ -3543,8 +3541,24 @@ pub fn sys_take_over_display() -> SyscallResult {
     let Some((group, vt)) = owner else {
         return SyscallResult::Err(3);
     };
+    #[cfg(target_arch = "aarch64")]
+    let previous = crate::console::vt::display_owner();
     if let Err(errno) = crate::console::vt::take_display(group, vt) {
         return SyscallResult::Err(errno as u64);
+    }
+    // The GPU core's ownership stack holds the display; its take stops the console.
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() {
+        let taken = crate::gpu::take_display();
+        if matches!(taken, SyscallResult::Err(_)) {
+            match previous {
+                Some((pid, vt)) => {
+                    let _ = crate::console::vt::take_display(pid, vt);
+                }
+                None => crate::console::vt::give_back_display(),
+            }
+        }
+        return taken;
     }
     // Quiesce the console before publishing authority to the new owner's
     // other threads, which can issue framebuffer syscalls concurrently.
@@ -3578,8 +3592,15 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
+    // The core restores the previous owner's frame, or the kernel's screen and console.
     #[cfg(target_arch = "aarch64")]
-    if crate::gpu::display_active() { return crate::gpu::give_display(); }
+    if crate::gpu::display_active() {
+        let given = crate::gpu::give_display();
+        if matches!(given, SyscallResult::Ok(_)) {
+            crate::console::vt::give_back_display();
+        }
+        return given;
+    }
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return SyscallResult::Err(3);
     };
@@ -3603,6 +3624,12 @@ pub fn sys_give_back_display() -> SyscallResult {
 /// `VT_AUTO` and `KD_TEXT`, and a display it held is given back.
 pub(crate) fn console_owner_exited(group: u64) {
     if crate::console::vt::process_exited(group) {
+        // The core's ownership stack publishes the next owner and restores the screen
+        // (`gpu::owner_ended`).
+        #[cfg(target_arch = "aarch64")]
+        if crate::gpu::display_active() {
+            return;
+        }
         crate::syscall::graphics::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
         crate::console::give_back_display();
     }

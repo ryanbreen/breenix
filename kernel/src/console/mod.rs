@@ -293,7 +293,7 @@ pub(crate) fn splash_boot_pass() {
     if !splash::is_up() {
         return;
     }
-    let Some(display) = DISPLAY.get() else {
+    let Some(display) = DISPLAY.get().filter(|display| display.boot_drawable()) else {
         return;
     };
     let Some(mut attached) = ATTACHED.try_lock() else {
@@ -447,6 +447,15 @@ fn may_draw() -> bool {
     if crate::graphics::boot_screen::diagnostics_up() {
         return false;
     }
+    // A process holds the GPU core's display and its terminal is in the
+    // foreground: the core shows that process's frames, not the kernel's.
+    #[cfg(target_arch = "aarch64")]
+    if matches!(DISPLAY.get(), Some(Display::GpuCore(_)))
+        && crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != u64::MAX
+        && !vt::presentation_suspended()
+    {
+        return false;
+    }
     true
 }
 
@@ -571,8 +580,7 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
     display.read_line(y, &mut line);
     let offset = x * layout.bytes_per_pixel;
     let [a, g, b] = [line[offset], line[offset + 1], line[offset + 2]];
-    let bgr = crate::graphics::arm64_fb::FB_INFO_CACHE.get()?.is_bgr;
-    let (r, b) = if bgr { (b, a) } else { (a, b) };
+    let (r, b) = if layout.bgr { (b, a) } else { (a, b) };
     Some((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
 }
 
@@ -586,7 +594,13 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
 #[cfg(target_arch = "aarch64")]
 pub fn attach() {
     use crate::graphics::arm64_fb;
-    let display = if arm64_fb::is_gop_active() {
+    // When the GPU core owns the display the console draws through it, sized for
+    // the mode the core shows the kernel's screen at (ruling F25); the GOP
+    // framebuffer keeps the early splash only until the core shows that screen.
+    let gpu = display::gpu_core::GpuCore::new().map(Display::GpuCore);
+    let display = if gpu.is_some() {
+        gpu
+    } else if arm64_fb::is_gop_active() {
         gop_display()
     } else if crate::drivers::virtio::gpu_pci::is_initialized() {
         display::virgl_backing::VirglBacking::new().map(Display::VirglBacking)
@@ -606,7 +620,8 @@ pub fn attach() {
         let n = crate::log_buffer::copy_tail(&mut boot_log);
         log_bytes(&boot_log[..n]);
     }
-    prepare(arm64_fb::FB_INFO_CACHE.get().is_none_or(|info| info.is_bgr));
+    let bgr = DISPLAY.get().is_none_or(|display| display.layout().bgr);
+    prepare(bgr);
 }
 
 /// Draw directly into GOP scanout before allocating or copying any shadow.
@@ -1430,6 +1445,7 @@ pub fn proc_console_check() -> Result<String, i32> {
                 layout.cols(),
                 layout.rows()
             );
+            let _ = writeln!(text, "console logo scale: {}", splash::logo_scale(&font));
             match &check.source {
                 Ok(source) => {
                     let _ = writeln!(text, "console scanout: {}", source);

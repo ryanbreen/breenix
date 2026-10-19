@@ -35,6 +35,7 @@ mod present_answers;
 mod display;
 pub mod console;
 pub mod panic;
+pub mod screen;
 mod observation;
 mod quota;
 mod staging;
@@ -4147,6 +4148,8 @@ pub fn take_display() -> SyscallResult {
                 p.has_display_ownership = true;
             }
         });
+        // The screen console stops drawing until the display comes back (`screen::restore`).
+        crate::console::take_display();
     }
     result(outcome.map(|()| 0))
 }
