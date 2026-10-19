@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use core::cmp::{max, min};
+use super::firmware_writes::BufferMut;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
@@ -126,7 +127,7 @@ pub trait Canvas {
     fn get_pixel(&self, x: i32, y: i32) -> Option<Color>;
 
     /// Get buffer for direct access (optional optimization).
-    fn buffer_mut(&mut self) -> &mut [u8];
+    fn buffer_mut(&mut self) -> BufferMut<'_>;
 
     /// Get buffer for read access.
     fn buffer(&self) -> &[u8];
@@ -209,23 +210,28 @@ pub fn draw_hline(canvas: &mut impl Canvas, x1: i32, x2: i32, y: i32, color: Col
     let stride_bytes = stride * bpp; // stride is in pixels, convert to bytes
     let is_bgr = canvas.is_bgr();
     let pixel = color.to_pixel_bytes(bpp, is_bgr);
-    let buffer = canvas.buffer_mut();
+    let mut buffer = canvas.buffer_mut();
 
     let row_start = (y as usize).saturating_mul(stride_bytes);
     if row_start >= buffer.len() {
         return;
     }
     let row_end = min(row_start + stride_bytes, buffer.len());
-    let row_slice = &mut buffer[row_start..row_end];
+    let row_len = row_end - row_start;
 
     let start_byte = (start as usize).saturating_mul(bpp);
-    if start_byte >= row_slice.len() {
+    if start_byte >= row_len {
         return;
     }
-    let end_byte = min((end as usize + 1).saturating_mul(bpp), row_slice.len());
+    let end_byte = min((end as usize + 1).saturating_mul(bpp), row_len);
 
-    for chunk in row_slice[start_byte..end_byte].chunks_exact_mut(bpp) {
-        chunk.copy_from_slice(&pixel[..bpp]);
+    let end_byte = end_byte - (end_byte - start_byte) % bpp;
+    if pixel[..bpp].iter().all(|&byte| byte == pixel[0]) {
+        buffer.fill(row_start + start_byte..row_start + end_byte, pixel[0]);
+    } else {
+        for at in (start_byte..end_byte).step_by(bpp) {
+            buffer.copy_from_slice(row_start + at, &pixel[..bpp]);
+        }
     }
 }
 
@@ -317,7 +323,7 @@ pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
     let stride_bytes = stride * bpp; // stride is in pixels, convert to bytes
     let is_bgr = canvas.is_bgr();
     let pixel = color.to_pixel_bytes(bpp, is_bgr);
-    let buffer = canvas.buffer_mut();
+    let mut buffer = canvas.buffer_mut();
 
     let start_y = clipped.y as usize;
     let end_y = start_y.saturating_add(clipped.height as usize);
@@ -330,16 +336,16 @@ pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
             break;
         }
         let row_end = min(row_start + stride_bytes, buffer.len());
-        let row_slice = &mut buffer[row_start..row_end];
+        let row_len = row_end - row_start;
 
         let start_byte = start_x.saturating_mul(bpp);
-        if start_byte >= row_slice.len() {
+        if start_byte >= row_len {
             continue;
         }
-        let end_byte = min(end_x.saturating_mul(bpp), row_slice.len());
+        let end_byte = min(end_x.saturating_mul(bpp), row_len);
 
-        for chunk in row_slice[start_byte..end_byte].chunks_exact_mut(bpp) {
-            chunk.copy_from_slice(&pixel[..bpp]);
+        for at in (start_byte..end_byte - (end_byte - start_byte) % bpp).step_by(bpp) {
+            buffer.copy_from_slice(row_start + at, &pixel[..bpp]);
         }
     }
 
@@ -571,7 +577,7 @@ fn draw_glyph_direct(
     if let Some(bg) = style.background {
         // With explicit background: pre-blend common intensity values
         let bg_bytes = bg.to_pixel_bytes(bpp, is_bgr);
-        let buffer = canvas.buffer_mut();
+        let mut buffer = canvas.buffer_mut();
 
         for (gy, row) in glyph.raster().iter().enumerate() {
             let row_offset = (y + gy) * stride_bytes + x * bpp;
@@ -582,20 +588,20 @@ fn draw_glyph_direct(
             for (gx, &intensity) in row.iter().take(glyph_w).enumerate() {
                 let offset = row_offset + gx * bpp;
                 if intensity == 0 {
-                    buffer[offset..offset + bpp].copy_from_slice(&bg_bytes[..bpp]);
+                    buffer.copy_from_slice(offset, &bg_bytes[..bpp]);
                 } else if intensity == 255 {
-                    buffer[offset..offset + bpp].copy_from_slice(&fg_bytes[..bpp]);
+                    buffer.copy_from_slice(offset, &fg_bytes[..bpp]);
                 } else {
                     let blended = blend_colors(style.foreground, bg, intensity);
                     let px = blended.to_pixel_bytes(bpp, is_bgr);
-                    buffer[offset..offset + bpp].copy_from_slice(&px[..bpp]);
+                    buffer.copy_from_slice(offset, &px[..bpp]);
                 }
             }
         }
     } else {
         // No explicit background: read existing pixels, blend, write back.
         // We read the background region first, then blend and write.
-        let buffer = canvas.buffer_mut();
+        let mut buffer = canvas.buffer_mut();
 
         for (gy, row) in glyph.raster().iter().enumerate() {
             let row_offset = (y + gy) * stride_bytes + x * bpp;
@@ -609,14 +615,14 @@ fn draw_glyph_direct(
                 }
                 let offset = row_offset + gx * bpp;
                 if intensity == 255 {
-                    buffer[offset..offset + bpp].copy_from_slice(&fg_bytes[..bpp]);
+                    buffer.copy_from_slice(offset, &fg_bytes[..bpp]);
                 } else {
                     // Read existing pixel, blend
                     let existing =
                         Color::from_pixel_bytes(&buffer[offset..offset + bpp], bpp, is_bgr);
                     let blended = blend_colors(style.foreground, existing, intensity);
                     let px = blended.to_pixel_bytes(bpp, is_bgr);
-                    buffer[offset..offset + bpp].copy_from_slice(&px[..bpp]);
+                    buffer.copy_from_slice(offset, &px[..bpp]);
                 }
             }
         }
@@ -792,8 +798,8 @@ mod tests {
             ))
         }
 
-        fn buffer_mut(&mut self) -> &mut [u8] {
-            &mut self.buffer
+        fn buffer_mut(&mut self) -> BufferMut<'_> {
+            BufferMut::new(&mut self.buffer, false)
         }
 
         fn buffer(&self) -> &[u8] {

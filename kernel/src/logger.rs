@@ -800,12 +800,13 @@ impl Canvas for ShellFrameBuffer {
         ))
     }
 
-    fn buffer_mut(&mut self) -> &mut [u8] {
-        if let Some(db) = &mut self.double_buffer {
+    fn buffer_mut(&mut self) -> crate::graphics::firmware_writes::BufferMut<'_> {
+        let bytes = if let Some(db) = &mut self.double_buffer {
             db.buffer_mut()
         } else {
             unsafe { core::slice::from_raw_parts_mut(self.buffer_ptr, self.buffer_len) }
-        }
+        };
+        crate::graphics::firmware_writes::BufferMut::new(bytes, false)
     }
 
     fn buffer(&self) -> &[u8] {

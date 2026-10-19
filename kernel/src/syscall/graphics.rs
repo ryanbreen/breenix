@@ -2735,7 +2735,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         // VirtIO DMA (PCI_FRAMEBUFFER → TRANSFER_TO_HOST_2D) was
                         // benchmarked and is slower: 5-7 FPS per-ball, 4-8 FPS
                         // full-pane, vs 12 FPS with direct BAR0 MMIO.
-                        if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
+                        if let Some(mut gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
                             for y in y_start..y_end {
                                 let user_row_ptr = (mmap_info.user_addr as usize)
                                     + y * mmap_info.user_stride
@@ -2743,10 +2743,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                 let target_row_offset = y * fb_stride_bytes + col_offset;
                                 if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                     unsafe {
-                                        core::ptr::copy_nonoverlapping(
-                                            user_row_ptr as *const u8,
-                                            gop_buf[target_row_offset..].as_mut_ptr(),
-                                            copy_row_bytes,
+                                        gop_buf.copy_from_slice(
+                                            target_row_offset,
+                                            core::slice::from_raw_parts(
+                                                user_row_ptr as *const u8,
+                                                copy_row_bytes,
+                                            ),
                                         );
                                     }
                                 }
@@ -2773,7 +2775,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         }
                     } else {
                         // Non-GOP path: copy to GPU buffer (VirtIO MMIO/PCI framebuffer)
-                        let target_buf = fb_guard.buffer_mut();
+                        let mut target_buf = fb_guard.buffer_mut();
                         for y in y_start..y_end {
                             let user_row_ptr =
                                 (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
@@ -2781,10 +2783,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                             if target_row_offset + row_bytes <= target_buf.len() {
                                 unsafe {
-                                    core::ptr::copy_nonoverlapping(
-                                        user_row_ptr as *const u8,
-                                        target_buf[target_row_offset..].as_mut_ptr(),
-                                        row_bytes,
+                                    target_buf.copy_from_slice(
+                                        target_row_offset,
+                                        core::slice::from_raw_parts(user_row_ptr as *const u8, row_bytes),
                                     );
                                 }
                             }
@@ -2860,7 +2861,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             .unwrap_or(0);
 
                         if fb_stride_bytes > 0 {
-                            if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
+                            if let Some(mut gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
                                 for rect in rects {
                                     if rect.w <= 0 || rect.h <= 0 {
                                         continue;
@@ -2887,10 +2888,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                         let target_row_offset = y * fb_stride_bytes + col_byte;
                                         if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                             unsafe {
-                                                core::ptr::copy_nonoverlapping(
-                                                    user_row_ptr as *const u8,
-                                                    gop_buf[target_row_offset..].as_mut_ptr(),
-                                                    copy_row_bytes,
+                                                gop_buf.copy_from_slice(
+                                                    target_row_offset,
+                                                    core::slice::from_raw_parts(
+                                                        user_row_ptr as *const u8,
+                                                        copy_row_bytes,
+                                                    ),
                                                 );
                                             }
                                         }

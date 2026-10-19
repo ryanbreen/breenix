@@ -200,7 +200,7 @@ impl TerminalPane {
         }
 
         // Copy each row up using the canvas buffer directly
-        let buffer = canvas.buffer_mut();
+        let mut buffer = canvas.buffer_mut();
         let row_bytes = self.width * bytes_per_pixel;
 
         for row_offset in 0..copy_height {

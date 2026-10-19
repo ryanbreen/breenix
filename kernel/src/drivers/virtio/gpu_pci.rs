@@ -6038,7 +6038,7 @@ fn copy_3d_framebuffer_to_bar0(width: u32, height: u32) {
         }
         let copy_len = fb_bytes.min(bar0.len()).min(fb_len);
         unsafe {
-            core::ptr::copy_nonoverlapping(fb_ptr, bar0.as_mut_ptr(), copy_len);
+            { bar0 }.copy_from_slice(0, core::slice::from_raw_parts(fb_ptr, copy_len));
         }
     }
 }
