@@ -271,7 +271,51 @@ fn nested() -> CaseResult {
 }
 pub fn ownership_stack() -> CaseResult {
     let _case = begin()?;
-    nested()
+    nested()?;
+    // Framebuffer owners also stack, with independent pixels behind each binding.
+    for exits in [false, true] {
+        take()?;
+        pane_frame(A)?;
+        let original = pane_pixel(A)?;
+        let kid = spawn(move |_| {
+            (|| -> CaseResult {
+                take()?;
+                pane_frame(B)?;
+                ensure(pane_pixel(B)? != original, || "nested panes shared a resource".to_string())?;
+                if !exits { back()?; }
+                Ok(())
+            })().map_err(child_error)
+        })?;
+        kid.done()?;
+        // Exit restoration is performed by the render thread.
+        let mut restored = false;
+        for _ in 0..100 {
+            if u32_at(&modes()?, 24) == 1 && pane_pixel(A).is_ok_and(|id| id == original) {
+                restored = true;
+                break;
+            }
+            let _ = libbreenix::time::sleep_ms(10);
+        }
+        ensure(restored, || "nested framebuffer give-back lost the saved pixels or binding".to_string())?;
+        back()?;
+    }
+    Ok(())
+}
+fn pane_frame(colour: u32) -> CaseResult {
+    let info = graphics::fbinfo().map_err(|e| fail_msg(format!("fbinfo: {e:?}")))?;
+    let (pane, width) = graphics::fb_mmap_pane().map_err(|e| fail_msg(format!("fb_mmap: {e:?}")))?;
+    ensure(width == info.width && info.bytes_per_pixel == 4, || "framebuffer pane geometry".to_string())?;
+    let pixels = unsafe { core::slice::from_raw_parts_mut(pane.cast::<u32>(), (width * info.height) as usize) };
+    pixels.fill(colour);
+    graphics::fb_flush().map_err(|e| fail_msg(format!("fb_flush: {e:?}")))
+}
+fn pane_pixel(colour: u32) -> R<u64> {
+    let mut px = [0; 4];
+    let mut rec = [0; record::SIZE];
+    let r = gpu::readback(0, [0, 0, 1, 1], &mut px, 4, &mut rec);
+    ensure(r == 0 && u32::from_le_bytes(px) == colour && u32_at(&rec, record::FLAGS) & 1 == 1,
+        || format!("framebuffer readback: {} pixel {:#x}, wanted {colour:#x}", errno(r), u32::from_le_bytes(px)))?;
+    Ok(u64_at(&rec, record::RESOURCE))
 }
 /// The kernel's screen after the display came back (ruling F25): the screen console redrew
 /// its frame into the kernel's scanout target, which MODES names as the console's resource
@@ -294,6 +338,7 @@ fn kernel_screen_shown() -> CaseResult {
     }
     ensure(identical(&text), || format!("restored kernel screen did not read back identical: {text}"))?;
     let m = modes()?;
+    ensure(u64_at(&m, 88) != 0, || "panic console atlas was not uploaded".to_string())?;
     let console = u64_at(&m, 72);
     ensure(console != 0 && u64_at(&m, 64) == console && u32_at(&m, 28) == 1, || {
         format!("scanout 0 is resource {} (known {}), the kernel's screen is {console}", u64_at(&m, 64), u32_at(&m, 28))
@@ -310,6 +355,7 @@ fn kernel_screen_shown() -> CaseResult {
 /// After a retake, before presenting: the current scanout is the kernel's screen.
 fn kernel_screen_bound() -> CaseResult {
     let m = modes()?;
+    ensure(u64_at(&m, 88) != 0, || "panic console atlas was not uploaded".to_string())?;
     let mut px = [0u8; 4];
     let mut rec = [0u8; record::SIZE];
     let r = gpu::readback(0, [0, 0, 1, 1], &mut px, 4, &mut rec);
