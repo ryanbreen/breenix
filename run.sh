@@ -493,6 +493,48 @@ bounded_vm_command() {
     python3 "$BREENIX_ROOT/scripts/bounded-vm-command.py" 30 "$@"
 }
 
+# F21: a name is not ownership. Keep crashed-run records until deletion succeeds.
+vm_run_owner() {
+    python3 "$BREENIX_ROOT/scripts/vm-run-owner.py" "$@"
+}
+
+delete_parallels_vm() {
+    local vm="$1" info disk
+    info=$(bounded_vm_command prlctl list -i "$vm") || return 1
+    # These disks are reusable artifacts outside the VM bundle. Detach every
+    # attached one before deleting either our own VM or a dead owner's VM.
+    for disk in hdd0 hdd1; do
+        if grep -q "^[[:space:]]*$disk[[:space:]]" <<< "$info"; then
+            bounded_vm_command prlctl set "$vm" --device-del "$disk" || return 1
+        fi
+    done
+    bounded_vm_command prlctl delete "$vm"
+}
+
+sweep_parallels_vms() {
+    local marker vm status
+    for marker in "$PARALLELS_OWNER_DIR"/breenix-*.json; do
+        [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+        vm_run_owner dead "$marker" || continue
+        vm=${marker##*/}; vm=${vm%.json}
+        status=$(bounded_vm_command prlctl status "$vm") || continue
+        [[ "$status" == *" stopped" ]] || continue
+        if delete_parallels_vm "$vm"; then rm -f "$marker"; fi
+    done
+}
+
+sweep_vmware_bundles() {
+    local bundle
+    for bundle in "$VM_MACHINES"/breenix-*.vmwarevm; do
+        [ -d "$bundle" ] && [ ! -L "$bundle" ] || continue
+        vm_run_owner dead "$bundle/.breenix-run-process" || continue
+        # Give the existing deletion path only the dead runner's exact bundle;
+        # it separately checks the name marker and that no VMX inside is running.
+        ( VM_BUNDLE="$bundle"; VM_NAME=${bundle##*/}; VM_NAME=${VM_NAME%.vmwarevm}
+          VM_BUNDLE_OWNED=true; delete_vmware_bundle "$bundle" )
+    done
+}
+
 # Read the VM's written disk only after stop has succeeded. VMware's deployed
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
 # A boot of several suites scores each of them here, the last with its disk checks.
@@ -564,7 +606,7 @@ delete_vmware_bundle() {
     # Remove only that marker, the window frame we wrote and an empty
     # directory, never unknown contents.
     if [ -d "$bundle" ] && [ ! -e "$vmx" ]; then
-        rm -f "$bundle/.breenix-run-owner" "$bundle/$VM_NAME.plist"
+        rm -f "$bundle/.breenix-run-owner" "$bundle/.breenix-run-process" "$bundle/$VM_NAME.plist"
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
@@ -650,14 +692,10 @@ finish_vm_boot() {
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
     if [ "$PARALLELS" = true ] && [ "$stopped" = true ]; then
-        # eb298971 removed the global stopped-VM sweep because those VMs belong to
-        # other runs. Delete only this run's VM, after its verdict, retaining the
-        # reusable disks outside its bundle by detaching them first.
-        if prlctl set "$PARALLELS_VM" --device-del hdd0 \
-            && { [ ! -d "$EXT2_HDD_DIR" ] || prlctl set "$PARALLELS_VM" --device-del hdd1; }; then
-            prlctl delete "$PARALLELS_VM" || echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
+        if delete_parallels_vm "$PARALLELS_VM"; then
+            rm -f "${PARALLELS_OWNER_FILE:-}"
         else
-            echo "WARNING: keeping owned VM $PARALLELS_VM because disk detach failed" >&2
+            echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
         fi
         host_slot_release mac-boot
     elif [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
@@ -914,11 +952,15 @@ if [ "$PARALLELS" = true ]; then
     # Use a unique VM name each time to avoid Parallels stale state issues.
     # Parallels can get stuck in "stopping"/"suspended" states that require
     # sudo service restarts. Using unique names sidesteps this entirely.
-    PARALLELS_VM="breenix-$(date +%s)"
+    PARALLELS_OWNER_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/breenix/vm-owners/parallels"
+    sweep_parallels_vms
+    PARALLELS_VM="breenix-$(date +%s)-$$"
     echo "VM name: $PARALLELS_VM"
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
+    PARALLELS_OWNER_FILE="$PARALLELS_OWNER_DIR/$PARALLELS_VM.json"
+    vm_run_owner record "$PARALLELS_OWNER_FILE" "$$"
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
     # Run the vCPU threads in macOS's user-interactive QoS class, as the ARM64 QEMU launcher
@@ -1258,18 +1300,13 @@ if [ "$VMWARE" = true ]; then
     VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
-    if [ -d "$VM_BUNDLE" ] && [ ! -L "$VM_BUNDLE" ] \
-        && [ -f "$VM_BUNDLE/.breenix-run-owner" ] \
-        && [ "$(cat "$VM_BUNDLE/.breenix-run-owner")" = "$VM_NAME" ]; then
-        VM_BUNDLE_OWNED=true
-        delete_vmware_bundle "$VM_BUNDLE"
-        VM_BUNDLE_OWNED=false
-    fi
+    sweep_vmware_bundles
     # Exclusive creation fails if a running, unowned or unknown-content bundle
     # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
+    vm_run_owner record "$VM_BUNDLE/.breenix-run-process" "$$"
     echo "VM name: $VM_NAME"
     trap cleanup_vmware_bundle EXIT
     trap 'exit 130' INT
