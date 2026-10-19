@@ -29,7 +29,7 @@ use metal_efi::uefi::*;
 use clock::Clock;
 use lab::{Answer, Entry, SlotAction};
 use screen::{Line, Screen};
-use slots::{Config, Note};
+use slots::{Config, Note, TestPath};
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
@@ -75,8 +75,12 @@ struct Manager<'a> {
     status: Line,
     detail: Line,
     countdown: Line,
-    http_option: [u8; options::OPTION_MAX],
-    http_option_len: usize,
+    /// The HTTP boot port's device path (a site value: never shown), the HTTP boot option, and how the test loop
+    /// is started.
+    port: [u8; slots::PATH_MAX],
+    port_len: usize,
+    http_option: Option<u16>,
+    test_path: TestPath,
 }
 
 fn line(arguments: core::fmt::Arguments) -> Line {
@@ -90,7 +94,7 @@ impl<'a> Manager<'a> {
         match item {
             Item::Current => self.current.present,
             Item::Previous => self.previous.present,
-            Item::TestLoop => self.http_option_len > 0,
+            Item::TestLoop => self.port_len > 0 && (self.test_path == TestPath::LoadFile || self.http_option.is_some()),
             Item::FirmwareSetup => true,
         }
     }
@@ -218,7 +222,8 @@ impl<'a> Manager<'a> {
             }
             Item::TestLoop => {
                 say!("starting the test loop");
-                lab::start_test_loop(self.boot, self.image, &self.http_option[..self.http_option_len])
+                let port = self.port;
+                lab::start_test_loop(self.boot, self.runtime, self.image, &port[..self.port_len], self.http_option, self.test_path)
             }
             Item::FirmwareSetup => options::firmware_setup(self.runtime),
         };
@@ -299,22 +304,32 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         status: line(format_args!("Asking the lab whether a test boot is pending.")),
         detail: Line::new(),
         countdown: Line::new(),
-        http_option: [0; options::OPTION_MAX],
-        http_option_len: 0,
+        port: [0; slots::PATH_MAX],
+        port_len: 0,
+        http_option: None,
+        test_path: TestPath::BootNext,
     };
-    if probe {
-        say!("probe mode: started without its configuration on a disk; nothing will be written or started");
-    } else {
+    if let Some(config) = config.as_ref() {
+        manager.port[..config.port_len].copy_from_slice(config.port());
+        manager.port_len = config.port_len;
+        manager.http_option = config.http_option;
+        manager.test_path = config.test_path;
         say!("slots: current {}, previous {}", manager.current.full(), manager.previous.full());
+    } else {
+        say!("probe mode: started without its configuration on a disk; nothing will be written or started");
+        // Over the network, this image's own path is the HTTP boot port's, and the option running is the HTTP one.
+        manager.port_len = lab::own_path(boot, image, &mut manager.port).unwrap_or(0);
+        manager.http_option = options::get_u16(runtime, "BootCurrent");
+        manager.test_path = TestPath::LoadFile;
     }
-    match options::http_boot_option(runtime, &mut manager.http_option) {
-        Some((number, len)) => {
-            manager.http_option_len = len;
-            let mut name = [0u8; 8];
-            say!("the HTTP boot option is {}", options::option_name(number, &mut name));
-        }
-        None => say!("the firmware has no active HTTP boot option"),
+    let mut name = [0u8; 8];
+    match manager.http_option {
+        Some(number) => say!("the HTTP boot option is {}", options::option_name(number, &mut name)),
+        None => say!("no HTTP boot option is known"),
     }
+    let mut kinds = [0u8; 96];
+    let kinds_len = options::kinds(&manager.port[..manager.port_len], &mut kinds);
+    say!("the HTTP boot port's path: {}", core::str::from_utf8(&kinds[..kinds_len]).unwrap_or("?"));
     if let Some(screen) = manager.screen.as_mut() {
         screen.clear();
     } else {
@@ -330,14 +345,14 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             None => &[],
         },
     };
-    let option_bytes = manager.http_option;
-    let option = &option_bytes[..manager.http_option_len];
-    let answer = if option.is_empty() {
-        Answer::None("there is no HTTP boot option to ask through")
+    let port_bytes = manager.port;
+    let port = &port_bytes[..manager.port_len];
+    let answer = if port.is_empty() {
+        Answer::None("no network port is known to ask through")
     } else if url.is_empty() {
         Answer::None("no query URL is configured")
     } else {
-        lab::ask(boot, image, option, url, &clock, probe)
+        lab::ask(boot, image, port, url, &clock, probe)
     };
     let countdown = config.as_ref().map_or(5, |config| config.countdown);
     match answer {
@@ -382,7 +397,11 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
 
     if probe {
         options::report(runtime);
-        say!("the HTTP boot option's port offers load-file: {}", lab::has_load_file(boot, option));
+        match options::get_u16(runtime, "BootCurrent") {
+            Some(number) => say!("BootCurrent is {}", options::option_name(number, &mut name)),
+            None => say!("BootCurrent is not set"),
+        }
+        lab::report_load_file(boot, port);
         let mut supported = [0u8; 8];
         let setup = options::get(runtime, "OsIndicationsSupported", &mut supported) == Ok(8)
             && u64::from_le_bytes(supported) & OS_INDICATIONS_BOOT_TO_FW_UI != 0;

@@ -63,6 +63,9 @@ pub fn parse(bytes: &[u8]) -> Option<LoadOption<'_>> {
 pub fn kinds(path: &[u8], out: &mut [u8; 96]) -> usize {
     let mut len = 0;
     for (kind, subtype, _) in Nodes::new(path) {
+        if kind == node::END {
+            break;
+        }
         let name: &[u8] = match (kind, subtype) {
             (node::HARDWARE, 1) => b"pci",
             (node::ACPI, _) => b"acpi",
@@ -95,8 +98,51 @@ pub fn kinds(path: &[u8], out: &mut [u8; 96]) -> usize {
     len
 }
 
-pub fn has_uri(path: &[u8]) -> bool {
-    Nodes::new(path).any(|(kind, subtype, _)| kind == node::MESSAGING && subtype == node::URI)
+/// The GUID of a path's first node when it is a vendor node (hardware, messaging or media), as text.
+fn vendor_guid(path: &[u8], out: &mut [u8; 36]) -> Option<usize> {
+    let (kind, subtype, node) = Nodes::new(path).next()?;
+    let vendor = matches!((kind, subtype), (node::HARDWARE, 4) | (node::MESSAGING, 10) | (node::MEDIA, 3));
+    if !vendor || node.len() < 20 {
+        return None;
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = &node[4..20];
+    // The GUID's text form (section 2.6.2): the first three fields little-endian, the rest in order.
+    let order = [3usize, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut len = 0;
+    for (index, &at) in order.iter().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            out[len] = b'-';
+            len += 1;
+        }
+        out[len] = HEX[(bytes[at] >> 4) as usize];
+        out[len + 1] = HEX[(bytes[at] & 0xf) as usize];
+        len += 2;
+    }
+    Some(len)
+}
+
+/// A load option description up to its first colon, letters, digits and spaces only: the firmware puts the
+/// device's model and location after the colon.
+fn description_class(option: &LoadOption) -> ([u8; 40], usize) {
+    let mut out = [0u8; 40];
+    let mut len = 0;
+    for &byte in option.description[..option.description_len].iter().take_while(|&&b| b != b':') {
+        if len < out.len() && (byte.is_ascii_alphanumeric() || byte == b' ') {
+            out[len] = byte;
+            len += 1;
+        }
+    }
+    (out, len)
+}
+
+/// A 16-bit variable such as `BootCurrent`.
+///
+/// # Safety
+/// `runtime` must be the firmware's runtime services table.
+pub unsafe fn get_u16(runtime: &RuntimeServices, name: &str) -> Option<u16> {
+    let mut bytes = [0u8; 2];
+    (get(runtime, name, &mut bytes) == Ok(2)).then(|| u16::from_le_bytes(bytes))
 }
 
 /// The boot order's option numbers into `out`; how many.
@@ -111,27 +157,6 @@ pub unsafe fn boot_order(runtime: &RuntimeServices, out: &mut [u16; 64]) -> Resu
         *slot = u16::from_le_bytes([bytes[2 * index], bytes[2 * index + 1]]);
     }
     Ok(count)
-}
-
-/// The firmware's HTTP boot option: the first option in the boot order whose device path has a URI node. Its
-/// device path is copied into `path`.
-///
-/// # Safety
-/// `runtime` must be the firmware's runtime services table.
-pub unsafe fn http_boot_option(runtime: &RuntimeServices, path: &mut [u8; OPTION_MAX]) -> Option<(u16, usize)> {
-    let mut order = [0u16; 64];
-    let count = boot_order(runtime, &mut order).ok()?;
-    for &number in &order[..count] {
-        let mut name = [0u8; 8];
-        let mut bytes = [0u8; OPTION_MAX];
-        let Ok(len) = get(runtime, option_name(number, &mut name), &mut bytes) else { continue };
-        let Some(option) = parse(&bytes[..len]) else { continue };
-        if option.attributes & LOAD_OPTION_ACTIVE != 0 && has_uri(option.path) && option.path.len() <= path.len() {
-            path[..option.path.len()].copy_from_slice(option.path);
-            return Some((number, option.path.len()));
-        }
-    }
-    None
 }
 
 /// Writes each load option of the boot order to COM1 by number, state and node kinds, not by its description
@@ -157,14 +182,18 @@ pub unsafe fn report(runtime: &RuntimeServices) {
             Some(option) => {
                 let mut kinds_text = [0u8; 96];
                 let kinds_len = kinds(option.path, &mut kinds_text);
-                let breenix = option.description[..option.description_len].starts_with(b"Breenix");
+                let (class, class_len) = description_class(&option);
+                let mut guid = [0u8; 36];
+                let guid_len = vendor_guid(option.path, &mut guid).unwrap_or(0);
                 say!(
-                    "boot order {}: {} {}, path {}{}",
+                    "boot order {}: {} {}, \"{}\", path {}{}{}",
                     index + 1,
                     option_name,
                     if option.attributes & LOAD_OPTION_ACTIVE != 0 { "active" } else { "inactive" },
+                    core::str::from_utf8(&class[..class_len]).unwrap_or("?"),
                     core::str::from_utf8(&kinds_text[..kinds_len]).unwrap_or("?"),
-                    if breenix { ", the Breenix boot manager" } else { "" }
+                    if guid_len > 0 { " vendor " } else { "" },
+                    core::str::from_utf8(&guid[..guid_len]).unwrap_or("?")
                 );
             }
             None => say!("boot order {}: {} unreadable", index + 1, option_name),

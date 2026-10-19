@@ -49,6 +49,8 @@ pub const VARIABLE_BOOTSERVICE_ACCESS: u32 = 2;
 pub const VARIABLE_RUNTIME_ACCESS: u32 = 4;
 /// `EfiResetCold`.
 pub const RESET_COLD: u32 = 0;
+/// `EfiResetWarm`.
+pub const RESET_WARM: u32 = 1;
 /// Load option attributes (section 3.1.3).
 pub const LOAD_OPTION_ACTIVE: u32 = 1;
 /// `EFI_OS_INDICATIONS_BOOT_TO_FW_UI` (section 8.5.4).
@@ -413,7 +415,19 @@ pub unsafe fn path_length(path: *const u8) -> Option<usize> {
     None
 }
 
-/// The nodes of a device path, before its end node: (type, subtype, the node's bytes including its header).
+/// Whether `bytes` is exactly one device path: nodes that fit, the last of them the end node.
+pub fn is_whole_path(bytes: &[u8]) -> bool {
+    let mut at = 0;
+    for (kind, subtype, bytes_of_node) in Nodes::new(bytes) {
+        at += bytes_of_node.len();
+        if kind == node::END && subtype == 0xff {
+            return at == bytes.len();
+        }
+    }
+    false
+}
+
+/// The nodes of a device path, the end node included: (type, subtype, the node's bytes including its header).
 pub struct Nodes<'a> {
     bytes: &'a [u8],
     at: usize,

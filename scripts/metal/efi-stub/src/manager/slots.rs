@@ -11,27 +11,65 @@ use crate::lab::Entry;
 pub const DIR: &str = "\\EFI\\BREENIX\\";
 const CONFIG_MAGIC: &str = "BREENIX-MANAGER 1";
 pub const URL_MAX: usize = 512;
+pub const PATH_MAX: usize = 512;
+
+/// How the manager starts the test loop: loading the HTTP boot port's path with `LoadImage`, or setting `BootNext`
+/// to the firmware's HTTP boot option and resetting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TestPath {
+    LoadFile,
+    BootNext,
+}
 
 pub struct Config {
     pub url: [u8; URL_MAX],
     pub url_len: usize,
     pub countdown: u32,
+    /// The device path the firmware's HTTP boot loaded the install's stub from: the network port, its address and
+    /// the boot URL. A site value: never shown.
+    pub port: [u8; PATH_MAX],
+    pub port_len: usize,
+    pub http_option: Option<u16>,
+    pub test_path: TestPath,
 }
 
 impl Config {
     pub fn url(&self) -> &[u8] {
         &self.url[..self.url_len]
     }
+
+    pub fn port(&self) -> &[u8] {
+        &self.port[..self.port_len]
+    }
 }
 
-/// `MANAGER.CFG`: the magic line, `query <url>` and `countdown <seconds>`.
+fn unhex(text: &str, out: &mut [u8]) -> Option<usize> {
+    if text.len() % 2 != 0 || text.len() / 2 > out.len() {
+        return None;
+    }
+    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
+        out[index] = u8::from_str_radix(core::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(text.len() / 2)
+}
+
+/// `MANAGER.CFG`: the magic line, then `query <url>`, `countdown <seconds>`, `port <device path in hex>`,
+/// `http-option <option number in hex>` and `test-path load-file|boot-next`.
 pub fn parse_config(text: &[u8]) -> Option<Config> {
     let text = core::str::from_utf8(text).ok()?;
     let mut lines = text.lines();
     if lines.next()? != CONFIG_MAGIC {
         return None;
     }
-    let mut config = Config { url: [0; URL_MAX], url_len: 0, countdown: 5 };
+    let mut config = Config {
+        url: [0; URL_MAX],
+        url_len: 0,
+        countdown: 5,
+        port: [0; PATH_MAX],
+        port_len: 0,
+        http_option: None,
+        test_path: TestPath::BootNext,
+    };
     for line in lines {
         match line.split_once(' ') {
             Some(("query", url)) if url.starts_with("http://") && url.len() < URL_MAX && url.is_ascii() => {
@@ -39,11 +77,20 @@ pub fn parse_config(text: &[u8]) -> Option<Config> {
                 config.url_len = url.len();
             }
             Some(("countdown", seconds)) => config.countdown = seconds.parse().ok().filter(|&s| (1..=60).contains(&s))?,
+            Some(("port", hex)) => {
+                config.port_len = unhex(hex, &mut config.port)?;
+                if !is_whole_path(&config.port[..config.port_len]) {
+                    return None;
+                }
+            }
+            Some(("http-option", hex)) if hex.len() == 4 => config.http_option = Some(u16::from_str_radix(hex, 16).ok()?),
+            Some(("test-path", "load-file")) => config.test_path = TestPath::LoadFile,
+            Some(("test-path", "boot-next")) => config.test_path = TestPath::BootNext,
             _ if line.is_empty() => {}
             _ => return None,
         }
     }
-    (config.url_len > 0).then_some(config)
+    (config.url_len > 0 && config.port_len > 0).then_some(config)
 }
 
 /// A slot's note: the commit it holds.

@@ -1,9 +1,11 @@
 //! The lab's question and the network test path (docs/metal/README.md, "The boot manager" and "The lab's answer").
 //!
-//! The manager asks over the network port the firmware's HTTP boot option names: DHCP through the DHCPv4 protocol
-//! (UEFI 2.10 section 29.2) for a station address, then an HTTP `GET` of the lab's query URL (29.6). The test path
-//! loads the HTTP boot option with `LoadImage` and `BootPolicy` set, as the firmware's own boot manager does
-//! (sections 3.1.2 and 24.7), so the firmware fetches the boot URL itself.
+//! The manager asks over the network port the firmware's HTTP boot uses (the port in the device path the install's
+//! stub was loaded from): DHCP through the DHCPv4 protocol (UEFI 2.10 section 29.2) for a station address, then an
+//! HTTP `GET` of the lab's query URL (29.6). The test path starts the firmware's HTTP boot: either `LoadImage` of the
+//! port's HTTP boot path with `BootPolicy` set, as a boot manager loads a load-file device (sections 3.1.2 and 24.7),
+//! or `BootNext` set to the firmware's HTTP boot option and a reset, whichever `MANAGER.CFG` names; the firmware
+//! fetches the boot URL itself either way.
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
 
@@ -12,6 +14,8 @@ use metal_efi::say;
 use metal_efi::uefi::*;
 
 use crate::clock::Clock;
+use crate::options;
+use crate::slots::TestPath;
 
 const DHCP_DISCOVER_TIMEOUTS: [u32; 3] = [2, 3, 4];
 const DHCP_REQUEST_TIMEOUTS: [u32; 2] = [2, 2];
@@ -93,22 +97,48 @@ fn boot_id(word: &str) -> Option<BootId> {
     Some(BootId { bytes, len: word.len() })
 }
 
-/// The handle carrying `binding` on the network port the HTTP boot option's device path names, connecting the
-/// port's drivers first when the firmware has not.
-unsafe fn port_handle(boot: &BootServices, option: &[u8], binding: &Guid) -> Result<Handle, Status> {
-    let mut remaining = option.as_ptr();
+/// The handle carrying `binding` on the network port `port` (a whole device path) names, connecting the port's
+/// drivers first when the firmware has not.
+unsafe fn port_handle(boot: &BootServices, port: &[u8], binding: &Guid) -> Result<Handle, Status> {
+    if !is_whole_path(port) {
+        return Err(INVALID_PARAMETER);
+    }
+    let mut remaining = port.as_ptr();
     let mut handle = null_mut();
     if (boot.locate_device_path)(binding, &mut remaining, &mut handle) == SUCCESS {
         return Ok(handle);
     }
-    let mut remaining = option.as_ptr();
+    let mut remaining = port.as_ptr();
     let mut device = null_mut();
     ok((boot.locate_device_path)(&DEVICE_PATH, &mut remaining, &mut device))?;
     let status = (boot.connect_controller)(device, null(), null(), 1);
     say!("connected the network port's drivers ({:#x})", status);
-    let mut remaining = option.as_ptr();
+    let mut remaining = port.as_ptr();
     ok((boot.locate_device_path)(binding, &mut remaining, &mut handle))?;
     Ok(handle)
+}
+
+/// This image's own device path, as the firmware's HTTP boot loaded it, copied into `out`; its length.
+///
+/// # Safety
+/// `image` must be this application's handle.
+pub unsafe fn own_path(boot: &BootServices, image: Handle, out: &mut [u8]) -> Option<usize> {
+    let mut loaded = null_mut();
+    (boot.handle_protocol)(image, &LOADED_IMAGE, &mut loaded);
+    if loaded.is_null() {
+        return None;
+    }
+    let mut path: *mut c_void = null_mut();
+    (boot.handle_protocol)((*loaded.cast::<LoadedImage>()).device_handle, &DEVICE_PATH, &mut path);
+    if path.is_null() {
+        return None;
+    }
+    let len = path_length(path.cast())? + END_NODE.len();
+    if len > out.len() {
+        return None;
+    }
+    out[..len].copy_from_slice(core::slice::from_raw_parts(path.cast::<u8>(), len));
+    Some(len)
 }
 
 /// A station address by DHCP on the port, released (stopped) again before it returns.
@@ -178,14 +208,14 @@ unsafe fn http_boot_address(boot: &BootServices, image: Handle) -> Option<http::
     })
 }
 
-/// Asks the lab whether a test boot is pending. `option` is the HTTP boot option's device path; `url` the query URL
+/// Asks the lab whether a test boot is pending. `port` is the HTTP boot port's device path; `url` the query URL
 /// (`http://host[:port]/path`, not printed: it is a site value). In probe mode the address may come from this
 /// image's own HTTP boot when DHCP is refused.
 ///
 /// # Safety
-/// `option` must be a device path; `image` this application's handle.
-pub unsafe fn ask(boot: &BootServices, image: Handle, option: &[u8], url: &[u8], clock: &Clock, probe: bool) -> Answer {
-    let port = match port_handle(boot, option, &DHCP4_SERVICE_BINDING) {
+/// `port` must be a device path; `image` this application's handle.
+pub unsafe fn ask(boot: &BootServices, image: Handle, port_path: &[u8], url: &[u8], clock: &Clock, probe: bool) -> Answer {
+    let port = match port_handle(boot, port_path, &DHCP4_SERVICE_BINDING) {
         Ok(port) => port,
         Err(status) => {
             say!("the network port has no DHCP service ({:#x})", status);
@@ -205,7 +235,7 @@ pub unsafe fn ask(boot: &BootServices, image: Handle, option: &[u8], url: &[u8],
             }
         }
     };
-    let nic = match port_handle(boot, option, &HTTP_SERVICE_BINDING) {
+    let nic = match port_handle(boot, port_path, &HTTP_SERVICE_BINDING) {
         Ok(nic) => nic,
         Err(status) => {
             say!("the network port has no HTTP service ({:#x})", status);
@@ -246,29 +276,72 @@ pub unsafe fn ask(boot: &BootServices, image: Handle, option: &[u8], url: &[u8],
     parse_answer(&body[..len])
 }
 
-/// Starts the firmware's HTTP boot option. Returns only when it could not be loaded, or returned.
+/// Starts the firmware's HTTP boot by `path`. Returns only when it could not be started, or its image returned.
 ///
 /// # Safety
-/// `option` must be the HTTP boot option's device path; `image` this application's handle.
-pub unsafe fn start_test_loop(boot: &BootServices, image: Handle, option: &[u8]) -> Status {
-    let mut child = null_mut();
-    let status = (boot.load_image)(1, image, option.as_ptr(), null(), 0, &mut child);
-    if status != SUCCESS {
-        say!("the HTTP boot option could not be loaded ({:#x})", status);
-        return status;
+/// `port` must be the HTTP boot port's whole device path; `image` this application's handle.
+pub unsafe fn start_test_loop(
+    boot: &BootServices,
+    runtime: &RuntimeServices,
+    image: Handle,
+    port: &[u8],
+    http_option: Option<u16>,
+    path: TestPath,
+) -> Status {
+    match path {
+        TestPath::LoadFile => {
+            if !is_whole_path(port) {
+                return INVALID_PARAMETER;
+            }
+            let mut child = null_mut();
+            let status = (boot.load_image)(1, image, port.as_ptr(), null(), 0, &mut child);
+            if status != SUCCESS {
+                say!("the HTTP boot port could not load the boot image ({:#x})", status);
+                return status;
+            }
+            say!("starting the image the firmware's HTTP boot fetched");
+            let status = (boot.start_image)(child, null_mut(), null_mut());
+            say!("the test loop's image returned ({:#x})", status);
+            if status == SUCCESS { LOAD_ERROR } else { status }
+        }
+        TestPath::BootNext => {
+            let Some(number) = http_option else { return NOT_FOUND };
+            let name = Wide::<16>::new("BootNext");
+            let attributes = VARIABLE_NON_VOLATILE | VARIABLE_BOOTSERVICE_ACCESS | VARIABLE_RUNTIME_ACCESS;
+            let bytes = number.to_le_bytes();
+            let status = (runtime.set_variable)(name.as_ptr(), &GLOBAL_VARIABLE, attributes, 2, bytes.as_ptr().cast());
+            if status != SUCCESS {
+                say!("could not set BootNext ({:#x})", status);
+                return status;
+            }
+            let mut text = [0u8; 8];
+            say!("BootNext is {}; restarting into the firmware's HTTP boot", options::option_name(number, &mut text));
+            (runtime.reset_system)(RESET_WARM, SUCCESS, 0, core::ptr::null())
+        }
     }
-    say!("starting the image the HTTP boot option fetched");
-    let status = (boot.start_image)(child, null_mut(), null_mut());
-    say!("the test loop's image returned ({:#x})", status);
-    if status == SUCCESS { LOAD_ERROR } else { status }
 }
 
-/// Whether the HTTP boot option's port offers the load-file protocol the test path uses.
+/// Probe: whether the HTTP boot port's path resolves to a load-file handle, and which part of it that handle covers.
 ///
 /// # Safety
-/// `option` must be a device path.
-pub unsafe fn has_load_file(boot: &BootServices, option: &[u8]) -> bool {
-    let mut remaining = option.as_ptr();
+/// `port` must be a device path.
+pub unsafe fn report_load_file(boot: &BootServices, port: &[u8]) {
+    if !is_whole_path(port) {
+        say!("load-file: no HTTP boot path to resolve");
+        return;
+    }
+    let mut remaining = port.as_ptr();
     let mut handle = null_mut();
-    (boot.locate_device_path)(&LOAD_FILE, &mut remaining, &mut handle) == SUCCESS
+    let status = (boot.locate_device_path)(&LOAD_FILE, &mut remaining, &mut handle);
+    let covered = remaining as usize - port.as_ptr() as usize;
+    let mut kinds = [0u8; 96];
+    let covered_len = options::kinds(&port[..covered], &mut kinds);
+    let mut rest = [0u8; 96];
+    let rest_len = options::kinds(&port[covered..], &mut rest);
+    say!(
+        "load-file on the HTTP boot path: {:#x}, handle covers {}, remaining {}",
+        status,
+        core::str::from_utf8(&kinds[..covered_len]).unwrap_or("?"),
+        core::str::from_utf8(&rest[..rest_len]).unwrap_or("?")
+    );
 }
