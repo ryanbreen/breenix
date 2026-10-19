@@ -26,18 +26,10 @@ fn back() -> R<()> {
     graphics::give_back_display().map_err(|e| fail_msg(format!("give back: {e:?}")))
 }
 fn present(ctx: u64, t: u64) -> R<u64> {
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.answer == native_success()? && p.fence != 0, || {
-        format!(
-            "PRESENT: {} answer {:#x} fence {}",
-            errno(r),
-            p.answer,
-            p.fence
-        )
-    })?;
-    wait_ok(ctx, p.fence, 0)?;
+    let p = present_view(ctx, t)?.ok_or_else(|| fail_msg("present case exceeds display".to_string()))?;
     Ok(p.fence)
 }
+
 fn setup(w: u32, h: u32, colour: u32) -> R<(u64, u64, Canvas)> {
     take()?;
     let c = context()?;
@@ -61,21 +53,28 @@ fn setup(w: u32, h: u32, colour: u32) -> R<(u64, u64, Canvas)> {
 }
 fn shown(t: u64, want: &Canvas, fence: u64) -> R<u64> {
     let rec = expect(t, want, "presented pixels")?;
-    ensure(
-        u32_at(&rec, record::FLAGS) & 1 == 1
-            && u64_at(&rec, record::PRESENT_FENCE) == fence
-            && u32_at(&rec, record::PRESENT_STATUS) == native_success()?,
-        || "record did not identify the completed present".to_string(),
-    )?;
-    let actual = expect(0, want, "current scanout pixels")?;
-    let id = u64_at(&rec, record::RESOURCE);
-    ensure(
-        id != 0 && u64_at(&actual, record::RESOURCE) == id && u64_at(&actual, record::TARGET) == 0,
-        || "current scanout names another resource".to_string(),
-    )?;
-    ensure(u64_at(&modes()?, 64) == id, || {
-        "MODES binding differs from observation".to_string()
-    })?;
+    let actual = expect(0, want, "current scanout pixels at source origin")?;
+    ensure(u32_at(&rec, record::TARGET_WIDTH) == want.w
+        && u32_at(&rec, record::TARGET_HEIGHT) == want.h,
+        || "presented source dimensions changed".to_string())?;
+    let source = u64_at(&rec, record::RESOURCE);
+    let id = u64_at(&actual, record::RESOURCE);
+    let m = modes()?;
+    let mode = u32_at(&m, 12) as usize;
+    let (dw, dh) = (u32_at(&m, 32 + mode * 16), u32_at(&m, 36 + mode * 16));
+    let composed = u32_at(&rec, record::TARGET_WIDTH) != dw
+        || u32_at(&rec, record::TARGET_HEIGHT) != dh;
+    ensure(u32_at(&actual, record::FLAGS) & 1 == 1
+        && u64_at(&actual, record::PRESENT_FENCE) == fence
+        && u32_at(&actual, record::PRESENT_STATUS) == native_success()?
+        && u32_at(&actual, record::TARGET_WIDTH) == dw
+        && u32_at(&actual, record::TARGET_HEIGHT) == dh,
+        || "scanout record lost display geometry or completed present".to_string())?;
+    ensure(source != 0 && id != 0 && (source != id) == composed
+        && u32_at(&rec, record::FLAGS) & 1 == u32::from(!composed)
+        && u64_at(&actual, record::TARGET) == 0,
+        || "presented source and actual scanout identities disagree".to_string())?;
+    ensure(u64_at(&m, 64) == id, || "MODES binding differs from actual scanout".to_string())?;
     Ok(id)
 }
 pub fn modes_listed() -> CaseResult {
@@ -139,7 +138,18 @@ pub fn scale_reported() -> CaseResult {
 pub fn scanout_bind() -> CaseResult {
     let _case = begin()?;
     let (c, t, w) = setup(73, 17, A)?;
-    shown(t, &w, present(c, t)?)?;
+    let fence = present(c, t)?;
+    let id = shown(t, &w, fence)?;
+    let m = modes()?;
+    let at = 32 + u32_at(&m, 12) as usize * 16;
+    let (dw, dh) = (u32_at(&m, at), u32_at(&m, at + 4));
+    let mut pixel = [0; 4];
+    let mut rec = [0; record::SIZE];
+    let ret = gpu::readback(0, [dw - 1, dh - 1, 1, 1], &mut pixel, 4, &mut rec);
+    ensure(ret == 0 && pixel == 0xff181512u32.to_le_bytes()
+        && u64_at(&rec, record::RESOURCE) == id
+        && u64_at(&rec, record::PRESENT_FENCE) == fence,
+        || "view remainder was not cleared on the confirmed scanout".to_string())?;
     Ok(())
 }
 pub fn flip() -> CaseResult {
@@ -165,7 +175,8 @@ pub fn present_completion() -> CaseResult {
     ensure(f > draw, || {
         "present fence did not order after rendering".to_string()
     })?;
-    let rec = expect(t, &scene_canvas(w.w, w.h, A, &[]), "completed present")?;
+    expect(t, &scene_canvas(w.w, w.h, A, &[]), "presented source")?;
+    let rec = expect(0, &scene_canvas(w.w, w.h, A, &[]), "completed present")?;
     ensure(u64_at(&rec, record::PRESENT_FENCE) == f, || {
         "record lost completion fence".to_string()
     })?;
@@ -354,7 +365,7 @@ pub fn mode_change_content() -> CaseResult {
 }
 pub fn fault_skip_flush() -> CaseResult {
     let _case = begin()?;
-    let (c, t, w) = setup(47, 13, A)?;
+    let (c, t, w) = setup(2560, 1600, A)?;
     present(c, t)?;
     arm(25, 0)?;
     let (r, p) = gpu::present(c, t);
@@ -386,21 +397,30 @@ pub fn fault_skip_flush() -> CaseResult {
     ensure(r == -EIO && a.reason == 10, || {
         "omitted flush was accepted as known scanout".to_string()
     })?;
-    shown(t, &w, present(c, t)?)?;
+    // The binding is deliberately unknown: PRESENT must repair it before READBACK.
+    let (ret, recovered) = gpu::present(c, t);
+    ensure(ret == 0 && recovered.answer == native_success()? && recovered.fence != 0,
+        || format!("recovery PRESENT: {} answer {:#x}", errno(ret), recovered.answer))?;
+    wait_ok(c, recovered.fence, 0)?;
+    shown(t, &w, recovered.fence)?;
     Ok(())
 }
 pub fn fault_wrong_scanout() -> CaseResult {
     let _case = begin()?;
-    let (c, a, wa) = setup(47, 13, A)?;
-    let b = scanout_target(format::B8G8R8A8, 47, 13)?;
+    let (c, a, wa) = setup(2560, 1600, A)?;
+    let b = scanout_target(format::B8G8R8A8, 2560, 1600)?;
     frame(c, &scene(b, B, &[]))?;
-    let wb = scene_canvas(47, 13, B, &[]);
+    let wb = scene_canvas(2560, 1600, B, &[]);
     let f = present(c, a)?;
     let aid = shown(a, &wa, f)?;
     let brec = expect(b, &wb, "other target")?;
     let bid = u64_at(&brec, record::RESOURCE);
     arm(26, 0)?;
-    present(c, a)?;
+    // This present intentionally installs the wrong resource; observe it below.
+    let (ret, wrong) = gpu::present(c, a);
+    ensure(ret == 0 && wrong.answer == native_success()? && wrong.fence != 0,
+        || format!("wrong-scanout PRESENT: {} answer {:#x}", errno(ret), wrong.answer))?;
+    wait_ok(c, wrong.fence, 0)?;
     let actual = expect(0, &wb, "wrong binding pixels")?;
     let requested = expect(a, &wa, "requested remains offscreen")?;
     ensure(

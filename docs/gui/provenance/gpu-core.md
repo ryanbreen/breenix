@@ -604,10 +604,11 @@ These probe routines do not supply G5's promised closed-form proofs or drawing p
 | Program or operation | Published definition | Token layout |
 |---|---|---|
 | Probe vertex program | L: MOV (line 71), POSITION declaration; the pass-through is derived as solid's is | T:37–56, 137–158, 174–175, 226–234, 649–661, 752–764, 796–803; 11 tokens |
-| `kernel/src/gpu/virgl/profile/profile.tgsi` | L: MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; USLT 1384; USEQ 1453; USNE 1481; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
+| `kernel/src/gpu/virgl/profile/rNN.tgsi` (one program per routine, ruling 48) | L: MUL 111; U2F 1009; F2I 1024; UADD 1056; UMUL 1088; AND 1192; OR 1205; XOR 1218; SHL 1283; USHR 1313; USLT 1384; USEQ 1453; USNE 1481; BGNLOOP 1643; ENDLOOP 1653; BRK 1668; UIF 1684; ENDIF 1698; the declarations and POSITION/COLOR semantics used by solid and copy | T:37–56 header/processor; 137–169 declaration/range/interpolation; 226–234 semantics; 274–292 UINT32 immediates and their values; 649–688 instructions and optional label; 752–803 registers. TEMPORARY 4 and IMMEDIATE 7 are T:77–80; the opcode enumeration is T:434–518. |
 
 The generated text is a reviewable file without a NUL; the shader encoder supplies its wire terminator.
-Its header declares the five constant vectors (sixteen operands, result-word selector and routine selector),
+Its header declares the five constant vectors (sixteen operands, result-word selector, the routine number, which
+the per-routine programs do not read, and B19's runtime constant 0),
 window position, colour output and temporaries. Sources selecting one component use a four-component
 replicated swizzle, as B10 establishes. The file is generated with
 `taskpolicy -b rustc --edition=2021 -O "$CHECKOUT/tools/gpu-profile/math.rs" -o "$GENERATOR"`, then
@@ -621,6 +622,12 @@ The review revision eliminates repeated expressions and constant operations, and
 terms discarded above bit 95. The generator prints the revised size and token budget when run; the
 emitted-ISA host tests execute that generated text, including loops and integer rewrites. Shader text now
 uses the continuation framing above rather than requiring one large command. Context creation queues only the fixed rendering catalogue's warm-up (section 1.4.1); the probe program's compilation is charged to its context's first PROBE, under the same watchdog and case deadlines.
+Ruling 48 splits `probe_int` into one program per routine, `profile/r00.tgsi` to `r24.tgsi`, so that each
+compiles within the 2 s watchdog: the combined program's first PROBE compiled for 3,146 ms on Parallels. Each
+program is the routine's own emitted text through the same integer rewrites, with no routine dispatch; the
+generator prints each program's size and token count, and the emitted-ISA tests run each of the 25 routines'
+own programs. A context creates a routine's vertex and fragment pair on that routine's first PROBE, so `warmed`
+grows by two per routine probed.
 The earlier B10 candidate at `09922c96` had capacity 21,940 and 240,200 text bytes including its terminator;
 its rejected 21,257 field omitted 130×5 immediate words and the label allowance. B10 records those original
 inputs; B11 records the integer-only selection program at `41766187`, and B12 the runtime literal construction. These capacities are layout-derived
@@ -759,11 +766,11 @@ The generator's output was compared byte for byte with the kernel's included fil
 
 | Programs | Derivation and published instructions |
 |---|---|
-| line, circle_fill, circle_outline, rounded_rect, triangle | G4's Breenix-authored integer predicates, now applied to the fragment's pixel, with the colour written for membership and KILL otherwise; L's integer instructions listed in G4, plus KILL at L:661 and ELSE at L:1693 |
+| line, circle_fill, circle_outline, rounded_rect, triangle | G4's Breenix-authored integer predicates, now applied to the fragment's pixel, with the colour written for membership and KILL otherwise; L's integer instructions listed in G4, plus KILL at L:661 and ELSE at L:1693. triangle computes the model's area test once and runs its edge test three times in a loop like coverage_spans's, the vertices rotating between passes (807 lines rather than 1,501; on Parallels the three-copy program compiled for 0.43 to 0.75 s); the emitted-ISA test `triangle_pipeline_matches_the_model_predicate` runs the committed program against the model on 46 triangles at 221 pixels each |
 | gradient_v | The contract's weighted numerator in two words, restored division and packed channel output; G4's integer model and L instructions |
 | copy_scaled, nearest_scaled, box_filter | The contract's integer mappings; 64 restoring division steps, explicit remainder carry and normalized comparison bits; box means accumulate two-word sums and round half up; L's integer instructions, TXF at 858, and the boundary conversion below |
 | over, over_straight, coverage, bitmap_text | Integer byte channels, div255 and the contract's source-over, coverage or bit-row rules; TXF and L's integer instructions; bitmap scale uses the bounded restoring divider |
-| coverage_spans | Per-row eight-sub-scanline traversal of the snapshotted crossing lists; winding and fill_start follow section 2.1; span subtraction, ordered accumulation, multiplication and truncation use G4's IEEE-754 integer model |
+| coverage_spans | Per-row eight-sub-scanline traversal of the snapshotted crossing lists; winding and fill_start follow section 2.1; span subtraction, ordered accumulation, multiplication and truncation use G4's IEEE-754 integer model. The subtraction and the accumulation run one binary32 addition twice, and the two scalings one binary32 multiplication twice, each in a loop whose bound is computed from `CONST[4].x`, which the encoder's catalogue draws and warm-up draw supply as 0 (`kernel/src/gpu/virgl/encode.rs`), so the bound is unknown at compile time and the program carries one copy: on Parallels this program's warm-up step took 0.86 to 1.64 s across 124 contexts against the 2 s compile watchdog, and the loops cut its text from 2,437 to 1,787 lines |
 | UNORM boundary conversion | L:111 MUL, 124 ADD, 1040 F2U: floor(v*255+0.5); O: #1714's fetch boundary. Output uses L:1009 U2F and MUL by binary32 1/255, as G4. Native float operations do not compute span coverage. |
 
 <!-- claim-lint:ok: Literal selection is implemented by integer_words in tools/gpu-profile/math.rs and checked by integer_rewrites_use_a_declared_zero_literal in tools/gpu-profile/emitted_tests.rs. -->
@@ -965,6 +972,120 @@ The facts these establish, for this host and renderer:
   synchronous-request-heavy cases several times slower (the second row), so the interrupt wakes waiters
   directly.
 - A full 2560x1600 readback measured 79,999 µs before and 73,989 µs after, against the 100 ms bound.
+
+
+## Parallels catch-up values
+
+The historical #1875 per-step warm-up timings cited in the catalogue derivation
+used uncommitted timing diagnostics. Those historical timings are unverified under
+ruling 12 and are not reproducible from the recorded revision.
+
+| Value or design | Source |
+|---|---|
+| Variable shifts that can reach 32 take the count's low five bits with an explicit `AND` with 31 first (45 masked shifts across 39 generated programs): the division loop's two shifts by its bit counter (counts 95 to 0) in `tools/gpu-profile/math.rs`, each variable `SHL` and `USHR` the model's emitter writes, and `bitmap_text`'s bit-row shift in `tools/gpu-profile/pipelines.rs`. The eight shifts by `CONST[6].w` in pipeline 8 are unmasked because their count is at most 14 | L: SHL 1283 and USHR 1313 define the shift by the count's low five bits, so the `AND` changes no result where that definition holds; B18 shows a host renderer where it does not |
+| Parallels' virtio-gpu interrupts through MSI-X: vector 0 for the control queue and vector 1 for configuration changes, each an edge-triggered SPI from the GICv2m frame; the driver does not read the ISR byte for the queue vector | VirtIO 1.3 sections 4.1.4.3, 4.1.4.5 and 4.1.5.1.2; the Arm GICv2m frame's MSI_SETSPI_NS register at offset 0x40 |
+| In the 39 generated programs an instruction with only immediate sources (a word copy `UADD x, k, 0`, or a select between two literals lowered to `XOR`) takes `CONST[4].z` in place of its immediate 0; the draws of these programs supply that word as 0 (`kernel/src/gpu/virgl/encode.rs`: catalogue draws pass `CONST[4]` as `0, 0, 0, 0`, PROBE passes `word, routine, 0, 0`) | B19; the operation and its result are unchanged where `CONST[4].z` is 0 |
+
+The programs were regenerated with the commands in "G4 shader derivation" and "G5 parameterized
+catalogue". The model tests exercise arithmetic routines; the emitted-ISA tests exercise
+profile routines and catalogue triangle 15, rather than each regenerated catalogue program.
+The committed-catalogue comparison checks generated text and token counts for pipelines 2 through 15.
+The generator at the previous commit reproduced the committed programs byte for byte before the change.
+
+## B18: Parallels variable shift counts
+
+A Linux guest on the same Parallels configuration ran `tools/gpu-experiments/parallels-shift-count.c`
+(commit `f856f059`) through its own GLES driver (Mesa 25.2.8's virgl driver, as a library through EGL
+and GLES 3.0): `gcc -O2 -o psc parallels-shift-count.c -lgbm -lEGL -lGLESv2 && ./psc`. The fragment
+program shifts 0x80000001 by eight counts read from a uniform array and also by the count ANDed with 31.
+The Gallium trace of the same run (`GALLIUM_TRACE`, shader cache disabled) shows the driver passed one
+`ushr` and one `ishl` by the uniform count: it folded the `& 31u` variants into them, as its shifts are
+defined on the low five bits, so the host received a bare variable count.
+
+| Count | Right shift read back | Left shift read back | TGSI's definition |
+|---|---|---|---|
+| 0, 1, 31 | `0x80000001`, `0x40000000`, `0x00000001` | `0x80000001`, `0x00000002`, `0x80000000` | equal |
+| 32, 33, 63, 64, 95 | `0x00000000` | `0x00000000` | `value >> (count & 31)` and `value << (count & 31)`, for example `0x40000000` and `0x00000002` at 33 |
+
+The program printed `SHIFT COUNT NOT MASKED TO FIVE BITS`. On this host renderer a shift by a register
+count of 32 or more gives 0, where TGSI defines the shift by the count's low five bits. The ARM64 QEMU
+renderer follows TGSI's definition: the G5 programs, which relied on it, pass there.
+
+## B19: Parallels folding of literal-only instructions
+
+The original diagnostic shader and watchdog patch were not committed; this experiment
+is not reproducible from the recorded revision and remains unverified in #1871.
+The corrected command below describes the historical invocation shape, not a
+reconstruction with the current per-routine checkpoint tool.
+
+On Parallels, `profile/binary32-emulation` and the three `coverage_spans` cases read wrong pixels while
+the integer routines passed; the probe program's binary32 routines returned, for example, `0x3f7ffffb`
+for 1.0 + 2^-24 (want `0x3f800000`) and 1 for 3 × 0.5 (want 2). Each of these failures was a run of the
+gpu suite at `9d8cebd1` with the kernel's diagnostic changes not committed: `probe_int` warmed with the
+catalogue and an 8 s watchdog so that the first PROBE's 3.1 s compilation (section "Parallels catch-up
+values") did not end the case.
+
+A run with a twelve-instruction diagnostic program in place of `probe_int` (XOR of a constant with
+`0x80000000` and `0x7f800000`, moves of `0x80000000`, `0xffffffff` and `0x7fc00001`, UADD and USLT
+with `0x80000000`, AND with `0xffffffff`) returned 12 of 12 words exactly, so the host keeps those bit
+patterns through registers and constant operands.
+
+`tools/gpu-experiments/probe-checkpoints.py "$PROFILE" 600 1194 "$OUT"`, with PROFILE the probe program
+at `9d8cebd1`, gave a diagnostic program of 64 checkpoints in routine 12 (binary32 add). A 64-pixel PROBE
+row of routine 12 with operands `0x3f800000, 0x33800000` was read back on Parallels and compared with
+the generator's interpreter on the same text:
+
+| Checkpoint | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| Interpreter | `3f800000` | `c000000` | `ffffffff` | `0` | `800000` | `ffffff99` | `1000000` | `1` | `fffffffc` |
+| Parallels | `3f800000` | `c000000` | `ffffffff` | `0` | `7ffffd` | `ffffff99` | `1000000` | `1` | `fffffffd` |
+
+Between checkpoints 3 and 4 the program selects between two literals: `XOR TEMP[44].x, IMM[62].zzzz,
+IMM[62].yyyy` (`0x00800000` and 0), `AND` with the condition mask, then `XOR` with 0. Checkpoint 4 read
+`0x007ffffd`. Of the 11 generated programs with literal-only instructions, the 2 that failed on Parallels (program 8
+and `probe_int`) had a normal binary32 bit pattern among those literals (`0x00800000`, `0x3f800000`); the
+other 9 used only 0 and small integers there and passed. The generator now gives no instruction only immediate sources. Attributing
+the deviation to the host compiler's constant folding is an inference from these observations, as B12's
+was for ARM64 QEMU's renderer.
+
+## B20: Parallels virtio-gpu BAR0 memory
+
+The Breenix-side hash observation below used uncommitted diagnostics and cannot be
+reproduced from its recorded revision; it is historical, unverified evidence under ruling 12.
+
+On Parallels the UEFI framebuffer that `present/firmware-handoff` hashes is BAR0 of the virtio-gpu
+device itself (`1af4:1050`, 128 MiB at `0x10000000`; the GOP mode used its first 3 MiB). In a one-case run
+of that case (`run.sh --parallels --suite gpu --case present/firmware-handoff` at `9d8cebd1` with
+diagnostic prints not committed), the hash at the console's handoff was `0x7319e2a2077647ed`, and after
+the GPU console's first present the whole region read 0 (hash `0x3fe01b4acfe22325`, also read after
+a device reset in another run), with no device reset between.
+
+A Linux guest on the same configuration ran `tools/gpu-experiments/parallels-vram-scanout.py`
+(commit `74b9252e`) as root, first with the command `true` (no change of scanout), then with
+`scripts/parallels/egl_green_test.c`. Its output:
+
+```text
+written: first=kept last=kept first-16=030a11181f262d343b424950575e656c
+after 1 s: first=changed last=changed first-16=01010100010101000101010001010100
+command exit 0
+after the 3D scanout: first=changed last=changed first-16=01010100010101000101010001010100
+```
+
+The second run printed the same three lines and `command exit 1` (the program did not take the
+display). The pattern written into BAR0 from the guest CPU was replaced within one second without any
+guest action: while the virtio-gpu drives the display, the device rewrites its BAR0 memory. A hash of
+that memory changes without any guest write, so on Parallels it cannot show whether the kernel wrote
+the firmware framebuffer after the handoff.
+
+## Parallels attestation negative control
+
+Run `20261018T114114Z-parallels` at `af4fc2f3`, with
+`BREENIX_PARALLELS_3D=off` and `run.sh --parallels --suite gpu`, finished
+with 0 passed, 170 failed and 0 skipped. Admission refused `missing 3d-feature`,
+and the host judge refused the disabled 3D configuration before measuring its rate.
+This checks admission, not the ten-times-idle rate against a negative device run.
+Under ruling 51, an idle interval measuring 0 ns GPU time requires only positive performance GPU time;
+that positive-time rule has no stronger measured negative-control claim here.
 
 ## CU-1749 terminal display design
 

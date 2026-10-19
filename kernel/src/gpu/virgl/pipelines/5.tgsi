@@ -16,7 +16,7 @@ IMM[3] UINT32 {65535, 65535, 16, 0}
 UADD TEMP[65].x, CONST[4].zzzz, IMM[3].xxxx
 SHL TEMP[65].x, TEMP[65].xxxx, IMM[3].zzzz
 OR TEMP[65].x, TEMP[65].xxxx, IMM[3].yyyy
-UADD TEMP[0], IMM[0].xxxx, IMM[0].xxxx
+UADD TEMP[0], IMM[0].xxxx, CONST[4].zzzz
 F2I TEMP[0].xy, IN[0]
 XOR TEMP[59], CONST[0].xxxx, TEMP[65].xxxx
 UADD TEMP[59], TEMP[59], IMM[0].yyyy
@@ -29,12 +29,12 @@ UADD TEMP[1].y, TEMP[1].yyyy, CONST[0].wwww
 USLT TEMP[2].xy, TEMP[1], CONST[6]
 AND TEMP[2].x, TEMP[2].xxxx, TEMP[2].yyyy
 UIF TEMP[2].xxxx
-UADD TEMP[1].zw, IMM[0].xxxx, IMM[0].xxxx
+UADD TEMP[1].zw, IMM[0].xxxx, CONST[4].zzzz
 TXF TEMP[10], TEMP[1], SAMP[0], 2D
 MUL TEMP[10], TEMP[10], IMM[1].zzzz
 ADD TEMP[10], TEMP[10], IMM[1].wwww
 F2U TEMP[10], TEMP[10]
-UADD TEMP[0].zw, IMM[0].xxxx, IMM[0].xxxx
+UADD TEMP[0].zw, IMM[0].xxxx, CONST[4].zzzz
 TXF TEMP[20], TEMP[0], SAMP[1], 2D
 MUL TEMP[20], TEMP[20], IMM[1].zzzz
 ADD TEMP[20], TEMP[20], IMM[1].wwww

@@ -17,7 +17,7 @@ IMM[4] UINT32 {65535, 65535, 16, 0}
 UADD TEMP[65].x, CONST[4].zzzz, IMM[4].xxxx
 SHL TEMP[65].x, TEMP[65].xxxx, IMM[4].zzzz
 OR TEMP[65].x, TEMP[65].xxxx, IMM[4].yyyy
-UADD TEMP[0], IMM[0].xxxx, IMM[0].xxxx
+UADD TEMP[0], IMM[0].xxxx, CONST[4].zzzz
 F2I TEMP[0].xy, IN[0]
 XOR TEMP[59], CONST[0].xxxx, TEMP[65].xxxx
 UADD TEMP[59], TEMP[59], IMM[0].yyyy
@@ -26,10 +26,10 @@ XOR TEMP[59], CONST[0].yyyy, TEMP[65].xxxx
 UADD TEMP[59], TEMP[59], IMM[0].yyyy
 UADD TEMP[1].y, TEMP[0].yyyy, TEMP[59]
 UADD TEMP[50].x, TEMP[1].xxxx, IMM[0].xxxx
-UADD TEMP[50].y, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[51].x, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[51].y, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[52].x, IMM[1].zzzz, IMM[0].xxxx
+UADD TEMP[50].y, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[51].x, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[51].y, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[52].x, IMM[1].zzzz, CONST[4].zzzz
 BGNLOOP
 USHR TEMP[53].x, TEMP[50].yyyy, IMM[1].wwww
 USHR TEMP[53].y, TEMP[50].xxxx, IMM[1].wwww
@@ -59,10 +59,10 @@ ENDIF
 ENDLOOP
 UADD TEMP[1].x, TEMP[51].yyyy, IMM[0].xxxx
 UADD TEMP[50].x, TEMP[1].yyyy, IMM[0].xxxx
-UADD TEMP[50].y, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[51].x, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[51].y, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[52].x, IMM[1].zzzz, IMM[0].xxxx
+UADD TEMP[50].y, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[51].x, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[51].y, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[52].x, IMM[1].zzzz, CONST[4].zzzz
 BGNLOOP
 USHR TEMP[53].x, TEMP[50].yyyy, IMM[1].wwww
 USHR TEMP[53].y, TEMP[50].xxxx, IMM[1].wwww
@@ -104,7 +104,7 @@ ENDIF
 USLT TEMP[2].xy, TEMP[1], CONST[6]
 AND TEMP[2].x, TEMP[2].xxxx, TEMP[2].yyyy
 UIF TEMP[2].xxxx
-UADD TEMP[1].zw, IMM[0].xxxx, IMM[0].xxxx
+UADD TEMP[1].zw, IMM[0].xxxx, CONST[4].zzzz
 USEQ TEMP[2].x, CONST[1].wwww, IMM[0].xxxx
 UIF TEMP[2].xxxx
 UADD TEMP[1].x, CONST[0].zzzz, IMM[0].xxxx
@@ -116,10 +116,10 @@ XOR TEMP[59], CONST[0].xxxx, TEMP[65].xxxx
 UADD TEMP[59], TEMP[59], IMM[0].yyyy
 UADD TEMP[2].x, TEMP[0].xxxx, TEMP[59]
 UADD TEMP[50].x, TEMP[2].xxxx, IMM[0].xxxx
-UADD TEMP[50].y, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[51].x, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[51].y, IMM[0].xxxx, IMM[0].xxxx
-UADD TEMP[52].x, IMM[1].zzzz, IMM[0].xxxx
+UADD TEMP[50].y, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[51].x, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[51].y, IMM[0].xxxx, CONST[4].zzzz
+UADD TEMP[52].x, IMM[1].zzzz, CONST[4].zzzz
 BGNLOOP
 USHR TEMP[53].x, TEMP[50].yyyy, IMM[1].wwww
 USHR TEMP[53].y, TEMP[50].xxxx, IMM[1].wwww
@@ -154,6 +154,7 @@ UADD TEMP[2].y, CONST[1].xxxx, TEMP[59]
 XOR TEMP[59], TEMP[2].xxxx, TEMP[65].xxxx
 UADD TEMP[59], TEMP[59], IMM[0].yyyy
 UADD TEMP[2].x, TEMP[2].yyyy, TEMP[59]
+AND TEMP[2].x, TEMP[2].xxxx, IMM[1].wwww
 USHR TEMP[10].x, TEMP[10].xxxx, TEMP[2].xxxx
 AND TEMP[10].x, TEMP[10].xxxx, IMM[0].yyyy
 UMUL TEMP[10].x, TEMP[10].xxxx, IMM[1].xxxx
@@ -163,7 +164,7 @@ MUL TEMP[10], TEMP[10], IMM[2].xxxx
 ADD TEMP[10], TEMP[10], IMM[2].yyyy
 F2U TEMP[10], TEMP[10]
 ENDIF
-UADD TEMP[0].zw, IMM[0].xxxx, IMM[0].xxxx
+UADD TEMP[0].zw, IMM[0].xxxx, CONST[4].zzzz
 TXF TEMP[20], TEMP[0], SAMP[1], 2D
 MUL TEMP[20], TEMP[20], IMM[2].xxxx
 ADD TEMP[20], TEMP[20], IMM[2].yyyy
@@ -187,7 +188,7 @@ UADD TEMP[10], TEMP[23], IMM[3].yyyy
 USHR TEMP[58], TEMP[10], IMM[2].wwww
 UADD TEMP[10], TEMP[10], TEMP[58]
 USHR TEMP[10], TEMP[10], IMM[2].wwww
-UADD TEMP[10].w, IMM[1].xxxx, IMM[0].xxxx
+UADD TEMP[10].w, IMM[1].xxxx, CONST[4].zzzz
 U2F TEMP[48], TEMP[10]
 MUL OUT[0], TEMP[48], IMM[3].zzzz
 ELSE

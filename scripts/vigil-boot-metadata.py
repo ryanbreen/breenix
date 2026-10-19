@@ -55,6 +55,13 @@ def complete(action, boot_id, checkout):
             destination = folder / "host-renderer.json"
             if source.resolve() != destination.resolve():
                 shutil.copyfile(source, destination)
+        gpu_time = os.environ.get("BREENIX_GPU_TIME_JSONL")
+        if gpu_time:
+            source = Path(gpu_time)
+            serial = (folder / "serial.txt").resolve()
+            if source.resolve() != Path(str(serial) + ".gpu-time.jsonl"):
+                raise ValueError("GPU time does not belong to the serial's run")
+            shutil.copyfile(source, folder / "gpu-time.jsonl")
     else:
         raise ValueError("unknown recorder action")
 

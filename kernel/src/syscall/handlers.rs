@@ -1685,18 +1685,21 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
-    // x86_64: with another CPU online and no thread queued on any CPU there
-    // is nothing to yield to, and the scheduling pass would pick this thread
-    // again (#1172). That pass runs under PROCESS_MANAGER and the scheduler
-    // lock, which every CPU's timer expiry and dispatch need: a process
-    // polling with sched_yield kept them held much of the time, and a timed
-    // wake waited out any stall of the polling CPU there (#1401). With one
+    // With another CPU online and no thread queued on any CPU, there is no
+    // thread to yield to, and the scheduling pass would pick this thread
+    // again (#1172). That pass runs under the scheduler lock (x86_64: and
+    // PROCESS_MANAGER), which timer expiry and dispatch on each CPU need: a
+    // process polling with sched_yield kept it held much of the time, and a
+    // timed wake waited out any stall of the polling CPU there (#1401). On
+    // aarch64 the suite runner's wait for each case yields this way, and its
+    // passes were most of the scheduler lock's hold time (#2038). With one
     // CPU online the pass is kept: it switches this thread to idle, the only
     // place idle's housekeeping runs there.
     #[cfg(target_arch = "x86_64")]
-    if crate::arch_impl::x86_64::smp::cpus_online() > 1
-        && !crate::task::scheduler::thread_queued_anywhere()
-    {
+    let other_cpu_online = crate::arch_impl::x86_64::smp::cpus_online() > 1;
+    #[cfg(target_arch = "aarch64")]
+    let other_cpu_online = crate::arch_impl::aarch64::smp::cpus_online() > 1;
+    if other_cpu_online && !crate::task::scheduler::thread_queued_anywhere() {
         return SyscallResult::Ok(0);
     }
 

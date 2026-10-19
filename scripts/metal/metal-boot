@@ -633,6 +633,13 @@ class Driver:
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
+        # getty leaves its prompt unterminated while waiting for login input.
+        if self.args.mode == "default" and self.line.strip("\r") == "Breenix login: ":
+            try:
+                self.on_line(self.line, observed_at=arrived)
+            except Finish as finish:
+                if decision is None or finish.status != m.EXIT_DONE:
+                    decision = finish
         try:
             self.challenge_shell(self.line)
             self.challenge_console(self.line)

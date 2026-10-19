@@ -178,6 +178,9 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
 - `MEMORY before` comes after START and before the first case. After DONE, the runner kills
   and reaps any process left (each case's were swept after it), then prints `MEMORY after`
   and the `reclaimed` verdict, before `SUITE_SEQUENCE READY`.
+- What the runner keeps for its final panel exists before `MEMORY before`, so both samples
+  count it: a framebuffer suite's mapping of the display, and the GPU suite's view, a GPU
+  context and its 2560x1600 scanout target (4013 pages).
 - `free` is `/proc/meminfo`'s MemFree in 4 KiB pages and `heap_free_kb` its KernelHeapFree.
   The owners are the `owner` rows of `/proc/breenix/frames`: allocated frames by what holds
   them, from the source of the code that allocated them. `user_stacks` are the stack pages

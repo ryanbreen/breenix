@@ -61,7 +61,7 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe | Target::Default | Target::Shell | Target::Console { .. } | Target::Program { .. }) => {
+        Ok(Target::Probe | Target::Default | Target::Desktop | Target::Shell | Target::Console { .. } | Target::Program { .. }) => {
             panic!("{text:?} parsed as another mode")
         }
         Err(why) => panic!("{text:?} was refused: {why}"),
@@ -201,4 +201,9 @@ fn only_an_explicit_measured_console_target_requests_replug() {
     for text in ["console idle=2 replug", "console replug idle=2", "shell replug", "console  replug"] {
         assert!(parse(text).is_err(), "{text:?} was accepted");
     }
+}
+
+#[test]
+fn desktop_request_is_preserved_for_the_architecture_to_accept_or_refuse() {
+    assert!(matches!(parse("desktop\n"), Ok(Target::Desktop)));
 }

@@ -334,7 +334,8 @@ def main():
     p = sub.add_parser('boot')
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
-    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default')
+    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default',
+                   help='default boots the framebuffer console with virtual-terminal logins')
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
     p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')

@@ -236,8 +236,12 @@ static SUITE: Suite = suite("gpu", "GPU rendering", &[
         case("coverage-throughput", "A full-screen 2560x1600 coverage blend from an R8 mask completes within 16.7 ms", performance::coverage_throughput),
         case("wait-no-spin", "CPU time while waiting on a fence is at most 5% of the wait", performance::wait_no_spin),
         case("present-rate-2560", "At least 60 presents per second alternating two full-screen 2560x1600 targets", performance::present_rate_2560),
-    ]),
+    ]).idle_before(PERFORMANCE_IDLE_MS),
 ]);
+
+/// The idle window before `performance`, the baseline of the Parallels host GPU time
+/// attestation (`docs/gui/gpu.md` section 1.6.5, `scripts/parallels/gpu-time.py`).
+const PERFORMANCE_IDLE_MS: u64 = 5000;
 
 // The layers cases need, each with the build step that supplies it.
 const CORE: &str = "the kernel GPU core and syscall 416 (G1)";

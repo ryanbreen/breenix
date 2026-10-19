@@ -62,10 +62,9 @@ for label, text, tokens, expected in [('raw literal XOR', raw, 68, 0x7fc00000), 
     assert result == expected
 
 root = Path(__file__).resolve().parents[2] / 'kernel/src/gpu/virgl/profile'
-profile = (root / 'profile.tgsi').read_text()
-tokens = int(re.search(r'tokens: (\d+)', (root / 'mod.rs').read_text()).group(1))
+counts = [int(t) for t in re.findall(r'tokens: (\d+)', (root / 'mod.rs').read_text())]
 for routine, inputs, expected in [(15, [0xcf000000], 0x80000000), (21, [0x7fffffff, 1, 0, 0, 0x7fffffff], 1)]:
     operands = inputs + [0] * (16 - len(inputs)) + [0, routine, 0, 0]
-    result = draw(profile, tokens, operands)
+    result = draw((root / f'r{routine:02}.tgsi').read_text(), counts[routine], operands)
     print(f'G4 repaired routine {routine} {result:08x}', flush=True)
     assert result == expected

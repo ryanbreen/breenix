@@ -671,11 +671,11 @@ pub fn init_gop_early() {
     let Some(display) = gop_display() else {
         return;
     };
-    let Some(buffer) = crate::graphics::arm64_fb::gop_framebuffer() else {
+    let Some(mut buffer) = crate::graphics::arm64_fb::gop_framebuffer() else {
         return;
     };
     let layout = display.layout();
-    splash::Look::new(layout, layout.bgr).draw_all(buffer, &splash::View::now(0));
+    buffer.render(|frame| splash::Look::new(layout, layout.bgr).draw_all(frame, &splash::View::now(0)));
     display::drain_writes();
 }
 
@@ -697,7 +697,8 @@ fn gop_display() -> Option<Display> {
         return None;
     }
     // SAFETY: the GOP framebuffer's direct-map mapping lives for the kernel's lifetime.
-    let linear = unsafe { display::linear::Linear::new(buffer.as_mut_ptr(), buffer.len(), layout) }?;
+    // Linear writes go through write_bands, which counts firmware mutations.
+    let linear = unsafe { display::linear::Linear::new(buffer.as_ptr().cast_mut(), buffer.len(), layout) }?;
     linear.locate(crate::platform_config::fb_base_phys(), display::linear::Place::Gop);
     Some(Display::Linear(linear))
 }
