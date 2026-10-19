@@ -746,8 +746,26 @@ fn chvt_chvt_switches() -> CaseResult {
     measured(|| {
         let tty3 = VtFd::open(3)?;
         io::write(tty3.0, b"\x1bcchvt-switch-witness\r\n").map_err(|e| e.to_string())?;
-        let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
-        require(child.wait()? == 0, "chvt 3 failed")?;
+        let pid = match libbreenix::process::fork().map_err(|e| e.to_string())? {
+            libbreenix::process::ForkResult::Child => {
+                let result = (|| -> Verdict {
+                    libbreenix::process::setsid().map_err(|e| e.to_string())?;
+                    vt_ioctl(tty3.0, 0x540E, 0)?; // TIOCSCTTY before dropping root.
+                    #[cfg(target_arch = "x86_64")]
+                    const SETUID: u64 = 105;
+                    #[cfg(target_arch = "aarch64")]
+                    const SETUID: u64 = 146;
+                    require(unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0, "setuid(1000)")?;
+                    let mut command = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+                    require(command.wait()? == 0, "non-root chvt 3 failed")
+                })();
+                if let Err(reason) = &result { eprintln!("chvt credential probe: {reason}"); }
+                libbreenix::process::exit(if result.is_ok() { 0 } else { 1 });
+            }
+            libbreenix::process::ForkResult::Parent(pid) => pid,
+        };
+        let mut child = VtChild(pid.raw() as i32, false);
+        require(child.wait()? == 0, "chvt with a non-root controlling VT failed")?;
         require(foreground()? == 3, "chvt did not select tty3")?;
         let check = screen_check()?;
         require(check.lines().any(|l| l == "console foreground: tty3"), "read-back is not tty3")?;
