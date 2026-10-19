@@ -13,6 +13,7 @@ pub mod reg {
     pub const CAPABILITIES: u32 = 17;
     pub const CONFIG_DONE: u32 = 20;
     pub const IRQMASK: u32 = 33;
+    pub const TRACES: u32 = 45;
     pub const COMMAND_LOW: u32 = 48;
     pub const COMMAND_HIGH: u32 = 49;
     pub const DEV_CAP: u32 = 52;

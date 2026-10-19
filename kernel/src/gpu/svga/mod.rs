@@ -692,6 +692,9 @@ impl Device {
         }
         dev.write(wire::reg::IRQMASK, 0);
         dev.write(wire::reg::ENABLE, 1);
+        // GOP remains the console's display until kgpu completes its handoff.
+        // Keep the device observing those framebuffer writes during that interval.
+        dev.write(wire::reg::TRACES, 1);
         dev.write(wire::reg::CONFIG_DONE, 1);
         dev.stopped = false;
         if let Err(e) = dev.start_queue().and_then(|_| dev.init_tables()).and_then(|_| dev.init_objects()) {
