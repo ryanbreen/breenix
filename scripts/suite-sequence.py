@@ -129,15 +129,15 @@ def score(ids, records_log, logs, disk=None, repo=REPO):
     text = Path(records_log).read_bytes().decode("utf-8", errors="replace")
     rows = []
     with tempfile.TemporaryDirectory(prefix="suite-sequence-") as scratch:
-        for suite, records in zip(ids, windows(ids, [line.rstrip("\r") for line in text.split("\n")])):
+        for index, (suite, records) in enumerate(zip(ids, windows(ids, lines(text)))):
             window = Path(scratch) / f"{suite}.txt"
             window.write_text("\n".join(records) + "\n")
             rows.append(score_one(scorer, repo, suite, suite == ids[-1], records, window,
-                                  [window] + [Path(log) for log in logs[1:]], disk))
+                                  [window] + [Path(log) for log in logs[1:]], disk, index > 0))
     return all(status == "PASS" for _, status, _ in rows), rows
 
 
-def score_one(scorer, repo, suite, last, records, window, logs, disk):
+def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False):
     manifest = json.loads((repo / "docs/suites" / f"{suite}.json").read_text())
     started = any(re.fullmatch(rf"SUITE {suite} START cases=\d+", line) for line in records)
     done = any(line.startswith(f"SUITE {suite} DONE ") for line in records)
@@ -145,10 +145,20 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk):
                                 for line in records) if m), None)
     resets = [line[len("SUITE_SEQUENCE RESET "):] for line in records
               if line.startswith(f"SUITE_SEQUENCE RESET {suite} ")]
-    # Files it could not put back, a TCP connection still open, or a reset that failed.
-    unrestored = [reset for reset in resets if " FAIL " in reset or not re.search(r" changed=0(?: |$)", reset)
-                  or re.search(r" tcp=[1-9]", reset)]
+    # Missing, partial or failed reset evidence cannot establish isolation.
+    unrestored = [reset for reset in resets if " FAIL " in reset
+                  or not re.search(r" removed=\d+(?: |$)", reset)
+                  or not re.search(r" changed=0(?: |$)", reset)
+                  or not re.search(r" tcp=0(?: |$)", reset)
+                  or not re.search(r" tcpwait=\d+(?: |$)", reset)]
+    if needs_reset:
+        before_start = records[:next((i for i, line in enumerate(records)
+                                     if re.fullmatch(rf"SUITE {suite} START cases=\d+", line)), len(records))]
+        if len(resets) != 1 or not any(line.startswith(f"SUITE_SEQUENCE RESET {suite} ") for line in before_start):
+            unrestored.append("missing or ambiguous RESET before START")
     if not started:
+        if resets and unrestored:
+            return suite, "NOT-ISOLATED", f"RESET {'; '.join(unrestored)}; it never printed START"
         failed_exec = any(line == f"SUITE_SEQUENCE FAIL exec {suite}" for line in records)
         return suite, "NOT-RUN", "its binary could not be started" if failed_exec else "it never printed START"
     ok, detail = scorer["verdict"](manifest, window, logs)

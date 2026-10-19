@@ -126,11 +126,11 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
 }
 
 /// Wait until `/proc/net/tcp` lists no listener or connection, up to [`TCP_DRAIN_MS`]:
-/// ` tcp=<rows left> tcpwait=<ms>`, or an empty string when the kernel has no such file.
+/// ` tcp=<rows left> tcpwait=<ms>`, or an explicit FAIL when TCP state cannot be read.
 fn drain_tcp() -> String {
     let start = monotonic_ns();
     loop {
-        let Ok(text) = std::fs::read_to_string("/proc/net/tcp") else { return String::new() };
+        let Ok(text) = std::fs::read_to_string("/proc/net/tcp") else { return String::from(" FAIL cannot read /proc/net/tcp") };
         let rows = text.lines().skip(1).filter(|line| !line.trim().is_empty()).count();
         let waited = (monotonic_ns() - start) / 1_000_000;
         if rows == 0 || waited >= TCP_DRAIN_MS {

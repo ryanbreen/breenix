@@ -63,10 +63,10 @@ class ScoreTests(unittest.TestCase):
 
     def test_each_suite_is_scored_from_its_own_part_of_the_serial(self):
         serial = ("SUITE_SEQUENCE BEGIN suites=a,b,c,d,e baseline=9\n" + self.passing("a")
-                  + "SUITE_SEQUENCE RESET b removed=2 changed=0\n" + self.passing("b")
-                  + "SUITE_SEQUENCE RESET c removed=0 changed=1 paths=/etc/hosts\n" + self.passing("c")
-                  + "SUITE_SEQUENCE RESET d removed=0 changed=0\nSUITE d START cases=2\nSUITE d CASE case/one PASS ms=1\n"
-                  + "SUITE_SEQUENCE STALLED d cases=1/2\nSUITE_SEQUENCE RESET e removed=0 changed=0\n"
+                  + "SUITE_SEQUENCE RESET b removed=2 changed=0 tcp=0 tcpwait=0\n" + self.passing("b")
+                  + "SUITE_SEQUENCE RESET c removed=0 changed=1 paths=/etc/hosts tcp=0 tcpwait=0\n" + self.passing("c")
+                  + "SUITE_SEQUENCE RESET d removed=0 changed=0 tcp=0 tcpwait=0\nSUITE d START cases=2\nSUITE d CASE case/one PASS ms=1\n"
+                  + "SUITE_SEQUENCE STALLED d cases=1/2\nSUITE_SEQUENCE RESET e removed=0 changed=0 tcp=0 tcpwait=0\n"
                   + "SUITE e START cases=2\nSUITE e CASE case/one PASS ms=1\nKERNEL PANIC: in e\n")
         ok, rows = self.score(serial, ["a", "b", "c", "d", "e", "f"])
         self.assertFalse(ok)
@@ -91,11 +91,20 @@ class ScoreTests(unittest.TestCase):
         self.assertIn("tcp=1", rows[2][2])
 
     def test_a_boot_stopped_mid_suite_records_its_partial_cases(self):
-        ok, rows = self.score(self.passing("a") + "SUITE b START cases=2\nSUITE b CASE case/one PASS ms=1\n", ["a", "b"])
+        ok, rows = self.score(self.passing("a") + "SUITE_SEQUENCE RESET b removed=0 changed=0 tcp=0 tcpwait=0\nSUITE b START cases=2\nSUITE b CASE case/one PASS ms=1\n", ["a", "b"])
         self.assertFalse(ok)
         self.assertEqual(rows[0][1], "PASS")
         self.assertEqual(rows[1][1], "STALLED")
         self.assertIn("after 1 of its cases", rows[1][2])
+
+    def test_lost_or_incomplete_reset_never_passes(self):
+        for reset in ("", "SUITE_SEQUENCE RESET b removed=0 changed=0\n",
+                      "SUITE_SEQUENCE RESET b removed=0 changed=0 tcp=unknown FAIL cannot read /proc/net/tcp\n",
+                      "SUITE_SEQUENCE RESET b removed=0 changed=0 tcp=0 tcpwait=0"):
+            with self.subTest(reset=reset):
+                ok, rows = self.score(self.passing("a") + reset + self.passing("b"), ["a", "b"])
+                self.assertFalse(ok)
+                self.assertEqual(rows[1][1], "NOT-ISOLATED")
 
     def test_deadlines_restart_at_each_suite(self):
         boundaries = SEQUENCE["boundaries"]
