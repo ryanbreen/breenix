@@ -1,0 +1,30 @@
+[package]
+name = "console-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+log = "0.4"
+spin = "0.9"
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-latin-extended-a", "unicode-specials"] }
+
+[lib]
+doctest = false
+
+# These kernel-only feature names occur in the included discipline source.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("boot_tests", "btrt"))'] }
+
+# A harness for `cargo run --bin input`: under cfg(test) keymap.rs swaps in its own event types.
+[[bin]]
+name = "input"
+test = false
+
+[[test]]
+name = "quiet_console"
+path = "../../tests/quiet_console.rs"
+
+[features]
+boot_tests = []

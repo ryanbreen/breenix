@@ -175,6 +175,9 @@ pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 /// allow reporter headroom without extending any other time-suite case.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("time", "clocks/rate-counter", 25_000),
+    // Two authenticated logins, host-injected keys and init's respawn delay.
+    ("console", "getty/logout-reacquires", 30_000),
+    ("console", "getty/independent-sessions", 30_000),
 ];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
@@ -252,6 +255,36 @@ fn record(kind: &str, rest: &str) {
     }
 }
 
+static HOSTKEY_METHOD: OnceLock<String> = OnceLock::new();
+static HOSTKEY_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The launcher's declared method and missing keys, if any.
+pub fn hostkey_method() -> Option<&'static str> {
+    HOSTKEY_METHOD.get().map(String::as_str)
+}
+
+/// Ask the launcher to press ordered chords through the case's serial record path.
+/// The case must check the resulting guest state before it reports success.
+pub fn hostkeys(chords: &str) -> Result<u64, String> {
+    let method = hostkey_method().filter(|value| !value.is_empty())
+        .ok_or_else(|| String::from("no host key path"))?;
+    let (path, missing) = method.split_once(";missing=").unwrap_or((method, ""));
+    for chord in chords.split(',') {
+        if chord.is_empty() || !chord.split('-').all(is_word) {
+            return Err(std::format!("invalid host key chord {chord}"));
+        }
+        if chord.split('-').any(|key| missing.split(',').any(|m| key == m)) {
+            return Err(std::format!("no host key path for {chord} on {path}"));
+        }
+    }
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return Err(String::from("host key record unavailable"));
+    }
+    let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
+    record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
+    Ok(seq)
+}
+
 /// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.
 fn is_word(text: &str) -> bool {
     !text.is_empty()
@@ -302,6 +335,29 @@ pub fn pulses(every_us: i64, limit_us: i64, at_us: &[i64]) {
     record("PULSES", &rest);
 }
 
+/// End the boot splash, so the console's text has the screen: `KDSETMODE(KD_TEXT)`
+/// on tty1 (`docs/console/contract.md`, sections 7 and 12), then wait, at most three
+/// seconds, until `/proc/console/check` no longer reports the splash.
+fn console_takes_screen() {
+    const KDSETMODE: u64 = 0x4B3A;
+    const KD_TEXT: u64 = 0;
+    // `O_NOCTTY`: the open must not give the suite a controlling terminal.
+    const O_NOCTTY: u32 = 0o400;
+    if let Ok(fd) = fs::open("/dev/console", fs::O_RDWR | O_NOCTTY) {
+        // SAFETY: KDSETMODE takes its mode by value.
+        let _ = unsafe { crate::syscall::raw::syscall3(crate::syscall::nr::IOCTL, fd.raw(), KDSETMODE, KD_TEXT) };
+        let _ = io::close(fd);
+    }
+    for _ in 0..30 {
+        let splash = std::fs::read_to_string("/proc/console/check")
+            .is_ok_and(|text| text.contains("the boot splash has the display"));
+        if !splash {
+            return;
+        }
+        let _ = time::sleep_ms(100);
+    }
+}
+
 /// A suite: its id, title and categories, run in order.
 pub struct Suite {
     pub id: &'static str,
@@ -322,46 +378,58 @@ impl Suite {
     }
 
     /// Leave the console available to cases; take the display only for the final panel.
+    /// The cases run on the console itself, so the run starts by ending the boot splash.
     pub const fn defer_display(self) -> Suite {
         Suite { defer_display: true, ..self }
     }
 
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
 
-    /// Run the cases in manifest order, or only argv's `--case category/case`,
+    /// Run the cases in manifest order, or argv's `--case category[/case]`,
     /// then leave the final panel up and idle. One-case START/DONE carry `only=`;
     /// a one-case run stops before any suite sequence and is not full-suite
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let (only, usable_args) = match args.as_slice() {
-            [] => (None, true),
-            [flag, case] if flag == "--case" => (Some(case.as_str()), true),
-            _ => (None, false),
-        };
+        let mut only = None;
+        let mut method = None;
+        let mut usable_args = true;
+        let mut pairs = args.chunks_exact(2);
+        for pair in &mut pairs {
+            match pair[0].as_str() {
+                "--case" if only.is_none() => only = Some(pair[1].as_str()),
+                "--hostkeys" if method.is_none() => method = Some(pair[1].as_str()),
+                _ => usable_args = false,
+            }
+        }
+        usable_args &= pairs.remainder().is_empty();
+        if let Some(value) = method { let _ = HOSTKEY_METHOD.set(value.to_string()); }
         let names: Vec<String> = self.categories.iter().flat_map(|category| {
             category.cases.iter().map(move |case| std::format!("{}/{}", category.id, case.id))
         }).collect();
         let error = if !usable_args {
-            Some(std::format!("expected no arguments or --case <category>/<case>, found {:?}", args))
+            Some(std::format!("expected [--case <category>[/<case>]] [--hostkeys <method>], found {:?}", args))
         } else {
-            only.filter(|name| !names.iter().any(|valid| valid == name))
+            only.filter(|name| !names.iter().any(|valid| valid == name) && !self.categories.iter().any(|c| c.id == *name))
                 .map(|name| std::format!("unknown case {}; valid ids: {}", name, names.join(", ")))
         };
-        // A selection, or an argv that could not be read, counts as one case.
-        let total = if only.is_some() || error.is_some() { 1 } else { self.total() };
+        // An invalid selection is one failure; a category counts its cases.
+        let total = if error.is_some() { 1 } else {
+            names.iter().filter(|name| only.is_none_or(|selected| name.as_str() == selected || name.starts_with(&std::format!("{selected}/")))).count()
+        };
         let suffix = only.map_or(String::new(), |name| std::format!(" only={name}"));
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
         let mut screen = if self.defer_display {
+            console_takes_screen();
             Screen { fb: None, gpu: None, gpu_failure: None, live: false, area: None }
         } else {
             Screen::open(self.id == "gpu")
         };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
-            Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
+            Some(name) => std::format!("suite {}: selection {name} (not full-suite evidence)", self.id),
             None => std::format!("suite {}: {} cases in {} categories", self.id, self.total(), self.categories.len()),
         };
         let mut counts = Counts::default();
@@ -385,7 +453,7 @@ impl Suite {
         for (c, category) in self.categories.iter().enumerate() {
             for (k, case) in category.cases.iter().enumerate() {
                 let name = std::format!("{}/{}", category.id, case.id);
-                if only.is_some_and(|selected| selected != name) { continue; }
+                if only.is_some_and(|selected| selected != name && selected != category.id) { continue; }
                 states[c][k] = State::Running;
                 let progress = std::format!("Running {}/{} ({} of {})", category.id, case.id, done + 1, total);
                 feed.start(&name);
@@ -758,6 +826,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         }
     } else { None };
     let start = monotonic_ns();
+    HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
             sequence::in_child();
@@ -1097,7 +1166,7 @@ impl Screen {
             .collect();
         let checks: Vec<Vec<Check<'_>>> = suite.categories.iter().zip(states).zip(&details)
             .map(|((category, cases), details)| category.cases.iter().zip(cases).zip(details)
-                .filter(|((case, _), _)| only.is_none_or(|name| name == std::format!("{}/{}", category.id, case.id)))
+                .filter(|((case, _), _)| only.is_none_or(|name| name == category.id || name == std::format!("{}/{}", category.id, case.id)))
                 .map(|((case, state), detail)| Check {
                     name: case.id,
                     state: match state {

@@ -1573,7 +1573,7 @@ class StagingTest(unittest.TestCase):
             self.assertEqual(run.build('20261017T000009Z-metal', 'a' * 40), 0)
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
-                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'efi-stub/Cargo.toml',
+                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'effort-target-guard.py', 'efi-stub/Cargo.toml',
                           'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs',
                           'efi-stub/src/suite_disk.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
@@ -1583,8 +1583,36 @@ class StagingTest(unittest.TestCase):
         self.assertEqual(builder.call_args_list[0].args[1:3], ('rm', '-rf'))
 
 
+class CatchupTest(StateTest):
+    def test_catchup_is_recorded_and_defaults_to_false(self):
+        for catchup in (False, True):
+            args = SimpleNamespace(id='20261017T00000' + str(int(catchup)) + 'Z-metal',
+                                   mode='default', payload='image', target='main', task='',
+                                   commit='a' * 40, inject=None, suite=None, nmi=False, catchup=catchup)
+            with patch.object(m, 'load_site', return_value={}):
+                driver = boot.Driver(args)
+            driver.create_record()
+            record = m.read_json(driver.dir / 'run.json')
+            self.assertIs(record['catchup'], catchup)
+
+    def test_environment_matches_run_sh(self):
+        run = load_script('metal-run')
+        for value, expected in [('1', True), ('YES', True), ('true', True),
+                                ('0', False), ('no', False), ('false', False), ('', False)]:
+            with patch.dict(os.environ, BREENIX_CATCHUP=value):
+                self.assertIs(run.catchup_from_env(), expected)
+        with patch.dict(os.environ, BREENIX_CATCHUP='maybe'):
+            with self.assertRaises(SystemExit):
+                run.catchup_from_env()
+
+
 class BuildPolicyTest(unittest.TestCase):
     def test_guard_comes_from_origin_main_instead_of_the_target_tree(self):
+        for catchup in (False, True):
+            with self.subTest(catchup=catchup):
+                self.guard_from_main(catchup)
+
+    def guard_from_main(self, catchup):
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1606,7 +1634,7 @@ class BuildPolicyTest(unittest.TestCase):
             git('-C', repo, 'commit', '-am', 'Attempt to bypass the policy')
             sha = git('-C', repo, 'rev-parse', 'HEAD')
             args = SimpleNamespace(id='20261017T000011Z-metal', root=str(root), repo=str(repo), sha=sha,
-                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'))
+                                   rust_fork=str(root / 'rust'), cache=str(root / 'cache'), catchup=catchup)
             self.assertEqual(build.outer(args), 3)
 
 

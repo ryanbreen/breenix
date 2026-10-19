@@ -258,16 +258,6 @@ pub(crate) fn report_userspace_completion() {
         // No more userspace threads remaining
         report_line!(info, "No more userspace threads remaining");
 
-        // Wake the keyboard task to ensure it can process any pending input
-        #[cfg(target_arch = "x86_64")]
-        {
-            crate::keyboard::stream::wake_keyboard_task();
-            report_line!(
-                info,
-                "Woke keyboard task to ensure input processing continues"
-            );
-        }
-
         // Signal that userspace testing is complete with clear markers
         report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
         let (exited, nonzero) = crate::task::exit_tally::totals();
@@ -658,6 +648,19 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     // Write to console/tty
                     write_to_stdio(fd, &buffer)
                 }
+                // A virtual terminal: tty1 has serial and the screen, the
+                // others the screen. /dev/tty0 is the foreground one now.
+                DeviceType::Tty0 | DeviceType::Vt(_) => {
+                    match device_type.terminal().and_then(crate::tty::driver::vt) {
+                        Some(tty) => {
+                            tty.write_bytes(&buffer);
+                            SyscallResult::Ok(buffer.len() as u64)
+                        }
+                        None => SyscallResult::Err(6), // ENXIO
+                    }
+                }
+                // The screens are read-only.
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) => SyscallResult::Err(22),
             }
         }
         WriteOperation::RegularFile {
@@ -1579,6 +1582,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                }
+                // A virtual terminal reads its own input queue; /dev/tty0 the
+                // foreground terminal's at the time of the read.
+                crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_) => {
+                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking).map_err(|e| -e)
                 }
                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
             };
@@ -3510,6 +3518,37 @@ pub struct CowStatsResult {
 pub fn sys_take_over_display() -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() { return crate::gpu::take_display(); }
+    // The display goes with the caller's terminal, its controlling terminal
+    // when that is a virtual terminal, else tty1; EBUSY while that terminal
+    // is not in the foreground (`docs/console/contract.md` section 4.2).
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    let owner = {
+        let guard = crate::process::manager();
+        guard.as_ref().and_then(|manager| {
+            let (pid, row) = manager.find_process_by_thread(tid)?;
+            let group = manager.thread_group_of(pid).unwrap_or(pid.as_u64());
+            let vt = match row.ctty {
+                Some(crate::tty::ctty::TtyId::Vt(n)) => usize::from(n),
+                _ => 1,
+            };
+            Some((group, vt))
+        })
+    };
+    let Some((group, vt)) = owner else {
+        return SyscallResult::Err(3);
+    };
+    if let Err(errno) = crate::console::vt::take_display(group, vt) {
+        return SyscallResult::Err(errno as u64);
+    }
+    // Quiesce the console before publishing authority to the new owner's
+    // other threads, which can issue framebuffer syscalls concurrently.
+    crate::console::take_display();
+    // Quiesce the boot screen before publishing authority to either the
+    // owner's other threads or the cursor presenter.
+    #[cfg(target_arch = "aarch64")]
+    let _ = crate::graphics::boot_screen::stop_drawing();
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3528,19 +3567,6 @@ pub fn sys_take_over_display() -> SyscallResult {
             }
         }
 
-        // The kernel stops drawing its boot screen but leaves it up until the new
-        // owner draws, so an owner that fails first does not blank the screen.
-        #[cfg(target_arch = "aarch64")]
-        let _ = crate::graphics::boot_screen::stop_drawing();
-
-        // Tell the render thread to stop flushing the framebuffer.
-        // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-        crate::graphics::render_task::set_display_taken();
-
-        // The x86_64 screen console stops drawing.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::fbcon::take_display();
     }
     SyscallResult::Ok(0)
 }
@@ -3550,7 +3576,32 @@ pub fn sys_take_over_display() -> SyscallResult {
 pub fn sys_give_back_display() -> SyscallResult {
     #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() { return crate::gpu::give_display(); }
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    {
+        let mut guard = crate::process::manager();
+        let Some((pid, process)) = guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(tid)) else {
+            return SyscallResult::Err(3);
+        };
+        let owner = &crate::syscall::graphics::DISPLAY_OWNER_PID;
+        if owner.load(core::sync::atomic::Ordering::Acquire) != pid.as_u64() && process.cred.euid != 0 {
+            return SyscallResult::Err(1);
+        }
+        process.has_display_ownership = false;
+        owner.store(u64::MAX, core::sync::atomic::Ordering::Release);
+    }
+    crate::console::give_back_display();
     SyscallResult::Ok(0)
+}
+
+/// Process group `group`'s last row exited: its virtual terminals return to
+/// `VT_AUTO` and `KD_TEXT`, and a display it held is given back.
+pub(crate) fn console_owner_exited(group: u64) {
+    if crate::console::vt::process_exited(group) {
+        crate::syscall::graphics::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
+        crate::console::give_back_display();
+    }
 }
 
 /// sys_cow_stats - Get Copy-on-Write statistics (for testing)

@@ -170,20 +170,6 @@ fn idle_thread_fn() {
                 super::scheduler::yield_current();
             }
         }
-
-        // Periodically wake keyboard task to ensure responsiveness
-        // This helps when returning from userspace execution
-        // Note: keyboard module is x86_64 only
-        #[cfg(target_arch = "x86_64")]
-        {
-            static mut WAKE_COUNTER: u64 = 0;
-            unsafe {
-                WAKE_COUNTER += 1;
-                if WAKE_COUNTER % 100 == 0 {
-                    crate::keyboard::stream::wake_keyboard_task();
-                }
-            }
-        }
     }
 }
 

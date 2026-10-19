@@ -54,6 +54,11 @@ provenance() {
         git -C "$ROOT" update-ref "refs/vigil/boots/$id" "$snapshot" || return 1
     fi
 }
+VIGIL_WORKTREE=""
+# A detached main commit is still main; a feature commit in the main checkout is not.
+if ! git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+    VIGIL_WORKTREE="$(basename "$ROOT")"
+fi
 # A boot of several suites: run this script once per suite, ID-SUITE, and print the ids joined by commas.
 if [[ "${4:-}" == *,* ]] && { [ "${1:-}" = start ] || [ "${1:-}" = record ]; }; then
     [ -n "${2:-}" ] || exit 0
@@ -70,15 +75,20 @@ fi
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
+        # vigil-cli accepts desktop, and stores it as default for VM platforms.
+        if [ "$mode" = default ]; then
+            case "$platform" in metal|beast) mode= ;; *) mode=desktop ;; esac
+        fi
         [ -n "$platform" ] && [ -n "$serial" ] || exit 0
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 0
         [ -n "$id" ] || id=$(date -u +%Y%m%dT%H%M%SZ)-$platform
         provenance || exit 0
         args=(breenix start --arch "$arch" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --dirty "${dirty:-0}" --pid "${BREENIX_LAUNCHER_PID:-$PPID}")
         [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
+        [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
         if [ -n "$suite" ]; then
             args+=(--suite "$suite")
-        elif [ -n "$mode" ] && [ "$mode" != default ]; then
+        elif [ -n "$mode" ]; then
             args+=(--mode "$mode")
         fi
         [ -z "$user" ] || args+=(--serial-user "$user")
@@ -88,7 +98,7 @@ case "${1:-}" in
         # machine; Vigil keeps it out of main's evidence.
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
-        id=$("$CLI" "${args[@]}") || exit 0
+        id=$("$CLI" "${args[@]}") || { echo "WARNING: Vigil boot registration failed" >&2; exit 0; }
         if [ -n "$id" ] && [ -n "${BREENIX_VIGIL_DISPLAY:-}" ]; then
             python3 "$ROOT/scripts/vigil-boot-metadata.py" start "$id" "$ROOT" >&2 || true
         fi
@@ -100,11 +110,15 @@ case "${1:-}" in
         started=${10:-}; ended=${11:-}; status=${12:-1}
         [ -n "$commit" ] || commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || exit 1
         provenance || exit 1
+        if [ "$mode" = default ]; then
+            case "$platform" in metal|beast) mode= ;; *) mode=desktop ;; esac
+        fi
         args=(breenix record --arch "$arch" --dirty "$dirty" --platform "$platform" --commit "$commit" --checkout "$ROOT" --serial "$serial" --id "$id" --started "$started" --ended "$ended" --exit-status "$status")
         [ -z "$user" ] || args+=(--serial-user "$user")
         [ -z "$snapshot" ] || args+=(--snapshot "$snapshot")
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
-        if [ -n "$suite" ]; then args+=(--suite "$suite"); else args+=(--mode "$mode"); fi
+        [ -z "$VIGIL_WORKTREE" ] || args+=(--worktree "$VIGIL_WORKTREE")
+        if [ -n "$suite" ]; then args+=(--suite "$suite"); elif [ -n "$mode" ]; then args+=(--mode "$mode"); fi
         [ -z "$profile" ] || args+=(--profile "$profile")
         # A timed-out start may already have published this exact id. Finish it
         # instead of creating a second record or letting the importer assign zero. vigil-cli keeps boots under the
