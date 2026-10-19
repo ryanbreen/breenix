@@ -15,7 +15,7 @@
 //! The pool is ready once `READY_BITS` have been credited. Credit is
 //! conservative: a full word per RDSEED or RNDRRS word, half a word per RDRAND
 //! or RNDR word (each is a generator's output, not raw entropy). Timing and
-//! device events add input but no credit: variation does not prove entropy.
+//! device events add input but no credit: variation does not establish entropy.
 //! Without a hardware RNG the pool stays unready.
 
 mod blake2s;
@@ -32,7 +32,7 @@ use spin::Mutex;
 /// Credited bits at which the pool counts as initialized.
 pub const READY_BITS: u32 = 256;
 
-/// Bounded supplemental timing input; never credited as entropy.
+/// Bounded, uncredited supplemental timing input.
 const JITTER_SAMPLES: u32 = 4096;
 
 /// The generator's key. A leaf lock, held only with interrupts masked; callers
@@ -296,7 +296,7 @@ pub const CHUNK: usize = MAX_FILL;
 
 /// Fill `out` from the pool, whether or not it is ready yet. For kernel users
 /// that cannot wait (port numbers, IDs). Before readiness, unpredictability
-/// is not guaranteed.
+/// may be absent.
 pub fn fill(out: &mut [u8]) {
     for (i, chunk) in out.chunks_mut(CHUNK).enumerate() {
         fill_chunk(chunk, i == 0);
