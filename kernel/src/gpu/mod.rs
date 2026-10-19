@@ -34,6 +34,7 @@ mod completion;
 mod present_answers;
 mod display;
 pub mod console;
+pub mod panic;
 mod observation;
 mod quota;
 mod staging;
@@ -91,6 +92,8 @@ static DOORBELL: AtomicU64 = AtomicU64::new(0);
 static KICK: AtomicBool = AtomicBool::new(false);
 /// A configuration change was signalled: the device may have set DEVICE_NEEDS_RESET.
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
+/// The level interrupt is masked until normal GPU work reads its ISR byte.
+static IRQ_PENDING: AtomicBool = AtomicBool::new(false);
 /// The control queue's interrupt (or the INTx line), and with MSI-X the configuration
 /// change interrupt.
 static INTID: AtomicU32 = AtomicU32::new(0);
@@ -105,7 +108,7 @@ fn now_ns() -> u64 {
 fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     crate::per_cpu::preempt_disable();
     let (r, kick) = {
-        let mut core = CORE.lock();
+        let mut core = panic::lock(&CORE);
         let r = core.as_mut().map(f);
         // Claim this operation's notification before another CPU can enter the core.
         (r, KICK.swap(false, Ordering::AcqRel))
@@ -123,6 +126,7 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
 /// requests' descriptors and ring index were published before `KICK` was set, and the
 /// caller claimed that kick while still holding the core's lock.
 fn ring_doorbell() {
+    let _access = panic::Access::enter();
     let at = DOORBELL.load(Ordering::Acquire);
     if at != 0 {
         // SAFETY: the control queue's mapped notification address; queue 0.
@@ -407,7 +411,6 @@ pub fn init() {
                     ISR.store(dev.isr, Ordering::Release);
                     INTID.store(intid, Ordering::Release);
                     gic::configure_spi_level_triggered(intid);
-                    gic::enable_spi(intid);
                 }
                 virgl::Irq::Msix { queue, config } => {
                     crate::serial_println!("[gpu] MSI-X: queue SPI {} config SPI {}", queue, config);
@@ -416,7 +419,6 @@ pub fn init() {
                     for spi in [queue, config] {
                         gic::configure_spi_edge_triggered(spi);
                         gic::clear_spi_pending(spi);
-                        gic::enable_spi(spi);
                     }
                 }
             }
@@ -434,6 +436,8 @@ pub fn init() {
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
     core.key = counter ^ 0x9E37_79B9_7F4A_7C15;
     *CORE.lock() = Some(core);
+    #[cfg(feature = "capture_panic_oracle")]
+    panic::initialized();
 }
 
 impl Core {
@@ -1290,6 +1294,7 @@ impl Core {
         self.quarantined_at = None;
         self.stalled = false;
         self.resetting = true;
+        panic::invalidate();
         self.epoch += 1;
         for c in self.contexts.values_mut() {
             c.state = CtxState::Reset;
@@ -1426,10 +1431,24 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             return Err(Stop::Interrupted);
         }
         let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(EXAMINE_NS)));
+        // A queued wait holds the one preemption level syscall entry takes, and
+        // `wait_prepared` releases it only for the halt. A kernel thread (the console's
+        // render thread) runs at count 0, so it takes the level here. Released unheld,
+        // the count underflows, the halt sees a caller that cannot be preempted and keeps
+        // the CPU, and the request this wait needs stays queued for a kgpu waiting on
+        // that CPU (#1826).
+        let unheld = crate::per_cpu::preempt_count() == 0;
+        if unheld {
+            crate::per_cpu::preempt_disable();
+        }
         let outcome = WAITERS.prepare_to_wait_checked(ThreadState::BlockedOnIO, wake, || {
             EVENTS.load(Ordering::Acquire) == seen
         });
-        if crate::syscall::blocking_io::wait_prepared(&WAITERS, outcome).is_err() && interruptible {
+        let woke = crate::syscall::blocking_io::wait_prepared(&WAITERS, outcome);
+        if unheld {
+            crate::per_cpu::preempt_enable();
+        }
+        if woke.is_err() && interruptible {
             return Err(Stop::Interrupted);
         }
     }
@@ -1504,38 +1523,52 @@ pub fn config_irq() -> Option<u32> {
     }
 }
 
-/// The GPU interrupt: with INTx, acknowledge it through the ISR byte; with MSI-X it is the
-/// control queue's vector, and the ISR byte is not read (VirtIO 1.3 section 4.1.4.5.2).
-/// Count it and wake whoever waits. No lock, no allocation, no output.
+/// Defer INTx acknowledgement to the IRQ-enabled worker; MSI-X needs no ISR read
+/// (VirtIO 1.3 section 4.1.4.5.2). Wake consumers with bounded, nonblocking queue work.
 pub fn handle_interrupt() {
-    // The handler's whole run counts toward gpu_irq_masked_max_us (section 1.16).
     let start = crate::tracing::providers::gpu::interrupt_begin();
-    let isr = ISR.load(Ordering::Acquire);
-    signal(if isr != 0 { virgl::read_isr(isr) } else { 1 });
+    if ISR.load(Ordering::Acquire) != 0 {
+        if let Some(id) = irq() {
+            crate::arch_impl::aarch64::gic::disable_spi(id);
+        }
+        IRQ_PENDING.store(true, Ordering::Release);
+    }
+    signal(1);
     crate::tracing::providers::gpu::interrupt_end(start);
 }
 
-/// The configuration-change MSI-X vector. No lock, no allocation, no output.
+/// The configuration-change MSI-X vector needs no ISR read.
 pub fn handle_config_interrupt() {
     let start = crate::tracing::providers::gpu::interrupt_begin();
     signal(2);
     crate::tracing::providers::gpu::interrupt_end(start);
 }
 
-/// Wake for an interrupt whose cause is `status`, in the ISR byte's encoding: bit 0 a
-/// used buffer, bit 1 a configuration change (VirtIO 1.3 section 4.1.4.5).
+/// Wake for a used buffer or configuration change, using the ISR byte's bit meanings.
 fn signal(status: u8) {
-    if status == 0 {
-        return;
-    }
     if status & 2 != 0 {
         CONFIG_CHANGED.store(true, Ordering::Release);
     }
     EVENTS.fetch_add(1, Ordering::AcqRel);
-    WAITERS.wake_up();
+    WAITERS.try_wake_up_n_from_irq(limits::IN_FLIGHT as u32);
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
         crate::task::scheduler::wake_thread_any_context(tid);
+    }
+}
+
+fn acknowledge_interrupt() {
+    if !IRQ_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let _access = panic::Access::enter();
+    let isr = ISR.load(Ordering::Acquire);
+    let status = if isr != 0 { virgl::read_isr(isr) } else { 0 };
+    if status & 2 != 0 {
+        CONFIG_CHANGED.store(true, Ordering::Release);
+    }
+    if let Some(id) = irq() {
+        crate::arch_impl::aarch64::gic::unmask_spi(id);
     }
 }
 
@@ -1549,6 +1582,9 @@ fn ensure_reaper() -> bool {
             let started = match crate::task::kthread::kthread_run(reaper, "kgpu") {
                 Ok(handle) => {
                     REAPER.store(handle.tid(), Ordering::Release);
+                    for id in [irq(), config_irq()].into_iter().flatten() {
+                        crate::arch_impl::aarch64::gic::enable_spi_on_cpu(id, 0);
+                    }
                     true
                 }
                 Err(_) => false,
@@ -1591,6 +1627,7 @@ fn reaper() {
     let mut next_sweep = now_ns();
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
+        acknowledge_interrupt();
         let now = now_ns();
         let (deadline, busy, reset) = with_core(|c| {
             c.pump();

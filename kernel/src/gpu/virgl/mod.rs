@@ -18,6 +18,7 @@
 pub mod encode;
 pub mod queue;
 pub mod wire;
+pub(crate) mod emergency;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -403,7 +404,11 @@ impl Device {
 
     /// The control queue's size in descriptors.
     pub fn queue_size(&self) -> usize {
-        self.queue.size() as usize
+        self.queue.normal_capacity() as usize
+    }
+
+    pub(crate) fn terminal_queue(&self) -> emergency::Queue {
+        self.queue.terminal(self.doorbell())
     }
 
     /// Whether a request of `segments` descriptors fits now.
@@ -445,12 +450,14 @@ impl Device {
 
     /// Start a reset (section 2.4): write 0 to the device status.
     pub fn begin_reset(&mut self) {
+        let _access = crate::gpu::panic::Access::enter();
         self.pci.reset();
     }
 
     /// Whether the device has completed the reset: it reads its status back as 0, which
     /// ends its use of every buffer it was given (section 2.4.2).
     pub fn reset_done(&self) -> bool {
+        let _access = crate::gpu::panic::Access::enter();
         self.pci.read_status() == 0
     }
 
@@ -458,6 +465,7 @@ impl Device {
     /// it can no longer use, and bring the device up again with an empty queue.
     pub fn restart(&mut self) -> (Vec<Request>, Result<(), &'static str>) {
         let held: Vec<Request> = self.inflight.iter_mut().filter_map(Option::take).collect();
+        let _access = crate::gpu::panic::Access::enter();
         self.queue.reset();
         let up = match Self::start(&mut self.pci) {
             Ok(size) if size >= self.queue.size() => self.enable_queue(),

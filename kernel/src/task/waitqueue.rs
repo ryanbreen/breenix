@@ -215,6 +215,24 @@ impl WaitQueueHead {
         woken
     }
 
+    /// Try a bounded wake from hard IRQ context, where IRQs are already masked.
+    /// Contention leaves the queue for the completion publisher in task context.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn try_wake_up_n_from_irq(&self, max: u32) -> u32 {
+        let Some(mut waiters) = self.waiters.try_lock() else {
+            return 0;
+        };
+        let mut woken = 0;
+        while woken < max {
+            let Some(waiter) = waiters.pop_front() else {
+                break;
+            };
+            crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+            woken += 1;
+        }
+        woken
+    }
+
     /// Enqueue `tid` without publishing a blocked state, for a caller that
     /// watches several queues and publishes its own wait (poll, select). It
     /// rechecks its condition after publishing, and removes itself with

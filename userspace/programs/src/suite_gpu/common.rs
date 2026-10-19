@@ -149,7 +149,11 @@ pub fn resource_create(arg: &mut [u8; 48]) -> i64 {
 /// Submit and return the fence.
 pub fn submit(ctx: u64, s: &[u32]) -> Result<u64, CaseError> {
     let (r, a) = gpu::submit(ctx, s);
-    ensure(r == 0, || format!("SUBMIT returned {} (command {} error {})", errno(r), a.error_index, a.error))?;
+    ensure(r == 0, || {
+        let (status, k) = gpu::counters(ctx);
+        format!("SUBMIT returned {} (command {} error {}; context {ctx:#x} counters={status} state={} warmed={} submissions={} device_errors={})",
+            errno(r), a.error_index, a.error, k.state, k.warmed, k.submissions, k.device_errors)
+    })?;
     Ok(a.fence)
 }
 
