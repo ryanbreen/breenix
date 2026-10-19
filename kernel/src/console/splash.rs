@@ -321,7 +321,7 @@ const BACKSTOP_MS: u64 = 10_000;
 
 /// A testing kernel keeps the splash until the backstop or the end of the run:
 /// only the backstop, a display owner and a panic end it there.
-const TESTING: bool = cfg!(feature = "testing");
+const TESTING: bool = cfg!(any(feature = "testing", feature = "boot_tests"));
 
 pub fn is_up() -> bool {
     STATE.load(Ordering::Acquire) == UP
