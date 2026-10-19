@@ -6084,7 +6084,7 @@ fn fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site() {
     let aarch64_sources = aarch64_sources_with_exception(&mutant);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
-        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => with_scheduler_lock  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn with_scheduler_lock => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
@@ -6118,7 +6118,7 @@ fn fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee() {
     let aarch64_sources = aarch64_sources_with_exception(&mutant);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
-        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => with_scheduler_lock  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn with_scheduler_lock => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
@@ -6168,7 +6168,7 @@ fn fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee() {
     let aarch64_sources = aarch64_sources_with_exception(&exception_source);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
-        Err("+ kernel/src/task/scheduler.rs :: #[cfg(target_arch=aarch64)] fn dump_cpu_state_history_postmortem => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/task/scheduler.rs :: #[cfg(target_arch=aarch64)] fn dump_cpu_state_history_postmortem => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => with_scheduler_lock  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn with_scheduler_lock => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
