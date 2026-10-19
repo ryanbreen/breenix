@@ -1,9 +1,9 @@
-//! x86-metal xHCI host controller, written from Intel xHCI revision 1.2.
+//! xHCI host controller, written from Intel xHCI revision 1.2.
 //!
 //! Source authority: Intel's published xHCI 1.2 (4.2-4.6, 4.9, 4.17,
 //! 4.19, 4.22.1 and chapters 5-7); USB 2.0 chapter 9 for descriptors.
 //! The existing ARM USB stack is neither used nor a reference.
-//! DMA is coherent on x86. One worker owns the rings and device contexts;
+//! DMA is coherent on x86; ARM64 maintains caches at the ownership boundaries. One worker owns the rings and device contexts;
 //! the MSI handler accesses only published MMIO addresses and atomic work.
 //! `keyboard` adds HID boot keyboards, hot-plug and slot reclamation.
 //! `fault` is the recovery exercise, built only into fault-test kernels.
@@ -11,6 +11,19 @@ mod keyboard;
 mod recovery;
 #[cfg(feature = "xhci_fault_inject")]
 mod fault;
+#[cfg(target_arch = "aarch64")]
+mod firmware;
+#[cfg(target_arch = "aarch64")]
+pub use firmware::set_rsdp as set_firmware_rsdp;
+mod platform;
+#[cfg(target_arch = "aarch64")]
+mod pointer;
+#[cfg(target_arch = "aarch64")]
+pub use platform::get_irq;
+#[cfg(target_arch = "aarch64")]
+pub use pointer::describe as describe_pointers;
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+pub use pointer::replay;
 mod spec;
 
 use crate::{
@@ -20,7 +33,7 @@ use crate::{
 use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::{
     ptr::{read_volatile, write_volatile},
-    sync::atomic::{fence, AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{fence, AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
 };
 use spec::{Consumer, Contexts, Producer, Trb, Work, EVENT_TRBS, PORT_CHANGES, TRBS};
 
@@ -37,7 +50,37 @@ const ERDP: usize = 0x18;
 const EHB: u64 = 1 << 3; // RW1C, not a bit to preserve (5.5.2.3.3).
 static OP: AtomicUsize = AtomicUsize::new(0);
 static IR: AtomicUsize = AtomicUsize::new(0);
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// True after the controller has completed commands and device enumeration.
+pub fn is_initialized() -> bool {
+    INITIALIZED.load(Ordering::Acquire)
+}
+
+/// The driver's progress for `/proc/xhci/trace`: no controller, enumerating the
+/// root ports and attaching their class drivers, attached, or stopped by a failure.
+/// PID 1 starts while the worker enumerates, so a program that needs a USB keyboard
+/// (a suite's host keys) waits for `ready` (`libbreenix::suite::hostkeys`).
+static STATE: AtomicU8 = AtomicU8::new(STATE_ABSENT);
+const STATE_ABSENT: u8 = 0;
+const STATE_ENUMERATING: u8 = 1;
+const STATE_READY: u8 = 2;
+const STATE_FAILED: u8 = 3;
+
+pub fn state() -> &'static str {
+    match STATE.load(Ordering::Acquire) {
+        STATE_ENUMERATING => "enumerating",
+        STATE_READY => "ready",
+        STATE_FAILED => "failed",
+        _ => "absent",
+    }
+}
+
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+pub fn interrupt_count() -> u64 {
+    INTERRUPTS.load(Ordering::Acquire)
+}
+
 static WORK: Work = Work::new();
 /// A thread-context console request, serviced after initial keyboard attach.
 static CONSOLE_START: AtomicBool = AtomicBool::new(false);
@@ -50,6 +93,20 @@ static CONSOLE_READY: crate::task::completion::Completion = crate::task::complet
 /// keyboard report (a switch to a terminal with other locks), so the worker
 /// sends attached keyboards their LEDs (`keyboard::sync_leds`).
 static LEDS: AtomicBool = AtomicBool::new(false);
+
+/// A thread-context request: the pointer replay control has a report for the
+/// worker (`pointer::replay`, measurement kernels only).
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+static REPLAY: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+fn replay_requested() -> bool {
+    REPLAY.load(Ordering::SeqCst)
+}
+#[cfg(not(all(target_arch = "aarch64", feature = "usb_pointer_replay")))]
+fn replay_requested() -> bool {
+    false
+}
 
 /// Prepare input before init starts getty. Only measured boot targets request
 /// the destructive replug exercise; ordinary sessions only arm input markers.
@@ -122,7 +179,7 @@ fn until(base: usize, offset: usize, mask: u32, value: u32, ns: u64) -> Result<(
 
 /// Hard IRQ: bounded MMIO acknowledgements and atomic publication only.
 /// EHB stays set until the worker has advanced the dequeue pointer.
-fn interrupt() {
+pub fn handle_interrupt() {
     let op = OP.load(Ordering::Acquire);
     let ir = IR.load(Ordering::Acquire);
     if op == 0 || ir == 0 {
@@ -132,6 +189,7 @@ fn interrupt() {
     wr(ir, IMAN, 3); // IP RW1C; retain IE. MSI may already have cleared IP.
     let _ = rd(ir, IMAN); // flush posted acknowledgements before APIC EOI
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    crate::tracing::providers::xhci::count_irq_entry();
     let tid = WORK.signal();
     if tid != 0 {
         // A persistent per-CPU bit cannot overflow the shared ISR TID queue.
@@ -175,6 +233,7 @@ impl Dma {
         unsafe {
             core::ptr::write_bytes(virt as *mut u8, 0, pages * 4096);
         }
+        platform::clean(virt, pages * 4096);
         Ok(Self {
             phys,
             virt,
@@ -184,17 +243,21 @@ impl Dma {
     fn put32(&self, offset: usize, value: u32) {
         assert!(offset + 4 <= self.bytes);
         wr(self.virt, offset, value);
+        platform::clean(self.virt + offset, 4);
     }
     fn put64(&self, offset: usize, value: u64) {
         assert!(offset + 8 <= self.bytes);
         wr64(self.virt, offset, value);
+        platform::clean(self.virt + offset, 8);
     }
     fn get32(&self, offset: usize) -> u32 {
         assert!(offset + 4 <= self.bytes);
+        platform::invalidate(self.virt + offset, 4);
         rd(self.virt, offset)
     }
     fn copy(&self, offset: usize, len: usize) -> Vec<u8> {
         assert!(offset + len <= self.bytes);
+        platform::invalidate(self.virt + offset, len);
         (offset..offset + len)
             .map(|i| unsafe { read_volatile((self.virt + i) as *const u8) })
             .collect()
@@ -202,16 +265,21 @@ impl Dma {
     fn put8(&self, offset: usize, value: u8) {
         assert!(offset < self.bytes);
         unsafe { write_volatile((self.virt + offset) as *mut u8, value) }
+        platform::clean(self.virt + offset, 1);
     }
     /// Return the frames. Only for memory the controller no longer owns: a
     /// device's, after its Disable Slot command completed (4.6.4).
     fn release(self) -> usize {
         let pages = self.bytes / 4096;
         for page in 0..pages {
-            let address = x86_64::PhysAddr::new(self.phys + (page * 4096) as u64);
-            crate::memory::frame_allocator::deallocate_frame(
-                x86_64::structures::paging::PhysFrame::containing_address(address),
-            );
+            #[cfg(target_arch = "aarch64")]
+            use crate::memory::arch_stub::{PhysAddr, PhysFrame};
+            #[cfg(target_arch = "x86_64")]
+            use x86_64::{structures::paging::PhysFrame, PhysAddr};
+            let address = PhysAddr::new(self.phys + (page * 4096) as u64);
+            crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+                address,
+            ));
         }
         pages
     }
@@ -278,6 +346,8 @@ struct Device {
     /// The first configuration's full descriptor, for class drivers.
     config: Vec<u8>,
     keyboard: Option<keyboard::Pipe>,
+    #[cfg(target_arch = "aarch64")]
+    pointers: Vec<pointer::Pipe>,
     /// EP0 requests sent again since Address Device.
     ep0_retries: u32,
 }
@@ -304,13 +374,17 @@ struct Controller {
     console: crate::drivers::hid_boot::Console,
     /// The LED state last sent to the keyboards: the console's lock state.
     keyboard_leds: u8,
+    /// The replay request whose Transfer Event is queued, and its TD
+    /// (`pointer::replay_pointer`).
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+    replay_at: Option<(u64, u64)>,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
 }
 
 /// One x86-metal attach hook, after clocks and the interrupt controller exist.
 pub fn init() {
-    if crate::drivers::fw_cfg::present() {
+    if platform::skip_controller() {
         return;
     }
     if let Some(device) = pci::find_by_class(pci::DeviceClass::SerialBus, 3, 0x30) {
@@ -318,10 +392,12 @@ pub fn init() {
             crate::task::softirqd::SoftirqType::IrqPoll,
             deferred_wake,
         );
+        STATE.store(STATE_ENUMERATING, Ordering::Release);
         AVAILABLE.store(true, Ordering::Release);
         if let Err(error) = kthread::kthread_run(
             move || {
                 if let Err(error) = start(device) {
+                    STATE.store(STATE_FAILED, Ordering::Release);
                     FAILED.store(true, Ordering::Release);
                     CONSOLE_READY.complete(1);
                     log::error!("[xhci] FAILED: {error}");
@@ -329,6 +405,7 @@ pub fn init() {
             },
             "xhci",
         ) {
+            STATE.store(STATE_FAILED, Ordering::Release);
             FAILED.store(true, Ordering::Release);
             CONSOLE_READY.complete(1);
             log::error!("[xhci] FAILED: cannot create worker: {error:?}");
@@ -340,6 +417,7 @@ pub fn init() {
 
 // PCI Local Bus 3.0 6.2.5.1: size both halves with decoding disabled,
 // restore the exact BARs and command register before mapping anything.
+#[cfg(target_arch = "x86_64")]
 fn size_bar(device: &pci::Device) -> Result<(u64, usize), &'static str> {
     let (bus, dev, fun) = (device.bus, device.device, device.function);
     let command = pci::pci_read_config_word(bus, dev, fun, 4);
@@ -384,10 +462,11 @@ fn size_bar(device: &pci::Device) -> Result<(u64, usize), &'static str> {
 }
 
 fn start(device: pci::Device) -> Result<(), &'static str> {
-    let (phys, size) = size_bar(&device)?;
+    let (phys, size) = platform::bar(&device)?;
+    #[cfg(target_arch = "x86_64")]
     pci::publish_xhci_bar0(&device, phys, size as u64);
     device.enable_memory_space();
-    let base = crate::memory::map_mmio(phys, size)?;
+    let base = platform::map_registers(phys, size)?;
     let cap = rd(base, 0);
     let caplen = (cap & 255) as usize;
     let hcs1 = rd(base, 4);
@@ -470,6 +549,8 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         devices: Vec::new(),
         console: crate::drivers::hid_boot::Console::new(),
         keyboard_leds: 0,
+        #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+        replay_at: None,
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
     };
@@ -638,7 +719,7 @@ impl Controller {
         wr(self.ir, 4, 4000); // 1 ms moderation, 250 ns units (5.5.2.2)
         OP.store(self.op, Ordering::Release);
         IR.store(self.ir, Ordering::Release);
-        let vector = crate::arch_impl::x86_64::msi::enable(&self.pci, interrupt)?;
+        let vector = platform::enable_interrupt(&self.pci, handle_interrupt)?;
         self.pci.enable_bus_master();
         wr(self.op, USBSTS, EINT | (1 << 4));
         wr(self.ir, IMAN, 3);
@@ -688,6 +769,7 @@ impl Controller {
             }
         }
         log::info!("[xhci] port census: ports={} connected={connected} enumerated={}; descriptors complete", self.ports, self.devices.len());
+        INITIALIZED.store(true, Ordering::Release);
         // Keep owning the event ring: class drivers, port changes, reclamation.
         self.serve()
     }
@@ -713,6 +795,7 @@ impl Controller {
                 status: self.events.get32(at + 8),
                 control,
             };
+            crate::tracing::providers::xhci::count_msi_event();
             match event.kind() {
                 32 | 33 => self.completions.push_back(event),
                 // PORTSC changes stay latched until `port_changed` acknowledges them.
@@ -746,7 +829,12 @@ impl Controller {
     /// `requests` is set, a thread-context request arrives (false).
     fn wait_work(&self, deadline: Option<u64>, requests: bool) -> Result<bool, &'static str> {
         let tid = scheduler::current_thread_id().ok_or("worker has no thread identity")?;
-        let requested = || requests && (CONSOLE_START.load(Ordering::SeqCst) || LEDS.load(Ordering::SeqCst));
+        let requested = || {
+            requests
+                && (CONSOLE_START.load(Ordering::SeqCst)
+                    || LEDS.load(Ordering::SeqCst)
+                    || replay_requested())
+        };
         loop {
             WORK.publish(tid);
             if WORK.take() {
@@ -774,7 +862,12 @@ impl Controller {
                 })
                 .unwrap_or(false)
                 {
+                    #[cfg(target_arch = "x86_64")]
                     crate::task::waitqueue::halt_blocked_current();
+                    // The blocked handoff saves this continuation without the
+                    // deferred reclamation an ordinary reschedule runs first.
+                    #[cfg(target_arch = "aarch64")]
+                    crate::arch_halt_while_blocked();
                 }
             }
             scheduler::with_current(|sched| {
@@ -942,6 +1035,8 @@ impl Controller {
                 speed,
                 config: Vec::new(),
                 keyboard: None,
+                #[cfg(target_arch = "aarch64")]
+                pointers: Vec::new(),
                 ep0_retries: 0,
             })
         })();
@@ -978,7 +1073,10 @@ impl Controller {
         input.put32(slot_at, (1 << 27) | ((speed_id as u32) << 20));
         input.put32(slot_at + 4, (port as u32) << 16);
         let ep_at = self.contexts.input(1);
-        input.put32(ep_at + 4, (3 << 1) | (4 << 3) | ((device.packet as u32) << 16));
+        input.put32(
+            ep_at + 4,
+            (3 << 1) | (4 << 3) | ((device.packet as u32) << 16),
+        );
         input.put64(ep_at + 8, device.ep0.memory.phys | 1);
         input.put32(ep_at + 16, 8); // Average TRB length for control, 6.2.3.
         self.dcbaa.put64(slot as usize * 8, device.output.phys);
@@ -1046,14 +1144,35 @@ impl Controller {
         // Fault-test only: the device descriptor is 18 bytes. Requesting 19
         // produces a real Short Packet; the resend asks for 18 again.
         #[cfg(feature = "xhci_fault_inject")]
-        let short = core::cell::Cell::new(self.fault.short_descriptor(device.port, kind, len));
-        let request = spec::get_descriptor(kind, index, len).parameter;
+        let first = if self.fault.short_descriptor(device.port, kind, len) { len + 1 } else { len };
+        #[cfg(not(feature = "xhci_fault_inject"))]
+        let first = len;
+        self.read_descriptor(
+            device,
+            &|len| spec::get_descriptor(kind, index, len).parameter,
+            len,
+            first,
+        )
+    }
+    /// A control IN transfer of `len` bytes; the first attempt asks for
+    /// `first` (fault-test kernels make it one longer). `setup` gives the
+    /// setup packet for a length.
+    fn read_descriptor(
+        &mut self,
+        device: &mut Device,
+        setup: &dyn Fn(u16) -> u64,
+        len: u16,
+        first: u16,
+    ) -> Result<Vec<u8>, &'static str> {
+        let attempt = core::cell::Cell::new(first);
+        let request = setup(len);
         let event = self.ep0_transfer(device, request, &|device: &mut Device| {
             // Each Data Stage TRB is contained in a 64 KiB boundary (4.11.2.2).
             // The DMA allocation need not itself be 64 KiB aligned, so split there.
-            #[cfg(feature = "xhci_fault_inject")]
-            let len = if short.replace(false) { len + 1 } else { len };
-            let mut pointers = vec![device.ep0.push(spec::get_descriptor(kind, index, len))];
+            let len = attempt.replace(len);
+            let mut pointers = vec![device
+                .ep0
+                .push(Trb::new(2, setup(len), 8, (1 << 6) | (3 << 16)))];
             let mut offset = 0usize;
             while offset < len as usize {
                 let phys = device.data.phys + offset as u64;
@@ -1080,7 +1199,7 @@ impl Controller {
         })?;
         if event.code() != 1 {
             log::error!(
-                "[xhci] slot {}: GET_DESCRIPTOR type={kind} completion code={}",
+                "[xhci] slot {}: GET_DESCRIPTOR completion code={}",
                 device.slot,
                 event.code()
             );

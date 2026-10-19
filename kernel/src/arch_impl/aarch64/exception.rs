@@ -2547,9 +2547,9 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                 }
             }
             // XHCI USB interrupt dispatch
-            if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+            if let Some(xhci_irq) = crate::drivers::xhci::get_irq() {
                 if irq_id == xhci_irq {
-                    crate::drivers::usb::xhci::handle_interrupt();
+                    crate::drivers::xhci::handle_interrupt();
                 }
             }
             // VirtIO GPU PCI interrupt dispatch (MSI completion)

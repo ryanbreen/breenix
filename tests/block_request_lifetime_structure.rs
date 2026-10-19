@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 /// Adding a driver completion wait is expected to force explicit review of this
 /// number rather than allowing a new interruptible wait to land silently.
-/// The separately named x86_64 console-readiness wait below is the only addition.
-const DRIVER_COMPLETION_WAIT_POPULATION: usize = 10;
+/// The separately named xHCI console-readiness wait below is the only addition.
+/// Retiring the Linux-derived USB driver removed its command and transfer
+/// completion waits, so the population fell from 10 to 8.
+const DRIVER_COMPLETION_WAIT_POPULATION: usize = 8;
 const INTERRUPTIBLE_WAIT: &str = ".wait_timeout(";
 const UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible(";
 const BLOCK_EINTR_ORACLE_PREFIX: &str = "[BLOCK_EINTR_ORACLE:";
@@ -269,18 +271,11 @@ fn drivers_have_no_interruptible_completion_waits() {
 }
 
 // The startup kthread must wait for xHCI keyboard preparation before getty.
-// Admit that deliberate addition only in its exact function and module cfg.
+// Admit that deliberate addition only in its exact function and module.
 fn validate_console_ready_wait(module: &str, driver: &str) -> Result<(), String> {
     let declarations = code_occurrences(module, "pub mod xhci;");
-    let attribute = "#[cfg(target_arch = \"x86_64\")]";
-    let cfg_is_code = declarations.first().is_some_and(|declaration| {
-        let prefix = module[..*declaration].trim_end();
-        prefix.ends_with(attribute)
-            && code_mask(module)[prefix.len() - attribute.len()]
-    });
-    if declarations.len() != 1 || !cfg_is_code
-    {
-        return Err("xhci must remain cfg(target_arch = \"x86_64\")".into());
+    if declarations.len() != 1 {
+        return Err("xhci must have exactly one module declaration".into());
     }
     let code = masked_code(driver);
     let sites: Vec<_> = code_occurrences(driver, UNINTERRUPTIBLE_WAIT)
@@ -304,7 +299,7 @@ fn driver_completion_wait_population_is_pinned() {
         &repo_text("kernel/src/drivers/mod.rs"),
         &repo_text("kernel/src/drivers/xhci/mod.rs"),
     )
-    .expect("the added wait is x86_64 xhci::wait_console_ready only");
+    .expect("the added wait is xhci::wait_console_ready only");
     assert_eq!(
         census.total(),
         DRIVER_COMPLETION_WAIT_POPULATION + 1,
@@ -315,24 +310,13 @@ fn driver_completion_wait_population_is_pinned() {
 }
 
 #[test]
-fn console_ready_wait_census_rejects_a_different_name_or_cfg() {
+fn console_ready_wait_census_rejects_a_different_name() {
     let module = repo_text("kernel/src/drivers/mod.rs");
     let driver = repo_text("kernel/src/drivers/xhci/mod.rs");
     assert!(validate_console_ready_wait(
         &module,
         &driver.replace("fn wait_console_ready()", "fn different_wait()"),
     ).is_err());
-    assert!(validate_console_ready_wait(
-        &module.replace("#[cfg(target_arch = \"x86_64\")]\npub mod xhci;", "pub mod xhci;"),
-        &driver,
-    ).is_err());
-    for fake_attribute in [
-        "// #[cfg(target_arch = \"x86_64\")]",
-        "/* #[cfg(target_arch = \"x86_64\")] */",
-    ] {
-        let commented = module.replace("#[cfg(target_arch = \"x86_64\")]", fake_attribute);
-        assert!(validate_console_ready_wait(&commented, &driver).is_err());
-    }
 
 }
 

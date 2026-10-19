@@ -649,6 +649,10 @@ path = "src/bssh.rs"
 name = "biconkit"
 path = "src/biconkit.rs"
 
+[[bin]]
+name = "usb_pointer_check"
+path = "src/usb_pointer_check.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"
