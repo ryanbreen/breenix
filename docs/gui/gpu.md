@@ -706,7 +706,8 @@ rests on host-side evidence that the gate checks, recorded with every run:
   console (`docs/console/contract.md`), its six virtual terminals with the grid sized for the kernel mode
   (index 1) by the contract's size rule, drawn by the CPU into the backing of one display-sized scanout
   target the core uploads, binds and flushes (`kernel/src/gpu/screen.rs`, ruling F25). A process that owns
-  the display through the framebuffer interface has its pane presented through that target too, so no
+  the display through the framebuffer interface has its pane presented through a private target retained
+  for that owner across nested takeovers, so no
   kernel writer touches the firmware framebuffer once the core has shown a frame. The core's own console,
   drawn from a glyph atlas uploaded from its built-in font tables (`purpose` `Fixture`) through
   `bitmap_text`, is the panic and diagnostics path only (section 1.7.1). Before the core shows a frame, the

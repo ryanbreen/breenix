@@ -4119,7 +4119,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
 pub fn display_active() -> bool {
     display::active()
 }
-pub fn take_display() -> SyscallResult {
+pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
     let tid = match crate::task::scheduler::current_thread_id() {
         Some(t) => t,
@@ -4141,7 +4141,7 @@ pub fn take_display() -> SyscallResult {
     if uid != 0 {
         return result(Err(abi::errno::EPERM));
     }
-    let outcome = display::take(group, pid);
+    let outcome = display::take(group, pid, vt);
     if outcome.is_ok() {
         crate::process::with_process_manager(|m| {
             if let Some(p) = m.get_process_mut(crate::process::ProcessId::new(pid)) {

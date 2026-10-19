@@ -278,8 +278,8 @@ changes or mode changes. It is 0 before handoff and must remain 0 afterward. The
 tracks actual writes, not attempted calls that perform no store, a drawing-policy flag or
 framebuffer contents. Device DMA and userspace stores are not kernel writes.
 `present/firmware-handoff` checks this counter before and after restoring the kernel's screen
-on every backend (ruling 50). A framebuffer-interface owner's pane is presented through the
-kernel's screen (`gpu.md` section 1.7), so it writes no firmware memory either.
+on every backend (ruling 50). A framebuffer-interface owner's pane is presented through its own retained scanout
+target (`gpu.md` section 1.7), so it writes no firmware memory either.
 
 The hashes remain diagnostic FNV-1a over the actual firmware framebuffer bytes (offset
 basis 14695981039346656037, multiplier 1099511628211), sampled at handoff and at MODES.

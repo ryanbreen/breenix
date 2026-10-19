@@ -30,6 +30,8 @@ pub(super) struct Owner {
     pub pid: u64,
     pub mode: u32,
     pub last: Option<Binding>,
+    /// Private CPU framebuffer target, retained across nested owners.
+    pub pane: Option<u32>,
 }
 
 pub(super) struct State {
@@ -522,12 +524,12 @@ impl Drop for Transition {
     }
 }
 
-pub(super) fn take(group: u64, pid: u64) -> Result<(), i64> {
-    // No device operation belongs to TAKE_DISPLAY. Refusal checks precede even
-    // waiting for a transition, and waiting cannot add an undocumented EINTR.
-    wait_for(None, false, |c| {
+pub(super) fn take(group: u64, pid: u64, vt: usize) -> Result<(), i64> {
+    // Refuse before changing VT custody. Hold a transition while installing both
+    // owners. Take the console lock after releasing the core lock.
+    let acquired = wait_for(None, false, |c| {
         if c.display.stack.last().is_some_and(|o| o.group == group) {
-            return Some(Ok(()));
+            return Some(Ok(false));
         }
         if c.display.stack.len() >= 4 || c.display.stack.iter().any(|o| o.group == group) {
             return Some(Err(EBUSY));
@@ -535,16 +537,26 @@ pub(super) fn take(group: u64, pid: u64) -> Result<(), i64> {
         if c.display.changing || c.display.outstanding != 0 {
             return None;
         }
+        c.display.changing = true;
+        Some(Ok(true))
+    }).unwrap_or(Err(ENODEV))?;
+    if !acquired {
+        // Repeated takeover still owes the foreground-VT check.
+        return crate::console::vt::take_display(group, vt).map_err(|e| e as i64);
+    }
+    let _transition = Transition;
+    crate::console::vt::take_display_nested(group, vt).map_err(|e| e as i64)?;
+    with_core(|c| {
         c.display.stack.push(Owner {
             group,
             pid,
             mode: c.display.mode,
             last: None,
+            pane: None,
         });
         publish_owner(c);
-        Some(Ok(()))
-    })
-    .unwrap_or(Err(ENODEV))
+    });
+    Ok(())
 }
 
 pub(super) fn back(group: u64) -> Result<(), i64> {
@@ -559,8 +571,14 @@ pub(super) fn back(group: u64) -> Result<(), i64> {
     .ok_or(ENODEV)??;
     match restore() {
         Ok(()) => {
+            if with_core(|c| !c.display.stack.is_empty()).unwrap_or(false) {
+                crate::console::vt::give_back_display();
+            }
             with_core(|c| {
                 publish_owner(c);
+                if let Some(id) = removed.pane {
+                    c.unhold(id);
+                }
                 if let Some(b) = removed.last {
                     c.unhold(b.id);
                 }
@@ -583,6 +601,9 @@ pub(super) fn ended(c: &mut Core, group: u64) {
     let was_top = c.display.stack.last().is_some_and(|o| o.group == group);
     if let Some(i) = c.display.stack.iter().position(|o| o.group == group) {
         let o = c.display.stack.remove(i);
+        if let Some(id) = o.pane {
+            c.unhold(id);
+        }
         if let Some(b) = o.last {
             c.unhold(b.id);
         }

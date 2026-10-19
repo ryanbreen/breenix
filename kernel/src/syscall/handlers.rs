@@ -3542,23 +3542,11 @@ pub fn sys_take_over_display() -> SyscallResult {
         return SyscallResult::Err(3);
     };
     #[cfg(target_arch = "aarch64")]
-    let previous = crate::console::vt::display_owner();
+    if crate::gpu::display_active() {
+        return crate::gpu::take_display(vt);
+    }
     if let Err(errno) = crate::console::vt::take_display(group, vt) {
         return SyscallResult::Err(errno as u64);
-    }
-    // The GPU core's ownership stack holds the display; its take stops the console.
-    #[cfg(target_arch = "aarch64")]
-    if crate::gpu::display_active() {
-        let taken = crate::gpu::take_display();
-        if matches!(taken, SyscallResult::Err(_)) {
-            match previous {
-                Some((pid, vt)) => {
-                    let _ = crate::console::vt::take_display(pid, vt);
-                }
-                None => crate::console::vt::give_back_display(),
-            }
-        }
-        return taken;
     }
     // Quiesce the console before publishing authority to the new owner's
     // other threads, which can issue framebuffer syscalls concurrently.
@@ -3595,11 +3583,7 @@ pub fn sys_give_back_display() -> SyscallResult {
     // The core restores the previous owner's frame, or the kernel's screen and console.
     #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() {
-        let given = crate::gpu::give_display();
-        if matches!(given, SyscallResult::Ok(_)) {
-            crate::console::vt::give_back_display();
-        }
-        return given;
+        return crate::gpu::give_display();
     }
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return SyscallResult::Err(3);

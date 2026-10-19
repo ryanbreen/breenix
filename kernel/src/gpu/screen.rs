@@ -5,7 +5,7 @@
 //! this target's guest backing (`write`); `present` uploads those rows (TRANSFER_TO_HOST_3D),
 //! binds the target to scanout 0 when it is not the binding, and flushes them. A process that
 //! owns the display through the framebuffer interface (`fb_mmap` and its flushes) has its pane
-//! copied into the same target and presented as its own frame (`present_pane`), so the
+//! copied into a private target and presented as its own frame (`present_pane`), so the
 //! kernel does not write the firmware framebuffer after the core has shown a frame.
 //!
 //! A read-back (`settle`) presents the whole screen, requires the target to be the completed
@@ -16,6 +16,7 @@
 //! spin lock only moves it in and out, and device waits run without it.
 
 use super::*;
+use alloc::vec;
 use core::ops::Range;
 use display::Binding;
 
@@ -37,6 +38,7 @@ struct Target {
     context: u32,
     handle: u64,
     id: u32,
+    pages: Arc<Pages>,
 }
 
 impl Target {
@@ -59,7 +61,7 @@ impl Target {
             }
         };
         RESOURCE.store(id as u64, Ordering::Release);
-        Ok(Target { epoch, context, handle, id })
+        Ok(Target { epoch, context, handle, id, pages: BACKING.get().ok_or(ENODEV)?.clone() })
     }
 
     fn live(&self) -> bool {
@@ -91,7 +93,7 @@ impl Target {
         if rows.is_empty() {
             return Ok(());
         }
-        let pages = BACKING.get().ok_or(ENODEV)?;
+        let pages = &self.pages;
         let offset = rows.start as usize * PITCH;
         pages.maintain(offset, rows.len() * PITCH, false);
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
@@ -181,7 +183,9 @@ impl Drop for Target {
             }
             c.unhold(self.id);
         });
-        destroy_context(0, self.handle);
+        if self.handle != 0 {
+            destroy_context(0, self.handle);
+        }
         let _ = RESOURCE.compare_exchange(self.id as u64, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 }
@@ -238,10 +242,15 @@ pub fn write(offset: usize, bytes: &[u8]) {
     }
 }
 
-/// Copy the backing at byte `offset` into `out`.
+/// Copy the completed scanout's backing (the console's after `settle`, or an
+/// owner's pane for framebuffer ReadPixel) at byte `offset` into `out`.
 pub fn read(offset: usize, out: &mut [u8]) {
-    if let Some(pages) = BACKING.get() {
-        if offset + out.len() <= PITCH * HEIGHT as usize {
+    let pages = with_core(|c| {
+        let b = c.display.binding.filter(|_| c.display.known)?;
+        Some(c.resources.get(&b.id)?.backing.clone())
+    }).flatten();
+    if let Some(pages) = pages {
+        if offset + out.len() <= pages.bytes() {
             pages.read(offset, out);
         }
     }
@@ -289,21 +298,66 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
         let (offset, len) = (y as usize * PITCH, rows as usize * PITCH);
+        let saved = Pages::new(len.div_ceil(PAGE)).ok_or("no frames to preserve the screen's read-back band")?;
+        let mut row = vec![0; PITCH];
+        for n in 0..rows as usize {
+            pages.read(offset + n * PITCH, &mut row);
+            saved.write(n * PITCH, &row);
+        }
         pages.fill(offset, len, POISON);
         pages.maintain(offset, len, false);
         let (id, context) = (target.id, target.context);
         let backing = pages.clone();
-        target
-            .fenced(|t, fence| virgl::transfer_from_host(t, context, fence, id, backing, 0, y, WIDTH, rows, offset as u64, PITCH as u32))
-            .map_err(|_| "the device did not transfer the screen back")?;
+        let transferred = target
+            .fenced(|t, fence| virgl::transfer_from_host(t, context, fence, id, backing, 0, y, WIDTH, rows, offset as u64, PITCH as u32));
         pages.maintain(offset, len, true);
+        if transferred.is_err() {
+            for n in 0..rows as usize {
+                saved.read(n * PITCH, &mut row);
+                pages.write(offset + n * PITCH, &row);
+            }
+            return Err("the device did not transfer the screen back");
+        }
         y += rows;
     }
     Ok((target.id, flush))
 }
 
+/// A framebuffer owner has its own resource and backing: nested owners must not
+/// overwrite the pixels a previous binding will restore. The owner's hold survives
+/// this temporary view; the ordinary resource retirement path releases it on pop.
+fn pane_target(console: &Target, group: u64) -> Result<Target, i64> {
+    let existing = with_core(|c| {
+        let id = c.display.stack.last()?.pane?;
+        let r = c.resources.get_mut(&id)?;
+        if r.lost { return None; }
+        r.holds += 1;
+        Some((id, r.backing.clone()))
+    }).flatten();
+    let (id, pages) = if let Some(found) = existing {
+        found
+    } else {
+        let pages = Arc::new(Pages::new((PITCH * HEIGHT as usize).div_ceil(PAGE)).ok_or(ENOMEM)?);
+        // A first partial flush retains the screen as the owner first saw it.
+        let mut row = vec![0; PITCH];
+        for y in 0..HEIGHT as usize {
+            console.pages.read(y * PITCH, &mut row);
+            pages.write(y * PITCH, &row);
+        }
+        let id = console::resource_with(console.context, kind::TARGET, format::B8G8R8A8, WIDTH, HEIGHT, true, pages.clone())?;
+        with_core(|c| {
+            let o = c.display.stack.last_mut().filter(|o| o.group == group).expect("display transition retains owner");
+            let old = o.pane.replace(id);
+            c.resources.get_mut(&id).expect("new pane resource").holds += 1;
+            if let Some(old) = old { c.unhold(old); }
+        });
+        (id, pages)
+    };
+    Ok(Target { epoch: console.epoch, context: console.context, handle: 0, id, pages })
+}
+
 /// Draw the calling process's framebuffer pane, at `pane` with `stride` bytes per row, onto
-/// the kernel's screen: rows `rows`, bytes `columns` of each, then present it as the
+/// its retained target: rows `rows`, bytes `columns` of each, then present it as the
 /// caller's frame. EPERM unless the caller owns the display.
 ///
 /// # Safety
@@ -313,7 +367,7 @@ pub unsafe fn present_pane(pane: *const u8, stride: usize, rows: Range<usize>, c
     let tgid = caller()?;
     let _transition = display::Transition::for_observation(tgid)?;
     let mut lease = Lease::take();
-    let target = lease.ensure()?;
+    let target = pane_target(lease.ensure()?, tgid)?;
     let rows = rows_of(rows);
     let columns = columns.start.min(PITCH)..columns.end.min(PITCH);
     if rows.is_empty() || columns.is_empty() {
@@ -322,9 +376,10 @@ pub unsafe fn present_pane(pane: *const u8, stride: usize, rows: Range<usize>, c
     for y in rows.clone() {
         // SAFETY: the caller's contract; row `y` is inside the pane.
         let row = unsafe { core::slice::from_raw_parts(pane.add(y as usize * stride + columns.start), columns.len()) };
-        write(y as usize * PITCH + columns.start, row);
+        target.pages.write(y as usize * PITCH + columns.start, row);
     }
-    target.upload(rows.clone())?;
+    let uploaded = with_core(|c| c.resources.get(&target.id).is_some_and(|r| r.last.is_some())).unwrap_or(false);
+    target.upload(if uploaded { rows.clone() } else { 0..HEIGHT })?;
     let current = with_core(|c| {
         c.display.known
             && c.display.binding.is_some_and(|b| b.id == target.id)
@@ -369,8 +424,9 @@ pub(super) fn show() -> Result<(), i64> {
 
 /// The display came back to the kernel: show its screen again and let the console redraw it.
 pub(super) fn restore() -> Result<(), i64> {
+    show()?;
     crate::console::give_back_display();
-    show()
+    Ok(())
 }
 
 /// Bind an owner's saved frame again, in the kernel screen's context.

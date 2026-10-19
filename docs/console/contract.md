@@ -244,8 +244,9 @@ shows the kernel's screen, which the console redraws.
   owner's `fb_mmap` mapping is a pane the kernel copies at each flush, not the scanout, so the suspension
   is of the framebuffer draw and flush requests (`fbdraw`): they return success without drawing, and a
   switch away waits for any of them already under way before the new VT is drawn. Where the GPU core owns
-  the display, a framebuffer owner's flush copies its pane into the kernel's scanout target and presents it
-  as the owner's frame, and while the owner's VT is released the console presents the foreground VT there;
+  the display, a framebuffer owner's flush copies its pane into a private scanout target retained for that owner
+  and presents it as the owner's frame; while the owner's VT is released the console presents the
+  foreground VT through the kernel's own target;
   suspending an owner's own GPU `PRESENT` is the GPU effort's (Q8).
 - A panic or fatal fault takes the screen regardless of VT state.
 
