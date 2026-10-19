@@ -297,7 +297,7 @@ VIGIL_CPUS=
 # Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).
 if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
-    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID"
+    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/${VIGIL_ID%%,*}"
     VIGIL_QMP_SOCKET="$VIGIL_BOOT_DIR/qmp.sock"
     if [ ! -d "$VIGIL_BOOT_DIR" ]; then
         echo "==> Vigil QMP disabled: no boot folder at $VIGIL_BOOT_DIR"

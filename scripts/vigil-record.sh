@@ -16,6 +16,9 @@
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
 
+# Preserve the launcher through command substitutions and recursive registrations.
+export BREENIX_LAUNCHER_PID=${BREENIX_LAUNCHER_PID:-$PPID}
+
 [ "$(uname -s)" = Darwin ] || exit 0
 [ -z "${VIGIL_BOOT_ID:-}" ] || exit 0
 
