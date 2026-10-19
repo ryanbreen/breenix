@@ -15,9 +15,9 @@ file from main and shows each milestone's state from live evidence; nothing in i
       "targetsNote": one line on the target policy, only beside "targets",
       "milestones": [ { "id", "title", "measure" } ] }
 
-An effort with `"needsGpu": true` does not exist on a target without a GPU: it is not
-shown, counted or selected as the current effort. Today that target is `x86-metal`
-(Vigil platform `metal`). Its path is E0–E14 plus the screen console effort.
+`needsGpu` declares a GPU requirement for Vigil to use when filtering efforts;
+repository runners do not act on this field. The GPU-less `x86-metal` target
+(Vigil platform `metal`) follows the five efforts in `metal.json`.
 The field is a boolean; only `true` is written, and absence means no GPU requirement.
 
 ## Targets
