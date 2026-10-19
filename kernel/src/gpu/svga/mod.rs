@@ -1403,3 +1403,21 @@ pub fn readback(tag: Tag, ctx: u32, fence: u64, source: u32, read: Option<u32>, 
     req.release.push(Release::Transient(sid));
     Some((req, sid, mob))
 }
+
+/// Read a kernel screen target into its attached MOB, completed by a device fence.
+pub fn download(tag: Tag, ctx: u32, fence: u64, resource: u32, pages: Arc<Pages>) -> Option<Request> {
+    let cid = cid_of(ctx)?;
+    let sid = sid_of(resource)?;
+    let mut b = Builder::new();
+    b.c.readback_surface(sid);
+    let mut req = Request::new(tag, Some(fence), Some(cid), b);
+    req.keep.push(Keep::Pages(pages));
+    Some(req)
+}
+
+pub fn flush_rect(tag: Tag, ctx: u32, fence: u64, x: u32, y: u32, w: u32, h: u32) -> Option<Request> {
+    let cid = cid_of(ctx)?;
+    let mut b = Builder::new();
+    b.c.update_screen_rect(x, y, w, h);
+    Some(Request::new(tag, Some(fence), Some(cid), b))
+}

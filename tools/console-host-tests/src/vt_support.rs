@@ -243,3 +243,48 @@ fn cursor_presentations_follow_current_ownership_and_drain_before_text() {
     assert!(vt::process_exited(77));
     assert!(vt::Presentation::begin_cursor().is_none(), "exited owner cannot draw cursor");
 }
+
+#[test]
+fn nested_display_giveback_restores_released_vt_custody() {
+    for exit in [false, true] {
+        let mut vts = [const { vt::Vt::new() }; vt::VT_COUNT];
+        let mut sw = vt::Switching::new();
+        let mut t = vt::Terminals { vts: &mut vts, sw: &mut sw };
+        let mut e = vt::Effects::default();
+        t.take_display_nested(9, 0, &mut e).unwrap();
+        t.set_mode(0, 9, vt::VT_PROCESS, 10, 12).unwrap();
+        t.request(1, vt::Source::Ioctl, &mut e).unwrap();
+        t.reldisp(0, 9, 1, &mut e).unwrap();
+        t.drawn(t.sw.epoch, &mut e);
+        t.checked(1, &mut e);
+        t.take_display_nested(10, 1, &mut e).unwrap();
+        if exit { assert!(t.exited(10, &mut e)); }
+        else { t.give_back_display(&mut e); }
+        assert!(t.kd_graphics(0), "saved owner keeps KD_GRAPHICS");
+        assert!(!t.kd_graphics(1), "departed owner's VT returns to text");
+        assert!(vt::presentation_suspended(), "restored owner is offscreen");
+        // A third party cannot seize the restored owner's VT protocol.
+        assert_eq!(t.set_mode(0, 11, vt::VT_PROCESS, 10, 12), Err(16));
+        t.give_back_display(&mut e);
+        assert!(!t.kd_graphics(0));
+    }
+}
+
+#[test]
+fn nested_display_restore_completes_graphics_acquisition_without_a_text_frame() {
+    let mut vts = [const { vt::Vt::new() }; vt::VT_COUNT];
+    let mut sw = vt::Switching::new();
+    let mut t = vt::Terminals { vts: &mut vts, sw: &mut sw };
+    let mut e = vt::Effects::default();
+    t.take_display_nested(9, 0, &mut e).unwrap();
+    t.set_mode(0, 9, vt::VT_PROCESS, 10, 12).unwrap();
+    t.request(1, vt::Source::Ioctl, &mut e).unwrap();
+    t.reldisp(0, 9, 1, &mut e).unwrap();
+    t.drawn(t.sw.epoch, &mut e);
+    t.checked(1, &mut e);
+    t.request(0, vt::Source::Ioctl, &mut e).unwrap();
+    t.take_display_nested(10, 0, &mut e).unwrap();
+    t.give_back_display(&mut e);
+    t.reldisp(0, 9, vt::VT_ACKACQ, &mut e).unwrap();
+    assert!(t.active(0), "restored graphics owner must not wait for a text frame");
+}

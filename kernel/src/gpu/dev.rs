@@ -287,3 +287,23 @@ pub fn set_scanout(tag: Tag, ctx: u32, resource: u32, width: u32, height: u32) -
 pub fn flush_resource(tag: Tag, ctx: u32, fence: u64, resource: u32, width: u32, height: u32) -> Option<Request> {
     if is_svga() { svga::flush_resource(tag, ctx, fence, width, height).map(Request::Svga) } else { Some(Request::Virgl(virgl::flush_resource(tag, ctx, fence, resource, width, height))) }
 }
+
+/// Read the attached backing of a kernel screen target. SVGA reads the whole surface;
+/// callers preserve the affected bytes until the fenced transfer succeeds.
+#[allow(clippy::too_many_arguments)]
+pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pages>, x: u32, y: u32, w: u32, h: u32, offset: u64, stride: u32) -> Option<Request> {
+    if is_svga() {
+        svga::download(tag, ctx, fence, id, backing).map(Request::Svga)
+    } else {
+        Some(Request::Virgl(virgl::transfer_from_host(tag, ctx, fence, id, backing, x, y, w, h, offset, stride)))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn flush_rect(tag: Tag, ctx: u32, fence: u64, id: u32, x: u32, y: u32, w: u32, h: u32) -> Option<Request> {
+    if is_svga() {
+        svga::flush_rect(tag, ctx, fence, x, y, w, h).map(Request::Svga)
+    } else {
+        Some(Request::Virgl(virgl::flush_rect(tag, ctx, fence, id, x, y, w, h)))
+    }
+}
