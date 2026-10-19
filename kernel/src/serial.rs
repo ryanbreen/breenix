@@ -1157,6 +1157,14 @@ macro_rules! serial_println {
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
 }
 
+/// Print a kernel diagnostic line (a census or trace written for gates and debugging) to
+/// serial and the kernel log, not to a screen console. On x86-64 serial records do not reach
+/// the screen console (only `log` records do), so this is `serial_println!`.
+#[macro_export]
+macro_rules! diag_println {
+    ($($arg:tt)*) => ($crate::serial_println!($($arg)*));
+}
+
 /// Print to the kernel log: COM2 under QEMU, separate from user I/O on COM1;
 /// on other firmware the console rule's UART (`select_log_port`).
 ///
