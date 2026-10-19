@@ -4382,15 +4382,16 @@ static PIN_GUARD_ORACLE_REFUSED: AtomicU64 = AtomicU64::new(0);
 static ENQUEUE_OFFLINE_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 mod thread { pub static CPU_PINS_STAMPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); }
-mod time { pub fn get_ticks() -> u64 { 100 } }
+mod time { pub fn get_ticks() -> u64 { 100 } pub fn get_cpu_ticks() -> u64 { 100 } }
 mod arch_impl { pub mod aarch64 { pub mod constants { pub fn percpu_stack_slot_of(sp: u64) -> Option<usize> { assert_eq!(sp, 0); None } } } }
 mod tracing { pub mod output { pub struct Record; impl Record { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 fn arch_can_dispatch_here() -> bool { true }
 fn last_interrupt_return_tick(_cpu: usize) -> u64 { 0 }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
-#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
+#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool, relocating: bool }
 struct Context { sp: u64 }
-struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context }
+struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context, run_start_ticks: u64 }
+impl Thread { fn id(&self) -> u64 { 7 } fn set_running(&mut self) {} }
 struct CpuState { last_schedule_ticks: u64, current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
 mod scheduler {
 use super::*;
@@ -4398,6 +4399,7 @@ struct Scheduler { per_cpu_queues: [VecDeque<u64>; MAX_CPUS], cpu_state: [CpuSta
 impl Scheduler {
 fn current_cpu_id() -> usize { 0 }
 fn online_cpu_count(&self) -> usize { 2 }
+fn cpu_load(&self, cpu: usize) -> usize { self.per_cpu_queues[cpu].len() }
 fn get_thread(&self, tid: u64) -> Option<&Thread> { (tid == 7).then_some(&self.thread) }
 fn get_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> { (tid == 7).then_some(&mut self.thread) }
 fn is_in_deferred_requeue(&self, tid: u64) -> bool { assert_eq!(tid, 7); false }
@@ -4405,6 +4407,8 @@ fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
 "#,
     );
     for (name, signature) in [
+        ("find_target_cpu_for_wakeup", "fn find_target_cpu_for_wakeup(&mut self, tid: u64) -> Option<usize>".into()),
+        ("set_selected_running", "fn set_selected_running(thread: &mut Thread, cpu: usize)".into()),
         (
             helper.as_str(),
             format!("fn {helper}(&mut self, source_cpu: usize, thread_id: u64) -> bool"),
@@ -4438,6 +4442,10 @@ fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
             "pin_guard_oracle_where",
             "fn pin_guard_oracle_where(&self, tid: u64) -> usize".into(),
         ),
+        (
+            "end_pin_relocation",
+            "fn end_pin_relocation(&mut self, thread_id: u64)".into(),
+        ),
     ] {
         let body = function_body(&source, name)
             .expect("production/probe method body")
@@ -4456,7 +4464,7 @@ pub fn run(offline: bool) {
     let mut s = Scheduler {
         per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
         cpu_state: std::array::from_fn(|_| CpuState { last_schedule_ticks: 0, current_thread: None, previous_thread: None, pending_next: None }),
-        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true }), context: Context { sp: 0 } },
+        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true, relocating: false }), context: Context { sp: 0 }, run_start_ticks: 0 },
     };
     assert!(offline || s.cpu_dispatch_stale(home));
     s.per_cpu_queues[home].push_back(7);
@@ -4470,7 +4478,31 @@ pub fn run(offline: bool) {
     assert_eq!(PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed), 0);
     assert_eq!(PIN_GUARD_ORACLE_REFUSED.load(Ordering::Relaxed), 0);
     assert_eq!(PINNED_STACK_HOME_CONFLICT.load(Ordering::Relaxed), 0);
-    println!("forced-{}-home: queue={} discard={} pin_cleared={} held=0 refused=0 first_marker=false PASS", if offline { "offline" } else { "stalled" }, s.pin_guard_oracle_where(7), PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed), s.thread.cpu_affinity.is_none());
+    if !offline {
+        PIN_GUARD_ORACLE_PROBE_TID.store(0, Ordering::Relaxed);
+        s.per_cpu_queues[home].clear();
+        s.cpu_state[home].last_schedule_ticks = 100;
+        // A remote re-pin blocks before requeue and is woken directly home.
+        s.thread.cpu_affinity.as_mut().unwrap().relocating = true;
+        let target = s.find_target_cpu_for_wakeup(7).unwrap();
+        assert_eq!(target, home);
+        s.per_cpu_queues[target].push_back(7);
+        assert!(!s.thread.cpu_affinity.unwrap().relocating);
+        s.per_cpu_queues[target].clear();
+        assert!(s.retain_cpu_affine_thread(7, 0));
+        assert_eq!(PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed), 1);
+        s.per_cpu_queues[home].clear();
+        // Dispatch only ends relocation when it actually reaches home.
+        s.thread.cpu_affinity.as_mut().unwrap().relocating = true;
+        Scheduler::set_selected_running(&mut s.thread, 0);
+        assert!(s.thread.cpu_affinity.unwrap().relocating);
+        Scheduler::set_selected_running(&mut s.thread, home);
+        assert!(!s.thread.cpu_affinity.unwrap().relocating);
+        assert_eq!(s.thread.run_start_ticks, 100);
+        assert!(s.retain_cpu_affine_thread(7, 0));
+        assert_eq!(PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed), 2);
+    }
+    println!("forced-{}-home: queue={} discard={} pin_cleared={} held=0 refused={} first_marker=false PASS", if offline { "offline" } else { "stalled" }, s.pin_guard_oracle_where(7), PINNED_PUBLISH_DISCARDED.load(Ordering::Relaxed), s.thread.cpu_affinity.is_none(), PINNED_MIGRATION_REFUSED.load(Ordering::Relaxed));
 }
 }
 "#);
@@ -4541,7 +4573,7 @@ static CURRENT_CPU: AtomicUsize = AtomicUsize::new(0);
 static LOOKUPS: AtomicU64 = AtomicU64::new(0);
 mod tracing { pub mod output { pub struct Record; impl Record { pub fn new() -> Self { Self } pub fn text(&mut self, s: &str) { print!("{s}"); } pub fn dec(&mut self, n: u64) { print!("{n}"); } } } }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Blocked }
-#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool }
+#[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool, relocating: bool }
 struct Thread { tid: u64, state: ThreadState, cpu_affinity: Option<CpuPin> }
 impl Thread { fn id(&self) -> u64 { self.tid } }
 #[derive(Default)] struct CpuState { current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
@@ -4592,7 +4624,7 @@ fn dispatch_and_release(s: &mut Scheduler, cpu: usize, tid: u64) {
     assert_eq!(s.per_cpu_queues[cpu].pop_front(), Some(tid));
 }
 pub fn run() {
-    let pinned = |tid, cpu, state| Thread { tid, state, cpu_affinity: Some(CpuPin { cpu, per_cpu_worker: true }) };
+    let pinned = |tid, cpu, state| Thread { tid, state, cpu_affinity: Some(CpuPin { cpu, per_cpu_worker: true, relocating: true }) };
     let mut s = Scheduler {
         threads: vec![pinned(7, 1, ThreadState::Ready), pinned(8, 2, ThreadState::Ready), pinned(9, 1, ThreadState::Blocked), Thread { tid: 10, state: ThreadState::Ready, cpu_affinity: None }],
         per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
@@ -4617,6 +4649,8 @@ pub fn run() {
     // The home CPU's next entry makes one pass, queues the wake once, and clears its credit.
     assert_eq!(enter(&mut s, 1), full_pass);
     assert_eq!(queue(&s, 1), [7]);
+    assert!(!s.threads[0].cpu_affinity.unwrap().relocating);
+    assert!(s.threads[1].cpu_affinity.unwrap().relocating);
     assert_eq!(delivered(), 1);
     assert_eq!(ENQUEUE_SAME_LOCK_OK.load(Ordering::Relaxed), 1);
     assert_eq!(holds(), [0, 0, 0, 0]);

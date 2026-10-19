@@ -836,12 +836,12 @@ pub static PINNED_WAKES_DELIVERED: core::sync::atomic::AtomicU64 =
 /// its wake is held for that CPU by `hold_pinned_wake_for_home`, which counts
 /// separately into `PINNED_HOME_CPU_UNAVAILABLE`.
 ///
-/// Gate-failing on both aarch64 boot gates, and unreachable in the shipped
-/// profiles for the same structural reason as the four fields above: no thread
-/// carries a pin of either kind, because `spawn_on_cpu` is the 1 mutating
-/// writer of `Thread::cpu_affinity` and its 1 call site has 0 callers.
-/// claim-lint:ok: 1 of 1 mutating writer of the field is `spawn_on_cpu`,
-/// counted by grep over kernel/src in this round
+/// A placement that carries out the pin's own move is not a refusal and is not
+/// counted: `set_user_affinity` marks a pin `relocating` when it sets it on a
+/// thread that stands on another CPU, and the guard's placement of that thread
+/// on its new home CPU moves it toward home, not off it (#1873).
+///
+/// Gate-failing on both aarch64 boot gates.
 ///
 /// This counter moves in 1 direction. The pin-guard oracle used to subtract
 /// the refusals its own probe manufactured, which made this the 1 census field
@@ -3583,6 +3583,12 @@ impl Scheduler {
             let delay = crate::time::tsc::frequency_hz() * 80 / 1000;
             while crate::time::tsc::read_tsc().saturating_sub(start) < delay {
                 core::hint::spin_loop();
+            }
+        }
+        // Local dispatch can bypass the placement guard after a blocked wake.
+        if let Some(pin) = thread.cpu_affinity.as_mut() {
+            if pin.cpu == cpu {
+                pin.relocating = false;
             }
         }
         thread.set_running();
@@ -6930,7 +6936,7 @@ impl Scheduler {
     /// for that CPU; it does not discard it.
     /// claim-lint:ok: the placement rule, and the three mutation legs that
     /// redden on it, are in tests/loopback_pump_structure.rs
-    fn find_target_cpu_for_wakeup(&self, tid: u64) -> Option<usize> {
+    fn find_target_cpu_for_wakeup(&mut self, tid: u64) -> Option<usize> {
         let current_cpu = Self::current_cpu_id();
         if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
             // The pinned CPU is a placement decision like the other arms in
@@ -6952,6 +6958,7 @@ impl Scheduler {
             if pin.cpu < self.online_cpu_count()
                 && (home_is_this_cpu || self.cpu_accepts_wakeups(pin.cpu))
             {
+                self.end_pin_relocation(tid);
                 return Some(pin.cpu);
             }
             // The home CPU cannot take it, and here the two pin kinds part
@@ -7110,6 +7117,9 @@ impl Scheduler {
             if !self.pinned_wake_is_waiting_here(tid, cpu) {
                 continue;
             }
+            if let Some(pin) = self.threads[index - 1].cpu_affinity.as_mut() {
+                pin.relocating = false;
+            }
             self.per_cpu_queues[cpu].push_back(tid);
             PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
             ENQUEUE_SAME_LOCK_OK.fetch_add(1, Ordering::Relaxed);
@@ -7200,7 +7210,11 @@ impl Scheduler {
         }
         if pin.cpu == taking_cpu {
             // The destination the caller chose IS the home CPU: 0 CPUs are
-            // crossed, so there is no migration to refuse.
+            // crossed, so there is no migration to refuse. A move the pin
+            // asked for ends here too: the thread is being placed at home.
+            if pin.relocating {
+                self.end_pin_relocation(thread_id);
+            }
             return false;
         }
         if pin.cpu >= self.online_cpu_count() {
@@ -7233,7 +7247,16 @@ impl Scheduler {
                 return false;
             }
         }
-        count_pinned_migration_refusal(thread_id);
+        // A pin set while its thread stood on another CPU asks for exactly
+        // this move, so carrying it out refuses no migration: the thread has
+        // not been at home since the pin was set. A foreign destination for an
+        // unmarked pin is a site proposing to move a thread off its home, and
+        // that is what the census counts.
+        if pin.relocating {
+            self.end_pin_relocation(thread_id);
+        } else {
+            count_pinned_migration_refusal(thread_id);
+        }
         if self.cpu_accepts_wakeups(pin.cpu) {
             // The home CPU can take it. Place it there rather than where the
             // caller proposed: a placement needs no delivery, so a hold here
@@ -7265,6 +7288,35 @@ impl Scheduler {
             self.send_resched_ipi_to_cpu(pin.cpu);
         }
         true
+    }
+
+    /// Whether a CPU other than `home` is running `tid` or holds it in a
+    /// handoff record, or any CPU still has to requeue it once its context is
+    /// saved: the records whose resolution places the thread through the
+    /// migration guard on that CPU's behalf. A requeue on `home` itself reaches
+    /// the guard's same-CPU arm, which ends the relocation.
+    fn stands_on_another_cpu(&self, tid: u64, home: usize) -> bool {
+        let named_elsewhere = self.cpu_state.iter().enumerate().any(|(cpu, state)| {
+            cpu != home
+                && (state.current_thread == Some(tid)
+                    || state.previous_thread == Some(tid)
+                    || state.pending_next == Some(tid))
+        });
+        #[cfg(target_arch = "aarch64")]
+        let named_elsewhere = named_elsewhere
+            || crate::arch_impl::aarch64::context_switch::deferred_requeue_contains(tid);
+        named_elsewhere
+    }
+
+    /// The thread has reached, or is being placed on, the CPU its pin names:
+    /// the move `set_user_affinity` asked for is done.
+    fn end_pin_relocation(&mut self, thread_id: u64) {
+        if let Some(pin) = self
+            .get_thread_mut(thread_id)
+            .and_then(|thread| thread.cpu_affinity.as_mut())
+        {
+            pin.relocating = false;
+        }
     }
 
     #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -9182,6 +9234,16 @@ pub fn set_user_affinity(tid: u64, pin: Option<super::thread::CpuPin>) -> bool {
             return false;
         };
         let held = old.is_some_and(|old| sched.pinned_wake_is_waiting_here(tid, old.cpu));
+        // A thread that stands on another CPU -- running there, named by its
+        // handoff records, or with its wake held there -- reaches the new home
+        // at its next placement, through the migration guard. That placement
+        // is the move this call asks for, so the pin says so and the guard
+        // does not count it as a migration it refused.
+        let pin = pin.map(|mut pin| {
+            pin.relocating =
+                pin.per_cpu_worker && (held || sched.stands_on_another_cpu(tid, pin.cpu));
+            pin
+        });
         if let Some(thread) = sched.get_thread_mut(tid) {
             thread.cpu_affinity = pin;
         }
