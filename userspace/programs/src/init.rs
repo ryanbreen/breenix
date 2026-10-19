@@ -674,26 +674,10 @@ fn start_bounce() {
     }
 }
 
-/// #713: a minimal, self-contained proof that spawn() actually creates,
-/// execs, runs, exits, and can be reaped on x86 -- independent of
-/// run_boot_script()'s own bsh/init.js chain, which drags in seven further,
-/// previously-unaudited x86 spawns and is deliberately out of scope here
-/// (see #722). /bin/spawn_smoke_target is a dedicated, always-built
-/// userspace binary (userspace/programs/src/spawn_smoke_target.rs) that
-/// exits 0 unconditionally -- deliberately NOT busybox's /bin/true, which
-/// depends on a musl-cross toolchain that isn't guaranteed present in
-/// every build environment this gate runs in.
-///
-/// Waits on the child DIRECTLY (mirroring run_exec_smoke()'s own pattern,
-/// aarch64-only, elsewhere in this file) rather than fire-and-forget: an
-/// earlier version left this for the ordinary `waitpid(-1, ...)` reap loop
-/// at the end of main() to report, which does not run until AFTER
-/// run_boot_script() returns -- accidentally entangling this arc's own
-/// fast, narrow evidence with the boot-script chain's much slower (and
-/// deliberately out-of-scope, #722) completion time. `/bin/bsh` alone is
-/// larger than anything loaded earlier in boot and its own chain adds
-/// seven further ELF loads; none of that has any bearing on whether
-/// spawn() itself works, so this no longer waits on it.
+/// #713: exercise x86 spawn, execution, exit and reap before the boot-script chain.
+/// The dedicated /bin/spawn_smoke_target exits 0; it does not depend on BusyBox.
+/// Wait for this child directly: the default x86 boot script enters the getty
+/// supervisor, so it does not return to main's general reap loop.
 ///
 /// Unlike this file's other fire-and-forget `let _ = waitpid(...)` call
 /// sites, this one's own success literal is a gate pin claiming a genuine

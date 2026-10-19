@@ -1325,7 +1325,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     }
 }
 
-/// Init's interactive argument and, for the console, what input preparation
+/// Init's boot argument and, for the console, what input preparation
 /// it needs. Selection only reads fw_cfg and the boot target;
 /// `launch_x86_production_init` starts the input clock and the xHCI request
 /// once init is published (#1893).
@@ -1333,8 +1333,8 @@ fn x86_boot_target() -> Option<X86BootTarget> {
 #[derive(Clone, Copy)]
 enum X86ConsoleMode {
     Shell,
-    /// `from` names where `replug` came from: "fw_cfg", "intent" (the
-    /// per-boot payload) or "target" (the boot-target file).
+    /// `full_boot` retains default services and checks before gettys. `from`
+    /// records the selection source, including default and fallback selection.
     Console { full_boot: bool, idle_minutes: Option<u16>, replug: bool, from: &'static str },
 }
 
