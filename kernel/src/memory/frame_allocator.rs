@@ -8,7 +8,7 @@ use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use core::panic::Location;
 #[cfg(feature = "testing")]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
@@ -1294,8 +1294,97 @@ pub fn memory_stats() -> MemoryStats {
     }
 }
 
-/// Allocated frames by the code that allocated them, and frames lost to the
-/// allocator, read from the ledger (`/proc/breenix/frames`).
+/// What holds an allocated frame, for the census's `owner` rows: the owners a
+/// suite's memory record breaks its frames down by (docs/suites/README.md,
+/// "Memory record").
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FrameOwner {
+    /// A process's stack pages, as exec and process creation map them.
+    UserStacks = 1,
+    /// Other pages mapped into processes: program, heap, anonymous and shared
+    /// memory, copy-on-write copies.
+    UserPages,
+    /// Page-table frames, a process's and the kernel's.
+    PageTables,
+    /// File pages the per-inode cache holds (`memory::file_map`).
+    PageCache,
+    /// Kernel and per-CPU stacks.
+    KernelStacks,
+    /// Device and DMA buffers, and the display's.
+    Buffers,
+    /// Everything else, the kernel heap's growth among it.
+    Other,
+}
+
+impl FrameOwner {
+    const ALL: [FrameOwner; 7] = [
+        FrameOwner::UserStacks,
+        FrameOwner::UserPages,
+        FrameOwner::PageTables,
+        FrameOwner::PageCache,
+        FrameOwner::KernelStacks,
+        FrameOwner::Buffers,
+        FrameOwner::Other,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            FrameOwner::UserStacks => "user_stacks",
+            FrameOwner::UserPages => "user_pages",
+            FrameOwner::PageTables => "page_tables",
+            FrameOwner::PageCache => "page_cache",
+            FrameOwner::KernelStacks => "kernel_stacks",
+            FrameOwner::Buffers => "buffers",
+            FrameOwner::Other => "other",
+        }
+    }
+
+    /// The owner of a frame allocated at `file` (as `short_source_path` names
+    /// it) that a process page table maps (`mapped`) or does not. A site
+    /// `allocate_frame_for` tagged is that owner instead.
+    fn of_site(file: &str, mapped: bool) -> FrameOwner {
+        const STACKS: [&str; 3] = ["memory/kernel_stack.rs", "memory/per_cpu_stack.rs", "memory/stack.rs"];
+        const BUFFERS: [&str; 4] = ["drivers/", "gpu/", "console/", "syscall/graphics.rs"];
+        const TABLES: [&str; 3] = ["memory/process_memory.rs", "memory/kernel_page_table.rs", "/structures/paging/"];
+        const USER: [&str; 7] = [
+            "memory/anon_map.rs", "elf.rs", "process/fork.rs", "process/manager.rs", "syscall/memory",
+            "ipc/shmem/", "interrupts.rs",
+        ];
+        if file == "memory/file_map.rs" {
+            FrameOwner::PageCache
+        } else if STACKS.contains(&file) {
+            FrameOwner::KernelStacks
+        } else if BUFFERS.iter().any(|prefix| file.starts_with(prefix)) {
+            FrameOwner::Buffers
+        } else if mapped {
+            FrameOwner::UserPages
+        } else if TABLES.iter().any(|part| file.contains(part)) {
+            FrameOwner::PageTables
+        } else if USER.iter().any(|part| file.contains(part)) {
+            FrameOwner::UserPages
+        } else {
+            FrameOwner::Other
+        }
+    }
+}
+
+/// The owner `allocate_frame_for` gave each site (`FRAME_SITES` index), or 0.
+static FRAME_SITE_OWNERS: [AtomicU8; FRAME_SITE_SLOTS] =
+    [const { AtomicU8::new(0) }; FRAME_SITE_SLOTS];
+
+/// `allocate_frame`, recording what the caller's frames are for where the
+/// census cannot tell it from the caller's source file.
+#[track_caller]
+pub fn allocate_frame_for(owner: FrameOwner) -> Option<PhysFrame> {
+    if let Some(slot) = (frame_site(Location::caller()) as usize).checked_sub(1) {
+        FRAME_SITE_OWNERS[slot].store(owner as u8, Ordering::Relaxed);
+    }
+    allocate_frame()
+}
+
+/// Allocated frames by the code that allocated them and by owner, and frames
+/// lost to the allocator, read from the ledger (`/proc/breenix/frames`).
 ///
 /// `used` is what `/proc/meminfo` counts as in use: the frames the sequential
 /// allocator has handed out, less those on the free list. It is `allocated`
@@ -1317,19 +1406,35 @@ pub fn frame_census() -> Result<alloc::string::String, i32> {
         .try_reserve_exact(FRAME_SITE_SLOTS + 1)
         .map_err(|_| ENOMEM)?;
     frames.resize(FRAME_SITE_SLOTS + 1, [0; 3]);
+    // Per site, the owner of its frames that no process page table maps and
+    // of those one does, as `FrameOwner` discriminants.
+    let mut site_owners = [[FrameOwner::Other as u8; 2]; FRAME_SITE_SLOTS + 1];
+    for (slot, owners) in site_owners.iter_mut().enumerate().skip(1) {
+        let location = FRAME_SITES[slot - 1].load(Ordering::Acquire);
+        // SAFETY: entries are only ever set to `&'static Location`s.
+        let file = unsafe { location.as_ref() }.map_or("unknown", |location| short_source_path(location.file()));
+        let tagged = FRAME_SITE_OWNERS[slot - 1].load(Ordering::Relaxed);
+        for (mapped, owner) in owners.iter_mut().enumerate() {
+            *owner = if tagged != 0 { tagged } else { FrameOwner::of_site(file, mapped == 1) as u8 };
+        }
+    }
+    let mut by_owner = [0usize; FrameOwner::ALL.len() + 1];
     let (mut allocated, mut free) = (0usize, 0usize);
     for chunk in ledger.chunks.iter().filter_map(spin::Once::get) {
         for slot in chunk.iter() {
             match slot.load(Ordering::Relaxed) & STATE_MASK {
                 ST_ALLOCATED => {
                     allocated += 1;
-                    let site = &mut frames[slot.site.load(Ordering::Relaxed) as usize];
+                    let index = slot.site.load(Ordering::Relaxed) as usize;
+                    let site = &mut frames[index];
                     site[0] += 1;
-                    match slot.leaf_refs.load(Ordering::Relaxed) {
+                    let refs = slot.leaf_refs.load(Ordering::Relaxed);
+                    match refs {
                         0 => {}
                         LEAF_EXTERNAL => site[2] += 1,
                         _ => site[1] += 1,
                     }
+                    by_owner[site_owners[index][usize::from(refs != 0)] as usize] += 1;
                 }
                 ST_FREE => free += 1,
                 _ => {}
@@ -1376,6 +1481,9 @@ pub fn frame_census() -> Result<alloc::string::String, i32> {
         free.saturating_sub(free_list),
         free_list
     );
+    for owner in FrameOwner::ALL {
+        let _ = writeln!(text, "owner {} {}", owner.name(), by_owner[owner as usize]);
+    }
     for (file, line, counts) in rows {
         let _ = writeln!(
             text,

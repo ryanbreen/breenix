@@ -470,9 +470,10 @@ The delivered image records the resulting component checksums; the cached base r
 Shell mode starts `/sbin/init shell`; the serial input task feeds its bytes into the console TTY instead of the
 kernel debug-command parser. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
 through SOL and requires the whole answer line `metal-console-ok 42` after sending it. Suite mode copies the commit's
-manifest and verdict tool into the boot record, waits for that suite's DONE line, and confirms power-off before
+manifest and verdict tool into the boot record, waits for that suite's `SUITE_SEQUENCE READY` line (it follows the
+suite's DONE and its memory record, docs/suites/README.md, "Memory record"), and confirms power-off before
 running the manifest verdict against the captured serial. The scorer runs as a transient unprivileged user with
-management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
+management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot, and so does a memory record with `reclaimed=FAIL`. Shell has a
 180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
 for firmware and delivery (a 1320-second attempt ceiling).
 

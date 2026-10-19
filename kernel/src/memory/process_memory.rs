@@ -10,7 +10,7 @@ use crate::memory::arch_stub::{
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_allocator::return_lease;
 use crate::memory::frame_allocator::{
-    acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease,
+    acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease, FrameOwner,
     LeafMappingClass, ReturnOutcome,
 };
 use crate::memory::layout::USER_STACK_REGION_END;
@@ -3809,7 +3809,8 @@ pub(crate) fn map_new_user_stack(
     let first = Page::<Size4KiB>::containing_address(bottom);
     let last = Page::<Size4KiB>::containing_address(top - 1u64);
     for page in Page::range_inclusive(first, last) {
-        let frame = allocate_frame().ok_or("Failed to allocate a user stack frame")?;
+        let frame = crate::memory::frame_allocator::allocate_frame_for(FrameOwner::UserStacks)
+            .ok_or("Failed to allocate a user stack frame")?;
         // SAFETY: the frame was just allocated and is mapped by no page table
         // yet, and the physical memory map covers allocator RAM.
         unsafe {

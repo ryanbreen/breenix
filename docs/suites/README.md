@@ -81,6 +81,9 @@ SUITE <id> CASE <category>/<case> SKIP msg=<why>
 SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 ```
 
+A full run booted as PID 1 also prints its memory record around the cases ("Memory record",
+below).
+
 Each record is one write that starts with a newline, so it always begins its own line even
 when other output on the same serial port (the x86-64 scheduler's COM1 breadcrumbs) left a
 line unfinished; a reader takes the lines that start with `SUITE <id> ` and ignores blank
@@ -158,6 +161,58 @@ A case can bound its own waits by `case_ms_left()`, the time left before it is k
 a case ends, any process it left behind has been reparented to the suite, which runs as
 PID 1; the suite kills them all with `kill(-1, SIGKILL)` and reaps them before the next case,
 so no case sees another's processes. A case whose processes outlive SIGKILL is a FAIL.
+
+### Memory record
+
+A suite has to give back the memory it used: a suite that leaves memory allocated once its
+processes are gone fails like one with a failing case. A full run booted as PID 1 (a boot of
+one suite, or each suite of a sequence) prints its memory record
+(`libbreenix::suite::memory_record`):
+
+```text
+SUITE <id> MEMORY before free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
+SUITE <id> MEMORY after free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
+SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> allowance=<pages>
+```
+
+- `MEMORY before` comes after START and before the first case. After DONE, the runner kills
+  and reaps any process left (each case's were swept after it), then prints `MEMORY after`
+  and the `reclaimed` verdict, before `SUITE_SEQUENCE READY`.
+- `free` is `/proc/meminfo`'s MemFree in 4 KiB pages and `heap_free_kb` its KernelHeapFree.
+  The owners are the `owner` rows of `/proc/breenix/frames`: allocated frames by what holds
+  them, from the source of the code that allocated them. `user_stacks` are the stack pages
+  exec and process creation map, `user_pages` the other pages mapped into processes (program,
+  heap, anonymous and shared memory, copy-on-write copies), `page_tables` process and kernel
+  page tables, `page_cache` the file pages the per-inode cache holds (`memory::file_map`),
+  `kernel_stacks` kernel and per-CPU stacks, `buffers` device, DMA and display buffers, and
+  `other` the rest, the kernel heap's growth among it.
+- Reclamation is deferred: an exited process's tables and the image an exec replaced go back
+  through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
+  sample waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
+  `settle_ms` how long it waited.
+- The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
+  The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
+  set from the measurement below; only the operator loosens it.
+- `scripts/suite-verdict.py`, and through it `suite-sequence.py score`, the launchers and the
+  metal driver's scoring, fails a full run whose memory record is missing, out of place, or
+  contradicts its own figures, or says `reclaimed=FAIL`. The launchers wait for the record
+  before they stop the VM. A record that cannot be read is a `SUITE <id> ERROR memory ...`
+  line and `reclaimed=FAIL`. A one-case run (`--case`) is not full-suite evidence and has no
+  memory record.
+
+The allowance comes from two leak-free boots of the fifteen suites (2026-10-19):
+
+| Boot | Suites short of `free_before` | Why |
+|---|---|---|
+| ARM64 QEMU, 4 CPUs, 512 MiB | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
+| R240 (a diagnostic build of this branch) | 12 of 15 by 5 to 7 pages | As above |
+| | terminals and networking by 37 pages | Each starts a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
+| | console 42 pages over | Kernel stacks freed during it came back |
+
+ARM64's kernel stacks are not taken from the frame ledger, so its workers do not show. The
+allowance, 48 pages, is the largest deficit, 37 pages, with headroom; a process image left
+behind is 300 pages or more.
 
 ## Writing a suite
 
