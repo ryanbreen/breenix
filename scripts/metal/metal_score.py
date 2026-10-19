@@ -1,8 +1,14 @@
 """Score the milestones measurable by one boot shape and mode, using that boot's definition."""
 import copy
 import json
+import re
+import runpy
 import metal_attended
 from pathlib import Path
+
+
+# The test runner names the marker each test will print before the test runs; that promise reaches no stage.
+ANNOUNCEMENT = 'kernel::test_exec:'
 
 
 def boot_shape(disk):
@@ -33,6 +39,8 @@ def score(directory):
         raise ValueError('fault tests are never milestone evidence')
     if run.get('kind') == 'console-session':
         raise ValueError('operator console sessions are never scored')
+    if run.get('mode') == 'tests':
+        return score_tests(directory, run, read)
     definition = read('definition/docs/metal/boot-path.json')
     attended = run.get('attended', False)
     if attended:
@@ -80,9 +88,51 @@ def score(directory):
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
 
 
+def tests_verdict(directory, serial):
+    """Use the boot commit's validator and contracts, never the deployed tools' checkout."""
+    root = Path(directory) / 'definition'
+    try:
+        validate = runpy.run_path(str(root / 'scripts/test-report-verdict.py'))['completion']
+        return validate(serial, root) or (False, 'userspace test report is incomplete')
+    except (OSError, ValueError) as error:
+        return False, f'test report validation failed: {error}'
+
+
+def score_tests(directory, run, read):
+    """A testing-kernel boot is scored as every testing boot is: each milestone of the commit's docs/boot-path.json by
+    its x86_64 stage list, a stage reached when one of its marker's alternatives appears on a serial line."""
+    definition = read('definition/docs/boot-path.json')
+    catalog = {stage['name']: stage for stage in read(
+        'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
+    serial = (directory / 'serial.txt').read_text()
+    passed, reason = tests_verdict(directory, serial)
+    for pattern in definition.get('fatal', []) + ['KERNEL PANIC:']:
+        if re.search(pattern, serial):
+            passed, reason = False, 'fatal kernel output'
+    lines = [line for line in serial.splitlines() if ANNOUNCEMENT not in line]
+    events = {json.loads(line)['event'] for line in (directory / 'events.jsonl').read_text().splitlines()}
+    results = {}
+    for milestone in definition['milestones']:
+        stages = milestone['stages'].get('x86_64', [])
+        if milestone.get('stub') or not stages:
+            continue
+        missing = []
+        for stage in stages:
+            spec = catalog[stage] if isinstance(stage, str) else stage
+            alternatives = spec['marker'].split('|')
+            if not any(marker in line for line in lines for marker in alternatives):
+                missing.append(spec['name'])
+        results[milestone['id']] = {'reached': len(stages) - len(missing), 'total': len(stages),
+                                    'passed': not missing, 'missing': missing}
+    return {'bootShape': boot_shape(run.get('disk')), 'definition': 'docs/boot-path.json',
+            'milestones': results, 'captureComplete': 'console-gap' not in events,
+            'testReport': {'passed': passed, 'reason': reason}}
+
+
 def falls_short(verdict):
     """A finished boot falls short on a capture gap, or on a milestone missing a stage its input could produce.
     A SOL console boot cannot produce the keyboard stages: those milestones stay unpassed without failing it."""
-    return not verdict['captureComplete'] or any(
+    return (not verdict.get('testReport', {}).get('passed', True)
+            or not verdict['captureComplete']) or any(
         not result['passed'] and result['reached'] + result.get('inputUnmeasured', 0) < result['total']
         for result in verdict['milestones'].values())
