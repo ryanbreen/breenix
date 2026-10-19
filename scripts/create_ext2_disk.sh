@@ -376,6 +376,7 @@ HOTKEYS
             echo "  Created /etc/hotkeys.conf"
 
             # Create /etc/init.js - bsh boot script executed by init
+            if [ "$BREENIX_ARCH" = aarch64 ]; then
             cat > /mnt/ext2/etc/init.js << 'INITJS'
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
@@ -399,6 +400,9 @@ spawn("/bin/bcheck");
 // get scheduled.
 spawn("/sbin/blogd");
 INITJS
+            else
+                echo "spawn(\"/sbin/telnetd\");" > /mnt/ext2/etc/init.js
+            fi
             echo "  Created /etc/init.js"
 
             # Show what was created
@@ -657,6 +661,7 @@ HOTKEYS
     echo "  Created /etc/hotkeys.conf"
 
     # Create /etc/init.js - bsh boot script executed by init
+    if [ "$ARCH" = aarch64 ]; then
     cat > "$MOUNT_DIR/etc/init.js" << 'INITJS'
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
@@ -680,6 +685,9 @@ spawn("/bin/bcheck");
 // get scheduled.
 spawn("/sbin/blogd");
 INITJS
+    else
+        echo 'spawn("/sbin/telnetd");' > "$MOUNT_DIR/etc/init.js"
+    fi
     echo "  Created /etc/init.js"
 
     # Show what was created

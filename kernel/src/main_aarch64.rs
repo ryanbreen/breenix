@@ -138,6 +138,7 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Default)) => BootMode::Default,
             Ok(Some(target::Target::Shell)) => BootMode::Shell,
+            Ok(Some(target::Target::Desktop)) => BootMode::Desktop,
             Ok(Some(target::Target::Console { .. })) => BootMode::Console,
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
             Ok(Some(target::Target::Program { path, arg })) => {

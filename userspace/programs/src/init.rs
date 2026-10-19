@@ -1,6 +1,6 @@
 //! Breenix init process (/sbin/init) - std version
 //!
-//! PID 1 - runs bsh as the init shell, then starts background services and reaps zombies.
+//! PID 1 - starts services and boot checks, then the desktop on ARM64 or gettys on x86.
 //! Init confers the init-shell role by passing `--init-shell`; no PID value is part of that
 //! contract.
 
@@ -98,8 +98,8 @@ fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
 
-    // The kernel passes a boot mode as argv[1] (`shell` or `desktop`); no argument is the
-    // full boot below.
+    // Explicit shell, console and desktop modes bypass the full startup below.
+    // No argument or `default` keeps the services and boot checks.
     match std::env::args().nth(1).as_deref() {
         Some("shell") => run_shell_mode(),
         Some("console") => run_console_mode(),
@@ -137,6 +137,9 @@ fn main() {
     run_exec_smoke();
     #[cfg(target_arch = "x86_64")]
     run_fork_smoke();
+    // Detach before starting daemons so the getty handoff cannot hang them up.
+    #[cfg(target_arch = "x86_64")]
+    detach_console();
     start_bsshd();
     run_bssh_pubkey_oracle();
     run_boot_script();
@@ -228,8 +231,15 @@ fn run_shell_mode() -> ! {
     }
 }
 
-/// Release init's terminal before starting an independent login session.
+/// Explicit console mode skips the default boot script and boot checks.
 fn run_console_mode() -> ! {
+    #[cfg(target_arch = "x86_64")]
+    console_text_mode();
+    run_console_gettys()
+}
+
+/// Release init's terminal before starting daemons or independent login sessions.
+fn detach_console() {
     use libbreenix::signal::{self, Sigaction};
     extern "C" { fn ioctl(fd: i32, request: u64, arg: u64) -> i32; }
     let ignored = Sigaction { handler: signal::SIG_IGN, ..Sigaction::default() };
@@ -241,6 +251,10 @@ fn run_console_mode() -> ! {
         print!("[init] console detach failed\n");
         reap_forever();
     }
+}
+
+fn run_console_gettys() -> ! {
+    detach_console();
     let mut children = [None; 6];
     let mut retry_at = [0i128; 6];
     loop {
@@ -283,8 +297,15 @@ fn run_console_mode() -> ! {
     }
 }
 
-/// `init desktop`: the window manager and a terminal window, then reap. No oracles or
-/// smoke tests.
+/// `init desktop`: ARM64 starts the desktop; x86 falls back to console gettys.
+/// Neither explicit mode runs boot checks.
+#[cfg(target_arch = "x86_64")]
+fn run_desktop_mode() -> ! {
+    print!("Desktop mode requires a GPU; using the framebuffer console.\n");
+    run_console_mode()
+}
+
+#[cfg(target_arch = "aarch64")]
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
     const DESKTOP: &[&[u8]] = &[b"/bin/bwm\0", b"/bin/bterm\0"];
@@ -623,19 +644,22 @@ fn run_boot_script() {
         Ok(child_pid) => {
             let child_raw = child_pid.raw() as i32;
             let mut status: i32 = 0;
-            let _ = waitpid(child_raw, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            if exit_code != 0 {
-                print!("[init] Boot script exited with code {}\n", exit_code);
-            } else {
-                console_text_mode();
-                print!("[init] Boot script completed\n");
+            match waitpid(child_raw, &mut status as *mut i32, 0) {
+                Ok(_) if libbreenix::process::wifexited(status)
+                    && libbreenix::process::wexitstatus(status) == 0 => {
+                    console_text_mode();
+                    print!("[init] Boot script completed\n");
+                }
+                Ok(_) => print!("[init] Boot script failed with status {}\n", status),
+                Err(e) => print!("[init] Boot script reap failed: {}\n", e),
             }
         }
         Err(e) => {
             print!("[init] Failed to spawn boot script: {}\n", e);
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    run_console_gettys();
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -650,26 +674,10 @@ fn start_bounce() {
     }
 }
 
-/// #713: a minimal, self-contained proof that spawn() actually creates,
-/// execs, runs, exits, and can be reaped on x86 -- independent of
-/// run_boot_script()'s own bsh/init.js chain, which drags in seven further,
-/// previously-unaudited x86 spawns and is deliberately out of scope here
-/// (see #722). /bin/spawn_smoke_target is a dedicated, always-built
-/// userspace binary (userspace/programs/src/spawn_smoke_target.rs) that
-/// exits 0 unconditionally -- deliberately NOT busybox's /bin/true, which
-/// depends on a musl-cross toolchain that isn't guaranteed present in
-/// every build environment this gate runs in.
-///
-/// Waits on the child DIRECTLY (mirroring run_exec_smoke()'s own pattern,
-/// aarch64-only, elsewhere in this file) rather than fire-and-forget: an
-/// earlier version left this for the ordinary `waitpid(-1, ...)` reap loop
-/// at the end of main() to report, which does not run until AFTER
-/// run_boot_script() returns -- accidentally entangling this arc's own
-/// fast, narrow evidence with the boot-script chain's much slower (and
-/// deliberately out-of-scope, #722) completion time. `/bin/bsh` alone is
-/// larger than anything loaded earlier in boot and its own chain adds
-/// seven further ELF loads; none of that has any bearing on whether
-/// spawn() itself works, so this no longer waits on it.
+/// #713: exercise x86 spawn, execution, exit and reap before the boot-script chain.
+/// The dedicated /bin/spawn_smoke_target exits 0; it does not depend on BusyBox.
+/// Wait for this child directly: the default x86 boot script enters the getty
+/// supervisor, so it does not return to main's general reap loop.
 ///
 /// Unlike this file's other fire-and-forget `let _ = waitpid(...)` call
 /// sites, this one's own success literal is a gate pin claiming a genuine

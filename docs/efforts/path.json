@@ -1421,7 +1421,8 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "console",
@@ -1661,7 +1662,8 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "window-manager",
@@ -1810,7 +1812,8 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "ui-testing",
@@ -1919,7 +1922,8 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "gui-apps",
@@ -2037,7 +2041,8 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     }
   ]
 }

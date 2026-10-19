@@ -190,7 +190,7 @@
     {
       "id": "first-userspace",
       "title": "First userspace process",
-      "summary": "Init running its boot script.",
+      "summary": "Init starts the framebuffer console and its virtual-terminal logins.",
       "stages": {
         "default": [
           {
@@ -200,6 +200,10 @@
           {
             "name": "Boot script completed",
             "marker": "[init] Boot script completed"
+          },
+          {
+            "name": "Console login prompt",
+            "marker": "Breenix login:"
           }
         ]
       },
