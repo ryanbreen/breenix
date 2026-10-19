@@ -113,7 +113,7 @@
     {
       "id": "devices",
       "title": "Devices",
-      "summary": "A storage device is found, initialized and read, and a network device is found, whatever drivers the hardware needs.",
+      "summary": "A storage device is found, initialized and read, and a network device is found, whatever drivers the hardware needs; x86 also requires network driver attach, the network stack and the keyboard queue.",
       "kernel": true,
       "stages": {
         "aarch64": [
@@ -126,7 +126,10 @@
           "Storage device found",
           "Storage device initialized",
           "Storage device read",
-          "Network device found"
+          "Network device found",
+          "Network driver initialized",
+          "Network stack initialized",
+          "Keyboard queue initialized"
         ]
       }
     },

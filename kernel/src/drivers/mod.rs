@@ -105,6 +105,14 @@ pub fn init() -> usize {
         log::info!("BCM5720 driver attached {bcm5720_ports} port(s)");
     }
 
+    if e1000::is_initialized()
+        || bcm5720::is_initialized()
+        || virtio::net_legacy::is_initialized()
+        || rtl8139::is_initialized()
+    {
+        log::info!("[devices] network initialized: driver attached");
+    }
+
     // Initialize VirtIO sound driver
     match virtio::sound::init() {
         Ok(()) => {

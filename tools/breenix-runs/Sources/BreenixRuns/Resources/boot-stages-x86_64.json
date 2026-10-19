@@ -183,6 +183,12 @@
       "checkHint": "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling"
     },
     {
+      "name": "Network driver initialized",
+      "marker": "[devices] network initialized: ",
+      "failureMeaning": "A NIC enumerated but no network driver attached",
+      "checkHint": "drivers::init() - e1000, bcm5720, VirtIO legacy or rtl8139 must be initialized"
+    },
+    {
       "name": "E1000 driver initialized",
       "marker": "E1000 driver initialized",
       "failureMeaning": "E1000 device initialization failed - MMIO mapping, MAC setup, or link configuration issue",

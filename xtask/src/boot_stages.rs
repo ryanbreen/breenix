@@ -292,6 +292,12 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling",
         },
         BootStage {
+            name: "Network driver initialized",
+            marker: "[devices] network initialized: ",
+            failure_meaning: "A NIC enumerated but no network driver attached",
+            check_hint: "drivers::init() - e1000, bcm5720, VirtIO legacy or rtl8139 must be initialized",
+        },
+        BootStage {
             name: "E1000 driver initialized",
             marker: "E1000 driver initialized",
             failure_meaning: "E1000 device initialization failed - MMIO mapping, MAC setup, or link configuration issue",
