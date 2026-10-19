@@ -1204,7 +1204,15 @@ pub fn vt(number: usize) -> Option<Arc<TtyDevice>> {
 /// the line being typed. False while the queue cannot take it. A queue another
 /// CPU holds is waited for as a key waits for it (`push_char_nonblock`).
 pub fn push_reply(number: usize, byte: u8) -> bool {
-    let Some(tty) = vt(number) else {
+    // Delivery holds REPLY_DELIVERY with interrupts masked. A console lookup
+    // holder may have been preempted here, so leave the reply queued rather
+    // than waiting for that holder with interrupts disabled.
+    let tty = if number == 1 {
+        CONSOLE_TTY.try_lock().and_then(|guard| guard.clone())
+    } else {
+        vt(number)
+    };
+    let Some(tty) = tty else {
         return false;
     };
     crate::arch_without_interrupts(|| {
