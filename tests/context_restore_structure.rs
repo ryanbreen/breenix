@@ -5425,6 +5425,7 @@ struct SourceFunction {
     name_offset: usize,
     open: usize,
     close: usize,
+    is_public: bool,
     is_extern_entry: bool,
 }
 
@@ -5544,6 +5545,7 @@ fn source_functions(source: &str, mask: &[bool], blocks: &[LexicalBlock]) -> Vec
             name_offset,
             open,
             close: block.close,
+            is_public,
             is_extern_entry,
         });
     }
@@ -5597,34 +5599,50 @@ impl FatalSourceAnalysis {
 fn derived_blocking_scheduler_accessors(
     scheduler_source: &str,
 ) -> Result<BTreeSet<String>, String> {
+    let analysis = fatal_source_analysis(scheduler_source);
     let bodies = module_function_bodies(scheduler_source);
-    let mut blocking = BTreeSet::new();
+    let mut helpers = BTreeSet::new();
 
     if bodies.contains_key("lock_scheduler") {
-        blocking.insert("lock_scheduler".to_string());
+        helpers.insert("lock_scheduler".to_string());
     }
-    // A private helper can acquire the lock on behalf of a public accessor.
-    // Follow the complete call chain, including cfg-split bodies, to a fixed
-    // point so another helper layer cannot hide a blocking acquisition.
+    // Follow private acquisition helpers to a fixed point, including cfg-split
+    // bodies. Public accessor calls are checked by the fatal-callee census;
+    // they do not turn their callers into acquisition helpers themselves.
     loop {
         let mut callers = BTreeSet::new();
-        for (name, definitions) in &bodies {
-            if blocking.contains(name) {
+        for function in analysis.functions.iter().filter(|function| !function.is_public) {
+            if helpers.contains(&function.name) {
                 continue;
             }
-            if definitions.iter().any(|body| {
-                let body_mask = code_mask(body);
-                blocking.iter().any(|callee| {
-                    !call_offsets(body, &body_mask, callee).is_empty()
+            if bodies.get(&function.name).is_some_and(|definitions| {
+                definitions.iter().any(|body| {
+                    let body_mask = code_mask(body);
+                    helpers.iter().any(|callee| {
+                        !call_offsets(body, &body_mask, callee).is_empty()
+                    })
                 })
             }) {
-                callers.insert(name.clone());
+                callers.insert(function.name.clone());
             }
         }
         if callers.is_empty() {
             break;
         }
-        blocking.extend(callers);
+        helpers.extend(callers);
+    }
+    let mut blocking = helpers.clone();
+    for function in analysis.functions.iter().filter(|function| function.is_public) {
+        if bodies.get(&function.name).is_some_and(|definitions| {
+            definitions.iter().any(|body| {
+                let body_mask = code_mask(body);
+                helpers.iter().any(|helper| {
+                    !call_offsets(body, &body_mask, helper).is_empty()
+                })
+            })
+        }) {
+            blocking.insert(function.name.clone());
+        }
     }
 
     if blocking.is_empty() {
