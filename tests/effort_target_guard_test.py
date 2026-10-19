@@ -149,6 +149,18 @@ class EffortTargetGuardTest(unittest.TestCase):
                         if expected:
                             self.assertEqual(result.stdout.strip(), sha)
 
+    def test_metal_catchup_fetches_unrelated_published_heads(self):
+        fresh = self.base / 'fresh'
+        subprocess.run(['git', 'clone', '-q', '--single-branch', '-b', 'main',
+                        str(self.origin), str(fresh)], check=True)
+        (fresh / 'docs/efforts').mkdir(parents=True)
+        for name in ('path.json', 'metal.json'):
+            shutil.copy(ROOT / 'docs/efforts' / name, fresh / 'docs/efforts' / name)
+        result = self.invoke('python3', str(GUARD), '--repo', str(fresh),
+                             '--commit', self.effort, '--target', 'x86-metal', '--catchup')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), self.effort)
+
     def test_metal_requires_published_first_parent_history(self):
         self.git('switch', '-qc', 'metal-stream/definition', 'main')
         local = self.commit('definition')

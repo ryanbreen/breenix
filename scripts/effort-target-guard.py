@@ -147,6 +147,8 @@ def check(root, commit, target, catchup):
                       if name.removeprefix('origin/').startswith('metal-') and name.count('/') >= 2}
         main = heads['origin/main']
         wanted = sorted({main, *(tip for tip, home in lanes.values()), *metal_tips})
+        if target == 'x86-metal' and catchup:
+            wanted = sorted(set(wanted) | set(heads.values()))
         missing = sorted(set(wanted) - present(root, wanted))
         if missing:
             fetch_objects(root, missing)
