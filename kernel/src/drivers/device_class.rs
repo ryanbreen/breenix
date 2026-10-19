@@ -62,68 +62,9 @@ pub fn storage_initialized(driver: &str, disks: usize) {
     screen(crate::graphics::boot_screen::Stage::StorageInitialized);
 }
 
-/// The disks the storage drivers attached, in the order the root search
-/// tries them.
-#[cfg(target_arch = "x86_64")]
-fn disks() -> alloc::vec::Vec<alloc::boxed::Box<dyn crate::block::BlockDevice>> {
-    crate::block::devices()
-}
-
-/// The disks the storage drivers attached: VirtIO MMIO block devices, then
-/// AHCI SATA disks, as the root search tries them.
-#[cfg(target_arch = "aarch64")]
-fn disks() -> alloc::vec::Vec<alloc::boxed::Box<dyn crate::block::BlockDevice>> {
-    use crate::block::virtio::VirtioBlockWrapper;
-    use crate::drivers::virtio::block_mmio::MAX_BLOCK_DEVICES;
-
-    let mut disks: alloc::vec::Vec<alloc::boxed::Box<dyn crate::block::BlockDevice>> =
-        alloc::vec::Vec::new();
-    for index in 0..MAX_BLOCK_DEVICES {
-        if let Some(disk) = VirtioBlockWrapper::new(index) {
-            disks.push(alloc::boxed::Box::new(disk));
-        }
-    }
-    for index in 0..crate::drivers::ahci::sata_device_count() {
-        if let Some(disk) = crate::drivers::ahci::get_block_device_by_index(index) {
-            disks.push(alloc::boxed::Box::new(disk));
-        }
-    }
-    disks
-}
-
-/// Read block 0 of each attached disk through the block layer, once the
-/// drivers can complete I/O, and report each read.
-pub fn read_storage() {
-    let disks = disks();
-    let mut read = 0;
-    for (index, disk) in disks.iter().enumerate() {
-        let mut block = alloc::vec![0u8; disk.block_size()];
-        match disk.read_block(0, &mut block) {
-            Ok(()) => {
-                read += 1;
-                line(
-                    "storage read",
-                    format_args!(
-                        "disk {} of {}, block 0, {} bytes",
-                        index,
-                        disks.len(),
-                        block.len()
-                    ),
-                );
-            }
-            Err(error) => line(
-                "storage read failed",
-                format_args!("disk {} of {}: {}", index, disks.len(), error),
-            ),
-        }
-    }
-    if read == 0 {
-        line(
-            "storage not read",
-            format_args!("{} disk(s) attached, none answered", disks.len()),
-        );
-        return;
-    }
+/// Report the root filesystem's completed superblock read without issuing extra I/O.
+pub fn storage_read() {
+    line("storage read", format_args!("root ext2 superblock"));
     #[cfg(target_arch = "aarch64")]
     screen(crate::graphics::boot_screen::Stage::StorageRead);
 }

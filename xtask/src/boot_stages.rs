@@ -75,7 +75,7 @@ fn device_class_stages() -> Vec<BootStage> {
             name: "Storage device read",
             marker: "[devices] storage read: ",
             failure_meaning: "No attached disk completed a block read",
-            check_hint: "drivers::device_class::read_storage() - the driver's read path and its completion (interrupt or polling)",
+            check_hint: "fs::ext2::init_root_fs() - the root superblock read and mount must succeed",
         },
         BootStage {
             name: "Network device found",

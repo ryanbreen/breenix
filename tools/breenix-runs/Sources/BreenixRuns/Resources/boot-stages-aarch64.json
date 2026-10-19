@@ -60,7 +60,7 @@
       "name": "Storage device read",
       "marker": "[devices] storage read: ",
       "failureMeaning": "No attached disk completed a block read",
-      "checkHint": "drivers::device_class::read_storage() - the driver's read path and its completion (interrupt or polling)"
+      "checkHint": "fs::ext2::init_root_fs() - the root superblock read and mount must succeed"
     },
     {
       "name": "Network device found",

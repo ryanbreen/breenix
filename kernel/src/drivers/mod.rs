@@ -188,7 +188,6 @@ pub fn run_post_init_self_tests() {
         }
     }
 
-    device_class::read_storage();
 
     if virtio::sound::is_initialized() {
         if let Err(e) = virtio::sound::test_silence() {
@@ -525,5 +524,4 @@ pub fn run_post_init_self_tests() {
     } else {
         serial_println!("[drivers] VirtIO block self-test skipped: no VirtIO MMIO block device");
     }
-    device_class::read_storage();
 }

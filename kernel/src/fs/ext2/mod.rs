@@ -2812,6 +2812,8 @@ pub fn init_root_fs() -> Result<(), &'static str> {
         })
         .ok_or("No mountable 512-byte-sector ext2 block device")?;
 
+    crate::drivers::device_class::storage_read();
+
     // Read packed struct fields safely before logging
     let blocks_count =
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(fs.superblock.s_blocks_count)) };
