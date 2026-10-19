@@ -15,6 +15,11 @@
 //!   motion case requires the guest to move to the requested position (absolute)
 //!   or by the requested distance (relative). An unscored first request gives the
 //!   host its origin.
+//!   F23: Fusion's VNC server sends no relative motion (four boots across two
+//!   configurations). VMware runs `absolute-replay`; its relative-motion case
+//!   is a host limitation, not a failed guest check. Relative motion is measured
+//!   on Parallels through the SDK with `absolute-relative-replay`. The requested
+//!   motion assertions below remain unchanged.
 //! - `replay`: for each interface of a kind the run measured, the reports that
 //!   interface's device sent during the host cases (`recorded=` in
 //!   `/proc/xhci/pointers`) go back through the kernel's replay control, which
