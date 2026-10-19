@@ -651,7 +651,9 @@ the backstop does not pass.
   `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
   then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
   the shadow's SHA-256>; <ms> ms after the switch` or `[console] ttyN shown: read back differs: <first
-  mismatch>; <ms> ms after the switch` (fatal). The time runs from the moment ttyN became the foreground
+  mismatch>; <ms> ms after the switch` (fatal). When a display owner or graphics mode takes ttyN's screen
+  before the check reads it, the check compares no pixels and the verdict is `[console] ttyN shown: not read back:
+  display ownership changed; <ms> ms after the switch`, which is not a difference. The time runs from the moment ttyN became the foreground
   to the verdict (plan Q25); `vt-switch/switch-readback` requires it under that case's 2000 ms. **A switch
   does not log screen contents:** terminals can show secrets, and serial and boot logs are retained.
 - **`/proc/console/check`** (root only, mode 0400) is how a case or a metal script reads the screen. Reading it
