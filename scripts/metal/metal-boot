@@ -415,7 +415,8 @@ class Driver:
         if disk == 'root':
             target = self.args.mode
             if target == 'suite':
-                target += ' ' + suites(self.args)[0]
+                # The intent replaces the root's boot target, so it carries the same host-key declaration.
+                target += ' ' + suites(self.args)[0] + ' hostkeys ' + metal_root.HOSTKEYS
             elif target == 'console':
                 self.console_intent = 'session' if session(self.args) else 'measure'
                 self.delivery['consoleIntent'] = self.console_intent
