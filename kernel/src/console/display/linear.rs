@@ -88,13 +88,22 @@ impl Linear {
 
     pub fn read_line(&self, y: usize, out: &mut [u8]) {
         let start = self.layout.line(y).start;
-        // Eight bytes per read where aligned: each read of video memory is a
-        // bus transaction of its own.
+        // The widest read the mapping allows: each read of video memory is a
+        // bus transaction of its own. On x86 a whole 64-byte line where
+        // aligned (`read_64`), else eight bytes where aligned.
+        #[cfg(target_arch = "x86_64")]
+        let lines = streaming_loads();
         let mut index = 0;
         while index < out.len() {
-            // SAFETY: inside the framebuffer mapping; the wide read is aligned.
+            // SAFETY: inside the framebuffer mapping; the wide reads are aligned.
             unsafe {
                 let source = self.buffer.add(start + index);
+                #[cfg(target_arch = "x86_64")]
+                if lines && index + 64 <= out.len() && source as usize % 64 == 0 {
+                    read_64(source, out[index..index + 64].as_mut_ptr());
+                    index += 64;
+                    continue;
+                }
                 if index + 8 <= out.len() && source as usize % 8 == 0 {
                     let word = core::ptr::read_volatile(source as *const u64);
                     out[index..index + 8].copy_from_slice(&word.to_le_bytes());
@@ -330,5 +339,60 @@ pub fn report_write_combining(result: Result<crate::arch_impl::x86_64::pagewalk:
             report.mappings
         ),
         Err(reason) => log::warn!("[fbcon] aperture not write-combining: {}", reason),
+    }
+}
+
+/// Whether `read_64` may run: the CPU has SSE4.1 (CPUID.01H:ECX bit 19) and
+/// this CPU has SSE enabled (CR4.OSFXSR, set by `cpu_init::init_fpu`).
+#[cfg(target_arch = "x86_64")]
+fn streaming_loads() -> bool {
+    use core::sync::atomic::{AtomicU8, Ordering};
+    use x86_64::registers::control::{Cr4, Cr4Flags};
+    // 0 not yet asked, 1 present, 2 absent.
+    static SSE41: AtomicU8 = AtomicU8::new(0);
+    let present = match SSE41.load(Ordering::Relaxed) {
+        0 => {
+            // SAFETY: CPUID leaf 1 is architecturally present on x86_64.
+            let ecx = unsafe { core::arch::x86_64::__cpuid(1) }.ecx;
+            let present = ecx & (1 << 19) != 0;
+            SSE41.store(if present { 1 } else { 2 }, Ordering::Relaxed);
+            present
+        }
+        known => known == 1,
+    };
+    present && Cr4::read().contains(Cr4Flags::OSFXSR)
+}
+
+/// Read the 64 bytes at `source` into `out` with four SSE4.1 streaming loads
+/// (MOVNTDQA, Intel SDM Vol. 2B). From write-combining memory the first load
+/// fetches the whole line in one bus read and the other three are served from
+/// that fetch, where ordinary loads make eight uncached reads. The kernel is
+/// built without SSE: the registers used here are the running thread's, saved
+/// and restored with it when it is switched out and in (`arch_impl::x86_64::fpu`).
+///
+/// # Safety
+/// `source` must be 64-byte aligned and readable for 64 bytes, `out` writable
+/// for 64 bytes, and `streaming_loads` true on this CPU.
+#[cfg(target_arch = "x86_64")]
+unsafe fn read_64(source: *const u8, out: *mut u8) {
+    // SAFETY: the caller's contract; only xmm0-3 change, and they are declared.
+    unsafe {
+        core::arch::asm!(
+            "movntdqa xmm0, [{source}]",
+            "movntdqa xmm1, [{source} + 16]",
+            "movntdqa xmm2, [{source} + 32]",
+            "movntdqa xmm3, [{source} + 48]",
+            "movdqu [{out}], xmm0",
+            "movdqu [{out} + 16], xmm1",
+            "movdqu [{out} + 32], xmm2",
+            "movdqu [{out} + 48], xmm3",
+            source = in(reg) source,
+            out = in(reg) out,
+            out("xmm0") _,
+            out("xmm1") _,
+            out("xmm2") _,
+            out("xmm3") _,
+            options(nostack, preserves_flags),
+        );
     }
 }
