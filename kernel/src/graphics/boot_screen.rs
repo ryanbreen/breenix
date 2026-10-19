@@ -42,8 +42,10 @@ pub enum Stage {
     GicInitialized,
     UartInterrupts,
     InterruptsEnabled,
-    DriversInitialized,
-    DriverSelfTests,
+    StorageFound,
+    StorageInitialized,
+    StorageRead,
+    NetworkFound,
     Ext2Mounted,
     Devfs,
     Devpts,
@@ -58,7 +60,7 @@ pub enum Stage {
     StartingPid1,
 }
 
-const STAGE_COUNT: usize = 23;
+const STAGE_COUNT: usize = 25;
 
 const STAGE_NAMES: [&str; STAGE_COUNT] = [
     "ARM64 kernel starting",
@@ -70,8 +72,10 @@ const STAGE_NAMES: [&str; STAGE_COUNT] = [
     "GIC initialized",
     "UART interrupts enabled",
     "Interrupts enabled",
-    "Device drivers initialized",
-    "Driver self-tests ran",
+    "Storage device found",
+    "Storage device initialized",
+    "Storage device read",
+    "Network device found",
     "ext2 root filesystem mounted",
     "devfs initialized",
     "devptsfs initialized",
@@ -90,10 +94,10 @@ const STAGE_NAMES: [&str; STAGE_COUNT] = [
 const GROUPS: [(&str, usize, usize); 6] = [
     ("Arch bring-up", 0, 4),
     ("Interrupts & time", 4, 5),
-    ("Devices", 9, 2),
-    ("Filesystems & console", 11, 5),
-    ("Scheduler, timer tick & SMP", 16, 6),
-    ("First userspace process", 22, 1),
+    ("Devices", 9, 4),
+    ("Filesystems & console", 13, 5),
+    ("Scheduler, timer tick & SMP", 18, 6),
+    ("First userspace process", 24, 1),
 ];
 
 /// Bit i set = stage i reached.

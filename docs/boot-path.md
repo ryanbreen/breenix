@@ -30,6 +30,16 @@ has gone quiet; `--display` also opens the VM's screen). From a fresh worktree t
 minute and a half. Run from a terminal, the same script is an interactive boot you can type into. x86-64 is scored against its own
 stage list on the x86-metal path; it is not measured on the main path.
 
+A milestone states what the kernel must do, not which emulated device it does it with. The
+devices milestone's aarch64 and x86_64 lists are the same four stages: a storage device found, initialized
+and read, and a network device found. Each driver reports them through
+`kernel/src/drivers/device_class.rs`, which prints a `[devices] storage found:`,
+`storage initialized:`, `storage read:` or `network found:` line whatever the driver:
+QEMU's VirtIO and E1000, the Parallels and VMware devices, or the R240's AHCI disk and
+BCM5720. "Found" comes from bus enumeration (a PCI class code, a VirtIO MMIO device ID,
+or a platform controller whose registers answer), "initialized" from a storage driver that
+attached a disk, and "read" from a block-0 read of each attached disk through the block layer.
+
 ## Boot modes
 
 ### ARM64 QEMU acceleration

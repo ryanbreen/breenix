@@ -6,6 +6,7 @@
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod bcm5720;
+pub mod device_class;
 pub mod e1000;
 pub mod fw_cfg;
 #[cfg(target_arch = "x86_64")]
@@ -178,6 +179,8 @@ pub fn run_post_init_self_tests() {
             log::warn!("NVMe test failed: {}", e);
         }
     }
+
+    device_class::read_storage();
 
     if virtio::sound::is_initialized() {
         if let Err(e) = virtio::sound::test_silence() {
@@ -427,6 +430,17 @@ fn init_virtio_mmio() -> usize {
             device.device_id(),
             device.version()
         );
+        let class = match device.device_id() {
+            virtio::mmio::device_id::BLOCK => Some(device_class::Class::Storage),
+            virtio::mmio::device_id::NETWORK => Some(device_class::Class::Network),
+            _ => None,
+        };
+        if let Some(class) = class {
+            device_class::found(
+                class,
+                format_args!("virtio-mmio {} (version {})", type_name, device.version()),
+            );
+        }
         device_count += 1;
     }
 
@@ -500,4 +514,5 @@ pub fn run_post_init_self_tests() {
     } else {
         serial_println!("[drivers] VirtIO block self-test skipped: no VirtIO MMIO block device");
     }
+    device_class::read_storage();
 }

@@ -947,6 +947,7 @@ pub fn init() -> Result<usize, &'static str> {
     let count = attached.len();
     CONTROLLERS.call_once(|| attached);
     log::info!("NVMe: Driver initialized with {} controller(s)", count);
+    crate::drivers::device_class::storage_initialized("nvme", count);
     if count == 0 {
         return Err("No NVMe controller could be attached");
     }

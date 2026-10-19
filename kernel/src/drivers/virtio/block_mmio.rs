@@ -760,6 +760,7 @@ pub fn init() -> Result<(), &'static str> {
         Err("No VirtIO block device found")
     } else {
         crate::serial_println!("[virtio-blk] Initialized {} block device(s)", found);
+        crate::drivers::device_class::storage_initialized("virtio-blk", found);
         Ok(())
     }
 }

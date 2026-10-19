@@ -113,25 +113,20 @@
     {
       "id": "devices",
       "title": "Devices",
-      "summary": "PCI and virtio devices are found and their drivers initialize.",
+      "summary": "A storage device is found, initialized and read, and a network device is found, whatever drivers the hardware needs.",
       "kernel": true,
       "stages": {
         "aarch64": [
-          "Device drivers initialized",
-          {
-            "name": "Driver self-tests ran",
-            "marker": "[drivers] Running post-init self-tests"
-          }
+          "Storage device found",
+          "Storage device initialized",
+          "Storage device read",
+          "Network device found"
         ],
         "x86_64": [
-          "PCI bus enumerated",
-          "E1000 network device found",
-          "VirtIO block device found",
-          "VirtIO block driver initialized",
-          "VirtIO disk read successful",
-          "E1000 driver initialized",
-          "Network stack initialized",
-          "Keyboard queue initialized"
+          "Storage device found",
+          "Storage device initialized",
+          "Storage device read",
+          "Network device found"
         ]
       }
     },
