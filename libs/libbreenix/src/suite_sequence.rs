@@ -86,6 +86,7 @@ static TOTAL: AtomicU32 = AtomicU32::new(0);
 /// This suite's id, and the suites after it as (id, NUL-terminated binary path).
 static ID: OnceLock<String> = OnceLock::new();
 static AFTER: OnceLock<Vec<(String, Vec<u8>)>> = OnceLock::new();
+static HOSTKEYS: OnceLock<Vec<u8>> = OnceLock::new();
 /// The number of suites in the sequence.
 static COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -101,6 +102,11 @@ pub fn read(id: &str) -> Option<(Vec<String>, usize)> {
 /// Before the suite's START: record the baseline (the first suite) or put the root back
 /// to it (any later one), then arm the watchdog for a suite of `total` cases.
 pub fn prepare(ids: &[String], index: usize, total: usize) {
+    if let Some(method) = super::hostkey_method() {
+        let mut bytes = method.as_bytes().to_vec();
+        bytes.push(0);
+        let _ = HOSTKEYS.set(bytes);
+    }
     let _ = ID.set(ids[index].clone());
     let _ = AFTER.set(ids[index + 1..].iter()
         .map(|id| (id.clone(), std::format!("/sbin/suite-{id}\0").into_bytes()))
@@ -244,7 +250,12 @@ fn hand_off() {
     }
     for (id, path) in after {
         // Exec returns only when the next suite could not start; try the one after it.
-        let _ = process::exec(path);
+        let mut argv = [path.as_ptr(), core::ptr::null(), core::ptr::null(), core::ptr::null()];
+        if let Some(method) = HOSTKEYS.get() {
+            argv[1] = b"--hostkeys\0".as_ptr();
+            argv[2] = method.as_ptr();
+        }
+        let _ = process::execv(path, argv.as_ptr());
         let mut line = Line::new();
         line.text("SUITE_SEQUENCE FAIL exec ").text(id);
         line.emit();

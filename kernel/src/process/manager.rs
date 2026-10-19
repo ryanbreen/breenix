@@ -929,7 +929,7 @@ impl ProcessManager {
         let default_env: [&[u8]; 5] = [
             b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/home\0",
-            b"TERM=vt100\0",
+            b"TERM=breenix\0",
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
@@ -1388,7 +1388,7 @@ impl ProcessManager {
         let default_env: [&[u8]; 5] = [
             b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/home\0",
-            b"TERM=vt100\0",
+            b"TERM=breenix\0",
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];

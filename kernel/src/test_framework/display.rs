@@ -1,24 +1,21 @@
 //! Graphical progress display for boot tests
 //!
 //! Renders progress bars showing test execution status in real-time.
-//! Works on both x86_64 and ARM64 whenever a framebuffer is available.
-//!
-//! On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature since it
-//! needs the double-buffered framebuffer setup. Without it, the raw framebuffer
-//! is consumed by the basic text logger and no shell framebuffer exists.
-//! On ARM64, VirtIO GPU provides the framebuffer regardless of feature flags.
-//!
-//! When no framebuffer is available, this module gracefully degrades to a no-op.
+//! On ARM64 the console renderer draws the panel into its splash shadow,
+//! below the stage label, so the panel and splash have one screen writer and
+//! the full-frame read-back includes both. x86 keeps the console's screen.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 use super::progress::{get_progress, get_stage_progress, is_started};
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 use super::registry::{SubsystemId, TestStage};
 
 /// Whether graphical display is available and initialized
 static DISPLAY_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static REFRESH: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // Public API (always available)
@@ -53,7 +50,9 @@ pub fn render_progress() {
         return;
     }
 
-    render_to_framebuffer();
+    // The console render pass samples progress after this request.
+    #[cfg(target_arch = "aarch64")]
+    REFRESH.store(true, Ordering::Release);
 }
 
 /// Request a display refresh
@@ -71,19 +70,12 @@ pub fn request_refresh() {
 
 /// Check if framebuffer is available (architecture-specific)
 ///
-/// On x86_64, SHELL_FRAMEBUFFER only exists with the `interactive` feature.
-/// On ARM64, SHELL_FRAMEBUFFER is always available when VirtIO GPU initializes.
+/// On x86_64 the framebuffer belongs to the screen console. On ARM64,
+/// SHELL_FRAMEBUFFER is available when VirtIO GPU initializes.
 fn has_framebuffer_available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        #[cfg(feature = "interactive")]
-        {
-            crate::logger::SHELL_FRAMEBUFFER.get().is_some()
-        }
-        #[cfg(not(feature = "interactive"))]
-        {
-            false
-        }
+        false
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -96,24 +88,22 @@ fn has_framebuffer_available() -> bool {
 // Graphical rendering implementation
 // =============================================================================
 //
-// The full rendering code is compiled on platforms that can have a framebuffer:
-// - x86_64 with interactive feature (SHELL_FRAMEBUFFER exists)
-// - ARM64 (VirtIO GPU provides SHELL_FRAMEBUFFER)
-//
-// On x86_64 without interactive, a no-op stub is provided instead.
+// The full rendering code is compiled on ARM64 (VirtIO GPU provides
+// SHELL_FRAMEBUFFER). On x86_64, a no-op stub is provided instead.
 
-/// Render to the appropriate framebuffer based on platform
-///
-/// On ARM64 the panel shares the screen with the boot screen, which stays up
-/// while a testing kernel runs (docs/console/contract.md, section 7): it draws
-/// only in the band the boot screen leaves free (`boot_screen::runner_area`),
-/// and not at all once the boot screen has given the screen away.
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-fn render_to_framebuffer() {
+/// Draw a requested test-panel update into the console's retained splash.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn render_splash(
+    shadow: &mut [u8],
+    layout: crate::console::raster::Layout,
+    force: bool,
+) -> Option<core::ops::Range<usize>> {
     use crate::graphics::primitives::{
         draw_rect, draw_text, fill_rect, Canvas, Color, Rect, TextStyle,
     };
-
+    if !is_ready() || !(REFRESH.swap(false, Ordering::AcqRel) || force) {
+        return None;
+    }
     // Color scheme
     const COLOR_BACKGROUND: Color = Color::rgb(26, 26, 46);
     const COLOR_BORDER: Color = Color::rgb(74, 74, 106);
@@ -197,16 +187,15 @@ fn render_to_framebuffer() {
 
         let inner_x = area.x + PANEL_PADDING;
         let inner_width = area.width as i32 - 2 * PANEL_PADDING;
-        let rows_fit = (area.height as i32 - 2 * PANEL_PADDING - TITLE_HEIGHT - SUMMARY_HEIGHT)
-            / ROW_HEIGHT;
+        let rows_fit =
+            (area.height as i32 - 2 * PANEL_PADDING - TITLE_HEIGHT - SUMMARY_HEIGHT) / ROW_HEIGHT;
         if rows_fit <= 0 {
             return;
         }
         let rows_fit = rows_fit as usize;
         let columns = SubsystemId::COUNT.div_ceil(rows_fit);
         let rows_per_column = SubsystemId::COUNT.div_ceil(columns);
-        let column_width =
-            (inner_width - (columns as i32 - 1) * COLUMN_GAP) / columns as i32;
+        let column_width = (inner_width - (columns as i32 - 1) * COLUMN_GAP) / columns as i32;
         let bar_width = column_width - NAME_WIDTH - PERCENT_WIDTH - STATUS_WIDTH;
         if bar_width < MIN_BAR_WIDTH {
             return;
@@ -268,7 +257,14 @@ fn render_to_framebuffer() {
 
         let bar_x = x + NAME_WIDTH;
         let bar_y = y + 2;
-        render_progress_bar(canvas, bar_x, bar_y, bar_width as u32, row.total, &row.stages);
+        render_progress_bar(
+            canvas,
+            bar_x,
+            bar_y,
+            bar_width as u32,
+            row.total,
+            &row.stages,
+        );
 
         let percent = if row.total > 0 {
             (row.completed.min(row.total) as u64 * 100 / row.total as u64) as u32
@@ -431,46 +427,60 @@ fn render_to_framebuffer() {
         }
     }
 
-    // Actual rendering dispatch based on architecture
-    #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-    {
-        if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
-            let mut guard = fb.lock();
-            let area = Rect {
-                x: 40,
-                y: 40,
-                width: 600,
-                height: 400,
-            };
-            render_panel(&mut *guard, area);
-        }
+    struct Shadow<'a> {
+        pixels: &'a mut [u8],
+        layout: crate::console::raster::Layout,
     }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-            let mut guard = fb.lock();
-            // The console retires the firmware canvas under this lock.
-            if crate::gpu::console::active() {
+    impl Canvas for Shadow<'_> {
+        fn width(&self) -> usize {
+            self.layout.width
+        }
+        fn height(&self) -> usize {
+            self.layout.height
+        }
+        fn bytes_per_pixel(&self) -> usize {
+            self.layout.bytes_per_pixel
+        }
+        fn stride(&self) -> usize {
+            self.layout.stride_bytes / self.layout.bytes_per_pixel
+        }
+        fn is_bgr(&self) -> bool {
+            self.layout.bgr
+        }
+        fn buffer(&self) -> &[u8] {
+            self.pixels
+        }
+        fn buffer_mut(&mut self) -> &mut [u8] {
+            self.pixels
+        }
+        fn set_pixel(&mut self, x: i32, y: i32, color: Color) {
+            if x < 0 || y < 0 || x as usize >= self.width() || y as usize >= self.height() {
                 return;
             }
-            let Some(area) = crate::graphics::boot_screen::runner_area(&*guard) else {
-                return;
-            };
-            crate::graphics::cursor::hide(&mut *guard);
-            render_panel(&mut *guard, area);
-            crate::graphics::cursor::show(&mut *guard);
-            guard.flush_rect(area.x as u32, area.y as u32, area.width, area.height);
+            let bpp = self.bytes_per_pixel();
+            let pixel = color.to_pixel_bytes(bpp, self.is_bgr());
+            let offset = y as usize * self.layout.stride_bytes + x as usize * bpp;
+            self.pixels[offset..offset + bpp].copy_from_slice(&pixel[..bpp]);
+        }
+        fn get_pixel(&self, x: i32, y: i32) -> Option<Color> {
+            if x < 0 || y < 0 || x as usize >= self.width() || y as usize >= self.height() {
+                return None;
+            }
+            let offset =
+                y as usize * self.layout.stride_bytes + x as usize * self.bytes_per_pixel();
+            let p = &self.pixels[offset..offset + 3];
+            Some(if self.is_bgr() {
+                Color::rgb(p[2], p[1], p[0])
+            } else {
+                Color::rgb(p[0], p[1], p[2])
+            })
         }
     }
-}
-
-/// No-op rendering stub for x86_64 without interactive feature.
-///
-/// On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature because
-/// without it, the raw framebuffer is consumed by the basic text logger.
-/// This stub ensures the code compiles cleanly with zero warnings.
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-fn render_to_framebuffer() {
-    // No graphical display available - framebuffer is used by basic text logger
+    let mut canvas = Shadow {
+        pixels: shadow,
+        layout,
+    };
+    let area = crate::graphics::boot_screen::runner_area(&canvas)?;
+    render_panel(&mut canvas, area);
+    Some(area.y as usize..area.y as usize + area.height as usize)
 }

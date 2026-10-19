@@ -66,6 +66,17 @@ fn suite(text: &str) -> (String, Option<String>) {
 }
 
 #[test]
+fn hostkeys_declaration_is_preserved_and_refuses_injection() {
+    for selection in ["suite console", "suite console case keys/alt-fn"] {
+        let Target::Suite(suite) = parse(&format!("{selection} hostkeys prlctl;missing=left,right\n")).unwrap() else { panic!("suite expected") };
+        assert_eq!(suite.hostkeys.as_deref(), Some("prlctl;missing=left,right"));
+    }
+    for text in ["suite console hostkeys ", "suite console hostkeys qmp extra", "probe hostkeys qmp", "suite console hostkeys qmp hostkeys vnc"] {
+        assert!(parse(text).is_err(), "{text}");
+    }
+}
+
+#[test]
 fn suite_and_probe_lines_parse() {
     assert_eq!(suite("suite smoke\n"), ("smoke".into(), None));
     assert_eq!(suite("suite files-io\r\n"), ("files-io".into(), None));

@@ -407,6 +407,10 @@ fn inspect(
                     // device_read serves the non-Console/Tty fallback only.
                     "copy_to_user",
                     "device_read",
+                    // The virtual terminals' read route: `Vt(_)` is the device
+                    // pattern, and vt_input selects a terminal's queue.
+                    "Vt",
+                    "vt_input",
                 ];
                 if !LEAVES.contains(&token)
                     && !["let", "=", ",", "&", "|", "||", "return"].contains(&token)
@@ -577,7 +581,8 @@ fn repaired_families_have_no_blocking_eagain_exit() {
     let roots: Vec<_> = defs
         .keys()
         .filter(|name| {
-            name.as_str() != "read_console" && compacted.contains(&format!("blocking_io::{name}("))
+            !["read_console", "read_terminal"].contains(&name.as_str())
+                && compacted.contains(&format!("blocking_io::{name}("))
         })
         .collect();
     assert_eq!(

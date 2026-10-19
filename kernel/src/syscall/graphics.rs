@@ -28,11 +28,9 @@ extern crate alloc;
 // Architecture-specific framebuffer imports
 #[cfg(target_arch = "aarch64")]
 use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-use crate::logger::SHELL_FRAMEBUFFER;
 
 use super::SyscallResult;
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 use crate::graphics::primitives::{
     draw_circle, draw_line, draw_rect, fill_circle, fill_rect, Canvas, Color, Rect,
 };
@@ -589,7 +587,7 @@ pub struct FbInfo {
 
 /// Maximum valid userspace address (canonical lower half)
 /// Addresses above this are kernel space and must be rejected.
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
 /// sys_fbinfo - Get framebuffer information
@@ -601,7 +599,7 @@ const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
 /// * 0 on success
 /// * -EFAULT if info_ptr is invalid or in kernel space
 /// * -ENODEV if no framebuffer is available
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
     // Validate pointer: must be non-null and in userspace address range
     if info_ptr == 0 {
@@ -689,11 +687,11 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_fbinfo - production x86_64 form: the bootloader framebuffer the kernel
-/// logs to until a process takes the display.
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+/// sys_fbinfo - x86_64 form: the bootloader framebuffer the screen console
+/// draws on until a process takes the display.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
-    let Some((width, height, stride, bpp, is_bgr)) = crate::fbcon::display_geometry() else {
+    let Some((width, height, stride, bpp, is_bgr)) = crate::console::display_geometry() else {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     };
     let info = FbInfo {
@@ -710,7 +708,7 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
 }
 
 /// Draw command operations for sys_fbdraw
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 #[repr(u32)]
 #[allow(dead_code)]
 pub enum FbDrawOp {
@@ -754,7 +752,7 @@ pub struct FbDrawCmd {
 }
 
 /// Get the width of the left (demo) pane
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn left_pane_width() -> usize {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
@@ -769,7 +767,7 @@ fn left_pane_width() -> usize {
 }
 
 /// Get the height of the framebuffer
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn fb_height() -> usize {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
@@ -2350,7 +2348,7 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
 /// * -EFAULT if cmd_ptr is invalid
 /// * -ENODEV if no framebuffer is available
 /// * -EINVAL if operation is invalid
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+#[cfg(target_arch = "aarch64")]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Validate pointer
     if cmd_ptr == 0 || cmd_ptr >= USER_SPACE_MAX {
@@ -2388,6 +2386,33 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         } else {
             (None, false)
         }
+    };
+
+    // ReadPixel is a privileged display-owner diagnostic, as on x86.
+    // Read the scanout's memory/backing, without presenting console pixels.
+    if cmd.op == 32 {
+        let root = crate::syscall::memory_common::get_current_thread_id().is_some_and(|tid| {
+            let guard = crate::process::manager();
+            guard.as_ref().and_then(|manager| manager.find_process_by_thread(tid))
+                .is_some_and(|(_, process)| process.cred.euid == 0)
+        });
+        if !root || !caller_owns_display {
+            return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
+        }
+        if cmd.p1 < 0 || cmd.p2 < 0 {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        }
+        return match crate::console::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
+            Some(pixel) => SyscallResult::Ok(pixel as u64),
+            None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+        };
+    }
+
+    // A display owner whose terminal is not in the foreground keeps drawing
+    // successfully, but what it draws or flushes does not reach the screen
+    // (`docs/console/contract.md` section 4.2).
+    let Some(_presenting) = crate::console::vt::Presentation::begin(caller_owns_display) else {
+        return SyscallResult::Ok(0);
     };
 
     // VirGL/compositor ops (7=balls, 9=rects, 10-14=compositor) don't need the
@@ -2920,20 +2945,20 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_fbdraw - production x86_64 form. Flush (op 6) copies
-/// the display owner's whole-screen fb_mmap pane (or the rectangle p1-p4 of it,
-/// when p3 and p4 are positive) onto the screen. The drawing ops draw on the
-/// interactive kernel's shell framebuffer, which this kernel does not have.
+/// sys_fbdraw - x86_64 form. Flush (op 6) copies the display owner's
+/// whole-screen fb_mmap pane (or the rectangle p1-p4 of it, when p3 and p4 are
+/// positive) onto the screen. The kernel-side drawing ops are ARM64's; an x86
+/// display owner draws in its pane.
 /// ReadPixel (op 32) returns the hardware pixel at (p1, p2) as 0x00RRGGBB,
 /// allowing a root display owner to verify that a flush reached the framebuffer.
 ///
 /// # Returns
 /// * 0 on Flush success, or the RGB pixel for ReadPixel
 /// * -EFAULT if cmd_ptr is invalid
-/// * -EINVAL for an unsupported op, invalid pixel coordinate, or no fb_mmap pane
+/// * -EINVAL for an unsupported op, invalid pixel coordinate, or Flush without a fb_mmap pane
 /// * -EPERM if the caller does not own the display, or ReadPixel is not privileged
-/// * -EBUSY if the screen console is writing a row (flush or read again)
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+/// * -EBUSY if the screen console is writing a row, or ReadPixel cannot read the display
+#[cfg(target_arch = "x86_64")]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     use crate::syscall::memory_common::get_current_thread_id;
 
@@ -2958,18 +2983,28 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     if !caller_owns_display || (cmd.op == 32 && !is_root) {
         return SyscallResult::Err(super::ErrorCode::PermissionDenied as u64);
     }
-    let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
-        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-    };
+    // ReadPixel reads the screen itself, so it needs no pane: an owner that
+    // only quiesced the console reads what the console drew.
     if cmd.op == 32 {
-        if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= pane.width || cmd.p2 as usize >= pane.height {
+        let Some((width, height, ..)) = crate::console::display_geometry() else {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        };
+        if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= width || cmd.p2 as usize >= height {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         }
-        return match crate::fbcon::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
+        return match crate::console::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
             Some(pixel) => SyscallResult::Ok(pixel as u64),
             None => SyscallResult::Err(super::ErrorCode::Busy as u64),
         };
     }
+    let Some(pane) = fb_mmap.filter(|pane| pane.whole_screen) else {
+        return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+    };
+    // A display owner whose terminal is not in the foreground flushes
+    // successfully, but its pane does not reach the screen (contract 4.2).
+    let Some(_presenting) = crate::console::vt::Presentation::begin(true) else {
+        return SyscallResult::Ok(0);
+    };
     let (rows, columns) = if cmd.p3 > 0 && cmd.p4 > 0 {
         let (x, y) = (cmd.p1.max(0) as usize, cmd.p2.max(0) as usize);
         (
@@ -2983,7 +3018,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
     // clipped to it.
     let copied = unsafe {
-        crate::fbcon::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
+        crate::console::copy_to_display(pane.user_addr as *const u8, pane.user_stride, rows, columns)
     };
     if copied {
         SyscallResult::Ok(0)
@@ -3120,44 +3155,13 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         (pane_width, cache.height, cache.bytes_per_pixel)
     };
 
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
+    #[cfg(target_arch = "x86_64")]
     let (pane_width, height, bpp) = {
-        let Some((width, height, _stride, bpp, _is_bgr)) = crate::fbcon::display_geometry() else {
+        let Some((width, height, _stride, bpp, _is_bgr)) = crate::console::display_geometry() else {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         };
         let pane_width = if whole_screen { width } else { width / 2 };
         (pane_width, height, bpp)
-    };
-
-    #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-    let (pane_width, height, bpp) = {
-        let fb = match SHELL_FRAMEBUFFER.get() {
-            Some(fb) => fb,
-            None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
-        };
-        let fb_guard = {
-            let mut guard = None;
-            for _ in 0..65536 {
-                if let Some(g) = fb.try_lock() {
-                    guard = Some(g);
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-            match guard {
-                Some(g) => g,
-                None => {
-                    log::warn!("sys_fbmmap: framebuffer lock busy");
-                    return SyscallResult::Err(super::ErrorCode::Busy as u64);
-                }
-            }
-        };
-        let pane_width = if whole_screen {
-            fb_guard.width()
-        } else {
-            fb_guard.width() / 2
-        };
-        (pane_width, fb_guard.height(), fb_guard.bytes_per_pixel())
     };
 
     let user_stride = pane_width * bpp;

@@ -29,8 +29,8 @@ fn line(event: &str, args: fmt::Arguments) {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn screen(stage: crate::graphics::boot_screen::Stage) {
-    crate::graphics::boot_screen::stage(stage);
+fn screen(stage: crate::console::splash::Stage) {
+    crate::console::splash::stage(stage);
 }
 
 /// A device of `class` was found; `args` says where and what it is.
@@ -39,12 +39,12 @@ pub fn found(class: Class, args: fmt::Arguments) {
         Class::Storage => {
             line("storage found", args);
             #[cfg(target_arch = "aarch64")]
-            screen(crate::graphics::boot_screen::Stage::StorageFound);
+            screen(crate::console::splash::Stage::StorageFound);
         }
         Class::Network => {
             line("network found", args);
             #[cfg(target_arch = "aarch64")]
-            screen(crate::graphics::boot_screen::Stage::NetworkFound);
+            screen(crate::console::splash::Stage::NetworkFound);
         }
     }
 }
@@ -59,12 +59,12 @@ pub fn storage_initialized(driver: &str, disks: usize) {
         format_args!("{driver}, {disks} disk(s)"),
     );
     #[cfg(target_arch = "aarch64")]
-    screen(crate::graphics::boot_screen::Stage::StorageInitialized);
+    screen(crate::console::splash::Stage::StorageInitialized);
 }
 
 /// Report the root filesystem's completed superblock read without issuing extra I/O.
 pub fn storage_read() {
     line("storage read", format_args!("root ext2 superblock"));
     #[cfg(target_arch = "aarch64")]
-    screen(crate::graphics::boot_screen::Stage::StorageRead);
+    screen(crate::console::splash::Stage::StorageRead);
 }

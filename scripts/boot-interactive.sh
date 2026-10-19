@@ -3,9 +3,9 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY/CASE]] [--serial-log FILE]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY[/CASE]]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
-#                               [--qmp SOCKET] [--fbconsole log] [--no-build] [--cpus N] [--gpu-gl]
+#                               [--qmp SOCKET] [--no-build] [--cpus N] [--gpu-gl]
 #
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
@@ -13,7 +13,7 @@
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
 #                        desktop's window manager needs VirGL, which this QEMU GPU lacks, so it exits here
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
-#   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
+#   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --suite ID,ID,...|all  for --mode suite: several suites in one boot, in order (docs/suites/README.md,
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
@@ -21,7 +21,6 @@
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
-#   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
@@ -34,7 +33,8 @@
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
 #   --cpu MODEL          QEMU CPU model (default max; cortex-a72 selects the strict TCG profile)
 #   --gpu-gl             also attach virtio-gpu-gl-pci, on the GL QEMU that scripts/build-qemu-gl.sh installs
-#                        (VirGL on ANGLE's Metal backend): the window is -display cocoa,gl=es, a run without
+#                        (VirGL on ANGLE's Metal backend), as the window's display: the GPU core drives it, and
+#                        after its handoff the window shows the GPU kernel console. The window is -display cocoa,gl=es, a run without
 #                        one has SPICE GL on a local socket. After the VM stops, scripts/check-host-renderer.py
 #                        judges the run's host renderer attestation, host-renderer.json beside the serial log,
 #                        and a refused attestation fails the boot. BREENIX_QEMU_GL_BINARY names another GL
@@ -62,12 +62,11 @@ SUITE=
 ONLY=
 QMP_SOCKET=
 QMP_REQUESTED=0
-FBCONSOLE=
 GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--fbconsole|--accel|--cpus|--cpu)
+        --mode|--program|--suite|--case|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -76,9 +75,8 @@ while [ "$#" -gt 0 ]; do
         --cpu) CPU="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
-        --case) [ -n "$2" ] || { echo "--case needs a case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
-        --fbconsole) FBCONSOLE="$2"; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
         --gate-timeout) GATE_TIMEOUT="$2"; shift 2 ;;
@@ -118,13 +116,9 @@ elif [ -n "$SUITE" ]; then
 fi
 if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
-        echo "--case needs --mode suite and a category/case id" >&2; exit 2;
+        echo "--case needs --mode suite and a category or category/case id" >&2; exit 2;
     }
 fi
-case "$FBCONSOLE" in
-    ""|log) ;;
-    *) echo "unknown --fbconsole value: $FBCONSOLE (expected log)" >&2; exit 2 ;;
-esac
 if [ -z "$DISPLAY_MODE" ]; then
     # On the operator's Mac every boot opens QEMU's window, as Parallels and VMware boots do, so a boot can be watched.
     # BREENIX_QEMU_NOGUI=1 (unattended automation), an ssh session or a host without a window server stays serial-only.
@@ -186,10 +180,8 @@ if [ "$MODE" = program ]; then
 fi
 if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=${SUITE%%,*}")
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/hostkeys,string=qmp")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
-fi
-if [ -n "$FBCONSOLE" ]; then
-    MODE_ARGS+=(-fw_cfg "name=opt/breenix/fbconsole,string=$FBCONSOLE")
 fi
 if [ -n "$QMP_SOCKET" ]; then
     case "$QMP_SOCKET" in /*) ;; *) QMP_SOCKET="$PWD/$QMP_SOCKET" ;; esac
@@ -312,10 +304,20 @@ if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
         echo "==> Vigil QMP disabled: socket path exceeds 103 bytes: $VIGIL_QMP_SOCKET"
     fi
 fi
+# Console suites and the shell take host keys through a private QMP socket,
+# including one-case runs that have no Vigil socket. Other suites have no host-key cases.
+HOSTKEYS_SOCKET=
+if [ "$MODE" = shell ] || { [ "$MODE" = suite ] && [[ ",$SUITE," == *,console,* ]]; }; then
+    HOSTKEYS_SOCKET="${TMPDIR:-/tmp}/breenix-hk-$$.sock"
+    [ "$(printf '%s' "$HOSTKEYS_SOCKET" | wc -c)" -le 103 ] || HOSTKEYS_SOCKET="/tmp/breenix-hk-$$.sock"
+fi
 QMP_ARGS=()
 if [ -n "$QMP_SOCKET" ]; then
     rm -f "$QMP_SOCKET"
     QMP_ARGS=(-qmp "unix:$QMP_SOCKET,server=on,wait=off")
+fi
+if [ -n "$HOSTKEYS_SOCKET" ]; then
+    QMP_ARGS+=(-qmp "unix:$HOSTKEYS_SOCKET,server=on,wait=off")
 fi
 echo "==> Booting (serial: $SERIAL_LOG; Ctrl-A X quits)"
 [ -z "$QMP_SOCKET" ] || echo "==> QMP: $QMP_SOCKET (scripts/qmp-screendump.py $(printf '%q' "$QMP_SOCKET") out.png)"
@@ -326,6 +328,12 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 exec 3<&0
 set +e
+HOSTKEYS_PID=
+if [ -n "$HOSTKEYS_SOCKET" ]; then
+    python3 "$ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "qmp:$HOSTKEYS_SOCKET" \
+        --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+    HOSTKEYS_PID=$!
+fi
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
@@ -349,6 +357,8 @@ qemu_host_lock_track_pid "$WATCHER_PID"
 wait "$WATCHER_PID"
 code=$?
 set -e
+[ -z "$HOSTKEYS_PID" ] || kill "$HOSTKEYS_PID" 2>/dev/null || true
+[ -z "$HOSTKEYS_SOCKET" ] || rm -f "$HOSTKEYS_SOCKET"
 echo
 echo "==> VM stopped (exit $code)"
 if [ "$GPU_GL" -eq 1 ]; then
