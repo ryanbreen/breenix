@@ -1768,8 +1768,7 @@ pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
     let current = local.state().current_thread;
     let idle = local.state().idle_thread;
     if Some(next) == current && next != idle && any_queued && !policy_keeps_cpu(local, next, outgoing_holds_head) {
-        // Keep the current thread out of the second search: putting it back
-        // first lets pop_local select it again before trying a peer's queue.
+        local.enqueue(next, outgoing_holds_head);
         let found = pop_local(local, &mut stack_waits).or_else(|| {
             (0..MAX_CPUS)
                 .filter(|&other| other != cpu && !is_idle(other))
@@ -1777,13 +1776,13 @@ pub(super) fn schedule(local: &mut Held) -> Option<(u64, u64)> {
         });
         super::wait_for_stacks_x86(core::mem::take(&mut stack_waits), cpu);
         match found {
-            Some(tid) => {
-                local.enqueue(next, outgoing_holds_head);
-                next = tid;
-            }
+            Some(tid) => next = tid,
             None => {
                 // Everything queued was declined: the current thread keeps
-                // this CPU without publishing a queued copy of itself.
+                // this CPU, and leaves the queue it was put back on.
+                if let Some(position) = local.queue().iter().position(|&tid| tid == next) {
+                    local.queue().remove(position);
+                }
                 if let Some(thread) = local.thread(next) {
                     thread.set_running();
                 }
