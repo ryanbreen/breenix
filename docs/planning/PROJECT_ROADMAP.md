@@ -11,9 +11,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
-Testing-boot fixes for #2009, #2012 and #1982 bring up BCM5720 DHCP before
-userspace tests and supply the read-only ext2 acceptance fixture on metal and
-native ARM64. Validation is in progress on `metal-tests/dhcp-and-readonly`.
+Testing-boot work for #2009, #2012 and #1982 waits for BCM5720 DHCP before
+loading userspace tests, continuing with a warning if no lease arrives within
+60 seconds. Noninteractive tests prefer the attached home disk and use an
+embedded read-only ext2 fixture without an attached disk; interactive boots
+retain their writable home disk. Fixture consolidation and reproducibility
+follow-ups are tracked in #1961 and #2029.
 
 ARM64 testing accounting work (#1958, #1969) withdraws the PTY ioctl fixture
 and requires completed retirement of both busy-CPU reclaim receipts. Its
