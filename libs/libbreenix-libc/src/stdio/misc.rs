@@ -72,13 +72,14 @@ pub unsafe extern "C" fn remove(path: *const u8) -> i32 {
 /// a per-process 32-bit sequence. Distinct sequence values give distinct names, so a
 /// process gets 2^32 different names (TMP_MAX in stdio.h is the largest int below
 /// that). Pool output is available before entropy readiness; exclusive creation
-/// in tmpfile, rather than unpredictability, protects the file being created.
+/// in tmpfile protects the file being created. tmpnam only suggests a name; its
+/// callers must create it with O_CREAT | O_EXCL themselves.
 pub(super) unsafe fn temp_name(out: &mut [u8], sequence: &AtomicU64) {
     let mut random = [0u8; 4];
     let mut got = 0;
     while got < random.len() {
         let n = crate::getrandom(random.as_mut_ptr().add(got), random.len() - got,
-            libbreenix::syscall::GRND_INSECURE);
+            0x0004); // GRND_INSECURE: non-secret names, including before readiness.
         if n <= 0 {
             break;
         }

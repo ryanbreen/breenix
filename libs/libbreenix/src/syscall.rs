@@ -12,10 +12,10 @@
 //! - Arguments in X0-X5
 //! - Return value in X0
 
+use core::arch::asm;
+
 /// Read pool output without waiting for credited entropy, for non-secret callers.
 pub const GRND_INSECURE: u32 = 0x0004;
-
-use core::arch::asm;
 
 /// Syscall numbers matching kernel/src/syscall/mod.rs
 ///

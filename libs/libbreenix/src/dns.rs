@@ -267,6 +267,7 @@ impl DnsHeader {
 // ============================================================================
 
 /// Draw transaction IDs from the pool without waiting for credited entropy at boot.
+/// IDs may be predictable before the pool is ready.
 fn generate_txid() -> Result<u16, DnsError> {
     let mut bytes = [0; 2];
     let mut used = 0;
