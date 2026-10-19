@@ -3545,6 +3545,10 @@ pub fn sys_take_over_display() -> SyscallResult {
     // Quiesce the console before publishing authority to the new owner's
     // other threads, which can issue framebuffer syscalls concurrently.
     crate::console::take_display();
+    // Quiesce the boot screen before publishing authority to either the
+    // owner's other threads or the cursor presenter.
+    #[cfg(target_arch = "aarch64")]
+    let _ = crate::graphics::boot_screen::stop_drawing();
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3562,16 +3566,6 @@ pub fn sys_take_over_display() -> SyscallResult {
                 }
             }
         }
-
-        // The kernel stops drawing its boot screen but leaves it up until the new
-        // owner draws, so an owner that fails first does not blank the screen.
-        #[cfg(target_arch = "aarch64")]
-        let _ = crate::graphics::boot_screen::stop_drawing();
-
-        // Tell the render thread to stop flushing the framebuffer.
-        // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(target_arch = "aarch64")]
-        crate::graphics::render_task::set_display_taken();
 
     }
     SyscallResult::Ok(0)

@@ -837,6 +837,22 @@ pub struct Presentation {
 }
 
 impl Presentation {
+    /// A cursor pass shares the display owner's authority. Check and count it
+    /// under the terminal lock so releasing ownership cannot race admission.
+    pub fn begin_cursor() -> Option<Presentation> {
+        with_terminals(|terminals, _| {
+            let (owner, vt) = terminals.sw.display_owner?;
+            // Syscall ownership is published only after the console and boot
+            // screen have quiesced; VT ownership alone precedes that barrier.
+            if crate::syscall::graphics::DISPLAY_OWNER_PID.load(Ordering::Acquire) == u64::MAX
+                || crate::syscall::graphics::DISPLAY_OWNER_GROUP.load(Ordering::Acquire) != owner
+                || vt != terminals.sw.fg {
+                return None;
+            }
+            Self::begin(true)
+        })
+    }
+
     pub fn begin(owner: bool) -> Option<Presentation> {
         if !owner {
             return Some(Presentation { counted: false });
@@ -858,10 +874,10 @@ impl Drop for Presentation {
     }
 }
 
-/// Wait until no display owner's presentation that began before its terminal
-/// left the foreground is still writing.
+/// Wait until no display-owner or cursor presentation is still writing,
+/// including a pass admitted before ownership was released.
 pub(super) fn wait_for_presentations() -> bool {
-    PRESENTATION_SUSPENDED.load(Ordering::SeqCst) && PRESENTING.load(Ordering::SeqCst) != 0
+    PRESENTING.load(Ordering::SeqCst) != 0
 }
 
 /// What the render thread copies for a frame: the foreground terminal's view.

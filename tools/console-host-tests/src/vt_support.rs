@@ -52,6 +52,11 @@ pub mod task {
     }
 }
 pub mod syscall {
+    pub mod graphics {
+        use std::sync::atomic::AtomicU64;
+        pub static DISPLAY_OWNER_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+        pub static DISPLAY_OWNER_GROUP: AtomicU64 = AtomicU64::new(u64::MAX);
+    }
     pub mod signal {
         pub fn signal_process_from_kernel(_: crate::process::ProcessId, _: u32) {}
     }
@@ -209,4 +214,32 @@ fn preinstalled_history_survives_the_first_process_write() {
         assert_eq!(g.view_row(0), before);
     })
     .unwrap();
+}
+
+#[test]
+fn cursor_presentations_follow_current_ownership_and_drain_before_text() {
+    assert!(vt::Presentation::begin_cursor().is_none());
+    vt::take_display(77, 1).unwrap();
+    assert!(vt::Presentation::begin_cursor().is_none(), "takeover must quiesce first");
+    syscall::graphics::DISPLAY_OWNER_GROUP.store(77, std::sync::atomic::Ordering::Release);
+    syscall::graphics::DISPLAY_OWNER_PID.store(77, std::sync::atomic::Ordering::Release);
+    let pass = vt::Presentation::begin_cursor().expect("foreground owner permits cursor");
+    vt::give_back_display();
+    assert!(vt::Presentation::begin_cursor().is_none());
+    assert!(vt::wait_for_presentations(), "text must wait for the admitted cursor pass");
+    drop(pass);
+    assert!(!vt::wait_for_presentations());
+
+    vt::take_display(77, 1).unwrap();
+    with_grid(|console| {
+        let mut t = vt::Terminals { vts: &mut console.vts, sw: &mut console.sw };
+        let mut e = vt::Effects::default();
+        t.set_mode(0, 77, vt::VT_PROCESS, 10, 12).unwrap();
+        t.request(1, vt::Source::Ioctl, &mut e).unwrap();
+        t.reldisp(0, 77, 1, &mut e).unwrap();
+    });
+    assert!(vt::Presentation::begin_cursor().is_none(), "background owner cannot draw cursor");
+    assert!(vt::Presentation::begin(true).is_none(), "background compositor cannot present");
+    assert!(vt::process_exited(77));
+    assert!(vt::Presentation::begin_cursor().is_none(), "exited owner cannot draw cursor");
 }
