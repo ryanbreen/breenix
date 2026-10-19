@@ -295,6 +295,12 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     }
     let pages = BACKING.get().ok_or("the screen has no backing")?;
     let band = (READBACK_BAND / PITCH).max(1) as u32;
+    // An uploaded SVGA surface may still use its MOB as the source of its pixels.
+    // Poison only a separate destination, then GPU-copy the band before reading it back.
+    let readback = if dev::is_svga() {
+        Some(Arc::new(Pages::new((band as usize * PITCH).div_ceil(PAGE))
+            .ok_or("no frames for the screen's read-back surface")?))
+    } else { None };
     let mut y = 0;
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
@@ -305,19 +311,28 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
             pages.read(offset + n * PITCH, &mut row);
             saved.write(n * PITCH, &row);
         }
-        pages.fill(offset, len, POISON);
-        pages.maintain(offset, len, false);
+        let (backing, transfer_offset) = match &readback {
+            Some(band) => (band.clone(), 0),
+            None => (pages.clone(), offset),
+        };
+        backing.fill(transfer_offset, len, POISON);
+        backing.maintain(transfer_offset, len, false);
         let (id, context) = (target.id, target.context);
-        let backing = pages.clone();
         let transferred = target
-            .fenced(|t, fence| dev::transfer_from_host(t, context, fence, id, backing, 0, y, WIDTH, rows, offset as u64, PITCH as u32));
-        pages.maintain(offset, len, true);
+            .fenced(|t, fence| dev::transfer_from_host(t, context, fence, id, backing.clone(), 0, y, WIDTH, rows, transfer_offset as u64, PITCH as u32));
+        backing.maintain(transfer_offset, len, true);
         if transferred.is_err() {
             for n in 0..rows as usize {
                 saved.read(n * PITCH, &mut row);
                 pages.write(offset + n * PITCH, &row);
             }
             return Err("the device did not transfer the screen back");
+        }
+        if readback.is_some() {
+            for n in 0..rows as usize {
+                backing.read(n * PITCH, &mut row);
+                pages.write(offset + n * PITCH, &row);
+            }
         }
         y += rows;
     }

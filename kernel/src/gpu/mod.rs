@@ -1558,10 +1558,8 @@ enum Stop {
 fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
-        let mut poll_device = false;
         if let Some(v) = with_core(|c| {
             c.poll();
-            poll_device = dev::is_svga() && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
             f(c)
         })
         .flatten()
@@ -1574,10 +1572,7 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         if interruptible && crate::syscall::check_signals_for_wait().is_some() {
             return Err(Stop::Interrupted);
         }
-        // SVGA has no completion interrupt here. The waiter must also poll: relying on
-        // kgpu to run and wake it adds a second scheduling hop after device completion.
-        let interval = if poll_device { POLL_NS } else { EXAMINE_NS };
-        let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(interval)));
+        let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(EXAMINE_NS)));
         // A queued wait holds the one preemption level syscall entry takes, and
         // `wait_prepared` releases it only for the halt. A kernel thread (the console's
         // render thread) runs at count 0, so it takes the level here. Released unheld,
