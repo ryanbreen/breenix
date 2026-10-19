@@ -663,6 +663,30 @@ fn circles(outline: bool) -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
     let t = scanout_target(format::B8G8R8A8, 83, 83)?;
+    // As in the glyph corpus, retain one display-sized view while checking every
+    // source and every presented frame. Reallocating it per radius dominates SVGA.
+    libbreenix::graphics::take_over_display()
+        .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    let mut modes = gpu::abi::Modes::ZERO;
+    let ret = gpu::call_with(gpu::abi::op::MODES, &mut modes);
+    ensure(ret == 0, || format!("MODES: {}", errno(ret)))?;
+    ensure((modes.current as usize) < modes.modes.len() && modes.current < modes.count,
+        || "MODES: invalid current mode".to_string())?;
+    let mode = modes.modes[modes.current as usize];
+    ensure(mode.width >= 83 && mode.height >= 83,
+        || "circle source exceeds display".to_string())?;
+    let view = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
+    frame(ctx, &scene(view, 0xff181512, &[]))?;
+    let show = |formula: &dyn Fn(u32, u32) -> u32, what: &str| -> CaseResult {
+        let mut want = Canvas::new(83, 83);
+        for y in 0..83 {
+            for x in 0..83 {
+                put(&mut want, x, y, formula(x, y));
+            }
+        }
+        corpus_view(ctx, t, view, &mode, &want, what)?;
+        pass()
+    };
     for r in -1..=40i32 {
         let mut points = Vec::new();
         if outline && r >= 0 {
@@ -688,12 +712,8 @@ fn circles(outline: bool) -> CaseResult {
             0,
             &[instance([0, 0, 83, 83], &[41, 41, r])],
         )?;
-        expect_draw(
-            ctx,
-            t,
-            83,
-            83,
-            |x, y| {
+        show(
+            &|x, y| {
                 if if outline {
                     points.contains(&(x as i32, y as i32))
                 } else {
@@ -721,12 +741,8 @@ fn circles(outline: bool) -> CaseResult {
         0,
         &[instance([0, 0, 83, 83], &[i32::MAX, 0, i32::MAX])],
     )?;
-    expect_draw(
-        ctx,
-        t,
-        83,
-        83,
-        |x, y| {
+    show(
+        &|x, y| {
             let dx = x as i128 - i32::MAX as i128;
             let dy = y as i128;
             let r = i32::MAX as i128;
