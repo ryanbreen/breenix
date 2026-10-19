@@ -13,8 +13,24 @@ import shutil
 import subprocess
 import tempfile
 import secrets
+import sys
 from urllib.parse import urlsplit, urlunsplit
 from metal_probe import PROBE_PATH, PROBE_SHA256
+
+
+def require_e2fsprogs(*commands):
+    """Resolve PATH, Linux sbin and Homebrew's keg before doing any staging."""
+    found = []
+    for command in commands:
+        candidates = (command, '/usr/sbin/' + command, '/sbin/' + command,
+                      '/opt/homebrew/opt/e2fsprogs/sbin/' + command,
+                      '/usr/local/opt/e2fsprogs/sbin/' + command)
+        executable = next((path for candidate in candidates if (path := shutil.which(candidate))), None)
+        if executable is None:
+            install = 'brew install e2fsprogs' if sys.platform == 'darwin' else 'sudo apt-get install e2fsprogs'
+            raise ValueError(f'missing prerequisite: {command} (e2fsprogs); install with: {install}')
+        found.append(executable)
+    return found
 
 
 RECORD_MAGIC = b'BREENIX-STORAGE 1\n'
@@ -85,11 +101,16 @@ def console_shadow(site, hasher):
     return 'root:' + value + ':' + str(int(time.time() // 86400)) + ':0:99999:7:::\n'
 
 
-def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False):
+def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None):
+    if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
+                                   or mode != 'console' or install or idle_minutes is not None or replug):
+        raise ValueError('invalid xHCI fault-test target')
     if mode not in ('default', 'shell', 'probe', 'suite', 'console'):
         raise ValueError('unsupported RAM-disk boot mode')
-    if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', suite or ''):
+    # A list runs each suite in turn (docs/suites/README.md, "Several suites in one boot").
+    if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
+    first = suite.split(',')[0] if suite else None
     if mode != 'suite' and suite:
         raise ValueError('a suite needs suite mode')
     if idle_minutes is not None and (mode != 'console' or not 1 <= idle_minutes <= 240):
@@ -113,15 +134,13 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         lines += ['METAL_FETCH_URL=' + urlunsplit((url.scheme, url.netloc, PROBE_PATH, '', '')) + '\n',
                   'METAL_FETCH_SHA256=' + PROBE_SHA256 + '\n']
     shadow = console_shadow(site, hasher) if mode == 'console' else None
-    debugfs = shutil.which('debugfs')
-    if not debugfs:
-        raise ValueError('staging needs debugfs')
+    debugfs, = require_e2fsprogs('debugfs')
     image = Path(image).resolve()
     packaged = Path(__file__).resolve().with_name('write-boot-target.sh')
     writer = Path(writer) if writer else (packaged if packaged.is_file() else
                                          Path(__file__).resolve().parents[1] / 'write-boot-target.sh')
     writer_hash = hashlib.sha256(writer.read_bytes()).hexdigest()
-    target = suite if mode == 'suite' else '--' + mode
+    target = first if mode == 'suite' else '--' + mode
     try:
         subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
                        env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
@@ -132,6 +151,12 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     with tempfile.TemporaryDirectory(prefix='metal-root-') as scratch:
         scratch = Path(scratch)
         files = {'site.env': ''.join(lines)}
+        # Replace this file so ordinary staging disarms a prior fault.
+        files['xhci-fault'] = '' if xhci_fault is None else xhci_fault + '\n'
+        # Several suites: the list beside the boot target (the writer removed any earlier one). Written here, by the
+        # driver's own staging code, so tools deployed while a boot builds cannot change how it is staged.
+        if mode == 'suite' and ',' in suite:
+            files['suite-sequence'] = suite + '\n'
         commands = []
         for name, text in files.items():
             source = scratch / name
@@ -150,7 +175,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)
-        expected_target = ('suite ' + suite if mode == 'suite' else mode)
+        expected_target = ('suite ' + first if mode == 'suite' else mode)
         if replug:
             expected_target += ' replug'
         if idle_minutes is not None:
@@ -183,12 +208,15 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                                   check=True, capture_output=True).stdout
         if b'Type: symlink' not in resolver or b'"/proc/net/pnp"' not in resolver:
             raise ValueError('RAM-disk resolver does not name the live DHCP configuration')
-        binary = {'suite': f'/sbin/suite-{suite}', 'probe': '/sbin/probe'}.get(mode, '/sbin/init')
-        installed = scratch / 'pid1'
-        subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
-                       check=True, capture_output=True)
-        if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
-            raise ValueError('RAM disk has no selected PID 1 ELF')
+        binaries = [f'/sbin/suite-{each}' for each in suite.split(',')] if mode == 'suite' else \
+            [{'probe': '/sbin/probe'}.get(mode, '/sbin/init')]
+        for binary in binaries:
+            installed = scratch / 'pid1'
+            installed.unlink(missing_ok=True)
+            subprocess.run([debugfs, '-R', f'dump {binary} {installed}', str(image)],
+                           check=True, capture_output=True)
+            if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
+                raise ValueError('RAM disk has no selected PID 1 ELF')
     facts = {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
     if mode == 'console':
         facts['consoleIdentity'] = console_identity(site)

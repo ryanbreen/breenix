@@ -1,5 +1,10 @@
 # The boot path
 
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](x86-execution-policy.md);
+legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+
 Breenix is brought up one milestone at a time, in the order a boot exercises it: arch
 bring-up, interrupts and time, devices, filesystems, the scheduler, the first userspace
 process, then process lifecycle, signals and IPC, userspace filesystem work, the TTY and
@@ -23,7 +28,7 @@ It builds userspace, the ext2 disk and the testing kernel, then boots once with 
 console on the terminal and in the log file (Ctrl-A X quits; `--idle-exit` stops a boot that
 has gone quiet; `--display` also opens the VM's screen). From a fresh worktree that is about a
 minute and a half. Run from a terminal, the same script is an interactive boot you can type into. x86-64 is scored against its own
-stage list and shown alongside, but does not block moving on.
+stage list on the x86-metal path; it is not measured on the main path.
 
 ## Boot modes
 
@@ -166,6 +171,12 @@ it does not establish that VMware can reach an external network.
 
 ## Shared host slots
 
+The x86 gate details below describe the retired QEMU path, available only with an
+operator override. They are not a landing checklist. Use the x86-metal boot loop
+for x86-64 evidence. ARM64 boots use the Mac boot slot; builds use four Cargo jobs
+and background priority, and boots run at normal priority with their windows open.
+Do not wait for a quiet host.
+
 Use `docker/qemu/run-x86-gate.sh` for queued x86 builds and boots: the helper
 provides `x86-build` leases and one `x86-boot` lease. Run Inspector installs its current
 helper outside the tested checkout, including when testing an older revision.
@@ -300,14 +311,13 @@ old and a /proc scan of command lines, current directories and open files finds 
 owning process, including gates killed before DONE.
 Evidence is harvested after the lane lease ends and retained remotely after a disconnect.
 
-`--mode suite --suite files-io,directories,processes` boots once. A sequence file on the
-private boot-target disk instructs each suite to exec the next after emitting its own
-DONE, keeping PID 1 and giving the next suite a fresh address space. After drawing its panel each sequence suite waits for host acknowledgement. The gate
-pauses QEMU at that boundary, saves both serial windows and its screen, and checks
-its private raw disk snapshot before allowing the next exec. Each suite gets its own
-DONE deadline and unchanged manifest; unstarted suites are NOT-RUN. Exec closes only
-FD_CLOEXEC descriptors, while /tmp, PID allocation and the page cache persist, so
-case equivalence must be verified against separate boots on the same commit.
+The x86 gate runs one suite per boot and refuses a list: suites now hand PID 1 to the
+next without the keyboard acknowledgement its boundary capture waited on. Lists run on
+ARM64 QEMU, Parallels, VMware and x86-metal ("Several suites in one boot" in
+`docs/suites/README.md`).
+
+<!-- claim-lint:ok: running owners are kept by testTerminalTombstonesArePrunedButRunningAndRecentClaimsRemain in
+tools/breenix-runs/Tests/BreenixRunsTests/DetachedGateTests.swift -->
 Run Inspector streams both beast serial logs into its local run directory over a separate
 owned SSH connection. It registers the gate with Vigil at launch, before building or receiving
 serial bytes, with the launcher's PID and links to the local files. The gate runs in a detached remote session with an exclusive per-run launch claim,
@@ -323,8 +333,7 @@ subsequent launches; running owners are never pruned.
 After the remote owner records its final result it stops the stream and pulls the remote evidence before finishing Vigil. Interrupted gates,
 failed builds and failed evidence pulls finish with nonzero status; captured remote evidence
 is harvested after the supervisor has stopped. Runs with no boot directories still receive a
-finished record. Multi-suite sequences keep an overall gate record and file each started
-suite separately with its own serial window, times and result. Registration subprocesses are
+finished record. Registration subprocesses are
 bounded and run outside the serial frame lock. The stream reader uses nonblocking writes so
 EOF and its heartbeat deadline remain effective when output stalls.
 Duplicate suite IDs are rejected. Single-suite boots keep their

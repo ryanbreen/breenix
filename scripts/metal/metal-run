@@ -2,8 +2,9 @@
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail] [--nmi]
+  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
+                 [--suite ID | --suite ID,ID,... | --suite all]
   metal-run stop ID
   metal-run status
   metal-run follow ID
@@ -13,12 +14,15 @@
 the caller's ssh session can end. For a Breenix image (the default payload) it then builds the commit in the metal
 build container, detached, and streams the image inputs into the service container. Instance names and paths come from
 the host file named by BREENIX_METAL_HOST_ENV (default ~/.config/breenix-metal/host.env), never from the repository.
+A suite boot may run several suites in turn: a list, or `all` (every main-path effort suite but those that need a 3D GPU),
+resolved against the commit's own docs/efforts/path.json and manifests (docs/suites/README.md, "Several suites in one boot").
 """
 import argparse
 import json
 import os
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 import time
@@ -26,6 +30,9 @@ import time
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
 HERE = Path(__file__).resolve().parent
+XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
+# The kernel feature that compiles the xHCI recovery exercise in; production kernels never carry it.
+FAULT_FEATURE = 'xhci_fault_inject'
 
 
 def host_env():
@@ -78,25 +85,52 @@ def verify_target(env, sha, branch):
         raise SystemExit('the requested commit is not contained in the target branch')
 
 
+def resolve_suites(env, sha, spec):
+    """The suites a suite boot runs, in order, from the commit's own path and manifests (scripts/suite-sequence.py)."""
+    in_build(env, 'git', '-C', env['BUILD_REPO'], 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', sha,
+             check=True, capture_output=True)
+
+    def read(relative):
+        result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'show', f'{sha}:{relative}', capture_output=True, text=True)
+        return result.stdout if result.returncode == 0 else None
+    # Deployed, the resolver sits beside metal-run; in a checkout it is in scripts/.
+    source = HERE / 'suite-sequence.py' if (HERE / 'suite-sequence.py').exists() else HERE.parent / 'suite-sequence.py'
+    try:
+        ids, skipped = runpy.run_path(str(source))['resolve'](spec, 'x86-metal', False, read)
+    except ValueError as error:
+        raise SystemExit(f'--suite: {error}') from None
+    for suite, why in skipped:
+        print(f'[metal-run] leaving out {suite}: {why}', file=sys.stderr, flush=True)
+    return ','.join(ids)
+
+
 def boot(args):
     is_session = bool(getattr(args, 'session', False))
     attended = bool(getattr(args, 'attended', False))
     wait = getattr(args, 'wait', 30)
-    if attended and (is_session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk):
-        raise SystemExit('--attended needs a RAM-disk console boot, without --session or --input')
+    if attended and (is_session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
+        raise SystemExit('--attended needs a console boot, without --session or --input')
     if not 0 < wait <= 240 or (wait != 30 and not attended):
         raise SystemExit('--wait needs --attended and more than 0 through 240 minutes')
     idle = getattr(args, 'idle_minutes', 30)
     if is_session and (args.mode != 'console' or args.input or getattr(args, 'disk', None) == 'install'):
         raise SystemExit('--session needs console mode, operator input and no disk install')
-    if not 1 <= idle <= 240 or (idle != 30 and (not is_session or getattr(args, 'disk', None) == 'root')):
-        raise SystemExit('--idle-minutes needs a RAM-disk session and 1 through 240 minutes')
+    if not 1 <= idle <= 240 or (idle != 30 and not is_session):
+        raise SystemExit('--idle-minutes needs a console session and 1 through 240 minutes')
     if not is_session and not attended and (args.mode == 'console') != (args.input == 'sol'):
         raise SystemExit('console mode requires --input sol; --input requires console mode')
+    if args.inject in XHCI_FAULTS and (
+            args.payload != 'image' or args.mode != 'console' or args.input != 'sol'
+            or is_session or attended or args.disk):
+        raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
+    if args.payload == 'image' and not args.disk and args.inject not in XHCI_FAULTS:
+        args.disk = 'root'
+    if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
+        raise SystemExit('disk-before-mount needs a disk-root image boot')
     env = host_env()
     payload = args.payload
     sha = target = ''
-    if payload == 'image':
+    if payload in ('image', 'disk-readback'):
         if args.sha:
             verify_target(env, args.sha, args.branch or 'main')
             sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
@@ -104,6 +138,9 @@ def boot(args):
             branch = args.branch or 'main'
             sha = resolve(env, branch)
             target = 'main' if branch == 'main' else 'branch:' + branch
+    if args.suite and payload == 'image':
+        args.suite = resolve_suites(env, sha, args.suite)
+        print(f'[metal-run] suites: {args.suite}', file=sys.stderr, flush=True)
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode]
@@ -113,6 +150,8 @@ def boot(args):
         command += ['--session', '--idle-minutes', str(idle)]
     elif args.mode == 'console':
         command += ['--input', args.input]
+    if getattr(args, 'source_boot', None):
+        command += ['--source-boot', args.source_boot]
     if args.suite:
         command += ['--suite', args.suite]
     if sha:
@@ -148,17 +187,22 @@ def boot(args):
         except Exception:
             in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
             raise
-    if payload == 'image':
+    if payload in ('image', 'disk-readback'):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha],
+            # An xHCI fault boot gets a fault-test kernel; every other boot the production one.
+            features = ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else []
+            # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
+            suite = ['--suite', args.suite] if args.suite else []
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite +
+                             (['--readback'] if payload == 'disk-readback' else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     return 0
 
 
-def build(boot_id, sha):
+def build(boot_id, sha, features=None, suite=None, readback=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -181,7 +225,7 @@ def build(boot_id, sha):
         incus('file', 'push', str(source), f"{env['BUILD_INSTANCE']}{tools}/{name}", check=True)
     # Push source files only: an old target tree or ignored local files must never reach staging.
     stub = HERE / 'efi-stub'
-    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs'):
+    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs', 'src/suite_disk.rs'):
         target = f'{tools}/efi-stub/{name}'
         in_build(env, 'mkdir', '-p', str(Path(target).parent), check=True)
         incus('file', 'push', str(stub / name), f"{env['BUILD_INSTANCE']}{target}", check=True)
@@ -189,7 +233,9 @@ def build(boot_id, sha):
     status = in_build(env, 'python3', f'{tools}/metal-build', '--id', boot_id, '--sha', sha,
                       '--repo', env['BUILD_REPO'], '--rust-fork', env['BUILD_RUST_FORK'],
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
-                      '--stub', f'{tools}/efi-stub').returncode
+                      '--stub', f'{tools}/efi-stub', *(['--features', features] if features else []),
+                      *(['--suite', suite] if suite else []),
+                      *(['--stub-only'] if readback else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
@@ -224,36 +270,40 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux'), default='image')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console'), default='default')
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
     p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
     p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
-    p.add_argument('--idle-minutes', type=int, default=30, help='RAM-disk session input idle limit; default 30')
+    p.add_argument('--idle-minutes', type=int, default=30, help='console session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),
-                   help='probe mode: install the RAM-disk root on the disk, or boot from the installed root')
+                   help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
+    p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
     p.add_argument('--sha')
     p.add_argument('--branch')
     p.add_argument('--no-wait', action='store_true')
-    p.add_argument('--inject', choices=('forceoff-fail',))
+    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
-    p.add_argument('--ramdisk', action='store_true', default=True, help='a Breenix image also carries the ext2 root as `ramdisk`')
+    p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
+    p.add_argument('--features', choices=(FAULT_FEATURE,))
+    p.add_argument('--suite')
+    p.add_argument('--readback', action='store_true')
     args = parser.parse_args()
     if args.command == 'boot':
         return boot(args)
     if args.command == '_build':
-        return build(args.id, args.sha)
+        return build(args.id, args.sha, args.features, args.suite, args.readback)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)

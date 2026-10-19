@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
 BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 BREENIX_HOST_ARGS=("$@")
 # Issue 927: exercise the retirement cohorts with the ordinary init loader.

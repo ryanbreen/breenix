@@ -714,12 +714,63 @@ class DefinitionTest(unittest.TestCase):
                          ('OEM', 'No bootable devices.', None))
 
 
+class StagingPrerequisiteTest(unittest.TestCase):
+    def test_missing_tool_reports_install_command_before_staging(self):
+        import metal_root
+        with patch.object(metal_root.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'missing prerequisite: debugfs .*install with: .*e2fsprogs'):
+                metal_root.require_e2fsprogs('debugfs')
+
+    def test_distribution_sbin_is_searched_when_it_is_not_on_path(self):
+        import metal_root
+        with patch.object(metal_root.shutil, 'which', side_effect=lambda p: p if p == '/usr/sbin/debugfs' else None):
+            self.assertEqual(metal_root.require_e2fsprogs('debugfs'), ['/usr/sbin/debugfs'])
+
+
+class MissingStagingToolCleanupTest(StateTest):
+    def test_missing_debugfs_cancels_claimed_boot_and_cleans_resources(self):
+        import metal_root
+        args = SimpleNamespace(id='missing-tool-fixture', payload='image', mode='default',
+                               target='main', task=None, commit=None, inject=None)
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+
+        def claim():
+            driver.claimed = True
+            driver.stage.mkdir(parents=True)
+
+        with patch.object(driver, 'claim', side_effect=claim), \
+                patch.object(driver, 'prepare_payload', side_effect=lambda: metal_root.stage_root(
+                    driver.stage / 'root.img', 'default', None, {})), \
+                patch.object(driver, 'pump_serial'), \
+                patch.object(metal_root.shutil, 'which', return_value=None), \
+                patch.object(m, 'clear_override') as clear, \
+                patch.object(m, 'unstage') as unstage, \
+                patch.object(m, 'sol_deactivate') as sol, \
+                patch.object(m, 'release_lease') as release, \
+                patch.object(boot.subprocess, 'run') as command:
+            self.assertEqual(driver.run(), m.EXIT_CANCELLED)
+        self.assertFalse(driver.stage.exists())
+        clear.assert_called_once_with()
+        unstage.assert_called_once_with(driver.id)
+        sol.assert_called_once_with()
+        release.assert_called_once_with(driver.id)
+        command.assert_called_once_with(driver.tmux + ['kill-server'], capture_output=True)
+        events = [json.loads(line) for line in (driver.dir / 'events.jsonl').read_text().splitlines()]
+        self.assertTrue(any(event.get('event') == 'driver-error'
+                            for event in events))
+        self.assertEqual(int((driver.dir / 'exit-status').read_text()), m.EXIT_CANCELLED)
+
+
 class RootStagingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import metal_root
+        cls.mke2fs, cls.debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+
     def test_modes_and_guest_site_are_read_back_from_the_staged_image(self):
         import metal_root
-        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
-        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
-        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        mke2fs, debugfs = self.mke2fs, self.debugfs
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             tree = root / 'tree'
@@ -728,6 +779,7 @@ class RootStagingTest(unittest.TestCase):
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            (tree / 'sbin/suite-time').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
@@ -764,12 +816,19 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'suite', 'absent', site)
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+            # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
+            metal_root.stage_root(image, 'suite', 'smoke,time', site)
+            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('suite-sequence'), 'smoke,time\n')
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'smoke,absent', site)
+            metal_root.stage_root(image, 'suite', 'time', site)
+            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root
-        prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
-        mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
-        debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
+        mke2fs, debugfs = self.mke2fs, self.debugfs
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             tree = root / 'tree'
@@ -968,15 +1027,18 @@ class DriverTest(StateTest):
         d.on_line('[storage] read back identical: truncated')
         self.assertFalse(d.completion_reported)
 
-    def test_disk_root_refuses_a_different_commit_before_assembling_the_payload(self):
+    def test_disk_root_stages_the_requested_build_before_assembling_the_payload(self):
         d = self.driver
         d.args.disk, d.args.commit = 'root', 'b' * 40
         inputs = d.stage / 'inputs'
         inputs.mkdir(parents=True)
         (inputs / 'ready').touch()
         m.write_json(inputs / 'build.json', {'commit': d.args.commit, 'profile': 'production', 'features': []})
-        m.write_json(m.STATE / 'disk.json', {'commit': 'a' * 40})
-        self.finish(d.prepare_payload, m.EXIT_CANCELLED)
+        with patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+             patch.object(boot.metal_disk, 'stage', side_effect=ValueError('changed build')) as stage:
+            with self.assertRaisesRegex(ValueError, 'changed build'):
+                d.prepare_payload()
+        self.assertEqual(stage.call_args.args[3], d.args.commit)
         self.assertNotIn('diskRoot', d.delivery)
 
     def test_disk_mismatch_rejects_the_boot_before_prefix_completion(self):
@@ -1210,6 +1272,34 @@ class DriverTest(StateTest):
         d.lease_ceiling = 400
         with patch.object(m, 'now', return_value=426):
             self.finish(d.check_deadlines, m.EXIT_HUNG)
+
+    def test_suite_deadline_and_attempt_ceiling_stop_unfinished_boots(self):
+        d = self.driver
+        d.args.mode = 'suite'
+        d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 530
+        with patch.object(m, 'now', return_value=530):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=531):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+        d.lease_ceiling = d.t0 + boot.ceiling_seconds(d.args)
+        d.kernel_started = d.last_serial = 1419
+        with patch.object(m, 'now', return_value=1419):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=1420):
+            self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
+
+    def test_each_suite_of_a_multi_suite_boot_gets_its_own_deadline(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'directories,processes,time'
+        self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
+        d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 900
+        d.on_line('SUITE processes START cases=154', observed_at=500)
+        with patch.object(m, 'now', return_value=920):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=921):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
 
     def test_404_and_fatal_capture_graces(self):
         d = self.driver
@@ -1483,7 +1573,8 @@ class StagingTest(unittest.TestCase):
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
                          ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'efi-stub/Cargo.toml',
-                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs'])
+                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs',
+                          'efi-stub/src/suite_disk.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'
@@ -1519,13 +1610,14 @@ class BuildPolicyTest(unittest.TestCase):
 
 
 class BuildSlotTest(unittest.TestCase):
-    def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
+    def build_inner(self, suite):
+        """Run metal-build's inner build with every subprocess faked; returns the helper and build calls."""
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = SimpleNamespace(id='20261017T000012Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
-                                   guard_target='x86-metal')
+                                   guard_target='x86-metal', features='', suite=suite)
             clone, out, tmp = build.paths(args)
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
@@ -1533,18 +1625,30 @@ class BuildSlotTest(unittest.TestCase):
             for path in (image, stub, clone / 'testdata/ext2.img'):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'bytes')
-            helper = []
+            order = []
             def run(command, **options):
-                helper.append(command[2:])
+                order.append(command[2:])
                 return SimpleNamespace(returncode=0, stdout=str(root / 'cargo-home') + '\n')
-            calls = []
             def call(command, **options):
-                calls.append(command)
+                order.append(command)
+                if command[1:2] == [str(clone / 'scripts/sdk-suite.py')]:
+                    Path(command[-1]).write_bytes(b'staged')
+                    work = options['env']['TMPDIR']
+                    order.append(('sdk-work', work, Path(work).is_dir()))
                 return 0
             with patch.dict(build.os.environ, CARGO_BUILD_JOBS='4'), \
                  patch.object(build.subprocess, 'run', side_effect=run), \
                  patch.object(build.subprocess, 'call', side_effect=call):
                 self.assertEqual(build.inner(args), 0)
+            built = json.loads((out / 'build.json').read_text())
+            built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
+            built['clone'] = str(clone)
+            return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built
+
+    def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
+        build, clone, tmp, order, root, built = self.build_inner('')
+        helper = [call for call in order if isinstance(call, list) and call[:1] not in ([sys.executable], ['cargo'])]
+        calls = [call for call in order if call not in helper]
         self.assertEqual(helper, [['cargo-home', str(Path.home() / '.cargo'), str(clone / 'target')],
                                   ['acquire', 'metal-build'], ['release', 'metal-build']])
         # The deployed helpers beside metal-build, not the commit's copies.
@@ -1552,6 +1656,22 @@ class BuildSlotTest(unittest.TestCase):
         self.assertFalse(build.ARTIFACTS.is_relative_to(clone))
         self.assertEqual(calls[1][:3], ['cargo', 'build', '--release'])
         self.assertEqual(len(calls), 3)
+        self.assertEqual((root, built['suite']), (b'bytes', None))
+
+    def test_the_sdk_suite_stages_its_root_under_the_build_lease(self):
+        _, clone, _, order, root, built = self.build_inner('sdk')
+        staging = next(i for i, call in enumerate(order) if call[1:2] == [str(clone / 'scripts/sdk-suite.py')])
+        self.assertEqual(order[staging][2:5], ['--arch', 'x86_64', '--image'])
+        self.assertLess(order.index(['acquire', 'metal-build']), staging)
+        self.assertLess(staging, order.index(['release', 'metal-build']))
+        # The staged copy is the root delivered; the built root is left as it is.
+        self.assertEqual((root, built['builtRoot'], built['suite']), (b'staged', b'bytes', 'sdk'))
+        # The harness's work folder holds neither the checkout's path nor the builder's home, which it scans for.
+        _, work, existed = order[staging + 1]
+        self.assertTrue(existed)
+        self.assertFalse(Path(work).exists())
+        self.assertNotIn(built['clone'], work)
+        self.assertNotIn(str(Path.home()), work)
 
 
 class PublicRepositoryTest(unittest.TestCase):
@@ -1568,4 +1688,9 @@ class PublicRepositoryTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    import metal_root
+    try:
+        metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     unittest.main()

@@ -4,13 +4,20 @@
 #
 #   scripts/vigil-record.sh start PLATFORM MODE SUITE SERIAL [USER_SERIAL] [PROFILE] [ID] [COMMIT]   prints the boot id
 #   scripts/vigil-record.sh finish ID EXIT_STATUS
+#   scripts/vigil-record.sh record PLATFORM MODE SUITE SERIAL USER_SERIAL PROFILE ID COMMIT STARTED ENDED EXIT_STATUS
 # BREENIX_VIGIL_ARCH is the launcher's explicit guest architecture: aarch64 or x86_64.
 #
 # PLATFORM is qemu, parallels, vmware, beast or metal; MODE is a boot mode (suite when SUITE is set); empty arguments are
-# omitted; COMMIT defaults to this checkout's HEAD. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
+# omitted; COMMIT defaults to this checkout's HEAD. SUITE may list several suites, comma-separated, for a boot that ran
+# them in turn (docs/suites/README.md, "Several suites in one boot"): Vigil's record names one suite, so each suite is
+# filed as its own record, ID-SUITE, over the boot's whole serial, which Vigil scores for that suite's lines alone as it
+# scores a single-suite boot. start then prints the ids joined by commas, and finish takes them so. The calling script is the boot's runner: Vigil counts the boot running while that process lives.
 # Skips registration when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
+
+# Preserve the launcher through command substitutions and recursive registrations.
+export BREENIX_LAUNCHER_PID=${BREENIX_LAUNCHER_PID:-$PPID}
 
 [ "$(uname -s)" = Darwin ] || exit 0
 [ -z "${VIGIL_BOOT_ID:-}" ] || exit 0
@@ -45,6 +52,19 @@ provenance() {
         git -C "$ROOT" update-ref "refs/vigil/boots/$id" "$snapshot" || return 1
     fi
 }
+# A boot of several suites: run this script once per suite, ID-SUITE, and print the ids joined by commas.
+if [[ "${4:-}" == *,* ]] && { [ "${1:-}" = start ] || [ "${1:-}" = record ]; }; then
+    [ -n "${2:-}" ] || exit 0
+    base=${8:-$(date -u +%Y%m%dT%H%M%SZ)-${2}}
+    ids=() status=0
+    IFS=',' read -r -a suites <<< "$4"
+    for suite in "${suites[@]}"; do
+        filed=$("$0" "$1" "$2" "$3" "$suite" "${5:-}" "${6:-}" "${7:-}" "$base-$suite" "${@:9}") || status=$?
+        [ -z "$filed" ] || ids+=("$filed")
+    done
+    (IFS=,; [ "${#ids[@]}" = 0 ] || echo "${ids[*]}")
+    exit "$status"
+fi
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}
@@ -93,7 +113,10 @@ case "${1:-}" in
         ;;
     finish)
         [ -n "${2:-}" ] || exit 0
-        "$CLI" breenix finish --id "$2" --exit-status "${3:-0}" >/dev/null 2>&1 || true
+        IFS=',' read -r -a filed <<< "$2"
+        for id in "${filed[@]}"; do
+            "$CLI" breenix finish --id "$id" --exit-status "${3:-0}" >/dev/null 2>&1 || true
+        done
         ;;
 esac
 exit 0

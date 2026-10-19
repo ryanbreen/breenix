@@ -13,9 +13,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-use super::progress::{
-    get_overall_progress, get_progress, get_stage_progress, is_complete, is_started,
-};
+use super::progress::{get_progress, get_stage_progress, is_started};
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 use super::registry::{SubsystemId, TestStage};
 
@@ -105,6 +103,11 @@ fn has_framebuffer_available() -> bool {
 // On x86_64 without interactive, a no-op stub is provided instead.
 
 /// Render to the appropriate framebuffer based on platform
+///
+/// On ARM64 the panel shares the screen with the boot screen, which stays up
+/// while a testing kernel runs (docs/console/contract.md, section 7): it draws
+/// only in the band the boot screen leaves free (`boot_screen::runner_area`),
+/// and not at all once the boot screen has given the screen away.
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 fn render_to_framebuffer() {
     use crate::graphics::primitives::{
@@ -129,127 +132,160 @@ fn render_to_framebuffer() {
     const COLOR_STAGE_USER: Color = Color::rgb(180, 100, 255); // Purple - Userspace
 
     // Layout constants
-    const PANEL_MARGIN_X: i32 = 40;
-    const PANEL_MARGIN_Y: i32 = 40;
-    const PANEL_WIDTH: u32 = 600;
-    const PANEL_HEIGHT: u32 = 400;
-    const PANEL_PADDING: i32 = 20;
-    const TITLE_HEIGHT: i32 = 40;
-    const ROW_HEIGHT: i32 = 28;
+    const PANEL_PADDING: i32 = 6;
+    const TITLE_HEIGHT: i32 = 24;
+    const ROW_HEIGHT: i32 = 20;
+    const SUMMARY_HEIGHT: i32 = 20;
+    const COLUMN_GAP: i32 = 16;
     const NAME_WIDTH: i32 = 100;
-    const BAR_WIDTH: u32 = 300;
-    const BAR_HEIGHT: u32 = 16;
-    const PERCENT_WIDTH: i32 = 50;
+    const BAR_HEIGHT: u32 = 12;
+    const MIN_BAR_WIDTH: i32 = 80;
+    const PERCENT_WIDTH: i32 = 48;
+    const STATUS_WIDTH: i32 = 40;
 
-    /// Render the progress panel to a canvas
-    fn render_panel<C: Canvas>(canvas: &mut C) {
-        let panel_x = PANEL_MARGIN_X;
-        let panel_y = PANEL_MARGIN_Y;
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Status {
+        NotApplicable,
+        Pending,
+        Running,
+        Pass,
+        Fail,
+    }
 
-        // Draw panel background
-        fill_rect(
-            canvas,
-            Rect {
-                x: panel_x,
-                y: panel_y,
-                width: PANEL_WIDTH,
-                height: PANEL_HEIGHT,
-            },
-            COLOR_BACKGROUND,
-        );
+    /// One subsystem's counters, read once per render so its row and the
+    /// summary line describe the same moment.
+    #[derive(Clone, Copy)]
+    struct Row {
+        completed: u32,
+        total: u32,
+        failed: u32,
+        status: Status,
+        stages: [(u32, u32); TestStage::COUNT],
+    }
 
-        // Draw panel border
-        draw_rect(
-            canvas,
-            Rect {
-                x: panel_x,
-                y: panel_y,
-                width: PANEL_WIDTH,
-                height: PANEL_HEIGHT,
-            },
-            COLOR_BORDER,
-        );
+    fn snapshot(id: SubsystemId) -> Row {
+        let (completed, total, failed) = get_progress(id);
+        let status = if total == 0 {
+            Status::NotApplicable
+        } else if completed >= total {
+            if failed > 0 {
+                Status::Fail
+            } else {
+                Status::Pass
+            }
+        } else if !is_started(id) {
+            Status::Pending
+        } else {
+            Status::Running
+        };
+        Row {
+            completed,
+            total,
+            failed,
+            status,
+            stages: get_stage_progress(id),
+        }
+    }
 
-        // Draw title
+    /// Render the progress panel into `area`, or skip the render when `area` is
+    /// too small for its columns.
+    fn render_panel<C: Canvas>(canvas: &mut C, area: Rect) {
+        let mut rows = [None; SubsystemId::COUNT];
+        for (idx, row) in rows.iter_mut().enumerate() {
+            *row = SubsystemId::from_index(idx).map(|id| (id, snapshot(id)));
+        }
+
+        let inner_x = area.x + PANEL_PADDING;
+        let inner_width = area.width as i32 - 2 * PANEL_PADDING;
+        let rows_fit = (area.height as i32 - 2 * PANEL_PADDING - TITLE_HEIGHT - SUMMARY_HEIGHT)
+            / ROW_HEIGHT;
+        if rows_fit <= 0 {
+            return;
+        }
+        let rows_fit = rows_fit as usize;
+        let columns = SubsystemId::COUNT.div_ceil(rows_fit);
+        let rows_per_column = SubsystemId::COUNT.div_ceil(columns);
+        let column_width =
+            (inner_width - (columns as i32 - 1) * COLUMN_GAP) / columns as i32;
+        let bar_width = column_width - NAME_WIDTH - PERCENT_WIDTH - STATUS_WIDTH;
+        if bar_width < MIN_BAR_WIDTH {
+            return;
+        }
+
+        fill_rect(canvas, area, COLOR_BACKGROUND);
+        draw_rect(canvas, area, COLOR_BORDER);
+
         let title_style = TextStyle::new().with_color(COLOR_TITLE);
+        let advance = title_style.font.metrics().char_advance() as i32;
         let title = "BREENIX PARALLEL TEST RUNNER";
-        let title_x = panel_x + (PANEL_WIDTH as i32 - title.len() as i32 * 9) / 2;
-        let title_y = panel_y + PANEL_PADDING;
+        let title_x = area.x + (area.width as i32 - title.len() as i32 * advance) / 2;
+        let title_y = area.y + PANEL_PADDING;
         draw_text(canvas, title_x, title_y, title, &title_style);
-
-        // Draw horizontal line under title
-        let line_y = panel_y + PANEL_PADDING + TITLE_HEIGHT - 8;
         fill_rect(
             canvas,
             Rect {
-                x: panel_x + PANEL_PADDING,
-                y: line_y,
-                width: PANEL_WIDTH - (PANEL_PADDING as u32 * 2),
+                x: inner_x,
+                y: title_y + TITLE_HEIGHT - 4,
+                width: inner_width as u32,
                 height: 1,
             },
             COLOR_BORDER,
         );
 
-        // Draw each subsystem row
-        let content_start_y = panel_y + PANEL_PADDING + TITLE_HEIGHT;
-        let content_x = panel_x + PANEL_PADDING;
-
-        for idx in 0..SubsystemId::COUNT {
-            if let Some(id) = SubsystemId::from_index(idx) {
-                let row_y = content_start_y + (idx as i32 * ROW_HEIGHT);
-                render_subsystem_row(canvas, content_x, row_y, id);
+        let content_y = title_y + TITLE_HEIGHT;
+        for (idx, entry) in rows.iter().enumerate() {
+            if let Some((id, row)) = entry {
+                let column = (idx / rows_per_column) as i32;
+                let x = inner_x + column * (column_width + COLUMN_GAP);
+                let y = content_y + (idx % rows_per_column) as i32 * ROW_HEIGHT;
+                render_subsystem_row(canvas, x, y, bar_width, *id, row);
             }
         }
 
-        // Draw summary line at bottom
-        let summary_y = content_start_y + (SubsystemId::COUNT as i32 * ROW_HEIGHT) + 10;
-        render_summary_line(canvas, content_x, summary_y);
+        let summary_y = content_y + rows_per_column as i32 * ROW_HEIGHT + 2;
+        render_summary_line(canvas, inner_x, summary_y, &rows);
     }
 
     /// Render a single subsystem row
-    fn render_subsystem_row<C: Canvas>(canvas: &mut C, x: i32, y: i32, id: SubsystemId) {
-        let (completed, total, failed) = get_progress(id);
-        let started = is_started(id);
-        let complete = is_complete(id);
-
-        // Determine status
-        let (status_text, status_color) = if total == 0 {
-            ("N/A ", COLOR_PEND)
-        } else if !started {
-            ("PEND", COLOR_PEND)
-        } else if complete {
-            if failed > 0 {
-                ("FAIL", COLOR_FAIL)
-            } else {
-                ("PASS", COLOR_PASS)
-            }
-        } else {
-            ("RUN ", COLOR_RUN)
+    fn render_subsystem_row<C: Canvas>(
+        canvas: &mut C,
+        x: i32,
+        y: i32,
+        bar_width: i32,
+        id: SubsystemId,
+        row: &Row,
+    ) {
+        let (status_text, status_color) = match row.status {
+            Status::NotApplicable => ("N/A", COLOR_PEND),
+            Status::Pending => ("PEND", COLOR_PEND),
+            Status::Running => ("RUN", COLOR_RUN),
+            Status::Pass => ("PASS", COLOR_PASS),
+            Status::Fail => ("FAIL", COLOR_FAIL),
         };
 
-        // Draw subsystem name
-        let name = id.name();
         let name_style = TextStyle::new().with_color(COLOR_TEXT);
-        draw_text(canvas, x, y, name, &name_style);
+        draw_text(canvas, x, y, id.name(), &name_style);
 
-        // Draw progress bar with stage-colored segments
         let bar_x = x + NAME_WIDTH;
-        let bar_y = y + (ROW_HEIGHT - BAR_HEIGHT as i32) / 2 - 2;
-        let stage_progress = get_stage_progress(id);
-        render_progress_bar(canvas, bar_x, bar_y, total, &stage_progress);
+        let bar_y = y + 2;
+        render_progress_bar(canvas, bar_x, bar_y, bar_width as u32, row.total, &row.stages);
 
-        // Draw percentage
-        let percent = if total > 0 {
-            (completed * 100) / total
+        let percent = if row.total > 0 {
+            (row.completed.min(row.total) as u64 * 100 / row.total as u64) as u32
         } else {
             0
         };
-        let percent_str = format_percent(percent);
-        let percent_x = bar_x + BAR_WIDTH as i32 + 10;
+        let mut percent_buf = [0u8; 4];
+        let percent_x = bar_x + bar_width + 8;
         let percent_style = TextStyle::new().with_color(COLOR_TEXT);
-        draw_text(canvas, percent_x, y, percent_str, &percent_style);
+        draw_text(
+            canvas,
+            percent_x,
+            y,
+            format_percent(percent, &mut percent_buf),
+            &percent_style,
+        );
 
-        // Draw status
         let status_x = percent_x + PERCENT_WIDTH;
         let status_style = TextStyle::new().with_color(status_color);
         draw_text(canvas, status_x, y, status_text, &status_style);
@@ -262,6 +298,7 @@ fn render_to_framebuffer() {
         canvas: &mut C,
         x: i32,
         y: i32,
+        bar_width: u32,
         total: u32,
         stage_progress: &[(u32, u32); TestStage::COUNT],
     ) {
@@ -280,7 +317,7 @@ fn render_to_framebuffer() {
             Rect {
                 x,
                 y,
-                width: BAR_WIDTH,
+                width: bar_width,
                 height: BAR_HEIGHT,
             },
             COLOR_BAR_EMPTY,
@@ -294,11 +331,11 @@ fn render_to_framebuffer() {
                 if completed > 0 {
                     // Calculate width for this stage's completed tests
                     let segment_width =
-                        ((completed as u64 * BAR_WIDTH as u64) / total as u64) as u32;
+                        ((completed as u64 * bar_width as u64) / total as u64) as u32;
 
                     if segment_width > 0 {
                         // Ensure we don't overflow the bar
-                        let remaining = BAR_WIDTH.saturating_sub((current_x - x) as u32);
+                        let remaining = bar_width.saturating_sub((current_x - x) as u32);
                         let actual_width = segment_width.min(remaining);
 
                         if actual_width > 0 {
@@ -325,67 +362,51 @@ fn render_to_framebuffer() {
             Rect {
                 x,
                 y,
-                width: BAR_WIDTH,
+                width: bar_width,
                 height: BAR_HEIGHT,
             },
             COLOR_BORDER,
         );
     }
 
-    /// Render the summary line at bottom of panel
-    fn render_summary_line<C: Canvas>(canvas: &mut C, x: i32, y: i32) {
-        let (completed, total, failed) = get_overall_progress();
-
-        // Count complete subsystems
-        let mut complete_count = 0u32;
-        for idx in 0..SubsystemId::COUNT {
-            if let Some(id) = SubsystemId::from_index(idx) {
-                if is_complete(id) {
-                    complete_count += 1;
-                }
+    /// Render the summary line from the same snapshot the rows were drawn from:
+    /// the complete count is the number of rows showing PASS or FAIL.
+    fn render_summary_line<C: Canvas>(
+        canvas: &mut C,
+        x: i32,
+        y: i32,
+        rows: &[Option<(SubsystemId, Row)>; SubsystemId::COUNT],
+    ) {
+        let (mut completed, mut total, mut failed, mut complete_count) = (0u32, 0u32, 0u32, 0u32);
+        for (_, row) in rows.iter().flatten() {
+            completed += row.completed;
+            total += row.total;
+            failed += row.failed;
+            if matches!(row.status, Status::Pass | Status::Fail) {
+                complete_count += 1;
             }
         }
 
-        // Format summary
         let summary = format_summary(completed, total, complete_count, failed);
         let style = TextStyle::new().with_color(COLOR_TEXT);
         draw_text(canvas, x, y, &summary, &style);
     }
 
-    /// Format a percentage as a string
-    fn format_percent(percent: u32) -> &'static str {
-        match percent {
-            0 => "  0%",
-            5 => "  5%",
-            10 => " 10%",
-            15 => " 15%",
-            20 => " 20%",
-            25 => " 25%",
-            30 => " 30%",
-            35 => " 35%",
-            40 => " 40%",
-            45 => " 45%",
-            50 => " 50%",
-            55 => " 55%",
-            60 => " 60%",
-            65 => " 65%",
-            70 => " 70%",
-            75 => " 75%",
-            80 => " 80%",
-            85 => " 85%",
-            90 => " 90%",
-            95 => " 95%",
-            100 => "100%",
-            _ => {
-                if percent < 10 {
-                    "  ?%"
-                } else if percent < 100 {
-                    " ??%"
-                } else {
-                    "100%"
-                }
+    /// Format a percentage (0-100) right-aligned in four characters, e.g. " 37%".
+    fn format_percent(percent: u32, buf: &mut [u8; 4]) -> &str {
+        let percent = percent.min(100);
+        *buf = *b"   %";
+        let mut value = percent;
+        let mut pos = 2;
+        loop {
+            buf[pos] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 || pos == 0 {
+                break;
             }
+            pos -= 1;
         }
+        core::str::from_utf8(buf).unwrap_or("")
     }
 
     /// Format the summary line
@@ -415,7 +436,13 @@ fn render_to_framebuffer() {
     {
         if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
             let mut guard = fb.lock();
-            render_panel(&mut *guard);
+            let area = Rect {
+                x: 40,
+                y: 40,
+                width: 600,
+                height: 400,
+            };
+            render_panel(&mut *guard, area);
         }
     }
 
@@ -423,9 +450,13 @@ fn render_to_framebuffer() {
     {
         if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
             let mut guard = fb.lock();
-            render_panel(&mut *guard);
-            // Flush to display on ARM64
-            guard.flush();
+            let Some(area) = crate::graphics::boot_screen::runner_area(&*guard) else {
+                return;
+            };
+            crate::graphics::cursor::hide(&mut *guard);
+            render_panel(&mut *guard, area);
+            crate::graphics::cursor::show(&mut *guard);
+            guard.flush_rect(area.x as u32, area.y as u32, area.width, area.height);
         }
     }
 }

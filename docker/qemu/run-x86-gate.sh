@@ -1,4 +1,7 @@
 #!/bin/bash
+if [ "${BREENIX_GATE_PHASE:-all}" != build ]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
+fi
 #
 # x86_64 build + boot gate, in the repository.
 #
@@ -247,6 +250,11 @@ sys.exit(0 if len(set(ids)) == len(ids) and all(re.fullmatch(r'[a-z0-9]+(-[a-z0-
 PYIDS
   then
     echo "GATE: FAIL (invalid or duplicate suite ids: $SUITE)"; exit 1
+  fi
+  # A guest suite now hands PID 1 to the next suite itself, without the keyboard acknowledgement this gate's
+  # boundary capture waits on; x86-64 runs suite lists on the metal boot loop (docs/suites/README.md).
+  if [ "${#SUITES[@]}" -gt 1 ]; then
+    echo "GATE: FAIL (x86 QEMU runs one suite per boot; run a list with metal-run boot --mode suite --suite $SUITE)"; exit 1
   fi
   for suite_id in "${SUITES[@]}"; do
     if [ ! -f "$REPO_DIR/docs/suites/$suite_id.json" ]; then

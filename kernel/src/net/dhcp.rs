@@ -318,7 +318,7 @@ pub fn observe_arp(sender_mac: [u8; 6], sender_ip: [u8; 4], target_ip: [u8; 4]) 
 fn wait_until(deadline: u64) {
     while now() < deadline {
         let _ = super::process_rx_budgeted(64);
-        core::hint::spin_loop();
+        super::between_rx_polls();
     }
 }
 
@@ -383,7 +383,7 @@ fn wait_reply(timeout_ms: u64) -> Option<Reply> {
         if let Some(reply) = take_reply() {
             return Some(reply);
         }
-        core::hint::spin_loop();
+        super::between_rx_polls();
     }
 }
 

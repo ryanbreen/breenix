@@ -29,6 +29,8 @@ def score(directory):
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     run = read('run.json')
+    if run.get('kind') == 'fault-test' or run.get('inject') in ('xhci-reset-device', 'xhci-short-read'):
+        raise ValueError('fault tests are never milestone evidence')
     if run.get('kind') == 'console-session':
         raise ValueError('operator console sessions are never scored')
     definition = read('definition/docs/metal/boot-path.json')

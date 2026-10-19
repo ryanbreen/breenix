@@ -136,6 +136,24 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             }
             _ => errors.push(format!("{at}: diskChecks must be a nonempty array")),
         }
+        // The host reads the disk after the boot, so in a boot of several suites no suite may run after this one.
+        if object.get("sequence") != Some(&Value::String("last".into())) {
+            errors.push(format!("{at}: a suite with diskChecks runs last in a multi-suite boot: set \"sequence\": \"last\""));
+        }
+    }
+    // Where the suite must run in a boot of several suites (docs/suites/README.md, "Several suites in one boot").
+    if let Some(place) = object.get("sequence") {
+        expected.push("sequence");
+        if place != "first" && place != "last" {
+            errors.push(format!("{at}: sequence is \"first\" or \"last\" when present"));
+        }
+    }
+    // A suite that renders through a 3D GPU; launchers for targets without one leave it out of a resolved list.
+    if let Some(needs) = object.get("needs3dGpu") {
+        expected.push("needs3dGpu");
+        if needs != &Value::Bool(true) {
+            errors.push(format!("{at}: needs3dGpu is true when present"));
+        }
     }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
@@ -688,8 +706,8 @@ fn timing_classification_ignores_comments_and_literals() {
 const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
 
 /// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
-/// `TARGETS` order without repeats; a note is one line of text and only sits beside a list; an effort
-/// without x86-64 has no `profiles` milestone, which is measured only there.
+/// `TARGETS` order without repeats; a note is one line of text and only sits beside a list.
+/// Vigil BreenixPath.swift:168,232-234 treats profiles without x86 as outOfScope.
 fn effort_target_errors(path: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     for effort in path["efforts"].as_array().into_iter().flatten() {
@@ -723,16 +741,6 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
             Some(Value::String(text)) if !text.trim().is_empty() && !text.contains('\n') => {}
             Some(_) => errors.push(format!("{id}: \"targetsNote\" must be non-empty text on one line")),
         }
-        if !names.contains(&"x86") {
-            for milestone in effort["milestones"].as_array().into_iter().flatten() {
-                if milestone["measure"].get("profiles").is_some() {
-                    errors.push(format!(
-                        "{id}: milestone {} measures x86-64 profiles, but x86 is not a target",
-                        milestone["id"]
-                    ));
-                }
-            }
-        }
     }
     errors
 }
@@ -764,7 +772,7 @@ fn effort_target_lists_are_checked() {
     assert!(check(serde_json::json!({ "id": "a" })).is_empty());
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
         .is_empty());
-    assert!(check(serde_json::json!({ "id": "a", "targets": TARGETS, "milestones": profiles })).is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware"], "milestones": profiles })).is_empty());
     for bad in [
         serde_json::json!({ "id": "a", "targetsNote": "no list" }),
         serde_json::json!({ "id": "a", "targets": [] }),
@@ -776,7 +784,6 @@ fn effort_target_lists_are_checked() {
         serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "two\nlines" }),
-        serde_json::json!({ "id": "a", "targets": ["vmware"], "milestones": profiles }),
     ] {
         assert_eq!(check(bad.clone()).len(), 1, "{bad}");
     }

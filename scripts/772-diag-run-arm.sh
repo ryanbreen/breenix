@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/x86-qemu-policy.sh"
 # #772 diag battery (R111/R112 measure slot): build one feature-flag arm,
 # then boot it N times, reading the DISPATCH_* counters out-of-band over GDB
 # on each boot -- 0 reads from inside the guest under test.
