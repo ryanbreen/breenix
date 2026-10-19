@@ -236,6 +236,15 @@ elif b"capture_oracle" in image:
     print("panic")
 PYPROFILE
 )
+# Terminal kernels cannot produce the completion records of other boot modes.
+if [ -n "$TERMINAL_PROFILE" ] && [ "$MODE" != program ]; then
+    echo "terminal profile needs --mode program" >&2
+    exit 2
+fi
+if [ "$TERMINAL_PROFILE" = fault ] && [ "$GPU_GL" -ne 1 ]; then
+    echo "fault terminal profile needs --gpu-gl" >&2
+    exit 2
+fi
 
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
     # The Developer SDK suite's host side builds the SDK and its test apps and stages
@@ -350,7 +359,7 @@ fi
 # Terminal profiles end in an intentional panic or fatal abort, not probe's
 # program completion. Their stopped serials are judged by the profile check below.
 WATCH_MODE=$MODE
-if [ -n "$TERMINAL_PROFILE" ]; then
+if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
     WATCH_MODE=default
 fi
 python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
@@ -387,7 +396,7 @@ if [ "$GPU_GL" -eq 1 ]; then
     fi
 fi
 # This special profile intentionally panics; judge its stopped serial as well.
-if [ "$TERMINAL_PROFILE" = panic ]; then
+if [ "$GPU_GL" -eq 1 ] && [ "$MODE" = program ] && [ "$TERMINAL_PROFILE" = panic ]; then
     if ! python3 "$ROOT/scripts/check-gpu-panic.py" "$SERIAL_LOG"; then
         [ "$code" -ne 0 ] || code=1
     fi

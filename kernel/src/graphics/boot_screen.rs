@@ -35,6 +35,8 @@ static HANDED_OVER: AtomicBool = AtomicBool::new(false);
 static LAYOUT_SETTLED: AtomicBool = AtomicBool::new(false);
 /// The terminal diagnostics screen has been claimed (first fatal failure wins).
 static DIAG_CLAIMED: AtomicBool = AtomicBool::new(false);
+/// Firmware diagnostics are visible, independently of the first-fatal claim.
+static DIAG_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// Bound firmware painting on recoverable faults independently of fatal ownership.
 static RECOVERABLE_DIAG_CLAIMED: AtomicBool = AtomicBool::new(false);
 
@@ -49,7 +51,7 @@ pub fn console_drew() {
 
 /// Whether the diagnostics screen has the screen.
 pub fn diagnostics_up() -> bool {
-    DIAG_CLAIMED.load(Ordering::Acquire)
+    DIAG_VISIBLE.load(Ordering::Acquire) || DIAG_CLAIMED.load(Ordering::Acquire)
 }
 
 /// Space below the splash stage label and above its mode/status lines.
@@ -57,7 +59,7 @@ pub fn diagnostics_up() -> bool {
 pub fn runner_area(canvas: &impl Canvas) -> Option<Rect> {
     if !crate::console::splash::is_up()
         || HANDED_OVER.load(Ordering::Acquire)
-        || DIAG_CLAIMED.load(Ordering::Acquire)
+        || diagnostics_up()
     {
         return None;
     }
@@ -89,7 +91,7 @@ pub fn runner_area(canvas: &impl Canvas) -> Option<Rect> {
 ///
 /// Returns false once the diagnostics screen is up: it keeps the screen.
 pub fn stop_drawing() -> bool {
-    if DIAG_CLAIMED.load(Ordering::Acquire) {
+    if diagnostics_up() {
         return false;
     }
     HANDED_OVER.store(true, Ordering::Release);
@@ -161,7 +163,7 @@ fn presenter_main() {
     let mut retry_at = 0u64;
     while !crate::task::kthread::kthread_should_stop() {
         let kernel_screen_up =
-            DIAG_CLAIMED.load(Ordering::Acquire) || !HANDED_OVER.load(Ordering::Acquire);
+            diagnostics_up() || !HANDED_OVER.load(Ordering::Acquire);
         if kernel_screen_up && timer::rdtsc() >= retry_at {
             if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
                 // Non-blocking: the GPU lock may be held for good by a CPU that
@@ -454,6 +456,7 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     if !terminal && DIAG_CLAIMED.load(Ordering::Acquire) {
         return;
     }
+    DIAG_VISIBLE.store(true, Ordering::Release);
     HANDED_OVER.store(true, Ordering::Release);
     let canvas = &mut *guard;
     let (width, height) = (canvas.width() as i32, canvas.height() as i32);
