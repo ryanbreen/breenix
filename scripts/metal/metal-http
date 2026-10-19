@@ -7,6 +7,8 @@ The firmware route answers HEAD and GET while a boot has an image staged and it 
 has been sent, in one response or across ranges, and while nothing is staged, requests get 404, so a machine that resets cannot boot the same image again. Every request and
 transfer is logged to STATE/http.jsonl, without the client's address.
 The independent probe-file route does not consume the firmware transfer.
+The boot manager's route (`manager` beside the boot URL) answers whether the lab has a test boot pending, from the
+lease (docs/metal/README.md, "The lab's answer"); it is not the firmware's image request.
 """
 import hashlib
 import http.server
@@ -30,6 +32,22 @@ PROGRESS_SECONDS = 1.0
 
 def log(**fields):
     m.append_jsonl(m.STATE / 'http.jsonl', dict(fields, t=round(m.now(), 3)))
+
+
+def manager_answer():
+    """The boot manager's answer from the lease: `test <boot>` for a powered boot, `persistent <boot> <entry>
+    [action]` for a powered persistent session, `busy <boot>` for one not yet powered or quarantined."""
+    with m.locked('lease'):
+        lease = m.read_lease()
+    if not lease:
+        return None
+    holder = lease.get('id', 'unknown')
+    if lease.get('state') != 'powered':
+        return f'busy {holder}'
+    if lease.get('kind') == 'persistent':
+        action = lease.get('slotAction')
+        return f"persistent {holder} {lease.get('entry', 'current')}" + (f' {action}' if action else '')
+    return f'test {holder}'
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -97,6 +115,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def do_GET(self):
+        if urlsplit(self.path).path == self.server.prefix + 'manager':
+            answer = manager_answer()
+            log(event='manager-query', answer=answer)
+            body = ((answer or '') + '\n').encode('ascii')
+            self.send_response(200 if answer else 404)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(len(body) if answer else 0))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            if answer:
+                self.wfile.write(body)
+            self.close_connection = True
+            return
         if urlsplit(self.path).path == PROBE_PATH:
             log(event='probe-get')
             self.send_response(200)

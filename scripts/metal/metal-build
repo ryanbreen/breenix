@@ -3,6 +3,7 @@
 
   metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject|testing]
               [--suite ID[,ID...]]
+  metal-build ... --stub-only --tools-profile disk-readback|boot-manager
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
@@ -16,7 +17,9 @@ an SDK suite boot (docs/suites/README.md), and that copy is the root delivered. 
 artifact helpers are the deployed tools' copies beside this file, not the commit's, so every commit builds the same
 way. The container runs on the host's shared CPUs, outside the x86 gate VM, so no x86 lease covers it. Writes
 <root>/breenix-metal-<id>-out/ with uefi.img, ext2.img, stub.efi, definition/ and build.json (and test-binaries.img for the
-testing kernel), and removes the clone.
+testing kernel), and removes the clone. Every build also writes manager.efi, the boot manager the same crate builds
+(docs/metal/README.md, "Boot manager and persistent install"). `--stub-only` builds only the deployed EFI applications,
+for a cold readback or a boot manager probe, under a metal-build slot without a kernel or userspace build.
 Exit 0 on success; 3 when the guard refuses the commit.
 """
 import argparse
@@ -34,6 +37,7 @@ import tempfile
 import time
 
 STUB_TARGET = 'x86_64-unknown-uefi'
+STUB_RELEASE = Path(STUB_TARGET) / 'release'
 # The kernel profile each --features value builds.
 PROFILES = {'': 'production', 'xhci_fault_inject': 'fault-test', 'testing': 'testing'}
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
@@ -216,7 +220,8 @@ def inner(args):
                     return 1
         finally:
             subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
-        shutil.copyfile(tmp / 'stub-target' / STUB_TARGET / 'release/metal-efi-stub.efi', out / 'stub.efi')
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-efi-stub.efi', out / 'stub.efi')
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-boot-manager.efi', out / 'manager.efi')
         images = sorted(glob.glob(str(clone / 'target/release/build/breenix-*/out/breenix-uefi.img')),
                         key=os.path.getmtime)
         if not images:
@@ -244,6 +249,7 @@ def inner(args):
                  'cargoJobs': int(os.environ['CARGO_BUILD_JOBS']),
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
+                 'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')},
                  'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
         if (out / 'test-binaries.img').is_file():
             build['testBinaries'] = {'size': (out / 'test-binaries.img').stat().st_size,
@@ -259,7 +265,8 @@ def inner(args):
 
 
 def stub_only(args):
-    """Build the deployed readback firmware under a metal-build slot, without a kernel or userspace build."""
+    """Build the deployed EFI applications under a metal-build slot, without a kernel or userspace build: the cold
+    readback's stub, or the boot manager for a probe boot."""
     out, tmp = paths(args)[1:]
     if not args.inner:
         environment = dict(os.environ, CARGO_BUILD_JOBS='4', BREENIX_SLOT_WORKTREE=args.stub,
@@ -284,11 +291,13 @@ def stub_only(args):
                                       '-Zbuild-std-features=compiler-builtins-mem',
                                       '--target-dir', str(tmp / 'stub-target')], cwd=args.stub,
                                      stdout=output, stderr=subprocess.STDOUT)
-        if not clean_build(status, log, 'readback stub', logs, out):
+        if not clean_build(status, log, 'EFI applications', logs, out):
             return 1
-        shutil.copyfile(tmp / 'stub-target' / STUB_TARGET / 'release/metal-efi-stub.efi', out / 'stub.efi')
-        m = {'commit': args.sha, 'profile': 'disk-readback',
-             'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')}}
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-efi-stub.efi', out / 'stub.efi')
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-boot-manager.efi', out / 'manager.efi')
+        m = {'commit': args.sha, 'profile': args.tools_profile,
+             'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
+             'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')}}
         (out / 'build.json').write_text(json.dumps(m, indent=2) + '\n')
         shutil.copytree(logs, out / 'logs', dirs_exist_ok=True)
         return 0
@@ -301,7 +310,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--catchup', action='store_true', help='request catch-up under the policy from origin/main')
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
-    parser.add_argument('--stub-only', action='store_true', help='build only the deployed cold-readback firmware')
+    parser.add_argument('--stub-only', action='store_true', help='build only the deployed EFI applications')
+    parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'), default='disk-readback',
+                        help='what a --stub-only build is for, recorded as its profile')
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
     parser.add_argument('--features', choices=tuple(PROFILES), default='',
                         help='build a fault-test or testing kernel; never set for a production boot')

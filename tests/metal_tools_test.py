@@ -1659,8 +1659,12 @@ class StagingTest(unittest.TestCase):
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
                          ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'effort-target-guard.py', 'efi-stub/Cargo.toml',
-                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/main.rs',
-                          'efi-stub/src/suite_disk.rs'])
+                          'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/bootdisk.rs',
+                          'efi-stub/src/com1.rs', 'efi-stub/src/files.rs', 'efi-stub/src/http.rs', 'efi-stub/src/lib.rs',
+                          'efi-stub/src/main.rs', 'efi-stub/src/manager/clock.rs', 'efi-stub/src/manager/lab.rs',
+                          'efi-stub/src/manager/main.rs', 'efi-stub/src/manager/options.rs',
+                          'efi-stub/src/manager/screen.rs', 'efi-stub/src/manager/slots.rs',
+                          'efi-stub/src/suite_disk.rs', 'efi-stub/src/uefi.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'
@@ -1736,7 +1740,7 @@ class BuildSlotTest(unittest.TestCase):
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
             stub = tmp / 'stub-target' / build.STUB_TARGET / 'release/metal-efi-stub.efi'
-            for path in (image, stub, clone / 'testdata/ext2.img'):
+            for path in (image, stub, stub.with_name('metal-boot-manager.efi'), clone / 'testdata/ext2.img'):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'bytes')
             order = []

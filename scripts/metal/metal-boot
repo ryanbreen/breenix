@@ -51,7 +51,7 @@ DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
-PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager')
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500}
 SESSION_CEILING_SECONDS = 4 * 3600
 
@@ -119,6 +119,11 @@ HANDOFF_LINE = 'Jumping to kernel entry point at'
 HANG_LINE = 'metal-hang: interrupts masked, halting'
 STUB_LINE = 'metal-stub: started'
 STUB_FAILED_LINE = 'metal-stub: FAILED'
+# The boot manager's lines (docs/metal/README.md, "The boot manager").
+MANAGER_STARTED = 'breenix-manager: started: '
+MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
+MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
+MANAGER_PANIC = 'breenix-manager: panic: '
 NO_BOOTABLE = 'no bootable device'
 RUNNING_STATES = ('OSBootStarted', 'OSRunning')
 
@@ -334,6 +339,20 @@ class Driver:
             if m.now() > deadline:
                 raise Finish(m.EXIT_CANCELLED, 'the image build did not deliver its inputs in time')
             time.sleep(2)
+        if self.args.payload == 'manager':
+            # The boot manager in probe mode, served bare: it asks the lab, reports and halts (README, "Probe mode").
+            build = m.read_json(inputs / 'build.json', {})
+            manager = inputs / 'manager.efi'
+            if (build.get('commit') != self.args.commit or build.get('profile') != 'boot-manager'
+                    or build.get('manager', {}).get('sha256') != metal_image.sha256(manager)):
+                raise Finish(m.EXIT_CANCELLED, 'the boot manager differs from its build record')
+            self.delivery['build'] = build
+            self.payload_facts = dict(path=manager, size=manager.stat().st_size, sha256=metal_image.sha256(manager),
+                                      contentType=metal_image.CONTENT_TYPES['efi'], name='metal-boot-manager.efi')
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            self.event('payload-ready', name='metal-boot-manager.efi', size=self.payload_facts['size'],
+                       sha256=self.payload_facts['sha256'])
+            return
         if self.args.payload == 'disk-readback':
             build = m.read_json(inputs / 'build.json', {})
             stub = inputs / 'stub.efi'
@@ -850,6 +869,7 @@ class Driver:
             self.event('stub-failed', observed_at=observed_at, seconds=seconds)
             raise Finish(m.EXIT_DELIVERY, 'the delivery stub could not start the bootloader')
 
+        self.on_manager_line(line, observed_at, seconds)
         if self.census:
             if line == 'metal-linux-start' and self.kernel_started is None:
                 self.kernel_started = observed_at
@@ -940,6 +960,22 @@ class Driver:
                 raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
 
+    def on_manager_line(self, line, observed_at, seconds):
+        """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
+        if MANAGER_STARTED in line:
+            self.event('manager-started', observed_at=observed_at, seconds=seconds)
+            self.phase('Boot manager started')
+            if self.args.payload == 'manager' and self.kernel_started is None:
+                self.kernel_started = observed_at
+                self.last_stage = 'boot manager started'
+        if (found := MANAGER_ANSWER.search(line)):
+            self.event('manager-answer', observed_at=observed_at, answer=found.group(1)[:120])
+            self.phase('Boot manager: the lab answered ' + found.group(1)[:80])
+        if MANAGER_PANIC in line:
+            raise Finish(m.EXIT_SHORT, 'the boot manager panicked')
+        if self.args.payload == 'manager' and MANAGER_PROBE_DONE in line:
+            raise Finish(m.EXIT_DONE, 'the boot manager probe completed')
+
     def disk_evidence_seen(self):
         """The disk's record, and on a disk-root console boot the kernel's account of this boot's intent."""
         needed = {None: set(), 'install': {'disk-write'}, 'root': {'disk-root'}}[getattr(self.args, 'disk', None)]
@@ -1024,6 +1060,10 @@ class Driver:
         observed_at = entry['t']
         elapsed = round(observed_at - self.t0, 1)
         kind = entry.get('event')
+        if kind == 'manager-query':
+            # The boot manager's question; not the firmware's image request, so it leaves the POST measurement alone.
+            self.event('manager-query', observed_at=observed_at, seconds=elapsed, answer=entry.get('answer'))
+            return
         if kind not in ('redirect', 'head', 'start', 'progress', 'range-done', 'complete', 'short', 'broken', '404',
                         'range-invalid'):
             return

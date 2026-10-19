@@ -2,7 +2,7 @@
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
+  metal-run boot [--payload image|hang|none|manager] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
   metal-run stop ID
@@ -181,7 +181,7 @@ def boot(args):
     env = host_env()
     payload = args.payload
     sha = target = ''
-    if payload in ('image', 'disk-readback'):
+    if payload in ('image', 'disk-readback', 'manager'):
         if args.sha:
             verify_target(env, args.sha, args.branch or 'main')
             sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
@@ -240,7 +240,7 @@ def boot(args):
         except Exception:
             in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
             raise
-    if payload in ('image', 'disk-readback'):
+    if payload in ('image', 'disk-readback', 'manager'):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
@@ -250,8 +250,10 @@ def boot(args):
                         ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
+            tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
+                          'manager': ['--tools-profile', 'boot-manager']}.get(payload, [])
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite +
-                             (['--readback'] if payload == 'disk-readback' else []) + (['--catchup'] if catchup else []),
+                             tools_only + (['--catchup'] if catchup else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     args.boot_id = boot_id
@@ -266,7 +268,13 @@ def boot(args):
     return 0
 
 
-def build(boot_id, sha, features=None, suite=None, readback=False, catchup=False):
+def stub_sources(stub):
+    """The EFI applications' sources: the manifests and every Rust file under src/, never a build tree."""
+    return ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'] + sorted(
+        str(path.relative_to(stub)) for path in (stub / 'src').rglob('*.rs'))
+
+
+def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -289,7 +297,7 @@ def build(boot_id, sha, features=None, suite=None, readback=False, catchup=False
         incus('file', 'push', str(source), f"{env['BUILD_INSTANCE']}{tools}/{name}", check=True)
     # Push source files only: an old target tree or ignored local files must never reach staging.
     stub = HERE / 'efi-stub'
-    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs', 'src/suite_disk.rs'):
+    for name in stub_sources(stub):
         target = f'{tools}/efi-stub/{name}'
         in_build(env, 'mkdir', '-p', str(Path(target).parent), check=True)
         incus('file', 'push', str(stub / name), f"{env['BUILD_INSTANCE']}{target}", check=True)
@@ -299,7 +307,8 @@ def build(boot_id, sha, features=None, suite=None, readback=False, catchup=False
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
                       '--stub', f'{tools}/efi-stub', *(['--features', features] if features else []),
                       *(['--suite', suite] if suite else []),
-                      *(['--stub-only'] if readback else []), *(['--catchup'] if catchup else [])).returncode
+                      *(['--stub-only', '--tools-profile', tools_profile] if tools_profile else []),
+                      *(['--catchup'] if catchup else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
@@ -334,7 +343,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback'), default='image')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager'),
+                   default='image', help='manager serves the boot manager over the network in probe mode')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default',
                    help='default boots the framebuffer console with virtual-terminal logins')
@@ -364,7 +374,7 @@ def main():
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE, TESTING_FEATURE))
     p.add_argument('--suite')
-    p.add_argument('--readback', action='store_true')
+    p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')
     p = sub.add_parser('_resume')
     p.add_argument('options')
@@ -375,7 +385,7 @@ def main():
     if args.command == 'boot':
         return boot(args)
     if args.command == '_build':
-        return build(args.id, args.sha, args.features, args.suite, args.readback, args.catchup)
+        return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)
