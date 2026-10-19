@@ -175,6 +175,7 @@ python3 "$REPO_ROOT/scripts/qemu-arm64.py" --accel tcg qemu-system-aarch64 \
     -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \
     -drive if=none,id=ext2,format=raw,file="$WRITABLE" \
+    -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -serial file:"$SERIAL_FILE" \

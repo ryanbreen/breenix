@@ -186,6 +186,7 @@ for ((boot=1; boot<=BOOTS; boot++)); do
             -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
             -device virtio-blk-device,drive=ext2 \
             -drive "if=none,id=ext2,format=raw,file=$RUN_DIR/ext2.img" \
+            -device virtio-rng-device \
             -device virtio-net-device,netdev=net0 -netdev user,id=net0 \
             -serial "file:$CURRENT_SERIAL" >"$RUN_DIR/qemu.log" 2>&1 &
     else
