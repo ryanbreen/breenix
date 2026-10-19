@@ -293,10 +293,14 @@ Each suite starts from the state its own boot gives it:
 - **What carries over.** PID numbers, the page cache and kernel memory persist across suites,
   as in any boot that runs programs one after another. BEGIN and RESET report the free memory
   and kernel heap `/proc/meminfo` shows as each suite starts (`MemFree`, `KernelHeapFree`),
-  so memory an earlier suite left allocated is visible. Frames the kernel does not reclaim
-  at exit (user-stack frames, #583) add up: on ARM64 QEMU's 512 MiB, free memory fell from
-  195 MB to 14 MB over ten suites (74 MB in processes alone), and the eleventh, libc, failed
-  to fork with ENOMEM. List fewer suites there until #583 is fixed.
+  and the FRAMES lines after each come from `/proc/breenix/frames`: the frames in use, those
+  lost to the allocator, the allocated frames per allocating source line (with how many a
+  process page table maps or are external leaves), what became of exited processes' page
+  tables, and the reclaim receipts still queued. Once the runner has reaped a suite its frames
+  are back: in one ARM64 QEMU boot of the fifteen suites at 512 MiB, MemFree was 357176 kB as
+  the first started and between 356332 and 356992 kB as each later one did, and the frames in
+  use at each start were PID 1's own image (one root and its tables, stack, TLS, program and
+  heap pages).
 
 A suite whose runner stops starting or finishing cases for 90 seconds (below the launchers'
 120-second stall watchdog, above the 25-second case allowance plus its kill and sweep) is
