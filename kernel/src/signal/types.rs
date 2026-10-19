@@ -322,6 +322,8 @@ pub struct ThreadSignals {
     /// Packed monotonic microseconds and user-mode bit; zero while not dispatched.
     pub cpu_clock: AtomicU64,
     pub in_user: AtomicBool,
+    /// ARM64 syscall lifetime, distinct from IRQ and EL0 fault accounting.
+    pub in_syscall: AtomicBool,
     /// This thread's CPU time in user and in system mode, in nanoseconds:
     /// CLOCK_THREAD_CPUTIME_ID and getrusage(RUSAGE_THREAD).
     pub user_ns: AtomicU64,

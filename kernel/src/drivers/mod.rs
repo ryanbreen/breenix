@@ -9,17 +9,13 @@ pub mod bcm5720;
 pub mod device_class;
 pub mod e1000;
 pub mod fw_cfg;
-#[cfg(target_arch = "x86_64")]
 pub mod hid_boot;
 #[cfg(target_arch = "x86_64")]
 pub mod nvme;
 pub mod pci;
-#[cfg(target_arch = "x86_64")]
 pub mod xhci;
 #[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
-#[cfg(target_arch = "aarch64")]
-pub mod usb;
 pub mod virtio; // Now available on both x86_64 and aarch64
 #[cfg(target_arch = "aarch64")]
 pub mod vmware;
@@ -355,42 +351,6 @@ pub fn init() -> usize {
                 serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
             }
             Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
-        }
-
-        // EHCI USB 2.0 controller — initialization is handled inside xhci::init()
-        // as a prerequisite for Parallels USB device routing (companion controller model).
-        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c at PCI 00:02.0
-
-        // Initialize XHCI USB host controller (keyboard + mouse)
-        // Find by class code (0x0C/0x03/0x30 = USB XHCI), then fall back to known device IDs.
-        // Parallels NEC uPD720200: 0x1033:0x0194, VMware: 0x15ad:0x077a
-        if let Some(xhci_dev) = pci::find_by_class(pci::DeviceClass::SerialBus, 0x03, 0x30)
-            .or_else(|| pci::find_device(0x1033, 0x0194))
-            .or_else(|| pci::find_device(0x15ad, 0x077a))
-        {
-            serial_println!(
-                "[drivers] Found XHCI at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
-                xhci_dev.bus,
-                xhci_dev.device,
-                xhci_dev.function,
-                xhci_dev.vendor_id,
-                xhci_dev.device_id
-            );
-            #[cfg(feature = "xhci_linux_harness")]
-            let xhci_result = usb::xhci_linux::init(&xhci_dev);
-            #[cfg(not(feature = "xhci_linux_harness"))]
-            let xhci_result = usb::xhci::init(&xhci_dev);
-
-            match xhci_result {
-                Ok(()) => {
-                    serial_println!("[drivers] XHCI USB controller initialized");
-                }
-                Err(e) => {
-                    serial_println!("[drivers] XHCI USB init failed: {}", e);
-                }
-            }
-        } else {
-            serial_println!("[drivers] No XHCI USB controller found");
         }
 
         // Initialize AHCI storage driver.

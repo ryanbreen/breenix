@@ -54,6 +54,11 @@ def completion(serial, mode, suite, only=None):
         return False, "duplicate completion records"
     if mode == "suite" and not only and re.search(r" only=\S+$", done[0]):
         return False, "one-case run is not full-suite evidence"
+    # A full run ends with its memory record after DONE (docs/suites/README.md, "Memory record"),
+    # or with an ERROR line when it could not run or read its memory.
+    if mode == "suite" and not only and not any(
+            line.startswith((f"SUITE {suite} MEMORY reclaimed=", f"SUITE {suite} ERROR ")) for line in lines):
+        return None
     suffix = rf" only={re.escape(only)}" if only else ""
     shape = (r"PROBE DONE passed=(\d+) failed=(\d+)" if mode == "probe"
              else rf"SUITE {re.escape(suite)} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+){suffix}")
@@ -66,7 +71,7 @@ def completion(serial, mode, suite, only=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("serial", type=Path)
-    parser.add_argument("mode", choices=("probe", "suite", "tests"))
+    parser.add_argument("mode", choices=("probe", "suite", "tests", "program"))
     parser.add_argument("--suite", default="")
     parser.add_argument("--case", default="", dest="only")
     parser.add_argument("--timeout", type=int, default=1800)

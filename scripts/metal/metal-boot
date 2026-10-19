@@ -475,8 +475,9 @@ class Driver:
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
-            # Several suites finish when the last has handed off.
-            self.final_marker = (('SUITE ' + self.args.suite + ' DONE ', 'contains') if len(suites(self.args)) == 1
+            # One suite finishes at its READY, after its DONE and memory record (docs/suites/README.md,
+            # "Memory record"); several suites when the last has handed off.
+            self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
                                  else ('SUITE_SEQUENCE DONE ', 'contains'))
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
@@ -897,8 +898,8 @@ class Driver:
             if stages and marker_matches(stages[0], line, input_kind(self.args)):
                 stages.pop(0)
         suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
-                      else re.fullmatch(r'SUITE ' + re.escape(self.args.suite or '') +
-                                        r' DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+', line)) if self.args.mode == 'suite' else True
+                      else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
+                      ) if self.args.mode == 'suite' else True
         if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True

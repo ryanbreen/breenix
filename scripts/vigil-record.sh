@@ -9,9 +9,8 @@
 #
 # PLATFORM is qemu, parallels, vmware, beast or metal; MODE is a boot mode (suite when SUITE is set); empty arguments are
 # omitted; COMMIT defaults to this checkout's HEAD. SUITE may list several suites, comma-separated, for a boot that ran
-# them in turn (docs/suites/README.md, "Several suites in one boot"). Pass the ordered list to Vigil so it
-# scores each suite's own records and keeps unreached suites distinct from failed suites. Finish is called
-# once the boot ends; suite failures do not finish the registration. The calling script is the boot's runner.
+# them in turn. Pass the list unchanged to Vigil, which counts each reached suite once and
+# leaves unreached suites' earlier evidence intact. start prints one boot id, as for a single suite.
 # BREENIX_VIGIL_DISPLAY=true|false is the launcher's effective window selection;
 # start records it before the VM starts. Finish retains BREENIX_HOST_RENDERER_JSON.
 # Skips registration when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
@@ -38,8 +37,6 @@ for candidate in "${VIGIL_CLI:-}" "$HOME/.local/bin/vigil-cli" /usr/local/bin/vi
     [ -z "${BREENIX_VIGIL_CPUS:-}" ] || printf '%s' "$usage" | grep -q -- '--cpus' || continue
     # Never file local x86 as ARM64 through an older recorder.
     [ "$arch" != x86_64 ] || [ "${2:-}" != qemu ] || printf '%s' "$usage" | grep -q -- '--arch' || continue
-    # List boots require native list scoring. Older recorders are skipped.
-    [[ "${4:-}" != *,* ]] || printf '%s' "$usage" | grep -q -- '--suite a,b,c' || continue
     CLI=$candidate; break
 done
 [ -n "$CLI" ] || exit 0
@@ -61,7 +58,7 @@ VIGIL_WORKTREE=""
 if ! git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
     VIGIL_WORKTREE="$(basename "$ROOT")"
 fi
-
+# Keep a suite list on one boot: Vigil scores only suites whose own START was reached.
 case "${1:-}" in
     start)
         platform=${2:-}; mode=${3:-}; suite=${4:-}; serial=${5:-}; user=${6:-}; profile=${7:-}; id=${8:-}; commit=${9:-}

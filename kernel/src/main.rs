@@ -1276,6 +1276,10 @@ fn x86_boot_target() -> Option<X86BootTarget> {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
             Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
+            Ok(Some(target::Target::Program { .. })) => {
+                log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
+                None
+            }
             Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);

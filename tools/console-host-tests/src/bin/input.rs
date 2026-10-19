@@ -47,6 +47,18 @@ fn main() {
     use input::{Device::UsbBootKeyboard as Usb, report_key as key};
     use input::event::*;
     let (a, b) = (Usb(1), Usb(2));
+    // The graphics ABI uses Ctrl as Super for the launcher double tap.
+    for _ in 0..2 {
+        key(a, KEY_LEFTCTRL, PRESS);
+        assert_eq!(input::poll_modifier_state() & 10, 10);
+        key(a, KEY_LEFTCTRL, REPEAT);
+        key(a, KEY_LEFTCTRL, RELEASE);
+        assert_eq!(input::poll_modifier_state() & 10, 0);
+    }
+    assert!(input::has_pending_super_tap());
+    assert_eq!(input::take_super_tap_count(), 2);
+    assert!(!input::has_pending_super_tap());
+
     // A release (including detach's release_all) cannot clear another device's Shift.
     key(a, KEY_LEFTSHIFT, PRESS);
     key(b, KEY_LEFTSHIFT, PRESS);

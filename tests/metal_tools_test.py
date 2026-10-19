@@ -1105,6 +1105,18 @@ class DriverTest(StateTest):
         d.completion_reported = False
         self.finish(lambda: d.on_line('PROBE DONE passed=16 failed=1'), m.EXIT_SHORT)
 
+    def test_one_suite_ends_at_its_ready_after_the_memory_record(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'processes'
+        definition = d.dir / 'definition/docs/metal'
+        definition.mkdir(parents=True)
+        m.write_json(definition / 'boot-path.json', {'gateArch': 'x86_64', 'fatal': [], 'milestones': []})
+        d.load_definition()
+        d.on_line('SUITE processes DONE passed=154 failed=0 skipped=0 total=154')
+        d.on_line('SUITE processes MEMORY reclaimed=PASS free_before=9 free_after=9 allowance=64')
+        self.assertFalse(d.completion_reported)
+        self.finish(lambda: d.on_line('SUITE_SEQUENCE READY processes'), m.EXIT_DONE)
+
     def test_failed_probe_keeps_failure_and_waits_for_kernel_producers(self):
         d = self.driver
         d.args.mode = 'probe'

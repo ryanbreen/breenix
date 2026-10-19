@@ -96,13 +96,14 @@ const NET_RX_COUNTER_PREFIXES: &[&str] = &[
 /// Read the KBD_NONZERO_TOTAL counter from /proc/xhci/counters.
 ///
 /// This is a guest-observable, monotonic count of non-empty USB-HID
-/// keyboard reports (kernel/src/drivers/usb/hid.rs::NONZERO_KBD_COUNT). The
+/// keyboard reports (kernel/src/drivers/hid_boot/mod.rs::NONZERO_KBD_COUNT). The
 /// Parallels launcher-smoke test harness's keyboard-delivery handshake
 /// baselines this value, injects a single inert probe key, and polls for it
 /// to increase -- proving the injected key actually reached the guest's HID
 /// stack before running the real (timing-sensitive) test gesture. Printed
 /// every heartbeat tick (~1/s) so the handshake's poll latency is bounded by
 /// this cadence, not by the 10s/20s dump_net_rx_counters() schedule.
+/// claim-lint:ok: Console::note_report in kernel/src/drivers/hid_boot/mod.rs is the counter's one increment.
 fn read_kbd_nonzero_total() -> Option<u64> {
     let fd = fs::open(XHCI_COUNTER_PATH, O_RDONLY).ok()?;
     let mut buf = [0u8; 512];

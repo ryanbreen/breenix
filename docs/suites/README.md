@@ -81,6 +81,9 @@ SUITE <id> CASE <category>/<case> SKIP msg=<why>
 SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 ```
 
+A full run booted as PID 1 also prints its memory record around the cases ("Memory record",
+below).
+
 Each record is one write that starts with a newline, so it always begins its own line even
 when other output on the same serial port (the x86-64 scheduler's COM1 breadcrumbs) left a
 line unfinished; a reader takes the lines that start with `SUITE <id> ` and ignores blank
@@ -158,6 +161,60 @@ A case can bound its own waits by `case_ms_left()`, the time left before it is k
 a case ends, any process it left behind has been reparented to the suite, which runs as
 PID 1; the suite kills them all with `kill(-1, SIGKILL)` and reaps them before the next case,
 so no case sees another's processes. A case whose processes outlive SIGKILL is a FAIL.
+
+### Memory record
+
+A suite has to give back the memory it used: a suite that leaves memory allocated once its
+processes are gone fails like one with a failing case. A full run booted as PID 1 (a boot of
+one suite, or each suite of a sequence) prints its memory record
+(`libbreenix::suite::memory_record`):
+
+```text
+SUITE <id> MEMORY before free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
+SUITE <id> MEMORY after free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
+SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> allowance=<pages>
+```
+
+- `MEMORY before` comes after START and before the first case. After DONE, the runner kills
+  and reaps any process left (each case's were swept after it), then prints `MEMORY after`
+  and the `reclaimed` verdict, before `SUITE_SEQUENCE READY`.
+- `free` is `/proc/meminfo`'s MemFree in 4 KiB pages and `heap_free_kb` its KernelHeapFree.
+  The owners are the `owner` rows of `/proc/breenix/frames`: allocated frames by what holds
+  them, from the source of the code that allocated them. `user_stacks` are the stack pages
+  exec and process creation map, `user_pages` the other pages mapped into processes (program,
+  heap, anonymous and shared memory, copy-on-write copies), `page_tables` process and kernel
+  page tables, `page_cache` the file pages the per-inode cache holds (`memory::file_map`),
+  `kernel_stacks` kernel and per-CPU stacks, `buffers` device, DMA and display buffers, and
+  `other` the rest, the kernel heap's growth among it.
+- Reclamation is deferred: an exited process's tables and the image an exec replaced go back
+  through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
+  sample waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
+  `settle_ms` how long it waited.
+- The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
+  The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
+  set from the measurement below; only the operator loosens it.
+- `scripts/suite-verdict.py`, and through it `suite-sequence.py score`, the launchers and the
+  metal driver's scoring, fails a full run whose memory record is missing, out of place, or
+  contradicts its own figures, or says `reclaimed=FAIL`. The launchers wait for the record
+  before they stop the VM. A record that cannot be read is a `SUITE <id> ERROR memory ...`
+  line and `reclaimed=FAIL`. A one-case run (`--case`) is not full-suite evidence and has no
+  memory record.
+
+The allowance comes from leak-free boots: two of the fifteen suites, and one of the memory
+suite alone (2026-10-19):
+
+| Boot | Suites short of `free_before` | Why |
+|---|---|---|
+| ARM64 QEMU, 4 CPUs, 512 MiB, fifteen suites | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
+| R240 (a diagnostic build of this branch), fifteen suites | 12 of 15 by 5 to 7 pages | As above |
+| | terminals and networking by 37 pages | Each starts a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
+| | console 42 pages over | Kernel stacks freed during it came back |
+| ARM64 QEMU, memory suite alone | 38 pages | The runner's own pages: booted alone it draws its live panel, and its heap grows with it |
+
+ARM64's kernel stacks are not taken from the frame ledger, so its workers do not show. The
+allowance, 48 pages, is the largest deficit, 38 pages, with headroom; a process image left
+behind is 300 pages or more.
 
 ## Writing a suite
 
@@ -260,6 +317,7 @@ they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds t
 SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
 SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 SUITE_SEQUENCE RESET <id> FAIL <why>
+SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
 SUITE_SEQUENCE READY <id>
 SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
 SUITE_SEQUENCE FAIL exec <id>
@@ -316,10 +374,14 @@ Each suite starts from the state its own boot gives it:
 - **What carries over.** PID numbers, the page cache and kernel memory persist across suites,
   as in any boot that runs programs one after another. BEGIN and RESET report the free memory
   and kernel heap `/proc/meminfo` shows as each suite starts (`MemFree`, `KernelHeapFree`),
-  so memory an earlier suite left allocated is visible. Frames the kernel does not reclaim
-  at exit (user-stack frames, #583) add up: on ARM64 QEMU's 512 MiB, free memory fell from
-  195 MB to 14 MB over ten suites (74 MB in processes alone), and the eleventh, libc, failed
-  to fork with ENOMEM. List fewer suites there until #583 is fixed.
+  and the FRAMES lines after each come from `/proc/breenix/frames`: the frames in use, those
+  lost to the allocator, the allocated frames per allocating source line (with how many a
+  process page table maps or are external leaves), what became of exited processes' page
+  tables, and the reclaim receipts still queued. Once the runner has reaped a suite its frames
+  are back: in one ARM64 QEMU boot of the fifteen suites at 512 MiB, MemFree was 357176 kB as
+  the first started and between 356332 and 356992 kB as each later one did, and the frames in
+  use at each start were PID 1's own image (one root and its tables, stack, TLS, program and
+  heap pages).
 
 A suite whose runner stops starting or finishing cases for 90 seconds (below the launchers'
 120-second stall watchdog, above the 25-second case allowance plus its kill and sweep) is

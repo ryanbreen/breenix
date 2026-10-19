@@ -228,6 +228,28 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 [ -f "$KERNEL" ] || { echo "No kernel at $KERNEL" >&2; exit 1; }
 [ -f "$DISK" ] || { echo "No disk at $DISK" >&2; exit 1; }
+# These feature-only Rust modules leave names in the kernel ELF's symbol table.
+# Inspect the image also with --no-build: the caller's environment can be stale.
+TERMINAL_PROFILE=$(python3 - "$KERNEL" <<'PYPROFILE'
+from pathlib import Path
+import sys
+image = Path(sys.argv[1]).read_bytes()
+if b"gpu_fault_acceptance" in image:
+    print("fault")
+elif b"capture_oracle" in image:
+    print("panic")
+PYPROFILE
+)
+# Terminal kernels cannot produce the completion records of other boot modes.
+if [ -n "$TERMINAL_PROFILE" ] && [ "$MODE" != program ]; then
+    echo "terminal profile needs --mode program" >&2
+    exit 2
+fi
+if [ "$TERMINAL_PROFILE" = fault ] && [ "$GPU_GL" -ne 1 ]; then
+    echo "fault terminal profile needs --gpu-gl" >&2
+    exit 2
+fi
+
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
     # The Developer SDK suite's host side builds the SDK and its test apps and stages
     # them onto a copy of the disk (docs/suites/README.md, "Developer SDK").
@@ -337,7 +359,13 @@ if [ -n "$HOSTKEYS_SOCKET" ]; then
         --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
     HOSTKEYS_PID=$!
 fi
-python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
+# Terminal profiles end in an intentional panic or fatal abort, not probe's
+# program completion. Their stopped serials are judged by the profile check below.
+WATCH_MODE=$MODE
+if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
+    WATCH_MODE=default
+fi
+python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \
@@ -367,6 +395,17 @@ echo "==> VM stopped (exit $code)"
 if [ "$GPU_GL" -eq 1 ]; then
     [ -z "${SPICE_SOCKET:-}" ] || rm -f "$SPICE_SOCKET"
     if ! python3 "$ROOT/scripts/check-host-renderer.py" "$BREENIX_HOST_RENDERER_JSON" --serial "$SERIAL_LOG"; then
+        [ "$code" -ne 0 ] || code=1
+    fi
+fi
+# This special profile intentionally panics; judge its stopped serial as well.
+if [ "$GPU_GL" -eq 1 ] && [ "$MODE" = program ] && [ "$TERMINAL_PROFILE" = panic ]; then
+    if ! python3 "$ROOT/scripts/check-gpu-panic.py" "$SERIAL_LOG"; then
+        [ "$code" -ne 0 ] || code=1
+    fi
+fi
+if [ "$TERMINAL_PROFILE" = fault ]; then
+    if ! python3 "$ROOT/scripts/check-gpu-fault-routing.py" "$SERIAL_LOG"; then
         [ "$code" -ne 0 ] || code=1
     fi
 fi

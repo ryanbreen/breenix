@@ -22,17 +22,21 @@ kernel's announcement lines) is never a request.
 Backends, one per way the target takes keys:
 
     qmp:<socket>          QEMU's QMP send-key (ARM64 and x86-64 QEMU)
-    prlctl:<vm>           prlctl send-key-event with PS/2 set-1 scancodes (Parallels)
+    prlsdk:<vm>           Parallels Virtualization SDK key and pointer events (Parallels)
     vnc:<host>:<port>     RFB key events (VMware Fusion's built-in VNC server)
     none                  nothing: every request is answered "no host key path"
 
-Earlier Parallels (27.0.3) probe: basic scancodes worked. Alt+Fn, Ctrl+Alt+Fn and letters reached the
-guest and the shell showed the typed letters. Arrows, Home/End and Page Up/Down do not:
-`prlctl` refuses a bare extended code ("Invalid scan code sequence"), and the encodings
-it does accept (a 224 prefix event, the 16-bit code 0xE04B, `--key` with several
-values) left the shell's line editor, which moves its cursor on Left, where it was,
-while QMP's `left` moved it. So Alt+Left, Alt+Right and Shift+PageUp cases have no host
-key path on Parallels; they run on QEMU, and the Alt+Fn cases run on both.
+Parallels (27.0.3): the Parallels Virtualization SDK ships inside Parallels Desktop and
+this script calls its published C API through ctypes. Keys are Parallels virtual key
+codes (PRL_KEY, PrlKeys.h), which carry the extended keys a PS/2 scancode cannot (`prlctl`
+refuses a bare 0xE0 code): probe boots of the clean-room USB driver showed Left (usage
+0x50), Right (0x4F), Page Up (0x4B), Home and the right-hand modifiers report by report.
+They go one event at a time through PrlDevKeyboard_SendKeyEventEx rather than as a
+`prlctl send-key-event -j` batch: in one probe VM the batches lost a chord's releases in
+about one chord in eight (the keyboard's own later reports still held the keys), the
+per-event calls in none of twenty. Pointer events: PrlDevMouse_SetPos reaches the
+virtual tablet (absolute) and PrlDevMouse_Move the relative interface, both shown on
+probe boots without Parallels Tools installed.
 
 Earlier VMware Fusion probe (see contract section 10 for limits): add `RemoteDisplay.vnc.enabled = "TRUE"` and `RemoteDisplay.vnc.port`
 to a boot VM's vmx (run.sh does so when BREENIX_VMWARE_VNC_PORT names a port). Fusion
@@ -64,12 +68,13 @@ import time
 REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)'
                      r' seq=(\d+) keys=([a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*)\r?$')
 
+POINTER_REQUEST = re.compile(r'^USB POINTER HOST seq=(\d+) axes=(absolute|relative) x=(\d+) y=(\d+) buttons=([0-7])'
+                             r' wheel=(-?1|0)\r?$')
+
 MODIFIERS = ('ctrl', 'alt', 'shift', 'super', 'rctrl', 'ralt')
 NAMED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete', 'enter', 'tab',
          'backspace', 'esc', 'space', 'capslock')
-# Keys the PS/2 set-1 table sends behind an 0xE0 prefix, which Parallels will not take.
-EXTENDED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete',
-            'super', 'rctrl', 'ralt')
+
 
 
 def parse_chord(spec):
@@ -128,43 +133,118 @@ class QMPKeys:
             sock.close()
 
 
-class PrlctlKeys:
-    # PS/2 set 1 make codes; Parallels turns them into USB HID usages.
-    CODES = {'ctrl': 29, 'alt': 56, 'shift': 42, 'esc': 1, 'tab': 15, 'enter': 28, 'space': 57, 'capslock': 58,
-             'backspace': 14}
+class ParallelsKeys:
+    """Keys and pointer events through the Parallels Virtualization SDK.
 
-    def __init__(self, vm, hold_ms=60):
-        self.vm, self.hold_ms = vm, hold_ms
+    Keys are Parallels virtual key codes (PRL_KEY, PrlKeys.h), sent one event at a time
+    with PrlDevKeyboard_SendKeyEventEx (PKE_PRESS 0, PKE_RELEASE 0x80) and the hold timed
+    here. Pointer requests are positions, each naming the interface kind it measures: for
+    `absolute`, PrlDevMouse_SetPos places the absolute (tablet) interface there; for
+    `relative`, PrlDevMouse_Move moves the relative interface by the distance from the
+    previous relative request (the first has no known origin and moves nothing). Buttons are PRL_MOUSE_BUTTON (left 1, right 2, middle 4), the request's
+    own HID order; the wheel is the z argument.
+    """
+    SDK = ('/Applications/Parallels Desktop.app/Contents/Frameworks/ParallelsVirtualizationSDK.framework/'
+           'ParallelsVirtualizationSDK')
+    CODES = {'ctrl': 37, 'alt': 64, 'shift': 50, 'super': 115, 'rctrl': 109, 'ralt': 113, 'esc': 9, 'tab': 23,
+             'enter': 36, 'space': 65, 'capslock': 66, 'backspace': 22, 'home': 97, 'up': 98, 'pageup': 99,
+             'left': 100, 'right': 102, 'end': 103, 'down': 104, 'pagedown': 105, 'insert': 106, 'delete': 107,
+             'f11': 95, 'f12': 96}
+    ROWS = 'qwertyuiop', 'asdfghjkl', 'zxcvbnm'
+    PRESS, RELEASE = 0, 0x80
+
+    def __init__(self, vm, hold_ms=60, library=None):
+        self.name, self.hold_ms = vm, hold_ms
+        self.sdk, self.vm, self.previous = library, (vm if library is not None else None), None
 
     @classmethod
-    def scancode(cls, key):
+    def code(cls, key):
         if key in cls.CODES:
             return cls.CODES[key]
-        if key in EXTENDED:
-            raise NoPath(key + ' is an extended scancode, which Parallels rejects')
         match = re.fullmatch(r'f(\d+)', key)
         if match:
-            n = int(match.group(1))
-            return 58 + n if n <= 10 else 76 + n
+            return 66 + int(match.group(1))
         if key.isdigit():
-            return 11 if key == '0' else 1 + int(key)
-        rows = {'q': 16, 'w': 17, 'e': 18, 'r': 19, 't': 20, 'y': 21, 'u': 22, 'i': 23, 'o': 24, 'p': 25,
-                'a': 30, 's': 31, 'd': 32, 'f': 33, 'g': 34, 'h': 35, 'j': 36, 'k': 37, 'l': 38,
-                'z': 44, 'x': 45, 'c': 46, 'v': 47, 'b': 48, 'n': 49, 'm': 50}
-        return rows[key]
+            return 19 if key == '0' else 9 + int(key)
+        for row, first in zip(cls.ROWS, (24, 38, 52)):
+            if key in row:
+                return first + row.index(key)
+        raise NoPath(key + ' has no Parallels virtual key code here')
+
+    @staticmethod
+    def check(code, what):
+        if code & 0xffffffff:
+            raise RuntimeError('%s returned %#x' % (what, code & 0xffffffff))
+
+    def connect(self):
+        if self.vm is not None:
+            return
+        import ctypes
+        sdk = ctypes.CDLL(self.SDK)
+        handle = ctypes.c_void_p
+        for name, args, result in (
+                ('PrlApi_InitEx', [ctypes.c_uint32] * 4, ctypes.c_int32),
+                ('PrlSrv_Create', [ctypes.POINTER(handle)], ctypes.c_int32),
+                ('PrlSrv_LoginLocal', [handle, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_uint32], handle),
+                ('PrlSrv_GetVmList', [handle], handle),
+                ('PrlJob_Wait', [handle, ctypes.c_uint32], ctypes.c_int32),
+                ('PrlJob_GetRetCode', [handle, ctypes.POINTER(ctypes.c_int32)], ctypes.c_int32),
+                ('PrlJob_GetResult', [handle, ctypes.POINTER(handle)], ctypes.c_int32),
+                ('PrlResult_GetParamsCount', [handle, ctypes.POINTER(ctypes.c_uint32)], ctypes.c_int32),
+                ('PrlResult_GetParamByIndex', [handle, ctypes.c_uint32, ctypes.POINTER(handle)], ctypes.c_int32),
+                ('PrlVmCfg_GetName', [handle, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32)], ctypes.c_int32),
+                ('PrlDevDisplay_ConnectToVm', [handle, ctypes.c_uint32], handle),
+                ('PrlDevKeyboard_SendKeyEventEx', [handle, ctypes.c_uint32, ctypes.c_uint32], ctypes.c_int32),
+                ('PrlDevMouse_Move', [handle, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_uint32],
+                 ctypes.c_int32),
+                ('PrlDevMouse_SetPos', [handle, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_uint32],
+                 ctypes.c_int32)):
+            function = getattr(sdk, name)
+            function.argtypes, function.restype = args, result
+
+        def job(started, what):
+            code = ctypes.c_int32()
+            self.check(sdk.PrlJob_Wait(started, 10000), what + ' wait')
+            self.check(sdk.PrlJob_GetRetCode(started, ctypes.byref(code)), what + ' result')
+            self.check(code.value, what)
+            return started
+        # PrlApi_InitEx takes 0 as this library's own version; PAM_DESKTOP_MAC is 1.
+        sdk.PrlApi_InitEx(0, 1, 0, 0)
+        server = handle()
+        self.check(sdk.PrlSrv_Create(ctypes.byref(server)), 'PrlSrv_Create')
+        job(sdk.PrlSrv_LoginLocal(server, None, 0, 1), 'PrlSrv_LoginLocal')
+        listing = job(sdk.PrlSrv_GetVmList(server), 'PrlSrv_GetVmList')
+        result, count = handle(), ctypes.c_uint32()
+        self.check(sdk.PrlJob_GetResult(listing, ctypes.byref(result)), 'PrlJob_GetResult')
+        self.check(sdk.PrlResult_GetParamsCount(result, ctypes.byref(count)), 'PrlResult_GetParamsCount')
+        for i in range(count.value):
+            vm, found, length = handle(), ctypes.create_string_buffer(256), ctypes.c_uint32(256)
+            self.check(sdk.PrlResult_GetParamByIndex(result, i, ctypes.byref(vm)), 'PrlResult_GetParamByIndex')
+            self.check(sdk.PrlVmCfg_GetName(vm, found, ctypes.byref(length)), 'PrlVmCfg_GetName')
+            if found.value.decode() == self.name:
+                # Keyboard and mouse events need a remote desktop session (C API reference).
+                job(sdk.PrlDevDisplay_ConnectToVm(vm, 0), 'PrlDevDisplay_ConnectToVm')
+                self.sdk, self.vm = sdk, vm
+                return
+        raise RuntimeError('Parallels VM %r not found through the SDK' % self.name)
 
     def send(self, mods, key):
-        for name in (*mods, key):
-            if name in EXTENDED:
-                raise NoPath(name + ' is an extended scancode, which Parallels rejects')
-        codes = [self.CODES[m] for m in mods] + [self.scancode(key)]
-        events = [{'scancode': c, 'event': 'press'} for c in codes]
-        events.append({'delay': self.hold_ms})
-        events += [{'scancode': c, 'event': 'release'} for c in reversed(codes)]
-        result = subprocess.run(['prlctl', 'send-key-event', self.vm, '-j'], input=json.dumps(events),
-                                text=True, capture_output=True, timeout=30)
-        if result.returncode != 0 or result.stderr.strip():
-            raise RuntimeError('prlctl send-key-event rc=%d: %s' % (result.returncode, result.stderr.strip()))
+        codes = [self.code(m) for m in mods] + [self.code(key)]
+        self.connect()
+        for code in codes:
+            self.check(self.sdk.PrlDevKeyboard_SendKeyEventEx(self.vm, code, self.PRESS), 'key press')
+        time.sleep(self.hold_ms / 1000)
+        for code in reversed(codes):
+            self.check(self.sdk.PrlDevKeyboard_SendKeyEventEx(self.vm, code, self.RELEASE), 'key release')
+
+    def pointer(self, x, y, buttons, wheel, axes):
+        self.connect()
+        if axes == 'relative':
+            dx, dy = (0, 0) if self.previous is None else (x - self.previous[0], y - self.previous[1])
+            self.previous = (x, y)
+            self.check(self.sdk.PrlDevMouse_Move(self.vm, dx, dy, wheel, buttons & 7), 'PrlDevMouse_Move')
+        else:
+            self.check(self.sdk.PrlDevMouse_SetPos(self.vm, x, y, wheel, buttons & 7), 'PrlDevMouse_SetPos')
 
 
 class VNCKeys:
@@ -237,6 +317,30 @@ class VNCKeys:
         finally:
             sock.close()
 
+    def pointer(self, x, y, buttons, wheel, axes):
+        # Fusion's configuration, not the RFB event, decides which interface reports it
+        # (run.sh's BREENIX_VMWARE_POINTER); the requested kind changes no RFB field.
+        if not (0 <= x <= 65535 and 0 <= y <= 65535):
+            raise ValueError("RFB pointer coordinate exceeds 16 bits")
+        fresh = not hasattr(self, '_pointer_socket')
+        if fresh:
+            self._pointer_socket = self.connect()
+        # HID and RFB order middle/right differently. RFB wheel-up/down are
+        # momentary buttons 4/5 (RFB 3.8 section 7.5.5).
+        mask = (buttons & 1) | ((buttons & 4) >> 1) | ((buttons & 2) << 1)
+        def send(value):
+            self._pointer_socket.sendall(struct.pack('>BBHH', 5, value, x, y))
+        if fresh:
+            # Fusion's VNC server did not deliver the first pointer event of a new
+            # connection to the guest (one VMware run, seq=0); later events arrived.
+            # Send the position and buttons once more before the requested event.
+            send(mask)
+            time.sleep(0.05)
+        send(mask | (8 if wheel > 0 else 16 if wheel < 0 else 0))
+        if wheel:
+            time.sleep(0.05)
+            send(mask)
+
 
 class NoKeys:
     def __init__(self, why='no backend'):
@@ -250,8 +354,8 @@ def backend(spec):
     kind, _, rest = spec.partition(':')
     if kind == 'qmp' and rest:
         return QMPKeys(rest)
-    if kind == 'prlctl' and rest:
-        return PrlctlKeys(rest)
+    if kind == 'prlsdk' and rest:
+        return ParallelsKeys(rest)
     if kind == 'vnc' and rest:
         host, _, port = rest.rpartition(':')
         return VNCKeys(host or '127.0.0.1', port)
@@ -274,6 +378,23 @@ class Watcher:
             self.line(line)
 
     def line(self, line):
+        pointer = POINTER_REQUEST.fullmatch(line)
+        if pointer:
+            seq, axes, x, y, buttons, wheel = pointer.groups()
+            seq, x, y, buttons, wheel = map(int, (seq, x, y, buttons, wheel))
+            identity = ('usb-pointer', seq)
+            if identity in self.seen:
+                return
+            self.seen.add(identity)
+            try:
+                send = getattr(self.keys, 'pointer', None)
+                if send is None:
+                    raise NoPath('this backend has no pointer transport')
+                send(x, y, buttons, wheel, axes)
+                self.log('[hostpointer] seq=%d sent via %s' % (seq, self.name))
+            except (NoPath, OSError, RuntimeError, ValueError) as error:
+                self.log('[hostpointer] seq=%d no host pointer input on %s: %s' % (seq, self.name, error))
+            return
         start = re.fullmatch(r'SUITE ([a-z0-9-]+) START .*\r?', line)
         if start:
             self.seen = {key for key in self.seen if key[0] != start.group(1)}
@@ -303,9 +424,7 @@ class Watcher:
 def declaration(spec):
     """The contract's `<method>[;missing=<key>,...]` string for a backend; empty when there is no path."""
     kind = spec.partition(':')[0]
-    if kind == 'prlctl':
-        return 'prlctl;missing=' + ','.join(EXTENDED)
-    return kind if kind in ('qmp', 'vnc') else ''
+    return kind if kind in ('qmp', 'prlsdk', 'vnc') else ''
 
 
 def watch(args):
@@ -366,12 +485,82 @@ def selftest_parse():
            'SUITE console HOSTKEY vt/a seq=1 keys=x\n')
     assert sent == [((), 'z'), ((), 'x')], sent
     sent.clear()
-    log = []
-    p = Watcher(PrlctlKeys('none'), 'prlctl', log.append)
-    p.feed('SUITE console HOSTKEY vt/c seq=7 keys=alt-left\n')
-    assert 'no host key path for alt-left on prlctl' in log[0], log
-    assert declaration('prlctl:x').startswith('prlctl;missing=left,right') and declaration('qmp:x') == 'qmp'
-    print('hostkeys parse ok')
+    # Parallels: virtual key codes (PRL_KEY), one SDK event at a time, and pointer requests.
+    class SDK:
+        def __init__(self):
+            self.calls = []
+        def PrlDevKeyboard_SendKeyEventEx(self, vm, code, event):
+            self.calls.append(('key', code, event))
+            return 0
+        def PrlDevMouse_Move(self, vm, dx, dy, dz, buttons):
+            self.calls.append(('move', dx, dy, dz, buttons))
+            return 0
+        def PrlDevMouse_SetPos(self, vm, x, y, z, buttons):
+            self.calls.append(('pos', x, y, z, buttons))
+            return 0
+    sdk = SDK()
+    prl = ParallelsKeys('vm', hold_ms=0, library=sdk)
+    def press(chord):
+        sdk.calls.clear()
+        prl.send(*parse_chord(chord))
+        return [c[1] for c in sdk.calls if c[2] == ParallelsKeys.PRESS]
+    assert press('a') == [38] and press('z') == [52] and press('p') == [33] and press('m') == [58]
+    assert press('1') == [10] and press('0') == [19] and press('f1') == [67] and press('f10') == [76]
+    assert press('f11') == [95] and press('f12') == [96] and press('capslock') == [66] and press('enter') == [36]
+    assert press('alt-left') == [64, 100] and press('alt-right') == [64, 102]
+    assert press('shift-pageup') == [50, 99] and press('shift-pagedown') == [50, 105]
+    assert press('ctrl-alt-f2') == [37, 64, 68]
+    sdk.calls.clear()
+    prl.send(('ctrl',), 'c')
+    assert sdk.calls == [('key', 37, 0), ('key', 54, 0), ('key', 54, 0x80), ('key', 37, 0x80)], sdk.calls
+    assert declaration('prlsdk:x') == 'prlsdk' and declaration('qmp:x') == 'qmp'
+    requests = ((100, 100, 0, 0), (140, 130, 0, 0), (140, 130, 1, 0), (140, 130, 0, 1), (100, 100, 4, -1))
+    sdk.calls.clear()
+    for request in requests:
+        prl.pointer(*request, 'absolute')
+    assert sdk.calls == [('pos', 100, 100, 0, 0), ('pos', 140, 130, 0, 0), ('pos', 140, 130, 0, 1),
+                         ('pos', 140, 130, 1, 0), ('pos', 100, 100, -1, 4)], sdk.calls
+    sdk.calls.clear()
+    for request in requests:
+        prl.pointer(*request, 'relative')
+    assert sdk.calls == [('move', 0, 0, 0, 0), ('move', 40, 30, 0, 0), ('move', 0, 0, 0, 1), ('move', 0, 0, 1, 0),
+                         ('move', -40, -30, -1, 4)], sdk.calls
+    # The watcher hands each pointer request, with its kind, to the backend once.
+    class Pointers:
+        def __init__(self):
+            self.requests = []
+        def pointer(self, *request):
+            self.requests.append(request)
+    pointers = Pointers()
+    w = Watcher(pointers, 'test', lambda m: None)
+    w.feed('USB POINTER HOST seq=0 axes=relative x=10 y=20 buttons=1 wheel=-1\r\n'
+           'USB POINTER HOST seq=0 axes=relative x=10 y=20 buttons=1 wheel=-1\n'
+           'USB POINTER HOST seq=1 axes=absolute x=30 y=40 buttons=0 wheel=0\n')
+    assert pointers.requests == [(10, 20, 1, -1, 'relative'), (30, 40, 0, 0, 'absolute')], pointers.requests
+    # Exercise the production RFB encoder, including HID middle/right order
+    # and the wheel release packet, without opening a VM connection.
+    class Wire:
+        def __init__(self):
+            self.packets = []
+        def sendall(self, data):
+            self.packets.append(struct.unpack('>BBHH', data))
+    wire = Wire()
+    vnc = VNCKeys('', 0)
+    vnc._pointer_socket = wire
+    for buttons, rfb in ((0, 0), (1, 1), (2, 4), (4, 2), (7, 7)):
+        vnc.pointer(123, 456, buttons, 0, 'absolute')
+        assert wire.packets.pop() == (5, rfb, 123, 456)
+    for wheel, rfb in ((1, 8), (-1, 16)):
+        vnc.pointer(123, 456, 2, wheel, 'absolute')
+        assert wire.packets == [(5, rfb | 4, 123, 456), (5, 4, 123, 456)]
+        wire.packets.clear()
+    # A new connection sends the state once before the requested event.
+    fresh = VNCKeys('', 0)
+    fresh.connect = lambda: wire
+    fresh.pointer(10, 20, 1, 1, 'absolute')
+    assert wire.packets == [(5, 1, 10, 20), (5, 9, 10, 20), (5, 1, 10, 20)], wire.packets
+    wire.packets.clear()
+    print('hostkeys parse, Parallels SDK keys and pointer, and RFB pointer wire ok')
 
 
 def main():

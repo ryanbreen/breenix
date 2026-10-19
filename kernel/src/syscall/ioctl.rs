@@ -56,6 +56,11 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         return super::handlers::arm_pipe_wake_hold(arg);
     }
 
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+    if request == crate::drivers::xhci::replay::POINTER_REPLAY {
+        return crate::drivers::xhci::replay::ioctl(arg);
+    }
+
     #[cfg(feature = "boot_tests")]
     if request == super::blocking_io_oracle::QUERY
         || request == super::blocking_io_oracle::FIFO_FIXTURE
