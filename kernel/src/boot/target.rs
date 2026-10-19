@@ -63,6 +63,11 @@ impl SuiteTarget {
 /// A production PID 1 selected by the boot-target file.
 pub enum Target {
     Default,
+    /// The persistent install's boot (docs/metal/README.md, "Boot intents and root selection"): the default boot
+    /// with the USB keyboard replug exercise.
+    Persistent,
+    /// The install boot's migration: `/sbin/persistent-install` as PID 1.
+    PersistentInstall,
     Shell,
     Desktop,
     Console { idle_minutes: u16, replug: bool },
@@ -87,6 +92,8 @@ pub fn parse(text: &str) -> Result<Target, String> {
         return Err(String::from("it has more than one line"));
     }
     if line.trim() == "default" { return Ok(Target::Default); }
+    if line.trim() == "persistent" { return Ok(Target::Persistent); }
+    if line.trim() == "persistent-install" { return Ok(Target::PersistentInstall); }
     if line.trim() == "desktop" { return Ok(Target::Desktop); }
     if line.trim() == "shell" { return Ok(Target::Shell); }
     if line.trim() == "console" { return Ok(Target::Console { idle_minutes: 30, replug: false }); }

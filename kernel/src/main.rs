@@ -643,6 +643,8 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
                 log::info!("[fs] root mounted from the RAM disk");
             } else if kernel::block::root_on_installed_disk() {
                 log::info!("[fs] root mounted from the installed disk");
+            } else if kernel::block::root_on_system_partition() {
+                log::info!("[fs] root mounted from the system partition");
             }
             if kernel::block::hardware_read_only() {
                 let count = kernel::block::devices().len();
@@ -670,6 +672,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // Noninteractive testing can supply a fixture; interactive needs a home disk.
     if cfg!(all(feature = "testing", not(feature = "interactive")))
         || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
+        || kernel::block::home_named()
     {
         match kernel::fs::ext2::init_home_fs() {
             Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
@@ -678,6 +681,10 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     } else {
         log::info!("No home filesystem: no home block device attached");
     }
+    // The boot's partitions are chosen and mounted: no further range may take writes.
+    kernel::block::fence_seal();
+    #[cfg(feature = "block_fence_inject")]
+    kernel::block::fence_fault::run();
 
     // Run after process::init() and the memory custody gates, while deferred-reclaim
     // queues are still quiescent and before any user process exists. This is inside
@@ -1274,6 +1281,7 @@ fn launch_x86_production_init(
 enum X86BootTarget {
     Suite(kernel::boot::target::SuiteTarget),
     Probe,
+    PersistentInstall,
 }
 
 /// Which suite or probe, if any, the production kernel runs as PID 1 instead of
@@ -1296,8 +1304,15 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Desktop | target::Target::Shell | target::Target::Console { .. })) => None,
+            Ok(Some(
+                target::Target::Default
+                | target::Target::Persistent
+                | target::Target::Desktop
+                | target::Target::Shell
+                | target::Target::Console { .. },
+            )) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
+            Ok(Some(target::Target::PersistentInstall)) => Some(X86BootTarget::PersistentInstall),
             Ok(Some(target::Target::Program { .. })) => {
                 log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
                 None
@@ -1386,6 +1401,14 @@ fn x86_console_mode() -> Option<X86ConsoleMode> {
             Ok(None | Some(kernel::boot::target::Target::Default)) => {
                 Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "default" })
             }
+            // The persistent install's boot: the default services with the keyboard replug exercise, so the
+            // USB keyboard milestone is measured when the operator types.
+            Ok(Some(kernel::boot::target::Target::Persistent)) => Some(X86ConsoleMode::Console {
+                full_boot: true,
+                idle_minutes: None,
+                replug: true,
+                from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
+            }),
             Ok(Some(kernel::boot::target::Target::Shell)) => Some(X86ConsoleMode::Shell),
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 Some(X86ConsoleMode::Console {
@@ -1430,6 +1453,22 @@ fn read_x86_production_init(
                     return Ok((alloc::string::String::from("probe"), exe_path, elf_data, None, None));
                 }
                 Err(e) => log::warn!("[boot] Ignoring boot mode \"probe\": /sbin/probe could not be loaded ({})", e),
+            }
+            None
+        }
+        Some(X86BootTarget::PersistentInstall) => {
+            match read_init_from_ext2("/sbin/persistent-install")
+                .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
+            {
+                Ok((elf_data, exe_path)) => {
+                    log::info!("[boot] Boot mode: persistent-install");
+                    kernel::console::splash::set_mode(format_args!("persistent-install"));
+                    return Ok((alloc::string::String::from("persistent-install"), exe_path, elf_data, None, None));
+                }
+                Err(e) => log::warn!(
+                    "[boot] Ignoring boot mode \"persistent-install\": /sbin/persistent-install could not be loaded ({})",
+                    e
+                ),
             }
             None
         }

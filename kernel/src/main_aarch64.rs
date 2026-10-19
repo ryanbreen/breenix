@@ -141,6 +141,10 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
             Ok(Some(target::Target::Desktop)) => BootMode::Desktop,
             Ok(Some(target::Target::Console { .. })) => BootMode::Console,
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
+            Ok(Some(target::Target::Persistent | target::Target::PersistentInstall)) => {
+                serial_println!("[boot] Ignoring boot target {}: the persistent install is x86-metal only", target::PATH);
+                BootMode::Default
+            }
             Ok(Some(target::Target::Program { path, arg })) => {
                 target_program = Some(path);
                 // The program's one argument rides in `only`, as a suite's case does.

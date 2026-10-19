@@ -1,4 +1,6 @@
 //! Run the current per-boot intent receiver without a guest.
+// root_partition, home_partition, tests and refused serve format 2, which tests/persistent_boot_intent.rs exercises.
+#[allow(dead_code)]
 #[path = "../kernel/src/boot/intent.rs"]
 mod intent;
 

@@ -80,10 +80,25 @@ pub unsafe fn init(addr: Option<u64>, len: u64) -> Result<(), &'static str> {
         return Err("Invalid RAM disk mapping");
     }
     if DISK.get().is_some() { return Err("RAM disk already installed"); }
-    // A disk-root console boot carries only its per-boot intent here. It
-    // must not become a root block device or change the installed filesystem.
+    // A disk-root boot carries its per-boot intent here. It must not become a
+    // root block device or change the installed filesystem. A tests boot's
+    // intent names the BXTEST image that follows it in the same RAM disk.
     let bytes = core::slice::from_raw_parts_mut(addr as *mut u8, len);
     if crate::boot::intent::capture(bytes) {
+        if let Some(why) = crate::boot::intent::refused() {
+            log::warn!("[boot] boot intent refused: {}", why);
+        }
+        if let Some((offset, length)) = crate::boot::intent::tests() {
+            let end = offset.checked_add(length).filter(|&end| end <= len && offset % SECTOR_SIZE == 0);
+            match end {
+                Some(end) if bytes[offset..end].starts_with(TEST_DISK_MAGIC) => {
+                    let disk = RamDisk::new(&mut bytes[offset..end])?;
+                    TEST_DISK.call_once(|| disk);
+                    log::info!("[block] ramdisk holds test binaries after the boot intent: {} bytes", length);
+                }
+                _ => log::warn!("[block] the boot intent's test binaries are not where it says"),
+            }
+        }
         return Ok(());
     }
     // A test-binary image is the testing kernel's test disk and not a root: root

@@ -3009,9 +3009,10 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     // Prefer the attached home device so VM acceptance boots exercise the
     // transport's read-only feature. Physical disks remain protected by the
     // hardware write-refusal policy rather than selected by index here.
+    // On a physical boot the home is the partition the boot intent names, when it names one.
     #[cfg(target_arch = "x86_64")]
     let device = if crate::block::hardware_read_only() {
-        None
+        crate::block::named_home()
     } else {
         crate::block::disk(3).or_else(|| crate::block::disk(1))
     };

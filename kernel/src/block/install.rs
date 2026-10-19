@@ -6,18 +6,19 @@
 //! purpose. ext2 leaves its first 1024 bytes unused (the superblock starts at
 //! byte 1024), so a record has the sector to itself.
 //!
-//! - `install-root <boot>` on the bootloader RAM disk asks the kernel to copy
-//!   the RAM disk onto the machine's only hardware disk before root mounts. The
-//!   boot loop writes it at staging, only for a boot it runs as an install.
-//! - `root <boot> <bytes> <sha256>` on a hardware disk, written last by that
-//!   copy, names the disk's ext2 root: a boot without a RAM disk mounts it as
-//!   root, with writes allowed.
+//! - `install-root <boot> <partition>` on the bootloader RAM disk asks the kernel
+//!   to copy the RAM disk into the test root partition with that unique GUID
+//!   before root mounts. The boot loop writes it at staging, only for a boot it
+//!   runs as a recovery install. A request without a partition is refused.
+//! - `root <boot> <bytes> <sha256>` in the test root partition's first sector,
+//!   written last by that copy or by the delivery stub, names the partition's
+//!   ext2 root, which a boot whose intent names that partition mounts.
 //!
 //! A record is the line `BREENIX-STORAGE 1`, one record line, and NUL padding
 //! to the end of the sector. The SHA-256 (FIPS 180-4) covers the image after its
 //! first sector, so the record can name the bytes it precedes.
 
-use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 
 use super::{BlockDevice, BlockError};
 
@@ -33,8 +34,13 @@ const BOOT_MAX: usize = 64;
 /// A storage record from a disk's first sector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
-    Install { boot: String },
+    Install { boot: String, partition: Option<String> },
     Root { boot: String, bytes: u64, sha256: [u8; 32] },
+}
+
+fn valid_guid(text: &str) -> bool {
+    text.len() == 36
+        && text.bytes().enumerate().all(|(at, b)| if [8, 13, 18, 23].contains(&at) { b == b'-' } else { b.is_ascii_hexdigit() })
 }
 
 fn valid_boot(boot: &str) -> bool {
@@ -83,7 +89,10 @@ impl Record {
         let line = core::str::from_utf8(&body[..end]).ok()?;
         let words: Vec<&str> = line.split(' ').collect();
         match words.as_slice() {
-            ["install-root", boot] if valid_boot(boot) => Some(Record::Install { boot: String::from(*boot) }),
+            ["install-root", boot] if valid_boot(boot) => Some(Record::Install { boot: String::from(*boot), partition: None }),
+            ["install-root", boot, partition] if valid_boot(boot) && valid_guid(partition) => {
+                Some(Record::Install { boot: String::from(*boot), partition: Some(String::from(*partition)) })
+            }
             ["root", boot, bytes, sha256] if valid_boot(boot) => {
                 let bytes = digits(bytes).filter(|&n| n > SECTOR as u64 && n % SECTOR as u64 == 0)?;
                 Some(Record::Root { boot: String::from(*boot), bytes, sha256: unhex(sha256)? })
@@ -95,7 +104,8 @@ impl Record {
     /// The record as a first sector.
     pub fn sector(&self) -> [u8; SECTOR] {
         let line = match self {
-            Record::Install { boot } => format!("install-root {}\n", boot),
+            Record::Install { boot, partition: None } => format!("install-root {}\n", boot),
+            Record::Install { boot, partition: Some(partition) } => format!("install-root {} {}\n", boot, partition),
             Record::Root { boot, bytes, sha256 } => format!("root {} {} {}\n", boot, bytes, hex(sha256)),
         };
         let mut sector = [0u8; SECTOR];
@@ -202,27 +212,6 @@ fn verify(ram: &dyn BlockDevice, disk: &dyn BlockDevice, record: &[u8; SECTOR], 
     Ok(())
 }
 
-/// The one disk whose first sector holds a root record, with that record.
-pub fn find_root(disks: Vec<Box<dyn BlockDevice>>) -> Result<(Box<dyn BlockDevice>, Record), &'static str> {
-    let mut found = None;
-    for disk in disks {
-        if disk.block_size() != SECTOR {
-            continue;
-        }
-        let mut first = [0u8; SECTOR];
-        if disk.read_block(0, &mut first).is_err() {
-            continue;
-        }
-        if let Some(record @ Record::Root { .. }) = Record::parse(&first) {
-            if found.is_some() {
-                return Err("more than one hardware disk holds a root record");
-            }
-            found = Some((disk, record));
-        }
-    }
-    found.ok_or("no hardware disk holds a root record")
-}
-
 /// Whether the image after the record sector still has the digest the record
 /// names. Later boots that write the root change it, so this is a report, not a refusal.
 pub fn matches(disk: &dyn BlockDevice, bytes: u64, sha256: &[u8; 32]) -> Result<bool, &'static str> {
@@ -309,7 +298,7 @@ mod tests {
         for (index, byte) in disk.bytes.lock().iter_mut().enumerate() {
             *byte = (index * 7 + index / 512) as u8;
         }
-        disk.bytes.lock()[..SECTOR].copy_from_slice(&Record::Install { boot: "20261017T000000Z-metal".into() }.sector());
+        disk.bytes.lock()[..SECTOR].copy_from_slice(&Record::Install { boot: "20261017T000000Z-metal".into(), partition: None }.sector());
         disk
     }
 
@@ -320,13 +309,19 @@ mod tests {
     #[test]
     fn records_round_trip_and_reject_damage() {
         let root = Record::Root { boot: "20261017T000000Z-metal".into(), bytes: 4096, sha256: [0xab; 32] };
-        for record in [Record::Install { boot: "20261017T000000Z-metal".into() }, root.clone()] {
+        let partition = Some(String::from("dac951c3-27df-4e3d-8b9e-487906ac2c81"));
+        for record in [
+            Record::Install { boot: "20261017T000000Z-metal".into(), partition: None },
+            Record::Install { boot: "20261017T000000Z-metal".into(), partition },
+            root.clone(),
+        ] {
             assert_eq!(Record::parse(&record.sector()), Some(record));
         }
         let mut sector = root.sector();
         sector[SECTOR - 1] = 1;
         assert_eq!(Record::parse(&sector), None);
-        for line in ["root x 4096 ab", "root x 4097 ", "root x +4096 ", "root x/y 4096 ", "install-root", "other x"] {
+        for line in ["root x 4096 ab", "root x 4097 ", "root x +4096 ", "root x/y 4096 ", "install-root", "other x",
+                     "install-root x not-a-guid", "install-root x dac951c3-27df-4e3d-8b9e-487906ac2c8g"] {
             let mut sector = [0u8; SECTOR];
             sector[..MAGIC.len()].copy_from_slice(MAGIC);
             let text = if line.ends_with(' ') { format!("{}{}\n", line, hex(&[0xab; 32])) } else { format!("{}\n", line) };
@@ -354,7 +349,7 @@ mod tests {
         assert_eq!(done.sha256, sha256::sha256(&ram.bytes.lock()[SECTOR..]));
         assert_eq!(disk.bytes.lock()[SECTOR..300 * SECTOR], ram.bytes.lock()[SECTOR..]);
         assert!(disk.bytes.lock()[300 * SECTOR..].iter().all(|&b| b == 0));
-        let (_, record) = find_root(vec![Box::new(Disk::new(4)), Box::new(disk) as Box<dyn BlockDevice>]).unwrap();
+        let record = Record::parse(&disk.bytes.lock()[..SECTOR]).unwrap();
         assert_eq!(record, Record::Root { boot: "20261017T000000Z-metal".into(), bytes: done.bytes, sha256: done.sha256 });
     }
 
@@ -369,7 +364,7 @@ mod tests {
         assert!(install(&ram, &disk, "20261017T000000Z-metal", &mut |granted| *writable.lock() = granted).is_err());
         assert!(!*disk.writable.lock());
         assert!(disk.bytes.lock()[..SECTOR].iter().all(|&b| b == 0));
-        assert!(find_root(vec![Box::new(disk) as Box<dyn BlockDevice>]).is_err());
+        assert_eq!(Record::parse(&disk.bytes.lock()[..SECTOR]), None);
     }
 
     #[test]
@@ -402,14 +397,12 @@ mod tests {
     }
 
     #[test]
-    fn find_root_needs_exactly_one_record_and_matches_reports_changes() {
+    fn matches_reports_changes() {
         let ram = image(64);
-        let (a, b) = (Disk::new(64), Disk::new(64));
+        let a = Disk::new(64);
         let done = install(&ram, &a, "a", &mut gate(&a)).unwrap();
-        install(&ram, &b, "b", &mut gate(&b)).unwrap();
         assert!(matches(&a, done.bytes, &done.sha256).unwrap());
         a.bytes.lock()[40 * SECTOR] ^= 1;
         assert!(!matches(&a, done.bytes, &done.sha256).unwrap());
-        assert!(find_root(vec![Box::new(a) as Box<dyn BlockDevice>, Box::new(b)]).is_err());
     }
 }
