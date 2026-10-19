@@ -143,7 +143,7 @@ pub const SOLID_VS: Program = Program {
 /// with one destination and one source (3); `END` (1). 11 in all.
 pub const SOLID_FS: Program = Program {
     kind: pipe::SHADER_FRAGMENT,
-    text: b"FRAG\nDCL OUT[0], COLOR\nDCL CONST[0]\nMOV OUT[0], CONST[0]\nEND\n\0",
+    text: include_bytes!("pipelines/solid.frag.tgsi"),
     tokens: 11,
 };
 
@@ -168,7 +168,7 @@ pub const COPY_VS: Program = Program {
 /// `END` (1). 39 tokens.
 pub const COPY_FS: Program = Program {
     kind: pipe::SHADER_FRAGMENT,
-    text: b"FRAG\nDCL IN[0], POSITION, LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\nDCL CONST[0]\nDCL TEMP[0]\nIMM[0] INT32 {0, 0, 0, 0}\nMOV TEMP[0], IMM[0]\nF2I TEMP[0].xy, IN[0]\nUADD TEMP[0].xy, TEMP[0], CONST[0]\nTXF OUT[0], TEMP[0], SAMP[0], 2D\nEND\n\0",
+    text: include_bytes!("pipelines/copy.frag.tgsi"),
     tokens: 39,
 };
 

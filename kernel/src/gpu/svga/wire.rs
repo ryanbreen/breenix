@@ -50,6 +50,7 @@ pub mod status {
 /// Device-context commands (`SVGADeviceContextCmdId`).
 pub mod dc {
     pub const START_STOP_CONTEXT: u32 = 1;
+    pub const PREEMPT: u32 = 2;
 }
 
 pub mod cap {

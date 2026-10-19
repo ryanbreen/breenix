@@ -24,7 +24,7 @@ path = "src/lib.rs"
 test = false
 
 [features]
-# Explicit device-layer opt-in; displaces the legacy VMware desktop without DX rendering.
+# Explicit opt-in to the clean-room SVGA3D DX rendering backend.
 gpu_svga_experimental = []
 force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
 force_reclaim_queue_contention = ["testing"] # A peer holds the pending queue while a killed victim publishes its receipt

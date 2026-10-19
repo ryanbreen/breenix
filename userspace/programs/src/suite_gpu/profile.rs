@@ -38,6 +38,7 @@ impl Run {
         let mut modes = abi::Modes::ZERO;
         let r = gpu::call_with(abi::op::MODES, &mut modes);
         ensure(r == 0, || format!("MODES: {}", errno(r)))?;
+        ensure((modes.current as usize) < modes.modes.len() && modes.current < modes.count, || "MODES: invalid current mode".to_string())?;
         let mode = modes.modes[modes.current as usize];
         let (_, rec) = read(t, 1, 1)?;
         if u32_at(&rec, record::TARGET_WIDTH) > mode.width || u32_at(&rec, record::TARGET_HEIGHT) > mode.height {

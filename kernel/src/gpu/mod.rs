@@ -621,7 +621,8 @@ impl Core {
         c.capset_count = 1;
         c.capset_ids[0] = 1;
         c.scanout_count = 1;
-        c.scanouts[0] = abi::ScanoutInfo { enabled: 1, width: p.screen_width.min(limits::SIDE), height: p.screen_height.min(limits::SIDE), reserved: 0 };
+        let (width, height) = dev.scanout_size();
+        c.scanouts[0] = abi::ScanoutInfo { enabled: u32::from(width != 0 && height != 0), width, height, reserved: 0 };
         c.pipelines = (1 << abi::pipeline::COUNT) - 1;
         let flags = |v: u32| {
             let mut f = 0;
@@ -1472,7 +1473,7 @@ impl Core {
         self.wedged = Some((dev, queued));
         self.resetting = false;
         self.status = abi::status::DEVICE_FAILED;
-        self.reason = "virtio-gpu reset did not complete";
+        self.reason = "GPU device reset did not complete";
         for s in self.syncs.values_mut() {
             if !s.failed {
                 s.failed = true;

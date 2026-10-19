@@ -703,6 +703,11 @@ impl Device {
         Ok(dev)
     }
 
+    /// The current device mode, distinct from its screen-target size limits.
+    pub fn scanout_size(&self) -> (u32, u32) {
+        (self.read(wire::reg::WIDTH), self.read(wire::reg::HEIGHT))
+    }
+
     fn read(&self, reg: u32) -> u32 {
         // SAFETY: BAR0 is mapped device memory, and reg is a published register index.
         unsafe { core::ptr::read_volatile((self.registers + 4 * reg as u64) as *const u32) }
@@ -958,8 +963,9 @@ impl Device {
             };
             let echoed = front.slot.map_or(0, |s| self.slot_value(s));
             // The fence slot is written once the buffer's work is finished, which may come
-            // after the buffer's status.
-            if status == wire::status::COMPLETED && front.req.fence.is_some_and(|f| echoed != f) {
+            // after the buffer's status. A nonzero wrong value is returned to the core
+            // so it can report FENCE_MISMATCH rather than waiting for the watchdog.
+            if status == wire::status::COMPLETED && front.req.fence.is_some() && echoed == 0 {
                 return Reap::Empty;
             }
             let Some(sent) = self.pending.pop_front() else { return Reap::Empty };
@@ -1008,7 +1014,7 @@ impl Device {
     /// (`SVGA_DC_CMD_PREEMPT`, queue 0, whatever the buffer's id). Buffers already started
     /// run to their end.
     pub fn begin_reset(&mut self) {
-        let _ = self.device_command(&[2, 0, 0]);
+        let _ = self.device_command(&[wire::dc::PREEMPT, 0, 0]);
     }
 
     /// Whether the reset is confirmed: each buffer the device was given has a terminal
