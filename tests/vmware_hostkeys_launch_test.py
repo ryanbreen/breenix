@@ -1,10 +1,12 @@
 """Exercise the launcher's selected key backend, declaration and VMX settings."""
+import json
 import os
 from pathlib import Path
 import re
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,13 +102,29 @@ printf '%s' "$VMWARE_VNC_PORT"
                 'import json, os, signal, sys\nfrom pathlib import Path\n'
                 'Path(sys.argv[sys.argv.index("--log") + 1]).write_text(json.dumps([os.getpid(), sys.argv[1:]]))\n'
                 'signal.pause()\n')
+            recorder = root / 'scripts/vigil-record.sh'
+            recorder.write_text('#!/bin/sh\nexit 0\n')
+            recorder.chmod(0o755)
             for parallels, port, expected in (('true', '', 'prlsdk:owned-vm'),
                                                ('false', '5999', 'vnc:127.0.0.1:5999'),
                                                ('false', '', 'none')):
                 env = dict(os.environ, BREENIX_ROOT=str(root), BOOT_MODE='suite', PARALLELS=parallels,
                            PARALLELS_VM='owned-vm', VMWARE_VNC_PORT=port, SERIAL_LOG=str(root / 'serial'))
-                script = definitions('start_vm_hostkeys') + '''
-trap 'kill "$HOSTKEYS_PID"; wait "$HOSTKEYS_PID" 2>/dev/null' EXIT
+                script = definitions('start_vm_hostkeys', 'finish_vm_boot', 'install_vm_boot_traps') + '''
+prlctl() { :; }
+bounded_vm_command() { :; }
+vmware_check_network_log() { :; }
+vmware_network_summary() { :; }
+score_vm_suite_disk() { :; }
+host_slot_header() { :; }
+host_slot_release() { :; }
+delete_parallels_vm() { :; }
+delete_vmware_bundle() { :; }
+prune_vmware_inventory() { :; }
+VMRUN=fixture
+VMX_FILE=fixture
+VM_BUNDLE=fixture
+install_vm_boot_traps
 start_vm_hostkeys
 printf '%s\\n' "$HOSTKEYS_PID"
 read -r done
@@ -115,8 +133,6 @@ read -r done
                                            stdout=subprocess.PIPE, text=True)
                 try:
                     pid = int(process.stdout.readline())
-                    import json
-                    import time
                     deadline = time.monotonic() + 3
                     log = root / 'serial.hostkeys'
                     while not log.exists() and time.monotonic() < deadline:
@@ -125,11 +141,20 @@ read -r done
                     self.assertEqual(pid, recorded_pid)
                     self.assertEqual(args[args.index('--backend') + 1], expected)
                     self.assertEqual(args[args.index('--parent') + 1], str(process.pid))
-                finally:
                     process.communicate('done\n', timeout=5)
+                    self.assertEqual(process.returncode, 0)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+                finally:
+                    if process.poll() is None:
+                        process.communicate('done\n', timeout=5)
+                    # Fixture safety runs only after the launcher's cleanup was checked.
+                    if 'pid' in locals():
+                        try:
+                            os.kill(pid, 15)
+                        except ProcessLookupError:
+                            pass
                     (root / 'serial.hostkeys').unlink(missing_ok=True)
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(pid, 0)
 
 
 if __name__ == '__main__':
