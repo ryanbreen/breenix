@@ -397,7 +397,12 @@ pub fn fault_skip_flush() -> CaseResult {
     ensure(r == -EIO && a.reason == 10, || {
         "omitted flush was accepted as known scanout".to_string()
     })?;
-    shown(t, &w, present(c, t)?)?;
+    // The binding is deliberately unknown: PRESENT must repair it before READBACK.
+    let (ret, recovered) = gpu::present(c, t);
+    ensure(ret == 0 && recovered.answer == native_success()? && recovered.fence != 0,
+        || format!("recovery PRESENT: {} answer {:#x}", errno(ret), recovered.answer))?;
+    wait_ok(c, recovered.fence, 0)?;
+    shown(t, &w, recovered.fence)?;
     Ok(())
 }
 pub fn fault_wrong_scanout() -> CaseResult {
