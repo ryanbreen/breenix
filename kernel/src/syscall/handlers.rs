@@ -2165,7 +2165,7 @@ pub fn sys_execv_with_frame(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_execv: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
             current_thread_id
@@ -2225,7 +2225,7 @@ pub fn sys_execv_with_frame(
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
-            log::info!(
+            log::debug!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
                 new_entry_point,
                 new_rsp
@@ -2342,7 +2342,7 @@ pub fn sys_execv_with_frame(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_execv: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
             current_thread_id
@@ -2403,7 +2403,7 @@ pub fn sys_execv_with_frame(
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
-            log::info!(
+            log::debug!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
                 new_entry_point,
                 new_rsp

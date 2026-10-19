@@ -109,7 +109,7 @@ pub fn sys_pipe(pipefd_ptr: u64) -> SyscallResult {
         return SyscallResult::Err(14); // EFAULT
     }
 
-    log::info!(
+    log::debug!(
         "sys_pipe: Created pipe with read_fd={}, write_fd={}",
         pipefd[0],
         pipefd[1]
@@ -377,7 +377,7 @@ pub fn sys_pipe2(pipefd_ptr: u64, pipe_flags: u64) -> SyscallResult {
         return SyscallResult::Err(14); // EFAULT
     }
 
-    log::info!(
+    log::debug!(
         "sys_pipe2: Created pipe with read_fd={}, write_fd={}, flags={:#x}",
         pipefd[0],
         pipefd[1],

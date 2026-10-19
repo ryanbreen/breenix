@@ -1299,7 +1299,7 @@ fn deliver_to_user_handler_aarch64(
     saved_regs.x1 = info_addr;
     saved_regs.x2 = uc_addr;
 
-    log::info!(
+    log::debug!(
         "Signal {} delivered to handler at {:#x}{}, SP={:#x}->{:#x}, return={:#x}",
         sig,
         handler_addr,

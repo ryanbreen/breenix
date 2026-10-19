@@ -1412,7 +1412,7 @@ fn sys_exec_aarch64(
         }
     };
 
-    log::info!(
+    log::debug!(
         "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
         current_pid.as_u64(),
         current_thread_id
@@ -1483,7 +1483,7 @@ fn sys_exec_aarch64(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
             new_entry_point
         );
@@ -1498,7 +1498,7 @@ fn sys_exec_aarch64(
 
         commit.apply();
 
-        log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
+        log::debug!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
         // Installing through the shared discipline publishes `saved_process_cr3`,
         // which the `.Lrestore_saved_ttbr` arm of `syscall_entry.S` would
         // otherwise use to switch TTBR0 back to the pre-exec page table that
@@ -1564,7 +1564,7 @@ fn sys_exec_aarch64(
         // Trace: frame registers zeroed, SPSR set
         super::trace::trace_exec(b'F');
 
-        log::info!(
+        log::debug!(
             "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
             frame.elr,
             new_rsp

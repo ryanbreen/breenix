@@ -390,7 +390,7 @@ fn sys_open_write_path(
                     // uid and gid), so a restrictive mode still lets it reopen it.
                     match fs.create_file(parent, filename, file_mode, cred.euid, gid) {
                         Ok(new_inode) => {
-                            log::info!(
+                            log::debug!(
                                 "sys_open: created file {} with inode {}",
                                 resolved.path,
                                 new_inode
@@ -803,7 +803,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             };
             match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
                 Ok(fd) => {
-                    log::info!(
+                    log::debug!(
                         "sys_open: opened directory {} as fd {} (inode {})",
                         path,
                         fd,
@@ -1869,7 +1869,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     match unlink_result {
         Ok(()) => {
-            log::info!("sys_unlink: successfully unlinked {}", path);
+            log::debug!("sys_unlink: successfully unlinked {}", path);
             SyscallResult::Ok(0)
         }
         Err(e) => {
@@ -2135,7 +2135,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
 
     match rmdir_result {
         Ok(()) => {
-            log::info!(
+            log::debug!(
                 "sys_rmdir: successfully removed directory {}",
                 resolved.path
             );

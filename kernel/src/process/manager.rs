@@ -3951,7 +3951,7 @@ impl ProcessManager {
     ) -> Result<u64, &'static str> {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
-        log::info!(
+        log::debug!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
         );
@@ -3989,7 +3989,7 @@ impl ProcessManager {
             process.drain_old_page_tables();
         }
 
-        log::info!(
+        log::debug!(
             "exec_process: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4047,10 +4047,10 @@ impl ProcessManager {
         log::info!("exec_process: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table
-        log::info!("exec_process: Loading ELF into new page table...");
+        log::debug!("exec_process: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
         let new_entry_point = loaded_elf.entry_point.as_u64();
-        log::info!(
+        log::debug!(
             "exec_process: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4137,7 +4137,7 @@ impl ProcessManager {
         process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
-            log::info!("exec_process: Updated process name to '{}'", name);
+            log::debug!("exec_process: Updated process name to '{}'", name);
         }
         process.entry_point = loaded_elf.entry_point;
 
@@ -4245,7 +4245,7 @@ impl ProcessManager {
             // Mark the thread as ready to run the new program
             thread.state = crate::task::thread::ThreadState::Ready;
 
-            log::info!(
+            log::debug!(
                 "exec_process: Updated thread {} context for new program",
                 thread_id
             );
@@ -4281,7 +4281,7 @@ impl ProcessManager {
             // The scheduler will use the process's page table during context switch
         } else {
             // Process is not scheduled - it will use the new page table when it runs
-            log::info!(
+            log::debug!(
                 "exec_process: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -4293,7 +4293,7 @@ impl ProcessManager {
         // The old table will be cleaned up at the start of the next exec or
         // when the process exits.
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process: Deferring old page table cleanup");
+            log::debug!("exec_process: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
@@ -4406,10 +4406,10 @@ impl ProcessManager {
         }
 
         // Load the ELF binary into the new page table
-        log::info!("exec_process_with_argv: Loading ELF into new page table...");
+        log::debug!("exec_process_with_argv: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
         let new_entry_point = loaded_elf.entry_point.as_u64();
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4420,7 +4420,7 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - user_stack_size as u64);
         let stack_top = VirtAddr::new(USER_STACK_TOP);
 
-        log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
+        log::debug!("exec_process_with_argv: Mapping stack pages into new process page table");
         crate::memory::process_memory::map_new_user_stack(
             new_page_table.as_mut(),
             stack_bottom,
@@ -4444,7 +4444,7 @@ impl ProcessManager {
             &cred,
         )?;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: argc/argv set up on stack, RSP={:#x}",
             initial_rsp
         );
@@ -4526,7 +4526,7 @@ impl ProcessManager {
             return Err(EXEC_GROUP_RUNNING);
         }
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4586,7 +4586,7 @@ impl ProcessManager {
 
         // Update the process with new program data
         if let Some(name) = program_name {
-            log::info!("exec_process_with_argv: Updated process name to '{}'", name);
+            log::debug!("exec_process_with_argv: Updated process name to '{}'", name);
             process.name = name;
         }
         process.exe_path = exe_path;
@@ -4685,7 +4685,7 @@ impl ProcessManager {
         thread.context.user_fs_base_set = false;
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: Updated thread {} context for new program",
             thread_id
         );
@@ -4712,7 +4712,7 @@ impl ProcessManager {
         } else if is_scheduled {
             log::info!("exec_process_with_argv: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -4809,13 +4809,13 @@ impl ProcessManager {
             }
         }
 
-        log::info!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
+        log::debug!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             new_page_table.as_mut(),
         )?;
         let new_entry_point = loaded_elf.entry_point;
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4823,7 +4823,7 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(user_stack_top - user_stack_size as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Mapping stack pages into new process page table"
         );
         crate::memory::process_memory::map_new_user_stack(
@@ -4846,7 +4846,7 @@ impl ProcessManager {
             &cred,
         )?;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: argc/argv set up on stack, SP_EL0={:#x}",
             initial_rsp
         );
@@ -4928,7 +4928,7 @@ impl ProcessManager {
             return Err(EXEC_GROUP_RUNNING);
         }
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4984,7 +4984,7 @@ impl ProcessManager {
         });
 
         if let Some(name) = program_name {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv [ARM64]: Updated process name to '{}'",
                 name
             );
@@ -5078,7 +5078,7 @@ impl ProcessManager {
         thread.kernel_stack_top = preserved_kernel_stack_top;
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Updated thread {} context for new program",
             thread_id
         );
@@ -5107,7 +5107,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -5115,7 +5115,7 @@ impl ProcessManager {
 
         // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
+            log::debug!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
@@ -5173,7 +5173,7 @@ impl ProcessManager {
         // Lock-free trace: exec entry
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Replacing process {} with new program",
             pid.as_u64()
         );
@@ -5208,7 +5208,7 @@ impl ProcessManager {
             process.drain_old_page_tables();
         }
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -5256,13 +5256,13 @@ impl ProcessManager {
         log::info!("exec_process [ARM64]: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table using ARM64-specific loader
-        log::info!("exec_process [ARM64]: Loading ELF into new page table...");
+        log::debug!("exec_process [ARM64]: Loading ELF into new page table...");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             new_page_table.as_mut(),
         )?;
         let new_entry_point = loaded_elf.entry_point;
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -5325,7 +5325,7 @@ impl ProcessManager {
         process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
-            log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
+            log::debug!("exec_process [ARM64]: Updated process name to '{}'", name);
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
@@ -5436,7 +5436,7 @@ impl ProcessManager {
         // Mark the thread as ready to run the new program
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Updated thread {} context for new program",
             thread_id
         );
@@ -5469,7 +5469,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -5477,7 +5477,7 @@ impl ProcessManager {
 
         // Defer old page table cleanup (see exec_process x86_64 for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process [ARM64]: Deferring old page table cleanup");
+            log::debug!("exec_process [ARM64]: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
