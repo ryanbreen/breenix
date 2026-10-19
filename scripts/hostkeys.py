@@ -19,12 +19,11 @@ keyboard and the case reads the screen back. The runner never reports success: t
 evidence is in the guest. A line that is not at the start of a serial line (the
 kernel's announcement lines) is never a request.
 
-Backends, one per way the target takes keys:
+Backends for the standalone `send` and `watch` commands:
 
     qmp:<socket>          QEMU's QMP send-key (ARM64 and x86-64 QEMU)
     prlsdk:<vm>           Parallels Virtualization SDK key and pointer events (Parallels)
     vnc:<host>:<port>     RFB key events (VMware Fusion's built-in VNC server)
-    xhci-replay           HID boot keyboard reports typed on the serial console (the x86-metal boot loop)
     none                  nothing: every request is answered "no host key path"
 
 The x86-metal boot loop reaches the machine only through power control and the serial
@@ -32,6 +31,9 @@ console, so it has no virtual keyboard to press. It declares `xhci-replay` and a
 request by typing `BXKEY <report>[,<report>...]` lines, one per chord, on the serial console
 (ReplayKeys); the kernel replays each report through its USB boot keyboard's interrupt-IN
 completion path (kernel/src/drivers/xhci/host_keys.rs).
+This is a library transport: `metal-boot` supplies its serial writer to `ReplayKeys`
+and passes that instance to `Watcher`. `declare --backend xhci-replay` returns the
+suite declaration, but `xhci-replay` is not a standalone `send` or `watch` backend.
 
 Parallels (27.0.3): the Parallels Virtualization SDK ships inside Parallels Desktop and
 this script calls its published C API through ctypes. Keys are Parallels virtual key
