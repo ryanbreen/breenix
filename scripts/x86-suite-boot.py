@@ -16,6 +16,7 @@ import runpy
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 relay_api = runpy.run_path(str(Path(__file__).with_name("x86_serial_relay.py")))
+hostkeys = runpy.run_path(str(Path(__file__).with_name("hostkeys.py")))
 
 spec = importlib.util.spec_from_file_location('suite_verdict', Path(__file__).with_name('suite-verdict.py'))
 scorer = importlib.util.module_from_spec(spec)
@@ -91,6 +92,16 @@ def main():
         raise ValueError('suite hold must be nonnegative')
     results = []
     qmp = None
+
+    class SuiteKeys:
+        # The suite's own QMP connection carries the chord: QEMU serves one QMP client at a time.
+        def send(self, mods, key):
+            nonlocal qmp
+            qmp = qmp or QMP(os.environ['BREENIX_QMP_SOCKET'])
+            qmp.command('send-key', {'keys': hostkeys['QMPKeys'].keys(mods, key), 'hold-time': 100})
+
+    host_keys = hostkeys['Watcher'](SuiteKeys(), 'qmp', lambda message: print(message, flush=True))
+    host_key_offset = 0
     command, relays = relay_api['live_serial_command'](command, (user_path, kernel_path))
     try:
         child = subprocess.Popen(command)
@@ -112,6 +123,8 @@ def main():
                 forced_failure = "stalled: " + progress.last_line
                 break
             clock.observe(data[0].decode(errors="replace"))
+            host_keys.feed(data[0][host_key_offset:].decode(errors="replace"))
+            host_key_offset = len(data[0])
             suite = suites[current]
             user = data[0][offsets[0]:].decode(errors='replace').replace('\r', '')
             done = re.search(rf'^SUITE {suite} DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+$', user, re.M)
@@ -156,7 +169,7 @@ def main():
                 if current == len(suites):
                     break
                 qmp.command('cont')
-                qmp.command('send-key', {'keys': [{'type': 'qcode', 'data': 'ret'}]})
+                SuiteKeys().send((), 'ret')
                 started = time.time()
                 deadline = time.monotonic() + timeout
             elif 'SUITE_SEQUENCE FAIL' in user:

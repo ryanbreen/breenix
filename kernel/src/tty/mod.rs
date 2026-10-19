@@ -17,6 +17,7 @@ pub mod line_discipline;
 pub mod pty;
 pub mod slave_read;
 pub mod termios;
+pub mod vt_ioctl;
 
 // Re-export for external use
 // Allow unused - these are public API re-exports for Phase 4+ syscalls and ioctls
@@ -75,3 +76,5 @@ pub fn init() {
     pty::init();
     log::info!("TTY subsystem initialized");
 }
+
+mod keyboard_input;

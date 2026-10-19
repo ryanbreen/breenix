@@ -1025,6 +1025,22 @@ fn vendor_name(vendor_id: u16) -> &'static str {
     }
 }
 
+/// Report a storage or network function by its class code (`device_class`).
+fn report_class(dev: &Device) {
+    let class = match dev.class {
+        DeviceClass::MassStorage => super::device_class::Class::Storage,
+        DeviceClass::Network => super::device_class::Class::Network,
+        _ => return,
+    };
+    super::device_class::found(
+        class,
+        format_args!(
+            "pci {:02x}:{:02x}.{} [{:04x}:{:04x}] subclass {:#04x}",
+            dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id, dev.subclass
+        ),
+    );
+}
+
 /// Enumerate all PCI devices on the bus
 ///
 /// Returns the total number of devices found.
@@ -1077,6 +1093,8 @@ pub fn enumerate() -> usize {
                     }
                 }
 
+                report_class(&dev);
+
                 // Track specific device types
                 if dev.is_virtio_block() {
                     virtio_block_count += 1;
@@ -1115,6 +1133,8 @@ pub fn enumerate() -> usize {
                                 func_dev.subclass,
                                 func_dev.interrupt_line
                             );
+
+                            report_class(&func_dev);
 
                             if func_dev.is_virtio_block() {
                                 virtio_block_count += 1;

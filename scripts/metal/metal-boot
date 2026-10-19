@@ -224,6 +224,7 @@ class Driver:
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
         kind = 'fault-test' if xhci_fault(self.args) else 'console-session' if session(self.args) else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
+               'catchup': bool(getattr(self.args, 'catchup', False)),
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
                # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
@@ -1482,6 +1483,7 @@ def main():
         p.add_argument('--source-boot')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
+        p.add_argument('--catchup', action='store_true')
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))

@@ -9,8 +9,8 @@ a whole line, are exactly: one START with the manifest's case count, one CASE li
 per manifest case in manifest order, and one DONE whose counts match those CASE
 lines with failed=0, skipped=0 and passed=total=the manifest's case count;
 and no log shows a kernel panic, soft lockup or EL1 abort
-(`fatal` in docs/boot-path.json, plus x86-64's "KERNEL PANIC:"). VALUE, WAIT and
-PULSES records, which a case may print while it runs, are accepted between START and
+(`fatal` in docs/boot-path.json, plus x86-64's "KERNEL PANIC:"). VALUE, WAIT,
+PULSES and HOSTKEY records, which a case may print while it runs, are accepted between START and
 DONE when they are well formed and name a manifest case; they do not count.
 
 A manifest with diskChecks also requires --disk: debugfs reads the stopped
@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
-LIVE = ("VALUE", "WAIT", "PULSES")
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY")
 
 
 def read_lines(path):
@@ -42,9 +42,10 @@ def verdict(manifest, records_log, logs, only=None):
     suite = manifest["id"]
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"] for case in category["cases"]]
     if only:
-        if only not in cases:
+        selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
+        if not selected:
             return False, f"unknown case {only}; valid ids: {', '.join(cases)}"
-        cases = [only]
+        cases = selected
     suffix = rf" only={re.escape(only)}" if only else ""
     fatal = json.loads((REPO / "docs/boot-path.json").read_text())["fatal"] + [r"KERNEL PANIC:"]
     for log in logs:
@@ -64,6 +65,7 @@ def verdict(manifest, records_log, logs, only=None):
         "VALUE": re.compile(rf"^SUITE {suite} VALUE {name} [a-z0-9]+(?:-[a-z0-9]+)*=(-?\d+(?:\.\d+)?)([a-z]*)"
                             r"(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
+        "HOSTKEY": re.compile(rf"^SUITE {suite} HOSTKEY {name} seq=\d+ keys=[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*$"),
         "PULSES": re.compile(rf"^SUITE {suite} PULSES {name} every=\d+ limit=\d+ at=(?:-?\d+(?:,-?\d+)*)?$"),
     }
     records = []
@@ -82,7 +84,7 @@ def verdict(manifest, records_log, logs, only=None):
                 records.append((kind, match, line))
                 break
         else:
-            return False, f"a SUITE line has none of the eight shapes: {line[:200]}"
+            return False, f"a SUITE line has none of the known shapes: {line[:200]}"
 
     if not records:
         return False, f"no 'SUITE {suite}' lines in {records_log}"

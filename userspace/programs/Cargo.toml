@@ -773,5 +773,13 @@ name = "getty"
 path = "src/getty.rs"
 
 [[bin]]
+name = "chvt"
+path = "src/chvt.rs"
+
+[[bin]]
 name = "login"
 path = "src/login.rs"
+
+[[bin]]
+name = "console-login-shell"
+path = "src/console_login_shell.rs"

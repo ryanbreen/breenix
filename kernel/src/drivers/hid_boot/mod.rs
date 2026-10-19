@@ -3,24 +3,16 @@
 //! Source authority: HID 1.11 (boot protocol, class requests, Appendices B,
 //! C and F), the HID Usage Tables' Keyboard/Keypad page and USB 2.0 chapter
 //! 9. The xHCI worker (`drivers::xhci`) configures each keyboard's interrupt-IN
-//! endpoint and hands its reports here: `report` turns them into console
-//! bytes and chords, `queue` keeps the bytes until TTY 0 accepts them.
+//! endpoint and hands its reports here: `report` turns them into key events,
+//! which go to the input core (`crate::input`), and the console's lock state
+//! comes back for the keyboards' LEDs.
 //! The pure modules' host tests: `rustc --edition=2021 --test <file>.rs`.
 
 pub mod interface;
-pub mod queue;
 pub mod report;
 
-use alloc::boxed::Box;
-
-/// Bytes waiting for TTY 0: minutes of typing behind a held lock.
-const QUEUE_BYTES: usize = 4096;
-/// How soon the worker offers retained bytes to TTY 0 again.
-pub const RETRY_NS: u64 = 5_000_000;
-
-/// Where boot keyboard input meets the console TTY.
+/// Where boot keyboard input meets the input core.
 pub struct Console {
-    queue: Box<queue::Retained<QUEUE_BYTES>>,
     /// The console target has started and its replug exercise is over; the
     /// one-shot first-key lines report only keys pressed after that.
     armed: bool,
@@ -31,7 +23,6 @@ pub struct Console {
 impl Console {
     pub fn new() -> Self {
         Self {
-            queue: Box::new(queue::Retained::new()),
             armed: false,
             first_report: false,
             first_typed: false,
@@ -53,38 +44,24 @@ impl Console {
         }
     }
 
-    pub fn output(&mut self, output: report::Output) {
-        match output {
-            report::Output::Bytes(bytes) => {
-                if !self.queue.push(bytes.as_slice()) && self.queue.refused() == 1 {
-                    log::warn!("[hid] console input queue full; key events are being refused");
-                }
-            }
-            // Kept distinct for the virtual-terminal layer, which does not exist yet.
-            report::Output::Chord(chord) => {
-                log::debug!("[hid] console chord {:?}: no virtual terminals yet", chord);
-            }
+    /// One key event for the input core.
+    pub fn event(&mut self, port: u8, code: u16, value: i32) {
+        let sent = crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
+        if sent == 0 {
+            return;
         }
-    }
-
-    /// Bytes are waiting for TTY 0.
-    pub fn pending(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
-    /// Offer retained bytes to TTY 0. True while some remain queued.
-    pub fn flush(&mut self) -> bool {
-        let taken = self.queue.drain(&mut |byte| {
-            crate::tty::push_char_nonblock_from(byte, crate::tty::InputSource::UsbKeyboard)
-        });
         // Report from the xHCI worker after TTY admission.
-        if taken != 0 {
-            if let Some(tty) = crate::tty::console() { tty.report_first_usb(); }
+        if let Some(tty) = crate::tty::console() {
+            tty.report_first_usb();
         }
-        if taken != 0 && self.armed && !self.first_typed {
+        if self.armed && !self.first_typed {
             self.first_typed = true;
-            log::info!("[hid] typed into the console tty: {} bytes", taken);
+            log::info!("[hid] typed into the console tty: {} bytes", sent);
         }
-        !self.queue.is_empty()
+    }
+
+    /// The keyboards' LED report for the console's lock state.
+    pub fn leds(&self) -> u8 {
+        crate::console::keys::leds()
     }
 }

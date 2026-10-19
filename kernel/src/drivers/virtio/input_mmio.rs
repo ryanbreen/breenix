@@ -626,7 +626,7 @@ pub fn get_irq() -> Option<u32> {
 /// Keyboard interrupt handler.
 ///
 /// Called from the GIC interrupt dispatcher when the keyboard device generates
-/// an interrupt. Processes pending events and pushes keyboard characters to stdin.
+/// an interrupt. Reports each pending key event to the input core.
 pub fn handle_interrupt() {
     if !KBD_INITIALIZED.load(Ordering::Acquire) {
         return;
@@ -643,79 +643,11 @@ pub fn handle_interrupt() {
         }
     }
 
-    // Track modifier key state
-    static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    static CTRL_PRESSED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    static CAPS_LOCK_ACTIVE: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-
-    // Process all pending events
+    // Each key event goes to the input core, which keeps the modifier state
+    // and turns keys into console input.
     for event in poll_events() {
         if event.event_type == event_type::EV_KEY {
-            let keycode = event.code;
-            let value = event.value; // 0=release, 1=press, 2=repeat
-
-            // Track shift key state
-            if is_shift(keycode) {
-                SHIFT_PRESSED.store(value != 0, core::sync::atomic::Ordering::Relaxed);
-                continue;
-            }
-
-            // Track ctrl key state
-            if is_ctrl(keycode) {
-                CTRL_PRESSED.store(value != 0, core::sync::atomic::Ordering::Relaxed);
-                continue;
-            }
-
-            // Toggle caps lock on key press only (not repeat or release)
-            if keycode == 58 {
-                if value == 1 {
-                    let prev = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
-                    CAPS_LOCK_ACTIVE.store(!prev, core::sync::atomic::Ordering::Relaxed);
-                }
-                continue;
-            }
-
-            // Only process key presses and repeats (not releases)
-            if value != 0 {
-                // Generate VT100 escape sequences for special keys
-                // (arrows, Home, End, Delete) that can't be represented
-                // as a single character.
-                if let Some(seq) = keycode_to_escape_seq(keycode) {
-                    for &b in seq {
-                        if !crate::tty::push_char_nonblock(b) {
-                            crate::ipc::stdin::push_byte_from_irq(b);
-                        }
-                    }
-                    continue;
-                }
-
-                let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
-                let caps = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
-                let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
-
-                // Ctrl+letter -> control character (e.g., Ctrl+C = 0x03)
-                let c = if ctrl {
-                    ctrl_char_from_keycode(keycode)
-                } else {
-                    // For letter keys, caps lock XOR shift determines case
-                    let effective_shift = if is_letter(keycode) {
-                        shift ^ caps
-                    } else {
-                        shift
-                    };
-                    keycode_to_char(keycode, effective_shift)
-                };
-
-                if let Some(c) = c {
-                    // Route through TTY for echo and line discipline processing.
-                    if !crate::tty::push_char_nonblock(c as u8) {
-                        crate::ipc::stdin::push_byte_from_irq(c as u8);
-                    }
-                }
-            }
+            crate::input::report_key(crate::input::Device::VirtioKeyboard, event.code, event.value as i32);
         }
     }
 }
@@ -896,6 +828,11 @@ pub fn handle_tablet_interrupt() {
 
 // =============================================================================
 // Linux Keycode to ASCII Conversion
+//
+// The console keymap is the input core's (`console::keymap`); this driver's
+// keyboard reports key events. These conversions remain for the ARM64 USB HID
+// driver under `drivers/usb/`, which the clean-room USB keyboard lane (V7)
+// retires with them (#1743).
 // =============================================================================
 
 /// Convert Linux keycode to ASCII character

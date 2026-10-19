@@ -6,6 +6,7 @@
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod bcm5720;
+pub mod device_class;
 pub mod e1000;
 pub mod fw_cfg;
 #[cfg(target_arch = "x86_64")]
@@ -104,6 +105,14 @@ pub fn init() -> usize {
         log::info!("BCM5720 driver attached {bcm5720_ports} port(s)");
     }
 
+    if e1000::is_initialized()
+        || bcm5720::is_initialized()
+        || virtio::net_legacy::is_initialized()
+        || rtl8139::is_initialized()
+    {
+        log::info!("[devices] network initialized: driver attached");
+    }
+
     // Initialize VirtIO sound driver
     match virtio::sound::init() {
         Ok(()) => {
@@ -178,6 +187,7 @@ pub fn run_post_init_self_tests() {
             log::warn!("NVMe test failed: {}", e);
         }
     }
+
 
     if virtio::sound::is_initialized() {
         if let Err(e) = virtio::sound::test_silence() {
@@ -430,6 +440,17 @@ fn init_virtio_mmio() -> usize {
             device.device_id(),
             device.version()
         );
+        let class = match device.device_id() {
+            virtio::mmio::device_id::BLOCK => Some(device_class::Class::Storage),
+            virtio::mmio::device_id::NETWORK => Some(device_class::Class::Network),
+            _ => None,
+        };
+        if let Some(class) = class {
+            device_class::found(
+                class,
+                format_args!("virtio-mmio {} (version {})", type_name, device.version()),
+            );
+        }
         device_count += 1;
     }
 

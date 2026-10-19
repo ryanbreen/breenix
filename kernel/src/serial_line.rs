@@ -120,7 +120,7 @@ impl Port for Uart {
 /// line if another writer's line is open. This is the accounting boundary of
 /// kernel output (`output_accounting`): the record's bytes count once, toward
 /// the current thread when `attributed`, and the lead newline does not count.
-fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], attributed: bool) {
+fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], level: log::Level, attributed: bool) {
     if bytes.is_empty() {
         return;
     }
@@ -136,6 +136,10 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], attributed: bool) {
         write_notices_from_thread();
     }
     uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
+    // The kernel log, as the log rings keep it, also goes to the screen console.
+    if TEE && writer == Writer::Kernel {
+        crate::console::log_bytes_at(level, bytes);
+    }
 }
 
 /// Write out the lines posted on paths that may not log (`log_notice`), oldest
@@ -147,6 +151,7 @@ pub fn write_notices() {
         let mut ownership = Ownership::acquire();
         crate::log_notice::take(|line| {
             uart_owner::write::<Uart, true>(Writer::Kernel, line, Kind::Line, &mut ownership);
+            crate::console::log_bytes_at(log::Level::Warn, line);
         });
     }
 }
@@ -193,6 +198,7 @@ pub struct Buffer<const TEE: bool> {
     bytes: [MaybeUninit<u8>; CAPACITY],
     len: usize,
     writer: Writer,
+    level: log::Level,
     /// Whether the bytes count toward the current thread (`output_accounting`).
     attributed: bool,
 }
@@ -208,6 +214,7 @@ impl<const TEE: bool> Buffer<TEE> {
             bytes: [MaybeUninit::uninit(); CAPACITY],
             len: 0,
             writer,
+            level: log::Level::Info,
             attributed: true,
         }
     }
@@ -219,8 +226,16 @@ impl<const TEE: bool> Buffer<TEE> {
             bytes: [MaybeUninit::uninit(); CAPACITY],
             len: 0,
             writer: Writer::Kernel,
+            level: log::Level::Info,
             attributed: false,
         }
+    }
+
+    /// Carry a structured kernel record's severity through UART chunking.
+    pub fn with_level(level: log::Level) -> Self {
+        let mut line = Self::new();
+        line.level = level;
+        line
     }
 
     pub fn char(&mut self, byte: u8) {
@@ -296,7 +311,7 @@ impl<const TEE: bool> Buffer<TEE> {
         // `char` initializes every byte below `len`.
         let record =
             unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.len) };
-        emit::<TEE>(self.writer, record, self.attributed);
+        emit::<TEE>(self.writer, record, self.level, self.attributed);
         self.len = 0;
     }
 }

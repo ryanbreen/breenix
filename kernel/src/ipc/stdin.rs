@@ -396,6 +396,8 @@ fn wake_blocked_readers_try() {
 /// Read bytes from stdin buffer
 /// Returns Ok(n) with bytes read, or Err(EAGAIN) if would block
 pub fn read_bytes(buf: &mut [u8]) -> Result<usize, i32> {
+    // A process reading the console ends the boot splash.
+    crate::console::splash::reader();
     let mut buffer = STDIN_BUFFER.lock();
 
     if buffer.is_empty() {
@@ -505,6 +507,8 @@ pub(crate) fn read_or_prepare(
     buf: &mut [u8],
     is_nonblocking: bool,
 ) -> Result<usize, PrepareOutcome> {
+    // A process reading the console ends the boot splash.
+    crate::console::splash::reader();
     crate::arch_without_interrupts(|| {
         let mut buffer = STDIN_BUFFER.lock();
         if !buffer.is_empty() || buf.is_empty() {
@@ -528,4 +532,81 @@ pub(crate) fn input_witness(tid: u64) -> (bool, usize) {
         let buffer = STDIN_BUFFER.lock();
         (INPUT_READERS.contains_waiter(tid), buffer.len)
     })
+}
+
+/// The input queue of one of tty2 to tty6: what its line discipline released,
+/// and the readers waiting for it (`docs/console/contract.md` section 1.1).
+/// tty1, the console, uses the queue above.
+pub(crate) struct VtInput {
+    buffer: Mutex<StdinBuffer>,
+    pub(crate) readers: WaitQueueHead,
+}
+
+impl VtInput {
+    const fn new() -> Self {
+        Self { buffer: Mutex::new(StdinBuffer::new()), readers: WaitQueueHead::new() }
+    }
+
+    /// Queue a byte from interrupt context; false while the queue is busy or full.
+    pub(crate) fn push_byte_from_irq(&self, byte: u8) -> bool {
+        if let Some(mut buffer) = self.buffer.try_lock() {
+            if buffer.push_byte(byte) {
+                self.readers.wake_up_deferred();
+                drop(buffer);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Queue a canonical end-of-file boundary.
+    pub(crate) fn push_eof_from_irq(&self) -> bool {
+        if let Some(mut buffer) = self.buffer.try_lock() {
+            if buffer.push_eof() {
+                self.readers.wake_up_deferred();
+                drop(buffer);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn flush(&self) {
+        crate::arch_without_interrupts(|| self.buffer.lock().flush());
+    }
+
+    pub(crate) fn available(&self) -> usize {
+        crate::arch_without_interrupts(|| self.buffer.lock().available())
+    }
+
+    pub(crate) fn has_data(&self) -> bool {
+        crate::arch_without_interrupts(|| !self.buffer.lock().is_empty())
+    }
+
+    /// As `read_or_prepare`: copy what is queued, or publish the caller as a
+    /// waiter under the same guard.
+    pub(crate) fn read_or_prepare(&self, buf: &mut [u8], is_nonblocking: bool) -> Result<usize, PrepareOutcome> {
+        crate::arch_without_interrupts(|| {
+            let mut buffer = self.buffer.lock();
+            if !buffer.is_empty() || buf.is_empty() {
+                return Ok(buffer.read_bytes(buf));
+            }
+            if is_nonblocking {
+                return Err(PrepareOutcome::Mismatch);
+            }
+            Err(self.readers.prepare_to_wait_checked(
+                crate::task::thread::ThreadState::BlockedOnIO,
+                None,
+                || buffer.is_empty(),
+            ))
+        })
+    }
+}
+
+static VT_INPUTS: [VtInput; 5] = [const { VtInput::new() }; 5];
+
+/// The input queue of TTY `num` (1 to 5: tty2 to tty6). The console's queue
+/// is this module's own, so TTY 0 has no entry here.
+pub(crate) fn vt_input(num: usize) -> Option<&'static VtInput> {
+    num.checked_sub(1).and_then(|index| VT_INPUTS.get(index))
 }

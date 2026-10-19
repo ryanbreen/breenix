@@ -134,6 +134,7 @@ pub enum FdKind {
     FifoReadWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>, Arc<Mutex<super::fifo::FifoEntry>>),
     /// Procfs virtual file (content generated at open time, shared by reads)
     ProcfsFile {
+        mode: u32,
         content: Arc<alloc::vec::Vec<u8>>,
         position: usize,
         /// The entry's user and group (`procfs::owner`).
@@ -952,6 +953,11 @@ impl FdTableInner {
     /// Count the number of open file descriptors
     pub fn open_fd_count(&self) -> usize {
         self.fds.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// The kinds of the open descriptors.
+    pub fn kinds(&self) -> impl Iterator<Item = &FdKind> {
+        self.fds.iter().flatten().map(|entry| &entry.kind)
     }
 
     /// Close all file descriptors marked with FD_CLOEXEC.

@@ -30,6 +30,19 @@ has gone quiet; `--display` also opens the VM's screen). From a fresh worktree t
 minute and a half. Run from a terminal, the same script is an interactive boot you can type into. x86-64 is scored against its own
 stage list on the x86-metal path; it is not measured on the main path.
 
+A milestone states what the kernel must do, not which emulated device it does it with. The
+devices milestone requires four class stages on each architecture: a storage device found, initialized
+and read, and a network device found. Each driver reports them through
+`kernel/src/drivers/device_class.rs`, which prints a `[devices] storage found:`,
+`storage initialized:`, `storage read:` or `network found:` line whatever the driver:
+QEMU's VirtIO and E1000, the Parallels and VMware devices, or the R240's AHCI disk and
+BCM5720. "Found" comes from bus enumeration (a PCI class code, a VirtIO MMIO device ID,
+or a platform controller whose registers answer), "initialized" from a storage driver that
+attached a disk, and "read" from the completed root ext2 superblock read through the block layer.
+No extra disk probe is issued for the milestone. On x86-64 the milestone also requires
+a network driver to attach, the network stack to initialize and the keyboard queue to
+initialize; these retain the default PC checks while allowing other NIC drivers.
+
 ## Boot modes
 
 ### ARM64 QEMU acceleration
@@ -342,24 +355,27 @@ final panel as before. Run cache helper tests with `python3 tests/gate_cache_tes
 
 ## Watching a boot
 
-The VM screen shows the boot, not the log. As soon as the framebuffer exists the kernel
-draws a boot screen: "Breenix", the boot mode, a progress bar, and the kernel stages of
-milestones 1-5 ticking in, ending in "Starting PID 1" with the program it starts. A
-testing kernel shows "Loading test programs N of M: NAME" while its loader runs, so a hang
-names the program it stopped on. When PID 1 draws for the first time the screen is
-handed over to it: `/sbin/probe` draws its checklist, `probe --run` its program panel
-(output, elapsed time, verdict). If PID 1 never draws, the boot screen stays up. A kernel
-panic or fatal EL1 fault replaces whatever is on screen with a red diagnostics screen: the
-message or fault, the boot stage, and the last 20 log lines. Serial output is unchanged;
-every log line still goes there.
+As soon as the framebuffer exists the kernel draws the boot splash
+(`docs/console/contract.md`, sections 6 and 7): the Breenix logo with its blinking cursor,
+a progress bar that fills as kernel stages are reached, six milestone dots, the name of the
+stage reached last, the boot mode and a status line. A testing kernel's status line reads
+"Loading test programs N of M: NAME" while its loader runs, so a hang names the program it
+stopped on. The splash gives way to the screen console, the kernel log since boot and the
+console TTY as text sized for the display (`kernel/src/console`; the shell typed over serial
+shows there too), on the first of: a process reading the console (`shell` and `console`
+modes), init's `KDSETMODE(KD_TEXT)` after its boot script (`default` mode), a key press, a
+process taking the display, a panic, or 10 seconds after the first process starts. A testing
+kernel keeps the splash until those 10 seconds pass. When a display owner draws for the first
+time the screen is handed over to it: `/sbin/probe` draws its checklist, `probe --run` its
+program panel (output, elapsed time, verdict). A kernel panic or fatal EL1 fault replaces
+whatever is on screen with a red diagnostics screen: the message or fault, the boot stage,
+and the last 20 log lines. Serial output is unchanged: the log still goes there line for line.
 
 - `--display` opens the screen in a window. On a Mac the window belongs to a QEMU app bundle
   (`scripts/qemu-1x-app.sh`), which turns App Nap off for itself: a napped QEMU fires the
   guest's timer ticks tens of milliseconds late, and the time suite's limits fail (#1292).
 - `--qmp SOCKET` opens a QMP socket; `scripts/qmp-screendump.py SOCKET out.png` saves the
   screen at that moment, with or without `--display`.
-- `--fbconsole log` draws the kernel log on screen instead of the boot screen (kernel lines
-  only, not userspace output).
 
 Wait for a serial line rather than a fixed time, since the build before the boot takes a
 minute or two. Remove the old log first: the script truncates it only once the build is done.
@@ -376,10 +392,10 @@ scripts/qmp-screendump.py "$TMPDIR/breenix.qmp" "$TMPDIR/screen.png"
 
 A milestone with `"stub": true` is a definition under construction, not a completion claim: its stage
 lists are proposals that no kernel prints yet, so no boot passes it. The lane that produces its markers
-lands the exact strings with its code and the stage catalog, and removes the flag. `boot-logo` is one: the
-console effort's splash (`docs/console/contract.md`, section 7), finalized by its splash lane. Because a
-mode list replaces the architecture list, its `shell` and `default` lists repeat its four kernel stages
-before the hand-over stage, and each names the one hand-over reason that mode must reach.
+lands the exact strings with its code and the stage catalog, and removes the flag. `boot-logo` was one,
+finalized by the console effort's splash lane. Because a mode list replaces the architecture list, its
+`shell` and `default` lists repeat its four kernel stages before the hand-over stage, and each names the
+one hand-over reason that mode must reach.
 
 ## Focus and backtracking
 
