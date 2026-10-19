@@ -5,6 +5,10 @@ import metal_attended
 from pathlib import Path
 
 
+# The test runner names the marker each test will print before the test runs; that promise reaches no stage.
+ANNOUNCEMENT = 'kernel::test_exec:'
+
+
 def boot_shape(disk):
     return {'install': 'install', 'root': 'disk-root', None: 'ramdisk'}[disk]
 
@@ -33,6 +37,8 @@ def score(directory):
         raise ValueError('fault tests are never milestone evidence')
     if run.get('kind') == 'console-session':
         raise ValueError('operator console sessions are never scored')
+    if run.get('mode') == 'tests':
+        return score_tests(directory, run, read)
     definition = read('definition/docs/metal/boot-path.json')
     attended = run.get('attended', False)
     if attended:
@@ -78,6 +84,31 @@ def score(directory):
         if unmeasured:
             results[milestone['id']]['inputUnmeasured'] = unmeasured
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
+
+
+def score_tests(directory, run, read):
+    """A testing-kernel boot is scored as every testing boot is: each milestone of the commit's docs/boot-path.json by
+    its x86_64 stage list, a stage reached when one of its marker's alternatives appears on a serial line."""
+    definition = read('definition/docs/boot-path.json')
+    catalog = {stage['name']: stage for stage in read(
+        'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
+    lines = [line for line in (directory / 'serial.txt').read_text().splitlines() if ANNOUNCEMENT not in line]
+    events = {json.loads(line)['event'] for line in (directory / 'events.jsonl').read_text().splitlines()}
+    results = {}
+    for milestone in definition['milestones']:
+        stages = milestone['stages'].get('x86_64', [])
+        if milestone.get('stub') or not stages:
+            continue
+        missing = []
+        for stage in stages:
+            spec = catalog[stage] if isinstance(stage, str) else stage
+            alternatives = spec['marker'].split('|')
+            if not any(marker in line for line in lines for marker in alternatives):
+                missing.append(spec['name'])
+        results[milestone['id']] = {'reached': len(stages) - len(missing), 'total': len(stages),
+                                    'passed': not missing, 'missing': missing}
+    return {'bootShape': boot_shape(run.get('disk')), 'definition': 'docs/boot-path.json',
+            'milestones': results, 'captureComplete': 'console-gap' not in events}
 
 
 def falls_short(verdict):
