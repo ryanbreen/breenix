@@ -6309,7 +6309,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
-            crate::task::scheduler::force_unlock_scheduler();
+            crate::task::scheduler::force_unlock_scheduler(None);
         }
 
         let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
@@ -6530,7 +6530,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 0);
-            crate::task::scheduler::force_unlock_scheduler();
+            crate::task::scheduler::force_unlock_scheduler(Some(sched));
         }
 
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
@@ -6653,7 +6653,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     unsafe {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
-        crate::task::scheduler::force_unlock_scheduler();
+        crate::task::scheduler::force_unlock_scheduler(Some(sched));
     }
 
     // Capture what CPU 0 is dispatching via ERET and where it's going

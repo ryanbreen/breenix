@@ -527,10 +527,9 @@ fn last_dispatchable_return_tick(cpu: usize) -> u64 {
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 static BOOT_TEST_CPU_AFFINITY: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
-/// x86_64: bit `n` is set while CPU `n`'s run queue holds a thread, as the
-/// queues stood when the scheduler lock was last released. Read without the
-/// lock by `sys_yield` (`thread_queued_anywhere`).
-#[cfg(target_arch = "x86_64")]
+/// Bit `n` is set while CPU `n`'s run queue holds a thread, as the queues
+/// stood when the scheduler lock was last released. Read without the lock by
+/// `sys_yield` (`thread_queued_anywhere`).
 static QUEUED_CPUS: AtomicU64 = AtomicU64::new(0);
 
 /// x86_64: the scheduler lock, which publishes `QUEUED_CPUS` and sends the
@@ -695,10 +694,11 @@ static SCHEDULER_HELD_BY: [core::sync::atomic::AtomicBool; MAX_CPUS] =
 #[cfg(target_arch = "aarch64")]
 static DEFERRED_SGIS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
-/// aarch64: the scheduler lock, which sends the SGIs asked for under it once
-/// it is released (`DEFERRED_SGIS`). Holders run with interrupts masked, as
-/// the IRQ-shape census in tests/teardown_structure.rs requires of each
-/// acquisition, so the CPU that took the lock releases it.
+/// aarch64: the scheduler lock, which publishes `QUEUED_CPUS` and sends the
+/// SGIs asked for under it once it is released (`DEFERRED_SGIS`). Holders run
+/// with interrupts masked, as the IRQ-shape census in
+/// tests/teardown_structure.rs requires of each acquisition, so the CPU that
+/// took the lock releases it.
 #[cfg(target_arch = "aarch64")]
 pub struct SchedulerGuard {
     guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<Scheduler>>>,
@@ -743,9 +743,27 @@ impl core::ops::DerefMut for SchedulerGuard {
 #[cfg(target_arch = "aarch64")]
 impl Drop for SchedulerGuard {
     fn drop(&mut self) {
+        if let Some(scheduler) = self.guard.as_ref() {
+            publish_queued_cpus(scheduler);
+        }
         // SAFETY: dropped once, here; the guard is not read after this.
         unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
         scheduler_released(self.cpu);
+    }
+}
+
+/// Record which CPUs' run queues hold a thread (`QUEUED_CPUS`), just before
+/// the scheduler lock is released.
+#[cfg(target_arch = "aarch64")]
+fn publish_queued_cpus(scheduler: &Scheduler) {
+    let queued = scheduler
+        .per_cpu_queues
+        .iter()
+        .enumerate()
+        .filter(|(_, queue)| !queue.is_empty())
+        .fold(0u64, |mask, (cpu, _)| mask | 1 << cpu);
+    if QUEUED_CPUS.load(Ordering::Relaxed) != queued {
+        QUEUED_CPUS.store(queued, Ordering::Release);
     }
 }
 
@@ -1336,10 +1354,15 @@ pub fn lock_for_context_switch() -> SchedulerGuard {
 ///
 /// The inline scheduler path intentionally leaks the lock guard before hopping
 /// to a per-CPU scheduler stack, then releases the lock from that neutral
-/// stack after the outgoing thread is off CPU, and sends the SGIs asked for
-/// under the lock.
+/// stack after the outgoing thread is off CPU. `scheduler` is the
+/// scheduler that guard held, when the caller still has it: the release then
+/// publishes `QUEUED_CPUS` as a guard's does. Either way it sends the SGIs
+/// asked for under the lock.
 #[cfg(target_arch = "aarch64")]
-pub unsafe fn force_unlock_scheduler() {
+pub unsafe fn force_unlock_scheduler(scheduler: Option<&Scheduler>) {
+    if let Some(scheduler) = scheduler {
+        publish_queued_cpus(scheduler);
+    }
     SCHEDULER.force_unlock();
     scheduler_released(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize);
 }
@@ -9875,11 +9898,10 @@ pub fn sched_policy(tid: u64) -> Option<super::thread::SchedPolicy> {
     with_scheduler(|scheduler| scheduler.get_thread(tid).map(|thread| thread.sched)).flatten()
 }
 
-/// x86_64: whether any CPU's run queue held a thread, or a pinned wake was
-/// held for its home CPU, when the scheduler lock was last released. Read
-/// without the lock. A thread queued after the read is placed with its own
-/// reschedule request, so a caller that finds none is not what dispatches it.
-#[cfg(target_arch = "x86_64")]
+/// Whether any CPU's run queue held a thread, or a pinned wake was held for
+/// its home CPU, when the scheduler lock was last released. Read without the
+/// lock. A thread queued after the read is placed with its own reschedule
+/// request, so a caller that finds no queued thread is not what dispatches it.
 pub fn thread_queued_anywhere() -> bool {
     QUEUED_CPUS.load(Ordering::Acquire) != 0
         || PINNED_HOLDS_OUTSTANDING
