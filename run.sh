@@ -328,15 +328,6 @@ if [ "$VMWARE" = true ] && [ "$PARALLELS_TEST" = true ]; then
     exit 2
 fi
 
-# --gpu-core: the ESP carries \EFI\BREENIX\GPUCORE, which the loader reports to the kernel
-# (arm64_boot_contract::BOOT_FLAG_GPU_CORE), so the GPU core drives the virtio-gpu device and
-# shows its kernel console. The gpu suite needs it; other boots keep the legacy display.
-if [ "$PARALLELS" = true ] && [[ ",$SUITE," == *",gpu,"* ]]; then GPU_CORE=true; fi
-if [ "$GPU_CORE" = true ] && [ "$PARALLELS" != true ]; then
-    echo "--gpu-core is for --parallels"
-    exit 2
-fi
-
 # --suite ID: the VM's ext2 disk gets /etc/breenix/boot-target ("suite ID"), so the
 # production kernel runs /sbin/suite-ID as PID 1 (docs/boot-path.md, "Boot modes").
 if [ -n "$SUITE" ]; then
@@ -350,6 +341,15 @@ if [ -n "$SUITE" ]; then
     if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
         echo "--case watches one case of one suite, not a list"; exit 2
     fi
+fi
+
+# --gpu-core: the ESP carries \EFI\BREENIX\GPUCORE, which the loader reports to the kernel
+# (arm64_boot_contract::BOOT_FLAG_GPU_CORE), so the GPU core drives the virtio-gpu device and
+# shows its kernel console. The gpu suite needs it; other boots keep the legacy display.
+if [ "$PARALLELS" = true ] && [[ ",$SUITE," == *",gpu,"* ]]; then GPU_CORE=true; fi
+if [ "$GPU_CORE" = true ] && [ "$PARALLELS" != true ]; then
+    echo "--gpu-core is for --parallels"
+    exit 2
 fi
 
 if [ -n "$ONLY" ]; then
@@ -1041,7 +1041,7 @@ if [ "$PARALLELS" = true ]; then
     # A full gpu suite's hardware claim rests on the VM process's host GPU time
     # (docs/gui/gpu.md section 1.6.5): sample it beside the serial log.
     GPU_TIME_RECORD=""
-    if [ "$SUITE" = gpu ] && [ -z "$ONLY" ]; then
+    if [[ ",$SUITE," == *",gpu,"* ]] && [ -z "$ONLY" ]; then
         GPU_TIME_RECORD="$SERIAL_LOG.gpu-time.jsonl"
         export BREENIX_GPU_TIME_JSONL="$GPU_TIME_RECORD"
         python3 "$BREENIX_ROOT/scripts/parallels/gpu-time.py" sample --vm "$PARALLELS_VM" \
