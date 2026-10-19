@@ -11,6 +11,8 @@ extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
 pub mod serial;
+#[cfg(target_arch = "x86_64")]
+mod serial_tx_queue;
 #[cfg(target_arch = "aarch64")]
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
