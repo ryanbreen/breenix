@@ -1085,7 +1085,7 @@ class DriverTest(StateTest):
         self.assertEqual(boot.final_marker(metal, 'probe', catalog, 'disk-root'),
                          ('PROBE dir OK', 'contains'))
         self.assertEqual(boot.final_marker(metal, 'default', catalog, 'ramdisk'),
-                         ('[init] Boot script completed', 'contains'))
+                         ('Breenix login:', 'contains'))
 
     def test_mode_completion_waits_for_delayed_kernel_producers(self):
         d = self.driver
