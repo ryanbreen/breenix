@@ -560,7 +560,8 @@ fn queue_log_line() -> Burst {
 /// A TTY record (including a suite's final marker) follows the kernel
 /// records and loss reports already submitted. Take a finite boundary before
 /// waiting, so new producers do not extend this caller's UART wait.
-fn sync_log_to_console() {
+pub(crate) fn sync_log_to_console() {
+    if !log_on_console() { return; }
     let target = loop {
         if let Some(target) = crate::arch_without_interrupts(|| LOG_RING.lock().sync_target()) {
             break target;
@@ -759,9 +760,6 @@ pub fn write_byte(writer: Writer, byte: u8) {
 /// the serial lock once, starting a fresh line first if another writer's line
 /// is open (`serial_writer`).
 pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
-    if writer == Writer::Tty && log_on_console() {
-        sync_log_to_console();
-    }
     // CRITICAL: Check if interrupts are currently enabled
     // We must NOT re-enable interrupts if they were disabled by syscall entry
     let irq_enabled = crate::arch_interrupts_enabled();
