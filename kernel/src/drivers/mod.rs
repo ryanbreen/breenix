@@ -330,10 +330,9 @@ pub fn init() -> usize {
 
         init_entropy_pci();
 
-        // Device-layer experiments must not displace the working desktop by default.
-        if crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
-            crate::gpu::init_vmware();
-        } else {
+        // The DX backend changes the GOP aperture. It starts after the splash
+        // is verified and legacy display writers are stopped, in main_aarch64.
+        if !(crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental")) {
             // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
             match vmware::svga3::init() {
                 Ok(()) => {

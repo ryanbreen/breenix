@@ -462,6 +462,7 @@ pub fn init() {
 /// interrupt this kernel can take, so `kgpu` polls it while work is outstanding. An absent
 /// or failing device leaves a core that refuses its ops, naming why.
 pub fn init_vmware() {
+    console::quiesce();
     let mut core = Core::empty();
     dev::select_svga();
     match svga::Device::probe() {

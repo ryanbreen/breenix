@@ -2,7 +2,7 @@
 
 pub const VENDOR: u16 = 0x15ad;
 pub const DEVICE: u16 = 0x0406;
-pub const ID_2: u32 = 0x9000_0002;
+pub const ID_3: u32 = 0x9000_0003;
 pub const INVALID: u32 = u32::MAX;
 
 pub mod reg {

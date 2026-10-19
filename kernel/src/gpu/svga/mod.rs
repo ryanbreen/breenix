@@ -673,11 +673,8 @@ impl Device {
             pending: VecDeque::new(), tables: Vec::new(), fence: None, next_id: 1, next_slot: 0, stopped: true,
             resetting: None, cleaning: false,
         };
-        // Preserve the firmware framebuffer aperture until the GPU takes over.
-        // Interface version 2 still advertises the DX and command-buffer entries
-        // checked below; version 3 no longer retains GOP's linear framebuffer.
-        dev.write(wire::reg::ID, wire::ID_2);
-        if dev.read(wire::reg::ID) != wire::ID_2 { return Err(Error::DeviceFault); }
+        dev.write(wire::reg::ID, wire::ID_3);
+        if dev.read(wire::reg::ID) != wire::ID_3 { return Err(Error::DeviceFault); }
         let caps = dev.read(wire::reg::CAPABILITIES);
         if caps & wire::COMMAND_BUFFERS == 0 { return Err(Error::Missing(gpu_abi::capability::CAPABILITY_SET)); }
         if caps & wire::GB_OBJECTS == 0 { return Err(Error::Missing(gpu_abi::capability::CAPABILITY_SET)); }

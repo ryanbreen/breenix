@@ -85,7 +85,7 @@ fn firmware_hash() -> u64 {
     guard.firmware_hash()
 }
 
-fn quiesce() {
+pub(super) fn quiesce() {
     if RETIRED.load(Ordering::Acquire) {
         return;
     }
@@ -98,10 +98,10 @@ fn quiesce() {
     } else {
         RETIRED.store(true, Ordering::Release);
     }
-    HASH.store(firmware_hash(), Ordering::Release);
 }
 
 fn handoff() {
+    HASH.store(firmware_hash(), Ordering::Release);
     crate::graphics::firmware_writes::handoff();
     HANDOFF.store(true, Ordering::Release);
     crate::graphics::log_capture::init();
