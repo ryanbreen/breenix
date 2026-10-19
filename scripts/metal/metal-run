@@ -3,7 +3,7 @@
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
   metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
-                 [--ramdisk] [--mode default|shell|probe|suite|console] [--disk install|root] [--session [--idle-minutes N]]
+                 [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
   metal-run stop ID
   metal-run status
@@ -16,6 +16,8 @@ build container, detached, and streams the image inputs into the service contain
 the host file named by BREENIX_METAL_HOST_ENV (default ~/.config/breenix-metal/host.env), never from the repository.
 A suite boot may run several suites in turn: a list, or `all` (every main-path effort suite but those that need a 3D GPU),
 resolved against the commit's own docs/efforts/path.json and manifests (docs/suites/README.md, "Several suites in one boot").
+A tests boot builds the testing kernel (--features testing, as run.sh --tests does) and runs its test binaries until the
+userspace test report; it is scored against the commit's docs/boot-path.json (docs/metal/README.md, "Tests mode").
 """
 import argparse
 import json
@@ -33,6 +35,8 @@ HERE = Path(__file__).resolve().parent
 XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
 # The kernel feature that compiles the xHCI recovery exercise in; production kernels never carry it.
 FAULT_FEATURE = 'xhci_fault_inject'
+# The testing kernel's feature, as run.sh --tests builds it.
+TESTING_FEATURE = 'testing'
 
 
 def host_env():
@@ -133,6 +137,8 @@ def boot(args):
             args.payload != 'image' or args.mode != 'console' or args.input != 'sol'
             or is_session or attended or args.disk):
         raise SystemExit('xHCI faults need a RAM-disk console boot with --input sol')
+    if args.mode == 'tests' and (args.payload != 'image' or args.inject or args.suite or args.disk == 'install'):
+        raise SystemExit('tests mode needs a disk-root image boot without --inject or --suite')
     if args.payload == 'image' and not args.disk and args.inject not in XHCI_FAULTS:
         args.disk = 'root'
     if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
@@ -203,8 +209,10 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            # An xHCI fault boot gets a fault-test kernel; every other boot the production one.
-            features = ['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else []
+            # An xHCI fault boot gets a fault-test kernel, a tests boot the testing kernel; every other boot the
+            # production one.
+            features = (['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
+                        ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite +
@@ -284,7 +292,7 @@ def main():
     p = sub.add_parser('boot')
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback'), default='image')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
-    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console'), default='default')
+    p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default')
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
     p.add_argument('--wait', type=float, default=30, metavar='MIN', help='attended wait in minutes (default 30)')
@@ -309,7 +317,7 @@ def main():
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE,))
+    p.add_argument('--features', choices=(FAULT_FEATURE, TESTING_FEATURE))
     p.add_argument('--suite')
     p.add_argument('--readback', action='store_true')
     p.add_argument('--catchup', action='store_true')

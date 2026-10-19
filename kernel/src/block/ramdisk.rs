@@ -7,6 +7,9 @@ use super::{BlockDevice, BlockError};
 
 const SECTOR_SIZE: usize = 512;
 static DISK: Once<RamDisk<'static>> = Once::new();
+/// A testing kernel's test binaries, when the bootloader handed over a BXTEST image (docs/metal/README.md, "Tests mode").
+static TEST_DISK: Once<RamDisk<'static>> = Once::new();
+const TEST_DISK_MAGIC: &[u8; 8] = b"BXTEST\0\0";
 
 #[derive(Clone)]
 struct RamDisk<'a> {
@@ -83,6 +86,14 @@ pub unsafe fn init(addr: Option<u64>, len: u64) -> Result<(), &'static str> {
     if crate::boot::intent::capture(bytes) {
         return Ok(());
     }
+    // A test-binary image is the testing kernel's test disk and not a root: root
+    // stays on the installed hardware disk.
+    if bytes.starts_with(TEST_DISK_MAGIC) {
+        let disk = RamDisk::new(bytes)?;
+        TEST_DISK.call_once(|| disk);
+        log::info!("[block] ramdisk {} bytes holds test binaries", len);
+        return Ok(());
+    }
     let disk = RamDisk::new(bytes)?;
     DISK.call_once(|| disk);
     log::info!("[block] ramdisk {} bytes", len);
@@ -91,6 +102,11 @@ pub unsafe fn init(addr: Option<u64>, len: u64) -> Result<(), &'static str> {
 
 pub fn device() -> Option<Box<dyn BlockDevice>> {
     DISK.get().map(|disk| Box::new(disk.clone()) as Box<dyn BlockDevice>)
+}
+
+/// The BXTEST image the bootloader handed over, if any.
+pub fn test_device() -> Option<Box<dyn BlockDevice>> {
+    TEST_DISK.get().map(|disk| Box::new(disk.clone()) as Box<dyn BlockDevice>)
 }
 
 #[cfg(test)]

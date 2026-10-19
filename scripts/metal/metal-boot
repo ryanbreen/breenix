@@ -10,11 +10,12 @@
   metal-boot status                 the lease, the machine reading and the newest records, as JSON
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-Run options: --payload image|hang|none, --mode default|shell|probe|suite|console, --commit SHA, --target main|branch:NAME,
+Run options: --payload image|hang|none, --mode default|shell|probe|suite|console|tests, --commit SHA, --target main|branch:NAME,
 --task NAME, --no-wait, --inject forceoff-fail|xhci-reset-device|xhci-short-read, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
 for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
 its stage folder, and serves boot.efi: the stub with its delivery disk appended. Main-path modes default to
-physical disk root, installing a fresh root with the requested target before the kernel starts. `--disk install` is an explicit recovery install from a RAM disk; xHCI fault boots
+physical disk root, installing a fresh root with the requested target before the kernel starts. A tests boot runs the
+testing kernel with the build's test-binary disk as its RAM disk and ends at the userspace test report. `--disk install` is an explicit recovery install from a RAM disk; xHCI fault boots
 retain a RAM-disk root (README, "The disks").
 """
 import argparse
@@ -41,13 +42,13 @@ import metal_disk  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-MODES = ('default', 'shell', 'probe', 'suite', 'console')
+MODES = ('default', 'shell', 'probe', 'suite', 'console', 'tests')
 DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback')
-CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900}
+CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500}
 SESSION_CEILING_SECONDS = 4 * 3600
 
 
@@ -92,7 +93,10 @@ def ceiling_seconds(args):
     return SESSION_CEILING_SECONDS if session(args) else CEILING_SECONDS[args.mode]
 
 
-MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300}
+MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300, 'tests': 600}
+# The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
+# through the logger, after a level and module prefix.
+TESTS_DONE = 'USERSPACE TEST REPORT DONE'
 INPUT_DEADLINE_SECONDS = 2 * 3600
 CONSOLE_BANNER = b'[SOL Session operational'
 CONSOLE_WAIT_SECONDS = 20
@@ -177,6 +181,7 @@ class Driver:
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
+        self.test_report_lines = []
         self.final_seen = False
         self.completion_reported = False
         self.probe_failed = False
@@ -354,11 +359,14 @@ class Driver:
             self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
             return
         build = m.read_json(inputs / 'build.json', {})
-        # Only an xHCI fault boot takes a fault-test kernel, and it takes no other.
-        features = ['xhci_fault_inject'] if xhci_fault(self.args) else []
-        profile = 'fault-test' if features else 'production'
+        # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
+        features = ['xhci_fault_inject'] if xhci_fault(self.args) else ['testing'] if self.args.mode == 'tests' else []
+        profile = {'xhci_fault_inject': 'fault-test', 'testing': 'testing'}.get(''.join(features), 'production')
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
+        tests = inputs / 'test-binaries.img'
+        if self.args.mode == 'tests' and (not tests.is_file() or build.get('testBinaries', {}).get('sha256') != metal_image.sha256(tests)):
+            raise Finish(m.EXIT_CANCELLED, 'the test-binary disk differs from its build record')
         if build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
             raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
         self.delivery['build'] = build
@@ -409,6 +417,10 @@ class Driver:
             intent = self.stage / 'boot-intent'
             intent.write_bytes(('BREENIX-BOOT 1\n' + target + '\n').encode('ascii'))
             files['ramdisk'] = intent
+            if self.args.mode == 'tests':
+                # The testing kernel takes its test binaries from the RAM disk; it never reads a boot intent.
+                files['ramdisk'] = tests
+                self.delivery['testBinaries'] = build['testBinaries']
         if self.args.inject == 'disk-before-mount':
             # The stub installs and verifies the root before loading this file.
             # An invalid EFI image fails delivery without executing a kernel.
@@ -420,7 +432,7 @@ class Driver:
         image = self.stage / 'boot.efi'
         wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
         disk.unlink()
-        for name in ('uefi.img', 'ext2.img', 'stub.efi'):
+        for name in ('uefi.img', 'ext2.img', 'stub.efi', 'test-binaries.img'):
             (inputs / name).unlink(missing_ok=True)
         self.payload_facts = {'path': image, 'size': wrapped['size'], 'sha256': wrapped['sha256'],
                               'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'boot.efi'}
@@ -454,6 +466,12 @@ class Driver:
             self.final_marker = (marker, 'contains')
             self.required_stages = [[(marker, 'contains')]]
             self.console_done = True
+        if self.args.mode == 'tests':
+            # The report's end triggers validation of its loader and exit accounting before completion.
+            # Milestones are scored against main's path after capture stops.
+            self.fatal_patterns = [re.compile(p) for p in main.get('fatal', [])]
+            self.final_marker = (TESTS_DONE, 'contains')
+            self.required_stages = []
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
@@ -793,6 +811,8 @@ class Driver:
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def on_line(self, line, *, observed_at=None):
+        if self.args.mode == 'tests':
+            self.test_report_lines.append(line + "\n")
         observed_at = m.now() if observed_at is None else observed_at
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
@@ -882,6 +902,11 @@ class Driver:
                 and self.fatal_at is None and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
+            if self.args.mode == 'tests':
+                passed, reason = metal_score.tests_verdict(self.dir, ''.join(self.test_report_lines))
+                self.event('test-report', passed=passed, reason=reason)
+                if not passed:
+                    raise Finish(m.EXIT_SHORT, reason)
             if self.probe_failed:
                 raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
@@ -1496,6 +1521,8 @@ def main():
             parser.error('boot modes need an image payload')
         if args.disk == 'install' and args.mode not in ('probe', 'console'):
             parser.error('--disk install needs probe or console mode')
+        if args.mode == 'tests' and (args.inject or args.disk == 'install'):
+            parser.error('tests mode needs a disk-root boot without --inject')
         if args.session and (args.mode != 'console' or args.input or args.disk == 'install'):
             parser.error('--session needs console mode, operator input and no disk install')
         if not 1 <= args.idle_minutes <= 240 or (args.idle_minutes != 30 and not args.session):
