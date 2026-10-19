@@ -1504,7 +1504,7 @@ struct Hung {
 }
 
 /// The nodes the accounts are posted through; a node is reused once its line is written.
-// A summary never competes with account lines for a node. If this node is still
+// Summaries use a separate node from account lines. If this node is still
 // posted, kgpu retains the new counts and retries them after its next wake.
 static HUNG_LOSS_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
 static HUNG_NODES: [crate::log_notice::Node; HUNG_KEPT * HUNG_LINES] =
