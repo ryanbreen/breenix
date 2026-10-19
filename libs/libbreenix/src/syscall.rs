@@ -14,6 +14,9 @@
 
 use core::arch::asm;
 
+/// Read pool output without waiting for credited entropy, for non-secret callers.
+pub const GRND_INSECURE: u32 = 0x0004;
+
 /// Syscall numbers matching kernel/src/syscall/mod.rs
 ///
 /// x86_64: Uses the Linux x86_64 ABI's system call numbers.

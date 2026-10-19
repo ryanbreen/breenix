@@ -254,6 +254,7 @@ class GDBChat:
             "-device", "virtio-keyboard-device",
             "-device", "virtio-tablet-device",
             *disk_opts,
+            "-device", "virtio-rng-device",
             "-device", "virtio-net-device,netdev=net0",
             "-netdev", "user,id=net0",
             "-serial", f"file:{self.SERIAL_LOG_FILE}",

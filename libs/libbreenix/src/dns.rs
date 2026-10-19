@@ -266,7 +266,8 @@ impl DnsHeader {
 // Encoding Functions
 // ============================================================================
 
-/// Obtain the transaction ID from the kernel random source; never fall back to a predictable ID.
+/// Draw transaction IDs from the pool without waiting for credited entropy at boot.
+/// IDs may be predictable before the pool is ready.
 fn generate_txid() -> Result<u16, DnsError> {
     let mut bytes = [0; 2];
     let mut used = 0;
@@ -276,7 +277,7 @@ fn generate_txid() -> Result<u16, DnsError> {
                 nr::GETRANDOM,
                 bytes[used..].as_mut_ptr() as u64,
                 (bytes.len() - used) as u64,
-                0,
+                crate::syscall::GRND_INSECURE as u64,
             )
         } as i64;
         if n <= 0 || n as usize > bytes.len() - used {

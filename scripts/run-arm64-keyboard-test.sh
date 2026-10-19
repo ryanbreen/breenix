@@ -86,6 +86,7 @@ python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -display none -no-reboot \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
+    -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -serial file:"$SERIAL_LOG" \

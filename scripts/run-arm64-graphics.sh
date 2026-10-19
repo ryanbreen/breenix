@@ -121,6 +121,7 @@ python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -device virtio-gpu-device \
     $DISPLAY_OPT \
     $DISK_OPTS \
+    -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -device virtio-keyboard-device \

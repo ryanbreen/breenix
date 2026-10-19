@@ -230,8 +230,7 @@ fn main() {
     }
 
     // Test 5: getrandom returns random bytes
-    // The kernel implements getrandom (syscall 318) with a TSC-seeded PRNG.
-    // Note: getrandom is a libc function, not available in libbreenix.
+    // Exercise the secure default: this must wait for credited entropy.
     unsafe {
         extern "C" {
             fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize;
