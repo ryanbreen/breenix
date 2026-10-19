@@ -273,52 +273,51 @@ pub fn ownership_stack() -> CaseResult {
     let _case = begin()?;
     nested()
 }
-fn console_pixels() -> CaseResult {
+/// The kernel's screen after the display came back (ruling F25): the screen console redrew
+/// its frame into the kernel's scanout target, which MODES names as the console's resource
+/// and the binding of scanout 0, and which reads back from the device identical to the
+/// console's shadow and to its font oracle (`/proc/console/check`).
+fn kernel_screen_shown() -> CaseResult {
+    let identical = |text: &str| {
+        text.lines().any(|l| l == "console check: shadow and screen identical")
+            && text.lines().any(|l| l.starts_with("console frame: ") && l.ends_with(" complete"))
+            && text.lines().any(|l| l.starts_with("console oracle: ") && l.ends_with(" mismatches=0"))
+    };
+    let mut text = String::new();
+    for _ in 0..40 {
+        text = std::fs::read_to_string("/proc/console/check")
+            .map_err(|e| fail_msg(format!("console check: {e}")))?;
+        if identical(&text) {
+            break;
+        }
+        let _ = libbreenix::time::sleep_ms(50);
+    }
+    ensure(identical(&text), || format!("restored kernel screen did not read back identical: {text}"))?;
     let m = modes()?;
+    let console = u64_at(&m, 72);
+    ensure(console != 0 && u64_at(&m, 64) == console && u32_at(&m, 28) == 1, || {
+        format!("scanout 0 is resource {} (known {}), the kernel's screen is {console}", u64_at(&m, 64), u32_at(&m, 28))
+    })?;
     ensure(
-        u64_at(&m, 72) != 0 && u64_at(&m, 80) > 0 && u64_at(&m, 88) > 0,
-        || "console lacks completed GPU glyph draws or fixture upload".to_string(),
-    )?;
-    let width = noto_sans_mono_bitmap::get_raster_width(
-        noto_sans_mono_bitmap::FontWeight::Regular,
-        noto_sans_mono_bitmap::RasterHeight::Size16,
-    ) as u32;
-    let text = b"Breenix GPU console";
-    let w = text.len() as u32 * width;
-    let mut px = vec![0u8; (w * 16 * 4) as usize];
+        text.lines().any(|l| {
+            l.starts_with("console scanout: ")
+                && l.contains(&format!(" of resource {console} bound to scanout 0"))
+                && l.ends_with("transferred back from the device")
+        }),
+        || format!("the console's read-back is not of resource {console}: {text}"),
+    )
+}
+/// After a retake, before presenting: the current scanout is the kernel's screen.
+fn kernel_screen_bound() -> CaseResult {
+    let m = modes()?;
+    let mut px = [0u8; 4];
     let mut rec = [0u8; record::SIZE];
-    let r = gpu::readback(0, [16, 16, w, 16], &mut px, w * 4, &mut rec);
-    ensure(r == 0, || format!("console device readback: {}", errno(r)))?;
+    let r = gpu::readback(0, [0, 0, 1, 1], &mut px, 4, &mut rec);
+    ensure(r == 0, || format!("scanout readback: {}", errno(r)))?;
     ensure(
         u64_at(&rec, record::RESOURCE) == u64_at(&m, 72) && u32_at(&rec, record::FLAGS) & 1 == 1,
-        || "restored screen is not the GPU console".to_string(),
-    )?;
-    for (i, &b) in text.iter().enumerate() {
-        let glyph = noto_sans_mono_bitmap::get_raster(
-            b as char,
-            noto_sans_mono_bitmap::FontWeight::Regular,
-            noto_sans_mono_bitmap::RasterHeight::Size16,
-        )
-        .ok_or_else(|| fail_msg("missing built-in glyph".to_string()))?;
-        for (y, row) in glyph.raster().iter().enumerate() {
-            for (x, &a) in row.iter().enumerate() {
-                let at = (y * w as usize + i * width as usize + x) * 4;
-                let bg = 0xff181512u32.to_le_bytes();
-                let fg = 0xffe8edf2u32.to_le_bytes();
-                for ch in 0..4 {
-                    let want = ((fg[ch] as u32 * a as u32 + bg[ch] as u32 * (255 - a as u32) + 127)
-                        / 255) as u8;
-                    ensure(px[at + ch] == want, || {
-                        format!(
-                            "console glyph {i} ({x},{y}) channel {ch}: {} expected {want}",
-                            px[at + ch]
-                        )
-                    })?;
-                }
-            }
-        }
-    }
-    Ok(())
+        || "restored screen is not the kernel's screen".to_string(),
+    )
 }
 pub fn console_restored() -> CaseResult {
     let _case = begin()?;
@@ -326,11 +325,12 @@ pub fn console_restored() -> CaseResult {
     present(c, t)?;
     let before = u64_at(&modes()?, 80);
     back()?;
+    kernel_screen_shown()?;
     take()?;
     ensure(u64_at(&modes()?, 80) > before, || {
-        "return to kernel did not redraw console".to_string()
+        "return to kernel did not present its screen".to_string()
     })?;
-    console_pixels()
+    kernel_screen_bound()
 }
 pub fn firmware_handoff() -> CaseResult {
     let _case = begin()?;
@@ -341,8 +341,9 @@ pub fn firmware_handoff() -> CaseResult {
         || "kernel wrote firmware framebuffer after GPU handoff".to_string(),
     )?;
     back()?;
+    kernel_screen_shown()?;
     take()?;
-    console_pixels()?;
+    kernel_screen_bound()?;
     let after = modes()?;
     value("handoff", u64_at(&after, 96) as i64, "", Some((1, 1)));
     ensure(
