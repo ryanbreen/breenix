@@ -288,9 +288,28 @@ pub fn hostkeys(chords: &str) -> Result<u64, String> {
     if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
         return Err(String::from("host key record unavailable"));
     }
+    usb_input_attached()?;
     let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
     record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
     Ok(seq)
+}
+
+/// On ARM64 Parallels and VMware the keyboard is a USB device that the kernel's
+/// xHCI worker attaches after PID 1 starts, and a key the host sends before then is
+/// lost. Wait up to 5 s while `/proc/xhci/trace` says the controller is still
+/// enumerating; a target without that file or controller does not wait.
+fn usb_input_attached() -> Result<(), String> {
+    let start = monotonic_ns();
+    loop {
+        let trace = std::fs::read_to_string("/proc/xhci/trace").unwrap_or_default();
+        if !trace.contains("state=enumerating") {
+            return Ok(());
+        }
+        if start.zip(monotonic_ns()).is_none_or(|(then, now)| now - then >= 5_000_000_000) {
+            return Err(String::from("USB input still enumerating after 5 s"));
+        }
+        let _ = time::sleep_ms(20);
+    }
 }
 
 /// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.

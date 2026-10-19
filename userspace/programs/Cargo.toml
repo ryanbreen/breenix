@@ -649,6 +649,10 @@ path = "src/bssh.rs"
 name = "biconkit"
 path = "src/biconkit.rs"
 
+[[bin]]
+name = "usb_pointer_check"
+path = "src/usb_pointer_check.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"
@@ -783,3 +787,7 @@ path = "src/login.rs"
 [[bin]]
 name = "console-login-shell"
 path = "src/console_login_shell.rs"
+
+[[bin]]
+name = "gpu_fault_acceptance"
+path = "src/gpu_fault_acceptance.rs"

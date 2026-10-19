@@ -95,6 +95,8 @@ pub mod capture;
 // of it: that directory forbids `panic!` and this module's job is to raise one.
 #[cfg(feature = "capture_panic_oracle")]
 pub mod capture_oracle;
+#[cfg(all(target_arch = "aarch64", feature = "gpu_fault_acceptance"))]
+pub mod gpu_fault_acceptance;
 // The BXCAP `edge=LOCKUP` oracle. AArch64 only: the soft-lockup detector it
 // drives, and the CPU-pinned spawn it needs, exist on that arch alone.
 #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]

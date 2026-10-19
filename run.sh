@@ -68,6 +68,9 @@ SUITE=""
 ONLY=""
 PROBE=false
 TESTS=false
+PROGRAM=""
+PROGRAM_ARG=""
+KERNEL_FEATURES=""
 BOOT_MODE=default
 GATE_TIMEOUT=1800
 DEBUG=false
@@ -170,6 +173,18 @@ while [[ $# -gt 0 ]]; do
             TESTS=true
             shift
             ;;
+        --program)
+            PROGRAM="${2:-}"
+            shift 2
+            ;;
+        --program-arg)
+            PROGRAM_ARG="${2:-}"
+            shift 2
+            ;;
+        --kernel-features)
+            KERNEL_FEATURES="${2:-}"
+            shift 2
+            ;;
         --case)
             [ -n "${2:-}" ] || { echo "--case needs a category id"; exit 2; }
             ONLY="${2:-}"
@@ -215,12 +230,16 @@ while [[ $# -gt 0 ]]; do
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
+            echo "  --program PATH             Parallels/VMware: /sbin/probe runs guest program PATH, wait for RUN DONE, stop VM"
+            echo "  --program-arg WORD         The one argument --program's PATH gets"
+            echo "  --kernel-features LIST     With --program: build the kernel with these cargo features (a measurement kernel)"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
             echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
+            echo "  BREENIX_VMWARE_POINTER=relative  VMware: tablet disabled, VNC buttons and wheel go to the USB mouse"
             echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
@@ -354,6 +373,23 @@ if [ "$PROBE" = true ]; then
 elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
 fi
+if [ -n "$PROGRAM" ]; then
+    if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
+        echo "--program is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode program)"
+        exit 1
+    fi
+    if [ "$PROBE" = true ] || [ -n "$SUITE" ] || [ "$TESTS" = true ] || [ "$PARALLELS_TEST" = true ] || [ "$BTRT" = true ]; then
+        echo "--program cannot be combined with --probe, --suite, --tests, --test or --btrt"
+        exit 1
+    fi
+    [[ "$PROGRAM" =~ ^/[A-Za-z0-9_./-]+$ ]] || { echo "--program needs an absolute guest path"; exit 2; }
+    [ -z "$PROGRAM_ARG" ] || [[ "$PROGRAM_ARG" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+        { echo "--program-arg needs lowercase words joined by '-'"; exit 2; }
+    BOOT_MODE=program
+elif [ -n "$PROGRAM_ARG" ] || [ -n "$KERNEL_FEATURES" ]; then
+    echo "--program-arg and --kernel-features need --program"
+    exit 2
+fi
 # The manifests of the suites this boot runs, for the quiet-host check.
 SUITE_MANIFESTS=()
 IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
@@ -378,6 +414,11 @@ if [ "$TESTS" = true ]; then
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
 fi
+if [ -n "$KERNEL_FEATURES" ]; then
+    [[ "$KERNEL_FEATURES" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || { echo "--kernel-features needs comma-separated feature names"; exit 2; }
+    [ "$NO_BUILD" != true ] || { echo "--kernel-features builds the kernel; it cannot be combined with --no-build"; exit 1; }
+    KERNEL_FEATURE_ARGS=(--features "$KERNEL_FEATURES")
+fi
 
 # Keep host launch policy beside this run's serial, including successful catch-up overrides.
 record_launch_metadata() {
@@ -391,7 +432,7 @@ PYLAUNCH
 
 # Whether this boot writes a boot target onto a copy of the ext2 disk.
 writes_boot_target() {
-    [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]
+    [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]
 }
 
 # The nameserver this target's /etc/resolv.conf names. VMware's adapter is bridged
@@ -422,10 +463,13 @@ stage_boot_ext2_disk() {
     if [ "$PROBE" = true ]; then
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
+    elif [ "$BOOT_MODE" = program ]; then
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --program "$PROGRAM" \
+            ${PROGRAM_ARG:+"$PROGRAM_ARG"} || exit 1
     else
         local hostkeys_backend=none
         if [ "$PARALLELS" = true ]; then
-            hostkeys_backend=prlctl:declaration
+            hostkeys_backend=prlsdk:declaration
         elif [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
             hostkeys_backend="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
         fi
@@ -462,7 +506,7 @@ ext2_rewrap_needed() {
 # Record whether the data disk just wrapped carries a boot target.
 mark_wrapped_ext2() {
     local marker="$1"
-    if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
+    if writes_boot_target; then echo "$BOOT_MODE $SUITE$PROGRAM${PROGRAM_ARG:+ $PROGRAM_ARG}" > "$marker"; else rm -f "$marker"; fi
     # Staging verifies the nameserver before the wrapped disk is published.
     target_nameserver > "$marker.dns"
     ext2_source_identity > "$marker.source.sha256"
@@ -963,6 +1007,8 @@ if [ "$PARALLELS" = true ]; then
     vm_run_owner record "$PARALLELS_OWNER_FILE" "$$"
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
+    # Forward modifier transitions for console chords (Parallels KB 119070).
+    prlctl set "$PARALLELS_VM" --keyboard-optimize on
     # Run the vCPU threads in macOS's user-interactive QoS class, as the ARM64 QEMU launcher
     # does (scripts/qemu-ui-launch.sh). Parallels otherwise starts them in the default class,
     # priority 31, below the host's interactive work, and on a loaded Mac guest timer ticks
@@ -1055,9 +1101,9 @@ if [ "$PARALLELS" = true ]; then
         { echo "ERROR: Parallels VM config does not carry system flags $PARALLELS_SYSTEM_FLAGS"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
-    if [ "$BOOT_MODE" = suite ]; then
+    if [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]; then
         # A suite case that needs a key asks on serial; the watcher presses it (scripts/hostkeys.py).
-        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "prlctl:$PARALLELS_VM" \
+        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "prlsdk:$PARALLELS_VM" \
             --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
     fi
     echo ""
@@ -1069,9 +1115,9 @@ if [ "$PARALLELS" = true ]; then
     echo "Stop:   prlctl stop $PARALLELS_VM --kill"
     echo ""
 
-    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then
         wait_boot_done || exit $?
-        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
+        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then exit 0; fi
         if [ "$PARALLELS_TEST" != true ]; then exit 0; fi
     fi
 
@@ -1405,6 +1451,16 @@ RemoteDisplay.vnc.port = "$BREENIX_VMWARE_VNC_PORT"
 RemoteDisplay.vnc.ip = "127.0.0.1"
 VMXEOF
     fi
+    # A pointer measurement of the relative interface: with Fusion's absolute USB tablet
+    # disabled, its VNC server sends the USB mouse the pointer's buttons and wheel. It sends
+    # that mouse no motion (two measurement boots, with and without the gaming-mouse policy).
+    if [ "${BREENIX_VMWARE_POINTER:-}" = relative ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
+mouse.vusb.absDisabled = "TRUE"
+VMXEOF
+    elif [ -n "${BREENIX_VMWARE_POINTER:-}" ]; then
+        echo "BREENIX_VMWARE_POINTER takes only 'relative'"; exit 2
+    fi
 
     # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
     if [ "${RETINA:-false}" != true ]; then
@@ -1454,23 +1510,20 @@ VMXEOF
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
-        # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
-        # "succeeds" (exit 0, no error to fall back from) even when nothing
-        # is watching it, so an unattended caller that wants no window on
-        # the operator's desktop has to skip the gui attempt entirely rather
-        # than rely on the error-fallback path below.
+        # An explicit headless request selects nogui for unattended callers.
+        # The default branch below requires a successful GUI start.
         echo "BREENIX_VMWARE_NOGUI set: starting headless (nogui)"
         CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
     else
         CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
-            echo "vmrun start failed with GUI, trying nogui..."
-            "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
+            echo "ERROR: VMware GUI start failed"
+            exit 1
         }
     fi
 
-    if [ "$BOOT_MODE" = suite ]; then
+    if [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]; then
         if [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
             HOSTKEYS_BACKEND="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
         else
@@ -1488,11 +1541,11 @@ VMXEOF
     echo "VMX:    $VMX_FILE"
     echo "Stop:   \"$VMRUN\" stop \"$VMX_FILE\" hard"
     echo ""
-    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then
         wait_boot_done || exit $?
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
-        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
+        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then exit 0; fi
         exit 0
     fi
 
