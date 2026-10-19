@@ -81,6 +81,10 @@ so the driver takes the first request after power-on as the firmware's: a probe 
 and a `GET` would take the boot's one transfer. claim-lint:ok: one L0 fault test's probe did both; its POST entry
 was removed from `post-times.json`.
 
+The boot loop’s default mode starts the framebuffer console with getty on its six
+virtual terminals. It waits for the login prompt. x86 desktop requests are refused
+with a plain line and use that console instead (S36).
+
 ## The console
 
 SOL reads the server's console UART, COM1 at I/O port 0x3F8. POST and firmware text reach it (BIOS console

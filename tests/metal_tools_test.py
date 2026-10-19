@@ -776,6 +776,9 @@ class RootStagingTest(unittest.TestCase):
             tree = root / 'tree'
             (tree / 'sbin').mkdir(parents=True)
             (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'bin').mkdir()
+            for program in ('getty', 'login'):
+                (tree / 'bin' / program).write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
@@ -783,17 +786,25 @@ class RootStagingTest(unittest.TestCase):
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
-            site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
+            site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture',
+                    'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
+                    'CONSOLE_IDENTITY_KEY': 'ab' * 32}
+            hasher = Path(os.environ['CONSOLE_HASH_HELPER'])
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
                                           ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:
-                facts = metal_root.stage_root(image, mode, suite, site)
+                facts = metal_root.stage_root(image, mode, suite, site, hasher=hasher)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):
                     return subprocess.run([debugfs, '-R', 'cat /etc/breenix/' + name, str(image)],
                                           check=True, capture_output=True).stdout.decode()
                 self.assertEqual(read('boot-target'), expected + '\n')
                 self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+                if mode == 'default':
+                    self.assertTrue(read('../shadow').startswith('root:$6$'))
+            subprocess.run(['bash', str(TOOLS.parent / 'write-boot-target.sh'), str(image), '--desktop'],
+                           check=True, capture_output=True)
+            self.assertEqual(read('boot-target'), 'desktop\n')
             probe_site = dict(site, BOOT_URL='http://fixture.invalid/breenix/boot.img')
             metal_root.stage_root(image, 'probe', None, probe_site)
             self.assertEqual(read('boot-target'), 'probe\n')
@@ -809,7 +820,7 @@ class RootStagingTest(unittest.TestCase):
             spec = importlib.util.spec_from_file_location('deployed_root', package / 'metal_root.py')
             deployed = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(deployed)
-            facts = deployed.stage_root(image, 'default', None, site)
+            facts = deployed.stage_root(image, 'default', None, site, hasher=hasher)
             self.assertEqual(read('boot-target'), 'default\n')
             self.assertEqual(facts['writerSha256'], hashlib.sha256(
                 (TOOLS.parent / 'write-boot-target.sh').read_bytes()).hexdigest())
@@ -1439,6 +1450,20 @@ class DriverTest(StateTest):
             d.pump_bmc()
         d.bmc_events = [{'t': 120, 'progress': {'LastState': 'MemoryInit'}}]
         self.finish(d.pump_bmc, m.EXIT_SHORT)
+
+    def test_default_waits_for_the_unterminated_getty_prompt(self):
+        d = self.driver
+        d.final_marker = ("Breenix login:", "contains")
+        d.required_stages = [[("[init] Boot script completed", "contains"), d.final_marker]]
+        raw = d.dir / "serial.raw"
+        raw.write_bytes(b"[init] Boot script completed\nBreenix log")
+        d.pump_serial()
+        self.assertFalse(d.final_seen)
+        with raw.open("ab") as stream:
+            stream.write(b"in: ")
+        self.finish(d.pump_serial, m.EXIT_DONE)
+        self.assertFalse(any(d.required_stages))
+        self.assertTrue((d.dir / "serial.txt").read_text().endswith("Breenix login: "))
 
     def test_finish_does_not_discard_the_rest_of_a_serial_read(self):
         d = self.driver

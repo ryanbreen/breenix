@@ -11,8 +11,14 @@ file from main and shows each milestone's state from live evidence; nothing in i
       "area":       the POSIX area its system interfaces belong to, as Vigil's syscall coverage names it,
       "subsystems": issue/merge taxonomy ids whose open issues and recent merges belong to this effort,
       "targets":    the targets the effort is measured on, explicitly listed (see below),
+      "needsGpu":   true when the effort requires a GPU (omit otherwise),
       "targetsNote": one line on the target policy, only beside "targets",
       "milestones": [ { "id", "title", "measure" } ] }
+
+An effort with `"needsGpu": true` does not exist on a target without a GPU: it is not
+shown, counted or selected as the current effort. Today that target is `x86-metal`
+(Vigil platform `metal`). Its path is E0–E14 plus the screen console effort.
+The field is a boolean; only `true` is written, and absence means no GPU requirement.
 
 ## Targets
 

@@ -1278,7 +1278,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
+            Ok(Some(target::Target::Default | target::Target::Desktop | target::Target::Shell | target::Target::Console { .. })) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(Some(target::Target::Program { .. })) => {
                 log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
@@ -1290,7 +1290,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
                 None
             }
         },
-        Some("default" | "shell" | "console") => None,
+        Some("default" | "shell" | "console" | "desktop") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1352,9 +1352,21 @@ impl X86ConsoleMode {
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
 fn x86_console_mode() -> Option<X86ConsoleMode> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        Some("desktop") => {
+            serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
+            Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "fw_cfg" })
+        }
+        Some("default") => Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "fw_cfg" }),
         Some("shell") => Some(X86ConsoleMode::Shell),
         Some("console") => Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "fw_cfg" }),
         None | Some("") => match kernel::boot::target::read() {
+            Ok(Some(kernel::boot::target::Target::Desktop)) => {
+                serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
+                Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "target" })
+            }
+            Ok(None | Some(kernel::boot::target::Target::Default)) => {
+                Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "default" })
+            }
             Ok(Some(kernel::boot::target::Target::Shell)) => Some(X86ConsoleMode::Shell),
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 Some(X86ConsoleMode::Console {

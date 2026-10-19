@@ -776,6 +776,9 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     for effort in path["efforts"].as_array().into_iter().flatten() {
         let id = effort["id"].as_str().unwrap_or("?");
+        if effort.get("needsGpu").is_some_and(|value| value != &Value::Bool(true)) {
+            errors.push(format!("{id}: \"needsGpu\" must be true or omitted"));
+        }
         let note = effort.get("targetsNote");
         let Some(targets) = effort.get("targets") else {
             if note.is_some() {
@@ -832,6 +835,10 @@ fn effort_targets_are_known_and_ordered() {
 #[test]
 fn effort_target_lists_are_checked() {
     let check = |effort: Value| effort_target_errors(&serde_json::json!({ "efforts": [effort] }));
+    assert!(check(serde_json::json!({"needsGpu": true})).is_empty());
+    for value in [serde_json::json!(false), serde_json::json!("true"), Value::Null, serde_json::json!(1)] {
+        assert_eq!(check(serde_json::json!({"needsGpu": value})).len(), 1);
+    }
     let profiles = serde_json::json!([{ "id": "hw", "measure": { "profiles": "first-userspace" } }]);
     assert!(check(serde_json::json!({ "id": "a" })).is_empty());
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))

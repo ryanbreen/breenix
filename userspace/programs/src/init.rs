@@ -241,6 +241,8 @@ fn run_console_mode() -> ! {
         print!("[init] console detach failed\n");
         reap_forever();
     }
+    console_text_mode();
+    print!("[init] Boot script completed\n");
     let mut children = [None; 6];
     let mut retry_at = [0i128; 6];
     loop {
@@ -285,6 +287,13 @@ fn run_console_mode() -> ! {
 
 /// `init desktop`: the window manager and a terminal window, then reap. No oracles or
 /// smoke tests.
+#[cfg(target_arch = "x86_64")]
+fn run_desktop_mode() -> ! {
+    print!("Desktop mode requires a GPU; using the framebuffer console.\n");
+    run_console_mode()
+}
+
+#[cfg(target_arch = "aarch64")]
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
     const DESKTOP: &[&[u8]] = &[b"/bin/bwm\0", b"/bin/bterm\0"];
@@ -610,32 +619,8 @@ fn run_boot_script() {
         return;
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
-    let path = b"/bin/bsh\0";
-    #[cfg(not(target_arch = "aarch64"))]
-    let arg0 = b"bsh\0";
-    #[cfg(not(target_arch = "aarch64"))]
-    let arg1 = b"--init-shell\0";
-    #[cfg(not(target_arch = "aarch64"))]
-    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
-    #[cfg(not(target_arch = "aarch64"))]
-    match spawnv(path, argv.as_ptr()) {
-        Ok(child_pid) => {
-            let child_raw = child_pid.raw() as i32;
-            let mut status: i32 = 0;
-            let _ = waitpid(child_raw, &mut status as *mut i32, 0);
-            let exit_code = (status >> 8) & 0xFF;
-            if exit_code != 0 {
-                print!("[init] Boot script exited with code {}\n", exit_code);
-            } else {
-                console_text_mode();
-                print!("[init] Boot script completed\n");
-            }
-        }
-        Err(e) => {
-            print!("[init] Failed to spawn boot script: {}\n", e);
-        }
-    }
+    #[cfg(target_arch = "x86_64")]
+    run_console_mode();
 }
 
 #[cfg(target_arch = "aarch64")]
