@@ -167,6 +167,7 @@ prlctl() {{
                 log = root / "vmware.log"
                 log.write_text("started\n")
                 pid_file = root / "monitor.pid"
+                keys_pid_file = root / "hostkeys.pid"
                 deleted = root / "deleted"
                 script = f"""
 finish_vm_boot() {{
@@ -197,11 +198,15 @@ SERIAL_LOG={root / 'serial.log'}
 python3 -u {MONITOR} {platform} {log} "$$" &
 LOGMON_PID=$!
 echo "$LOGMON_PID" > {pid_file}
+python3 {ROOT / "scripts/hostkeys.py"} watch --serial "$SERIAL_LOG" --backend none --parent "$$" &
+HOSTKEYS_PID=$!
+echo "$HOSTKEYS_PID" > {keys_pid_file}
 install_vm_boot_traps
 {f'wait "$LOGMON_PID"' if name in {'int', 'term'} else f'exit {exit_code}'}
 """
                 process = subprocess.Popen(["/bin/bash", "-c", script])
                 pid = self.read_pid(pid_file)
+                keys_pid = self.read_pid(keys_pid_file)
                 if name in {"int", "term"}:
                     process.send_signal(signal.SIGINT if name == "int" else signal.SIGTERM)
                 self.assertEqual(process.wait(timeout=5), exit_code)
@@ -209,6 +214,7 @@ install_vm_boot_traps
                 while self.is_alive(pid) and time.monotonic() < deadline:
                     time.sleep(0.02)
                 self.assertFalse(self.is_alive(pid), f"{name} left monitor PID {pid} alive")
+                self.assertFalse(self.is_alive(keys_pid), f"{name} left hostkeys PID {keys_pid} alive")
                 if platform == "vmware":
                     self.assertEqual(deleted.read_text().strip(), str(root), f"{name} kept its VM")
                 else:

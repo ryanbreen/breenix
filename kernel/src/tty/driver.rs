@@ -1207,10 +1207,20 @@ pub fn vt(number: usize) -> Option<Arc<TtyDevice>> {
 /// A terminal-input reply (a DSR answer) for virtual terminal `number`: it
 /// joins the terminal's keyboard queue behind the keys already there and goes
 /// through its line discipline as they do, so in canonical mode it is part of
-/// the line being typed. False while the queue cannot take it. A queue another
-/// CPU holds is waited for as a key waits for it (`push_char_nonblock`).
+/// the line being typed. Returns false if the TTY lookup is unavailable or
+/// bounded keyboard-queue admission fails; delivery retries after yielding.
+/// Until admission succeeds, keyboard input may enter the queue first.
 pub fn push_reply(number: usize, byte: u8) -> bool {
-    let Some(tty) = vt(number) else {
+    // Delivery holds REPLY_DELIVERY with interrupts masked. A console lookup
+    // holder may have been preempted while holding CONSOLE_TTY, so retain the
+    // reply in the delivery queue rather
+    // than waiting for that holder with interrupts disabled.
+    let tty = if number == 1 {
+        CONSOLE_TTY.try_lock().and_then(|guard| guard.clone())
+    } else {
+        vt(number)
+    };
+    let Some(tty) = tty else {
         return false;
     };
     crate::arch_without_interrupts(|| {

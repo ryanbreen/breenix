@@ -47,16 +47,11 @@ per-event calls in none of twenty. Pointer events: PrlDevMouse_SetPos reaches th
 virtual tablet (absolute) and PrlDevMouse_Move the relative interface, both shown on
 probe boots without Parallels Tools installed.
 
-Earlier VMware Fusion probe (see contract section 10 for limits): add `RemoteDisplay.vnc.enabled = "TRUE"` and `RemoteDisplay.vnc.port`
-to a boot VM's vmx (run.sh does so when BREENIX_VMWARE_VNC_PORT names a port). Fusion
-on Apple Silicon starts the VNC server (no password with `useKey 0`), the RFB handshake
-and framebuffer updates work and the key events are accepted. That a key reached the
-guest could not be shown: the guest's xHCI controller fails its first command on VMware
-("XHCI command IRQ unavailable"), so the guest has no working keyboard there until the
-ARM64 xHCI port (V7). Until then the VMware `keys` cases answer "no host key path" (the
-watcher on a VMware boot without a VNC port) and V7 re-runs the self-test
-(scripts/hostkeys-selftest.sh vnc:127.0.0.1:<port> <serial log>). The server listens on
-all interfaces for the length of the boot, so use the variable only on a trusted network.
+VMware Fusion: run.sh enables the VM's built-in VNC server for a suite list containing
+console, choosing a free loopback port. BREENIX_VMWARE_VNC_PORT overrides that choice
+and can enable VNC for other boot modes. RemoteDisplay.vnc.ip binds it to 127.0.0.1;
+the server stops with the owned VM. The watcher sends RFB key events to its USB keyboard.
+Relative pointer motion remains a host limitation (docs/console/contract.md section 10).
 
 Usage:
     hostkeys.py watch --serial FILE --backend SPEC [--log FILE] [--suite ID] [--parent PID]
