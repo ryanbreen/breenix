@@ -18,7 +18,7 @@
 //! rng.fill(&mut buf);
 //! ```
 
-use crate::syscall::{nr, raw};
+use crate::syscall::{nr, raw, GRND_INSECURE};
 
 /// Request random bytes from the kernel via the `getrandom` syscall.
 ///
@@ -28,12 +28,24 @@ use crate::syscall::{nr, raw};
 /// # Returns
 /// `Ok(n)` where `n` is the number of bytes filled, or `Err(errno)` on failure.
 pub fn getrandom_bytes(buf: &mut [u8]) -> Result<usize, i64> {
+    getrandom_with_flags(buf, 0)
+}
+
+/// Read pool output for non-secret uses, even before the pool is ready.
+///
+/// Suitable for temporary names and test fixtures; unsuitable for cryptographic keys.
+/// Returns the number of bytes read or the negative syscall errno.
+pub fn getrandom_insecure_bytes(buf: &mut [u8]) -> Result<usize, i64> {
+    getrandom_with_flags(buf, GRND_INSECURE)
+}
+
+fn getrandom_with_flags(buf: &mut [u8], flags: u32) -> Result<usize, i64> {
     let ret = unsafe {
         raw::syscall3(
             nr::GETRANDOM,
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
-            0, // flags
+            flags as u64,
         )
     };
     let ret = ret as i64;
