@@ -27,11 +27,14 @@ fn checksum(data: &[u8]) -> bool {
     data.iter().fold(0u8, |sum, value| sum.wrapping_add(*value)) == 0
 }
 
+/// The end of the 48-bit physical address space the HHDM maps.
+const PHYSICAL_END: u64 = 0x0001_0000_0000_0000;
+
 // The loader supplies the RSDP; the HHDM retains the firmware's ACPI RAM.
 // Lengths and checksums are checked before following entries in these tables.
 unsafe fn bytes(address: u64, length: usize) -> Option<&'static [u8]> {
     use crate::arch_impl::aarch64::constants::HHDM_BASE;
-    if address == 0 || address.checked_add(length as u64)? >= (1u64 << 48) {
+    if address == 0 || address.checked_add(length as u64)? >= PHYSICAL_END {
         return None;
     }
     Some(core::slice::from_raw_parts(
