@@ -309,3 +309,29 @@ fn shared_log_transfer_cannot_wait_on_the_ring_or_uart() {
         assert!(!body.contains(blocking), "shared transfer may not call {blocking}");
     }
 }
+
+#[test]
+fn console_log_sync_sleeps_in_a_syscall_instead_of_spinning() {
+    // x86 syscalls run with interrupts masked; spinning until a 64 KiB log
+    // backlog reaches COM1 could delay device completions on that CPU.
+    let source = repo_text("kernel/src/serial.rs");
+    let sync = function_body(&source, "sync_log_to_console").expect("console sync");
+    assert!(!sync.contains("spin_loop"), "the console sync may not spin on its own");
+    assert!(sync.contains("wait_for_console_room()"));
+    assert!(sync.contains("drain_until(target, wait_for_console_room)"));
+    let drain = function_body(&source, "drain_until").expect("log drain");
+    assert!(drain.contains("Burst::Busy => wait()"), "a busy UART waits through the caller's wait");
+    let wait = function_body(&source, "wait_for_console_room").expect("console wait");
+    for step in [
+        "console_sync_can_sleep()",
+        "prepare_to_wait_checked(",
+        "schedule_current_wait()",
+        "finish_wait()",
+    ] {
+        assert!(wait.contains(step), "console wait must sleep through {step}");
+    }
+    let can_sleep = function_body(&source, "console_sync_can_sleep").expect("sleep rule");
+    for condition in ["TX_THREAD.get().is_none()", "in_interrupt()", "preempt_count() != 1", "idle_thread()"] {
+        assert!(can_sleep.contains(condition), "sleep rule must check {condition}");
+    }
+}
