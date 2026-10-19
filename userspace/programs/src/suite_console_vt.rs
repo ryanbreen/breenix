@@ -939,7 +939,10 @@ fn owner_on_tty3(ready: &Gate, body: impl FnOnce(&Term) -> Verdict) -> Verdict<C
 pub fn vt_switch_vt_process_release() -> CaseResult {
     measured(|| {
         let _back = BackToTty1;
+        let witness = mark("suspended-compositor");
+        Term::vt(2)?.write(format!("\x1bc{witness}\r\n").as_bytes())?;
         let (ready, asked) = (Gate::new()?, Gate::new()?);
+        let (presented, checked) = (Gate::new()?, Gate::new()?);
         let mut owner = owner_on_tty3(&ready, |tty3| {
             require(signalled(&RELEASES, 1, 3000), "no release signal")?;
             require(tty3.state()?[0] == 3, "the foreground moved before the owner answered")?;
@@ -958,7 +961,8 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
                 let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const _ as u64) } as i64;
                 require(ret == 0, &format!("suspended compositor op {op} returned {ret}"))?;
             }
-            shows(2, "")?;
+            presented.open();
+            checked.wait(3000, "the foreground read-back")?;
             drop(display);
             Ok(())
         })?;
@@ -966,6 +970,9 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
         asked.wait(3000, "the owner's release signal")?;
         require(foreground()? == 3, "the switch did not wait for VT_RELDISP")?;
         wait_active(2)?;
+        presented.wait(3000, "the suspended compositor commands")?;
+        shows(2, &witness)?;
+        checked.open();
         owner.finish(3000)
     })
 }
