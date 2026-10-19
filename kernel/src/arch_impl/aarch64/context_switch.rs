@@ -6129,7 +6129,7 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
         .thread_id
         .store(thread_id, Ordering::Release);
 
-    let _ = spin::MutexGuard::leak(guard);
+    guard.leak();
     let pivot_cpu = CpuId::current_checked(cpu_id);
     let scheduler_top = pivot_destination(
         pivot_cpu,
@@ -6967,7 +6967,7 @@ pub fn schedule_from_kernel() {
         .should_requeue_old
         .store(should_requeue_old, Ordering::Relaxed);
 
-    let _ = spin::MutexGuard::leak(guard);
+    guard.leak();
 
     // Re-read the identity at the point it is spent on a stack. Masked since
     // the mint above, so this can only disagree if something re-enabled

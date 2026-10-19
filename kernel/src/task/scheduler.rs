@@ -678,16 +678,125 @@ pub fn send_deferred_resched_ipis() {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-type SchedulerGuard = spin::MutexGuard<'static, Option<Scheduler>>;
+/// aarch64: whether CPU `n` holds the scheduler lock. An SGI asked for while
+/// it does waits in `DEFERRED_SGIS[n]` until the lock is released.
+#[cfg(target_arch = "aarch64")]
+static SCHEDULER_HELD_BY: [core::sync::atomic::AtomicBool; MAX_CPUS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; MAX_CPUS];
+
+/// aarch64: per CPU, the SGIs it asked for while it held the scheduler lock,
+/// sent once it has released the lock (`send_deferred_sgis`): bit `cpu` for a
+/// reschedule SGI to `cpu`, bit `MAX_CPUS + cpu` for a wake SGI.
+///
+/// An SGI is a write to ICC_SGI1R_EL1, which the hypervisor traps. On
+/// Parallels one took 2.5 us on average under the scheduler lock and up to
+/// 9.1 ms when the host did not resume the vCPU, and the CPUs waiting for
+/// the lock waited that long too (#2038).
+#[cfg(target_arch = "aarch64")]
+static DEFERRED_SGIS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// aarch64: the scheduler lock, which sends the SGIs asked for under it once
+/// it is released (`DEFERRED_SGIS`). Holders run with interrupts masked, as
+/// the IRQ-shape census in tests/teardown_structure.rs requires of each
+/// acquisition, so the CPU that took the lock releases it.
+#[cfg(target_arch = "aarch64")]
+pub struct SchedulerGuard {
+    guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<Scheduler>>>,
+    cpu: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl SchedulerGuard {
+    fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+        let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+        if cpu < MAX_CPUS {
+            SCHEDULER_HELD_BY[cpu].store(true, Ordering::Relaxed);
+        }
+        Self {
+            guard: core::mem::ManuallyDrop::new(guard),
+            cpu,
+        }
+    }
+
+    /// Keep the lock held past this guard, across the inline switch's stack
+    /// pivot. `force_unlock_scheduler` releases it.
+    pub fn leak(self) {
+        core::mem::forget(self);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::Deref for SchedulerGuard {
+    type Target = Option<Scheduler>;
+    fn deref(&self) -> &Option<Scheduler> {
+        &self.guard
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl core::ops::DerefMut for SchedulerGuard {
+    fn deref_mut(&mut self) -> &mut Option<Scheduler> {
+        &mut self.guard
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for SchedulerGuard {
+    fn drop(&mut self) {
+        // SAFETY: dropped once, here; the guard is not read after this.
+        unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
+        scheduler_released(self.cpu);
+    }
+}
+
+/// aarch64: CPU `cpu` has released the scheduler lock; send the SGIs it asked
+/// for while it held it.
+#[cfg(target_arch = "aarch64")]
+fn scheduler_released(cpu: usize) {
+    if cpu < MAX_CPUS {
+        SCHEDULER_HELD_BY[cpu].store(false, Ordering::Relaxed);
+        send_deferred_sgis(cpu);
+    }
+}
+
+/// aarch64: send SGI `sgi` (`SGI_RESCHEDULE` or `SGI_WAKE`) to `target`, or,
+/// while this CPU holds the scheduler lock, once it has released it.
+#[cfg(target_arch = "aarch64")]
+fn send_sgi_outside_scheduler_lock(sgi: u32, target: usize) {
+    use crate::arch_impl::aarch64::constants::{SGI_RESCHEDULE, SGI_WAKE};
+    let me = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let kind = match sgi {
+        SGI_RESCHEDULE => Some(0),
+        SGI_WAKE => Some(1),
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        if me < MAX_CPUS && target < MAX_CPUS && SCHEDULER_HELD_BY[me].load(Ordering::Relaxed) {
+            DEFERRED_SGIS[me].fetch_or(1 << (kind * MAX_CPUS + target), Ordering::Relaxed);
+            return;
+        }
+    }
+    crate::arch_impl::aarch64::gic::send_sgi(sgi as u8, target as u8);
+}
+
+/// aarch64: send the SGIs CPU `cpu` deferred while it held the scheduler lock.
+#[cfg(target_arch = "aarch64")]
+fn send_deferred_sgis(cpu: usize) {
+    use crate::arch_impl::aarch64::constants::{SGI_RESCHEDULE, SGI_WAKE};
+    let mut deferred = DEFERRED_SGIS[cpu].swap(0, Ordering::Relaxed);
+    while deferred != 0 {
+        let bit = deferred.trailing_zeros() as usize;
+        deferred &= deferred - 1;
+        let sgi = if bit >= MAX_CPUS { SGI_WAKE } else { SGI_RESCHEDULE };
+        crate::arch_impl::aarch64::gic::send_sgi(sgi as u8, (bit % MAX_CPUS) as u8);
+    }
+}
 
 #[inline(always)]
 fn lock_scheduler() -> SchedulerGuard {
     let guard = SCHEDULER.lock();
     crate::tracing::providers::teardown::note_scheduler_acquire();
-    #[cfg(target_arch = "x86_64")]
-    let guard = SchedulerGuard::new(guard);
-    guard
+    SchedulerGuard::new(guard)
 }
 
 /// x86_64: a spin for a lock another CPU holds, during which this CPU
@@ -788,6 +897,8 @@ fn try_lock_scheduler() -> Option<SchedulerGuard> {
     crate::tracing::providers::teardown::note_scheduler_acquire();
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::holding_all(guard);
+    #[cfg(target_arch = "aarch64")]
+    let guard = SchedulerGuard::new(guard);
     Some(guard)
 }
 
@@ -1217,7 +1328,7 @@ pub fn increment_context_switch_count() {
 /// The caller must not call any other scheduler public functions that acquire
 /// SCHEDULER.lock() while holding this guard (would deadlock).
 #[cfg(target_arch = "aarch64")]
-pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>> {
+pub fn lock_for_context_switch() -> SchedulerGuard {
     lock_scheduler()
 }
 
@@ -1225,10 +1336,12 @@ pub fn lock_for_context_switch() -> spin::MutexGuard<'static, Option<Scheduler>>
 ///
 /// The inline scheduler path intentionally leaks the lock guard before hopping
 /// to a per-CPU scheduler stack, then releases the lock from that neutral
-/// stack after the outgoing thread is fully off CPU.
+/// stack after the outgoing thread is off CPU, and sends the SGIs asked for
+/// under the lock.
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn force_unlock_scheduler() {
     SCHEDULER.force_unlock();
+    scheduler_released(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize);
 }
 
 /// Check if a specific CPU is running its idle thread (lock-free).
@@ -5475,9 +5588,9 @@ impl Scheduler {
             // to wait for an interrupt, and without this one it would sleep
             // until its next tick with the new thread on its queue.
             if cpu < MAX_CPUS && self.cpu_is_idle(cpu) {
-                crate::arch_impl::aarch64::gic::send_sgi(
-                    crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-                    cpu as u8,
+                send_sgi_outside_scheduler_lock(
+                    crate::arch_impl::aarch64::constants::SGI_RESCHEDULE,
+                    cpu,
                 );
                 // Continue to wake ALL idle CPUs
             }
@@ -5502,9 +5615,9 @@ impl Scheduler {
             (((target_cpu as u32) & 0xFFFF) << 16) | ((Self::current_cpu_id() as u32) & 0xFFFF),
         );
 
-        crate::arch_impl::aarch64::gic::send_sgi(
-            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
-            target_cpu as u8,
+        send_sgi_outside_scheduler_lock(
+            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE,
+            target_cpu,
         );
     }
 
@@ -5539,10 +5652,7 @@ impl Scheduler {
             #[cfg(target_arch = "x86_64")]
             send_reschedule_vector_x86(cpu);
             #[cfg(target_arch = "aarch64")]
-            crate::arch_impl::aarch64::gic::send_sgi(
-                crate::arch_impl::aarch64::constants::SGI_WAKE as u8,
-                cpu as u8,
-            );
+            send_sgi_outside_scheduler_lock(crate::arch_impl::aarch64::constants::SGI_WAKE, cpu);
         }
     }
 
