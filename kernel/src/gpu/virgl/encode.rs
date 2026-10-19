@@ -173,12 +173,13 @@ pub const COPY_FS: Program = Program {
 /// profile-only `probe_int` is not one of them.
 pub const RENDERING_PIPELINES: u32 = 2 + pipelines::CATALOGUE.len() as u32;
 /// A context's warm-up mask with each rendering pipeline's bit set. The catalogue's
-/// asynchronous warm-up compiles and warms a pair of programs per rendering pipeline; the
-/// profile-only `probe_int` pair is created by the context's first PROBE (`docs/gui/gpu.md`
-/// section 1.4.1, program warm-up).
+/// asynchronous warm-up compiles and warms a pair of programs per rendering pipeline; each
+/// profile-only `probe_int` routine's pair is created by that routine's first PROBE in the
+/// context (`docs/gui/gpu.md` section 1.4.1, program warm-up; ruling 48).
 pub const ALL_WARM: u32 = (1 << RENDERING_PIPELINES) - 1;
-/// Programs `probe_int` adds once a context's first PROBE has created them.
-pub const PROBE_PROGRAMS: u32 = 2;
+/// The `probe_int` routines, one program pair each.
+const PROBE_ROUTINES: usize = profile::PROGRAMS.len();
+const _: () = assert!(PROBE_ROUTINES == gpu_abi::probe::COUNT as usize);
 
 /// The per-context VirGL object handles, from one allocator that never reuses a handle
 /// across object types (`docs/gui/gpu.md` section 1.6, VirGL object handles).
@@ -193,8 +194,8 @@ pub struct Objects {
     pub copy_vs: u32,
     pub copy_fs: u32,
     pub catalogue: [(u32, u32); 14],
-    pub probe_vs: u32,
-    pub probe_fs: u32,
+    /// Each `probe_int` routine's pair, 0 until that routine's first PROBE.
+    pub probe: [(u32, u32); PROBE_ROUTINES],
     pub sampler: u32,
     pub elements: u32,
     /// The surface object of each target resource this context has drawn into.
@@ -215,8 +216,7 @@ impl Objects {
             copy_vs: 0,
             copy_fs: 0,
             catalogue: [(0,0); 14],
-            probe_vs: 0,
-            probe_fs: 0,
+            probe: [(0, 0); PROBE_ROUTINES],
             sampler: 0,
             elements: 0,
             surfaces: BTreeMap::new(),
@@ -229,9 +229,9 @@ impl Objects {
         self.surfaces.keys().chain(self.views.keys()).copied()
     }
 
-    /// Whether a PROBE has created `probe_int`'s pair in this context.
-    pub fn has_probe(&self) -> bool {
-        self.probe_fs != 0
+    /// The programs PROBEs have created in this context: a pair per routine probed.
+    pub fn probe_programs(&self) -> u32 {
+        2 * self.probe.iter().filter(|&&(_, fs)| fs != 0).count() as u32
     }
 
     fn take(&mut self) -> u32 {
@@ -359,7 +359,7 @@ enum Bound {
     None,
     Solid,
     Copy,
-    Probe,
+    Probe(u32),
     Catalogue(u32),
 }
 
@@ -367,7 +367,7 @@ enum Bound {
 fn handles(o: &Objects, want: Bound) -> (u32, u32) {
     match want {
         Bound::Copy => (o.copy_vs, o.copy_fs),
-        Bound::Probe => (o.probe_vs, o.probe_fs),
+        Bound::Probe(r) => o.probe[r as usize],
         Bound::Catalogue(p) => o.catalogue[(p - 2) as usize],
         _ => (o.vs, o.fs),
     }
@@ -385,7 +385,7 @@ fn bind_programs(enc: &mut Enc, o: &mut Objects, bound: &mut Bound, want: Bound)
     if fs == 0 {
         let (vp, fp): (&Program, &Program) = match want {
             Bound::Copy => (&COPY_VS, &COPY_FS),
-            Bound::Probe => (&SOLID_VS, &profile::FS),
+            Bound::Probe(r) => (&SOLID_VS, &profile::PROGRAMS[r as usize]),
             Bound::Catalogue(p) => (&SOLID_VS, &pipelines::CATALOGUE[(p - 2) as usize].1),
             _ => (&SOLID_VS, &SOLID_FS),
         };
@@ -395,7 +395,7 @@ fn bind_programs(enc: &mut Enc, o: &mut Objects, bound: &mut Bound, want: Bound)
         shader(enc, fs, fp);
         match want {
             Bound::Copy => (o.copy_vs, o.copy_fs) = (vs, fs),
-            Bound::Probe => (o.probe_vs, o.probe_fs) = (vs, fs),
+            Bound::Probe(r) => o.probe[r as usize] = (vs, fs),
             Bound::Catalogue(p) => o.catalogue[(p - 2) as usize] = (vs, fs),
             _ => (o.vs, o.fs) = (vs, fs),
         }
@@ -770,9 +770,10 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                 };
                 let r = [4, 5, 6, 7].map(|k| words.word(at + k) as i32);
                 if let Some(r) = stream::clipped(r, t.info.width, t.info.height, scissor) {
-                    // The context's first PROBE compiles `probe_int`; this draw warms it.
-                    // The objects are kept only if the submission is sent.
-                    bind_programs(enc, o, &mut programs, Bound::Probe);
+                    // A routine's first PROBE in the context compiles its program; this draw
+                    // warms it. The objects are kept only if the submission is sent.
+                    // Validation admitted only defined routines (`gpu_abi::probe::valid`).
+                    bind_programs(enc, o, &mut programs, Bound::Probe(words.word(at + 2)));
                     let mut constants = Vec::with_capacity(22);
                     constants.extend_from_slice(&[pipe::SHADER_FRAGMENT, 0]);
                     constants.extend((8..24).map(|k| words.word(at + k)));
@@ -882,6 +883,24 @@ pub fn warm_pipeline(
     let mut bound = false;
     bind_vertices(enc, &mut bound, vertex_buffer);
     draw_vertices(enc, vertex_buffer, p * 48, &quad([0, 0, 1, 1]), 1);
+}
+
+/// Compile and draw one first-use PROBE on private scratch, under its own fence.
+pub fn warm_probe(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32, scratch: u32,
+    words: &(impl Words + ?Sized), at: usize, flip_y: bool) {
+    let Some(&surface) = o.surfaces.get(&scratch) else {
+        enc.oom = true;
+        return;
+    };
+    bind_target(enc, surface, flip_y);
+    bind_programs(enc, o, &mut Bound::None, Bound::Probe(words.word(at + 2)));
+    let mut constants = Vec::with_capacity(22);
+    constants.extend_from_slice(&[pipe::SHADER_FRAGMENT, 0]);
+    constants.extend((8..24).map(|k| words.word(at + k)));
+    constants.extend_from_slice(&[words.word(at + 3), words.word(at + 2), 0, 0]);
+    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &constants);
+    bind_vertices(enc, &mut false, vertex_buffer);
+    draw_vertices(enc, vertex_buffer, 0, &quad([0, 0, 1, 1]), 1);
 }
 
 /// Bytes of vertex data a stream with `drawn` drawn rectangles needs.

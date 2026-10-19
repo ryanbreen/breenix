@@ -23,9 +23,18 @@ pub fn has_deliverable_signals(process: &Process) -> bool {
 /// What a return to user mode must act on: a deliverable signal, or a stop in
 /// force. A stopped process's thread does not return to user mode,
 /// even when nothing is pending, and whatever woke it.
+///
+/// An exited process needs no action: its thread passes through the return
+/// path once more on its way out of exit (the syscall return), and leaves the
+/// CPU there rather than return to user mode; its address space has already
+/// gone to reclamation. A caught signal still pending there (a child's SIGCHLD)
+/// found no stack for its frame, and the frame-fault exit that followed
+/// restated the process's status as a SIGSEGV death, which its parent then
+/// reaped (#2040).
 #[inline]
 pub fn needs_action_on_return_to_user(process: &Process) -> bool {
-    has_deliverable_signals(process) || process.job.stopped.is_some()
+    !process.is_terminated()
+        && (has_deliverable_signals(process) || process.job.stopped.is_some())
 }
 
 /// Interruptible waits use the same eligibility check as signal delivery.
@@ -1299,7 +1308,7 @@ fn deliver_to_user_handler_aarch64(
     saved_regs.x1 = info_addr;
     saved_regs.x2 = uc_addr;
 
-    log::info!(
+    log::debug!(
         "Signal {} delivered to handler at {:#x}{}, SP={:#x}->{:#x}, return={:#x}",
         sig,
         handler_addr,

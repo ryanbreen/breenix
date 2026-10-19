@@ -1,0 +1,29 @@
+FRAG
+DCL IN[0], POSITION, LINEAR
+DCL OUT[0], COLOR
+DCL CONST[0..4]
+DCL TEMP[0..8]
+IMM[0] UINT32 {0, 1, 0, 2}
+IMM[1] UINT32 {3, 4, 5, 8}
+IMM[2] UINT32 {16, 24, 31, 32}
+IMM[3] UINT32 {96, 255, 998277249, 0}
+IMM[4] UINT32 {65535, 65535, 16, 0}
+UADD TEMP[8].x, CONST[4].zzzz, IMM[4].xxxx
+SHL TEMP[8].x, TEMP[8].xxxx, IMM[4].zzzz
+OR TEMP[8].x, TEMP[8].xxxx, IMM[4].yyyy
+F2I TEMP[0].xy, IN[0]
+XOR TEMP[1].x, CONST[0].yyyy, TEMP[8].xxxx
+UADD TEMP[2].x, TEMP[1].xxxx, IMM[0].yyyy
+UADD TEMP[1].x, CONST[0].xxxx, TEMP[2].xxxx
+UADD TEMP[3].x, TEMP[1].xxxx, IMM[0].zzzz
+USHR TEMP[5].x, TEMP[3].xxxx, IMM[2].xxxx
+AND TEMP[5].x, TEMP[5].xxxx, IMM[3].yyyy
+USHR TEMP[5].y, TEMP[3].xxxx, IMM[1].wwww
+AND TEMP[5].y, TEMP[5].yyyy, IMM[3].yyyy
+USHR TEMP[5].z, TEMP[3].xxxx, IMM[0].zzzz
+AND TEMP[5].z, TEMP[5].zzzz, IMM[3].yyyy
+USHR TEMP[5].w, TEMP[3].xxxx, IMM[2].yyyy
+AND TEMP[5].w, TEMP[5].wwww, IMM[3].yyyy
+U2F TEMP[5], TEMP[5]
+MUL OUT[0], TEMP[5], IMM[3].zzzz
+END

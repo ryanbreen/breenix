@@ -12,7 +12,9 @@ use crate::memory::layout::{
 #[cfg(target_arch = "x86_64")]
 use crate::task::thread::ThreadPrivilege;
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
+use x86_64::structures::paging::{
+    Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB,
+};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
@@ -32,14 +34,10 @@ pub struct GuardedStack {
     /// Size of the usable stack area (excluding guard page)
     stack_size: usize,
     /// Privilege level of the stack
-    #[allow(dead_code)]
     privilege: ThreadPrivilege,
-    /// Physical frames backing the stack, in ascending virtual-page order
-    /// (ARM64 only). The user mapping binds page `i` to `frames[i]`, so the
-    /// stack works correctly whether or not the frames are physically
-    /// contiguous. Every frame here is individually registered as an external
-    /// leaf frame, so it exactly matches the set the user page table maps.
-    #[cfg(target_arch = "aarch64")]
+    /// Physical frames backing the stack, in ascending virtual-page order:
+    /// page `i` of the stack is `frames[i]`. A user stack's frames are each
+    /// registered as an external leaf. Dropping the stack returns them.
     frames: alloc::vec::Vec<PhysFrame>,
 }
 
@@ -80,7 +78,15 @@ impl GuardedStack {
         let stack_start = allocation_start + 4096u64; // Skip guard page
         let stack_top = stack_start + stack_size as u64;
 
-        Self::map_stack_pages(stack_start, stack_size, mapper, privilege)?;
+        // Built before mapping, so an error return drops what was mapped.
+        let mut stack = GuardedStack {
+            allocation_start,
+            stack_top,
+            stack_size,
+            privilege,
+            frames: alloc::vec::Vec::with_capacity(stack_size / 4096),
+        };
+        stack.map_stack_pages(mapper)?;
 
         // Guard page is intentionally left unmapped at allocation_start
         log::debug!("Guard page at {:#x} (unmapped)", allocation_start.as_u64());
@@ -91,17 +97,7 @@ impl GuardedStack {
             stack_size / 1024
         );
 
-        Ok(GuardedStack {
-            allocation_start,
-            stack_top,
-            stack_size,
-            privilege,
-            // This constructor is the x86_64 mapper path; the ARM64 user-stack
-            // path builds its GuardedStack in `allocate_stack_with_privilege`
-            // with the real frame list. Kept valid for the shared struct shape.
-            #[cfg(target_arch = "aarch64")]
-            frames: alloc::vec::Vec::new(),
-        })
+        Ok(stack)
     }
 
     /// Get the top of the stack (highest usable address)
@@ -140,14 +136,6 @@ impl GuardedStack {
     /// Get the size of the usable stack area
     pub fn size(&self) -> usize {
         self.stack_size
-    }
-
-    /// Physical frames backing this stack, in ascending virtual-page order
-    /// (ARM64). Page `i` of the user stack maps to `frames()[i]`; no physical
-    /// contiguity is assumed.
-    #[cfg(target_arch = "aarch64")]
-    pub fn frames(&self) -> &[PhysFrame] {
-        &self.frames
     }
 
     /// Find free virtual address space for stack allocation
@@ -197,12 +185,7 @@ impl GuardedStack {
 
     /// Map stack pages with appropriate permissions
     #[cfg(target_arch = "aarch64")]
-    fn map_stack_pages(
-        _start: VirtAddr,
-        _size: usize,
-        _mapper: &mut OffsetPageTable,
-        _privilege: ThreadPrivilege,
-    ) -> Result<(), &'static str> {
+    fn map_stack_pages(&mut self, _mapper: &mut OffsetPageTable) -> Result<(), &'static str> {
         // ARM64 stack allocation strategy:
         // - The HHDM (higher-half direct map) created by boot.S maps physical RAM
         //   at HHDM_BASE (0xFFFF_0000_0000_0000)
@@ -219,14 +202,11 @@ impl GuardedStack {
         Ok(())
     }
 
-    /// Map stack pages with appropriate permissions
+    /// Map stack pages with appropriate permissions, recording each frame in
+    /// `frames` once it is mapped.
     #[cfg(not(target_arch = "aarch64"))]
-    fn map_stack_pages(
-        start: VirtAddr,
-        size: usize,
-        mapper: &mut OffsetPageTable,
-        privilege: ThreadPrivilege,
-    ) -> Result<(), &'static str> {
+    fn map_stack_pages(&mut self, mapper: &mut OffsetPageTable) -> Result<(), &'static str> {
+        let (start, size, privilege) = (self.bottom(), self.stack_size, self.privilege);
         if privilege == ThreadPrivilege::User {
             // x86_64: User stacks need special handling
             log::debug!("User stack: mapping in kernel page tables");
@@ -267,30 +247,77 @@ impl GuardedStack {
                 page.start_address()
             );
 
-            unsafe {
+            let mapped = unsafe {
                 let mut frame_allocator = crate::memory::frame_allocator::GlobalFrameAllocator;
                 log::trace!("map_stack_pages: About to call mapper.map_to...");
-
-                mapper
-                    .map_to(page, frame, flags, &mut frame_allocator)
-                    .map_err(|_| "failed to map stack page")?
-                    .flush();
-
-                log::trace!(
-                    "map_stack_pages: Successfully mapped page {:#x}",
-                    page.start_address()
-                );
+                mapper.map_to(page, frame, flags, &mut frame_allocator)
+            };
+            match mapped {
+                Ok(flush) => flush.flush(),
+                Err(_) => {
+                    Self::return_frame(privilege, frame);
+                    return Err("failed to map stack page");
+                }
             }
+            self.frames.push(frame);
+
+            log::trace!(
+                "map_stack_pages: Successfully mapped page {:#x}",
+                page.start_address()
+            );
         }
 
         Ok(())
     }
+
+    /// x86_64: unmap the stack's page `index` from the page table it was
+    /// mapped in, true when that page mapped `frame`. A page that maps another
+    /// frame or is unmapped here (a stack dropped under a root that does not
+    /// hold its mapping) keeps its frame, since a mapping may still reach it.
+    #[cfg(not(target_arch = "aarch64"))]
+    fn unmap_stack_page(&self, index: usize, frame: PhysFrame) -> bool {
+        let mut mapper = unsafe { crate::memory::paging::get_mapper() };
+        let page = Page::<Size4KiB>::containing_address(self.bottom() + index as u64 * 4096);
+        if !matches!(mapper.translate_page(page), Ok(mapped) if mapped == frame) {
+            return false;
+        }
+        match mapper.unmap(page) {
+            Ok((_, flush)) => {
+                flush.flush();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// ARM64 reaches a stack through the direct map, which stays mapped.
+    #[cfg(target_arch = "aarch64")]
+    fn unmap_stack_page(&self, _index: usize, _frame: PhysFrame) -> bool {
+        true
+    }
+
+    /// Give back one of a stack's frames: a user stack's through its external
+    /// leaf mark, any other directly.
+    fn return_frame(privilege: ThreadPrivilege, frame: PhysFrame) {
+        if privilege == ThreadPrivilege::User {
+            let _ = crate::memory::frame_allocator::release_external_leaf_frame(frame);
+        } else {
+            crate::memory::frame_allocator::deallocate_frame(frame);
+        }
+    }
 }
 
 impl Drop for GuardedStack {
+    /// Return the stack's frames (issue #583). The owner drops a stack once
+    /// its thread is done with it and, for a user stack, after the process
+    /// page tables that mapped it are gone, since a table drops an external
+    /// leaf's mapping without returning the frame.
     fn drop(&mut self) {
-        // TODO: Implement proper cleanup (unmap pages, deallocate frames)
-        log::debug!("GuardedStack dropped (cleanup not yet implemented)");
+        for (index, frame) in core::mem::take(&mut self.frames).into_iter().enumerate() {
+            if self.unmap_stack_page(index, frame) {
+                Self::return_frame(self.privilege, frame);
+            }
+        }
     }
 }
 
@@ -335,13 +362,13 @@ pub fn allocate_stack_with_privilege(
     size: usize,
     privilege: ThreadPrivilege,
 ) -> Result<GuardedStack, &'static str> {
-    use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_allocator::allocate_contiguous_frames;
 
     // Get HHDM base for converting physical to virtual addresses
     const HHDM_BASE: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE;
 
     // Ensure stack size is page-aligned
-    if size % 4096 != 0 {
+    if size % 4096 != 0 || size == 0 {
         return Err("Stack size must be page-aligned");
     }
 
@@ -351,55 +378,40 @@ pub fn allocate_stack_with_privilege(
     // CRITICAL: No logging in stack allocation path - timer interrupt + logger lock = deadlock
     // This function is called during process creation which may have interrupts enabled
 
-    // Allocate physical frames for the stack.
-    //
-    // The frames are NOT required to be physically contiguous: each one is
-    // recorded in `frames` in ascending virtual-page order and the user page
-    // table binds page `i` to `frames[i]`. This avoids the latent corruption
-    // that arose when the free list handed back a non-ascending run and the
-    // mapper derived a bogus contiguous [bottom, top) span (issue #470 PR-2).
-    let mut first_frame_phys: Option<u64> = None;
-    let mut prev_frame_phys: Option<u64> = None;
-    let mut frames: alloc::vec::Vec<PhysFrame> = alloc::vec::Vec::with_capacity(stack_pages);
+    // One physically contiguous run: a kernel thread runs on [bottom, top)
+    // through the direct map, which is exactly the stack's frames only when
+    // they are adjacent.
+    let mut run: alloc::vec::Vec<Option<PhysFrame>> = alloc::vec::Vec::new();
+    run.try_reserve_exact(stack_pages)
+        .map_err(|_| "out of memory for stack")?;
+    run.resize(stack_pages, None);
+    let base =
+        allocate_contiguous_frames(stack_pages, &mut run).ok_or("out of memory for stack")?;
+    let base_phys = base.start_address().as_u64();
 
-    for i in 0..stack_pages {
-        let frame = allocate_frame().ok_or("out of memory for stack")?;
-        if privilege == ThreadPrivilege::User {
-            crate::memory::frame_allocator::register_external_leaf_frame(frame)?;
-        }
-        let phys = frame.start_address().as_u64();
-        frames.push(frame);
-
-        if i == 0 {
-            first_frame_phys = Some(phys);
-        }
-        prev_frame_phys = Some(phys);
-
+    // Layout: [guard page][stack pages...]; the guard page is not allocated.
+    let mut stack = GuardedStack {
+        allocation_start: VirtAddr::new(HHDM_BASE + base_phys - 4096),
+        stack_top: VirtAddr::new(HHDM_BASE + base_phys + size as u64),
+        stack_size: size,
+        privilege,
+        frames: alloc::vec::Vec::with_capacity(stack_pages),
+    };
+    for frame in run.into_iter().flatten() {
         // Zero the frame via HHDM
-        let virt = HHDM_BASE + phys;
+        let virt = HHDM_BASE + frame.start_address().as_u64();
         unsafe {
             core::ptr::write_bytes(virt as *mut u8, 0, 4096);
         }
+        if privilege == ThreadPrivilege::User {
+            crate::memory::frame_allocator::register_external_leaf_frame(frame)?;
+        }
+        stack.frames.push(frame);
     }
-
-    let stack_phys = first_frame_phys.ok_or("no frames allocated")?;
-    let last_frame_phys = prev_frame_phys.ok_or("no frames allocated")?;
-
-    // Calculate virtual addresses via HHDM
-    // Layout: [guard page][stack pages...]
-    // Stack top is at the END of the last allocated frame
-    let allocation_start = VirtAddr::new(HHDM_BASE + stack_phys - 4096); // Guard page (unallocated)
-    let stack_top = VirtAddr::new(HHDM_BASE + last_frame_phys + 4096);
 
     // No logging here - see comment at function start
 
-    Ok(GuardedStack {
-        allocation_start,
-        stack_top,
-        stack_size: size,
-        privilege,
-        frames,
-    })
+    Ok(stack)
 }
 
 /// Check if a page fault is due to guard page access

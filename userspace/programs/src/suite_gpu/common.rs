@@ -2,7 +2,7 @@
 //! suite's own model of what a frame must read back as (`docs/gui/gpu.md` section 1.10:
 //! expectations are computed here, never taken from the kernel).
 
-use libbreenix::gpu::{self, abi};
+use libbreenix::gpu::{self, abi, abi::Plain};
 use libbreenix::suite::{CaseError, CaseResult};
 
 pub use abi::errno::{EAGAIN, EDQUOT, EFAULT, EINTR, EINVAL, EIO, ENODEV, ENOSYS, ETIMEDOUT};
@@ -251,6 +251,56 @@ pub fn expect(t: u64, want: &Canvas, what: &str) -> Result<[u8; record::SIZE], C
     let (px, rec) = read(t, want.w, want.h)?;
     want.matches(&px, what)?;
     Ok(rec)
+}
+
+/// Show a judged source without changing the display's shape (ruling 53).
+/// Oversized sources remain offscreen; their callers still judge their full readback.
+pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseError> {
+    libbreenix::graphics::take_over_display()
+        .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    let mut modes = abi::Modes::ZERO;
+    let result = gpu::call_with(abi::op::MODES, &mut modes);
+    ensure(result == 0, || format!("MODES: {}", errno(result)))?;
+    let mode = modes.modes[modes.current as usize];
+    let (_, source_record) = read(source, 1, 1)?;
+    let w = u32_at(&source_record, record::TARGET_WIDTH);
+    let h = u32_at(&source_record, record::TARGET_HEIGHT);
+    if w > mode.width || h > mode.height {
+        ensure(u32_at(&source_record, record::FLAGS) & 1 == 0,
+            || "oversized source was bound as scanout".to_string())?;
+        return Ok(None);
+    }
+    let (source_pixels, _) = read(source, w, h)?;
+    let want = Canvas { w, h, px: source_pixels };
+    let composed = w != mode.width || h != mode.height;
+    let target = if composed {
+        scanout_target(u32_at(&source_record, record::FORMAT), mode.width, mode.height)?
+    } else { source };
+    let result = (|| {
+        if composed {
+            let mut stream = scene(target, 0xff181512, &[]);
+            encode::copy(&mut stream, source, [0, 0, w, h], target, [0, 0]);
+            frame(ctx, &stream)?;
+        }
+        let (ret, present) = gpu::present(ctx, target);
+        ensure(ret == 0 && present.fence != 0 && present.answer == native_success()?,
+            || format!("PRESENT view: {} fence={} answer={:#x}", errno(ret), present.fence, present.answer))?;
+        wait_ok(ctx, present.fence, 0)?;
+        let (pixels, actual) = read(0, w, h)?;
+        want.matches(&pixels, "scanout source rectangle")?;
+        ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
+            && u32_at(&actual, record::TARGET_HEIGHT) == mode.height
+            && u32_at(&actual, record::FLAGS) & 1 == 1
+            && u64_at(&actual, record::PRESENT_FENCE) == present.fence,
+            || "view lost display geometry or completed present".to_string())?;
+        let source_id = u64_at(&source_record, record::RESOURCE);
+        let bound_id = u64_at(&actual, record::RESOURCE);
+        ensure((source_id == bound_id) != composed,
+            || "source and scanout identities disagree with the viewing copy".to_string())?;
+        Ok(Some(present))
+    })();
+    if composed { let _ = gpu::resource_destroy(target); }
+    result
 }
 
 /// A frame for target `t`: clear to `bg`, then each rectangle in its colour.

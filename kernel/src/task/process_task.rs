@@ -615,14 +615,60 @@ fn drain_old_page_tables_counted(
     old_page_tables.is_empty()
 }
 
-#[cfg(any(target_arch = "aarch64", feature = "boot_tests"))]
-pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
-    #[cfg(target_arch = "aarch64")]
+/// Release the leaves of an address space no CPU runs on, under PM. The tables
+/// stay with the row for a receipt (`defer_remaining_tables`).
+#[cfg(target_arch = "aarch64")]
+fn release_process_leaves(process: &mut crate::process::Process) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::tracing::providers::teardown::record_masked_frames_walked(process.id.as_u64());
     }
-    #[cfg(target_arch = "aarch64")]
     process.cleanup_cow_frames();
+}
+
+/// Defer what is left of an address space whose leaves are released: its
+/// tables, and the roots exec superseded, retire through a receipt once the
+/// reclaim pass's root checks show no CPU can still walk them. Returns no
+/// receipt when the row holds neither (a repeat exit, or a row whose first
+/// exit took them).
+pub(crate) fn defer_remaining_tables(
+    process: &mut crate::process::Process,
+) -> Option<PendingProcessReclaim> {
+    if process.page_table.is_none() && process.pending_old_page_tables.is_empty() {
+        process.vmas.clear();
+        process.memory_locks.clear();
+        return None;
+    }
+    Some(defer_process_resources(process))
+}
+
+/// The roots an exec superseded, for the reclaim pipeline. The row keeps
+/// running on its new root, so the receipt only retires the old ones; it is
+/// counted on the row like an exit's, so the row is not removed (and its PID
+/// not reused) before the receipt settles. Returns no receipt when no root is
+/// pending. The caller queues the receipt once PM is released.
+pub(crate) fn defer_superseded_roots(
+    process: &mut crate::process::Process,
+) -> Option<PendingProcessReclaim> {
+    if process.pending_old_page_tables.is_empty() {
+        return None;
+    }
+    process.note_receipt_created();
+    crate::tracing::providers::teardown::record_defer(process.id.as_u64());
+    Some(PendingProcessReclaim {
+        pid: process.id.as_u64(),
+        page_table: None,
+        old_page_tables: core::mem::take(&mut process.pending_old_page_tables),
+        after_epoch: scheduler::retirement_grace_target(),
+        last_pass: 0,
+        proof_failures: 0,
+        parked: None,
+    })
+}
+
+#[cfg(feature = "boot_tests")]
+pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
+    #[cfg(target_arch = "aarch64")]
+    release_process_leaves(process);
     // The superseded roots are cleared below, so their bounded leaf release
     // must finish here: a partial walk would keep the rest of their frames
     // referenced, and shared with the parent, for the life of the system.
@@ -647,7 +693,6 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     process.memory_locks.clear();
     #[cfg(target_arch = "x86_64")]
     debug_assert!(process.page_table.is_none());
-    drop(process.stack.take());
     process.pending_old_page_tables.clear();
 }
 
@@ -1090,33 +1135,26 @@ impl ProcessScheduler {
                     let retirement_receipt: Option<crate::process::RetirementReceipt> =
                         if already_terminated && !deferred_release {
                             // Preserve the single-CoW-decref invariant: external
-                            // terminate() already walked these mappings, so raw-drop
-                            // them without another reclaim/decref path.
-                            if let Some(mut page_table) = process.page_table.take() {
-                                page_table.retain_file_vmas(&mut process.vmas);
-                                page_table.abandon(AbandonReason::AlreadyTerminated);
-                            }
-                            process.vmas.clear();
-                            process.memory_locks.clear();
-                            drop(process.stack.take());
-                            process.pending_old_page_tables.clear();
-                            None
+                            // terminate() already released these leaves, and the
+                            // table's released mark keeps the receipt's walk from
+                            // releasing them again. Only its tables are left.
+                            defer_remaining_tables(process)
+                                .map(crate::process::RetirementReceipt::from_reclaim)
                         } else {
                             #[cfg(target_arch = "aarch64")]
-                            let receipt =
-                                if let Some(reclaim) = defer_live_process_resources(process) {
-                                    drop(process.stack.take());
-                                    Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
-                                } else {
-                                    release_process_resources(process);
-                                    None
-                                };
+                            let receipt = defer_live_process_resources(process)
+                                .or_else(|| {
+                                    // No TTBR0 holds the root: its leaves go back
+                                    // now, and its tables once the reclaim pass's
+                                    // root checks show no CPU can still walk them.
+                                    release_process_leaves(process);
+                                    defer_remaining_tables(process)
+                                })
+                                .map(crate::process::RetirementReceipt::from_reclaim);
                             #[cfg(target_arch = "x86_64")]
-                            let receipt = {
-                                let reclaim = defer_process_resources(process);
-                                drop(process.stack.take());
-                                Some(crate::process::RetirementReceipt::from_reclaim(reclaim))
-                            };
+                            let receipt = Some(crate::process::RetirementReceipt::from_reclaim(
+                                defer_process_resources(process),
+                            ));
                             receipt
                         };
 
@@ -1516,6 +1554,15 @@ fn reclaim_daemon() {
 
 /// Whether a receipt is queued or parked. Each queue is held on its own, as
 /// their lock order requires.
+/// Receipts waiting for a reclaim pass, and receipts parked by one
+/// (`/proc/breenix/frames`).
+pub fn reclaim_queue_lengths() -> (usize, usize) {
+    (
+        crate::arch_without_interrupts(|| PENDING_PROCESS_RECLAIMS.lock().len()),
+        crate::arch_without_interrupts(|| PARKED_PROCESS_RECLAIMS.lock().len()),
+    )
+}
+
 fn reclaim_work_queued() -> bool {
     crate::arch_without_interrupts(|| !PENDING_PROCESS_RECLAIMS.lock().is_empty())
         || crate::arch_without_interrupts(|| !PARKED_PROCESS_RECLAIMS.lock().is_empty())

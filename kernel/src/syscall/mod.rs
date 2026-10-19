@@ -906,6 +906,10 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
     }
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_fault_acceptance"))]
+    if number == crate::gpu_fault_acceptance::SYSCALL {
+        return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
+    }
     Some(match number {
         MLOCK_SYSCALL_NUMBER => memory_advice::sys_mlock(a[0], a[1]),
         MUNLOCK_SYSCALL_NUMBER => memory_advice::sys_munlock(a[0], a[1]),

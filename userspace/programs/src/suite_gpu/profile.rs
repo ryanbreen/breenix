@@ -2,7 +2,6 @@
 //! drawing and device readback use the public GPU interface.
 use super::common::*;
 use libbreenix::gpu::{self, abi};
-use libbreenix::graphics;
 use libbreenix::suite::{CaseError, CaseResult};
 
 type R<T> = Result<T, CaseError>;
@@ -32,10 +31,8 @@ impl Run {
         Ok(t)
     }
     fn show(&self, t: u64) -> CaseResult {
-        graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-        let (r, p) = gpu::present(self.ctx, t);
-        ensure(r == 0, || format!("PRESENT: {}", errno(r)))?;
-        wait_ok(self.ctx, p.fence, 2_000)
+        present_view(self.ctx, t)?;
+        Ok(())
     }
 }
 impl Drop for Run {

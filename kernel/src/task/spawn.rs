@@ -88,6 +88,11 @@ pub fn spawn_thread_with_privilege(
 
     let tid = thread.id();
 
+    // The thread runs on this stack, and a spawned thread has no owner that
+    // returns its stack when it ends: it is kept rather than freed under the
+    // thread.
+    core::mem::forget(stack);
+
     // Add to scheduler
     super::scheduler::spawn(thread);
 

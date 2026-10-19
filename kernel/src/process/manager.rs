@@ -9,8 +9,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 // Import paging types from appropriate source
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
-#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -19,7 +17,7 @@ use crate::memory::arch_stub::VirtAddr;
 use super::{Process, ProcessId};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
-use crate::memory::process_memory::{AbandonReason, ProcessPageTable};
+use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
 
 /// The process ID reserved for init. Never handed out by ordinary allocation.
@@ -115,7 +113,6 @@ pub(crate) enum ReapOutcome {
 pub(crate) struct PreparedExecImage {
     new_page_table: crate::memory::process_memory::UnpublishedPageTable,
     loaded_elf: crate::elf::LoadedElf,
-    new_stack: Box<crate::memory::stack::GuardedStack>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
     cmdline: alloc::sync::Arc<Vec<u8>>,
@@ -709,50 +706,24 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate a stack for the process
-        use crate::memory::stack;
-        use crate::task::thread::ThreadPrivilege;
-
-        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process: Allocating user stack");
-        let user_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User).map_err(
-                |_| {
-                    crate::serial_println!("manager.create_process: Stack allocation failed");
-                    "Failed to allocate user stack"
-                },
-            )?;
-        crate::serial_println!(
-            "manager.create_process: User stack allocated at {:#x}",
-            user_stack.top()
-        );
-
-        let stack_top = user_stack.top();
+        // The user stack, where exec puts it: pages the process page table
+        // owns, returned with its other leaves.
+        use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_SIZE};
+        let stack_top = VirtAddr::new(USER_STACK_REGION_START + USER_STACK_SIZE as u64);
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_top.as_u64() - USER_STACK_SIZE as u64;
 
-        // Store the stack in the process
-        process.stack = Some(Box::new(user_stack));
-
-        // CRITICAL: Map the user stack pages into the process page table
-        // The stack was allocated in the kernel page table, but userspace needs it mapped
-        log::debug!("Mapping user stack pages into process page table...");
         crate::serial_println!(
             "manager.create_process: Mapping user stack into process page table"
         );
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = stack_top - USER_STACK_SIZE as u64;
-            crate::memory::process_memory::map_user_stack_to_process(
-                page_table,
-                stack_bottom,
-                stack_top,
-            )
-            .map_err(|e| {
-                log::error!("Failed to map user stack to process page table: {}", e);
-                "Failed to map user stack in process page table"
-            })?;
-            log::debug!("✓ User stack mapped in process page table");
+            crate::memory::process_memory::map_new_user_stack(page_table, stack_bottom, stack_top)
+                .map_err(|e| {
+                    log::error!("Failed to map user stack to process page table: {}", e);
+                    "Failed to map user stack in process page table"
+                })?;
             crate::serial_println!("manager.create_process: User stack mapped successfully");
         } else {
             return Err("Process page table not available for stack mapping");
@@ -821,20 +792,10 @@ impl ProcessManager {
     /// #713: x86 had no argv-carrying process-creation entry point before this — only
     /// `create_process`/`build_process_at` (no argv) existed. This is assembled from
     /// `build_process_at`'s page-table/ELF-load block plus `exec_process_with_argv`'s
-    /// `setup_argv_on_stack` call, but uses `build_process_at`'s bump-allocated
-    /// `GuardedStack` stack convention throughout rather than `exec_process_with_argv`'s
-    /// fixed-address manual frame loop + fabricated dummy `GuardedStack` (precheck C4):
-    /// `process.stack` must genuinely custody the mapped stack region so P4
-    /// scheduler-single-ownership's Drop-based cleanup (#583) actually reclaims it
-    /// instead of leaking the frames behind a stack object that does not describe
-    /// what got mapped.
-    ///
-    /// Precheck C14: the stack VA still comes from `build_process_at`'s
-    /// never-reclaiming bump allocator (`stack::allocate_stack_with_privilege`,
-    /// region `USER_STACK_REGION_START`, ~68 KiB consumed per process, 16 MiB total
-    /// per `kernel/src/memory/stack.rs`) — a long-running x86 session that spawns and
-    /// reaps repeatedly will exhaust that VA region after roughly 240 process
-    /// creations. Tracked as its own follow-up issue; not fixed here.
+    /// `setup_argv_on_stack` call. Its stack is exec's: zeroed pages at exec's fixed
+    /// address that the process page table owns (`map_new_user_stack`), so the
+    /// table's leaf release returns them (#583) and no per-process address range
+    /// is consumed.
     #[cfg(target_arch = "x86_64")]
     pub fn create_process_with_argv(
         &mut self,
@@ -943,35 +904,23 @@ impl ProcessManager {
         process.heap_end = heap_base;
         process.memory_usage.code_size = elf_data.len();
 
-        // --- Stack: build_process_at's bump-allocated GuardedStack (precheck C4) ---
-        use crate::memory::stack;
-        use crate::task::thread::ThreadPrivilege;
-
-        const USER_STACK_SIZE: usize = 64 * 1024;
-        let user_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User)
-                .map_err(|_| "Failed to allocate user stack")?;
-
-        let stack_top = user_stack.top();
+        // --- Stack: where exec puts it, pages the process page table owns ---
+        use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_SIZE};
+        let stack_top = VirtAddr::new(USER_STACK_REGION_START + USER_STACK_SIZE as u64);
         let stack_bottom = stack_top - USER_STACK_SIZE as u64;
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_bottom.as_u64();
-        process.stack = Some(Box::new(user_stack));
 
         if let Some(ref mut page_table) = process.page_table {
-            crate::memory::process_memory::map_user_stack_to_process(
-                page_table,
-                stack_bottom,
-                stack_top,
-            )
-            .map_err(|e| {
-                log::error!(
-                    "create_process_with_argv: Failed to map user stack to process page table: {}",
-                    e
-                );
-                "Failed to map user stack in process page table"
-            })?;
+            crate::memory::process_memory::map_new_user_stack(page_table, stack_bottom, stack_top)
+                .map_err(|e| {
+                    log::error!(
+                        "create_process_with_argv: Failed to map user stack to process page table: {}",
+                        e
+                    );
+                    "Failed to map user stack in process page table"
+                })?;
         } else {
             return Err("Process page table not available for stack mapping");
         }
@@ -1100,9 +1049,6 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
     ) -> Result<ProcessId, &'static str> {
-        // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
-        use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
-
         crate::serial_println!(
             "manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}",
             name,
@@ -1183,42 +1129,11 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate physical frames for the stack
-        // On ARM64, we need to:
-        // 1. Allocate physical memory for the stack
-        // 2. Map it at USERSPACE addresses (not kernel HHDM addresses)
-        // 3. Use the userspace addresses for the thread's SP
+        // The user stack, below USER_STACK_REGION_START as exec puts it: pages
+        // the process page table owns, returned with its other leaves.
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
-
-        // allocate_stack_with_privilege returns HHDM addresses (kernel-accessible)
-        // We need to extract the physical frames and map them to userspace addresses
-        let kernel_stack = stack::allocate_stack_with_privilege(
-            USER_STACK_SIZE,
-            StackPrivilege::User,
-        )
-        .map_err(|_| {
-            crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
-            "Failed to allocate user stack"
-        })?;
-
-        // The kernel_stack.top() is an HHDM address - extract physical address
-        let kernel_stack_top = kernel_stack.top().as_u64();
-        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-        let stack_phys_top = kernel_stack_top - hhdm_base;
-        let stack_phys_bottom = stack_phys_top - USER_STACK_SIZE as u64;
-
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Stack physical range {:#x}-{:#x}",
-            stack_phys_bottom,
-            stack_phys_top
-        );
-
-        // Calculate userspace stack addresses
-        // Stack grows down, so stack_top is the highest address
         let user_stack_top = USER_STACK_REGION_START;
         let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
@@ -1232,36 +1147,15 @@ impl ProcessManager {
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_bottom;
 
-        // Store the kernel-accessible stack (for potential kernel access later)
-        process.stack = Some(Box::new(kernel_stack));
-
-        // Map the physical stack frames into the process page table at USERSPACE addresses
-        log::debug!("ARM64: Mapping user stack pages into process page table...");
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Mapping user stack into process page table"
-        );
         let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
-            crate::serial_println!(
-                "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} phys_bottom={:#x}",
-                user_stack_bottom,
-                user_stack_top,
-                stack_phys_bottom
-            );
-
-            // Map physical frames to userspace addresses
-            crate::memory::process_memory::map_user_stack_to_process_with_phys(
+            crate::memory::process_memory::map_new_user_stack(
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                process
-                    .stack
-                    .as_deref()
-                    .ok_or("user stack frames unavailable")?
-                    .frames(),
             )
             .map_err(|e| {
                 crate::serial_println!(
-                    "manager.create_process [ARM64]: map_user_stack_to_process FAILED: {}",
+                    "manager.create_process [ARM64]: user stack mapping FAILED: {}",
                     e
                 );
                 log::error!(
@@ -1270,7 +1164,6 @@ impl ProcessManager {
                 );
                 "Failed to map user stack in process page table"
             })?;
-            log::debug!("ARM64: User stack mapped in process page table");
             crate::serial_println!(
                 "manager.create_process [ARM64]: User stack mapped successfully"
             );
@@ -1378,9 +1271,6 @@ impl ProcessManager {
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
-        // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
-        use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
-
         crate::serial_println!(
             "manager.create_process_with_argv [ARM64]: ENTRY - name='{}', elf_size={}, argc={}",
             name,
@@ -1454,16 +1344,11 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate physical frames for the stack
+        // The user stack, below USER_STACK_REGION_START as exec puts it: pages
+        // the process page table owns, returned with its other leaves.
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process_with_argv [ARM64]: Allocating user stack");
-
-        let kernel_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
-                .map_err(|_| "Failed to allocate user stack")?;
 
         // Calculate userspace stack addresses
         let user_stack_top = USER_STACK_REGION_START;
@@ -1478,19 +1363,12 @@ impl ProcessManager {
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_bottom;
-        process.stack = Some(Box::new(kernel_stack));
 
-        // Map the physical stack frames into the process page table
         let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
-            crate::memory::process_memory::map_user_stack_to_process_with_phys(
+            crate::memory::process_memory::map_new_user_stack(
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                process
-                    .stack
-                    .as_deref()
-                    .ok_or("user stack frames unavailable")?
-                    .frames(),
             )
             .map_err(|e| {
                 log::error!(
@@ -2155,23 +2033,19 @@ impl ProcessManager {
                 already_terminated && core::mem::take(&mut process.address_space_release_deferred);
             if already_terminated && !deferred_release {
                 // Preserve the single-CoW-decref invariant: external terminate()
-                // already walked these mappings, so raw-drop them without ever
-                // routing the page table through another reclaim/decref path.
-                // File bindings leave with the mappings, so a zombie row does
-                // not keep their files open.
-                process.vmas.clear();
-                process.memory_locks.clear();
-                if let Some(page_table) = process.page_table.take() {
-                    page_table.abandon(AbandonReason::AlreadyTerminated);
-                }
-                drop(process.stack.take());
-                process.pending_old_page_tables.clear();
-                // P6a condition C2, path (b): this arm produces no receipt, so
-                // no `record_reclaim` will ever arrive for the work it just did.
-                // The latch is still refused while a receipt from this row's
+                // already released these leaves, and the table's released mark
+                // keeps the receipt's walk from releasing them again. Its tables
+                // retire through the receipt; file bindings go with the table.
+                receipt = crate::task::process_task::defer_remaining_tables(process)
+                    .map(super::RetirementReceipt::from_reclaim);
+                // P6a condition C2, path (b): a row holding no tables (its first
+                // exit took them) gets no receipt here, so no `record_reclaim`
+                // arrives for this arm. The latch is still refused while a receipt from this row's
                 // first exit is outstanding, so a repeat exit cannot retire a row
                 // whose resources are still in flight.
-                process.note_resources_absent();
+                if receipt.is_none() {
+                    process.note_resources_absent();
+                }
             } else {
                 // Fault exits always defer: the two-epoch grace covers both a
                 // peer's pre-shadow-stamp dispatch window and hardware root lag.
@@ -2179,7 +2053,6 @@ impl ProcessManager {
                 // structural issue as normal-exit deferral.
                 let reclaim = crate::task::process_task::defer_process_resources(process);
                 receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
-                drop(process.stack.take());
 
                 // Keep termination after release/deferral. Once page_table is None,
                 // cleanup_cow_frames() cannot repeat the CoW walk; restoring the old
@@ -2747,7 +2620,6 @@ impl ProcessManager {
         let page_table = from.page_table.take();
         let vmas = core::mem::take(&mut from.vmas);
         let memory_locks = core::mem::take(&mut from.memory_locks);
-        let stack = from.stack.take();
         let pending_old_page_tables = core::mem::take(&mut from.pending_old_page_tables);
         let memory_usage = core::mem::take(&mut from.memory_usage);
         let fb_mmap = from.fb_mmap.take();
@@ -2762,7 +2634,6 @@ impl ProcessManager {
         to.page_table = page_table;
         to.vmas = vmas;
         to.memory_locks = memory_locks;
-        to.stack = stack;
         to.pending_old_page_tables = pending_old_page_tables;
         to.memory_usage = memory_usage;
         to.fb_mmap = fb_mmap;
@@ -3709,9 +3580,6 @@ impl ProcessManager {
         // Set the child process's main thread (also transitions Creating → Ready)
         child_process.set_main_thread(child_thread);
 
-        // CoW fork: no separate stack allocation, so no stack to store
-        child_process.stack = None;
-
         // Inherit parent's user stack bounds for demand-paged growth
         child_process.user_stack_top = {
             let parent = self
@@ -4013,9 +3881,6 @@ impl ProcessManager {
             // IMPORTANT: Set RAX to 0 for the child (fork return value)
             child_thread.context.rax = 0;
 
-            // CoW fork: no separate stack allocation
-            child_process.stack = None;
-
             // Inherit parent's user stack bounds
             {
                 let parent = self
@@ -4086,7 +3951,7 @@ impl ProcessManager {
     ) -> Result<u64, &'static str> {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
-        log::info!(
+        log::debug!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
         );
@@ -4124,7 +3989,7 @@ impl ProcessManager {
             process.drain_old_page_tables();
         }
 
-        log::info!(
+        log::debug!(
             "exec_process: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4182,10 +4047,10 @@ impl ProcessManager {
         log::info!("exec_process: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table
-        log::info!("exec_process: Loading ELF into new page table...");
+        log::debug!("exec_process: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
         let new_entry_point = loaded_elf.entry_point.as_u64();
-        log::info!(
+        log::debug!(
             "exec_process: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4202,29 +4067,17 @@ impl ProcessManager {
         let stack_top = VirtAddr::new(USER_STACK_TOP);
         let _guard_page = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64 - 0x1000);
 
-        // Map stack pages into the NEW process page table
-        log::info!("exec_process: Mapping stack pages into new process page table");
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
+        // Map zeroed stack pages into the NEW process page table
         log::info!(
             "exec_process: Stack range: {:#x} - {:#x}",
             stack_bottom.as_u64(),
             stack_top.as_u64()
         );
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            // Map into the NEW process page table with user-accessible permissions
-            new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            )?;
-        }
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
 
         // The no-argument exec path needs the same startup ABI as argv exec,
         // including the program headers used by the runtime to initialize TLS.
@@ -4239,14 +4092,6 @@ impl ProcessManager {
             new_entry_point,
             &self.processes.live_row(&pid).ok_or("Process not found")?.cred,
         )?;
-
-        // For now, we'll use a dummy stack object since we manually mapped the stack
-        // In the future, we should refactor stack allocation to support mapping into specific page tables
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096, // Dummy size - we already mapped the real stack
-            crate::task::thread::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
 
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
@@ -4292,7 +4137,7 @@ impl ProcessManager {
         process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
-            log::info!("exec_process: Updated process name to '{}'", name);
+            log::debug!("exec_process: Updated process name to '{}'", name);
         }
         process.entry_point = loaded_elf.entry_point;
 
@@ -4348,7 +4193,6 @@ impl ProcessManager {
         process.publish_identity();
 
         // Replace the stack
-        process.stack = Some(Box::new(new_stack));
         process.user_stack_top = USER_STACK_TOP;
         process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
 
@@ -4401,7 +4245,7 @@ impl ProcessManager {
             // Mark the thread as ready to run the new program
             thread.state = crate::task::thread::ThreadState::Ready;
 
-            log::info!(
+            log::debug!(
                 "exec_process: Updated thread {} context for new program",
                 thread_id
             );
@@ -4437,7 +4281,7 @@ impl ProcessManager {
             // The scheduler will use the process's page table during context switch
         } else {
             // Process is not scheduled - it will use the new page table when it runs
-            log::info!(
+            log::debug!(
                 "exec_process: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -4449,7 +4293,7 @@ impl ProcessManager {
         // The old table will be cleaned up at the start of the next exec or
         // when the process exits.
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process: Deferring old page table cleanup");
+            log::debug!("exec_process: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
@@ -4562,10 +4406,10 @@ impl ProcessManager {
         }
 
         // Load the ELF binary into the new page table
-        log::info!("exec_process_with_argv: Loading ELF into new page table...");
+        log::debug!("exec_process_with_argv: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
         let new_entry_point = loaded_elf.entry_point.as_u64();
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4576,25 +4420,12 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - user_stack_size as u64);
         let stack_top = VirtAddr::new(USER_STACK_TOP);
 
-        log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            if let Err(error) = new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            ) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-                return Err(error);
-            }
-        }
+        log::debug!("exec_process_with_argv: Mapping stack pages into new process page table");
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
 
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // We need to write to the new stack pages that we just mapped
@@ -4613,23 +4444,14 @@ impl ProcessManager {
             &cred,
         )?;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: argc/argv set up on stack, RSP={:#x}",
             initial_rsp
         );
 
-        // Create a dummy stack object since we manually mapped the stack
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096,
-            crate::task::thread::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
-
-        let new_stack = crate::syscall::exec::try_box(new_stack)?;
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -4651,7 +4473,15 @@ impl ProcessManager {
         pid: ProcessId,
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<
+        (
+            u64,
+            u64,
+            crate::task::scheduler::ExecSchedCommit,
+            Option<super::RetirementReceipt>,
+        ),
+        &'static str,
+    > {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         let is_current_process = self.current_pid == Some(pid);
@@ -4696,7 +4526,7 @@ impl ProcessManager {
             return Err(EXEC_GROUP_RUNNING);
         }
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4715,7 +4545,6 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -4757,7 +4586,7 @@ impl ProcessManager {
 
         // Update the process with new program data
         if let Some(name) = program_name {
-            log::info!("exec_process_with_argv: Updated process name to '{}'", name);
+            log::debug!("exec_process_with_argv: Updated process name to '{}'", name);
             process.name = name;
         }
         process.exe_path = exe_path;
@@ -4815,7 +4644,6 @@ impl ProcessManager {
             .level_4_frame()
             .start_address()
             .as_u64();
-        process.stack = Some(new_stack);
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_top.as_u64() - user_stack_size as u64;
 
@@ -4857,7 +4685,7 @@ impl ProcessManager {
         thread.context.user_fs_base_set = false;
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: Updated thread {} context for new program",
             thread_id
         );
@@ -4884,7 +4712,7 @@ impl ProcessManager {
         } else if is_scheduled {
             log::info!("exec_process_with_argv: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -4896,20 +4724,30 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        if let Some(process) = self.processes.live_row_mut(&pid) {
+        // The roots this exec superseded retire through a receipt the caller
+        // queues once PM is released, as an exit's do.
+        let superseded = self.processes.live_row_mut(&pid).and_then(|process| {
             for old_pt in &mut process.pending_old_page_tables {
                 old_pt.release_exec_file_vmas();
             }
-        }
+            crate::task::process_task::defer_superseded_roots(process)
+        });
 
-        Ok((new_entry_point, initial_rsp, sched_commit))
+        Ok((
+            new_entry_point,
+            initial_rsp,
+            sched_commit,
+            superseded.map(super::RetirementReceipt::from_reclaim),
+        ))
     }
 
     /// Replace a process's address space with a new program (exec) with argv support (ARM64)
     ///
-    /// Returns the entry point, stack pointer, and a scheduler commit receipt on success.
-    /// The caller must release the process-manager lock before applying the receipt so the
-    /// scheduler and process-manager locks are never nested in either direction.
+    /// Returns the entry point, stack pointer, a scheduler commit receipt, and the
+    /// retirement receipt for the roots exec superseded on success. The caller must
+    /// release the process-manager lock before applying the commit, so the scheduler
+    /// and process-manager locks do not nest in either direction, and before
+    /// queueing the retirement receipt.
     /// Build an unpublished image with interrupts enabled and no manager guard.
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn prepare_exec_image(
@@ -4924,8 +4762,6 @@ impl ProcessManager {
     ) -> Result<PreparedExecImage, &'static str> {
         #[cfg(target_arch = "aarch64")]
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        #[cfg(target_arch = "aarch64")]
-        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
         let exe_path = exe_path
             .map(alloc::sync::Arc::try_new)
             .transpose()
@@ -4973,13 +4809,13 @@ impl ProcessManager {
             }
         }
 
-        log::info!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
+        log::debug!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             new_page_table.as_mut(),
         )?;
         let new_entry_point = loaded_elf.entry_point;
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4987,27 +4823,14 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(user_stack_top - user_stack_size as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Mapping stack pages into new process page table"
         );
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            if let Err(error) = new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            ) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-                return Err(error);
-            }
-        }
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
         let cmdline_area = Self::argv_area(user_stack_top, argv, envp);
@@ -5023,22 +4846,14 @@ impl ProcessManager {
             &cred,
         )?;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: argc/argv set up on stack, SP_EL0={:#x}",
             initial_rsp
         );
 
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096,
-            crate::memory::arch_stub::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
-
-        let new_stack = crate::syscall::exec::try_box(new_stack)?;
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -5060,7 +4875,15 @@ impl ProcessManager {
         pid: ProcessId,
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<
+        (
+            u64,
+            u64,
+            crate::task::scheduler::ExecSchedCommit,
+            Option<super::RetirementReceipt>,
+        ),
+        &'static str,
+    > {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
@@ -5105,7 +4928,7 @@ impl ProcessManager {
             return Err(EXEC_GROUP_RUNNING);
         }
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -5124,7 +4947,6 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -5162,7 +4984,7 @@ impl ProcessManager {
         });
 
         if let Some(name) = program_name {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv [ARM64]: Updated process name to '{}'",
                 name
             );
@@ -5221,7 +5043,6 @@ impl ProcessManager {
             .level_4_frame()
             .start_address()
             .as_u64();
-        process.stack = Some(new_stack);
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_top.as_u64() - user_stack_size as u64;
 
@@ -5257,7 +5078,7 @@ impl ProcessManager {
         thread.kernel_stack_top = preserved_kernel_stack_top;
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Updated thread {} context for new program",
             thread_id
         );
@@ -5286,7 +5107,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -5294,7 +5115,7 @@ impl ProcessManager {
 
         // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
+            log::debug!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
@@ -5304,13 +5125,21 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        if let Some(process) = self.processes.live_row_mut(&pid) {
+        // The roots this exec superseded retire through a receipt the caller
+        // queues once PM is released, as an exit's do.
+        let superseded = self.processes.live_row_mut(&pid).and_then(|process| {
             for old_pt in &mut process.pending_old_page_tables {
                 old_pt.release_exec_file_vmas();
             }
-        }
+            crate::task::process_task::defer_superseded_roots(process)
+        });
 
-        Ok((new_entry_point, initial_rsp, sched_commit))
+        Ok((
+            new_entry_point,
+            initial_rsp,
+            sched_commit,
+            superseded.map(super::RetirementReceipt::from_reclaim),
+        ))
     }
 
     /// Replace a process's address space with a new program (exec) for ARM64
@@ -5340,12 +5169,11 @@ impl ProcessManager {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
         // Lock-free trace: exec entry
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Replacing process {} with new program",
             pid.as_u64()
         );
@@ -5380,7 +5208,7 @@ impl ProcessManager {
             process.drain_old_page_tables();
         }
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -5428,13 +5256,13 @@ impl ProcessManager {
         log::info!("exec_process [ARM64]: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table using ARM64-specific loader
-        log::info!("exec_process [ARM64]: Loading ELF into new page table...");
+        log::debug!("exec_process [ARM64]: Loading ELF into new page table...");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             new_page_table.as_mut(),
         )?;
         let new_entry_point = loaded_elf.entry_point;
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -5446,40 +5274,18 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
-        // Map stack pages into the NEW process page table
-        log::info!("exec_process [ARM64]: Mapping stack pages into new process page table");
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
+        // Map zeroed stack pages into the NEW process page table
         log::info!(
             "exec_process [ARM64]: Stack range: {:#x} - {:#x}",
             stack_bottom.as_u64(),
             stack_top.as_u64()
         );
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            // Map into the NEW process page table with user-accessible permissions
-            if let Err(error) = new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            ) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-                return Err(error);
-            }
-        }
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
-
-        // For now, we'll use a dummy stack object since we manually mapped the stack
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096, // Dummy size - we already mapped the real stack
-            crate::memory::arch_stub::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
 
         log::info!(
             "exec_process [ARM64]: New entry point: {:#x}, new stack top: {:#x}",
@@ -5519,7 +5325,7 @@ impl ProcessManager {
         process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
-            log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
+            log::debug!("exec_process [ARM64]: Updated process name to '{}'", name);
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
@@ -5580,7 +5386,6 @@ impl ProcessManager {
             .as_u64();
 
         // Replace the stack
-        process.stack = Some(Box::new(new_stack));
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
@@ -5631,7 +5436,7 @@ impl ProcessManager {
         // Mark the thread as ready to run the new program
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Updated thread {} context for new program",
             thread_id
         );
@@ -5664,7 +5469,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -5672,7 +5477,7 @@ impl ProcessManager {
 
         // Defer old page table cleanup (see exec_process x86_64 for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process [ARM64]: Deferring old page table cleanup");
+            log::debug!("exec_process [ARM64]: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }

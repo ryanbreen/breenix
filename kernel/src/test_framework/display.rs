@@ -450,8 +450,8 @@ pub(crate) fn render_splash(
         fn buffer(&self) -> &[u8] {
             self.pixels
         }
-        fn buffer_mut(&mut self) -> &mut [u8] {
-            self.pixels
+        fn buffer_mut(&mut self) -> crate::graphics::firmware_writes::BufferMut<'_> {
+            crate::graphics::firmware_writes::BufferMut::new(self.pixels, false)
         }
         fn set_pixel(&mut self, x: i32, y: i32, color: Color) {
             if x < 0 || y < 0 || x as usize >= self.width() || y as usize >= self.height() {

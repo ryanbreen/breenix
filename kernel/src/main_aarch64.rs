@@ -108,8 +108,10 @@ impl BootMode {
 /// a `testing` kernel (which always runs its test loader), runs `default` and is
 /// noted on a separate line. Returns the mode; the program path for program mode or
 /// the suite id for suite mode; and the `<category>/<case>` a suite boot runs alone,
-/// from fw_cfg `opt/breenix/case` or the boot target's `case` word. `announce_boot_mode`
+/// from fw_cfg `opt/breenix/case` or the boot target's `case` word, or the one
+/// argument word a boot target's program takes. `announce_boot_mode`
 /// prints the mode once it is known to run.
+/// claim-lint:ok: the cfg!(feature = "testing") branch of read_boot_mode in kernel/src/main_aarch64.rs.
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
     use kernel::boot::target;
@@ -128,15 +130,23 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
         Some("suite") => BootMode::Suite,
         _ => BootMode::Default,
     };
-    // Without a fw_cfg mode, the boot-target file may name a suite or probe.
+    // Without a fw_cfg mode, the boot-target file may name a suite, probe or program.
     let mut target_suite = None;
+    let mut target_program = None;
     let mut only = None;
     let mode = match requested.as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Default)) => BootMode::Default,
             Ok(Some(target::Target::Shell)) => BootMode::Shell,
+            Ok(Some(target::Target::Desktop)) => BootMode::Desktop,
             Ok(Some(target::Target::Console { .. })) => BootMode::Console,
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
+            Ok(Some(target::Target::Program { path, arg })) => {
+                target_program = Some(path);
+                // The program's one argument rides in `only`, as a suite's case does.
+                only = arg;
+                BootMode::Program
+            }
             Ok(Some(target::Target::Suite(suite))) => {
                 target_suite = Some(suite.id);
                 only = suite.case;
@@ -164,6 +174,7 @@ fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::s
         mode
     };
     let arg = match mode {
+        BootMode::Program if target_program.is_some() => target_program,
         BootMode::Program => match kernel::drivers::fw_cfg::read_string("opt/breenix/program") {
             Some(path) if path.starts_with('/') => Some(path),
             Some(path) if !path.is_empty() => {
@@ -229,6 +240,10 @@ fn announce_boot_mode(mode: BootMode, arg: Option<&str>, only: Option<&str>) {
             serial_println!("[boot] Boot mode: suite {} case {}", arg, case);
             splash::set_mode(format_args!("suite {} case {}", arg, case));
         }
+        (BootMode::Program, Some(arg), Some(word)) => {
+            serial_println!("[boot] Boot mode: program {} {}", arg, word);
+            splash::set_mode(format_args!("program {} {}", arg, word));
+        }
         (BootMode::Program | BootMode::Suite, Some(arg), _) => {
             serial_println!("[boot] Boot mode: {} {}", mode.name(), arg);
             splash::set_mode(format_args!("{} {}", mode.name(), arg));
@@ -271,10 +286,14 @@ impl InitLaunch {
             BootMode::Shell => InitLaunch::new("/sbin/init", &[b"init", b"shell"]),
             BootMode::Console => InitLaunch::new("/sbin/init", &[b"init", b"console"]),
             BootMode::Desktop => InitLaunch::new("/sbin/init", &[b"init", b"desktop"]),
-            BootMode::Program => InitLaunch::new(
-                "/sbin/probe",
-                &[b"probe", b"--run", arg.unwrap_or("").as_bytes()],
-            ),
+            BootMode::Program => {
+                let mut argv: alloc::vec::Vec<&[u8]> =
+                    alloc::vec![b"probe", b"--run", arg.unwrap_or("").as_bytes()];
+                if let Some(word) = only {
+                    argv.push(word.as_bytes());
+                }
+                InitLaunch::new("/sbin/probe", &argv)
+            }
             BootMode::Suite => {
                 let path = kernel::boot::target::suite_path(arg.unwrap_or(""));
                 let hostkeys = if kernel::platform_config::is_qemu() {
@@ -660,6 +679,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::platform_config::init_from_parallels(config),
             "ARM64 boot: incompatible loader HardwareConfig"
         );
+        kernel::drivers::xhci::set_firmware_rsdp(config.rsdp_addr);
 
         // Breadcrumb: 'H' = linked HHDM entry and platform setup complete.
         unsafe {
@@ -1110,11 +1130,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // Initialize input devices (capability-based detection)
-    if kernel::drivers::usb::xhci::is_initialized() {
-        // USB HID keyboard/mouse via XHCI — already set up during drivers::init().
-        // Runtime input and command completion delivery are IRQ-driven.
-        serial_println!("[boot] USB HID input active via XHCI IRQ");
-    } else if kernel::platform_config::is_qemu() {
+    if kernel::platform_config::is_qemu() {
         // VirtIO keyboard/mouse MMIO (QEMU)
         serial_println!("[boot] Initializing VirtIO keyboard...");
         match input_mmio::init() {
@@ -1181,6 +1197,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::process_task::start_reclaim_daemon();
     // Terminal signals the input interrupt generates are sent from a thread.
     kernel::tty::driver::start_foreground_signal_thread();
+    kernel::drivers::xhci::init();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
@@ -1297,17 +1314,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     } else {
         None
     };
-
-    kernel::drivers::usb::xhci::activate_msi_if_ready();
-    // Boot-context observability for Parallels MSI delivery. This runs once,
-    // before timer init, so it does not depend on CPU0 timer polling.
-    serial_println!(
-        "[xhci] post-activation: MSI_EVENT_COUNT={} EVENT_COUNT={} POLL_COUNT={} SPI_ACTIVATED={}",
-        kernel::drivers::usb::xhci::MSI_EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
-        kernel::drivers::usb::xhci::EVENT_COUNT.load(core::sync::atomic::Ordering::Relaxed),
-        kernel::drivers::usb::xhci::POLL_COUNT.load(core::sync::atomic::Ordering::Relaxed),
-        kernel::drivers::usb::xhci::SPI_ACTIVATED.load(core::sync::atomic::Ordering::Relaxed),
-    );
 
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized

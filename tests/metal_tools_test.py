@@ -776,6 +776,9 @@ class RootStagingTest(unittest.TestCase):
             tree = root / 'tree'
             (tree / 'sbin').mkdir(parents=True)
             (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'bin').mkdir()
+            for program in ('getty', 'login'):
+                (tree / 'bin' / program).write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
@@ -783,17 +786,29 @@ class RootStagingTest(unittest.TestCase):
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
-            site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture'}
+            site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture',
+                    'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
+                    'CONSOLE_IDENTITY_KEY': 'ab' * 32}
+            helper = os.environ.get('CONSOLE_HASH_HELPER')
+            self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
+                            'Missing CONSOLE_HASH_HELPER: install with rustc --edition=2021 -O '
+                            'scripts/metal/sha512-crypt.rs -o /tmp/sha512-crypt, then export CONSOLE_HASH_HELPER=/tmp/sha512-crypt')
+            hasher = Path(helper)
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
-                                          ('suite', 'smoke', 'suite smoke'), ('tests', None, 'default')]:
-                facts = metal_root.stage_root(image, mode, suite, site)
+                                          ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:
+                facts = metal_root.stage_root(image, mode, suite, site, hasher=hasher)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):
                     return subprocess.run([debugfs, '-R', 'cat /etc/breenix/' + name, str(image)],
                                           check=True, capture_output=True).stdout.decode()
                 self.assertEqual(read('boot-target'), expected + '\n')
                 self.assertEqual(read('site.env'), 'FETCH_URL=fixture-value\n')
+                if mode == 'default':
+                    self.assertTrue(read('../shadow').startswith('root:$6$'))
+            subprocess.run(['bash', str(TOOLS.parent / 'write-boot-target.sh'), str(image), '--desktop'],
+                           check=True, capture_output=True)
+            self.assertEqual(read('boot-target'), 'desktop\n')
             probe_site = dict(site, BOOT_URL='http://fixture.invalid/breenix/boot.img')
             metal_root.stage_root(image, 'probe', None, probe_site)
             self.assertEqual(read('boot-target'), 'probe\n')
@@ -809,7 +824,7 @@ class RootStagingTest(unittest.TestCase):
             spec = importlib.util.spec_from_file_location('deployed_root', package / 'metal_root.py')
             deployed = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(deployed)
-            facts = deployed.stage_root(image, 'default', None, site)
+            facts = deployed.stage_root(image, 'default', None, site, hasher=hasher)
             self.assertEqual(read('boot-target'), 'default\n')
             self.assertEqual(facts['writerSha256'], hashlib.sha256(
                 (TOOLS.parent / 'write-boot-target.sh').read_bytes()).hexdigest())
@@ -819,12 +834,12 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
             # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
             metal_root.stage_root(image, 'suite', 'smoke,time', site)
-            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('boot-target'), 'suite smoke hostkeys xhci-replay\n')
             self.assertEqual(read('suite-sequence'), 'smoke,time\n')
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'suite', 'smoke,absent', site)
             metal_root.stage_root(image, 'suite', 'time', site)
-            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('boot-target'), 'suite time hostkeys xhci-replay\n')
             self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
@@ -1074,7 +1089,7 @@ class DriverTest(StateTest):
         self.assertEqual(boot.final_marker(metal, 'probe', catalog, 'disk-root'),
                          ('PROBE dir OK', 'contains'))
         self.assertEqual(boot.final_marker(metal, 'default', catalog, 'ramdisk'),
-                         ('[init] Boot script completed', 'contains'))
+                         ('Breenix login:', 'contains'))
 
     def test_mode_completion_waits_for_delayed_kernel_producers(self):
         d = self.driver
@@ -1104,6 +1119,43 @@ class DriverTest(StateTest):
         self.finish(lambda: d.on_line('DNS answer'), m.EXIT_DONE)
         d.completion_reported = False
         self.finish(lambda: d.on_line('PROBE DONE passed=16 failed=1'), m.EXIT_SHORT)
+
+    def test_one_suite_ends_at_its_ready_after_the_memory_record(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'processes'
+        definition = d.dir / 'definition/docs/metal'
+        definition.mkdir(parents=True)
+        m.write_json(definition / 'boot-path.json', {'gateArch': 'x86_64', 'fatal': [], 'milestones': []})
+        d.load_definition()
+        d.on_line('SUITE processes DONE passed=154 failed=0 skipped=0 total=154')
+        d.on_line('SUITE processes MEMORY reclaimed=PASS free_before=9 free_after=9 allowance=64')
+        self.assertFalse(d.completion_reported)
+        self.finish(lambda: d.on_line('SUITE_SEQUENCE READY processes'), m.EXIT_DONE)
+
+    def test_suite_answers_each_host_key_record_once_with_boot_reports_on_the_serial_console(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'console'
+        d.console_send = Mock()
+        record = 'SUITE console HOSTKEY keys/alt-fn seq=4 keys=alt-f2,a'
+        with patch.object(boot.hostkeys.time, 'sleep'):
+            d.on_line(record)  # before the kernel starts: not a case's record
+            self.assertFalse(d.console_send.called)
+            d.kernel_started = 120
+            d.on_line(record)
+            d.on_line(record)  # a serial replay of the same record is answered once
+            d.on_line('SUITE console HOSTKEY keys/alt-fn seq=5 keys=alt-f2')
+        self.assertEqual([c.args[0] for c in d.console_send.call_args_list], [
+            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000',
+            'BXKEY 0000040000000000,0000000000000000',
+            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
+        logged = [c.kwargs['message'] for c in d.event.call_args_list if c.args[0] == 'hostkeys']
+        self.assertEqual(len(logged), 2)
+        self.assertIn('seq=4 keys=alt-f2,a sent via xhci-replay', logged[0])
+        # A console boot types no host keys.
+        d.args.mode, d.hostkey_watcher = 'console', None
+        d.console_send.reset_mock()
+        d.on_line('SUITE console HOSTKEY keys/alt-fn seq=6 keys=alt-f2')
+        self.assertFalse(d.console_send.called)
 
     def test_failed_probe_keeps_failure_and_waits_for_kernel_producers(self):
         d = self.driver
@@ -1182,6 +1234,22 @@ class DriverTest(StateTest):
              patch.object(d, 'cleanup') as cleanup:
             self.assertEqual(d.run(), m.EXIT_SHORT)
         cleanup.assert_called_once_with(m.EXIT_SHORT)
+
+    def test_cancelled_sequence_keeps_cancellation_without_a_readback_boot(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke,files-io'
+        d.kernel_started = 110
+        with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+             patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+             patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+             patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+             patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_STOPPED, 'operator stop')), \
+             patch.object(d, 'power_off', return_value=True), \
+             patch.object(d, 'score_suite') as score, \
+             patch.object(d, 'continue_disk_readback') as readback, patch.object(d, 'cleanup'):
+            self.assertEqual(d.run(), m.EXIT_STOPPED)
+        score.assert_not_called()
+        readback.assert_not_called()
 
     def test_linux_completion_requires_checked_census(self):
         import metal_census
@@ -1296,7 +1364,10 @@ class DriverTest(StateTest):
         self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
         d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
         d.last_serial = 900
+        d.lease_ceiling = 2000
         d.on_line('SUITE processes START cases=154', observed_at=500)
+        d.on_line('SUITE processes CASE fork PASS ms=1', observed_at=910)
+        self.assertEqual(d.lease_ceiling, 2000)
         with patch.object(m, 'now', return_value=920):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=921):
@@ -1383,6 +1454,20 @@ class DriverTest(StateTest):
             d.pump_bmc()
         d.bmc_events = [{'t': 120, 'progress': {'LastState': 'MemoryInit'}}]
         self.finish(d.pump_bmc, m.EXIT_SHORT)
+
+    def test_default_waits_for_the_unterminated_getty_prompt(self):
+        d = self.driver
+        d.final_marker = ("Breenix login:", "contains")
+        d.required_stages = [[("[init] Boot script completed", "contains"), d.final_marker]]
+        raw = d.dir / "serial.raw"
+        raw.write_bytes(b"[init] Boot script completed\nBreenix log")
+        d.pump_serial()
+        self.assertFalse(d.final_seen)
+        with raw.open("ab") as stream:
+            stream.write(b"in: ")
+        self.finish(d.pump_serial, m.EXIT_DONE)
+        self.assertFalse(any(d.required_stages))
+        self.assertTrue((d.dir / "serial.txt").read_text().endswith("Breenix login: "))
 
     def test_finish_does_not_discard_the_rest_of_a_serial_read(self):
         d = self.driver

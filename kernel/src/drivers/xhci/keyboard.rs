@@ -10,7 +10,10 @@
 //! device (4.10.2.1.2). Devices behind hubs are not driven: the machine's
 //! port census found its keyboard on a root port.
 use super::recovery::{self, Attach, DEVICE_RESETS};
-use super::{delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, CONSOLE_START, CONSOLE_READY, LEDS, PORT_CHANGES, REPLUG, SECOND};
+use super::{
+    delay, now, spec, wr, Controller, Device, Dma, Ring, Trb, CONSOLE_READY, CONSOLE_START, LEDS,
+    PORT_CHANGES, REPLUG, SECOND, STATE, STATE_READY,
+};
 use crate::drivers::hid_boot::{interface, report};
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, Ordering};
@@ -19,6 +22,10 @@ use core::sync::atomic::{fence, Ordering};
 const ERRORS_BEFORE_TEARDOWN: u32 = 3;
 /// Detach and reattach rounds in a console boot's replug exercise.
 const REPLUG_ROUNDS: u32 = 10;
+/// Between replayed host-key reports: one polling interval of a low-speed
+/// boot keyboard (bInterval 10, USB 2.0 9.6.6), so no key is held for less.
+#[cfg(target_arch = "x86_64")]
+const HOST_KEY_GAP_NS: u64 = 10_000_000;
 const CCS: u32 = 1;
 const PED: u32 = 1 << 1;
 const PP: u32 = 1 << 9;
@@ -32,7 +39,9 @@ pub(super) struct Pipe {
     ring: Ring,
     buffer: Dma,
     request: u32,
-    pub(super) outstanding: Option<u64>,
+    /// Bytes between the buffer's report slots (`spec::posted_stride`).
+    stride: usize,
+    pub(super) posted: spec::Posted,
     state: report::Keyboard,
     errors: u32,
     bad_reports: u64,
@@ -49,8 +58,15 @@ impl Controller {
             if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                 let first = self.attach_keyboard(index, 0);
                 recovery::reset_while_refused(&mut Reattach { controller: self, port }, first);
+                #[cfg(target_arch = "aarch64")]
+                if let Some(index) = self.devices.iter().position(|d| d.port == port) {
+                    if let Err(error) = self.attach_pointers(index) {
+                        log::error!("[usb] port {port}: pointer attach FAILED: {error}");
+                    }
+                }
             }
         }
+        STATE.store(STATE_READY, Ordering::Release);
         loop {
             let deadline = self.next_deadline();
             if self.wait_work(deadline, true)? {
@@ -73,6 +89,18 @@ impl Controller {
             if LEDS.swap(false, Ordering::SeqCst) {
                 self.sync_leds();
             }
+            #[cfg(target_arch = "x86_64")]
+            self.replay_keys();
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+            if super::REPLAY.swap(false, Ordering::SeqCst) {
+                let pending = super::pointer::replay::PENDING.lock().take();
+                if let Some((seq, port, endpoint, report)) = pending {
+                    // Answered from `dispatch`, with the event it queued.
+                    if let Err(error) = self.replay_pointer(seq, port, endpoint, &report) {
+                        super::pointer::replay::answer(seq, Err(error));
+                    }
+                }
+            }
         }
     }
 
@@ -90,15 +118,98 @@ impl Controller {
         }
     }
 
-    /// Now, when events are already waiting; else the next repeat.
+    /// Now, when events are already waiting; else the next repeat or, on
+    /// x86, the next host-key report.
     fn next_deadline(&self) -> Option<u64> {
         if !self.completions.is_empty() || !self.port_events.is_empty() {
             return Some(now());
         }
-        self.devices
+        let repeat = self
+            .devices
             .iter()
             .filter_map(|d| d.keyboard.as_ref()?.state.repeat_due())
-            .min()
+            .min();
+        #[cfg(target_arch = "x86_64")]
+        if !self.host_keys.is_empty() {
+            return Some(repeat.map_or(self.next_host_key, |due| due.min(self.next_host_key)));
+        }
+        repeat
+    }
+
+    /// Take the reports the serial host-key channel queued, and replay the
+    /// next one when its gap has passed (`host_keys`, `replay_key`).
+    #[cfg(target_arch = "x86_64")]
+    fn replay_keys(&mut self) {
+        if super::HOST_KEYS.swap(false, Ordering::SeqCst) {
+            self.host_keys.extend(super::HOST_KEY_REPORTS.lock().drain(..));
+        }
+        let now = now();
+        if now < self.next_host_key {
+            return;
+        }
+        let Some(report) = self.host_keys.pop_front() else {
+            return;
+        };
+        self.next_host_key = now + HOST_KEY_GAP_NS;
+        if let Err(error) = self.replay_key(&report) {
+            // The rest of the line would act on a keyboard state this report did not make.
+            let dropped = self.host_keys.len();
+            self.host_keys.clear();
+            log::warn!("[usb] host key report refused: {error}; {dropped} queued reports dropped");
+        }
+    }
+
+    /// Replay one boot report on the first attached boot keyboard, through the
+    /// path a device's report takes: a Transfer Event for a posted TD, the
+    /// report read from that TD's buffer by `keyboard_event`. The endpoint is
+    /// stopped first (4.6.9), so the controller has given its TDs back; the
+    /// oldest TD it did not complete takes the report, and the endpoint's
+    /// dequeue moves past it (4.6.10). `keyboard_event` posts the freed TD
+    /// again and rings the doorbell, which restarts the endpoint.
+    #[cfg(target_arch = "x86_64")]
+    fn replay_key(&mut self, report: &[u8; super::host_keys::REPORT_LEN]) -> Result<(), &'static str> {
+        let index = self
+            .devices
+            .iter()
+            .position(|d| d.keyboard.is_some())
+            .ok_or("no boot keyboard attached")?;
+        let (slot, dci, request) = {
+            let device = &self.devices[index];
+            let pipe = device.keyboard.as_ref().ok_or("no boot keyboard attached")?;
+            (device.slot, pipe.dci, pipe.request)
+        };
+        match self.command_code(spec::stop_endpoint(slot, dci))? {
+            1 | 19 => {}
+            _ => return Err("Stop Endpoint refused"),
+        }
+        // The TD the controller was working on reports Stopped (26-28); it
+        // goes back to software with the others. Completions it posted before
+        // stopping stay queued for `dispatch`.
+        let ours = |e: &Trb| e.kind() == 32 && e.slot() == slot && (e.control >> 16) & 31 == dci as u32;
+        self.completions.retain(|e| !(ours(e) && matches!(e.code(), 26..=28)));
+        let completed: Vec<u64> = self.completions.iter().filter(|e| ours(e)).map(|e| e.parameter & !15).collect();
+        let pipe = self.devices[index].keyboard.as_mut().ok_or("no boot keyboard attached")?;
+        let ring = pipe.ring.memory.phys;
+        let (buffer_slot, at) = pipe
+            .posted
+            .oldest_uncompleted(&completed, ring, pipe.ring.enqueue())
+            .ok_or("no posted TD to replay into")?;
+        for (i, byte) in report.iter().enumerate() {
+            pipe.buffer.put8(buffer_slot * pipe.stride + i, *byte);
+        }
+        let at_index = ((at - ring) / 16) as usize;
+        let cycle = pipe.ring.memory.get32(at_index * 16 + 12) & 1 != 0;
+        self.set_dequeue(slot, dci, spec::ring_next(ring, at_index, cycle))?;
+        // `request` is at least a boot report's length (`configure_keyboard`).
+        let residual = request - report.len() as u32;
+        let code = if residual == 0 { 1u32 } else { 13 };
+        self.completions.push_back(Trb::new(
+            32,
+            at,
+            code << 24 | residual,
+            (slot as u32) << 24 | (dci as u32) << 16,
+        ));
+        Ok(())
     }
 
     pub(super) fn dispatch(&mut self) {
@@ -112,13 +223,17 @@ impl Controller {
             if event.kind() != 32 {
                 continue;
             }
+            #[cfg(target_arch = "aarch64")]
+            if self.dispatch_pointer(event) {
+                continue;
+            }
             let dci = ((event.control >> 16) & 31) as u8;
             let pointer = event.parameter & !15;
             if let Some(index) = self.devices.iter().position(|d| {
                 d.slot == event.slot()
                     && d.keyboard
                         .as_ref()
-                        .is_some_and(|p| p.dci == dci && p.outstanding == Some(pointer))
+                        .is_some_and(|p| p.dci == dci && p.posted.slot(pointer).is_some())
             }) {
                 self.keyboard_event(index, event);
             }
@@ -172,7 +287,11 @@ impl Controller {
         };
         let interval = spec::interrupt_interval(speed, boot.interval)?;
         let dci = boot.dci();
-        let burst = if speed >= 480_000_000 { boot.extra_transactions } else { 0 };
+        let burst = if speed >= 480_000_000 {
+            boot.extra_transactions
+        } else {
+            0
+        };
         let ring = Ring::new(self.address64)?;
         let buffer = match Dma::new(4096, self.address64) {
             Ok(buffer) => buffer,
@@ -182,6 +301,14 @@ impl Controller {
             }
         };
         let request = (boot.max_packet as u32).max(report::REPORT_LEN as u32);
+        let stride = match spec::posted_stride(request, 4096) {
+            Ok(stride) => stride,
+            Err(error) => {
+                ring.memory.release();
+                buffer.release();
+                return Err(error);
+            }
+        };
         // Input Control (A0 and the endpoint), Slot (Context Entries) and the
         // endpoint's context; the rest of the input context zeroed (4.6.6, 6.2.2.2, 6.2.3.2).
         let d = &self.devices[index];
@@ -191,15 +318,19 @@ impl Controller {
         d.input.put32(4, 1 | 1 << dci);
         let slot_at = self.contexts.input(0);
         for dword in 0..3 {
-            d.input
-                .put32(slot_at + dword * 4, d.output.get32(self.contexts.output(0) + dword * 4));
+            d.input.put32(
+                slot_at + dword * 4,
+                d.output.get32(self.contexts.output(0) + dword * 4),
+            );
         }
         let dw0 = d.input.get32(slot_at);
-        d.input.put32(slot_at, (dw0 & !(31 << 27)) | (dci as u32) << 27);
+        d.input
+            .put32(slot_at, (dw0 & !(31 << 27)) | (dci as u32) << 27);
         let ep_at = self.contexts.input(dci as usize);
-        for (i, value) in spec::interrupt_in_context(interval, boot.max_packet, burst, ring.memory.phys)
-            .iter()
-            .enumerate()
+        for (i, value) in
+            spec::interrupt_in_context(interval, boot.max_packet, burst, ring.memory.phys)
+                .iter()
+                .enumerate()
         {
             d.input.put32(ep_at + i * 4, *value);
         }
@@ -225,7 +356,8 @@ impl Controller {
             ring,
             buffer,
             request,
-            outstanding: None,
+            stride,
+            posted: spec::Posted::new(),
             state: report::Keyboard::new(),
             errors: 0,
             bad_reports: 0,
@@ -234,8 +366,14 @@ impl Controller {
         // USB 2.0 9.4.7, then HID 1.11 F.5: boot protocol after configuration;
         // Set_Idle(0) so reports come only on change (7.2.4, F.4).
         for (setup, what) in [
-            (spec::set_configuration(boot.configuration), "SET_CONFIGURATION"),
-            (interface::set_boot_protocol(boot.interface), "Set_Protocol(Boot)"),
+            (
+                spec::set_configuration(boot.configuration),
+                "SET_CONFIGURATION",
+            ),
+            (
+                interface::set_boot_protocol(boot.interface),
+                "Set_Protocol(Boot)",
+            ),
             (interface::set_idle_indefinite(boot.interface), "Set_Idle"),
         ] {
             let code = self.control(index, setup, None)?;
@@ -300,12 +438,13 @@ impl Controller {
         if self.control(index, spec::clear_endpoint_halt(endpoint), None)? != 1 {
             return Err("CLEAR_FEATURE(ENDPOINT_HALT) refused");
         }
-        let next = self.devices[index]
+        let pipe = self.devices[index]
             .keyboard
-            .as_ref()
-            .ok_or("device has no keyboard pipe")?
-            .ring
-            .enqueue();
+            .as_mut()
+            .ok_or("device has no keyboard pipe")?;
+        // The dequeue moves past the posted TDs, not only the failed one.
+        pipe.posted.abandon();
+        let next = pipe.ring.enqueue();
         self.set_dequeue(slot, dci, next)
     }
 
@@ -316,7 +455,10 @@ impl Controller {
         let Some(pipe) = self.devices[index].keyboard.as_ref() else {
             return "none";
         };
-        let (setup, leds) = (interface::set_led_report(pipe.interface), self.keyboard_leds);
+        let (setup, leds) = (
+            interface::set_led_report(pipe.interface),
+            self.keyboard_leds,
+        );
         match self.control(index, setup, Some(leds)) {
             Ok(1) => "accepted",
             Ok(_) => "refused",
@@ -324,13 +466,24 @@ impl Controller {
         }
     }
 
-    /// Post one interrupt-IN TD for the next report.
+    /// Post an interrupt-IN TD in each free report slot, so the reports that
+    /// follow one another find TDs waiting (`spec::POSTED_TDS`).
     fn queue_report(&mut self, index: usize) -> Result<(), &'static str> {
         let device = &mut self.devices[index];
         let slot = device.slot;
-        let pipe = device.keyboard.as_mut().ok_or("device has no keyboard pipe")?;
-        let pointer = pipe.ring.push(spec::normal_in(pipe.buffer.phys, pipe.request));
-        pipe.outstanding = Some(pointer);
+        let pipe = device
+            .keyboard
+            .as_mut()
+            .ok_or("device has no keyboard pipe")?;
+        let free: Vec<usize> = pipe.posted.free().collect();
+        if free.is_empty() {
+            return Ok(());
+        }
+        for buffer_slot in free {
+            let at = pipe.buffer.phys + (buffer_slot * pipe.stride) as u64;
+            let pointer = pipe.ring.push(spec::normal_in(at, pipe.request));
+            pipe.posted.post(buffer_slot, pointer);
+        }
         let dci = pipe.dci;
         self.ring_doorbell(slot, dci as u32);
         Ok(())
@@ -341,7 +494,9 @@ impl Controller {
         let Some(pipe) = self.devices[index].keyboard.as_mut() else {
             return;
         };
-        pipe.outstanding = None;
+        let Some(buffer_slot) = pipe.posted.complete(event.parameter & !15) else {
+            return;
+        };
         let (dci, endpoint) = (pipe.dci, pipe.endpoint);
         match event.code() {
             // Success or Short Packet: the TD's length less the residual.
@@ -349,12 +504,14 @@ impl Controller {
                 pipe.errors = 0;
                 let residual = event.status & 0x00ff_ffff;
                 let report = if residual <= pipe.request {
-                    pipe.buffer.copy(0, (pipe.request - residual) as usize)
+                    pipe.buffer.copy(buffer_slot * pipe.stride, (pipe.request - residual) as usize)
                 } else {
                     Vec::new()
                 };
                 let now = now();
-                let Controller { devices, console, .. } = self;
+                let Controller {
+                    devices, console, ..
+                } = self;
                 let Some(pipe) = devices[index].keyboard.as_mut() else {
                     return;
                 };
@@ -370,17 +527,23 @@ impl Controller {
                         }
                     }
                 }
-                self.sync_leds();
+                // Rearm before synchronous SET_REPORT: the console can ask
+                // the host for another key as soon as this report is delivered.
+                // Keep interrupt-IN available while the LED transfer waits.
                 if let Err(error) = self.queue_report(index) {
                     log::error!("[usb] port {port}: cannot post the next report: {error}");
                 }
+                self.sync_leds();
             }
             // Stopped by a teardown in progress.
             26..=28 => {}
             code => {
                 pipe.errors += 1;
                 if pipe.errors > ERRORS_BEFORE_TEARDOWN {
-                    log::error!("[usb] port {port}: interrupt-IN failed {} times, last code={code}", pipe.errors);
+                    log::error!(
+                        "[usb] port {port}: interrupt-IN failed {} times, last code={code}",
+                        pipe.errors
+                    );
                     self.teardown(index, "interrupt-IN errors");
                     return;
                 }
@@ -397,11 +560,14 @@ impl Controller {
 
     fn tick_keyboards(&mut self) {
         let now = now();
-        let Controller { devices, console, .. } = self;
+        let Controller {
+            devices, console, ..
+        } = self;
         for device in devices.iter_mut() {
             if let Some(pipe) = device.keyboard.as_mut() {
                 let port = device.port;
-                pipe.state.tick(now, &mut |code, value| console.event(port, code, value));
+                pipe.state
+                    .tick(now, &mut |code, value| console.event(port, code, value));
             }
         }
     }
@@ -440,6 +606,12 @@ impl Controller {
     pub(super) fn attach(&mut self, port: u8) {
         let first = self.attach_once(port, 0);
         recovery::reset_while_refused(&mut Reattach { controller: self, port }, first);
+        #[cfg(target_arch = "aarch64")]
+        if let Some(index) = self.devices.iter().position(|d| d.port == port) {
+            if let Err(error) = self.attach_pointers(index) {
+                log::error!("[usb] port {port}: pointer attach FAILED: {error}");
+            }
+        }
     }
 
     fn attach_once(&mut self, port: u8, resets: u32) -> Attach {
@@ -458,8 +630,14 @@ impl Controller {
 
     pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
+        #[cfg(target_arch = "aarch64")]
+        if !device.pointers.is_empty() {
+            crate::input::pointer::release(device.port);
+            super::pointer::detached(device.port);
+        }
         if let Some(pipe) = device.keyboard.as_mut() {
-            pipe.state.release_all(&mut |code, value| self.console.event(device.port, code, value));
+            pipe.state
+                .release_all(&mut |code, value| self.console.event(device.port, code, value));
         }
         let (port, slot, keyboard) = (device.port, device.slot, device.keyboard.is_some());
         let reclaimed = self.reclaim(device);
@@ -485,6 +663,8 @@ impl Controller {
         let slot = device.slot;
         let mut dcis = alloc::vec![1u8];
         dcis.extend(device.keyboard.as_ref().map(|p| p.dci));
+        #[cfg(target_arch = "aarch64")]
+        dcis.extend(device.pointers.iter().map(|p| p.dci));
         for dci in dcis {
             match self.command_code(spec::stop_endpoint(slot, dci)) {
                 // Stopped, or not running (halted, stopped or not yet enabled).
@@ -497,7 +677,8 @@ impl Controller {
             }
         }
         // Each Stopped Transfer Event precedes its command's completion (4.6.9).
-        self.completions.retain(|e| !(e.kind() == 32 && e.slot() == slot));
+        self.completions
+            .retain(|e| !(e.kind() == 32 && e.slot() == slot));
         match self.command_code(spec::disable_slot(slot)) {
             Ok(1) => {}
             Ok(code) => {
@@ -516,6 +697,10 @@ impl Controller {
             + device.data.release();
         if let Some(pipe) = device.keyboard {
             pages += pipe.ring.memory.release() + pipe.buffer.release();
+        }
+        #[cfg(target_arch = "aarch64")]
+        for pipe in device.pointers {
+            pages += pipe.release();
         }
         Some(pages)
     }
@@ -542,11 +727,19 @@ impl Controller {
         for port in ports {
             let mut reattached = 0;
             for round in 1..=REPLUG_ROUNDS {
-                if !self.devices.iter().any(|d| d.port == port && d.keyboard.is_some()) {
+                if !self
+                    .devices
+                    .iter()
+                    .any(|d| d.port == port && d.keyboard.is_some())
+                {
                     break;
                 }
                 self.replug(port, power, round);
-                if self.devices.iter().any(|d| d.port == port && d.keyboard.is_some()) {
+                if self
+                    .devices
+                    .iter()
+                    .any(|d| d.port == port && d.keyboard.is_some())
+                {
                     reattached += 1;
                 }
             }
@@ -557,7 +750,9 @@ impl Controller {
     fn replug(&mut self, port: u8, power: bool, round: u32) {
         let register = 0x400 + (port as usize - 1) * 16;
         if power {
-            log::info!("[usb] replug exercise: port {port}: round {round}: port power off, then on");
+            log::info!(
+                "[usb] replug exercise: port {port}: round {round}: port power off, then on"
+            );
             wr(self.op, register, spec::port_power_off(self.portsc(port)));
             // 5.4.8: confirm PP before writing it again.
             if super::until(self.op, register, PP, 0, SECOND).is_err() {

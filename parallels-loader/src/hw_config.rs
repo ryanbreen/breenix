@@ -137,6 +137,9 @@ pub struct HardwareConfig {
     pub runtime_region_count: u32,
     pub _pad8: u32,
     pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
+    /// `arm64_boot_contract::BOOT_FLAG_*` bits the launcher selected on the ESP.
+    pub boot_flags: u32,
+    pub _pad9: u32,
 }
 
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
@@ -196,6 +199,8 @@ impl HardwareConfig {
             runtime_region_count: 0,
             _pad8: 0,
             runtime_regions: [arm64_boot_contract::RuntimeRegion::default(); arm64_boot_contract::MAX_RUNTIME_REGIONS],
+            boot_flags: 0,
+            _pad9: 0,
         }
     }
 

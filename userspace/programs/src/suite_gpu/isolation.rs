@@ -769,7 +769,7 @@ pub fn foreign_readback() -> CaseResult {
 pub fn display_context_unreachable() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
-    let t = scanout_target(format::B8G8R8A8, 16, 12)?;
+    let t = scanout_target(format::B8G8R8A8, 2560, 1600)?;
     let rects = [([2, 2, 10, 8], BLUE)];
     frame(ctx, &scene(t, GREY, &rects))?;
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
@@ -826,7 +826,7 @@ pub fn no_addresses() -> CaseResult {
         handle_form(h, "a context handle")?;
         let _ = gpu::context_destroy(h);
     }
-    let t = scanout_target(format::B8G8R8A8, 8, 8)?;
+    let t = scanout_target(format::B8G8R8A8, 2560, 1600)?;
     let tex = gpu::texture_create(format::R8, 8, 8).map_err(|e| fail_msg(format!("texture: {}", errno(e))))?;
     let buf = gpu::buffer_create(4096).map_err(|e| fail_msg(format!("buffer: {}", errno(e))))?;
     for (h, what) in [(t, "a target handle"), (tex, "a texture handle"), (buf, "a buffer handle")] {
@@ -1542,7 +1542,7 @@ pub fn killable_wait() -> CaseResult {
 pub fn client_cannot_scanout() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
-    let t = scanout_target(format::B8G8R8A8, 16, 12)?;
+    let t = scanout_target(format::B8G8R8A8, 2560, 1600)?;
     let rects = [([3, 3, 9, 9], RED)];
     frame(ctx, &scene(t, BLUE, &rects))?;
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
@@ -1550,7 +1550,7 @@ pub fn client_cannot_scanout() -> CaseResult {
     ensure(r == 0, || format!("the owner's PRESENT returned {}", errno(r)))?;
     let kid = spawn(|_| {
         let c = child(context())?;
-        let own = child(scanout_target(format::B8G8R8A8, 16, 12))?;
+        let own = child(scanout_target(format::B8G8R8A8, 2560, 1600))?;
         child(frame(c, &scene(own, GREEN, &[])).map(drop))?;
         let eperm = -abi::errno::EPERM;
         need(gpu::set_mode(0) == eperm, || "a client's valid SET_MODE was not refused with EPERM".to_string())?;

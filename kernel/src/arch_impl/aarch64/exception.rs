@@ -828,6 +828,26 @@ mod exception_class {
     pub const BRK_AARCH64: u32 = 0b111100; // BRK instruction
 }
 
+/// Only a user-address fault during a user thread's syscall can abandon that
+/// task. IRQ/softirq faults and kernel-address faults belong to the kernel.
+fn route_el1_abort(esr: u64, far: u64, elr: u64) {
+    let recoverable = !crate::per_cpu_aarch64::in_interrupt()
+        && far < crate::memory::layout::USER_STACK_REGION_END
+        && current_thread_lock_free().is_some_and(|thread| {
+            thread.privilege == crate::task::thread::ThreadPrivilege::User
+                && thread.signals.in_syscall.load(Ordering::Acquire)
+        });
+    if recoverable {
+        crate::graphics::boot_screen::show_recoverable_fault(esr, far, elr);
+    } else {
+        crate::graphics::boot_screen::show_fault(esr, far, elr);
+        // Park rather than abandoning the active IRQ frame or signaling its task.
+        if crate::per_cpu_aarch64::in_interrupt() {
+            crate::gpu::panic::park();
+        }
+    }
+}
+
 /// Handle synchronous exceptions (syscalls, page faults, etc.)
 ///
 /// Called from assembly with:
@@ -1269,20 +1289,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate — defer full process cleanup to
-            // the next safe scheduling point, then redirect to idle.
-            {
-                let mut line = crate::serial_line::Line::new();
-
-                line.text("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
-            }
-            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
             if !from_el0 {
-                crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
+                route_el1_abort(esr, far, frame_ref.elr);
             }
 
+            // Recover task faults and pre-handoff faults at a safe scheduling point.
+            {
+                let mut line = crate::serial_line::Line::new();
+                line.text("[DATA_ABORT] deferring process cleanup\n");
+            }
+            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             // EL1 may have faulted while holding SCHEDULER, so termination is
             // non-blocking there. Preserve the established EL0 path exactly.
             if from_el0 {
@@ -1423,7 +1441,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
 
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
-                    crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -1621,6 +1638,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
             drop(fatal_uart_guard);
+
+            if !from_el0 {
+                route_el1_abort(esr, far, frame_ref.elr);
+            }
 
             if from_el0 {
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
@@ -2526,9 +2547,9 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                 }
             }
             // XHCI USB interrupt dispatch
-            if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+            if let Some(xhci_irq) = crate::drivers::xhci::get_irq() {
                 if irq_id == xhci_irq {
-                    crate::drivers::usb::xhci::handle_interrupt();
+                    crate::drivers::xhci::handle_interrupt();
                 }
             }
             // VirtIO GPU PCI interrupt dispatch (MSI completion)
@@ -2542,10 +2563,15 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                     crate::drivers::virtio::gpu_pci::handle_interrupt();
                 }
             }
-            // GPU core interrupt dispatch (virtio-gpu-gl-pci INTx on QEMU)
+            // GPU core interrupt dispatch (INTx on QEMU, MSI-X on Parallels)
             if let Some(gpu_core_irq) = crate::gpu::irq() {
                 if irq_id == gpu_core_irq {
                     crate::gpu::handle_interrupt();
+                }
+            }
+            if let Some(gpu_core_config_irq) = crate::gpu::config_irq() {
+                if irq_id == gpu_core_config_irq {
+                    crate::gpu::handle_config_interrupt();
                 }
             }
             // VirtIO network PCI interrupt dispatch (GICv2m MSI)

@@ -42,6 +42,7 @@ pub mod arm64_fb;
 pub mod boot_screen;
 pub mod cursor;
 pub mod double_buffer;
+pub mod firmware_writes;
 pub mod font;
 pub mod log_capture;
 pub mod primitives;

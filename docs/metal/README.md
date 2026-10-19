@@ -81,6 +81,10 @@ so the driver takes the first request after power-on as the firmware's: a probe 
 and a `GET` would take the boot's one transfer. claim-lint:ok: one L0 fault test's probe did both; its POST entry
 was removed from `post-times.json`.
 
+The boot loop’s default mode starts the framebuffer console with getty on its six
+virtual terminals. It waits for the login prompt. x86 desktop requests are refused
+with a plain line and use that console instead (S36).
+
 ## The console
 
 SOL reads the server's console UART, COM1 at I/O port 0x3F8. POST and firmware text reach it (BIOS console
@@ -469,10 +473,15 @@ The delivered image records the resulting component checksums; the cached base r
 
 Shell mode starts `/sbin/init shell`; the serial input task feeds its bytes into the console TTY instead of the
 kernel debug-command parser. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
-through SOL and requires the whole answer line `metal-console-ok 42` after sending it. Suite mode copies the commit's
-manifest and verdict tool into the boot record, waits for that suite's DONE line, and confirms power-off before
+through SOL and requires the whole answer line `metal-console-ok 42` after sending it. A suite boot's target declares
+`hostkeys xhci-replay` (docs/console/contract.md section 10): the driver answers each `SUITE <id> HOSTKEY` record
+once by typing a `BXKEY <report>,...` line per chord through SOL, HID boot keyboard reports that the kernel replays
+through its USB boot keyboard's interrupt-IN completion path, and records what it sent as `hostkeys` events. While
+that path is armed the kernel reads serial input as host-key lines only. Suite mode copies the commit's
+manifest and verdict tool into the boot record, waits for that suite's `SUITE_SEQUENCE READY` line (it follows the
+suite's DONE and its memory record, docs/suites/README.md, "Memory record"), and confirms power-off before
 running the manifest verdict against the captured serial. The scorer runs as a transient unprivileged user with
-management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot. Shell has a
+management files hidden, no network, a clean environment, a 20-second runtime limit and a 25-second caller timeout. A DONE with failed, missing, out-of-order or skipped cases fails the boot, and so does a memory record with `reclaimed=FAIL`. Shell has a
 180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
 for firmware and delivery (a 1320-second attempt ceiling).
 

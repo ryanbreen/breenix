@@ -1182,6 +1182,10 @@ fn launch_x86_production_init(
             }
         })
     } else { None };
+    // The bare-metal boot loop answers host keys over the serial console.
+    if hostkeys.as_deref().is_some_and(|value| value.split(';').next() == Some("xhci-replay")) {
+        kernel::drivers::xhci::arm_host_keys();
+    }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
@@ -1219,7 +1223,7 @@ fn launch_x86_production_init(
         reserved_collisions
     );
 
-    if let Some(X86ConsoleMode::Console { idle_minutes, replug, from }) = console_mode {
+    if let Some(X86ConsoleMode::Console { idle_minutes, replug, from, .. }) = console_mode {
         // Input preparation begins here, once init has been read and
         // published, so an init read or launch failure returns above
         // without a keyboard request (#1893).
@@ -1274,15 +1278,19 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     match fw_cfg::read_string("opt/breenix/mode").as_deref() {
         None | Some("") => match target::read() {
             Ok(Some(target::Target::Suite(suite))) => Some(X86BootTarget::Suite(suite)),
-            Ok(Some(target::Target::Default | target::Target::Shell | target::Target::Console { .. })) => None,
+            Ok(Some(target::Target::Default | target::Target::Desktop | target::Target::Shell | target::Target::Console { .. })) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
+            Ok(Some(target::Target::Program { .. })) => {
+                log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
+                None
+            }
             Ok(None) => None,
             Err(why) => {
                 log::warn!("[boot] Ignoring boot target {}: {}", target::PATH, why);
                 None
             }
         },
-        Some("default" | "shell" | "console") => None,
+        Some("default" | "shell" | "console" | "desktop") => None,
         Some("suite") => match fw_cfg::read_string("opt/breenix/suite") {
             Some(id) if target::is_suite_id(&id) => {
                 match target::SuiteTarget::new(id, fw_cfg::read_string("opt/breenix/case")) {
@@ -1317,7 +1325,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
     }
 }
 
-/// Init's interactive argument and, for the console, what input preparation
+/// Init's boot argument and, for the console, what input preparation
 /// it needs. Selection only reads fw_cfg and the boot target;
 /// `launch_x86_production_init` starts the input clock and the xHCI request
 /// once init is published (#1893).
@@ -1325,9 +1333,9 @@ fn x86_boot_target() -> Option<X86BootTarget> {
 #[derive(Clone, Copy)]
 enum X86ConsoleMode {
     Shell,
-    /// `from` names where `replug` came from: "fw_cfg", "intent" (the
-    /// per-boot payload) or "target" (the boot-target file).
-    Console { idle_minutes: Option<u16>, replug: bool, from: &'static str },
+    /// `full_boot` retains default services and checks before gettys. `from`
+    /// records the selection source, including default and fallback selection.
+    Console { full_boot: bool, idle_minutes: Option<u16>, replug: bool, from: &'static str },
 }
 
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
@@ -1335,6 +1343,7 @@ impl X86ConsoleMode {
     fn arg(self) -> &'static str {
         match self {
             Self::Shell => "shell",
+            Self::Console { full_boot: true, .. } => "default",
             Self::Console { .. } => "console",
         }
     }
@@ -1344,12 +1353,25 @@ impl X86ConsoleMode {
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
 fn x86_console_mode() -> Option<X86ConsoleMode> {
     match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
+        Some("desktop") => {
+            serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
+            Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "fw_cfg" })
+        }
+        Some("default") => Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "fw_cfg" }),
         Some("shell") => Some(X86ConsoleMode::Shell),
-        Some("console") => Some(X86ConsoleMode::Console { idle_minutes: None, replug: false, from: "fw_cfg" }),
+        Some("console") => Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "fw_cfg" }),
         None | Some("") => match kernel::boot::target::read() {
+            Ok(Some(kernel::boot::target::Target::Desktop)) => {
+                serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
+                Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "target" })
+            }
+            Ok(None | Some(kernel::boot::target::Target::Default)) => {
+                Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "default" })
+            }
             Ok(Some(kernel::boot::target::Target::Shell)) => Some(X86ConsoleMode::Shell),
             Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
                 Some(X86ConsoleMode::Console {
+                    full_boot: false,
                     idle_minutes: Some(idle_minutes),
                     replug,
                     from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
@@ -1432,7 +1454,10 @@ fn read_x86_production_init(
 ))]
 fn read_default_x86_init(
 ) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
-    let mode = x86_console_mode();
+    // Prepare terminal input and the keyboard when falling back to init.
+    let mode = Some(x86_console_mode().unwrap_or(X86ConsoleMode::Console {
+        full_boot: true, idle_minutes: None, replug: false, from: "fallback",
+    }));
     let mode_name = mode.map_or("default", X86ConsoleMode::arg);
     log::info!("[boot] Boot mode: {}", mode_name);
     kernel::console::splash::set_mode(format_args!("{}", mode_name));

@@ -849,70 +849,87 @@ impl Code {
         self.subwide(&l, &r)
     }
     fn triangle(&mut self, a: &[V]) -> V {
-        let z = self.k(0);
-        let one = self.k(1);
-        let mut px = self.wide(a[0]);
-        let mut py = self.wide(a[1]);
-        px = self.addwide(&px, &px.clone());
-        py = self.addwide(&py, &py.clone());
-        px = self.addwide(&px, &[one, z, z]);
-        py = self.addwide(&py, &[one, z, z]);
+        let (px, py) = self.centre(a[0], a[1]);
         let x0 = self.wide(a[2]);
         let y0 = self.wide(a[3]);
         let x1 = self.wide(a[4]);
         let y1 = self.wide(a[5]);
         let x2 = self.wide(a[6]);
         let y2 = self.wide(a[7]);
-        let dx = self.subwide(&x1, &x0);
-        let dy = self.subwide(&y1, &y0);
-        let ex = self.subwide(&x2, &x0);
-        let ey = self.subwide(&y2, &y0);
-        let area = self.cross(&dx, &dy, &ex, &ey);
-        let negative = self.shrk(area[2], 31);
-        let area01 = self.or(area[0], area[1]);
-        let areaall = self.or(area01, area[2]);
-        let valid = self.nz(areaall);
+        let (valid, negative) = self.triangle_area(&x0, &y0, &x1, &y1, &x2, &y2);
         let mut result = valid;
         for (ax, ay, bx, by) in [
             (&x0, &y0, &x1, &y1),
             (&x1, &y1, &x2, &y2),
             (&x2, &y2, &x0, &y0),
         ] {
-            let mut dx = self.subwide(bx, ax);
-            let mut dy = self.subwide(by, ay);
-            let ndx = self.subwide(&[z, z, z], &dx);
-            let ndy = self.subwide(&[z, z, z], &dy);
-            for i in 0..3 {
-                dx[i] = self.sel(negative, ndx[i], dx[i]);
-                dy[i] = self.sel(negative, ndy[i], dy[i]);
-            }
-            let ax2 = self.addwide(ax, ax);
-            let ay2 = self.addwide(ay, ay);
-            let ex = self.subwide(&px, &ax2);
-            let ey = self.subwide(&py, &ay2);
-            let edge = self.cross(&dx, &dy, &ex, &ey);
-            let neg = self.shrk(edge[2], 31);
-            let nonneg = self.eq(neg, z);
-            let dyneg = self.shrk(dy[2], 31);
-            let dy01 = self.or(dy[0], dy[1]);
-            let dyall = self.or(dy01, dy[2]);
-            let dyeq = self.eq(dyall, z);
-            let dxneg = self.shrk(dx[2], 31);
-            let dxpos = self.eq(dxneg, z);
-            let dx01 = self.or(dx[0], dx[1]);
-            let dxall = self.or(dx01, dx[2]);
-            let dxnz = self.nz(dxall);
-            let dxpos = self.and(dxpos, dxnz);
-            let horizontal = self.and(dyeq, dxpos);
-            let top = self.or(dyneg, horizontal);
-            let e01 = self.or(edge[0], edge[1]);
-            let eall = self.or(e01, edge[2]);
-            let enz = self.nz(eall);
-            let accept = self.or(enz, top);
-            let accept = self.and(accept, nonneg);
+            let accept = self.triangle_edge(&px, &py, ax, ay, bx, by, negative);
             result = self.and(result, accept);
         }
         result
+    }
+    /// The pixel centre doubled, (2x + 1, 2y + 1), in three words each.
+    fn centre(&mut self, x: V, y: V) -> (Vec<V>, Vec<V>) {
+        let z = self.k(0);
+        let one = self.k(1);
+        let mut px = self.wide(x);
+        let mut py = self.wide(y);
+        px = self.addwide(&px, &px.clone());
+        py = self.addwide(&py, &py.clone());
+        px = self.addwide(&px, &[one, z, z]);
+        py = self.addwide(&py, &[one, z, z]);
+        (px, py)
+    }
+    /// Whether the triangle has a nonzero area (1 or 0), and whether that area is
+    /// negative (1 or 0).
+    fn triangle_area(&mut self, x0: &[V], y0: &[V], x1: &[V], y1: &[V], x2: &[V], y2: &[V]) -> (V, V) {
+        let dx = self.subwide(x1, x0);
+        let dy = self.subwide(y1, y0);
+        let ex = self.subwide(x2, x0);
+        let ey = self.subwide(y2, y0);
+        let area = self.cross(&dx, &dy, &ex, &ey);
+        let negative = self.shrk(area[2], 31);
+        let area01 = self.or(area[0], area[1]);
+        let areaall = self.or(area01, area[2]);
+        let valid = self.nz(areaall);
+        (valid, negative)
+    }
+    /// Whether pixel centre (px, py) is inside the edge from a to b (1 or 0), with the
+    /// top-left rule for a centre on the edge; `negative` orients the edge.
+    fn triangle_edge(&mut self, px: &[V], py: &[V], ax: &[V], ay: &[V], bx: &[V], by: &[V], negative: V) -> V {
+        let z = self.k(0);
+        let mut dx = self.subwide(bx, ax);
+        let mut dy = self.subwide(by, ay);
+        let ndx = self.subwide(&[z, z, z], &dx);
+        let ndy = self.subwide(&[z, z, z], &dy);
+        for i in 0..3 {
+            dx[i] = self.sel(negative, ndx[i], dx[i]);
+            dy[i] = self.sel(negative, ndy[i], dy[i]);
+        }
+        let ax2 = self.addwide(ax, ax);
+        let ay2 = self.addwide(ay, ay);
+        let ex = self.subwide(px, &ax2);
+        let ey = self.subwide(py, &ay2);
+        let edge = self.cross(&dx, &dy, &ex, &ey);
+        let neg = self.shrk(edge[2], 31);
+        let nonneg = self.eq(neg, z);
+        let dyneg = self.shrk(dy[2], 31);
+        let dy01 = self.or(dy[0], dy[1]);
+        let dyall = self.or(dy01, dy[2]);
+        let dyeq = self.eq(dyall, z);
+        let dxneg = self.shrk(dx[2], 31);
+        let dxpos = self.eq(dxneg, z);
+        let dx01 = self.or(dx[0], dx[1]);
+        let dxall = self.or(dx01, dx[2]);
+        let dxnz = self.nz(dxall);
+        let dxpos = self.and(dxpos, dxnz);
+        let horizontal = self.and(dyeq, dxpos);
+        let top = self.or(dyneg, horizontal);
+        let e01 = self.or(edge[0], edge[1]);
+        let eall = self.or(e01, edge[2]);
+        let enz = self.nz(eall);
+        let accept = self.or(enz, top);
+        self.and(accept, nonneg)
     }
     fn line(&mut self, a: &[V]) -> V {
         let dx = self.absdiff(a[4], a[2]);
@@ -1265,12 +1282,21 @@ fn tgsi(code: &Code, outputs: &[V]) -> (String, u32, usize) {
                     Op::Select => "UCMP",
                     _ => unreachable!(),
                 };
-                write!(body, "{name} {}", refs[i]).unwrap();
-                for &a in &n.args[..n.arity()] {
-                    write!(body, ", {}", refs[a]).unwrap();
+                let count = n.args[1];
+                if matches!(n.op, Op::Shl | Op::Shr) && !matches!(code.nodes[count].op, Op::Lit(_)) {
+                    // A variable count takes its low five bits explicitly (see emit_division);
+                    // the destination is free here, so it holds the masked count.
+                    writeln!(body, "AND {}, {}, {}", refs[i], refs[count], kref(31)).unwrap();
+                    writeln!(body, "{name} {}, {}, {}", refs[i], refs[n.args[0]], refs[i]).unwrap();
+                    tokens += 4 + 4;
+                } else {
+                    write!(body, "{name} {}", refs[i]).unwrap();
+                    for &a in &n.args[..n.arity()] {
+                        write!(body, ", {}", refs[a]).unwrap();
+                    }
+                    body.push('\n');
+                    tokens += 2 + n.arity() as u32;
                 }
-                body.push('\n');
-                tokens += 2 + n.arity() as u32;
                 if matches!(n.op, Op::Lt | Op::Eq) {
                     writeln!(body, "AND {}, {}, {}", refs[i], refs[i], kref(1)).unwrap();
                     tokens += 4;
@@ -1350,79 +1376,40 @@ fn tgsi(code: &Code, outputs: &[V]) -> (String, u32, usize) {
     (text, tokens, next)
 }
 
-fn generated() -> (String, u32) {
-    use std::fmt::Write;
-    let mut pieces = Vec::new();
-    let mut max_registers = 0;
-    for r in 0..25 {
-        let (p, o) = program(r);
-        let (text, tokens, registers) = tgsi(&p, &o);
-        println!(
-            "routine={r} bytes={} tokens={tokens} registers={registers}",
-            text.len()
-        );
-        max_registers = max_registers.max(registers);
-        pieces.push((text, tokens));
-    }
-    let mut text=format!("FRAG\nDCL IN[0], POSITION, LINEAR\nDCL OUT[0], COLOR\nDCL CONST[0..4]\nDCL TEMP[0..{max_registers}]\n");
-    let mut tokens = 13 + 7 * 5 + 1;
-    for i in 0..7 {
-        writeln!(
-            text,
-            "IMM[{i}] UINT32 {{{}, {}, {}, {}}}",
-            i * 4,
-            i * 4 + 1,
-            i * 4 + 2,
-            i * 4 + 3
-        )
-        .unwrap();
-    }
-    let mut bodies = String::new();
-    let mut offset = 7;
-    for (r, (piece, count)) in pieces.iter().enumerate() {
-        let immediates = piece.lines().filter(|l| l.starts_with("IMM[")).count();
-        for line in piece.lines().filter(|l| l.starts_with("IMM[")) {
-            writeln!(text, "{}", renumber(line, offset)).unwrap();
-        }
-        writeln!(
-            bodies,
-            "USEQ TEMP[{max_registers}].x, CONST[4].y, IMM[{}].{}\nUIF TEMP[{max_registers}].x",
-            r / 4,
-            ["x", "y", "z", "w"][r % 4]
-        )
-        .unwrap();
-        for line in piece.lines().skip_while(|l| !l.starts_with("F2I ")) {
-            if line == "END" || line.contains('\0') {
-                continue;
-            }
-            writeln!(bodies, "{}", renumber(line, offset)).unwrap();
-        }
-        bodies.push_str("ENDIF\n");
-        tokens += count - 13 - 1 + 7;
-        offset += immediates;
-    }
-    text.push_str(&bodies);
-    text.push_str("END\n\0");
+/// The routines `probe_int` implements, numbered as PROBE's `routine` word.
+const ROUTINES: u32 = 25;
 
-    let text = expand_sources(&text);
-    let text = integer_words(&text, max_registers, &mut tokens);
-    let (text, constant_registers) = integer_constants(&text, max_registers + 3, &mut tokens);
-    // T:649-688: a flow instruction may carry one instruction-label token.
-    tokens += text
-        .lines()
-        .filter(|l| l.starts_with("UIF ") || matches!(*l, "BGNLOOP" | "ENDLOOP" | "BRK"))
-        .count() as u32;
-    assert!(
-        text.len().div_ceil(4) + 5 <= 65532,
-        "combined shader exceeds the VirGL command size: {} bytes",
-        text.len()
-    );
-    println!(
-        "combined bytes={} tokens={tokens} registers={}",
-        text.len(),
-        max_registers + 3 + constant_registers
-    );
-    (text, tokens)
+/// `probe_int` as one program per routine (ruling 48), so that each compiles within the
+/// 2 s watchdog on each of the three targets; a context compiles a routine's program on its
+/// first PROBE.
+fn generated() -> Vec<(String, u32)> {
+    (0..ROUTINES)
+        .map(|r| {
+            let (p, o) = program(r);
+            let (text, mut tokens, registers) = tgsi(&p, &o);
+            // tgsi declares TEMP[0..registers - 1]; the integer rewrites add their mask and
+            // difference registers after it, then the reconstructed constants.
+            let text = expand_sources(&text);
+            let text = integer_words(&text, registers - 1, &mut tokens);
+            let (text, constant_registers) = integer_constants(&text, registers + 2, &mut tokens);
+            // T:649-688: a flow instruction may carry one instruction-label token.
+            tokens += text
+                .lines()
+                .filter(|l| l.starts_with("UIF ") || matches!(*l, "BGNLOOP" | "ENDLOOP" | "BRK"))
+                .count() as u32;
+            assert!(
+                text.len().div_ceil(4) + 5 <= 65532,
+                "routine {r} exceeds the VirGL command size: {} bytes",
+                text.len()
+            );
+            println!(
+                "routine={r} bytes={} tokens={tokens} registers={}",
+                text.len(),
+                registers + 2 + constant_registers
+            );
+            (text, tokens)
+        })
+        .collect()
 }
 
 #[cfg(not(test))]
@@ -1436,31 +1423,18 @@ fn main() {
     let destination = first;
     let destination = std::path::Path::new(&destination);
     std::fs::create_dir_all(destination).unwrap();
-    let (text, tokens) = generated();
-    std::fs::write(
-        destination.join("profile.tgsi"),
-        text.trim_end_matches('\0'),
-    )
-    .unwrap();
-    std::fs::write(
-        destination.join("mod.rs"),
-        format!("// Generated by tools/gpu-profile/math.rs.\nuse super::{{pipe, Program}};\n\npub const FS: Program = Program {{\n    kind: pipe::SHADER_FRAGMENT,\n    text: include_bytes!(\"profile.tgsi\"),\n    tokens: {tokens},\n}};\n"),
-    ).unwrap();
-}
-
-fn renumber(line: &str, offset: usize) -> String {
-    let mut result = String::new();
-    let mut rest = line;
-    while let Some(at) = rest.find("IMM[") {
-        result.push_str(&rest[..at + 4]);
-        rest = &rest[at + 4..];
-        let end = rest.find(']').unwrap();
-        let index = rest[..end].parse::<usize>().unwrap();
-        result.push_str(&(index + offset).to_string());
-        rest = &rest[end..];
+    let mut module = String::from(
+        "// Generated by tools/gpu-profile/math.rs.\nuse super::{pipe, Program};\n\n/// `probe_int`, one program per routine (ruling 48).\npub const PROGRAMS: [Program; 25] = [\n",
+    );
+    for (r, (text, tokens)) in generated().iter().enumerate() {
+        let name = format!("r{r:02}.tgsi");
+        std::fs::write(destination.join(&name), text.trim_end_matches('\0')).unwrap();
+        module.push_str(&format!(
+            "    Program {{ kind: pipe::SHADER_FRAGMENT, text: include_bytes!(\"{name}\"), tokens: {tokens} }},\n"
+        ));
     }
-    result.push_str(rest);
-    result
+    module.push_str("];\n");
+    std::fs::write(destination.join("mod.rs"), module).unwrap();
 }
 
 fn allocate(free: &mut Vec<usize>, next: &mut usize) -> usize {
@@ -1483,10 +1457,10 @@ fn emit_division(
 ) -> ([usize; 6], u32) {
     use std::fmt::Write;
     let result = core::array::from_fn(|_| allocate(free, next));
-    let work: [usize; 12] = core::array::from_fn(|_| allocate(free, next));
+    let work: [usize; 13] = core::array::from_fn(|_| allocate(free, next));
     let q: [String; 3] = core::array::from_fn(|i| format!("TEMP[{}].x", result[i]));
     let r: [String; 3] = core::array::from_fn(|i| format!("TEMP[{}].x", result[i + 3]));
-    let w: [String; 12] = work.map(|i| format!("TEMP[{i}].x"));
+    let w: [String; 13] = work.map(|i| format!("TEMP[{i}].x"));
     let mut tokens = 0;
     let mut emit = |op: &str, d: &str, src: &[&str]| {
         write!(body, "{op} {d}").unwrap();
@@ -1512,14 +1486,18 @@ fn emit_division(
         body.push('\n');
         tokens += 2 + src.len() as u32;
     };
-    // w0 bit, w1 word index, w2 chosen dividend word / incoming bit.
+    // w0 bit, w1 word index, w2 chosen dividend word / incoming bit, w12 the bit within its
+    // word. TGSI defines a shift by the count's low five bits, and Parallels' host renderer
+    // does not apply that rule to a count of 32 or more (provenance B18), so the generator
+    // masks a variable shift count with an explicit AND with 31.
     emit("UADD", &w[0], &[&w[0], &all]);
+    emit("AND", &w[12], &[&w[0], &k31]);
     emit("USHR", &w[1], &[&w[0], &k(5)]);
     emit("USEQ", &w[3], &[&w[1], &one]);
     emit("UCMP", &w[2], &[&w[3], &a[1], &a[0]]);
     emit("USEQ", &w[3], &[&w[1], &two]);
     emit("UCMP", &w[2], &[&w[3], &a[2], &w[2]]);
-    emit("USHR", &w[2], &[&w[2], &w[0]]);
+    emit("USHR", &w[2], &[&w[2], &w[12]]);
     emit("AND", &w[2], &[&w[2], &one]);
     emit("USHR", &w[4], &[&r[2], &k31]);
     for value in &r {
@@ -1553,7 +1531,7 @@ fn emit_division(
         emit("UCMP", &r[i], &[&w[5], &w[9], &r[i]]);
     }
     emit("AND", &w[5], &[&w[5], &one]);
-    emit("SHL", &w[5], &[&w[5], &w[0]]);
+    emit("SHL", &w[5], &[&w[5], &w[12]]);
     for i in 0..3 {
         emit("USEQ", &w[3], &[&w[1], &k(i as u32)]);
         emit("AND", &w[3], &[&w[3], &w[5]]);
@@ -1702,6 +1680,7 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
     for (old, new) in replacements {
         body = body.replace(&old, &new);
     }
+    let body = runtime_zero_operands(&declarations, &body);
     let mut initialization = String::new();
     for (i, word) in values.iter().enumerate() {
         let immediate = immediates + i;
@@ -1739,9 +1718,44 @@ fn integer_constants(text: &str, first: usize, tokens: &mut u32) -> (String, usi
     (declarations, values.len())
 }
 
+/// An instruction with only immediate sources is a constant expression a host compiler
+/// may fold, and Parallels' folds some wrongly: `XOR` of 0x00800000 and 0 read 0x007ffffd
+/// (provenance B19). Such an instruction's immediate 0 becomes `CONST[4].z`, which the
+/// draws of these programs supply as 0 (`kernel/src/gpu/virgl/encode.rs`), so the
+/// expression is evaluated at run time with the same result.
+fn runtime_zero_operands(declarations: &str, body: &str) -> String {
+    let mut zero = std::collections::HashSet::new();
+    for line in declarations.lines() {
+        let Some(rest) = line.strip_prefix("IMM[") else { continue };
+        let index = &rest[..rest.find(']').unwrap()];
+        let words = &line[line.find('{').unwrap() + 1..line.find('}').unwrap()];
+        for (lane, word) in words.split(", ").enumerate() {
+            if word.trim() == "0" {
+                zero.insert(format!("IMM[{index}].{}", ["xxxx", "yyyy", "zzzz", "wwww"][lane]));
+            }
+        }
+    }
+    let mut out = String::new();
+    for line in body.lines() {
+        let rewritten = line.split_once(' ').and_then(|(op, args)| {
+            let mut sources: Vec<&str> = args.split(", ").skip(1).collect();
+            if sources.is_empty() || !sources.iter().all(|s| s.starts_with("IMM[")) {
+                return None;
+            }
+            let at = sources.iter().rposition(|s| zero.contains(*s))
+                .unwrap_or_else(|| panic!("all-immediate instruction without a zero operand: {line}"));
+            sources[at] = "CONST[4].zzzz";
+            let destination = args.split(", ").next().unwrap();
+            Some(format!("{op} {destination}, {}", sources.join(", ")))
+        });
+        out.push_str(rewritten.as_deref().unwrap_or(line));
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 #[path = "emitted_tests.rs"]
 mod emitted_tests;
 
-#[cfg(not(test))]
 mod pipelines;

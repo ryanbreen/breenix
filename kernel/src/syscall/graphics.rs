@@ -236,7 +236,7 @@ fn release_presented_window_frames(
 fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, u64) {
     use core::sync::atomic::Ordering;
 
-    let (mx, my, mb) = crate::drivers::usb::hid::mouse_state();
+    let (mx, my, mb) = crate::input::pointer::mouse_state();
     let mouse_packed = ((mx as u64) << 32) | ((my as u64) << 16) | (mb as u64);
     let cur_reg_gen = REGISTRY_GENERATION.load(Ordering::Relaxed);
 
@@ -245,8 +245,8 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
         ready |= 1;
     }
     if mouse_packed != prev_mouse
-        || crate::drivers::usb::hid::has_pending_press()
-        || crate::drivers::usb::hid::has_pending_scroll()
+        || crate::input::pointer::has_pending_press()
+        || crate::input::pointer::has_pending_scroll()
     {
         ready |= 2;
     }
@@ -256,7 +256,7 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
     // Keyboard readiness: a latched Super press-edge (captured at HID-report
     // time) means a hotkey tap may have completed between polls. Surface it so
     // compositor_wait returns and BWM drains the latch instead of re-blocking.
-    if crate::drivers::usb::hid::has_pending_super_tap() {
+    if crate::input::has_pending_super_tap() {
         ready |= 8;
     }
 
@@ -1171,7 +1171,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // Inject accumulated scroll wheel delta into mouse events.
             // MOUSE_MOVE=3, MOUSE_SCROLL=9 (exclude MOUSE_BUTTON=4: scroll_y carries press state)
             if event.event_type == 3 || event.event_type == 9 {
-                let wheel = crate::drivers::usb::hid::mouse_wheel_consume();
+                let wheel = crate::input::pointer::mouse_wheel_consume();
                 if wheel != 0 {
                     event.scroll_y = event
                         .scroll_y
@@ -1340,7 +1340,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
         26 => {
             // PollModifierState: returns current modifier key bitmask.
             // Bits: 0=Shift, 1=Ctrl, 2=Alt, 3=Super
-            let state = crate::drivers::usb::hid::poll_modifier_state();
+            let state = crate::input::poll_modifier_state();
             SyscallResult::Ok(state as u64)
         }
         27 => {
@@ -1366,7 +1366,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             // press-edges captured at HID-report time. Lets BWM recover taps
             // that completed (press+release) between two compositor polls so
             // a correctly-delivered double-tap-Super is never dropped.
-            let count = crate::drivers::usb::hid::take_super_tap_count();
+            let count = crate::input::take_super_tap_count();
             SyscallResult::Ok(count as u64)
         }
         _ => {
@@ -2760,7 +2760,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         // VirtIO DMA (PCI_FRAMEBUFFER → TRANSFER_TO_HOST_2D) was
                         // benchmarked and is slower: 5-7 FPS per-ball, 4-8 FPS
                         // full-pane, vs 12 FPS with direct BAR0 MMIO.
-                        if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
+                        if let Some(mut gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
                             for y in y_start..y_end {
                                 let user_row_ptr = (mmap_info.user_addr as usize)
                                     + y * mmap_info.user_stride
@@ -2768,10 +2768,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                 let target_row_offset = y * fb_stride_bytes + col_offset;
                                 if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                     unsafe {
-                                        core::ptr::copy_nonoverlapping(
-                                            user_row_ptr as *const u8,
-                                            gop_buf[target_row_offset..].as_mut_ptr(),
-                                            copy_row_bytes,
+                                        gop_buf.copy_from_slice(
+                                            target_row_offset,
+                                            core::slice::from_raw_parts(
+                                                user_row_ptr as *const u8,
+                                                copy_row_bytes,
+                                            ),
                                         );
                                     }
                                 }
@@ -2798,7 +2800,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                         }
                     } else {
                         // Non-GOP path: copy to GPU buffer (VirtIO MMIO/PCI framebuffer)
-                        let target_buf = fb_guard.buffer_mut();
+                        let mut target_buf = fb_guard.buffer_mut();
                         for y in y_start..y_end {
                             let user_row_ptr =
                                 (mmap_info.user_addr as usize) + y * mmap_info.user_stride;
@@ -2806,10 +2808,9 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 
                             if target_row_offset + row_bytes <= target_buf.len() {
                                 unsafe {
-                                    core::ptr::copy_nonoverlapping(
-                                        user_row_ptr as *const u8,
-                                        target_buf[target_row_offset..].as_mut_ptr(),
-                                        row_bytes,
+                                    target_buf.copy_from_slice(
+                                        target_row_offset,
+                                        core::slice::from_raw_parts(user_row_ptr as *const u8, row_bytes),
                                     );
                                 }
                             }
@@ -2885,7 +2886,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                             .unwrap_or(0);
 
                         if fb_stride_bytes > 0 {
-                            if let Some(gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
+                            if let Some(mut gop_buf) = crate::graphics::arm64_fb::gop_framebuffer() {
                                 for rect in rects {
                                     if rect.w <= 0 || rect.h <= 0 {
                                         continue;
@@ -2912,10 +2913,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                                         let target_row_offset = y * fb_stride_bytes + col_byte;
                                         if target_row_offset + copy_row_bytes <= gop_buf.len() {
                                             unsafe {
-                                                core::ptr::copy_nonoverlapping(
-                                                    user_row_ptr as *const u8,
-                                                    gop_buf[target_row_offset..].as_mut_ptr(),
-                                                    copy_row_bytes,
+                                                gop_buf.copy_from_slice(
+                                                    target_row_offset,
+                                                    core::slice::from_raw_parts(
+                                                        user_row_ptr as *const u8,
+                                                        copy_row_bytes,
+                                                    ),
                                                 );
                                             }
                                         }
@@ -3051,10 +3054,10 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
     let (mx, my, buttons) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
-        crate::drivers::usb::hid::mouse_state_consume()
+        crate::input::pointer::mouse_state_consume()
     };
 
-    let scroll = crate::drivers::usb::hid::mouse_wheel_consume() as u32;
+    let scroll = crate::input::pointer::mouse_wheel_consume() as u32;
 
     unsafe {
         let out = out_ptr as *mut [u32; 4];

@@ -36,10 +36,22 @@ EXPECTATIONS = {
     "out-of-order": (False, "CASE line 1 is first/two; the manifest's case 1 is first/one"),
     "wrong-total": (False, "disagrees with its CASE lines (3 passed, 0 failed, 0 skipped of 3)"),
     "failed-case": (False, "CASE first/two FAIL ms=1 msg=case failed"),
+    "memory-leaked": (False, "memory not reclaimed: 100 pages short after the reap, allowance 64"),
 }
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_memory_only_log_fails_without_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            memory = [line for line in (FIXTURES / "all-pass.txt").read_text().splitlines()
+                      if " MEMORY " in line]
+            self.assertTrue(memory)
+            serial.write_text("\n".join(memory) + "\n")
+            ok, reason = SCORER.verdict(MANIFEST, serial, [serial])
+            self.assertFalse(ok)
+            self.assertIn("START", reason)
+
     def test_category_selection_requires_its_complete_case_list(self):
         with tempfile.TemporaryDirectory() as directory:
             serial = Path(directory) / "serial.txt"
@@ -69,6 +81,24 @@ class SuiteVerdictTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0 if expected else 1, result.stdout + result.stderr)
                 self.assertIn(("PASS: " if expected else "FAIL: ") + detail, result.stdout)
+
+    def test_memory_record_is_required_and_must_agree_with_itself(self):
+        original = (FIXTURES / "all-pass.txt").read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            for broken, reason in (
+                ("".join(line for line in original.splitlines(keepends=True) if " MEMORY " not in line),
+                 "found 0, 0 and 0"),
+                (original.replace("free_after=990 allowance=64", "free_after=900 allowance=64"),
+                 "does not repeat the free counts"),
+                (original.replace("free_after=990 allowance=64", "free_after=990 allowance=5"),
+                 "contradicts its own figures"),
+            ):
+                with self.subTest(reason=reason):
+                    serial.write_text(broken)
+                    ok, detail = SCORER.verdict(MANIFEST, serial, [serial])
+                    self.assertFalse(ok)
+                    self.assertIn(reason, detail)
 
     def test_hostkey_live_record(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -105,7 +105,7 @@ class DiskTest(existing.StateTest):
                  patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')) as assemble:
                 with self.assertRaisesRegex(RuntimeError, 'captured'):
                     d.prepare_payload()
-            self.assertEqual(assemble.call_args.args[1]['ramdisk'].read_bytes(), b'BREENIX-BOOT 1\nsuite smoke\n')
+            self.assertEqual(assemble.call_args.args[1]['ramdisk'].read_bytes(), b'BREENIX-BOOT 1\nsuite smoke hostkeys xhci-replay\n')
             self.assertEqual(stage.call_args.kwargs['suite'], 'smoke,files-io')
             self.assertEqual((d.dir / 'readback-stub.efi').read_bytes(), b'stub')
             (d.dir / 'serial.txt').write_text('serial')

@@ -4219,6 +4219,11 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
+    // The roots an exec superseded (`defer_superseded_roots`), queued by the
+    // exec system calls once PM is released, and by the exec-detach oracle's
+    // fixture execs the same way.
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_exec_aarch64", 1),
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_execv_with_frame", 2),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
     // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
@@ -4228,6 +4233,7 @@ const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn queue_superseded", 1),
     // The kernel-stack ownership oracle now retires its owned fixture row through the same deferred-reclaim helper shape as the existing oracles.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
@@ -4441,6 +4447,8 @@ const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[
 const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_frame", 1),
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_leaf_frame", 1),
+    // #583: a dropped GuardedStack gives back its user stack's external leaves.
+    ("kernel/src/memory/frame_allocator.rs", "fn release_external_leaf_frame", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn retire_bounded", 2),
 ];
 #[rustfmt::skip]
@@ -4457,11 +4465,13 @@ const TABLE_RECORDER_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked => AbandonReason::AlreadyTerminated", 1),
+    // An exit whose leaves are released (a non-live ARM64 root, or an earlier
+    // terminate) retires its tables through a receipt, so production abandons a
+    // table only when a receipt cannot be queued; the release helper that still
+    // abandons is a boot-test fixture.
     ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoArchPipeline", 1),
     ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoProofPipeline", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(any(target_arch=aarch64,feature=boot_tests))] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit => AbandonReason::AlreadyTerminated", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
@@ -6944,13 +6954,11 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
-    // The contended return holds the list as this CPU's own nested holder:
-    // through `with_free_frames` on x86_64, where only that makes a return
-    // give up rather than wait, and by locking it elsewhere.
+    // The contended return holds the list as this CPU's own nested holder,
+    // through `with_free_frames`: a return waits for a holder on another CPU
+    // on both architectures, so only that makes it give up rather than wait.
     let held = function_body(tests, "with_free_list_held");
-    let held_split = held.find("#[cfg(not(target_arch = \"x86_64\"))]").ok_or(())?;
-    let (held_x86, held_other) = held.split_at(held_split);
-    if !held_x86.contains("#[cfg(target_arch = \"x86_64\")]") {
+    if held.contains("#[cfg(") || held.contains("FREE_FRAMES") {
         return Err(());
     }
     let above_top = function_body(tests, "above_top_of_ram_frame");
@@ -7134,9 +7142,8 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
         && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
-        && held_x86.contains("with_free_frames(|_| f())")
-        && held_other.contains("let _free_list = FREE_FRAMES.lock();")
-        && held_other.contains("f()")
+        && normalized_code(held)
+            == "fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R { with_free_frames(|_| f()) }"
         && gate.matches("healthy_round_trip()").count() == 5
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
@@ -7221,7 +7228,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -8572,7 +8579,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
@@ -10166,7 +10173,7 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     const FORMAT_STRING: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]";
     const OBSERVED_ARGUMENTS: &str =
         "\",\n        leaf_residual,\n        user_stack_residual\n    );";
-    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]";
+    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=0:user_stack_residual=0]";
 
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let oracle = function_body(&provider, "creating_dispatch_refusal_test");
@@ -10185,12 +10192,12 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     for (constant, declaration, comparison) in [
         (
             "EXPECTED_LEAF_RESIDUAL",
-            "const EXPECTED_LEAF_RESIDUAL: u64 = 16;",
+            "const EXPECTED_LEAF_RESIDUAL: u64 = 0;",
             "if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {",
         ),
         (
             "EXPECTED_USER_STACK_RESIDUAL",
-            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;",
+            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 0;",
             "if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {",
         ),
     ] {
@@ -11739,10 +11746,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     }
     let process_task = source(&sources, "kernel/src/task/process_task.rs");
     let wrong_reason = process_task.replacen(
-        "page_table.abandon(AbandonReason::AlreadyTerminated);",
         "page_table.abandon(AbandonReason::NoProofPipeline);",
+        "page_table.abandon(AbandonReason::AlreadyTerminated);",
         1,
     );
+    assert_ne!(wrong_reason, process_task, "wrong-reason mutation must apply");
     let wrong_reason =
         with_replaced_source(&sources, "kernel/src/task/process_task.rs", wrong_reason);
     assert!(validate_process_page_table_dispositions(&wrong_reason).is_err());
@@ -12359,16 +12367,17 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
 
-    // R1: seven syntactically distinct ways to bypass the return choke point.
+    // R1: seven syntactically distinct ways to bypass the return choke point,
+    // planted in the free-list closure allocate_candidate pops from.
     for insertion in [
-        "free_list.push(frame);",
-        "free_list.insert(0, frame);",
-        "free_list /* trivia */ .insert(0, frame);",
-        "free_list.push_within_capacity(frame);",
+        "list.push(frame);",
+        "list.insert(0, frame);",
+        "list /* trivia */ .insert(0, frame);",
+        "list.push_within_capacity(frame);",
     ] {
         let broken = allocator.replacen(
-            "if let Some(frame) = free_list.pop() {",
-            &format!("if let Some(frame) = free_list.pop() {{ {insertion}"),
+            "free_list.and_then(|list| list.pop())",
+            &format!("free_list.and_then(|list| {{ let frame = list.pop()?; {insertion} Some(frame) }})"),
             1,
         );
         let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
@@ -12400,16 +12409,16 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         );
     }
     let reborrowed = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let list = &mut *free_list; list.insert(0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let spare = &mut *list; spare.insert(0, frame); Some(frame) })",
         1,
     );
     let reborrowed =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
     assert!(validate_frame_return_choke_point(&reborrowed).is_err());
     let typed_reborrow = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let list: &mut Vec<PhysFrame> = &mut free_list; list.insert(0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let spare: &mut Vec<PhysFrame> = &mut *list; spare.insert(0, frame); Some(frame) })",
         1,
     );
     let typed_reborrow = with_replaced_source(
@@ -12419,8 +12428,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&typed_reborrow).is_err());
     let parenthesized_reborrow = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { (*free_list).insert(0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; (*list).insert(0, frame); Some(frame) })",
         1,
     );
     let parenthesized_reborrow = with_replaced_source(
@@ -12430,8 +12439,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
     let indexed_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { if free_list.len() > 0 { free_list[0] = frame; }",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; if list.len() > 0 { list[0] = frame; } Some(frame) })",
         1,
     );
     let indexed_alias_store = with_replaced_source(
@@ -12441,8 +12450,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_alias_store).is_err());
     let deref_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { *free_list = alloc::vec![frame, frame];",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; *list = alloc::vec![frame, frame]; Some(frame) })",
         1,
     );
     let deref_alias_store = with_replaced_source(
@@ -12453,8 +12462,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
     // R1: the same physical bypass through an indexed, sliced or branch-selected alias.
     let indexed_element_replace = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { core::mem::replace(&mut free_list[0], frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; core::mem::replace(&mut list[0], frame); Some(frame) })",
         1,
     );
     let indexed_element_replace = with_replaced_source(
@@ -12464,8 +12473,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_element_replace).is_err());
     let indexed_element_swap = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = frame; core::mem::swap(&mut free_list[0], &mut spare);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = frame; core::mem::swap(&mut list[0], &mut spare); Some(frame) })",
         1,
     );
     let indexed_element_swap = with_replaced_source(
@@ -12475,8 +12484,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_element_swap).is_err());
     let indexed_element_clone_from = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[0].clone_from(&frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[0].clone_from(&frame); Some(frame) })",
         1,
     );
     let indexed_element_clone_from = with_replaced_source(
@@ -12486,8 +12495,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_element_clone_from).is_err());
     let sliced_copy_from_slice = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[..].copy_from_slice(&[frame]);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[..].copy_from_slice(&[frame]); Some(frame) })",
         1,
     );
     let sliced_copy_from_slice = with_replaced_source(
@@ -12497,8 +12506,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&sliced_copy_from_slice).is_err());
     let sliced_fill = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { free_list[0..1].fill(frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[0..1].fill(frame); Some(frame) })",
         1,
     );
     let sliced_fill = with_replaced_source(
@@ -12508,8 +12517,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&sliced_fill).is_err());
     let indexed_helper_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { publish_frame(&mut free_list[0], frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; publish_frame(&mut list[0], frame); Some(frame) })",
         1,
     );
     let indexed_helper_export = with_replaced_source(
@@ -12519,8 +12528,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&indexed_helper_export).is_err());
     let conditional_branch_alias_store = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; *dest = alloc::vec![frame];",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; *dest = alloc::vec![frame]; Some(frame) })",
         1,
     );
     let conditional_branch_alias_store = with_replaced_source(
@@ -12530,8 +12539,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_store).is_err());
     let conditional_branch_alias_method = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; dest.push(frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; dest.push(frame); Some(frame) })",
         1,
     );
     let conditional_branch_alias_method = with_replaced_source(
@@ -12541,8 +12550,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_method).is_err());
     let helper_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { stash_frame(&mut free_list, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; stash_frame(&mut list, frame); Some(frame) })",
         1,
     );
     let helper_export = with_replaced_source(
@@ -12552,8 +12561,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&helper_export).is_err());
     let ufcs_export = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { Vec::insert(&mut free_list, 0, frame);",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; Vec::insert(&mut list, 0, frame); Some(frame) })",
         1,
     );
     let ufcs_export = with_replaced_source(
@@ -12563,8 +12572,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
     let renamed_alias = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); } Some(frame) })",
         1,
     );
     let renamed_alias = with_replaced_source(
@@ -12574,8 +12583,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&renamed_alias).is_err());
     let matched_alias = allocator.replacen(
-        "if let Some(frame) = free_list.pop() {",
-        "if let Some(frame) = free_list.pop() { match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }",
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} } Some(frame) })",
         1,
     );
     let matched_alias = with_replaced_source(

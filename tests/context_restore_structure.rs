@@ -5601,20 +5601,44 @@ fn derived_blocking_scheduler_accessors(
 ) -> Result<BTreeSet<String>, String> {
     let analysis = fatal_source_analysis(scheduler_source);
     let bodies = module_function_bodies(scheduler_source);
-    let mut blocking = BTreeSet::new();
+    let mut helpers = BTreeSet::new();
 
     if bodies.contains_key("lock_scheduler") {
-        blocking.insert("lock_scheduler".to_string());
+        helpers.insert("lock_scheduler".to_string());
     }
-    for function in analysis
-        .functions
-        .iter()
-        .filter(|function| function.is_public)
-    {
+    // Follow private acquisition helpers to a fixed point, including cfg-split
+    // bodies. Public accessor calls are checked by the fatal-callee census;
+    // they do not turn their callers into acquisition helpers themselves.
+    loop {
+        let mut callers = BTreeSet::new();
+        for function in analysis.functions.iter().filter(|function| !function.is_public) {
+            if helpers.contains(&function.name) {
+                continue;
+            }
+            if bodies.get(&function.name).is_some_and(|definitions| {
+                definitions.iter().any(|body| {
+                    let body_mask = code_mask(body);
+                    helpers.iter().any(|callee| {
+                        !call_offsets(body, &body_mask, callee).is_empty()
+                    })
+                })
+            }) {
+                callers.insert(function.name.clone());
+            }
+        }
+        if callers.is_empty() {
+            break;
+        }
+        helpers.extend(callers);
+    }
+    let mut blocking = helpers.clone();
+    for function in analysis.functions.iter().filter(|function| function.is_public) {
         if bodies.get(&function.name).is_some_and(|definitions| {
             definitions.iter().any(|body| {
                 let body_mask = code_mask(body);
-                !call_offsets(body, &body_mask, "lock_scheduler").is_empty()
+                helpers.iter().any(|helper| {
+                    !call_offsets(body, &body_mask, helper).is_empty()
+                })
             })
         }) {
             blocking.insert(function.name.clone());
@@ -5638,6 +5662,44 @@ fn derived_blocking_scheduler_accessors(
         return Err("try_dump_state was misclassified as blocking".to_string());
     }
     Ok(blocking)
+}
+
+#[test]
+fn blocking_scheduler_accessors_follow_private_lock_helpers() {
+    let source = r#"
+        fn lock_scheduler() {}
+        fn with_scheduler_lock() {
+            without_interrupts(|| {
+                let guard = lock_scheduler();
+                f(guard)
+            })
+        }
+        fn outer_helper() { with_scheduler_lock(); }
+        pub fn current_thread_id() { lock_scheduler(); }
+        pub fn with_scheduler() { with_scheduler_lock(); }
+        pub fn with_thread_mut() { outer_helper(); }
+        pub fn try_dump_state() {
+            // with_scheduler_lock();
+            let diagnostic = "lock_scheduler()";
+            try_lock_scheduler();
+        }
+    "#;
+    assert_eq!(
+        derived_blocking_scheduler_accessors(source),
+        Ok(BTreeSet::from([
+            "lock_scheduler".to_owned(),
+            "with_scheduler_lock".to_owned(),
+            "outer_helper".to_owned(),
+            "current_thread_id".to_owned(),
+            "with_scheduler".to_owned(),
+            "with_thread_mut".to_owned(),
+        ]))
+    );
+    let disconnected = source.replace("lock_scheduler();", "try_lock_scheduler();");
+    assert_eq!(
+        derived_blocking_scheduler_accessors(&disconnected),
+        Err("blocking scheduler accessor derivation missing anchors: current_thread_id, with_scheduler, with_thread_mut".to_owned())
+    );
 }
 
 fn call_is_el0_guarded(blocks: &[LexicalBlock], offset: usize) -> bool {
@@ -6022,7 +6084,7 @@ fn fatal_scheduler_census_m_a_rejects_blocking_call_at_fixed_site() {
     let aarch64_sources = aarch64_sources_with_exception(&mutant);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
-        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn handle_sync_exception => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => with_scheduler_lock  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn with_scheduler_lock => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
@@ -6056,7 +6118,7 @@ fn fatal_scheduler_census_m_b_rejects_blocking_call_in_direct_fatal_callee() {
     let aarch64_sources = aarch64_sources_with_exception(&mutant);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&mutant, &scheduler_source, &aarch64_sources),
-        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/arch_impl/aarch64/exception.rs :: fn dump_el1_fatal_frame_and_dispatch_trace => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => with_scheduler_lock  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn with_scheduler_lock => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 
@@ -6106,7 +6168,7 @@ fn fatal_scheduler_census_m_e_rejects_blocking_call_in_transitive_callee() {
     let aarch64_sources = aarch64_sources_with_exception(&exception_source);
     assert_eq!(
         validate_fatal_scheduler_accessor_census(&exception_source, &mutant, &aarch64_sources),
-        Err("+ kernel/src/task/scheduler.rs :: #[cfg(target_arch=aarch64)] fn dump_cpu_state_history_postmortem => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)".to_string())
+        Err("+ kernel/src/task/scheduler.rs :: #[cfg(target_arch=aarch64)] fn dump_cpu_state_history_postmortem => current_thread_id  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => lock_scheduler  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn current_thread_id => with_scheduler_lock  (1 occurrences, expected none)\n+ kernel/src/task/scheduler.rs :: fn with_scheduler_lock => lock_scheduler  (1 occurrences, expected none)".to_string())
     );
 }
 

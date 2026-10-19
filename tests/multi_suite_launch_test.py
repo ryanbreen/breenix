@@ -43,12 +43,12 @@ class LaunchTest(unittest.TestCase):
                 target = subprocess.check_output(['debugfs', '-R', 'cat /etc/breenix/boot-target', str(root / platform / 'ext2-boot-target.img')], env=env, stderr=subprocess.DEVNULL)
                 self.assertEqual(target, b'suite smoke case basic/hello\n')
 
-    def test_recursive_registrations_keep_the_live_launcher_pid(self):
+    def test_list_registration_keeps_the_live_launcher_pid(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cli = root / 'vigil-cli'
             cli.write_text('''#!/bin/sh
-if [ "$#" = 1 ]; then echo 'breenix start --cpus'; exit 0; fi
+if [ "$#" = 1 ]; then echo 'breenix start --cpus --suite a,b,c'; exit 0; fi
 printf '%s\\n' "$@" >> "$CAPTURE"
 echo boot
 ''')
@@ -60,10 +60,12 @@ echo boot
             launcher = subprocess.Popen(['bash', '-c', script, 'launcher', str(root / 'pid'), str(ROOT / 'scripts/vigil-record.sh'), str(root / 'serial')],
                                         env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
             try:
-                self.assertEqual(launcher.stdout.readline().strip(), 'boot,boot')
+                self.assertEqual(launcher.stdout.readline().strip(), 'boot')
                 args = (root / 'args').read_text().splitlines()
+                self.assertEqual(args[args.index('--suite') + 1], 'smoke,crypto')
+                self.assertEqual(args.count('--suite'), 1)
                 pids = [int(args[i + 1]) for i, value in enumerate(args) if value == '--pid']
-                self.assertEqual(pids, [launcher.pid, launcher.pid])
+                self.assertEqual(pids, [launcher.pid])
                 for pid in pids:
                     os.kill(pid, 0)
             finally:

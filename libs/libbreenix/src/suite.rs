@@ -16,6 +16,12 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
+//! A full run booted as PID 1 also prints its memory record ([`memory_record`]):
+//! `SUITE <id> MEMORY before ...` before its first case, and once DONE is out and
+//! its processes are reaped, `SUITE <id> MEMORY after ...` and
+//! `SUITE <id> MEMORY reclaimed=PASS|FAIL ...`. A suite whose memory was not
+//! reclaimed fails like one with a failing case.
+//!
 //! In a boot that runs several suites ([`sequence`]), the next suite replaces it as PID 1
 //! instead.
 //!
@@ -86,6 +92,8 @@
 //! fn main() { SUITE.run() }
 //! ```
 
+#[path = "suite_memory.rs"]
+pub mod memory_record;
 #[path = "suite_prerequisites.rs"]
 pub mod prerequisites;
 #[path = "suite_sequence.rs"]
@@ -160,10 +168,28 @@ pub struct Category {
     pub id: &'static str,
     pub title: &'static str,
     pub cases: &'static [Case],
+    /// Milliseconds the full-suite run sits idle before the category's first case,
+    /// between `SUITE_IDLE <suite> <category> begin ms=N` and `... end` lines, so a host
+    /// can measure the guest at rest just before the category (0: no idle window). The
+    /// runner settles for `IDLE_SETTLE_MS` on each side of the window, so neither the
+    /// idle notice's own display work nor the category's first case lands inside it
+    /// while the host reads the serial lines late.
+    pub idle_before_ms: u64,
 }
 
+/// The quiet time on each side of an idle window: longer than a host's serial-read and
+/// GPU-time sampling intervals, and than the display's redraw interval.
+const IDLE_SETTLE_MS: u64 = 1000;
+
 pub const fn category(id: &'static str, title: &'static str, cases: &'static [Case]) -> Category {
-    Category { id, title, cases }
+    Category { id, title, cases, idle_before_ms: 0 }
+}
+
+impl Category {
+    /// The same category with an idle window of `ms` before its first case.
+    pub const fn idle_before(self, ms: u64) -> Category {
+        Category { idle_before_ms: ms, ..self }
+    }
 }
 
 /// How long a case may run before it is killed and fails, unless the suite sets its own.
@@ -280,9 +306,28 @@ pub fn hostkeys(chords: &str) -> Result<u64, String> {
     if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
         return Err(String::from("host key record unavailable"));
     }
+    usb_input_attached()?;
     let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
     record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
     Ok(seq)
+}
+
+/// On ARM64 Parallels and VMware the keyboard is a USB device that the kernel's
+/// xHCI worker attaches after PID 1 starts, and a key the host sends before then is
+/// lost. Wait up to 5 s while `/proc/xhci/trace` says the controller is still
+/// enumerating; a target without that file or controller does not wait.
+fn usb_input_attached() -> Result<(), String> {
+    let start = monotonic_ns();
+    loop {
+        let trace = std::fs::read_to_string("/proc/xhci/trace").unwrap_or_default();
+        if !trace.contains("state=enumerating") {
+            return Ok(());
+        }
+        if start.zip(monotonic_ns()).is_none_or(|(then, now)| now - then >= 5_000_000_000) {
+            return Err(String::from("USB input still enumerating after 5 s"));
+        }
+        let _ = time::sleep_ms(20);
+    }
 }
 
 /// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.
@@ -449,8 +494,22 @@ impl Suite {
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
+        // A full run as PID 1 keeps the memory record; a one-case run is not
+        // full-suite evidence, and a suite run from a shell does not reap others.
+        let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        screen.prepare();
+        let before = if recording { memory_sample(self.id, "before") } else { None };
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
+            if only.is_none() && category.idle_before_ms > 0 {
+                let progress = std::format!("Idle {} ms before {}", category.idle_before_ms, category.id);
+                screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
+                let _ = time::sleep_ms(IDLE_SETTLE_MS);
+                emit(&std::format!("SUITE_IDLE {} {} begin ms={}", self.id, category.id, category.idle_before_ms));
+                let _ = time::sleep_ms(category.idle_before_ms);
+                emit(&std::format!("SUITE_IDLE {} {} end", self.id, category.id));
+                let _ = time::sleep_ms(IDLE_SETTLE_MS);
+            }
             for (k, case) in category.cases.iter().enumerate() {
                 let name = std::format!("{}/{}", category.id, case.id);
                 if only.is_some_and(|selected| selected != name && selected != category.id) { continue; }
@@ -484,10 +543,19 @@ impl Suite {
         }
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
             self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
+        let reclaimed = !recording || {
+            // Each case's processes were swept after it; any left since go now.
+            let _ = sweep();
+            let after = memory_sample(self.id, "after");
+            let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
+            emit(&line);
+            reclaimed
+        };
 
-        let summary = std::format!("{} passed, {} failed, {} skipped of {}",
+        let mut summary = std::format!("{} passed, {} failed, {} skipped of {}",
             counts.passed, counts.failed, counts.skipped, total);
-        let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
+        if !reclaimed { summary.push_str("; memory not reclaimed"); }
+        let verdict = if counts.failed == 0 && reclaimed { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(self.id == "gpu"); }
@@ -519,6 +587,21 @@ enum State {
     Pending,
     Running,
     Done(Outcome),
+}
+
+/// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
+/// line saying why it could not be read.
+fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
+    match memory_record::settled() {
+        Ok(sample) => {
+            emit(&sample.record(id, when));
+            Some(sample)
+        }
+        Err(why) => {
+            emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
+            None
+        }
+    }
 }
 
 /// Write one serial line with a single write, so it is never split, starting with
@@ -1106,6 +1189,19 @@ impl Screen {
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
         Screen { live: fb.is_some() && !off, fb, gpu: None, gpu_failure: None, area: None }
+    }
+
+    /// Before the memory record's first sample, create what the view keeps until its final
+    /// panel: the GPU view's context and scanout target, as `open` has already mapped a
+    /// framebuffer suite's display. Both samples then count it.
+    fn prepare(&mut self) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            let failed = gpu.open().err();
+            if failed.is_some() && failed != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", failed.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = failed;
+        }
     }
 
     fn live_on(&self) -> bool { self.live }

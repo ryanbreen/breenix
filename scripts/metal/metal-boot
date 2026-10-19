@@ -40,6 +40,10 @@ import metal_score  # noqa: E402
 import metal_attended  # noqa: E402
 import metal_disk  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
+# Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
+if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+import hostkeys  # noqa: E402
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 MODES = ('default', 'shell', 'probe', 'suite', 'console', 'tests')
@@ -161,7 +165,7 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
-        # In a multi-suite boot, when the running suite started (its START, or the previous one's STALLED).
+        # The latest suite progress record; failed cases and resets are progress too.
         self.suite_started = None
         self.input_clock_alive = None
         self.last_stage = None
@@ -189,6 +193,8 @@ class Driver:
         self.shell_ready = False
         self.shell_sent = False
         self.attended_challenge = None
+        # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
+        self.hostkey_watcher = None
         self.console_step = 0
         self.console_done = False
         self.delivery = {}
@@ -409,7 +415,8 @@ class Driver:
         if disk == 'root':
             target = self.args.mode
             if target == 'suite':
-                target += ' ' + suites(self.args)[0]
+                # The intent replaces the root's boot target, so it carries the same host-key declaration.
+                target += ' ' + suites(self.args)[0] + ' hostkeys ' + metal_root.HOSTKEYS
             elif target == 'console':
                 self.console_intent = 'session' if session(self.args) else 'measure'
                 self.delivery['consoleIntent'] = self.console_intent
@@ -475,8 +482,9 @@ class Driver:
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
-            # Several suites finish when the last has handed off.
-            self.final_marker = (('SUITE ' + self.args.suite + ' DONE ', 'contains') if len(suites(self.args)) == 1
+            # One suite finishes at its READY, after its DONE and memory record (docs/suites/README.md,
+            # "Memory record"); several suites when the last has handed off.
+            self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
                                  else ('SUITE_SEQUENCE DONE ', 'contains'))
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
@@ -625,6 +633,13 @@ class Driver:
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
+        # getty leaves its prompt unterminated while waiting for login input.
+        if self.args.mode == "default" and self.line.strip("\r") == "Breenix login: ":
+            try:
+                self.on_line(self.line, observed_at=arrived)
+            except Finish as finish:
+                if decision is None or finish.status != m.EXIT_DONE:
+                    decision = finish
         try:
             self.challenge_shell(self.line)
             self.challenge_console(self.line)
@@ -866,10 +881,14 @@ class Driver:
             self.event('payload-started', observed_at=observed_at, seconds=seconds)
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
-        if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
+        suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
+        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        if (self.kernel_started and self.fatal_at is None
+                and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
+                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if len(suites(self.args)) > 1 and re.search(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED ', line):
+        if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
@@ -887,12 +906,16 @@ class Driver:
             raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
+        self.on_hostkey_line(line)
         self.challenge_shell(line)
         self.challenge_console(line, complete=True)
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line, input_kind(self.args)):
                 stages.pop(0)
-        if (self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+        suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
+                      else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
+                      ) if self.args.mode == 'suite' else True
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
         if (self.final_marker and self.final_seen and not any(self.required_stages)
@@ -917,6 +940,17 @@ class Driver:
         if self.console_intent:
             needed.add('console-intent')
         return needed <= self.seen
+
+    def on_hostkey_line(self, line):
+        """A suite case's HOSTKEY record: type its chords on the serial console as HID boot reports, which the
+        kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
+        once; what was sent goes to the boot's events, never to the guest's serial."""
+        if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
+            return
+        if self.hostkey_watcher is None:
+            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.console_send), metal_root.HOSTKEYS,
+                                                    log=lambda message: self.event('hostkeys', message=message))
+        self.hostkey_watcher.line(line)
 
     def on_intent_line(self, line, observed_at):
         """A disk-root console boot's replug choice must come from its staged intent, not the installed target."""
@@ -1144,7 +1178,7 @@ class Driver:
             if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
                 raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
             return
-        # Each suite of a multi-suite boot has the deadline from when it started.
+        # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
 
@@ -1287,7 +1321,8 @@ class Driver:
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
                 # the cases it reported.
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
-                if self.args.mode == 'suite' and (status == m.EXIT_DONE or several):
+                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
+                        and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
                     if self.gap:
