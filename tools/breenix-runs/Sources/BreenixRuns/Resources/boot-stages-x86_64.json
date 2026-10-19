@@ -135,6 +135,30 @@
       "checkHint": "drivers::pci::enumerate() - check I/O port access (0xCF8/0xCFC)"
     },
     {
+      "name": "Storage device found",
+      "marker": "[devices] storage found: ",
+      "failureMeaning": "No storage device was found on any bus",
+      "checkHint": "drivers::pci::report_class() for PCI class 0x01, the VirtIO MMIO enumeration in drivers::init(), or ahci::init_platform()"
+    },
+    {
+      "name": "Storage device initialized",
+      "marker": "[devices] storage initialized: ",
+      "failureMeaning": "A storage device was found but no storage driver attached a disk",
+      "checkHint": "the storage drivers' init (virtio block, ahci, nvme) and their device_class::storage_initialized() calls"
+    },
+    {
+      "name": "Storage device read",
+      "marker": "[devices] storage read: ",
+      "failureMeaning": "No attached disk completed a block read",
+      "checkHint": "fs::ext2::init_root_fs() - the root superblock read and mount must succeed"
+    },
+    {
+      "name": "Network device found",
+      "marker": "[devices] network found: ",
+      "failureMeaning": "No network device was found on any bus",
+      "checkHint": "drivers::pci::report_class() for PCI class 0x02, or the VirtIO MMIO enumeration in drivers::init()"
+    },
+    {
       "name": "E1000 network device found",
       "marker": "E1000 network device found",
       "failureMeaning": "No E1000 network device detected on PCI bus - network I/O will fail",
@@ -157,6 +181,12 @@
       "marker": "VirtIO block test: Read successful!",
       "failureMeaning": "VirtIO disk I/O failed - cannot read from block device",
       "checkHint": "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling"
+    },
+    {
+      "name": "Network driver initialized",
+      "marker": "[devices] network initialized: ",
+      "failureMeaning": "A NIC enumerated but no network driver attached",
+      "checkHint": "drivers::init() - e1000, bcm5720, VirtIO legacy or rtl8139 must be initialized"
     },
     {
       "name": "E1000 driver initialized",

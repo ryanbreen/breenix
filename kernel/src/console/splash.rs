@@ -43,8 +43,10 @@ pub enum Stage {
     GicInitialized,
     UartInterrupts,
     InterruptsEnabled,
-    DriversInitialized,
-    DriverSelfTests,
+    StorageFound,
+    StorageInitialized,
+    StorageRead,
+    NetworkFound,
     Ext2Mounted,
     Devfs,
     Devpts,
@@ -61,7 +63,7 @@ pub enum Stage {
 }
 
 #[cfg(target_arch = "aarch64")]
-const STAGE_NAMES: [&str; 24] = [
+const STAGE_NAMES: [&str; 26] = [
     "ARM64 kernel starting",
     "Running at EL1",
     "MMU enabled",
@@ -71,8 +73,10 @@ const STAGE_NAMES: [&str; 24] = [
     "GIC initialized",
     "UART interrupts enabled",
     "Interrupts enabled",
-    "Device drivers initialized",
-    "Driver self-tests ran",
+    "Storage device found",
+    "Storage device initialized",
+    "Storage device read",
+    "Network device found",
     "ext2 root filesystem mounted",
     "devfs initialized",
     "devptsfs initialized",
@@ -89,7 +93,7 @@ const STAGE_NAMES: [&str; 24] = [
 ];
 
 #[cfg(target_arch = "aarch64")]
-const MILESTONES: [usize; 7] = [0, 4, 9, 11, 16, 23, 24];
+const MILESTONES: [usize; 7] = [0, 4, 9, 13, 18, 25, 26];
 
 /// x86-64's splash stages: catalog stages `main.rs` reaches at each milestone's
 /// boundaries.

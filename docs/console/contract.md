@@ -534,9 +534,10 @@ origin unless given as screen coordinates:
   in the running colour while some are, and a `ring(…, 3k, 2k)` in the pending colour while no stage of it is.
 - **The stage name** is the latest stage reached. The boot-mode line reads `Boot mode: <mode>` and the status
   line names the next step, as today's boot screen does. Text is outside the crate's composition.
-- **The stages counted (V2b).** ARM64 counts the 23 kernel stages of those milestones in
+- **The stages counted (V2b).** ARM64 counts the 25 kernel stages of those milestones in
   `docs/boot-path.json` that the kernel reaches before PID 1 (each but `User work ran on every online
-  CPU`), and `Starting PID 1` for `first-userspace`: 24 in all, by dot 4, 5, 2, 5, 7 and 1. x86-64's lists
+  CPU`), and `Starting PID 1` for `first-userspace`: 26 in all, by dot 4, 5, 4, 5, 7 and 1. The four
+  `devices` stages are the device-class stages `kernel/src/drivers/device_class.rs` reports. x86-64's lists
   are long and mostly in-kernel tests, so it counts 13 catalog stages that `main.rs` reaches at the
   milestones' boundaries: `Kernel entry point`, `Serial port initialized`, `GDT and IDT initialized`,
   `Kernel heap initialized`; `Interrupt controller initialized`, `Timer initialized`; `PCI bus
