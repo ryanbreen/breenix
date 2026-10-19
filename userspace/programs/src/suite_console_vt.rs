@@ -1129,9 +1129,22 @@ pub fn vt_switch_eperm_unprivileged() -> CaseResult {
             const SETUID: u64 = 105;
             #[cfg(target_arch = "aarch64")]
             const SETUID: u64 = 146;
+            // Keep a privileged descriptor to exercise ioctl authorization after
+            // dropping privileges, independently of the open-time input check.
+            let tty2 = Term::vt(2)?;
             // SAFETY: setuid takes its user ID by value.
             require(unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0, "setuid(1000)")?;
-            let tty2 = Term::vt(2)?;
+            for path in ["/dev/console", "/dev/tty0", "/dev/tty1", "/dev/tty2", "/dev/tty3", "/dev/tty4", "/dev/tty5", "/dev/tty6"] {
+                for mode in [fs::O_RDONLY, fs::O_RDWR] {
+                    match fs::open(path, mode | O_NOCTTY) {
+                        Ok(fd) => {
+                            let _ = io::close(fd);
+                            return Err(format!("unprivileged input open succeeded: {path}"));
+                        }
+                        Err(error) => require(matches!(error, libbreenix::error::Error::Os(libbreenix::errno::Errno::EACCES)), &format!("{path}: expected EACCES, got {error}"))?,
+                    }
+                }
+            }
             tty2.fails("VT_ACTIVATE", VT_ACTIVATE, 3, EPERM)?;
             tty2.fails("KDSETMODE", KDSETMODE, KD_TEXT, EPERM)?;
             let mode = vt_mode(VT_PROCESS, 10, 12);
