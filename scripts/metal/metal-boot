@@ -868,7 +868,8 @@ class Driver:
             self.last_stage = 'metal-hang started'
         suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
         dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
-        if (self.kernel_started and self.fatal_at is None and not suite_record
+        if (self.kernel_started and self.fatal_at is None
+                and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
                 and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
@@ -908,8 +909,8 @@ class Driver:
         if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
-        if (self.final_marker and self.final_seen and (self.args.mode == 'suite' or not any(self.required_stages))
-                and (self.args.mode == 'suite' or self.disk_evidence_seen())
+        if (self.final_marker and self.final_seen and not any(self.required_stages)
+                and self.disk_evidence_seen()
                 and not session(self.args)
                 and (self.args.mode != 'console' or self.console_done)
                 and self.fatal_at is None and not self.completion_reported):
@@ -1159,7 +1160,8 @@ class Driver:
             return
         # Suite deadlines measure inactivity; other modes retain their boot deadline.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
-            raise Finish(m.EXIT_SHORT, 'suite progress stalled' if self.args.mode == 'suite' else 'the mode deadline passed with stages missing')
+            raise Finish(m.EXIT_HUNG if self.args.mode == 'suite' else m.EXIT_SHORT,
+                         'suite progress stalled' if self.args.mode == 'suite' else 'the mode deadline passed with stages missing')
 
     # Power.
     def power_on(self):
@@ -1300,7 +1302,8 @@ class Driver:
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
                 # the cases it reported.
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
-                if self.args.mode == 'suite' and (status == m.EXIT_DONE or several):
+                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
+                        and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
                     if self.gap:

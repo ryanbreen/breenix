@@ -92,7 +92,13 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
             return "idle"
         time.sleep(0.2)
-    return "exit"
+    # An operator quit (monitor, window, or signal) must not reboot the guest.
+    # A fatal guest record still identifies a guest death if QEMU exited first.
+    text = serial.read_bytes().decode("utf-8", errors="replace") if serial.exists() else ""
+    result = DONE["completion"](text, mode, suite, only) if mode in COMPLETING_MODES else None
+    if process.returncode >= 0 and result and result[1].startswith("fatal kernel output:"):
+        return "fatal"
+    return "cancelled"
 
 
 def main():
@@ -126,6 +132,9 @@ def main():
                        args.gate_timeout, args.suite_hold, clock, args.only)
     finally:
         stop(process)
+    if reason == "cancelled":
+        print("==> QEMU exited; operator cancellation stops suite collection", flush=True)
+        return 128 - process.returncode if process.returncode < 0 else 130
     clock_ok = True
     if args.mode in COMPLETING_MODES:
         clock_ok, clock_reason = clock.verdict()
@@ -137,7 +146,7 @@ def main():
             print(f"{status} {suite}: {detail}", flush=True)
         passed = sum(status == "PASS" for _, status, _ in rows)
         print(f"{'PASS' if ok else 'FAIL'}: {passed} of {len(rows)} suites passed", flush=True)
-        if reason == "stalled":
+        if reason in ("stalled", "deadline", "idle"):
             return 124
         return 0 if ok and clock_ok and reason == "done" else 1
     if reason == "stalled":

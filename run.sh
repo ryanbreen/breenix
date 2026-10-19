@@ -356,7 +356,7 @@ elif [ -n "$SUITE" ]; then
 fi
 if [ -n "$SUITE" ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
     exec python3 "$BREENIX_ROOT/scripts/suite-sequence.py" run "$SUITE" \
-        "${SERIAL_LOG_OVERRIDE:-${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}" "$BREENIX_ROOT/run.sh" "${RUN_ARGS[@]}"
+        "${SERIAL_LOG_OVERRIDE:-${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}" bash "$BREENIX_ROOT/run.sh" "${RUN_ARGS[@]}"
 fi
 # The manifests of the suites this boot runs, for the quiet-host check.
 SUITE_MANIFESTS=()

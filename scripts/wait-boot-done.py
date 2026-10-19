@@ -31,7 +31,8 @@ def completion(serial, mode, suite, only=None):
     # A logfile write can stop anywhere in a record; wait for its newline.
     lines = [line.rstrip("\r") for line in serial.split("\n")[:-1]]
     for line in serial.split("\n"):
-        if ((not line.startswith(("SUITE ", "SUITE_SEQUENCE ")) and SUITE_DEATH.search(line))
+        if ((re.search(r"KERNEL PANIC[:!]", line) or
+              (not line.startswith(("SUITE ", "SUITE_SEQUENCE ")) and SUITE_DEATH.search(line)))
                 if mode == "suite" else any(re.search(pattern, line) for pattern in FATAL)):
             return False, f"fatal kernel output: {line}"
     if mode == "program":
@@ -124,7 +125,7 @@ def main():
             return 124
         if time.monotonic() >= (progress.last_at + args.timeout if args.mode == "suite" else deadline):
             print(f"FAIL: no {args.mode} DONE within {args.timeout} seconds")
-            return 1
+            return 124 if sequence else 1
         time.sleep(1)
 
 

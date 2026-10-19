@@ -116,7 +116,7 @@ elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
 fi
 if [ "$MODE" = suite ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
-    exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
+    exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" bash "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
 fi
 if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
@@ -270,8 +270,7 @@ fi
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
 
-# Records the boot's start; a timing-sensitive suite first waits for a quiet host
-# (docs/boot-path.md, "Shared host slots").
+# Records host conditions through the shared slot policy (docs/boot-path.md).
 if [ "$MODE" = suite ]; then
     MANIFESTS=()
     IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
@@ -298,7 +297,7 @@ export BREENIX_VIGIL_DISPLAY=false
 # Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).
 if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
-    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/${VIGIL_ID%%,*}"
+    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID"
     VIGIL_QMP_SOCKET="$VIGIL_BOOT_DIR/qmp.sock"
     if [ ! -d "$VIGIL_BOOT_DIR" ]; then
         echo "==> Vigil QMP disabled: no boot folder at $VIGIL_BOOT_DIR"

@@ -1183,6 +1183,22 @@ class DriverTest(StateTest):
             self.assertEqual(d.run(), m.EXIT_SHORT)
         cleanup.assert_called_once_with(m.EXIT_SHORT)
 
+    def test_cancelled_sequence_keeps_cancellation_without_a_readback_boot(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'smoke,files-io'
+        d.kernel_started = 110
+        with patch.object(d, 'create_record'), patch.object(d, 'claim'), \
+             patch.object(d, 'prepare_payload'), patch.object(d, 'preflight'), \
+             patch.object(d, 'do_stage'), patch.object(d, 'start_console'), \
+             patch.object(d, 'power_on'), patch.object(d, 'pump_serial'), \
+             patch.object(d, 'watch', side_effect=boot.Finish(m.EXIT_STOPPED, 'operator stop')), \
+             patch.object(d, 'power_off', return_value=True), \
+             patch.object(d, 'score_suite') as score, \
+             patch.object(d, 'continue_disk_readback') as readback, patch.object(d, 'cleanup'):
+            self.assertEqual(d.run(), m.EXIT_STOPPED)
+        score.assert_not_called()
+        readback.assert_not_called()
+
     def test_linux_completion_requires_checked_census(self):
         import metal_census
         from metal_census_test import capture
@@ -1274,6 +1290,7 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=426):
             self.finish(d.check_deadlines, m.EXIT_HUNG)
 
+    # S35: an inactivity timeout is retryable, with the timeout status, not a launch failure.
     def test_suite_deadline_and_attempt_ceiling_stop_unfinished_boots(self):
         d = self.driver
         d.args.mode = 'suite'
@@ -1282,7 +1299,7 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=530):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=531):
-            self.finish(d.check_deadlines, m.EXIT_SHORT)
+            self.finish(d.check_deadlines, m.EXIT_HUNG)
         d.lease_ceiling = d.t0 + boot.ceiling_seconds(d.args)
         d.kernel_started = d.last_serial = 1419
         with patch.object(m, 'now', return_value=1419):
@@ -1300,7 +1317,7 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=920):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=921):
-            self.finish(d.check_deadlines, m.EXIT_SHORT)
+            self.finish(d.check_deadlines, m.EXIT_HUNG)
 
     def test_404_and_fatal_capture_graces(self):
         d = self.driver

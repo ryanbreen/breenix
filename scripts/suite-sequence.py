@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import re
 import runpy
+import signal
 import subprocess
 import sys
 import tempfile
@@ -126,11 +127,21 @@ def collect(ids, attempt):
     pending, status, number = list(ids), 0, 1
     while pending:
         text, code = attempt(pending, number)
+        code = 128 - code if code < 0 else code
         status = status or code
+        if 128 < code < 128 + signal.NSIG:
+            print('suite-sequence: cancelled; no suites will resume', flush=True)
+            return code
         remaining = unreached(pending, text)
         if not remaining:
             return status
-        if remaining == pending or code in (129, 130, 143):
+        guest_death = any(re.search(r"KERNEL PANIC[:!]", line) or
+                          (not line.startswith(("SUITE ", "SUITE_SEQUENCE ")) and
+                           re.search(r"panicked at kernel/src/|!!! SOFT LOCKUP DETECTED !!!|"
+                                     r"\[(?:DATA|INSTRUCTION)_ABORT\].*from_el0=0|"
+                                     r"memory allocation of \d+ bytes failed|allocation error:", line))
+                          for line in text.splitlines())
+        if remaining == pending or not (code == 124 or guest_death):
             print(f"suite-sequence: stopped; could not get past {remaining[0]}; unreached: {','.join(remaining)}", flush=True)
             return status or 1
         print(f"suite-sequence: resuming unreached suites: {','.join(remaining)}", flush=True)
@@ -154,7 +165,33 @@ def launch(suites, serial, command):
         if number > 1:
             args = [arg for arg in args if arg != "--clean"] + ["--no-build"]
         print(f"suite-sequence: boot {number}: {','.join(pending)}", flush=True)
-        code = subprocess.call(args, env=env)
+        # subprocess.call kills its child on KeyboardInterrupt, before run.sh can
+        # finish its EXIT trap. Forward cancellation and wait for synchronous cleanup.
+        cancelled = 0
+        child = None
+
+        def cancel(signum, frame):
+            nonlocal cancelled
+            if cancelled:
+                return
+            cancelled = 128 + signum
+            if child is not None and child.poll() is None:
+                try:
+                    os.killpg(child.pid, signum)
+                except ProcessLookupError:
+                    pass
+
+        previous = {sig: signal.signal(sig, cancel)
+                    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        try:
+            child = subprocess.Popen(args, env=env, start_new_session=True)
+            if cancelled:
+                os.killpg(child.pid, cancelled - 128)
+            code = child.wait()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        code = cancelled or code
         text = log.read_bytes().decode("utf-8", errors="replace") if log.exists() else ""
         return text, code
 
@@ -162,7 +199,7 @@ def launch(suites, serial, command):
 
 
 def boundaries(text):
-    """How many suites have started or been stopped: each suite's DONE deadline counts from the latest of these."""
+    """Count complete suite START and STALLED records."""
     return sum(bool(re.fullmatch(r"SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+", line))
                for line in lines(text))
 

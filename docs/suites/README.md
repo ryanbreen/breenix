@@ -276,7 +276,13 @@ names the suite it could not get past and the remaining list. Operator cancellat
 also stops collection. A suite whose binary could not start remains unreached,
 even if the runner subsequently prints sequence DONE.
 
-Each attempt keeps its serial and suite results in Vigil. Mac launchers reuse the
+Each attempt keeps its serial and gets one Vigil boot record with the ordered suite list.
+A suite that never starts gets no figure. Ctrl+C, quitting QEMU, closing its window, or
+a launcher killed by a signal cancels the run without resuming. Ctrl+C waits for the
+launcher to stop and clean up its VM.
+claim-lint:ok: S35; host cancellation replays in tests/suite_resume_test.py and tests/suite_watcher_test.py.
+
+Mac launchers reuse the
 built artifacts on retries and place retry serials in separate `-resume-N`
 directories beside the initial serial. QEMU keeps a boot's writable image beside
 its serial. Metal's detached collector

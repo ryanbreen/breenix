@@ -55,6 +55,28 @@ while True:
 
 
 class SuiteWatcherTest(unittest.TestCase):
+    def test_partial_sequence_timeout_has_the_retryable_timeout_status(self):
+        result, _ = self.replay(b'SUITE directories DONE passed=1 failed=0 skipped=0 total=1\n'
+                                b'SUITE smoke START cases=5\n', suite='directories,smoke',
+                                split=False, idle=0.4)
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+
+    def test_quitting_or_signalling_qemu_cancels_a_partial_sequence(self):
+        for action, status in (("raise SystemExit(0)", 130),
+                               ("os.kill(os.getpid(), signal.SIGTERM)", 143)):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as tmp:
+                serial = Path(tmp) / 'serial'
+                replay = ("import os, signal, sys\nfrom pathlib import Path\n"
+                          "Path(sys.argv[1]).write_text('SUITE directories DONE passed=1 failed=0 skipped=0 total=1\\n')\n"
+                          + action)
+                result = subprocess.run([sys.executable, str(ROOT / 'scripts/watch-qemu.py'),
+                                         '--serial', str(serial), '--mode', 'suite',
+                                         '--suite', 'directories,smoke', '--', sys.executable,
+                                         '-c', replay, str(serial)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                self.assertIn('operator cancellation', result.stdout)
+
     def replay(self, data, idle=2, mode="suite", suite="directories", split=True, late=b"", deadline=30, clock_offset=0, only=""):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

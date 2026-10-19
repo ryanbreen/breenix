@@ -18,7 +18,7 @@
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
 
-# Preserve the launcher through command substitutions and recursive registrations.
+# Preserve the launcher through command substitutions.
 export BREENIX_LAUNCHER_PID=${BREENIX_LAUNCHER_PID:-$PPID}
 
 [ "$(uname -s)" = Darwin ] || exit 0
@@ -38,6 +38,8 @@ for candidate in "${VIGIL_CLI:-}" "$HOME/.local/bin/vigil-cli" /usr/local/bin/vi
     [ -z "${BREENIX_VIGIL_CPUS:-}" ] || printf '%s' "$usage" | grep -q -- '--cpus' || continue
     # Never file local x86 as ARM64 through an older recorder.
     [ "$arch" != x86_64 ] || [ "${2:-}" != qemu ] || printf '%s' "$usage" | grep -q -- '--arch' || continue
+    # List boots require native list scoring. Older recorders are skipped.
+    [[ "${4:-}" != *,* ]] || printf '%s' "$usage" | grep -q -- '--suite a,b,c' || continue
     CLI=$candidate; break
 done
 [ -n "$CLI" ] || exit 0

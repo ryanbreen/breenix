@@ -48,6 +48,9 @@ class BootInteractiveQmpTest(unittest.TestCase):
         (scripts / "qemu-arm64.py").write_text('print("default")\n')
         (scripts / "watch-qemu.py").write_text(
             'import json, os, pathlib, sys\n'
+            'serial = pathlib.Path(sys.argv[sys.argv.index("--serial") + 1])\n'
+            'suites = sys.argv[sys.argv.index("--suite") + 1]\n'
+            'serial.write_text("".join("SUITE " + s + " DONE passed=1 failed=0 skipped=0 total=1\\n" for s in suites.split(",") if s))\n'
             'pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(sys.argv[sys.argv.index("--") + 1:]))\n')
         kernel = self.root / "target/aarch64-breenix-kernel/release/kernel-aarch64"
         kernel.parent.mkdir(parents=True)
@@ -101,8 +104,8 @@ class BootInteractiveQmpTest(unittest.TestCase):
                 self.assertTrue(Path(socket).parent.is_dir())
                 self.assertEqual(self.notices(output), [])
 
-    def test_multi_suite_boot_uses_the_first_registered_folder(self):
-        argv, output = self.launch(boot_id="boot-a,boot-b", mode=("--mode", "suite", "--suite", "smoke,crypto"))
+    def test_multi_suite_boot_uses_its_registered_folder(self):
+        argv, output = self.launch(boot_id="boot-a", mode=("--mode", "suite", "--suite", "smoke,crypto"))
         self.assertIn(f"unix:{self.vigil_home}/{BOOTS}/boot-a/qmp.sock,server=on,wait=off", argv)
         self.assertEqual(self.notices(output), [])
 

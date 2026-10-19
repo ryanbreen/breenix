@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import signal
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,60 @@ def load_metal(name):
 
 
 class ResumeTest(unittest.TestCase):
+    def test_failed_launch_or_incomplete_collection_is_not_a_guest_death(self):
+        for status in (0, 1, 2, 75):
+            calls = []
+            def attempt(pending, number):
+                calls.append(list(pending))
+                return terminal('console'), status
+            with self.subTest(status=status), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(SEQUENCE['collect'](['console', 'signals'], attempt), status or 1)
+                self.assertEqual(calls, [['console', 'signals']])
+
+    def test_cancel_waits_for_launcher_exit_trap_and_never_resumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            launcher = tmp / 'launcher.sh'
+            launcher.write_text('''#!/bin/bash
+echo attempt >> "$1/attempts"
+trap 'sleep 0.8; echo cleaned > "$1/cleaned"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+echo 'SUITE console DONE passed=1 failed=0 skipped=0 total=1' > "$1/serial"
+echo ready > "$1/ready"
+while :; do sleep 0.1; done
+''')
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+                with self.subTest(signal=sig):
+                    for name in ('ready', 'cleaned', 'attempts'):
+                        (tmp / name).unlink(missing_ok=True)
+                    # Kill the launcher itself in the SIGKILL leg; the collector must
+                    # normalize the negative Popen status and treat it as cancellation.
+                    command = ['bash', str(launcher), str(tmp)]
+                    if sig == signal.SIGKILL:
+                        launcher_text = launcher.read_text()
+                        launcher.write_text(launcher_text.replace('echo ready >', 'kill -KILL $$\necho ready >'))
+                    proc = subprocess.Popen([sys.executable, str(ROOT / 'scripts/suite-sequence.py'),
+                                             'run', 'console,signals', str(tmp / 'serial'), *command],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    try:
+                        if sig != signal.SIGKILL:
+                            deadline = time.monotonic() + 10
+                            while not (tmp / 'ready').exists() and time.monotonic() < deadline:
+                                time.sleep(0.02)
+                            self.assertTrue((tmp / 'ready').exists())
+                            proc.send_signal(sig)
+                        out, err = proc.communicate(timeout=10)
+                        self.assertEqual(proc.returncode, 128 + sig, out + err)
+                        self.assertEqual((tmp / 'attempts').read_text(), 'attempt\n')
+                        if sig != signal.SIGKILL:
+                            self.assertEqual((tmp / 'cleaned').read_text(), 'cleaned\n')
+                        self.assertNotIn('resuming unreached', out)
+                    finally:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            proc.communicate(timeout=10)
+
     def test_dead_serial_reboots_only_unreached_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -90,7 +145,7 @@ serial.write_text(''.join('SUITE '+s+' DONE passed=1 failed=0 skipped=0 total=1\
         calls = []
         def attempt(pending, number):
             calls.append(list(pending))
-            return (terminal('console', 1) + 'SUITE_SEQUENCE FAIL exec signals\nSUITE_SEQUENCE DONE suites=3\n' if number == 1 else 'lost serial\n', 1)
+            return (terminal('console', 1) + 'SUITE_SEQUENCE FAIL exec signals\nKERNEL PANIC: replay death\n' if number == 1 else 'lost serial\n', 1)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             self.assertEqual(SEQUENCE['collect'](ids, attempt), 1)
@@ -106,6 +161,8 @@ serial.write_text(''.join('SUITE '+s+' DONE passed=1 failed=0 skipped=0 total=1\
                 self.assertIsNone(DONE['completion'](line+'\n', 'suite', 'console,signals'))
         self.assertEqual(DONE['completion']('SUITE_SEQUENCE DONE suites=2\n', 'suite', 'console,signals')[0], True)
         self.assertFalse(DONE['completion']('KERNEL PANIC: dead\n', 'suite', 'console,signals')[0])
+        self.assertFalse(DONE['completion'](terminal('console').strip() + ' KERNEL PANIC: dead\n',
+                                            'suite', 'console,signals')[0])
 
     def test_vm_waiter_does_not_score_on_a_failed_suite(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +197,7 @@ serial.write_text(''.join('SUITE '+s+' DONE passed=1 failed=0 skipped=0 total=1\
             path = command[-1]
             value = ''
             if path.endswith('/serial.txt'):
-                value = terminal('console', 1) if '/first/' in path else terminal('signals') + terminal('files-io')
+                value = terminal('console', 1) + 'KERNEL PANIC: replay death\n' if '/first/' in path else terminal('signals') + terminal('files-io')
             if path.endswith('/exit-status'):
                 value = '1' if '/first/' in path else '0'
             return SimpleNamespace(returncode=0, stdout=value)
@@ -169,9 +226,17 @@ serial.write_text(''.join('SUITE '+s+' DONE passed=1 failed=0 skipped=0 total=1\
             driver.on_line('SUITE_SEQUENCE STALLED crypto cases=0/1', observed_at=152)
             driver.on_line('SUITE_SEQUENCE DONE suites=2 partial', observed_at=153)
             self.assertFalse(driver.final_seen)
-            with self.assertRaises(metal.Finish) as finished:
-                driver.on_line('SUITE_SEQUENCE DONE suites=2', observed_at=154)
-            self.assertEqual(finished.exception.status, 0)
+            driver.on_line('SUITE_SEQUENCE DONE suites=2', observed_at=154)
+            self.assertTrue(driver.final_seen)
+            self.assertFalse(driver.completion_reported, 'missing definition stages must hold completion')
+            driver.required_stages = [[]]
+            with patch.object(driver, 'disk_evidence_seen', return_value=False):
+                driver.on_line('still waiting for disk evidence', observed_at=154)
+            self.assertFalse(driver.completion_reported, 'missing disk evidence must hold completion')
+            with patch.object(driver, 'disk_evidence_seen', return_value=True):
+                with self.assertRaises(metal.Finish) as finished:
+                    driver.on_line('disk evidence complete', observed_at=154)
+            self.assertEqual(finished.exception.status, metal.m.EXIT_DONE)
             update.assert_called_with(driver.id, ceilingAt=154 + metal.MODE_DEADLINE_SECONDS['suite'])
             driver.completion_reported = driver.final_seen = False
             driver.on_line('KERNEL PANIC!', observed_at=155)
