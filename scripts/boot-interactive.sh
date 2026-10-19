@@ -3,7 +3,7 @@
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
-#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY]] [--serial-log FILE]
+#   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY[/CASE]]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
 #                               [--qmp SOCKET] [--no-build] [--cpus N] [--gpu-gl]
 #
@@ -13,7 +13,7 @@
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
 #                        desktop's window manager needs VirGL, which this QEMU GPU lacks, so it exits here
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
-#   --case CATEGORY       for --mode suite: run only this category (not full-suite evidence; not filed in Vigil)
+#   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --suite ID,ID,...|all  for --mode suite: several suites in one boot, in order (docs/suites/README.md,
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
@@ -116,7 +116,7 @@ elif [ -n "$SUITE" ]; then
 fi
 if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
-        echo "--case needs --mode suite and a category id" >&2; exit 2;
+        echo "--case needs --mode suite and a category or category/case id" >&2; exit 2;
     }
 fi
 if [ -z "$DISPLAY_MODE" ]; then

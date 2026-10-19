@@ -216,7 +216,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
             echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
-            echo "  --case CATEGORY            Run just this suite category (not full-suite evidence)"
+            echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --dry-run                  Check target policy and exit before building or booting"
@@ -1402,6 +1402,7 @@ VMXEOF
         cat >> "$VMX_FILE" <<VMXEOF
 RemoteDisplay.vnc.enabled = "TRUE"
 RemoteDisplay.vnc.port = "$BREENIX_VMWARE_VNC_PORT"
+RemoteDisplay.vnc.ip = "127.0.0.1"
 VMXEOF
     fi
 
