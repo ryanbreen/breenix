@@ -943,9 +943,24 @@ pub fn vt_switch_vt_process_release() -> CaseResult {
         let mut owner = owner_on_tty3(&ready, |tty3| {
             require(signalled(&RELEASES, 1, 3000), "no release signal")?;
             require(tty3.state()?[0] == 3, "the foreground moved before the owner answered")?;
+            libbreenix::process::setsid().map_err(|e| e.to_string())?;
+            tty3.ok("TIOCSCTTY", TIOCSCTTY, 0)?;
+            let display = super::DisplayOwner::take()?;
             asked.open();
             sleep(200);
-            tty3.ok("VT_RELDISP(1)", VT_RELDISP, 1).map(drop)
+            tty3.ok("VT_RELDISP(1)", VT_RELDISP, 1)?;
+            require(within(3000, || foreground().ok() == Some(2)), "owner did not leave foreground")?;
+            #[cfg(target_arch = "aarch64")]
+            for op in [10, 16] {
+                // A suspended owner's command succeeds without reaching the
+                // compositor, even with a pointer it would otherwise reject.
+                let cmd = libbreenix::graphics::FbDrawCmd { op, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 };
+                let ret = unsafe { raw::syscall1(nr::FBDRAW, &cmd as *const _ as u64) } as i64;
+                require(ret == 0, &format!("suspended compositor op {op} returned {ret}"))?;
+            }
+            shows(2, "")?;
+            drop(display);
+            Ok(())
         })?;
         activate(2)?;
         asked.wait(3000, "the owner's release signal")?;
