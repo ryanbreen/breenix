@@ -312,9 +312,8 @@ fn shared_log_transfer_cannot_wait_on_the_ring_or_uart() {
 
 #[test]
 fn console_log_sync_sleeps_in_a_syscall_instead_of_spinning() {
-    // x86 syscalls run with interrupts masked; a TTY write that spun until a
-    // 64 KiB log backlog reached COM1 held its CPU for seconds and timed out
-    // device completions that CPU had to take.
+    // x86 syscalls run with interrupts masked; spinning until a 64 KiB log
+    // backlog reaches COM1 could delay device completions on that CPU.
     let source = repo_text("kernel/src/serial.rs");
     let sync = function_body(&source, "sync_log_to_console").expect("console sync");
     assert!(!sync.contains("spin_loop"), "the console sync may not spin on its own");

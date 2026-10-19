@@ -588,9 +588,11 @@ const CONSOLE_SYNC_NAP_NS: u64 = 1_000_000;
 
 /// Wait for COM1's queue to take more of the log ahead of a terminal record.
 /// The backlog can be the whole ring, 64 KiB or about 5.7 s at 115200 baud,
-/// and x86 syscalls run with interrupts masked: spinning held the CPU that
-/// long with no interrupts, so device completions it had to take (an AHCI
-/// command's) passed their 5 s deadlines and failed filesystem calls with EIO.
+/// and x86 syscalls run with interrupts masked. Spinning could therefore
+/// delay device completions beyond AHCI's 5 s deadlines and cause EIO.
+/// This is an inference: the failing capture shows EIO and dropped log
+/// records, but no measured stall duration or AHCI timeout dump. The passing
+/// boot after this change supports the fix; the causal chain remains unconfirmed.
 /// A thread in a syscall sleeps instead, while the transmit thread drains the
 /// queue; any other caller spins as before.
 fn wait_for_console_room() {
