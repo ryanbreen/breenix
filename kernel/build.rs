@@ -37,9 +37,11 @@ fn main() {
     let target = env::var("TARGET").unwrap_or_default();
     let use_linux_xhci = env::var("CARGO_FEATURE_XHCI_LINUX_HARNESS").is_ok();
 
-    // A testing boot needs the same genuinely read-only ext2 device on every
-    // transport, including machines with only their writable root disk.
-    if env::var_os("CARGO_FEATURE_TESTING").is_some() {
+    // Supply the fallback fixture for noninteractive testing boots without an
+    // attached home disk. Interactive profiles use their writable home disk.
+    if env::var_os("CARGO_FEATURE_TESTING").is_some()
+        && env::var_os("CARGO_FEATURE_INTERACTIVE").is_none()
+    {
         let fixture = PathBuf::from(&out_dir).join("readonly-fixture");
         fs::create_dir_all(&fixture).expect("create read-only fixture directory");
         fs::write(fixture.join(".breenix-readonly-fixture"), b"Read-only ext2 acceptance fixture\n")

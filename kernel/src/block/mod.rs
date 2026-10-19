@@ -16,7 +16,7 @@ pub mod nvme;
 #[cfg(target_arch = "x86_64")]
 pub mod ramdisk;
 pub mod virtio;
-#[cfg(feature = "testing")]
+#[cfg(all(feature = "testing", not(feature = "interactive")))]
 pub mod testing_fixture;
 
 mod write_policy;

@@ -709,8 +709,8 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::fault_inject::run_fs_fault_leg();
-    // Testing supplies an immutable fixture; other profiles need a home disk.
-    if cfg!(feature = "testing")
+    // Noninteractive testing can supply a fixture; interactive needs a home disk.
+    if cfg!(all(feature = "testing", not(feature = "interactive")))
         || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
     {
         match kernel::fs::ext2::init_home_fs() {
