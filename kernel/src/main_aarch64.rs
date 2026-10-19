@@ -925,9 +925,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
-    boot_screen::stage(Stage::DriversInitialized);
     kernel::drivers::run_post_init_self_tests();
-    boot_screen::stage(Stage::DriverSelfTests);
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 

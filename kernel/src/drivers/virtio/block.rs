@@ -1072,6 +1072,7 @@ pub fn init() -> Result<(), &'static str> {
         "VirtIO block: Driver initialized with {} device(s)",
         device_count
     );
+    crate::drivers::device_class::storage_initialized("virtio-blk", device_count);
 
     Ok(())
 }
