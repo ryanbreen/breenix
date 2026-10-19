@@ -3526,6 +3526,16 @@ impl Scheduler {
     /// scheduler clone can outlive the process-table copy until it has fully
     /// disappeared from CPU current/previous slots.
     pub fn reclaim_terminated_threads(&mut self) -> alloc::vec::Vec<alloc::boxed::Box<Thread>> {
+        // Most calls have no thread to reclaim, among them the idle loop's call
+        // on each pass: return before allocating or rebuilding the thread list,
+        // so those calls make no heap call under the scheduler lock (#2038).
+        // Threads leave the list only below, which also clears their queue
+        // entries, so with no thread terminated no queue entry is stale.
+        if self.retirement_grace.is_empty()
+            && !self.threads.iter().any(|thread| thread.state == ThreadState::Terminated)
+        {
+            return alloc::vec::Vec::new();
+        }
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|&thread_id| self.threads.iter().any(|thread| thread.id() == thread_id));
         }
