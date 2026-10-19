@@ -84,6 +84,9 @@ impl Layout {
         let mut used = 0usize;
         let mut minimum_usage = None;
         let mut maximum_usage = None;
+        let mut collections = [false; 16];
+        let mut collection_depth = 0usize;
+        let mut pointer_application = false;
         let mut at = 0;
         while at < descriptor.len() {
             let prefix = descriptor[at];
@@ -167,7 +170,25 @@ impl Layout {
                     })
                 }
                 (0, _) => {
-                    if tag == 8 {
+                    if tag == 10 {
+                        if collection_depth == collections.len() {
+                            return Err("HID collection stack overflow");
+                        }
+                        collections[collection_depth] = pointer_application;
+                        collection_depth += 1;
+                        if value == 1 {
+                            // Generic Desktop Pointer or Mouse application. A
+                            // joystick/gamepad may use identical X/Y/Button fields.
+                            pointer_application = used != 0
+                                && matches!(usages[0], 0x0001_0001 | 0x0001_0002);
+                        }
+                    } else if tag == 12 {
+                        if collection_depth == 0 {
+                            return Err("HID collection stack underflow");
+                        }
+                        collection_depth -= 1;
+                        pointer_application = collections[collection_depth];
+                    } else if tag == 8 {
                         let bits = &mut layout.bits[globals.id as usize];
                         let size = (globals.size as u32)
                             .checked_mul(globals.count as u32)
@@ -176,7 +197,7 @@ impl Layout {
                             return Err("HID report exceeds buffer");
                         }
                         // Constant padding and array inputs still occupy report bits.
-                        if value & 3 == 2 {
+                        if pointer_application && value & 3 == 2 {
                             if globals.size == 0 || globals.size > 32 {
                                 return Err("unsupported HID field width");
                             }
@@ -229,6 +250,9 @@ impl Layout {
                 }
                 _ => {}
             }
+        }
+        if collection_depth != 0 {
+            return Err("unclosed HID collection");
         }
         if layout.count == 0 {
             return Err("HID descriptor has no pointer fields");
@@ -328,6 +352,24 @@ mod tests {
         0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 8, 0x95, 3, 0x81, 6, 0xc0, 0xc0,
     ];
     #[test]
+    fn gamepad_and_joystick_fields_do_not_become_pointer_input() {
+        for usage in [4, 5] {
+            let mut descriptor = MOUSE.to_vec();
+            descriptor[3] = usage;
+            assert!(matches!(Layout::parse(&descriptor), Err("HID descriptor has no pointer fields")));
+            // A mouse in the same descriptor still works; the preceding
+            // gamepad's bits occupy their own report ID.
+            let mut composite = vec![0x85, 1];
+            composite.extend_from_slice(&descriptor);
+            composite.extend_from_slice(&[0x85, 2]);
+            composite.extend_from_slice(MOUSE);
+            let layout = Layout::parse(&composite).unwrap();
+            assert_eq!(layout.decode(&[1, 1, 10, 20, 0]).unwrap(), None);
+            assert_eq!(layout.decode(&[2, 1, 10, 20, 0]).unwrap().unwrap().buttons, Some(1));
+        }
+    }
+
+    #[test]
     fn relative_buttons_wheel_and_clamping() {
         let layout = Layout::parse(MOUSE).unwrap();
         assert_eq!(layout.axes(), "relative");
@@ -343,7 +385,7 @@ mod tests {
         // Maximum precedes a new minimum: the previous negative minimum
         // must not sign-extend the new unsigned 255 maximum.
         let descriptor = [
-            0x05, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95, 1, 0x81, 2,
+            0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95, 1, 0x81, 2, 0xc0,
         ];
         let motion = Layout::parse(&descriptor)
             .unwrap()
@@ -356,8 +398,8 @@ mod tests {
     #[test]
     fn report_ids_absolute_axes_and_unrelated_reports() {
         let descriptor = [
-            0x05, 1, 0x85, 3, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26, 0xff, 0x7f, 0x75, 16, 0x95, 2,
-            0x81, 2,
+            0x05, 1, 0x09, 2, 0xa1, 1, 0x85, 3, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26, 0xff, 0x7f, 0x75, 16, 0x95, 2,
+            0x81, 2, 0xc0,
         ];
         let layout = Layout::parse(&descriptor).unwrap();
         assert_eq!(layout.axes(), "absolute");
