@@ -137,29 +137,63 @@ def machine_ready():
     return True
 
 
-def claim_lease(holder, wait, poll=5.0, on_wait=None, checkpoint=None):
-    """Takes the lease for `holder` (a dict with `id` and `unit` or `pid`). Raises Busy (when not waiting),
-    Quarantined, or NotReady (no reconciled machine service)."""
-    announced = False
-    while True:
+def read_queue():
+    return read_json(STATE / 'queue.json', [])
+
+
+def write_queue(queue):
+    """Called under lease.lock; mirror the queue beside the current holder for operators."""
+    write_json(STATE / 'queue.json', queue)
+    lease = read_lease()
+    if lease:
+        write_json(STATE / LEASE, dict(lease, queue=queue))
+
+
+def claim_lease(holder, wait, poll=5.0, on_wait=None, checkpoint=None, wait_seconds=4 * 3600):
+    """FIFO admission, bounded separately from the powered lease's ceiling.
+
+    Dead or expired waiters cannot strand the queue. A cancellation removes only
+    this request; the machine service alone reconciles a dead lease holder.
+    """
+    deadline = now() + wait_seconds
+    announced = None
+    try:
+        while True:
+            with locked('lease'):
+                if checkpoint:
+                    checkpoint()
+                if not machine_ready():
+                    raise NotReady('the machine service has not finished its startup reconciliation')
+                lease = read_lease()
+                if lease and lease.get('state') == 'quarantined':
+                    raise Quarantined(lease.get('reason', 'quarantined'))
+                queue = [entry for entry in read_queue()
+                         if entry['deadline'] > now() and holder_alive(entry)]
+                if now() >= deadline:
+                    raise Busy('queue wait expired')
+                if not wait and (lease or (queue and queue[0]['id'] != holder['id'])):
+                    raise Busy((lease or queue[0]).get('id', 'another holder'))
+                if not any(entry['id'] == holder['id'] for entry in queue):
+                    queue.append(dict(holder, enqueued=now(), deadline=deadline))
+                if not lease and queue[0]['id'] == holder['id']:
+                    queue.pop(0)
+                    write_queue(queue)
+                    record = dict(holder, state='claimed', claimed=now(), heartbeat=now(), queue=queue)
+                    write_json(STATE / LEASE, record)
+                    return record
+                write_queue(queue)
+                position = next(i + 1 for i, entry in enumerate(queue) if entry['id'] == holder['id'])
+                state = {'holder': (lease or {}).get('id'), 'position': position, 'deadline': deadline}
+            if on_wait and state != announced:
+                on_wait(state)
+                announced = state
+            time.sleep(min(poll, max(0, deadline - now())))
+    finally:
         with locked('lease'):
-            if checkpoint:
-                checkpoint()
-            if not machine_ready():
-                raise NotReady('the machine service has not finished its startup reconciliation')
-            lease = read_lease()
-            if lease and lease.get('state') == 'quarantined':
-                raise Quarantined(lease.get('reason', 'quarantined'))
-            if not lease:
-                record = dict(holder, state='claimed', claimed=now(), heartbeat=now())
-                write_json(STATE / LEASE, record)
-                return record
-        if not wait:
-            raise Busy(lease.get('id', 'another holder'))
-        if on_wait and not announced:
-            on_wait(lease)
-            announced = True
-        time.sleep(poll)
+            queue = read_queue()
+            remaining = [entry for entry in queue if entry['id'] != holder['id']]
+            if remaining != queue:
+                write_queue(remaining)
 
 
 def handoff_lease(holder_id, successor):
@@ -168,7 +202,7 @@ def handoff_lease(holder_id, successor):
         lease = read_lease()
         if not lease or lease.get('id') != holder_id or lease.get('state') == 'quarantined':
             return False
-        write_json(STATE / LEASE, dict(successor, state='claimed', claimed=now(), heartbeat=now()))
+        write_json(STATE / LEASE, dict(successor, state='claimed', claimed=now(), heartbeat=now(), queue=read_queue()))
         return True
 
 
