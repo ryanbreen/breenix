@@ -1129,6 +1129,8 @@ if [ "$PARALLELS" = true ]; then
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    export BREENIX_VIGIL_DISPLAY=true
+    [ -z "${BREENIX_PARALLELS_NOGUI:-}" ] || export BREENIX_VIGIL_DISPLAY=false
     record_launch_metadata
     # A one-case run is not registered: Vigil would score it as a suite boot.
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
