@@ -3448,32 +3448,27 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
 
-    // The leaf residual below remains a manifestation of issue #583:
-    // `GuardedStack::drop` does not reclaim user-stack frames. `stack_residual`
-    // used to include a kernel-stack component too; `KernelStack::drop` now
-    // releases that component, leaving the user-stack residue still owned by
-    // #583.
+    // The leaves the window maps are returned in it: user stacks are pages the
+    // process page table owns (#583), returned with its other leaves.
     #[cfg(target_arch = "aarch64")]
-    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    const EXPECTED_LEAF_RESIDUAL: u64 = 0;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    const EXPECTED_LEAF_RESIDUAL: u64 = 0;
     // Residual before kernel-stack frames are released in `KernelStack::drop`:
-    // the leader's 16-frame user stack plus one frame for each of the six exec
-    // images that build a one-page user stack (three per body: the exec that
-    // waits for its group and the two that commit), 0 of 22 returned (#583). x86
-    // adds 131 frames of its own: the leader thread's 128-frame kernel stack
-    // and 3 more.
+    // the processes leave no frames of their own, since their user stacks go
+    // back with their page tables and exec builds no separate stack object
+    // (#583). x86 adds the leader thread's 128-frame kernel stack.
     #[cfg(target_arch = "aarch64")]
-    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 22;
+    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 0;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 153;
-    // x86: 153 - 128 * 1 = 25 (the leader's kernel stack is dropped in the
-    // window, 128 frames per stack). aarch64: 22 - 0 = 22 because
+    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 128;
+    // x86: 128 - 128 * 1 = 0 (the leader's kernel stack is dropped in the
+    // window, 128 frames per stack). aarch64: 0 - 0 = 0 because
     // HHDM-preallocated stacks release no frames.
     #[cfg(target_arch = "aarch64")]
-    const EXPECTED_STACK_RESIDUAL: i64 = 22;
+    const EXPECTED_STACK_RESIDUAL: i64 = 0;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_STACK_RESIDUAL: i64 = 25;
+    const EXPECTED_STACK_RESIDUAL: i64 = 0;
     // The leader's root, and in each body the corrupt image's, the image of
     // the exec that waited for its group, and the images of the two exec calls
     // that committed.
@@ -4147,8 +4142,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
         .aggregate()
         .saturating_sub(leaf_frames_returned_before);
-    // The page-table mapping records are released, but external GuardedStack
-    // frames are not returned until issue #583 is closed.
+    // Mapped leaves not returned by the end of the window.
     let leaf_residual = leaf_mappings_recorded_delta.saturating_sub(leaf_frames_returned_delta);
     let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
         .aggregate()
@@ -4297,15 +4291,12 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
 
     /// This oracle creates exactly one real process row through
     /// `manager.create_process(...)`; its 64 KiB user stack is 16 x 4 KiB
-    /// frames. `GuardedStack::drop` does not reclaim them (issue #583), so all
-    /// 16 mappings remain recorded instead of returned. Counted rather than
-    /// freed is deliberate: a counted leak beats an over-free. Closing #583
-    /// should drive this and the exec-detach residuals to zero together.
-    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
-    /// The same unreclaimed 16 x 4 KiB user-stack frames leave the allocator
-    /// exactly 16 frames heavier. This is the same issue #583 residual class
-    /// pinned by `exec_detach_oracle_test`, and should reach zero with it.
-    const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;
+    /// pages its page table owns, returned with the table's other leaves
+    /// (#583), so no mapping stays recorded.
+    const EXPECTED_LEAF_RESIDUAL: u64 = 0;
+    /// Nor does the allocator end the oracle heavier by the stack's frames,
+    /// as the exec-detach oracle's residual pins too.
+    const EXPECTED_USER_STACK_RESIDUAL: i64 = 0;
 
     fn reclaim_progress_sample() -> [u64; 4] {
         [

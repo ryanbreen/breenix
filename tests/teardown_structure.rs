@@ -4444,6 +4444,8 @@ const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[
 const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_frame", 1),
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_leaf_frame", 1),
+    // #583: a dropped GuardedStack gives back its user stack's external leaves.
+    ("kernel/src/memory/frame_allocator.rs", "fn release_external_leaf_frame", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn retire_bounded", 2),
 ];
 #[rustfmt::skip]
@@ -7197,7 +7199,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -8548,7 +8550,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=16:stack_residual=25:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
@@ -10142,7 +10144,7 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     const FORMAT_STRING: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]";
     const OBSERVED_ARGUMENTS: &str =
         "\",\n        leaf_residual,\n        user_stack_residual\n    );";
-    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]";
+    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=0:user_stack_residual=0]";
 
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let oracle = function_body(&provider, "creating_dispatch_refusal_test");
@@ -10161,12 +10163,12 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     for (constant, declaration, comparison) in [
         (
             "EXPECTED_LEAF_RESIDUAL",
-            "const EXPECTED_LEAF_RESIDUAL: u64 = 16;",
+            "const EXPECTED_LEAF_RESIDUAL: u64 = 0;",
             "if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {",
         ),
         (
             "EXPECTED_USER_STACK_RESIDUAL",
-            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;",
+            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 0;",
             "if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {",
         ),
     ] {

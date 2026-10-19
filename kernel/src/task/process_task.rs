@@ -692,7 +692,6 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     process.memory_locks.clear();
     #[cfg(target_arch = "x86_64")]
     debug_assert!(process.page_table.is_none());
-    drop(process.stack.take());
     process.pending_old_page_tables.clear();
 }
 

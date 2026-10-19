@@ -2304,16 +2304,9 @@ pub fn sys_execv_with_frame(
 
         // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
         // before exec runs, mirroring sys_spawn's identical ordering (#713 precheck C8).
-        // This mirrors, but does not fix, two separately-filed pools exec_process_with_argv
-        // touches on every call: it allocates a fresh GuardedStack for its manually-mapped
-        // user stack (manager.rs, "Create a dummy stack object since we manually mapped the
-        // stack") from #720's never-reclaiming NEXT_USER_STACK_ADDR bump allocator, and the
-        // previous GuardedStack it replaces is dropped into #583's no-op Drop (the frames
-        // are never returned). reclaim_deferred_process_resources()/reclaim_terminated_threads()
-        // reclaim kernel stacks and dead-process resources — neither touches either pool.
-        // Before this PR, production x86 exec consumed nothing (ENOSYS); it is now a new
-        // per-call consumer of #720's finite VA budget and #583's frame leak. The PM lock is
-        // not held across either reclaim call.
+        // exec maps its user stack as pages the new page table owns (#583), so it takes no
+        // stack address range and leaves no stack frames behind. The PM lock is not held
+        // across either reclaim call.
         crate::task::process_task::reclaim_deferred_process_resources();
         crate::task::scheduler::reclaim_terminated_threads();
 

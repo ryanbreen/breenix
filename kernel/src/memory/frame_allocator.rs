@@ -471,6 +471,23 @@ pub(crate) fn register_external_leaf_frame(frame: PhysFrame) -> Result<(), &'sta
     }
 }
 
+/// Return a frame `register_external_leaf_frame` marked. Its owner calls this
+/// once the process page tables that mapped the frame are gone: a table drops
+/// an external leaf's mapping without returning the frame.
+pub(crate) fn release_external_leaf_frame(frame: PhysFrame) -> ReturnOutcome {
+    let Some(slot) = frame_ordinal(frame).and_then(|index| FRAME_LEDGER.get()?.get(index)) else {
+        return counted(ReturnOutcome::RefusedUntracked);
+    };
+    if slot
+        .leaf_refs
+        .compare_exchange(LEAF_EXTERNAL, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return counted(ReturnOutcome::RefusedLiveLeaf);
+    }
+    return_lease(current_lease_for_frame(frame))
+}
+
 /// Register a kernel/device-owned physical span before it is exposed through a
 /// process page table. Allocator-backed pages also receive the per-frame marker;
 /// device apertures remain authoritative through this fixed-capacity registry.
