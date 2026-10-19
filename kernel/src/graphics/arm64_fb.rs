@@ -397,6 +397,12 @@ impl Arm64FrameBuffer {
         let (width, height) =
             crate::drivers::virtio::gpu_pci::dimensions().or_else(|| gpu_mmio::dimensions())?;
 
+        let bytes = if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer()?
+        } else {
+            gpu_mmio::framebuffer()?
+        };
+        super::firmware_writes::register(bytes.as_ptr() as usize, bytes.len());
         Some(Self {
             width: width as usize,
             height: height as usize,
@@ -515,7 +521,7 @@ impl Canvas for Arm64FrameBuffer {
         } else {
             gpu_mmio::framebuffer().unwrap_or(&mut [])
         };
-        BufferMut::new(bytes, self.is_gop)
+        BufferMut::new(bytes, true)
     }
 
     fn buffer(&self) -> &[u8] {

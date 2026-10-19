@@ -71,6 +71,19 @@ impl<'a> BufferMut<'a> {
         }
     }
 
+    /// Fill complete pixels as one mutation, checking the handoff latch once.
+    pub fn fill_pixels(&mut self, range: core::ops::Range<usize>, pixel: &[u8]) {
+        let destination = &mut self.bytes[range];
+        if !destination.is_empty() && !pixel.is_empty() {
+            for chunk in destination.chunks_exact_mut(pixel.len()) {
+                chunk.copy_from_slice(pixel);
+            }
+            if self.firmware && destination.len() >= pixel.len() {
+                note();
+            }
+        }
+    }
+
     pub fn copy_within(&mut self, source: core::ops::Range<usize>, destination: usize) {
         // Validate even an empty range before deciding whether it writes anything.
         let length = self.bytes[source.clone()].len();

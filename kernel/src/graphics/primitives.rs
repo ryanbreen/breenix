@@ -344,9 +344,7 @@ pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
         }
         let end_byte = min(end_x.saturating_mul(bpp), row_len);
 
-        for at in (start_byte..end_byte - (end_byte - start_byte) % bpp).step_by(bpp) {
-            buffer.copy_from_slice(row_start + at, &pixel[..bpp]);
-        }
+        buffer.fill_pixels(row_start + start_byte..row_start + end_byte, &pixel[..bpp]);
     }
 
     // Mark the entire filled rectangle dirty once (not per-pixel)

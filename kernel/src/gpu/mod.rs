@@ -77,8 +77,7 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
-/// Grace after a successful creation, applied only to that process's contexts. Failed
-/// requests and other processes cannot postpone a context's catalogue warm-up.
+/// Initial context grace before catalogue warm-up. Resource creation does not extend it.
 const WARM_GRACE_NS: u64 = 20_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
@@ -209,7 +208,7 @@ struct Ctx {
     /// The rendering pipelines whose warm-up step completed, one bit each
     /// (`encode::ALL_WARM` when the catalogue's warm-up is complete).
     warm: u32,
-    /// Grace deadline, extended only by successful creations in this context's process.
+    /// Initial grace deadline; later resource creations do not postpone it.
     warm_after: u64,
     /// Warm-up steps the device refused in a row; two quarantine the context.
     warm_failures: u32,
@@ -1895,7 +1894,6 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
 /// handle publication, so their snapshots cannot both miss each other.
 struct CreationGuard {
     owner: u64,
-    succeeded: bool,
 }
 
 impl CreationGuard {
@@ -1908,7 +1906,7 @@ impl CreationGuard {
             p.creating = true;
             Some(())
         }).map_err(|_| EINTR)?;
-        Ok(Self { owner: tgid, succeeded: false })
+        Ok(Self { owner: tgid })
     }
 }
 
@@ -1917,12 +1915,6 @@ impl Drop for CreationGuard {
         with_core(|c| {
             if let Some(p) = c.procs.get_mut(&self.owner) {
                 p.creating = false;
-            }
-            if self.succeeded {
-                let until = now_ns().saturating_add(WARM_GRACE_NS);
-                for ctx in c.contexts.values_mut().filter(|x| x.owner == self.owner) {
-                    ctx.warm_after = until;
-                }
             }
         });
         notify();
@@ -1972,7 +1964,7 @@ fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
-    let mut creation = CreationGuard::acquire(tgid)?;
+    let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
         return Err(ENOMEM);
@@ -2109,7 +2101,6 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
             return Err(e);
         }
     };
-    creation.succeeded = true;
     Ok((handle, warmed))
 }
 
@@ -2271,7 +2262,7 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    let mut creation = CreationGuard::acquire(tgid)?;
+    let _creation = CreationGuard::acquire(tgid)?;
     let max = with_core(|c| c.caps.max_width).unwrap_or(0);
     let (vtarget, vformat, bind, bytes, pitch) = match a.kind {
         kind::TARGET | kind::TEXTURE => {
@@ -2383,7 +2374,6 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         let _ = destroy_resource(tgid, a.handle);
         return Err(e);
     }
-    creation.succeeded = true;
     Ok(0)
 }
 
@@ -2982,6 +2972,36 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         release_slot(false);
         return Err(EIO);
     };
+    // First-use profile programs must not accumulate compilation time behind a single
+    // submission fence. The context slot is held; warm each needed pair separately on
+    // private scratch before encoding the user's draws. The watchdog remains 2 seconds.
+    let prewarm = (|| -> Result<(), i64> {
+        let mut at = 0;
+        while at < words.len() {
+            if words.word(at) == stream::cmd::PROBE
+                && objects.probe[words.word(at + 2) as usize].1 == 0 {
+                let mut enc = encode::Enc::new();
+                encode::warm_probe(&mut enc, &mut objects, default_vb, scratch, &words, at, FLIP_Y);
+                let chunks = enc.finish().filter(|v| !v.is_empty()).ok_or(ENOMEM)?;
+                with_core(|c| if let Some(ctx) = c.contexts.get_mut(&id) { ctx.objects = objects.clone(); });
+                for chunk in chunks {
+                    let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                    let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
+                    let done = exec_req(serial, req, id, &[default_vb, scratch, scratch_texture], &[])?;
+                    if !virgl::ok(done.answer) || done.echoed != fence {
+                        return Err(EIO);
+                    }
+                }
+            }
+            at += words.word(at + 1) as usize;
+        }
+        Ok(())
+    })();
+    if let Err(error) = prewarm {
+        drop_vertex_buffer();
+        release_slot(false);
+        return Err(error);
+    }
     let stale: Vec<u32> = objects.resources().filter(|&rid| rid != scratch && rid != scratch_texture && !view.has_id(rid)).collect();
     let mut suppression = None;
     let mut suppress = None;

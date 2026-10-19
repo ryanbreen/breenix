@@ -885,6 +885,24 @@ pub fn warm_pipeline(
     draw_vertices(enc, vertex_buffer, p * 48, &quad([0, 0, 1, 1]), 1);
 }
 
+/// Compile and draw one first-use PROBE on private scratch, under its own fence.
+pub fn warm_probe(enc: &mut Enc, o: &mut Objects, vertex_buffer: u32, scratch: u32,
+    words: &(impl Words + ?Sized), at: usize, flip_y: bool) {
+    let Some(&surface) = o.surfaces.get(&scratch) else {
+        enc.oom = true;
+        return;
+    };
+    bind_target(enc, surface, flip_y);
+    bind_programs(enc, o, &mut Bound::None, Bound::Probe(words.word(at + 2)));
+    let mut constants = Vec::with_capacity(22);
+    constants.extend_from_slice(&[pipe::SHADER_FRAGMENT, 0]);
+    constants.extend((8..24).map(|k| words.word(at + k)));
+    constants.extend_from_slice(&[words.word(at + 3), words.word(at + 2), 0, 0]);
+    enc.cmd(ccmd::SET_CONSTANT_BUFFER, 0, &constants);
+    bind_vertices(enc, &mut false, vertex_buffer);
+    draw_vertices(enc, vertex_buffer, 0, &quad([0, 0, 1, 1]), 1);
+}
+
 /// Bytes of vertex data a stream with `drawn` drawn rectangles needs.
 pub fn vertex_bytes(drawn: u64) -> u64 {
     drawn * 48
