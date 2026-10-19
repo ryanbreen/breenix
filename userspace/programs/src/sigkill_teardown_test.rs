@@ -788,13 +788,12 @@ fn self_kill_child() {
                 let _ = process::yield_now();
                 current = evidence(raw_pid);
             }
-            // ARM64 has already released TTBR0 and reclaims synchronously;
-            // x86 ordinary exit retains its deferred receipt. Score each real
-            // route exactly instead of forcing production into the peer path.
-            let expected_defer = u64::from(cfg!(target_arch = "x86_64"));
+            // S37 (#2058): both architectures retire self-death through a deferred
+            // receipt, and the count pairing must hold after the wait expires.
+            assert_eq!(current.defer, current.reclaim, "self-death left an unreclaimed deferral");
             let expected_masked = u64::from(cfg!(target_arch = "aarch64"));
-            if current.report != 1 || current.defer != expected_defer
-                || current.reclaim != expected_defer
+            if current.report != 1 || current.defer != 1
+                || current.reclaim != 1
                 || current.quarantine != 0 || current.sgi_sent != 0
                 || current.kick_observed != 0 || current.masked_frames_walked != expected_masked {
                 fail("self-death retirement/report contract failed");
