@@ -456,6 +456,50 @@ writes_boot_target() {
     [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]
 }
 
+# Console cases press the VM's virtual keyboard. Choose a loopback port before
+# staging their hostkeys declaration; an explicit port also supports program boots.
+configure_vmware_hostkeys() {
+    VMWARE_VNC_PORT=${BREENIX_VMWARE_VNC_PORT:-}
+    if [ -z "$VMWARE_VNC_PORT" ] && [ "$BOOT_MODE" = suite ] && [[ ",$SUITE," == *",console,"* ]]; then
+        VMWARE_VNC_PORT=$(python3 - <<'PYPORT'
+import socket
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    print(listener.getsockname()[1])
+PYPORT
+        ) || return $?
+    fi
+    if [ -n "$VMWARE_VNC_PORT" ]; then
+        [[ "$VMWARE_VNC_PORT" =~ ^[0-9]{1,5}$ ]] &&
+            [ "$((10#$VMWARE_VNC_PORT))" -ge 1 ] && [ "$((10#$VMWARE_VNC_PORT))" -le 65535 ] || {
+            echo "BREENIX_VMWARE_VNC_PORT needs a port number from 1 to 65535" >&2
+            return 2
+        }
+    fi
+}
+
+write_vmware_vnc() {
+    [ -n "${VMWARE_VNC_PORT:-}" ] || return 0
+    cat >> "$VMX_FILE" <<VMXEOF
+RemoteDisplay.vnc.enabled = "TRUE"
+RemoteDisplay.vnc.port = "$VMWARE_VNC_PORT"
+RemoteDisplay.vnc.ip = "127.0.0.1"
+VMXEOF
+}
+
+start_vm_hostkeys() {
+    [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ] || return 0
+    local backend=none
+    if [ "$PARALLELS" = true ]; then
+        backend="prlsdk:$PARALLELS_VM"
+    elif [ -n "${VMWARE_VNC_PORT:-}" ]; then
+        backend="vnc:127.0.0.1:$VMWARE_VNC_PORT"
+    fi
+    python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "$backend" \
+        --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+    HOSTKEYS_PID=$!
+}
+
 # The nameserver this target's /etc/resolv.conf names. VMware's adapter is bridged
 # to the host's network, whose nameserver only the boot-time DHCP lease knows, so
 # its resolv.conf is the kernel's /proc/net/pnp.
@@ -491,8 +535,8 @@ stage_boot_ext2_disk() {
         local hostkeys_backend=none
         if [ "$PARALLELS" = true ]; then
             hostkeys_backend=prlsdk:declaration
-        elif [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
-            hostkeys_backend="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
+        elif [ -n "${VMWARE_VNC_PORT:-}" ]; then
+            hostkeys_backend="vnc:127.0.0.1:$VMWARE_VNC_PORT"
         fi
         local sequence=
         [[ "$SUITE" != *,* ]] || sequence=$SUITE
@@ -731,6 +775,11 @@ finish_vm_boot() {
     local stopped=true
     trap '' INT HUP TERM
     trap - EXIT
+    if [ -n "${HOSTKEYS_PID:-}" ]; then
+        kill "$HOSTKEYS_PID" 2>/dev/null || true
+        wait "$HOSTKEYS_PID" 2>/dev/null || true
+        HOSTKEYS_PID=""
+    fi
     if [ -n "${LOGMON_PID:-}" ]; then
         kill "$LOGMON_PID" 2>/dev/null || true
         wait "$LOGMON_PID" 2>/dev/null || true
@@ -1160,11 +1209,7 @@ if [ "$PARALLELS" = true ]; then
             --serial "$SERIAL_LOG" --out "$GPU_TIME_RECORD" &
         GPU_TIME_PID=$!
     fi
-    if [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]; then
-        # A suite case that needs a key asks on serial; the watcher presses it (scripts/hostkeys.py).
-        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "prlsdk:$PARALLELS_VM" \
-            --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
-    fi
+    start_vm_hostkeys
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -1387,6 +1432,8 @@ if [ "$VMWARE" = true ]; then
         echo "  Boot VMDK: $VMWARE_DIR/boot.vmdk"
     fi
 
+    configure_vmware_hostkeys
+
     # Convert the ext2 data disk to VMDK (see ext2_rewrap_needed).
     EXT2_SUITE_MARKER="$VMWARE_DIR/ext2-data.vmdk.suite"
     VMWARE_REBUILT=true
@@ -1504,15 +1551,7 @@ usb_xhci:6.port = "6"
 svga.vramSize = "268435456"
 VMXEOF
 
-    # Host keys for a suite (scripts/hostkeys.py): Fusion's own VNC server takes them as RFB key events.
-    if [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
-        [[ "$BREENIX_VMWARE_VNC_PORT" =~ ^[0-9]{4,5}$ ]] || { echo "BREENIX_VMWARE_VNC_PORT needs a port number"; exit 2; }
-        cat >> "$VMX_FILE" <<VMXEOF
-RemoteDisplay.vnc.enabled = "TRUE"
-RemoteDisplay.vnc.port = "$BREENIX_VMWARE_VNC_PORT"
-RemoteDisplay.vnc.ip = "127.0.0.1"
-VMXEOF
-    fi
+    write_vmware_vnc
     # A pointer measurement of the relative interface: with Fusion's absolute USB tablet
     # disabled, its VNC server sends the USB mouse the pointer's buttons and wheel. It sends
     # that mouse no motion (two measurement boots, with and without the gaming-mouse policy).
@@ -1585,15 +1624,7 @@ VMXEOF
         }
     fi
 
-    if [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]; then
-        if [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
-            HOSTKEYS_BACKEND="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
-        else
-            HOSTKEYS_BACKEND=none
-        fi
-        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "$HOSTKEYS_BACKEND" \
-            --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
-    fi
+    start_vm_hostkeys
     echo ""
     echo "========================================="
     echo "Breenix running on VMware Fusion"

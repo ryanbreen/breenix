@@ -781,11 +781,17 @@ framebuffer updates and accepted key events after enabling the built-in VNC
 server, but no observed guest key effect. The guest reported
 `XHCI command IRQ unavailable`. This is transport evidence only, predates the
 final HOSTKEY format, and is not a successful VMware keyboard self-test.
-V7 must repair the guest keyboard and rerun the host-key self-test during the
-catch-up before VMware key coverage can pass. Without the opt-in VNC port,
-the launcher declares no path and cases fail `no host key path`.
-The VNC server is unauthenticated; its exposure must be resolved before using
-it outside an isolated test environment.
+For current console suite boots, `run.sh` enables Fusion's VNC server on a free
+port bound to `127.0.0.1` with `RemoteDisplay.vnc.ip`, declares the VNC key path
+in the guest boot target and starts the serial key watcher. This also applies
+when console appears in a multi-suite list. `BREENIX_VMWARE_VNC_PORT` overrides
+the selected port and can enable VNC for other boot modes. The server is
+unauthenticated and remains bound to loopback; it stops with the owned VM,
+and cleanup reaps the watcher's recorded PID.
+Relative pointer motion remains a VMware host limitation: with the absolute
+tablet disabled, Fusion's VNC path supplies the USB mouse's buttons and wheel,
+but supplies no motion (the launcher records this limitation beside its
+`BREENIX_VMWARE_POINTER=relative` configuration).
 
 ---
 
