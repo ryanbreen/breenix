@@ -374,6 +374,10 @@ struct Controller {
     console: crate::drivers::hid_boot::Console,
     /// The LED state last sent to the keyboards: the console's lock state.
     keyboard_leds: u8,
+    /// The replay request whose Transfer Event is queued, and its TD
+    /// (`pointer::replay_pointer`).
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+    replay_at: Option<(u64, u64)>,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
 }
@@ -545,6 +549,8 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         devices: Vec::new(),
         console: crate::drivers::hid_boot::Console::new(),
         keyboard_leds: 0,
+        #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
+        replay_at: None,
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
     };

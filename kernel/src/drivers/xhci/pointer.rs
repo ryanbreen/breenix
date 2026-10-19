@@ -12,13 +12,23 @@ struct Attached {
     endpoint: u8,
     axes: &'static str,
     descriptor: Vec<u8>,
+    /// The interface's last reports from the device, oldest first, kept by
+    /// measurement kernels for the replay control (`replay`).
+    #[cfg(feature = "usb_pointer_replay")]
+    recorded: alloc::collections::VecDeque<Vec<u8>>,
 }
+
+/// Reports kept per interface for replay.
+#[cfg(feature = "usb_pointer_replay")]
+const RECORDED: usize = 16;
 
 /// Written by the xHCI worker at attach and detach; read by procfs.
 static ATTACHED: Mutex<Vec<Attached>> = Mutex::new(Vec::new());
 
 /// `/proc/xhci/pointers`: one line per attached pointer interface, with the
-/// axis kinds its report descriptor declares and the descriptor in hex.
+/// axis kinds its report descriptor declares and the descriptor in hex; in a
+/// measurement kernel also `recorded=`, the device's last reports in hex,
+/// oldest first, comma-separated.
 pub fn describe() -> String {
     use core::fmt::Write;
     let mut text = String::new();
@@ -30,6 +40,18 @@ pub fn describe() -> String {
         );
         for byte in &p.descriptor {
             let _ = write!(text, "{byte:02x}");
+        }
+        #[cfg(feature = "usb_pointer_replay")]
+        {
+            text.push_str(" recorded=");
+            for (i, report) in p.recorded.iter().enumerate() {
+                if i != 0 {
+                    text.push(',');
+                }
+                for byte in report {
+                    let _ = write!(text, "{byte:02x}");
+                }
+            }
         }
         text.push('\n');
     }
@@ -47,7 +69,9 @@ pub(super) struct Pipe {
     ring: Ring,
     buffer: Dma,
     request: u32,
-    outstanding: Option<u64>,
+    /// Bytes between the buffer's report slots (`spec::posted_stride`).
+    stride: usize,
+    posted: spec::Posted,
     layout: Option<Layout>,
     buttons: u8,
     errors: u8,
@@ -102,6 +126,7 @@ impl Controller {
             Err(error) => return Err(error),
         };
         let interval = spec::interrupt_interval(self.devices[index].speed, hid.interval)?;
+        let stride = spec::posted_stride(hid.max_packet as u32, 4096)?;
         let ring = Ring::new(self.address64)?;
         let buffer = match Dma::new(4096, self.address64) {
             Ok(buffer) => buffer,
@@ -158,7 +183,8 @@ impl Controller {
                     ring,
                     buffer,
                     request: hid.max_packet as u32,
-                    outstanding: None,
+                    stride,
+                    posted: spec::Posted::new(),
                     layout: Some(layout),
                     buttons: 0,
                     errors: 0,
@@ -172,7 +198,8 @@ impl Controller {
             ring,
             buffer,
             request: hid.max_packet as u32,
-            outstanding: None,
+            stride,
+            posted: spec::Posted::new(),
             layout: Some(layout),
             buttons: 0,
             errors: 0,
@@ -189,17 +216,25 @@ impl Controller {
             endpoint: hid.endpoint,
             axes,
             descriptor,
+            #[cfg(feature = "usb_pointer_replay")]
+            recorded: alloc::collections::VecDeque::new(),
         });
         Ok(())
     }
 
+    /// Post an interrupt-IN TD in each free report slot (`spec::POSTED_TDS`).
     fn queue_pointer(&mut self, index: usize, pipe_index: usize) {
         let device = &mut self.devices[index];
         let pipe = &mut device.pointers[pipe_index];
-        pipe.outstanding = Some(
-            pipe.ring
-                .push(spec::normal_in(pipe.buffer.phys, pipe.request)),
-        );
+        let free: Vec<usize> = pipe.posted.free().collect();
+        if free.is_empty() {
+            return;
+        }
+        for buffer_slot in free {
+            let at = pipe.buffer.phys + (buffer_slot * pipe.stride) as u64;
+            let pointer = pipe.ring.push(spec::normal_in(at, pipe.request));
+            pipe.posted.post(buffer_slot, pointer);
+        }
         let (slot, dci) = (device.slot, pipe.dci);
         self.ring_doorbell(slot, dci as u32);
     }
@@ -212,22 +247,37 @@ impl Controller {
             }
             d.pointers
                 .iter()
-                .position(|p| p.dci == dci && p.outstanding == Some(event.parameter & !15))
+                .position(|p| p.dci == dci && p.posted.slot(event.parameter & !15).is_some())
                 .map(|p| (i, p))
         }) else {
             return false;
         };
         let pipe = &mut self.devices[index].pointers[pipe_index];
-        pipe.outstanding = None;
+        let Some(buffer_slot) = pipe.posted.complete(event.parameter & !15) else {
+            return true;
+        };
         if matches!(event.code(), 1 | 13) && (event.status & 0xff_ffff) <= pipe.request {
             pipe.errors = 0;
-            let data = pipe
-                .buffer
-                .copy(0, (pipe.request - (event.status & 0xff_ffff)) as usize);
-            if let Err(error) = self.deliver_pointer(index, pipe_index, &data) {
+            let data = pipe.buffer.copy(
+                buffer_slot * pipe.stride,
+                (pipe.request - (event.status & 0xff_ffff)) as usize,
+            );
+            #[cfg(feature = "usb_pointer_replay")]
+            let replayed = self.replay_at.take_if(|(_, at)| *at == event.parameter & !15);
+            #[cfg(feature = "usb_pointer_replay")]
+            if replayed.is_none() {
+                record(self.devices[index].port, self.devices[index].pointers[pipe_index].endpoint, &data);
+            }
+            let delivered = self.deliver_pointer(index, pipe_index, &data);
+            if let Err(error) = delivered {
                 log::warn!("[hid] pointer report refused: {error}");
             }
             self.queue_pointer(index, pipe_index);
+            #[cfg(feature = "usb_pointer_replay")]
+            if let Some((seq, _)) = replayed {
+                let armed = self.devices[index].pointers[pipe_index].posted.full();
+                replay::answer(seq, delivered.map(|delivered| delivered as u64 | (armed as u64) << 1));
+            }
         } else if !matches!(event.code(), 26..=28) {
             pipe.errors += 1;
             if pipe.errors > 3 {
@@ -242,7 +292,10 @@ impl Controller {
                 if self.control(index, spec::clear_endpoint_halt(endpoint), None)? != 1 {
                     return Err("pointer CLEAR_FEATURE refused");
                 }
-                let next = self.devices[index].pointers[pipe_index].ring.enqueue();
+                let pipe = &mut self.devices[index].pointers[pipe_index];
+                // The dequeue moves past every posted TD, not only the failed one.
+                pipe.posted.abandon();
+                let next = pipe.ring.enqueue();
                 self.set_dequeue(slot, dci, next)
             });
             if recovered.is_ok() {
@@ -285,17 +338,22 @@ impl Controller {
         Ok(true)
     }
 
-    /// Replay one report through `deliver_pointer` on the pointer interface
-    /// whose interrupt-IN endpoint is `endpoint` on root port `port`, as if its
-    /// request had completed with it. The real request stays outstanding.
-    /// Returns bit 0 delivered, bit 1 that interface is still armed.
+    /// Replay one report on the pointer interface whose interrupt-IN endpoint
+    /// is `endpoint` on root port `port`, through the path a device's report
+    /// takes: a Transfer Event for a posted TD, the report read from that TD's
+    /// buffer, decoded, and the pipe's TDs posted again. The endpoint is stopped
+    /// first (4.6.9), so the controller has given its TDs back; the oldest TD it
+    /// did not complete takes the report, and the endpoint's dequeue moves past
+    /// it (4.6.10). The event is dispatched with the controller's own; `dispatch`
+    /// answers request `seq`.
     #[cfg(feature = "usb_pointer_replay")]
     pub(super) fn replay_pointer(
         &mut self,
+        seq: u64,
         port: u8,
         endpoint: u8,
         data: &[u8],
-    ) -> Result<u64, &'static str> {
+    ) -> Result<(), &'static str> {
         let (index, pipe_index) = self
             .devices
             .iter()
@@ -307,9 +365,70 @@ impl Controller {
                     .map(|pipe_index| (index, pipe_index))
             })
             .ok_or("no attached pointer interface on that port and endpoint")?;
-        let delivered = self.deliver_pointer(index, pipe_index, data)?;
-        let armed = self.devices[index].pointers[pipe_index].outstanding.is_some();
-        Ok(delivered as u64 | (armed as u64) << 1)
+        let (slot, dci, request) = {
+            let pipe = &self.devices[index].pointers[pipe_index];
+            (self.devices[index].slot, pipe.dci, pipe.request)
+        };
+        if data.is_empty() || data.len() > request as usize {
+            return Err("replayed report does not fit the endpoint's request");
+        }
+        match self.command_code(spec::stop_endpoint(slot, dci))? {
+            1 | 19 => {}
+            _ => return Err("Stop Endpoint refused"),
+        }
+        // The TD the controller was working on reports Stopped (26-28); it
+        // goes back to software with the others. Completions it posted before
+        // stopping stay queued for `dispatch`.
+        self.completions.retain(|e| {
+            !(e.kind() == 32
+                && e.slot() == slot
+                && (e.control >> 16) & 31 == dci as u32
+                && matches!(e.code(), 26..=28))
+        });
+        let completed: Vec<u64> = self
+            .completions
+            .iter()
+            .filter(|e| e.kind() == 32 && e.slot() == slot && (e.control >> 16) & 31 == dci as u32)
+            .map(|e| e.parameter & !15)
+            .collect();
+        let pipe = &mut self.devices[index].pointers[pipe_index];
+        let ring = pipe.ring.memory.phys;
+        // The oldest TD still posted and uncompleted is at the dequeue pointer.
+        let oldest = (0..spec::POSTED_TDS)
+            .filter_map(|buffer_slot| {
+                let at = pipe.posted.tds(buffer_slot)?;
+                (!completed.contains(&at)).then_some((buffer_slot, at))
+            })
+            .min_by_key(|(_, at)| spec::ring_age(ring, pipe.ring.enqueue(), *at));
+        let (buffer_slot, at) = oldest.ok_or("no posted TD to replay into")?;
+        for (i, byte) in data.iter().enumerate() {
+            pipe.buffer.put8(buffer_slot * pipe.stride + i, *byte);
+        }
+        let index_of = ((at - ring) / 16) as usize;
+        let cycle = pipe.ring.memory.get32(index_of * 16 + 12) & 1 != 0;
+        let next = spec::ring_next(ring, index_of, cycle);
+        self.set_dequeue(slot, dci, next)?;
+        let residual = request - data.len() as u32;
+        let code = if residual == 0 { 1u32 } else { 13 };
+        self.replay_at = Some((seq, at));
+        self.completions.push_back(Trb::new(
+            32,
+            at,
+            code << 24 | residual,
+            (slot as u32) << 24 | (dci as u32) << 16,
+        ));
+        Ok(())
+    }
+}
+
+/// Keep a report the device sent, for replay (measurement kernels only).
+#[cfg(feature = "usb_pointer_replay")]
+fn record(port: u8, endpoint: u8, data: &[u8]) {
+    if let Some(p) = ATTACHED.lock().iter_mut().find(|p| p.port == port && p.endpoint == endpoint) {
+        if p.recorded.len() == RECORDED {
+            p.recorded.pop_front();
+        }
+        p.recorded.push_back(data.to_vec());
     }
 }
 
@@ -319,9 +438,11 @@ impl Pipe {
     }
 }
 
-/// The pointer measurement's test control on a target with no host pointer
-/// path (Parallels): `ioctl(fd, POINTER_REPLAY, &ReplayRequest)` hands one
-/// report to the xHCI worker, which replays it through `deliver_pointer`.
+/// The pointer measurement's test control for an axis kind the target's host
+/// cannot send (Parallels' absolute interface, VMware's relative one):
+/// `ioctl(fd, POINTER_REPLAY, &ReplayRequest)` hands one report, normally one
+/// the device sent earlier (`recorded=` in `/proc/xhci/pointers`), to the xHCI
+/// worker, which completes a posted TD with it (`Controller::replay_pointer`).
 /// Built only with the `usb_pointer_replay` feature (kernel/Cargo.toml), which
 /// release builds leave off.
 /// One caller at a time: a second request replaces an unanswered first.

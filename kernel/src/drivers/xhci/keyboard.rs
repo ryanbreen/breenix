@@ -89,8 +89,10 @@ impl Controller {
             if super::REPLAY.swap(false, Ordering::SeqCst) {
                 let pending = super::pointer::replay::PENDING.lock().take();
                 if let Some((seq, port, endpoint, report)) = pending {
-                    let result = self.replay_pointer(port, endpoint, &report);
-                    super::pointer::replay::answer(seq, result);
+                    // Answered from `dispatch`, with the event it queued.
+                    if let Err(error) = self.replay_pointer(seq, port, endpoint, &report) {
+                        super::pointer::replay::answer(seq, Err(error));
+                    }
                 }
             }
         }

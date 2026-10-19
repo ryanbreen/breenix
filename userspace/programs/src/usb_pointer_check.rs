@@ -1,24 +1,27 @@
 //! USB pointer measurement for Parallels and VMware (ARM64), run by
-//! `./run.sh --parallels|--vmware --program /bin/usb_pointer_check --program-arg MODE`.
+//! `./run.sh --parallels|--vmware --program /bin/usb_pointer_check --program-arg MODE`
+//! with a kernel built with the `usb_pointer_replay` feature.
 //!
 //! The observations come from the production graphics syscall that bwm
-//! reads (`mouse_state_with_scroll`). The inputs come from one of two places:
+//! reads (`mouse_state_with_scroll`). MODE names what the run measures, words
+//! joined by '-':
 //!
-//! - `host`: the launcher's host pointer path. The check prints
-//!   `USB POINTER HOST seq=.. x=.. y=.. buttons=.. wheel=..` and the host-key
-//!   watcher (`scripts/hostkeys.py`) sends that pointer state over VMware's VNC
-//!   server, which the virtual USB device turns into HID reports. Each motion case
-//!   says whether the guest moved to the requested position (absolute) or by the
-//!   requested distance (relative).
-//! - `replay`: for a target with no host pointer path (Parallels). For each
-//!   attached pointer interface, reports are encoded from the report descriptor
-//!   the device itself returned (`/proc/xhci/pointers`) and handed to the kernel's
-//!   replay control with that interface's port and endpoint, which runs them
-//!   through the xHCI pointer completion path (decode, button merge, input report,
-//!   compositor wake). That control exists only in a kernel built with the
-//!   `usb_pointer_replay` feature.
-//!
-//! `both` runs `host` and then `replay`.
+//! - `absolute`, `relative`: the launcher's host pointer path, for the interface
+//!   kind named. The check prints `USB POINTER HOST seq=.. axes=.. x=.. y=..
+//!   buttons=.. wheel=..` and the host-key watcher (`scripts/hostkeys.py`) sends
+//!   that pointer state: over VMware's VNC server (Fusion's configuration decides
+//!   whether its tablet or its mouse reports it), or through the Parallels SDK
+//!   (an absolute position for the tablet, a relative move for the mouse). Each
+//!   motion case requires the guest to move to the requested position (absolute)
+//!   or by the requested distance (relative). An unscored first request gives the
+//!   host its origin.
+//! - `replay`: for each interface of a kind the run measured, the reports that
+//!   interface's device sent during the host cases (`recorded=` in
+//!   `/proc/xhci/pointers`) go back through the kernel's replay control, which
+//!   completes one of the interface's posted interrupt-IN TDs with each: the
+//!   Transfer Event, the report read from the TD's buffer, the decode, the input
+//!   report and the TDs posted again. Each report's effect is computed by this
+//!   program's own reading of the report descriptor.
 use libbreenix::graphics;
 use libbreenix::syscall::{nr, raw::syscall3};
 use std::time::{Duration, Instant};
@@ -41,6 +44,19 @@ struct Pointer {
     interface: u32,
     endpoint: u32,
     descriptor: Vec<u8>,
+    /// The reports the device sent this interface, oldest first.
+    recorded: Vec<Vec<u8>>,
+}
+
+fn unhex(hex: &str, line: &str) -> Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 {
+        return Err(format!("odd hex in {line:?}"));
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| format!("bad hex in {line:?}"))
 }
 
 /// The attached pointers, once the xHCI worker has attached them: the program
@@ -68,15 +84,15 @@ fn pointers() -> Result<Vec<Pointer>, String> {
                 .map(str::to_string)
         };
         let number = |name: &str| field(name).and_then(|v| v.parse::<u32>().ok());
-        let hex = field("descriptor=").unwrap_or_default();
-        if hex.len() % 2 != 0 {
-            return Err(format!("odd descriptor hex in {line:?}"));
-        }
-        let descriptor = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
-            .collect::<Result<Vec<u8>, _>>()
-            .map_err(|_| format!("bad descriptor hex in {line:?}"))?;
+        let descriptor = unhex(&field("descriptor=").unwrap_or_default(), line)?;
+        let Some(recorded) = field("recorded=") else {
+            return Err(format!("no recorded= field in {line:?}: the kernel needs the usb_pointer_replay feature"));
+        };
+        let recorded = recorded
+            .split(',')
+            .filter(|hex| !hex.is_empty())
+            .map(|hex| unhex(hex, line))
+            .collect::<Result<Vec<_>, _>>()?;
         let endpoint = field("endpoint=")
             .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok());
         match (number("port="), number("interface="), endpoint) {
@@ -85,6 +101,7 @@ fn pointers() -> Result<Vec<Pointer>, String> {
                 interface,
                 endpoint,
                 descriptor,
+                recorded,
             }),
             _ => return Err(format!("unreadable pointer line {line:?}")),
         }
@@ -234,28 +251,21 @@ impl Layout {
         Ok(layout)
     }
 
-    /// A report for report ID `id` carrying the given field values; the
-    /// report's other fields are cleared.
-    fn encode(&self, id: u8, values: &[(Field, i64)]) -> Vec<u8> {
-        let bytes = self.bits[id as usize].div_ceil(8);
-        let mut data = vec![0u8; bytes];
-        for (field, value) in values {
-            for bit in 0..field.size {
-                if (value >> bit) & 1 != 0 {
-                    let at = field.offset + bit;
-                    data[at / 8] |= 1 << (at % 8);
-                }
+    /// The value of `field` in `report`, which starts with its report ID
+    /// when the descriptor declares IDs.
+    fn value(&self, report: &[u8], field: Field) -> i64 {
+        let data = if self.ids { &report[1..] } else { report };
+        let mut raw = 0i64;
+        for bit in 0..field.size {
+            let at = field.offset + bit;
+            if data.get(at / 8).is_some_and(|byte| byte >> (at % 8) & 1 != 0) {
+                raw |= 1 << bit;
             }
         }
-        if self.ids {
-            data.insert(0, id);
+        if field.minimum < 0 && field.size < 64 && raw >> (field.size - 1) & 1 != 0 {
+            raw -= 1 << field.size;
         }
-        data
-    }
-
-    /// The report carrying X/Y, or another field when X/Y are absent.
-    fn primary_id(&self) -> Option<u8> {
-        self.x.map(|f| f.id)
+        raw
     }
 }
 
@@ -307,79 +317,69 @@ impl Tally {
     }
 }
 
-fn host(width: u32, height: u32, tally: &mut Tally) {
+/// The host cases for interface kind `axes`, numbered from `seq`; returns the next seq.
+fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) -> usize {
     let mut a = (width / 4, height / 3);
     let mut b = (width * 3 / 4, height * 2 / 3);
     let start = observe();
     if start.0.abs_diff(a.0) <= 1 && start.1.abs_diff(a.1) <= 1 {
         std::mem::swap(&mut a, &mut b);
     }
+    // The host's pointer position before the first request is unknown; for a
+    // relative device this request only sets the origin of the scored ones.
+    println!("USB POINTER HOST seq={seq} axes={axes} x={} y={} buttons=0 wheel=0", b.0, b.1);
+    seq += 1;
+    std::thread::sleep(Duration::from_millis(500));
     let cases = [
-        ("host/move-a", a, 0, 0),
-        ("host/left-press", a, 1, 0),
-        ("host/left-release", a, 0, 0),
-        ("host/move-b", b, 0, 0),
-        ("host/right-press", b, 2, 0),
-        ("host/right-release", b, 0, 0),
-        ("host/middle-press", b, 4, 0),
-        ("host/middle-release", b, 0, 0),
-        ("host/wheel-up", b, 0, 1),
-        ("host/wheel-down", b, 0, -1),
+        ("move-a", a, 0, 0),
+        ("left-press", a, 1, 0),
+        ("left-release", a, 0, 0),
+        ("move-b", b, 0, 0),
+        ("right-press", b, 2, 0),
+        ("right-release", b, 0, 0),
+        ("middle-press", b, 4, 0),
+        ("middle-release", b, 0, 0),
+        ("wheel-up", b, 0, 1),
+        ("wheel-down", b, 0, -1),
     ];
-    // The host's previous pointer position is unknown before the first request;
-    // a relative device moves by the difference between requested positions.
-    let mut previous: Option<((u32, u32), (u32, u32))> = None;
-    let (mut absolute_seen, mut relative_seen) = (false, false);
-    for (seq, (name, (x, y), buttons, wheel)) in cases.iter().enumerate() {
+    let mut previous = (b, observe());
+    let mut distinguished = false;
+    for (name, (x, y), buttons, wheel) in cases {
         let before = observe();
-        println!("USB POINTER HOST seq={seq} x={x} y={y} buttons={buttons} wheel={wheel}");
-        let relative_target = previous.map(|((px, py), (gx, gy))| {
-            (
-                (gx as i64 + *x as i64 - px as i64).clamp(0, width as i64 - 1) as u32,
-                (gy as i64 + *y as i64 - py as i64).clamp(0, height as i64 - 1) as u32,
-            )
-        });
-        let moved = name.starts_with("host/move");
+        println!("USB POINTER HOST seq={seq} axes={axes} x={x} y={y} buttons={buttons} wheel={wheel}");
+        seq += 1;
+        let ((px, py), observed) = previous;
+        let relative_target = (
+            (observed.0 as i64 + x as i64 - px as i64).clamp(0, width as i64 - 1) as u32,
+            (observed.1 as i64 + y as i64 - py as i64).clamp(0, height as i64 - 1) as u32,
+        );
+        let target = if axes == "relative" { relative_target } else { (x, y) };
+        let other = if axes == "relative" { (x, y) } else { relative_target };
+        let moved = name.starts_with("move");
+        let near = |s: (u32, u32, u32, i32), p: (u32, u32)| s.0.abs_diff(p.0) <= 1 && s.1.abs_diff(p.1) <= 1;
         let (state, passed) = wait_for(&|s| {
-            let absolute = s.0.abs_diff(*x) <= 1 && s.1.abs_diff(*y) <= 1;
-            let relative = relative_target
-                .is_some_and(|(rx, ry)| s.0.abs_diff(rx) <= 1 && s.1.abs_diff(ry) <= 1);
-            let position = if moved {
-                absolute || relative
-            } else {
-                // Button and wheel cases must not move the pointer.
-                s.0.abs_diff(before.0) <= 1 && s.1.abs_diff(before.1) <= 1
-            };
-            position && s.2 == *buttons && s.3 == *wheel
+            // Button and wheel cases must not move the pointer.
+            let position = if moved { near(s, target) } else { near(s, (before.0, before.1)) };
+            position && s.2 == buttons && s.3 == wheel
         });
-        let kind = if !moved || !passed {
-            ""
-        } else if state.0.abs_diff(*x) <= 1 && state.1.abs_diff(*y) <= 1 {
-            " motion=absolute"
-        } else {
-            " motion=relative"
-        };
-        if moved && passed && relative_target.is_some() {
-            let absolute = state.0.abs_diff(*x) <= 1 && state.1.abs_diff(*y) <= 1;
-            let relative = relative_target
-                .is_some_and(|(rx, ry)| state.0.abs_diff(rx) <= 1 && state.1.abs_diff(ry) <= 1);
-            // The first request has no known host origin. Later positions
-            // compatible with both models cannot distinguish them either.
-            absolute_seen |= absolute && !relative;
-            relative_seen |= relative && !absolute;
-        }
+        // A position both kinds predict does not show which kind moved.
+        distinguished |= moved && passed && !near(state, other);
         tally.case(
-            name,
+            &format!("host/{axes}/{name}"),
             passed,
             &format!(
-                "requested={x},{y},{buttons} observed={},{},{} wheel={}{kind}",
-                state.0, state.1, state.2, state.3
+                "requested={x},{y},{buttons} expected={},{} observed={},{},{} wheel={}",
+                target.0, target.1, state.0, state.1, state.2, state.3
             ),
         );
-        previous = Some(((*x, *y), (state.0, state.1)));
+        previous = ((x, y), state);
     }
-    tally.case("host/absolute-coverage", absolute_seen, "requires distinguishable absolute host motion");
-    tally.case("host/relative-coverage", relative_seen, "requires distinguishable relative host motion");
+    tally.case(
+        &format!("host/{axes}/coverage"),
+        distinguished,
+        &format!("requires {axes} host motion no other kind explains"),
+    );
+    seq
 }
 
 fn replay_one(pointer: &Pointer, report: &[u8]) -> Result<u64, i64> {
@@ -405,69 +405,67 @@ fn replay_one(pointer: &Pointer, report: &[u8]) -> Result<u64, i64> {
     }
 }
 
-fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) {
+/// Replay `pointer`'s recorded reports; returns how many were replayed.
+fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) -> usize {
     let prefix = format!("replay/port{}-if{}", pointer.port, pointer.interface);
-    let layout = match Layout::parse(&pointer.descriptor) {
-        Ok(layout) => layout,
-        Err(error) => {
-            tally.case(&prefix, false, &format!("descriptor unreadable: {error}"));
-            return;
-        }
-    };
-    let Some(id) = layout.primary_id() else {
-        tally.case(&prefix, false, "missing X axis");
-        return;
+    let Ok(layout) = Layout::parse(&pointer.descriptor) else {
+        tally.case(&prefix, false, "descriptor unreadable");
+        return 0;
     };
     let (Some(x), Some(y)) = (layout.x, layout.y) else {
-        tally.case(&prefix, false, "X without Y");
-        return;
+        tally.case(&prefix, false, "missing X/Y");
+        return 0;
     };
-    if y.id != id || x.relative != y.relative {
-        tally.case(&prefix, false, "X/Y must share a report ID and axis kind");
-        return;
-    }
-    let buttons: Vec<(u8, Field)> = layout
-        .buttons
-        .iter()
-        .copied()
-        .filter(|(_, f)| f.id == id)
-        .collect();
+    let id = x.id;
     let wheel = layout.wheel.filter(|f| f.id == id && f.relative);
-    // A report for one case: relative axes moved by `move_by`, absolute axes at
-    // `position`, the given buttons and wheel.
-    let report = |position: (u32, u32), move_by: (i64, i64), held: u8, turn: i64| {
-        let axis = |field: Field, pixel: u32, delta: i64, extent: u32| {
-            if field.relative {
-                delta
-            } else {
-                let range = field.maximum - field.minimum;
-                field.minimum + (pixel as i64 * range + (extent as i64 - 1) / 2) / (extent as i64 - 1)
-            }
-        };
-        let mut values = vec![
-            (x, axis(x, position.0, move_by.0, width)),
-            (y, axis(y, position.1, move_by.1, height)),
-        ];
-        for (button, field) in &buttons {
-            values.push((*field, (held >> (button - 1) & 1) as i64));
-        }
-        if let Some(field) = wheel {
-            values.push((field, turn));
-        }
-        layout.encode(id, &values)
+    let buttons: Vec<(u8, Field)> = layout.buttons.iter().copied().filter(|(_, f)| f.id == id).collect();
+    let reports: Vec<&Vec<u8>> = pointer
+        .recorded
+        .iter()
+        .filter(|r| !layout.ids || r.first() == Some(&id))
+        .collect();
+    if reports.is_empty() {
+        tally.case(&prefix, false, "the device sent this interface no pointer report to replay");
+        return 0;
+    }
+    let scale = |field: Field, value: i64, extent: u32| {
+        let range = (field.maximum - field.minimum).max(1);
+        ((value - field.minimum).clamp(0, range) * (extent as i64 - 1) / range) as u32
     };
-    let send = |tally: &mut Tally, name: &str, data: Vec<u8>, accept: &dyn Fn((u32, u32, u32, i32)) -> bool| {
+    let (mut motion, mut pressed, mut turned) = (false, false, false);
+    for (n, report) in reports.iter().enumerate() {
+        let (vx, vy) = (layout.value(report, x), layout.value(report, y));
+        let held = buttons
+            .iter()
+            .fold(0u32, |held, (button, field)| held | ((layout.value(report, *field) & 1) as u32) << (button - 1));
+        let turn = wheel.map_or(0, |field| layout.value(report, field)).signum() as i32;
         let _ = observe(); // drain press and wheel latches from earlier cases
-        match replay_one(pointer, &data) {
+        let before = observe();
+        let target = if x.relative {
+            (
+                (before.0 as i64 + vx).clamp(0, width as i64 - 1) as u32,
+                (before.1 as i64 + vy).clamp(0, height as i64 - 1) as u32,
+            )
+        } else {
+            (scale(x, vx, width), scale(y, vy, height))
+        };
+        motion |= target.0.abs_diff(before.0) > 1 || target.1.abs_diff(before.1) > 1;
+        pressed |= held != 0;
+        turned |= turn != 0;
+        let hex: String = report.iter().map(|b| format!("{b:02x}")).collect();
+        let name = format!("{prefix}/report-{n}");
+        match replay_one(pointer, report) {
             Ok(answer) => {
-                let (state, passed) = wait_for(accept);
-                let passed = passed && answer & 1 != 0 && answer & 2 != 0;
+                let (state, seen) = wait_for(&|s| {
+                    s.0.abs_diff(target.0) <= 1 && s.1.abs_diff(target.1) <= 1 && s.2 == held && s.3 == turn
+                });
                 tally.case(
-                    &format!("{prefix}/{name}"),
-                    passed,
+                    &name,
+                    seen && answer & 1 != 0 && answer & 2 != 0,
                     &format!(
-                        "report={} delivered={} armed={} observed={},{},{} wheel={}",
-                        data.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        "report={hex} expected={},{},{held} wheel={turn} delivered={} rearmed={} observed={},{},{} wheel={}",
+                        target.0,
+                        target.1,
                         answer & 1,
                         answer >> 1 & 1,
                         state.0,
@@ -477,57 +475,30 @@ fn replay(pointer: &Pointer, width: u32, height: u32, tally: &mut Tally) {
                     ),
                 );
             }
-            Err(errno) => tally.case(
-                &format!("{prefix}/{name}"),
-                false,
-                &format!("replay control returned {errno}"),
-            ),
+            Err(errno) => tally.case(&name, false, &format!("report={hex} replay control returned {errno}")),
         }
-    };
-    let axes = if x.relative { "relative" } else { "absolute" };
-    println!("USB POINTER NOTE {prefix} axes={axes} buttons={} wheel={}", buttons.len(), wheel.is_some());
-    let start = observe();
-    // Where the pointer rests for the button and wheel cases.
-    let b = if x.relative {
-        // Move toward the centre so no step is clamped at an edge.
-        let dx: i64 = if start.0 < width / 2 { 40 } else { -40 };
-        let dy: i64 = if start.1 < height / 2 { 30 } else { -30 };
-        let a = ((start.0 as i64 + dx) as u32, (start.1 as i64 + dy) as u32);
-        send(tally, "move-relative", report(a, (dx, dy), 0, 0), &|s| s.0 == a.0 && s.1 == a.1);
-        let back = (start.0, start.1);
-        send(tally, "move-relative-back", report(back, (-dx, -dy), 0, 0), &|s| s.0 == back.0 && s.1 == back.1);
-        back
-    } else {
-        let (mut a, mut b) = ((width / 4, height / 3), (width * 3 / 4, height * 2 / 3));
-        if start.0.abs_diff(a.0) <= 1 && start.1.abs_diff(a.1) <= 1 {
-            std::mem::swap(&mut a, &mut b);
-        }
-        let near = |p: (u32, u32)| move |s: (u32, u32, u32, i32)| s.0.abs_diff(p.0) <= 1 && s.1.abs_diff(p.1) <= 1;
-        send(tally, "move-absolute-a", report(a, (0, 0), 0, 0), &near(a));
-        send(tally, "move-absolute-b", report(b, (0, 0), 0, 0), &near(b));
-        b
-    };
-    for (button, name) in [(1u8, "left"), (2, "right"), (3, "middle")] {
-        if !buttons.iter().any(|(n, _)| *n == button) {
-            tally.case(&format!("{prefix}/{name}"), false, "required button missing from motion report");
-            continue;
-        }
-        let mask = 1u32 << (button - 1);
-        send(tally, &format!("{name}-press"), report(b, (0, 0), mask as u8, 0), &|s| s.2 == mask && s.0.abs_diff(b.0) <= 1);
-        send(tally, &format!("{name}-release"), report(b, (0, 0), 0, 0), &|s| s.2 == 0 && s.0.abs_diff(b.0) <= 1);
     }
-    if wheel.is_some() {
-        send(tally, "wheel-up", report(b, (0, 0), 0, 1), &|s| s.3 == 1);
-        send(tally, "wheel-down", report(b, (0, 0), 0, -1), &|s| s.3 == -1);
-    } else {
-        tally.case(&format!("{prefix}/wheel"), false, "required relative wheel missing from motion report");
-    }
+    tally.case(
+        &format!("{prefix}/coverage"),
+        motion && pressed && (turned || wheel.is_none()),
+        &format!("replayed reports moved={motion} pressed={pressed} wheel={turned}"),
+    );
+    reports.len()
 }
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
-    if !matches!(mode.as_str(), "host" | "replay" | "both") {
-        println!("USB POINTER FAIL usage: usb_pointer_check host|replay|both");
+    let words: Vec<&str> = mode.split('-').collect();
+    let kinds: Vec<&str> = words.iter().copied().filter(|w| matches!(*w, "absolute" | "relative")).collect();
+    let replaying = words.contains(&"replay");
+    let mut unique = words.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    if kinds.is_empty()
+        || unique.len() != words.len()
+        || words.iter().any(|w| !matches!(*w, "absolute" | "relative" | "replay"))
+    {
+        println!("USB POINTER FAIL usage: usb_pointer_check absolute|relative[-absolute|-relative][-replay]");
         std::process::exit(2);
     }
     let info = match graphics::fbinfo() {
@@ -538,7 +509,7 @@ fn main() {
         }
     };
     let (width, height) = (info.width as u32, info.height as u32);
-    let attached = match pointers() {
+    let census = || match pointers() {
         Ok(attached) if !attached.is_empty() => attached,
         Ok(_) => {
             println!("USB POINTER FAIL no USB HID pointer attached within 30 s");
@@ -549,26 +520,34 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let attached = census();
+    let kind_of = |pointer: &Pointer| {
+        let layout = Layout::parse(&pointer.descriptor).ok()?;
+        let (x, y) = (layout.x?, layout.y?);
+        (x.id == y.id && x.relative == y.relative).then_some(if x.relative { "relative" } else { "absolute" })
+    };
     let mut tally = Tally { passed: 0, failed: 0 };
-    if mode != "replay" {
-        host(width, height, &mut tally);
+    for kind in &kinds {
+        tally.case(
+            &format!("{kind}/interface"),
+            attached.iter().any(|p| kind_of(p) == Some(kind)),
+            &format!("requires an attached interface with {kind} X/Y"),
+        );
     }
-    if mode != "host" {
-        let (mut relative, mut absolute) = (false, false);
-        for pointer in &attached {
-            if let Ok(layout) = Layout::parse(&pointer.descriptor) {
-                if let (Some(x), Some(y)) = (layout.x, layout.y) {
-                    if x.id == y.id && x.relative == y.relative {
-                        relative |= x.relative;
-                        absolute |= !x.relative;
-                    }
-                }
-            }
-        }
-        tally.case("replay/relative-interface", relative, "requires relative X/Y coverage");
-        tally.case("replay/absolute-interface", absolute, "requires absolute X/Y coverage");
-        for pointer in &attached {
-            replay(pointer, width, height, &mut tally);
+    let mut seq = 0;
+    for kind in &kinds {
+        seq = host(kind, seq, width, height, &mut tally);
+    }
+    if replaying {
+        // The census again, for the reports the host cases produced.
+        let attached = census();
+        for kind in &kinds {
+            let replayed: usize = attached
+                .iter()
+                .filter(|p| kind_of(p) == Some(kind))
+                .map(|p| replay(p, width, height, &mut tally))
+                .sum();
+            tally.case(&format!("replay/{kind}/recorded"), replayed > 0, &format!("{replayed} recorded reports replayed"));
         }
     }
     println!(
