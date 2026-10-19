@@ -362,7 +362,7 @@ static LOG_RING: Mutex<LogRing<LOG_RING_BYTES>> = Mutex::new(LogRing::new());
 /// be switched out, or have its continuation discarded, while it holds it.
 static LOG_PRINTER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// Ring bytes written to the log UART (or COM1's queue) so far, counted under `LOG_PRINTER` once the
+/// Retained producer bytes, excluding loss reports, written to the log UART (or COM1's queue) so far, counted under `LOG_PRINTER` once the
 /// burst is in the UART.
 static LOG_SENT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -457,9 +457,14 @@ fn write_burst(limit: usize) -> Burst {
             if LOG_RING.lock().len() == 0 { Burst::Empty } else { Burst::Busy }
         } else {
             let mut chunk = [0u8; 16];
-            let n = LOG_RING.lock().pop(&mut chunk[..log_burst().min(limit)]);
+            let (n, sent) = {
+                let mut ring = LOG_RING.lock();
+                let before = ring.sent();
+                let n = ring.pop(&mut chunk[..log_burst().min(limit)]);
+                (n, ring.sent() - before)
+            };
             write_log_uart(&chunk[..n]);
-            LOG_SENT.fetch_add(n as u64, Ordering::Release);
+            LOG_SENT.fetch_add(sent, Ordering::Release);
             if n == 0 { Burst::Empty } else { Burst::Wrote }
         };
         LOG_PRINTER.store(false, Ordering::Release);
@@ -518,6 +523,7 @@ fn queue_log_line() -> Burst {
                     let _ = send_byte(queue);
                     Burst::Busy
                 } else {
+                    let before = ring.sent();
                     let mut chunk = [0u8; 64];
                     let (mut left, mut first, mut last) = (line, true, b'\n');
                     while left != 0 {
@@ -539,7 +545,7 @@ fn queue_log_line() -> Burst {
                         left -= n;
                     }
                     crate::serial_writer::wrote(Writer::Kernel, last);
-                    LOG_SENT.fetch_add(line as u64, Ordering::Release);
+                    LOG_SENT.fetch_add(ring.sent() - before, Ordering::Release);
                     drop(ring);
                     // start_queued drains synchronously before TX_THREAD;
                     // arm only once it exists, otherwise send one ready byte.
@@ -563,7 +569,10 @@ fn queue_log_line() -> Burst {
 pub(crate) fn sync_log_to_console() {
     if !log_on_console() { return; }
     let target = loop {
-        if let Some(target) = crate::arch_without_interrupts(|| LOG_RING.lock().sync_target()) {
+        if let Some(target) = crate::arch_without_interrupts(|| {
+            let mut ring = LOG_RING.lock();
+            ring.sync_target().map(|_| ring.accepted())
+        }) {
             break target;
         }
         let _ = write_burst_waiting();
@@ -572,7 +581,7 @@ pub(crate) fn sync_log_to_console() {
     drain_until(target);
 }
 
-/// Write the ring out until `target` bytes have gone to the log UART (with
+/// Write the ring out until `target` retained producer bytes have gone to the log UART (with
 /// the log on the console, into COM1's queue) in total, waiting on the UART
 /// between bursts with interrupts as the caller has them.
 fn drain_until(target: u64) {
@@ -651,6 +660,7 @@ pub fn flush_log() {
             if let Some(mut ring) = LOG_RING.try_lock() {
                 let mut chunk = [0u8; 16];
                 loop {
+                    let before = ring.sent();
                     let n = ring.pop(&mut chunk[..log_burst()]);
                     if n == 0 {
                         break;
@@ -659,7 +669,7 @@ pub fn flush_log() {
                         core::hint::spin_loop();
                     }
                     write_log_uart(&chunk[..n]);
-                    LOG_SENT.fetch_add(n as u64, Ordering::Release);
+                    LOG_SENT.fetch_add(ring.sent() - before, Ordering::Release);
                 }
                 break;
             }
@@ -1115,7 +1125,7 @@ pub fn _log_print(args: fmt::Arguments) {
         // Make room first, so a backlog does not drop this line.
         let backlog = crate::arch_without_interrupts(|| {
             let ring = LOG_RING.lock();
-            (ring.len() > LOG_RING_BYTES / 2).then_some(ring.pushed())
+            (ring.len() > LOG_RING_BYTES / 2).then_some(ring.accepted())
         });
         if let Some(target) = backlog {
             drain_until(target);
@@ -1147,7 +1157,7 @@ pub(crate) fn enqueue_log(args: fmt::Arguments) -> u64 {
             if appended.is_ok() {
                 crate::log_buffer::capture_fmt(args);
             }
-            appended
+            appended.map(|_| ring.accepted())
         });
         match appended {
             Ok(end) => return end,
@@ -1184,7 +1194,7 @@ fn write_notices_from_thread() {
 
 /// Write the ring out until it has `needed` free bytes.
 fn make_room(needed: usize) {
-    while crate::arch_without_interrupts(|| LOG_RING_BYTES - LOG_RING.lock().len() < needed) {
+    while crate::arch_without_interrupts(|| LOG_RING.lock().available() < needed) {
         match write_burst_waiting() {
             Burst::Empty | Burst::Wrote => {}
             Burst::Busy => core::hint::spin_loop(),

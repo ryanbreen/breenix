@@ -28,8 +28,16 @@ pub struct LogRing<const N: usize> {
     /// Bytes of dropped lines not yet reported.
     dropped: u64,
     dropped_lines: u64,
+    // Loss reports have their own storage: neither reports nor pending loss
+    // consume the stage reserve. `before_loss` locates the first refused
+    // record among the retained bytes, so later stages cannot overtake it.
+    before_loss: usize,
+    loss_partial: bool,
+    report: Report,
+    report_at: usize,
     /// Bytes ever appended.
     pushed: u64,
+    report_pushed: u64,
 }
 
 impl<const N: usize> LogRing<N> {
@@ -43,13 +51,24 @@ impl<const N: usize> LogRing<N> {
             len: 0,
             dropped: 0,
             dropped_lines: 0,
+            before_loss: 0,
+            loss_partial: false,
+            report: Report { bytes: [0; 128], len: 0 },
+            report_at: 0,
             pushed: 0,
+            report_pushed: 0,
         }
     }
 
     /// Bytes waiting to be written out.
     pub fn len(&self) -> usize {
-        self.len
+        self.len + self.report.len - self.report_at
+            + if self.dropped != 0 { self.drop_report().len } else { 0 }
+    }
+
+    /// Free byte-ring capacity, excluding the separately stored report.
+    pub fn available(&self) -> usize {
+        N - self.len
     }
 
     /// Bytes ever appended, counting the ones already written out.
@@ -57,33 +76,63 @@ impl<const N: usize> LogRing<N> {
         self.pushed
     }
 
+    /// Retained producer bytes accepted, excluding synthesized reports.
+    pub fn accepted(&self) -> u64 {
+        self.pushed() - self.report_pushed
+    }
+
+    /// Retained producer bytes drained, excluding synthesized reports.
+    pub fn sent(&self) -> u64 {
+        self.accepted() - self.len as u64
+    }
+
     /// Snapshot the serial synchronization boundary, including loss reports.
-    /// A pending loss asks the caller to drain room for its report.
+    /// Pending or active reports must drain before taking the boundary.
     pub fn sync_target(&mut self) -> Option<u64> {
         self.report_dropped();
-        (self.dropped == 0).then_some(self.pushed)
+        (self.dropped == 0 && self.report.len == 0).then_some(self.pushed)
     }
 
     /// Bytes waiting up to and including the first line end, or the whole
     /// waiting length when no line end is waiting.
     pub fn line_len(&self) -> usize {
-        for index in 0..self.len {
+        if self.report_at < self.report.len {
+            let bytes = &self.report.bytes[self.report_at..self.report.len];
+            return bytes.iter().position(|&byte| byte == b'\n')
+                .map_or(bytes.len(), |index| index + 1);
+        }
+        let limit = if self.dropped != 0 { self.before_loss } else { self.len };
+        for index in 0..limit {
             if self.bytes[(self.head + index) % N] == b'\n' {
                 return index + 1;
             }
         }
-        self.len
+        limit
     }
 
     pub fn pop(&mut self, out: &mut [u8]) -> usize {
-        let n = out.len().min(self.len);
-        for slot in &mut out[..n] {
-            *slot = self.bytes[self.head];
-            self.head = (self.head + 1) % N;
+        let mut n = 0;
+        while n < out.len() {
+            self.report_dropped();
+            if self.report_at < self.report.len {
+                out[n] = self.report.bytes[self.report_at];
+                self.report_at += 1;
+                if self.report_at == self.report.len {
+                    self.report_at = 0;
+                    self.report.len = 0;
+                }
+            } else if self.len != 0 {
+                out[n] = self.bytes[self.head];
+                self.head = (self.head + 1) % N;
+                self.len -= 1;
+                if self.dropped != 0 {
+                    self.before_loss -= 1;
+                }
+            } else {
+                break;
+            }
+            n += 1;
         }
-        self.len -= n;
-        // Materialize the loss before any later record, even if no producer
-        // ever calls append again. pop and line_len share the ring lock.
         self.report_dropped();
         n
     }
@@ -104,7 +153,7 @@ impl<const N: usize> LogRing<N> {
         let _ = writer.write_fmt(args);
         let overflow = writer.overflow;
         let lines = writer.lines + usize::from(writer.last.is_some_and(|last| last != b'\n'));
-        if overflow == 0 && self.dropped == 0 && self.len <= N - Self::RESERVE {
+        if overflow == 0 && self.len <= N - Self::RESERVE {
             return Ok(self.pushed);
         }
         // Only a line that reaches into the reserve needs to know what it is.
@@ -117,16 +166,21 @@ impl<const N: usize> LogRing<N> {
         } else {
             stage_lines::formats(markers, args)
         };
-        if stage && overflow == 0 && self.dropped == 0 {
+        if stage && overflow == 0 {
             return Ok(self.pushed);
         }
         let record = (self.pushed - start_pushed) as usize + overflow;
         self.len = start_len;
         self.pushed = start_pushed;
         if stage && record <= N {
-            return Err(if self.dropped == 0 { record } else { record.max(self.drop_report().len) });
+            return Err(record);
         }
         // An ordinary line, or a stage line longer than the whole ring.
+        if self.dropped == 0 {
+            self.before_loss = self.len;
+            self.loss_partial = self.len != 0
+                && self.bytes[(self.head + self.len - 1) % N] != b'\n';
+        }
         self.dropped += record as u64;
         self.dropped_lines += lines as u64;
         self.report_dropped();
@@ -135,7 +189,7 @@ impl<const N: usize> LogRing<N> {
 
     fn drop_report(&self) -> Report {
         let mut report = Report { bytes: [0; 128], len: 0 };
-        if self.len != 0 && self.bytes[(self.head + self.len - 1) % N] != b'\n' {
+        if self.loss_partial {
             let _ = report.write_str("\n");
         }
         // Maximum length is bounded by two u64 decimal counts.
@@ -144,20 +198,15 @@ impl<const N: usize> LogRing<N> {
         report
     }
 
-    /// The report may use the reserve, but never overtake surviving bytes.
-    /// Until it fits, newer ordinary records join this same loss interval.
-    /// claim-lint:ok: tests/serial_log_loss.rs checks exact counts and ordering through the final drain.
+    /// Emit the pending interval at its original position, independently of
+    /// byte-ring capacity. Drain alone publishes even the final loss.
     fn report_dropped(&mut self) {
-        if self.dropped == 0 {
+        if self.dropped == 0 || self.before_loss != 0 || self.report.len != 0 {
             return;
         }
-        let report = self.drop_report();
-        if self.len + report.len > N {
-            return;
-        }
-        for &byte in &report.bytes[..report.len] {
-            self.push(byte);
-        }
+        self.report = self.drop_report();
+        self.pushed += self.report.len as u64;
+        self.report_pushed += self.report.len as u64;
         self.dropped = 0;
         self.dropped_lines = 0;
     }

@@ -97,7 +97,7 @@ fn loss_report_keeps_its_position_before_a_protected_stage() {
         match ring.append(format_args!("protected stage\n"), &["protected stage"]) {
             Ok(_) => break,
             Err(needed) => {
-                while 512 - ring.len() < needed {
+                while ring.available() < needed {
                     let mut chunk = [0; 13];
                     let n = ring.pop(&mut chunk);
                     assert!(n > 0);
@@ -131,7 +131,7 @@ fn console_sync_boundary_includes_the_final_loss_report() {
         output.extend_from_slice(&chunk[..n]);
     };
     // A later producer must not extend the console's captured boundary.
-    while 512 - ring.len() < b"later\n".len() {
+    while ring.available() < b"later\n".len() {
         let mut chunk = [0; 1];
         assert_eq!(ring.pop(&mut chunk), 1);
         output.extend_from_slice(&chunk);
@@ -147,4 +147,37 @@ fn console_sync_boundary_includes_the_final_loss_report() {
     let mut later = [0; 6];
     assert_eq!(ring.pop(&mut later), 6);
     assert_eq!(&later, b"later\n");
+}
+
+#[test]
+fn flood_preserves_stage_reserve_without_draining_on_refusal() {
+    let mut ring = log_ring::LogRing::<4096>::new();
+    let mut output = Vec::new();
+    let mut stages = Vec::new();
+    for step in 0..4000 {
+        ring.append(format_args!("ordinary flood record {step:04} with a long payload to outrun the UART\n"), &[]).unwrap();
+        if step % 800 == 799 {
+            let stage = format!("protected stage {}\n", step / 800);
+            // No retry helper: ordinary logs and reports must leave room for
+            // these five stages even while the UART cannot keep up.
+            assert!(ring.append(format_args!("{stage}"), &["protected stage"]).is_ok());
+            stages.push(stage);
+        }
+        let mut chunk = [0; 8];
+        let n = ring.pop(&mut chunk);
+        output.extend_from_slice(&chunk[..n]);
+    }
+    while ring.len() != 0 {
+        let mut chunk = [0; 13];
+        let n = ring.pop(&mut chunk);
+        assert!(n > 0);
+        output.extend_from_slice(&chunk[..n]);
+    }
+    assert_eq!(ring.sent(), ring.accepted());
+    assert_eq!(ring.pushed(), output.len() as u64);
+    let text = String::from_utf8(output).unwrap();
+    for stage in stages { assert_eq!(text.matches(&stage).count(), 1); }
+    let report_bytes: usize = text.lines().filter(|line| line.starts_with("[log:")).map(|line| line.len() + 1).sum();
+    assert!(report_bytes > 0);
+    assert!(report_bytes < text.len() / 10, "loss reports dominated the UART");
 }

@@ -57,7 +57,7 @@ fn log(ring: &mut LogRing<RING>, out: &mut Vec<u8>, markers: &[&str], line: &str
                     needed <= RING,
                     "the ring asked for {needed} bytes, more than it holds"
                 );
-                while RING - ring.len() < needed {
+                while ring.available() < needed {
                     let mut chunk = [0u8; 16];
                     let n = ring.pop(&mut chunk);
                     assert!(n != 0, "the ring asked for room it could not make");
@@ -74,6 +74,8 @@ fn drain(ring: &mut LogRing<RING>, out: &mut Vec<u8>) {
         let n = ring.pop(&mut chunk);
         if n == 0 {
             assert_eq!(ring.sync_target(), Some(ring.pushed()), "final loss report was not drained");
+            assert_eq!(ring.sent(), ring.accepted());
+            assert_eq!(ring.len(), 0);
             return;
         }
         out.extend_from_slice(&chunk[..n]);
