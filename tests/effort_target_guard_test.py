@@ -141,8 +141,8 @@ class EffortTargetGuardTest(unittest.TestCase):
                 for sha in (self.main, self.fix, self.scratch, self.effort, metal):
                     with self.subTest(target=target, catchup=catchup, sha=sha):
                         expected = (sha != self.effort or target == 'arm64-qemu' or
-                                    (catchup and target != 'x86-metal'))
-                        if target == 'x86-metal' and sha in (self.fix, self.scratch):
+                                    catchup)
+                        if target == 'x86-metal' and not catchup and sha in (self.fix, self.scratch):
                             expected = False  # Positive ancestry rule also applies to unlabelled work.
                         result = self.policy(sha, target, *(['--catchup'] if catchup else []))
                         self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
@@ -155,7 +155,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         for extra in ([], ['--catchup']):
             result = self.policy(local, 'x86-metal', *extra)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('not first-parent reachable', result.stderr)
+            self.assertIn('push the requested branch' if extra else 'not first-parent reachable', result.stderr)
         self.git('push', '-q', 'origin', 'metal-stream/definition')
         self.assertEqual(self.policy(local, 'x86-metal').returncode, 0)
         self.git('switch', '-qc', 'scratch/renamed-metal')
@@ -180,8 +180,11 @@ class EffortTargetGuardTest(unittest.TestCase):
                 self.git('push', '-q', 'origin', '--delete', 'scratch/probe')
                 for extra in ([], ['--catchup']):
                     result = self.policy(merged, 'x86-metal', *extra)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn('not first-parent reachable', result.stderr)
+                    if extra:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('not first-parent reachable', result.stderr)
                 if not rename:
                     self.git('branch', 'scratch/probe', self.scratch)
                     self.git('push', '-q', 'origin', 'scratch/probe')
@@ -206,8 +209,11 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.metal_lane(name, 'breengel/window')
         for extra in ([], ['--catchup']):
             result = self.policy('HEAD', 'x86-metal', *extra)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('main-path effort work cannot run on metal', result.stderr)
+            if extra:
+                self.assertEqual(result.returncode, 0, result.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('main-path effort work cannot run on metal', result.stderr)
 
     def test_deleted_main_effort_second_parent_still_refuses_metal(self):
         name = 'metal-bring-up/deleted-parent'
@@ -218,8 +224,11 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.git('push', '-q', 'origin', '--delete', 'breengel/suite', 'breengel/window')
         for extra in ([], ['--catchup']):
             result = self.policy(merged, 'x86-metal', *extra)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('not first-parent reachable', result.stderr)
+            if extra:
+                self.assertEqual(result.returncode, 0, result.stderr)
+            else:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('not first-parent reachable', result.stderr)
 
     def test_local_main_path_lane_and_unavailable_origin_refuse_metal(self):
         self.git('switch', '-qc', 'breengel/local-metal', 'main')

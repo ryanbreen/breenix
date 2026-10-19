@@ -82,16 +82,19 @@ def outer(args):
         link.symlink_to(args.rust_fork)
     out.mkdir(parents=True)
     tmp.mkdir(parents=True)
-    policy_sha = git('-C', args.repo, 'ls-remote', 'origin', 'refs/heads/main').split()[0]
-    if not re.fullmatch(r'[0-9a-f]{40}', policy_sha):
-        raise ValueError('cannot resolve the landing policy')
-    git('-C', args.repo, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', policy_sha)
-    guard = tmp / 'effort-target-guard.py'
-    guard.write_text(git('-C', args.repo, 'show', policy_sha + ':scripts/effort-target-guard.py') + '\n')
+    if args.catchup:
+        guard = TOOLS / 'effort-target-guard.py'
+    else:
+        policy_sha = git('-C', args.repo, 'ls-remote', 'origin', 'refs/heads/main').split()[0]
+        if not re.fullmatch(r'[0-9a-f]{40}', policy_sha):
+            raise ValueError('cannot resolve the landing policy')
+        git('-C', args.repo, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', policy_sha)
+        guard = tmp / 'effort-target-guard.py'
+        guard.write_text(git('-C', args.repo, 'show', policy_sha + ':scripts/effort-target-guard.py') + '\n')
     targets = re.search(r"^TARGETS = \((.*)\)", guard.read_text(), re.M)
     target = 'x86-metal' if targets and "'x86-metal'" in targets.group(1) else 'x86'
     check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', args.sha,
-                            '--target', target], capture_output=True, text=True)
+                            '--target', target, *(['--catchup'] if args.catchup else [])], capture_output=True, text=True)
     print(f'[metal-build] guard target={target} exit={check.returncode}', flush=True)
     if check.returncode != 0:
         print(check.stdout + check.stderr, flush=True)
@@ -286,6 +289,7 @@ def stub_only(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--stub-only', action='store_true', help='build only the deployed cold-readback firmware')
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)

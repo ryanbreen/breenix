@@ -319,6 +319,12 @@ the initiator's value.
 
 ## One boot
 
+For an authorized effort landing, `metal-run boot --branch BRANCH --catchup`
+(or `BREENIX_CATCHUP=1`) admits pushed branch history and records `catchup: true`
+in `run.json`. The catch-up uses the deployed tools' guard; ordinary boots keep
+using origin/main's policy. Deploy the landing branch's tools immediately before
+its catch-up boot and restore origin/main's tools immediately afterwards.
+
 `metal-run boot` (on the boot host) starts the driver as `metal-boot-<id>` in the service container and returns as
 soon as the unit holds, or waits for, the machine lease, so the caller's ssh session can end. The driver then:
 
@@ -326,7 +332,8 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    holds it; a quarantined lease refuses new boots). The lease carries the boot id, the driver's unit, a heartbeat refreshed
    each 5 s and, from power-on, the attempt's absolute ceiling.
 2. **Gets its payload.** For a Breenix boot, `metal-build` runs in the build container: a private clone of the commit,
-   the effort-target guard from a freshly fetched origin/main (`--target x86-metal` once origin/main's guard knows that target; until then
+   the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;
+   `--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
    then, under one `metal-build` lease, userspace and the ext2 root through `scripts/gate-artifacts.py --metal`, the
    production kernel (no features; an xHCI fault boot's kernel adds only `xhci_fault_inject`) and its UEFI image,
