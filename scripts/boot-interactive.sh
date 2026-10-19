@@ -357,6 +357,12 @@ if [ "$GPU_GL" -eq 1 ]; then
         [ "$code" -ne 0 ] || code=1
     fi
 fi
+# This special profile intentionally panics; judge its stopped serial as well.
+if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",capture_panic_oracle,"* ]]; then
+    if ! python3 "$ROOT/scripts/check-gpu-panic.py" "$SERIAL_LOG"; then
+        [ "$code" -ne 0 ] || code=1
+    fi
+fi
 host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"
 
