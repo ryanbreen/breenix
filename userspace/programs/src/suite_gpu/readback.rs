@@ -379,8 +379,10 @@ pub fn efault() -> CaseResult {
         let prefix = unsafe { core::slice::from_raw_parts(ptr, 4096) };
         ensure(prefix.iter().all(|&b| b == 0xD7) && counters(ctx)?.readbacks == before, || "EFAULT had a side effect".to_string())?;
     }
-    memory::munmap(ptr, 8192).map_err(|e| fail_msg(format!("munmap: {e:?}")))?;
+    // Allocate the valid output before unmapping: an allocation after munmap
+    // may reuse the range whose address must stay invalid through both probes.
     let mut px = vec![0xD7; 5120]; let mut rec = [0xD7; record::SIZE];
+    memory::munmap(ptr, 8192).map_err(|e| fail_msg(format!("munmap: {e:?}")))?;
     for bad_record in [false, true] {
         let mut a = abi::Readback { target: t, width: 32, height: 40, pixels: if bad_record { px.as_mut_ptr() as u64 } else { ptr as u64 },
             pixels_len: 5120, stride: 128, record: if bad_record { ptr as u64 } else { rec.as_mut_ptr() as u64 }, ..abi::Readback::ZERO };

@@ -5425,7 +5425,6 @@ struct SourceFunction {
     name_offset: usize,
     open: usize,
     close: usize,
-    is_public: bool,
     is_extern_entry: bool,
 }
 
@@ -5545,7 +5544,6 @@ fn source_functions(source: &str, mask: &[bool], blocks: &[LexicalBlock]) -> Vec
             name_offset,
             open,
             close: block.close,
-            is_public,
             is_extern_entry,
         });
     }
@@ -5599,26 +5597,34 @@ impl FatalSourceAnalysis {
 fn derived_blocking_scheduler_accessors(
     scheduler_source: &str,
 ) -> Result<BTreeSet<String>, String> {
-    let analysis = fatal_source_analysis(scheduler_source);
     let bodies = module_function_bodies(scheduler_source);
     let mut blocking = BTreeSet::new();
 
     if bodies.contains_key("lock_scheduler") {
         blocking.insert("lock_scheduler".to_string());
     }
-    for function in analysis
-        .functions
-        .iter()
-        .filter(|function| function.is_public)
-    {
-        if bodies.get(&function.name).is_some_and(|definitions| {
-            definitions.iter().any(|body| {
+    // A private helper can acquire the lock on behalf of a public accessor.
+    // Follow the complete call chain, including cfg-split bodies, to a fixed
+    // point so another helper layer cannot hide a blocking acquisition.
+    loop {
+        let mut callers = BTreeSet::new();
+        for (name, definitions) in &bodies {
+            if blocking.contains(name) {
+                continue;
+            }
+            if definitions.iter().any(|body| {
                 let body_mask = code_mask(body);
-                !call_offsets(body, &body_mask, "lock_scheduler").is_empty()
-            })
-        }) {
-            blocking.insert(function.name.clone());
+                blocking.iter().any(|callee| {
+                    !call_offsets(body, &body_mask, callee).is_empty()
+                })
+            }) {
+                callers.insert(name.clone());
+            }
         }
+        if callers.is_empty() {
+            break;
+        }
+        blocking.extend(callers);
     }
 
     if blocking.is_empty() {
@@ -5638,6 +5644,44 @@ fn derived_blocking_scheduler_accessors(
         return Err("try_dump_state was misclassified as blocking".to_string());
     }
     Ok(blocking)
+}
+
+#[test]
+fn blocking_scheduler_accessors_follow_private_lock_helpers() {
+    let source = r#"
+        fn lock_scheduler() {}
+        fn with_scheduler_lock() {
+            without_interrupts(|| {
+                let guard = lock_scheduler();
+                f(guard)
+            })
+        }
+        fn outer_helper() { with_scheduler_lock(); }
+        pub fn current_thread_id() { lock_scheduler(); }
+        pub fn with_scheduler() { with_scheduler_lock(); }
+        pub fn with_thread_mut() { outer_helper(); }
+        pub fn try_dump_state() {
+            // with_scheduler_lock();
+            let diagnostic = "lock_scheduler()";
+            try_lock_scheduler();
+        }
+    "#;
+    assert_eq!(
+        derived_blocking_scheduler_accessors(source),
+        Ok(BTreeSet::from([
+            "lock_scheduler".to_owned(),
+            "with_scheduler_lock".to_owned(),
+            "outer_helper".to_owned(),
+            "current_thread_id".to_owned(),
+            "with_scheduler".to_owned(),
+            "with_thread_mut".to_owned(),
+        ]))
+    );
+    let disconnected = source.replace("lock_scheduler();", "try_lock_scheduler();");
+    assert_eq!(
+        derived_blocking_scheduler_accessors(&disconnected),
+        Err("blocking scheduler accessor derivation missing anchors: current_thread_id, with_scheduler, with_thread_mut".to_owned())
+    );
 }
 
 fn call_is_el0_guarded(blocks: &[LexicalBlock], offset: usize) -> bool {
