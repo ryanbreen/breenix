@@ -44,8 +44,10 @@ serves **`boot.efi`**: the delivery stub, `metal-efi-stub` (`scripts/metal/efi-s
 
 - **The boot disk** is a GPT disk with one FAT EFI system partition holding the bootloader as
   `efi/boot/bootx64.efi`, `kernel-x86_64` and `boot.json` (copied out of the kernel build's UEFI image) and
-  a `BREENIX-BOOT 1` target payload as `ramdisk` for disk-root boots. The same
-  target is written into the fresh physical ext2 root before boot.
+  a boot intent as `ramdisk` for disk-root boots: `BREENIX-BOOT 1` (the target) before the persistent install,
+  `BREENIX-BOOT 2` (the target and the test root's partition GUID) on its layout ("Boot intents and root
+  selection"). The same target is written into the fresh physical ext2 root before boot. An install boot's disk
+  also carries `persist.cfg` and `persist.dat` ("Install and upgrade").
 - **The stub** is a PE32+ EFI application written only from the UEFI and PE/COFF specifications. `metal-build`
   builds it from the deployed tools' copy, not the commit's, so any commit's kernel is delivered the same way. The
   image step (`stub_efi` in `scripts/metal/metal_image.py`) appends the disk as a read-only section, `.bimg`, and
@@ -120,7 +122,9 @@ boot with a gap ends with exit 137 and is not evidence. claim-lint:ok: `spawn_co
 
 ## Starting and ending an operator session
 
-Ask an agent to start a console session with the boot host command below. Vigil's Boot control does not yet
+For the persistent install, `metal-run boot --persistent` starts an operator session with no deadline ("Persistent
+sessions"); a session at the machine starts with the power button. A console session on a test boot is
+started with the boot host command below. Vigil's Boot control does not yet
 offer Console sessions; that application control remains to be built.
 
 ```sh
@@ -137,9 +141,12 @@ ask an agent to locate them. A session leaves the login prompt and typing to the
 automated login challenge. SOL and the local keyboard feed the same console TTY.
 claim-lint:ok: `tests/metal_session_test.py` checks that the session driver sends no challenge.
 
-**The power button boots nothing.** An agent or Vigil must stage and start the boot through the machine lease.
-A stray power-on has no image to fetch and the reaper turns it off. Do not use the power button to start a session.
-claim-lint:ok: the unstaged image-server contract in "Delivery" and the stray-power-on cases in `tests/metal_tools_test.py`.
+**The power button boots the persistent install, and only that.** On the persistent layout the boot manager asks
+the lab, which takes the lease for a persistent session when no boot holds it ("Persistent sessions"). Before the
+persistent install, or when a test boot holds the lease, a power-on at the machine has no image to fetch and the
+reaper turns it off. A console session on a test boot is started through the machine lease, not the power button.
+claim-lint:ok: the unstaged image-server contract in "Delivery", the stray-power-on cases in
+`tests/metal_tools_test.py` and the adoption cases in `tests/metal_persistent_test.py`.
 
 A session ends after **30 minutes without console input**, **four hours from power-on**, or `metal-run stop ID`.
 An observed power-off also closes the session at the next running-machine poll (30 seconds).
@@ -382,8 +389,9 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    A failed check ends the boot with exit 2 before power-on; failed pre-flight power-off quarantines the lease.
 4. **Stages** the payload, or makes sure the route answers 404.
 5. **Opens the console** and waits for its banner (20 s, one retry, else exit 2 before power-on).
-6. **Points and powers**: a one-time `UefiHttp` boot override, read back, then power on. Power-on starts the
-   deadlines' clock.
+6. **Points and powers**: before the persistent install, a one-time `UefiHttp` boot override, read back, then power
+   on; on its layout, power on alone, and the boot manager starts the test loop ("Test boots on the persistent
+   layout"). Power-on starts the deadlines' clock.
 7. **Watches** the console, the image server's log and paced reads of boot progress and the POST code (every 10 s
    during POST, every 30 s after). Host-side facts go to `events.jsonl`; phase lines (`==> POST code 0x41 · 19 s`,
    `==> Fetching boot image · 212 of 312 MB`) go to `console.log`, written from fixed templates that carry no address,
@@ -445,7 +453,8 @@ The reaper runs each 15 s, independently of the drivers:
 |---|---|
 | A lease whose heartbeat is older than 30 s, or whose holder is gone (unit stopped, crashed or killed) | Ends the boot: ForceOff and poll Off, clear the override, unstage, close SOL, close the record with exit **137** and `ended-by: reaper`, release the lease |
 | A lease past its attempt ceiling, whatever its driver reports | The same, exit **124** |
-| The machine on with no lease or an unpowered lease (checked each 60 s) | ForceOff, and a `stray-power-on` event in `machine.json` |
+| The machine on with no lease (checked each 60 s), still so 120 s after the first such reading; or on under a lease that has not powered it | ForceOff, and a `stray-power-on` event in `machine.json`. The 120 s cover POST and the boot manager's question, which makes an operator's power-on a persistent session ("Persistent sessions") |
+| A persistent session's lease | No attempt ceiling; the reaper ends it like any lease only when its driver's heartbeat stops |
 | A quarantined lease | Retries Redfish ForceOff each 60 s, adds IPMI `chassis power off` from the fourth retry, and lifts the quarantine when a read shows the power Off |
 
 **When power-off fails** (the driver's, the reaper's or reconciliation's), the lease is quarantined: new boots are
@@ -463,11 +472,16 @@ the POST budget, recent machine events, and the power draw as "not reported by t
 ## The boot record
 
 `/var/lib/breenix-metal/boots/<id>/` (ids are `YYYYMMDDTHHMMSSZ-metal`), in Vigil's folder layout: `run.json`
-(platform `metal`, arch `x86_64`, mode, target, payload, `kind` = `boot` or `fault-test`, the deployed tools'
-commit), `commit`, `dirty` (0: builds use a clean clone), `console.log`, `serial.txt`, `exit-status`, `ended`; plus
+(platform `metal`, arch `x86_64`, mode, target, payload, `kind` = `boot`, `fault-test`, `console-session` or
+`persistent`, the deployed tools' commit, and for a persistent boot its `entry`, `slotAction`, `run` and whether it
+was `adopted`), `commit`, `dirty` (0: builds use a clean clone), `console.log`, `serial.txt`, `exit-status`, `ended`; plus
 `serial.raw`, `serial.ts`, `events.jsonl`, `delivery.json` (image facts, build facts, baseline, POST and transfer
-times), `ended-by`, `claim.json` and `definition/`, and for an install boot `disk-write.json`. The service keeps the newest
-verified install in `disk.json` beside the boot records. `finished.jsonl` lists the closed records with their sequence
+times), `ended-by`, `claim.json` and `definition/`, for a recovery install boot `disk-write.json`, and for a persistent
+install boot `persist.json` (the action, the layout, the slot and the request's size). The service keeps the disk's
+record in `disk.json` beside the boot records: before the persistent install the newest verified whole-disk root;
+on its layout `layout`, `testRoot` (the test root's last staged image), `slots` (each kernel slot's commit and
+installing boot), `install` and `wholeDisk` (the record from before). The persistent kernels' definition files are
+kept in `persistent/<commit>/definition/`, and each persistent boot's record gets a copy. `finished.jsonl` lists the closed records with their sequence
 numbers, written after `ended` by whichever of the driver, the reaper or reconciliation closed the record, so an
 importer that asks for the entries above the lowest sequence it lacks catches up without gaps. Fault tests (`kind: fault-test`)
 have no definition and are not scored.
@@ -538,8 +552,10 @@ the build, and `metal-build` builds the kernel exactly as `run.sh --tests` does 
 --bin qemu-uefi --features testing`; `profile` `testing` in `build.json`). The x86-64 testing kernel reads its test
 binaries from a BXTEST disk, which the QEMU launchers attach as a second drive; this machine has one hardware disk,
 which holds the root. So the build also delivers the userspace build's `target/test_binaries.img` (`testBinaries` in
-`build.json`), and the driver hands it to the kernel as the bootloader's RAM disk in place of the boot intent. The
-kernel takes a RAM disk that starts with the BXTEST header as its test disk and not as a root
+`build.json`), and the driver hands it to the kernel as the bootloader's RAM disk in place of the boot intent; on
+the persistent layout the RAM disk is a format-2 intent naming the test root, padded to 4 KiB, with the BXTEST image
+after it (`tests 4096 <bytes>`). The kernel takes a RAM disk that starts with the BXTEST header, or the image the
+intent's `tests` item points at, as its test disk and not as a root
 (`kernel/src/block/ramdisk.rs`), so the root is the physical disk, installed for this boot as in the default, shell, probe,
 suite and console modes; staging writes it as a default boot's root; the testing kernel has production init compiled out, so it does not read
 that boot target (`kernel/src/main.rs`).
@@ -560,11 +576,14 @@ alternatives appears on a serial line other than the test runner's announcements
 Embedded SATA stays enabled in **AHCI mode**, not RAID. The stream owns the disk; `metal-storage` is scheduled
 after `metal-userspace`, in parallel with `metal-network`, to implement SATA/AHCI and the Breenix filesystem on it.
 The bootloader arrives over HTTP; the root for main-path boots lives on the
-physical disk. The firmware delivery stub selects the previously owned disk
-by its complete storage record, installs a fresh userspace image, flushes and
-reads its bytes back, and writes the new root record last. The kernel then takes
-the installed disk-root path from #1930. Other discovered disks keep their write
-refusal. Recovery fault boots retain a RAM-disk root.
+physical disk. Before the persistent install the root is the whole disk: the
+firmware delivery stub selects the previously owned disk by its complete storage
+record, installs a fresh userspace image, flushes and reads its bytes back, and
+writes the new root record last. On the persistent layout ("Boot manager and
+persistent install") the same steps write the test root partition, named by its
+unique GUID, and the record is that partition's first sector. The kernel then
+mounts the root its boot intent names. Other partitions and discovered disks keep
+their write refusal. Recovery fault boots retain a RAM-disk root.
 
 Each main-path boot reinstalls its staged root, including kernel-only commits and
 mode/suite switches. No mutable ext2 state crosses boots: consumed fixtures and
@@ -667,19 +686,22 @@ manager leaves the test loop working.
 
 On start the manager:
 
-1. Writes `breenix-manager: started: firmware <vendor> revision <n>` to COM1 and reads `MANAGER.CFG` (the lab's
-   query URL, the countdown) and the slot notes from its own volume.
+1. Writes `breenix-manager: started: firmware <vendor> revision <n>` to COM1 and reads `MANAGER.CFG` and the slot
+   notes from its own volume. `MANAGER.CFG` holds `query <url>` (the lab's question), `countdown <seconds>`,
+   `test-path load-file`, and two lines the install's stub adds: `port <hex>` (the device path the firmware's HTTP
+   boot loaded the stub from: the network port, its address and the boot URL) and `http-option <hex>` (the HTTP boot
+   option's number, the stub's `BootCurrent`). These are site values; the manager does not print them.
 2. Draws the menu on the firmware's graphics output, with the status line `Asking the lab whether a test boot is
    pending`, and writes the same rows to COM1 (`breenix-manager: menu: ...`).
-3. Asks the boot host (below): DHCP on the network port the firmware's HTTP boot option names (the DHCPv4 protocol,
-   section 29.2), then an HTTP `GET` of the query URL (the HTTP protocol, section 29.6). DHCP gets 10 s and the
-   request 4 s; a boot host that is down or does not answer costs at most those 14 s, and the manager then boots the
-   persistent install.
+3. Asks the boot host (below): DHCP on that network port (the DHCPv4 protocol, section 29.2), then an HTTP `GET` of
+   the query URL (the HTTP protocol, section 29.6). DHCP is bounded by three DISCOVER tries (2, 3 and 4 s) and two
+   REQUEST tries (2 s each), and each HTTP exchange by 4 s, so a boot host that is down or does not answer costs at
+   most about 21 s, after which the manager counts down to the persistent install.
 4. Acts on the answer and shows which answer it acted on, on the screen and on COM1
    (`breenix-manager: lab answered: ...`).
 
-The menu has four entries: **Breenix** (the current slot, the default), **Breenix (previous kernel)** (shown only
-when `PREVIOUS.IMG` exists), **Test loop (network)** and **Firmware setup**. The up and down arrow keys move the
+The menu has four entries: **Breenix** (the current slot, the default), **Breenix (previous kernel)** (marked
+unavailable until `PREVIOUS.IMG` exists), **Test loop (network)** and **Firmware setup**. The up and down arrow keys move the
 selection, Enter starts it, and a countdown of 5 seconds starts the default; any key stops the countdown. Keys come
 from the firmware's console input, which joins the USB keyboard and the serial console redirection.
 
@@ -694,23 +716,32 @@ Starting an entry:
 
 - **Breenix** and **Breenix (previous kernel)** read the slot's image into memory, attach it as a RAM disk the way
   the stub attaches its disk, let the firmware's partition and FAT drivers bind to it, and start
-  `\EFI\BOOT\BOOTX64.EFI` from it: `breenix-manager: booting current <commit>`.
-- **Test loop (network)** loads the firmware's HTTP boot option through `LoadImage` with the option's device path
-  and `BootPolicy` set, as the firmware's own boot manager does for that option (sections 3.1.2 and 24.7), and starts
-  the image it returns: the firmware fetches the boot URL exactly as the one-time `UefiHttp` override used to make it
-  do (`breenix-manager: starting the test loop`).
-- **Firmware setup** sets `EFI_OS_INDICATIONS_BOOT_TO_FW_UI` in `OsIndications` when `OsIndicationsSupported`
-  offers it (section 8.5.4) and resets the machine.
+  `\EFI\BOOT\BOOTX64.EFI` from it: `breenix-manager: booting current <commit>`. Just before, the manager reads
+  its screen back once more and reports it, so a console capture that began late still holds the menu.
+- **Test loop (network)** starts the firmware's HTTP boot (`breenix-manager: starting the test loop`). This
+  firmware's boot options are vendor device paths without a URI node, so the manager loads the boot image through
+  the port instead: `LoadImage` with `BootPolicy` set, as a boot manager loads a load-file device (sections 3.1.2
+  and 24.7), of the recorded path when a load-file handle covers it, otherwise of the port's own HTTP boot child
+  with the recorded URI node. When the firmware has no such handle, or refuses the load, the manager sets `BootNext`
+  to the HTTP boot option and resets, and the firmware boots that option as its own (one more POST). Either way the
+  firmware fetches the boot URL itself, as under the one-time `UefiHttp` override; the manager prints which path it
+  took.
+- **Firmware setup** sets `EFI_OS_INDICATIONS_BOOT_TO_FW_UI` in `OsIndications` and resets, when
+  `OsIndicationsSupported` offers it (section 8.5.4). This machine's firmware does not offer it and has no setup
+  load option, so the entry reads `Firmware setup (restarts; press F2 at the firmware logo)` and restarts the
+  machine for the firmware's own setup key.
 
 A failure returns to the menu with its reason and no countdown.
 
 Slot actions. `commit` renames `CURRENT.*` to `PREVIOUS.*` (replacing the old previous slot) and `NEXT.*` to
 `CURRENT.*`; `rollback` swaps `CURRENT.*` and `PREVIOUS.*`. The manager does them through the firmware's FAT
-driver (the file protocol, section 13.5) and reads the notes back before it boots. Each prints one line,
-`breenix-manager: slot commit: current <commit>, previous <commit>`.
+driver (the file protocol, section 13.5: `SetInfo` with the new name) and reads the notes back before it boots.
+Each prints one line, `breenix-manager: slot commit: current <commit>, previous <commit>` or `slot rollback: ...`,
+which the driver records in `disk.json` (`slots`). A commit with no staged `NEXT` leaves the slots as they are.
 
 **The screen.** The manager draws its own text with the console font the kernel's screen console uses
-(`noto-sans-mono-bitmap`, size 16, regular), through the graphics output protocol's `Blt` (section 12.9), then
+(`noto-sans-mono-bitmap`, size 20, regular), in white and black, through the graphics output protocol's `Blt`
+(section 12.9), then
 reads the screen back with `Blt` and compares each glyph cell with the font's pixels for the character drawn there:
 `breenix-manager: screen read back identical: <rows> rows, <cells> glyph cells match the font` (or the count that
 differ), and `breenix-manager: row: <text>` for each non-blank row, as `/proc/fbcon/check` reports the kernel
@@ -751,9 +782,13 @@ tests <offset> <bytes>
 `home` and `tests` are optional. On a physical boot without a RAM-disk root the kernel reads the GPT of each
 attached hardware disk, checking the header and entry CRCs, and mounts exactly the partitions the intent names:
 exactly one partition on the attached disks must have the root's unique GUID, and its type must be the test-root or
-the system type; the home partition must have the home type. Any other result is a loud failure
-(`[storage] root refused: ...`) and the boot has no root; the kernel does not look for a root anywhere else. The
-format-1 intent (`BREENIX-BOOT 1`, a target line only) still selects the target and names no partition.
+the system type. The home must pair with the root as the table below gives (the system partition beside a test
+root, the home partition beside the system root) and must not be the root itself. Any other result is a loud
+failure (`[storage] root refused: ...` or `[storage] home refused: ...`) and the boot has no root or no home; the
+kernel does not look for a root anywhere else. It reports what it chose: `[storage] root partition: <test root or
+system> <GUID> LBA <first>-<last> on <disk>` and `[storage] home partition: ...`. A format-1 intent (`BREENIX-BOOT
+1`, a target line only) selects the target and names no partition, and a format-2 intent that does not parse is
+refused rather than taken for a RAM-disk root (`[boot] boot intent refused: ...`).
 
 | Boot | `root` | `home` |
 |---|---|---|
@@ -770,9 +805,10 @@ image as its test disk.
 ### The write fence
 
 Physical boots keep hardware disks read-only until the roots are chosen. Then the block layer allows writes to the
-chosen partitions' LBA ranges only: the AHCI driver refuses a write unless its first and last sector lie inside one of them,
-whichever path asks for it, and counts and reports the first refusals (`[block] write refused by the fence: ...`).
-The fence is set once, before root mounts: `[block] write fence: <disk> LBA <first>-<last>[, <first>-<last>]`.
+chosen partitions' LBA ranges only: the AHCI, NVMe and VirtIO write paths refuse a write unless its first and last
+sector lie inside one of them, whichever path asks for it, and count and report the first eight refusals (`[block]
+write refused by the fence: ...`). The fence names one disk and at most two ranges, is set as root and home are
+chosen, and is sealed once they are mounted: `[block] write fence: <disk> LBA <first>-<last>[, <first>-<last>]`.
 Whole-disk writes (the partition table, the EFI system partition, the load option) exist only in the stub's install
 mode, before any kernel runs. The kernel's own recovery install (`--disk install`) copies its RAM disk into the test
 root partition, not onto the whole disk.
@@ -1074,6 +1110,13 @@ python3 ~/.local/share/breenix-metal/metal-run boot --payload none --inject forc
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-img   # metal-hang.efi in a small RAM-disk image
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-iso [--serve-as boot.iso] \
     [--content-type application/octet-stream]                           # ... in a small El Torito ISO
+python3 ~/.local/share/breenix-metal/metal-run boot --payload manager    # the boot manager in probe mode, over HTTP
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch NAME --sha SHA   # install or upgrade, then verify
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --rollback                # swap the kernel slots
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent          # an operator session on the persistent install
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent --run 'CMD' [--run 'CMD' ...]   # log in over SOL, run, power off
+python3 ~/.local/share/breenix-metal/metal-run boot --persistent --entry previous --verify  # the previous kernel, once
+python3 ~/.local/share/breenix-metal/metal-run boot --inject fence-out-of-partition --branch NAME --sha SHA   # the fence fault
 python3 ~/.local/share/breenix-metal/metal-run follow ID | stop ID | status
 ```
 

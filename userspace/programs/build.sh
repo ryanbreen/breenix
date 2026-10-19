@@ -414,6 +414,7 @@ STD_BINARIES=(
     "login"
     "probe"
     "persistent-install"
+    "sync"
 
     # Effort suites, installed as /sbin/suite-<id>
     "suite-smoke"

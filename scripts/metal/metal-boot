@@ -1177,8 +1177,9 @@ class Driver:
     def challenge_persistent(self, text):
         """A persistent boot with --run: log in over SOL with the console account, type each command at a fresh
         prompt, log out, and end at the next login prompt."""
-        commands = getattr(self.args, 'run', None) or []
-        if not persistent(self.args) or not commands or self.kernel_started is None or self.fatal_at is not None:
+        # The session ends with a power-off: flush the writes the commands made (/bin/sync) before logging out.
+        commands = (getattr(self.args, 'run', None) or []) + ['sync']
+        if not persistent(self.args) or len(commands) == 1 or self.kernel_started is None or self.fatal_at is not None:
             return
         fresh = self.line_start > self.sent_at
         # Steps: 0 the login prompt, 1 the password prompt, then one shell prompt per command, then logout.

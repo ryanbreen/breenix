@@ -193,9 +193,10 @@ class DriverPersistentTest(unittest.TestCase):
             d.line_start = offset
             d.challenge_persistent(text)
             d.challenge_persistent(text)  # the same partial line again is not a new prompt
-        for text in ('Breenix login: ', 'Password: ', 'bsh /root> ', 'bsh /root> ', 'bsh /root> ', 'Breenix login: '):
+        for text in ('Breenix login: ', 'Password: ', 'bsh /root> ', 'bsh /root> ', 'bsh /root> ', 'bsh /root> ',
+                     'Breenix login: '):
             prompt(text)
-        self.assertEqual(sent, ['root', 'fixture', 'writeFile("/root/a", "1")', 'sync', 'exit'])
+        self.assertEqual(sent, ['root', 'fixture', 'writeFile("/root/a", "1")', 'sync', 'sync', 'exit'])
         self.assertTrue(d.run_done)
         d.run_done, d.run_step, d.sent_at = False, 2, -1
         with self.assertRaises(boot.Finish):

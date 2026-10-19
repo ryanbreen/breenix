@@ -433,6 +433,11 @@ path = "src/probe.rs"
 name = "persistent-install"
 path = "src/persistent_install.rs"
 
+# POSIX sync, for the persistent install's sessions: installed as /bin/sync.
+[[bin]]
+name = "sync"
+path = "src/sync.rs"
+
 # Effort suites (docs/suites/<id>.json): installed as /sbin/suite-<id>.
 [[bin]]
 name = "suite-smoke"
