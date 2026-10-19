@@ -35,6 +35,7 @@ mod present_answers;
 mod display;
 pub mod console;
 pub mod panic;
+pub mod screen;
 mod observation;
 mod quota;
 mod staging;
@@ -4396,7 +4397,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
 pub fn display_active() -> bool {
     display::active()
 }
-pub fn take_display() -> SyscallResult {
+pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
     let tid = match crate::task::scheduler::current_thread_id() {
         Some(t) => t,
@@ -4418,13 +4419,15 @@ pub fn take_display() -> SyscallResult {
     if uid != 0 {
         return result(Err(abi::errno::EPERM));
     }
-    let outcome = display::take(group, pid);
+    let outcome = display::take(group, pid, vt);
     if outcome.is_ok() {
         crate::process::with_process_manager(|m| {
             if let Some(p) = m.get_process_mut(crate::process::ProcessId::new(pid)) {
                 p.has_display_ownership = true;
             }
         });
+        // The screen console stops drawing until the display comes back (`screen::restore`).
+        crate::console::take_display();
     }
     result(outcome.map(|()| 0))
 }

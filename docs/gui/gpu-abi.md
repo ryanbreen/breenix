@@ -260,10 +260,10 @@ belongs to an observation that passed both poisons.
 | 24 | `owner_depth: u32` (0 to 4, excluding the kernel), `binding_known: u32` |
 | 32 | Two 16-byte modes: `width, height, scale, reserved: u32`; index 0 is 1280x800 at scale 1, index 1 is 2560x1600 at scale 2 |
 | 64 | `scanout_resource: u64`, the completed binding's device resource id, or 0 |
-| 72 | `console_resource: u64`, the kernel console's device resource id, or 0 before creation |
-| 80 | `console_draws: u64`, completed bitmap_text draws |
-| 88 | `console_fixture_bytes: u64`, font-table bytes transferred to its GPU atlas |
-| 96 | `handoff: u64`, 1 after the first completed GPU console present, else 0 |
+| 72 | `console_resource: u64`, the device resource id of the kernel's screen (the screen console's scanout target, ruling F25), or 0 before creation |
+| 80 | `console_draws: u64`, completed presents of the kernel's screen |
+| 88 | `console_fixture_bytes: u64`, font-table bytes transferred to the GPU console's atlas (the panic screen's) |
+| 96 | `handoff: u64`, 1 after the first completed present of the kernel's screen, else 0 |
 | 104 | `firmware_hash_at_handoff: u64`, `firmware_hash_now: u64` at 112 |
 | 120 | `firmware_writes_after_handoff: u64` |
 | 128 | Reserved through byte 255 (128 bytes, value 0) |
@@ -277,8 +277,9 @@ even when it stores the existing value. Reset it only at boot, never at MODES, o
 changes or mode changes. It is 0 before handoff and must remain 0 afterward. The counter
 tracks actual writes, not attempted calls that perform no store, a drawing-policy flag or
 framebuffer contents. Device DMA and userspace stores are not kernel writes.
-`present/firmware-handoff` checks this counter before and after restoring the GPU console
-on every backend (ruling 50).
+`present/firmware-handoff` checks this counter before and after restoring the kernel's screen
+on every backend (ruling 50). A framebuffer-interface owner's pane is presented through its own retained scanout
+target (`gpu.md` section 1.7), so it writes no firmware memory either.
 
 The hashes remain diagnostic FNV-1a over the actual firmware framebuffer bytes (offset
 basis 14695981039346656037, multiplier 1099511628211), sampled at handoff and at MODES.
@@ -303,8 +304,8 @@ is idempotent; taking again as an owner already lower in the stack is a cycle an
 EBUSY. Direct take-over requires uid 0. A new owner pushes, up to four userspace owners; a
 fifth returns EBUSY without a change. GIVE_DISPLAY from anyone other than the current owner returns
 EPERM. Giving back pops, restores the previous owner's mode and last presented target, and
-waits for that restore's device flush. Giving back the last user owner redraws and presents
-the kernel console. Exit or exec removes that owner's entry; removing the top restores the
+waits for that restore's device flush. Giving back the last user owner presents the kernel's
+screen, which the screen console then redraws. Exit or exec removes that owner's entry; removing the top restores the
 previous live owner, or the kernel. Saved targets retain their backing independently of
 userspace handles until their stack entry is replaced or removed.
 
@@ -317,9 +318,11 @@ kernel console's; no foreign resource handle is exposed. Unknown binding returns
 reason 10. Its record has target 0 and the actual device resource id; its pixels pass the
 same two-poison observation as an ordinary target. This allows a new owner to observe the
 screen left by its predecessor before presenting its own frame. Explicit foreign handles
-remain EINVAL. The console uses the built-in Noto Sans Mono 16 px coverage tables through
+remain EINVAL. The kernel's screen is the screen console's frame (`docs/console/contract.md`),
+which the console reads back itself through `/proc/console/check`. The GPU console, the panic
+path's (section 1.7.1 of `gpu.md`), uses the built-in Noto Sans Mono 16 px coverage tables through
 bitmap_text, with a fixed header `Breenix GPU console` at physical (16,16), scale 1,
-foreground BGRA 0xFFE8EDF2 over background 0xFF181512; log lines follow below it.
+foreground BGRA 0xFFE8EDF2 over background 0xFF181512.
 
 <!-- claim-lint:ok: Proposed G7 fault requirements implementing points 25 and 26 in gpu.md section 1.8. -->
 Point 25, skip-present-flush, matches the target handle (0 for any). It sends SET_SCANOUT

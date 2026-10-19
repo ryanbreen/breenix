@@ -709,7 +709,13 @@ pub fn set_scanout(tag: Tag, ctx: u32, resource: u32, width: u32, height: u32) -
 /// RESOURCE_FLUSH (VirtIO 1.3 section 5.7.6.8): r (x, y, width, height), resource_id,
 /// padding: the resource's whole rectangle, fenced.
 pub fn flush_resource(tag: Tag, ctx: u32, fence: u64, resource: u32, width: u32, height: u32) -> Request {
+    flush_rect(tag, ctx, fence, resource, 0, 0, width, height)
+}
+
+/// RESOURCE_FLUSH of the rectangle at (`x`, `y`), `width` by `height`, fenced.
+#[allow(clippy::too_many_arguments)]
+pub fn flush_rect(tag: Tag, ctx: u32, fence: u64, resource: u32, x: u32, y: u32, width: u32, height: u32) -> Request {
     Request::new(tag, cmd::RESOURCE_FLUSH, ctx, Some(fence), wire::HDR + 24, wire::HDR)
-        .field(0, 0).field(4, 0).field(8, width).field(12, height)
+        .field(0, x).field(4, y).field(8, width).field(12, height)
         .field(16, resource).field(20, 0)
 }

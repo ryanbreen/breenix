@@ -158,13 +158,14 @@ pub(super) struct Switching {
     pub(super) epoch: u64,
     /// The process holding the display (`sys_take_over_display`) and its terminal.
     display_owner: Option<(u64, usize)>,
+    display_stack: Vec<(u64, usize)>,
     /// When the last acquisition began (monotonic seconds and nanoseconds).
     switched: (u64, u64),
 }
 
 impl Switching {
     pub(super) const fn new() -> Self {
-        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None, switched: (0, 0) }
+        Self { fg: 0, acquired: true, check: None, pending: None, next: None, epoch: 0, display_owner: None, display_stack: Vec::new(), switched: (0, 0) }
     }
 }
 
@@ -578,12 +579,32 @@ impl Terminals<'_> {
         Ok(())
     }
 
+    /// Stack a GPU owner, retaining the previous owner's terminal for give-back.
+    #[cfg(any(test, target_arch = "aarch64"))]
+    pub(super) fn take_display_nested(&mut self, pid: u64, vt: usize, effects: &mut Effects) -> Result<(), i32> {
+        let previous = self.sw.display_owner;
+        if previous == Some((pid, vt)) {
+            return Ok(());
+        }
+        self.take_display(pid, vt, effects)?;
+        if let Some(owner) = previous {
+            self.sw.display_stack.push(owner);
+        }
+        Ok(())
+    }
+
     /// The display is given back (by its owner, or for it by root).
     pub(super) fn give_back_display(&mut self, effects: &mut Effects) {
         if let Some((owner, vt)) = self.sw.display_owner.take() {
             if self.vts[vt].graphics == Some(owner) {
                 let _ = self.set_kd(vt, owner, false, effects);
             }
+        }
+        // A saved owner may have released its VT to the foreground terminal. Restore
+        // custody without requiring that VT to be foreground again.
+        self.sw.display_owner = self.sw.display_stack.pop();
+        if let Some((owner, vt)) = self.sw.display_owner {
+            self.set_kd(vt, owner, true, effects).expect("restored display custody owns its VT");
         }
         effects.redraw = true;
         self.publish();
@@ -592,9 +613,10 @@ impl Terminals<'_> {
     /// Process `pid` exited: the terminals it owned return to `VT_AUTO` and
     /// `KD_TEXT`, and a switch waiting for it proceeds (sections 4.3, 4.4).
     pub(super) fn exited(&mut self, pid: u64, effects: &mut Effects) -> bool {
+        self.sw.display_stack.retain(|(owner, _)| *owner != pid);
         let mut display_released = false;
         if self.sw.display_owner.is_some_and(|(owner, _)| owner == pid) {
-            self.sw.display_owner = None;
+            self.sw.display_owner = self.sw.display_stack.pop();
             display_released = true;
         }
         for vt in 0..VT_COUNT {
@@ -633,6 +655,11 @@ impl Terminals<'_> {
                         *drawn = false;
                     }
                 }
+            }
+        }
+        if display_released {
+            if let Some((owner, vt)) = self.sw.display_owner {
+                self.set_kd(vt, owner, true, effects).expect("restored display custody owns its VT");
             }
         }
         self.publish();
@@ -792,6 +819,18 @@ pub fn take_display(pid: u64, vt: usize) -> Result<(), i32> {
 /// The display owner's process ID and terminal (1-based).
 pub fn display_owner() -> Option<(u64, usize)> {
     with_terminals(|terminals, _| terminals.sw.display_owner.map(|(pid, vt)| (pid, vt + 1)))
+}
+
+/// GPU takeover with nested VT custody retained until give-back.
+#[cfg(target_arch = "aarch64")]
+pub fn take_display_nested(pid: u64, vt: usize) -> Result<(), i32> {
+    with_terminals(|terminals, effects| terminals.take_display_nested(pid, vt - 1, effects))
+}
+
+/// The display owner's terminal is not in the foreground: the owner keeps the display
+/// but not the screen, which the kernel draws (contract section 4.2).
+pub fn presentation_suspended() -> bool {
+    PRESENTATION_SUSPENDED.load(Ordering::SeqCst)
 }
 
 /// `sys_give_back_display`.

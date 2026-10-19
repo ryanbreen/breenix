@@ -473,9 +473,9 @@ fn sys_exit_aarch64(
         // Log outside PM lock
         if report_exit {
             if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
-                crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
+                crate::diag_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
             } else {
-                crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+                crate::diag_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
             }
         }
         // This function never returns, so nothing on its stack is dropped
@@ -1813,7 +1813,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    crate::serial_println!("[spawn] path='{}'", program_path);
+    crate::diag_println!("[spawn] path='{}'", program_path);
 
     // Parse argv from userspace
     let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
@@ -1930,7 +1930,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
                 false
             };
             if scheduled {
-                crate::serial_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());
+                crate::diag_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());
             } else {
                 crate::serial_println!(
                     "[spawn] Warning: child PID {} created but not scheduled",

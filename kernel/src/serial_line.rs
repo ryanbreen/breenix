@@ -95,7 +95,6 @@ impl Port for Uart {
     }
 
     fn capture(byte: u8) {
-        crate::graphics::log_capture::capture_byte(byte);
         crate::log_buffer::capture_byte(byte);
     }
 
