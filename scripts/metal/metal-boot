@@ -957,6 +957,16 @@ class Driver:
                        check=True, capture_output=True)
         subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
 
+    def console_type(self, text):
+        """Types a command a few characters at a time: a burst can lose a byte while the shell echoes (#2105)."""
+        if attended(self.args):
+            raise RuntimeError('attended boots must never send console input')
+        for at in range(0, len(text), 4):
+            subprocess.run(self.tmux + ['send-keys', '-t', 'sol', '-l', '--', text[at:at + 4]], check=True,
+                           capture_output=True)
+            time.sleep(0.04)
+        subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'Enter'], check=True, capture_output=True)
+
     def challenge_console(self, text, complete=False):
         if xhci_fault(self.args):
             return
@@ -1200,12 +1210,12 @@ class Driver:
         elif 2 <= self.run_step < last and fresh and prompt:
             self.sent_at = self.line_start
             self.event('persistent-command', index=self.run_step - 1, of=len(commands))
-            self.console_send(commands[self.run_step - 2])
+            self.console_type(commands[self.run_step - 2])
             self.run_step += 1
         elif self.run_step == last and fresh and prompt:
             self.sent_at = self.line_start
             self.run_step = last + 1
-            self.console_send('exit')
+            self.console_type('exit')
         elif self.run_step == last + 1 and fresh and text.rstrip().endswith('login:'):
             self.run_step = last + 2
             self.run_done = True

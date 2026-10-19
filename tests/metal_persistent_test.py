@@ -184,7 +184,7 @@ class DriverPersistentTest(unittest.TestCase):
         d.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture'}
         d.kernel_started, d.t0 = 1, 0
         sent = []
-        d.console_send = sent.append
+        d.console_send = d.console_type = sent.append
         offset = 0
 
         def prompt(text):
