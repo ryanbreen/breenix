@@ -748,8 +748,8 @@ case reads its effect back in the guest. The host key is the input; the in-guest
 - **The launcher declares its path before the suite starts**, so a case knows what to expect: QEMU passes
   `-fw_cfg name=opt/breenix/hostkeys,string=<method>[;missing=<key>,...]`, the disk launchers write the same
   value as a `hostkeys` field of `/etc/breenix/boot-target`, and the kernel passes it to the suite as
-  `--hostkeys <value>` beside `--case`. `missing=` names keys the path cannot send (Parallels refuses extended
-  scancodes, which include the arrows and Page Up and Page Down). V6 owns the declaration, the runner's argv,
+  `--hostkeys <value>` beside `--case`. `missing=` names keys the path cannot send; QEMU, Parallels and VMware
+  send every key the chord grammar names, so none declares it today. V6 owns the declaration, the runner's argv,
   the kernel's forwarding and `scripts/suite-verdict.py`'s acceptance of HOSTKEY records.
 - **A case fails, and does not skip,** with `no host key path` when no method was declared, with
   `no host key path for <chord> on <method>` when a key it needs is missing, and with
@@ -758,15 +758,15 @@ case reads its effect back in the guest. The host key is the input; the in-guest
 
 ### V6 backend findings
 
-Parallels 27.0.3 accepts the basic `prlctl send-key-event` codes. The earlier
-probe reported letters and Alt+Fn reaching the guest, but those boots predate
-V6's final HOSTKEY record format and do not validate the final watcher.
-Extended codes remain declared in `missing=`; a case requiring one fails.
-The VNC fallback was tried on a disposable VM configuration: `prlctl set`
-with `--vnc-mode manual --vnc-address 127.0.0.1 --vnc-port 5997` returned
-`Unrecognized option: --vnc-mode`. The configuration was deleted without booting.
-This does not establish a Parallels VNC key path; #1791 tracks the missing
-extended-key route without changing target expectations.
+Parallels 27.0.3's `prlctl send-key-event` takes PS/2 set-1 scancodes or
+Parallels virtual key codes (`"key"` in its JSON input: the `PRL_KEY` values
+the Parallels Virtualization SDK's C API reference publishes for `PrlKeys.h`).
+A bare extended scancode is refused, so the watcher sends every key as its
+`PRL_KEY` code. A probe boot of V7's USB keyboard showed the reports: Left
+(usage 0x50), Right (0x4F), Page Up (0x4B), Page Down (0x4E), Home (0x4A),
+Shift+Page Up as modifier 0x02 with 0x4B, Alt+Left as 0x04 with 0x50, and the
+GUI, right Ctrl and right Alt modifier bits. That is the extended-key route
+#1791 asked for; Parallels declares no `missing=` keys.
 
 **VMware spike (Q5):** the earlier Fusion probe reported an RFB handshake,
 framebuffer updates and accepted key events after enabling the built-in VNC
@@ -816,10 +816,8 @@ milestone's measure, built by the lane named here:
 | `chvt`, `getty` | `chvt-getty` | V4u |
 | `keys` | `keyboard` | V5, with V6's host keys and, on Parallels and VMware, V7's USB keyboard |
 
-`keys/alt-left-right-wrap` and `keys/shift-pageup` remain scored on Parallels and
-fail while its extended-key host path is absent (#1791). Resolving that path or
-obtaining an explicit target-scope ruling is required; V6 does not reduce these
-expectations to make this target green.
+`keys/alt-left-right-wrap` and `keys/shift-pageup` are scored on Parallels like
+the other cases, through the `PRL_KEY` path above (#1791).
 
 - **Until its layer exists, a case fails naming it:** `missing <layer> (<lane>): <what the kernel answered>`.
   The suite asks the kernel each time: `/proc/console/check` for the screen layers, and `VT_GETSTATE` on

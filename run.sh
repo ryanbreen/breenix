@@ -468,7 +468,7 @@ stage_boot_ext2_disk() {
     else
         local hostkeys_backend=none
         if [ "$PARALLELS" = true ]; then
-            hostkeys_backend=prlctl:declaration
+            hostkeys_backend=prlsdk:declaration
         elif [ -n "${BREENIX_VMWARE_VNC_PORT:-}" ]; then
             hostkeys_backend="vnc:127.0.0.1:$BREENIX_VMWARE_VNC_PORT"
         fi
@@ -1102,7 +1102,7 @@ if [ "$PARALLELS" = true ]; then
     prlctl start "$PARALLELS_VM"
     if [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]; then
         # A suite case that needs a key asks on serial; the watcher presses it (scripts/hostkeys.py).
-        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "prlctl:$PARALLELS_VM" \
+        python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "prlsdk:$PARALLELS_VM" \
             --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
     fi
     echo ""
