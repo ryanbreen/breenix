@@ -105,8 +105,10 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
                                    or mode != 'console' or install or idle_minutes is not None or replug):
         raise ValueError('invalid xHCI fault-test target')
-    if mode not in ('default', 'shell', 'probe', 'suite', 'console'):
+    if mode not in ('default', 'shell', 'probe', 'suite', 'console', 'tests'):
         raise ValueError('unsupported RAM-disk boot mode')
+    # The testing kernel has production init compiled out and does not read the boot target: its root is a default boot's.
+    staged = 'default' if mode == 'tests' else mode
     # A list runs each suite in turn (docs/suites/README.md, "Several suites in one boot").
     if mode == 'suite' and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', suite or ''):
         raise ValueError('suite mode needs a suite id')
@@ -140,7 +142,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     writer = Path(writer) if writer else (packaged if packaged.is_file() else
                                          Path(__file__).resolve().parents[1] / 'write-boot-target.sh')
     writer_hash = hashlib.sha256(writer.read_bytes()).hexdigest()
-    target = first if mode == 'suite' else '--' + mode
+    target = first if mode == 'suite' else '--' + staged
     try:
         subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
                        env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
@@ -175,7 +177,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')
         subprocess.run([debugfs, '-w', '-f', str(script), str(image)], check=True, capture_output=True)
-        expected_target = ('suite ' + first if mode == 'suite' else mode)
+        expected_target = ('suite ' + first if mode == 'suite' else staged)
         if replug:
             expected_target += ' replug'
         if idle_minutes is not None:

@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Builds one x86-metal boot's inputs in the metal build container (docs/metal/README.md, "Build").
 
-  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject]
+  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject|testing]
               [--suite ID[,ID...]]
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
 (gate-artifacts.py --metal, exact artifacts over leased incremental targets in the container's cache), then the production kernel and its UEFI
-image (a fault-test kernel with --features), and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
+image (a fault-test kernel with --features xhci_fault_inject; the testing kernel with --features testing, as run.sh --tests
+builds it, which also delivers the test-binary disk the userspace build made), and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
 commit's kernel is delivered the same way), all under one lease of the container's metal-build slots. A suite boot
 names its suite, or the suites it runs in turn; when they include the Developer SDK suite the same lease also runs the commit's scripts/sdk-suite.py, which builds
 the SDK and its test apps and stages their records onto a copy of the ext2 root, as the other launchers do before
 an SDK suite boot (docs/suites/README.md), and that copy is the root delivered. The slot and
 artifact helpers are the deployed tools' copies beside this file, not the commit's, so every commit builds the same
 way. The container runs on the host's shared CPUs, outside the x86 gate VM, so no x86 lease covers it. Writes
-<root>/breenix-metal-<id>-out/ with uefi.img, ext2.img, stub.efi, definition/ and build.json, and removes the clone.
+<root>/breenix-metal-<id>-out/ with uefi.img, ext2.img, stub.efi, definition/ and build.json (and test-binaries.img for the
+testing kernel), and removes the clone.
 Exit 0 on success; 3 when the guard refuses the commit.
 """
 import argparse
@@ -32,13 +34,19 @@ import tempfile
 import time
 
 STUB_TARGET = 'x86_64-unknown-uefi'
+# The kernel profile each --features value builds.
+PROFILES = {'': 'production', 'xhci_fault_inject': 'fault-test', 'testing': 'testing'}
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
 TOOLS = Path(__file__).resolve().parent
 TOOLS = TOOLS if (TOOLS / 'host-slots.py').exists() else TOOLS.parent
 HELPER = TOOLS / 'host-slots.py'
 ARTIFACTS = TOOLS / 'gate-artifacts.py'
+# The testing kernel reads its test binaries from a BXTEST disk (kernel/src/userspace_test.rs).
+TEST_BINARIES = 'target/test_binaries.img'
 DEFINITION = ('docs/metal/boot-path.json', 'docs/boot-path.json', 'xtask/src/boot_stages.rs',
-              'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')
+              'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
+              'kernel/src/boot/test_list.rs', 'scripts/test-report-verdict.py', 'scripts/x86-gate-exits.py',
+              'scripts/x86-gate-allowlist.txt', 'scripts/score-sigkill-teardown.py')
 
 
 def sha256(path):
@@ -216,6 +224,8 @@ def inner(args):
             return 1
         shutil.copyfile(images[-1], out / 'uefi.img')
         shutil.copyfile(root, out / 'ext2.img')
+        if args.features == 'testing':
+            shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
         copied = []
         definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py']
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
@@ -227,7 +237,7 @@ def inner(args):
                 shutil.copyfile(source, target)
                 copied.append(name)
         build = {'commit': args.sha, 'guardTarget': args.guard_target,
-                 'profile': 'fault-test' if args.features else 'production',
+                 'profile': PROFILES[args.features],
                  'features': [args.features] if args.features else [], 'suite': args.suite or None,
                  'timings': timings, 'definition': copied,
                  'cpus': sorted(getattr(os, 'sched_getaffinity', lambda pid: ())(0)),
@@ -235,6 +245,9 @@ def inner(args):
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
                  'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
+        if (out / 'test-binaries.img').is_file():
+            build['testBinaries'] = {'size': (out / 'test-binaries.img').stat().st_size,
+                                     'sha256': sha256(out / 'test-binaries.img')}
         if (out / 'sha512-crypt').is_file():
             build['consoleHashHelper'] = {'size': (out / 'sha512-crypt').stat().st_size,
                                           'sha256': sha256(out / 'sha512-crypt')}
@@ -289,8 +302,8 @@ def main():
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--stub-only', action='store_true', help='build only the deployed cold-readback firmware')
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
-    parser.add_argument('--features', choices=('', 'xhci_fault_inject'), default='',
-                        help='build a fault-test kernel; never set for a production boot')
+    parser.add_argument('--features', choices=tuple(PROFILES), default='',
+                        help='build a fault-test or testing kernel; never set for a production boot')
     parser.add_argument('--suite', default='',
                         help="a suite boot's suite id, or ids joined by commas; sdk stages the SDK suite's host results")
     for name in ('--id', '--sha', '--repo', '--rust-fork', '--cache', '--root', '--stub'):
