@@ -383,8 +383,8 @@ in "Measured".
 | Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or boot progress returning to a state other than `OSBootStarted` or `OSRunning` (which the firmware reports once a boot option runs) | 124, 1, 1 |
-| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes | 0, else 1 |
-| Whole attempt | — | 15 minutes from power-on, 22 for a suite (enforced by the reaper as well) | 124 |
+| Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes, and in a multi-suite boot 7 minutes from each suite's START | 0, else 1 |
+| Whole attempt | — | 15 minutes from power-on, 22 for a suite and 7 more for each further suite of a multi-suite boot (enforced by the reaper as well) | 124 |
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice
 the longest of them (`post-times.json` in the boot store; the measured values are in "Measured", below). A POST
@@ -487,6 +487,19 @@ scorer receives `--disk` only after the complete upload, size, root record and
 digest have been verified and the readback boot has powered off. It checks the
 original byte expectations without guest page-cache reads. The driver also waits
 for the measured kernel stages before accepting the mode result. The console-gap and fatal-output vetoes apply (issue #1702).
+
+<!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and scripts/metal/metal-boot implement this paragraph. -->
+A suite boot can run several suites in turn for one boot's firmware, delivery and build time:
+`metal-run boot --mode suite --suite directories,memory,files-io`, or `--suite all` for every main-path effort suite
+but those that need a 3D GPU, which this machine lacks (docs/suites/README.md, "Several suites in one boot").
+`metal-run` resolves the list against the commit's own `docs/efforts/path.json` and manifests with the deployed
+`suite-sequence.py`, and refuses a list that puts `console` anywhere but first or `files-io` anywhere but last.
+Staging writes the list beside the boot target and checks that each suite's binary is on the root; the build stages
+the SDK suite's host side when the list includes it. The final marker is `SUITE_SEQUENCE DONE`; each suite has the
+420-second deadline from its own START, and the attempt ceiling grows by 420 seconds per further suite. After
+power-off, whether or not the sequence finished, the commit's `scripts/suite-sequence.py score` scores each suite
+from its own part of the serial into `suite-verdict.txt`, one line per suite (PASS, FAIL, STALLED with its reported
+cases, NOT-RUN or NOT-ISOLATED). `run.json` lists the suites in `suites`, and keeps `suite` for a boot of one.
 
 ## The disks
 

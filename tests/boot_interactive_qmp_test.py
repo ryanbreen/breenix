@@ -27,6 +27,9 @@ class BootInteractiveQmpTest(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         shutil.copyfile(ROOT / "scripts/boot-interactive.sh", scripts / "boot-interactive.sh")
+        shutil.copyfile(ROOT / "scripts/suite-sequence.py", scripts / "suite-sequence.py")
+        shutil.copytree(ROOT / "docs", self.root / "docs")
+        self.executable(scripts / "write-boot-target.sh", '#!/bin/sh\nexit 0\n')
         (scripts / "host-slots.sh").write_text("\n".join(
             f"{name}() {{ :; }}" for name in (
                 "host_slots_start", "host_slot_acquire", "host_slot_serial",
@@ -39,7 +42,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
         self.executable(scripts / "vigil-record.sh",
                         '#!/bin/sh\n[ "$1" = start ] || exit 0\necho start >> "$CALLS"\n'
                         '[ -n "$STUB_VIGIL_ID" ] || exit 0\n'
-                        f'[ -z "$STUB_BOOT_HOME" ] || mkdir -p "$STUB_BOOT_HOME/{BOOTS}/$STUB_VIGIL_ID"\n'
+                        f'for id in $(echo "$STUB_VIGIL_ID" | tr , " "); do [ -z "$STUB_BOOT_HOME" ] || mkdir -p "$STUB_BOOT_HOME/{BOOTS}/$id"; done\n'
                         'printf "%s" "$STUB_VIGIL_ID"\n')
         self.executable(scripts / "qemu-1x-app.sh", '#!/bin/sh\necho qemu-system-aarch64\n')
         (scripts / "qemu-arm64.py").write_text('print("default")\n')
@@ -97,6 +100,11 @@ class BootInteractiveQmpTest(unittest.TestCase):
                 self.assertEqual(argv, self.with_qmp(bare, socket))
                 self.assertTrue(Path(socket).parent.is_dir())
                 self.assertEqual(self.notices(output), [])
+
+    def test_multi_suite_boot_uses_the_first_registered_folder(self):
+        argv, output = self.launch(boot_id="boot-a,boot-b", mode=("--mode", "suite", "--suite", "smoke,crypto"))
+        self.assertIn(f"unix:{self.vigil_home}/{BOOTS}/boot-a/qmp.sock,server=on,wait=off", argv)
+        self.assertEqual(self.notices(output), [])
 
     def test_a_missing_boot_folder_leaves_qmp_off_and_says_so_once(self):
         bare, _ = self.launch(boot_id="")

@@ -77,10 +77,18 @@ def validate_xhci_fault(args):
         raise ValueError('xHCI faults need a RAM-disk console boot with --input sol')
 
 
+def suites(args):
+    """The suites a suite boot runs, in order: one, or several in turn (docs/suites/README.md)."""
+    return (getattr(args, 'suite', None) or '').split(',') if args.mode == 'suite' else []
+
+
 def ceiling_seconds(args):
     if attended(args):
         # Delivery/start-up budget plus the entire operator wait from handoff.
         return CEILING_SECONDS['console'] + args.wait * 60
+    if args.mode == 'suite':
+        # Each further suite of a multi-suite boot brings its own DONE deadline.
+        return CEILING_SECONDS['suite'] + MODE_DEADLINE_SECONDS['suite'] * (len(suites(args)) - 1)
     return SESSION_CEILING_SECONDS if session(args) else CEILING_SECONDS[args.mode]
 
 
@@ -149,6 +157,8 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
+        # In a multi-suite boot, when the running suite started (its START, or the previous one's STALLED).
+        self.suite_started = None
         self.input_clock_alive = None
         self.last_stage = None
         self.complete_at = None
@@ -210,7 +220,9 @@ class Driver:
         kind = 'fault-test' if xhci_fault(self.args) else 'console-session' if session(self.args) else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test')
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
-               'payload': self.args.payload, 'kind': kind, 'suite': getattr(self.args, 'suite', None), 'inject': self.args.inject or None,
+               'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
+               # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
+               'suite': suites(self.args)[0] if len(suites(self.args)) == 1 else None, 'suites': suites(self.args) or None,
                'sourceBoot': getattr(self.args, 'source_boot', None),
                'disk': getattr(self.args, 'disk', None), 'toolsCommit': tools_commit(),
                'input': input_kind(self.args),
@@ -352,10 +364,12 @@ class Driver:
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if (inputs / 'definition').is_dir():
             shutil.copytree(inputs / 'definition', self.dir / 'definition')
-        if self.args.mode == 'suite':
-            manifest = self.dir / 'definition/docs/suites' / (self.args.suite + '.json')
-            if not manifest.is_file() or m.read_json(manifest).get('id') != self.args.suite:
+        for suite in suites(self.args):
+            manifest = self.dir / 'definition/docs/suites' / (suite + '.json')
+            if not manifest.is_file() or m.read_json(manifest).get('id') != suite:
                 raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
+        if len(suites(self.args)) > 1 and not (self.dir / 'definition/scripts/suite-sequence.py').is_file():
+            raise Finish(m.EXIT_CANCELLED, 'the commit cannot score a multi-suite boot')
         disk = getattr(self.args, 'disk', None)
         if disk != 'root':
             self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
@@ -386,7 +400,7 @@ class Driver:
         if disk == 'root':
             target = self.args.mode
             if target == 'suite':
-                target += ' ' + self.args.suite
+                target += ' ' + suites(self.args)[0]
             elif target == 'console':
                 self.console_intent = 'session' if session(self.args) else 'measure'
                 self.delivery['consoleIntent'] = self.console_intent
@@ -442,7 +456,9 @@ class Driver:
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'suite':
-            self.final_marker = ('SUITE ' + self.args.suite + ' DONE ', 'contains')
+            # Several suites finish when the last has handed off.
+            self.final_marker = (('SUITE ' + self.args.suite + ' DONE ', 'contains') if len(suites(self.args)) == 1
+                                 else ('SUITE_SEQUENCE DONE ', 'contains'))
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
 
@@ -607,8 +623,9 @@ class Driver:
         with tempfile.TemporaryDirectory(prefix='metal-verdict-') as temporary:
             root = Path(temporary)
             root.chmod(0o755)
-            for name in ('scripts/suite-verdict.py', 'docs/boot-path.json',
-                         'docs/suites/' + self.args.suite + '.json'):
+            several = len(suites(self.args)) > 1
+            names = ['scripts/suite-verdict.py', 'docs/boot-path.json'] + ['docs/suites/' + s + '.json' for s in suites(self.args)]
+            for name in names + (['scripts/suite-sequence.py'] if several else []):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(definition / name, target)
@@ -629,8 +646,12 @@ class Driver:
                        '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
                        '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
                        '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
-                       sys.executable, '-I', str(sandbox / 'scripts/suite-verdict.py'),
-                       str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
+                       sys.executable, '-I']
+            if several:
+                command += [str(sandbox / 'scripts/suite-sequence.py'), 'score', self.args.suite, str(sandbox / 'serial.txt')]
+            else:
+                command += [str(sandbox / 'scripts/suite-verdict.py'),
+                            str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
             if disk is not None:
                 command += ['--disk', str(sandbox / 'disk.img')]
             try:
@@ -656,7 +677,7 @@ class Driver:
                 or self.t0 <= readback['suitePoweredOffAt']):
             raise ValueError('cold raw disk evidence differs from the completed suite boot')
         run = m.read_json(source / 'run.json')
-        args = argparse.Namespace(id=readback['source'], mode='suite', suite=run['suite'], payload='image',
+        args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
                                   inject=None)
         scorer = Driver(args)
         passed = scorer.score_suite(disk=image)
@@ -827,6 +848,8 @@ class Driver:
         if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
+        if len(suites(self.args)) > 1 and re.search(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED ', line):
+            self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
         if '[init] shell ready' in line:
@@ -1095,7 +1118,8 @@ class Driver:
             if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
                 raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
             return
-        if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS[self.args.mode]:
+        # Each suite of a multi-suite boot has the deadline from when it started.
+        if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
 
     # Power.
@@ -1234,20 +1258,23 @@ class Driver:
                 off = self.power_off(finish.hung)
                 if not off:
                     status = m.EXIT_INCOMPLETE
-                if self.args.mode == 'suite' and status == m.EXIT_DONE:
+                # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
+                # the cases it reported.
+                several = len(suites(self.args)) > 1 and self.kernel_started is not None
+                if self.args.mode == 'suite' and (status == m.EXIT_DONE or several):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
                     if self.gap:
                         status = m.EXIT_INCOMPLETE
                     else:
                         try:
-                            manifest = m.read_json(self.dir / 'definition/docs/suites' / (self.args.suite + '.json'), {})
+                            manifest = m.read_json(self.dir / 'definition/docs/suites' / (suites(self.args)[-1] + '.json'), {})
                             if manifest.get('diskChecks'):
                                 m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: awaiting cold raw disk readback after power-off\n')
                                 self.event('suite-awaiting-disk-readback')
                                 pending_readback = True
                                 status = m.EXIT_SHORT
-                            elif not self.score_suite():
+                            elif not self.score_suite() and status == m.EXIT_DONE:
                                 status = m.EXIT_SHORT
                         except Exception as error:
                             self.event('suite-verdict-error', error=error.__class__.__name__)
@@ -1459,8 +1486,8 @@ def main():
         except ValueError as error:
             parser.error(str(error))
         if args.mode == 'suite':
-            if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', args.suite or ''):
-                parser.error('suite mode needs --suite ID')
+            if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', args.suite or '') or len(set(suites(args))) != len(suites(args)):
+                parser.error('suite mode needs --suite ID, or distinct ids joined by commas')
         elif args.suite:
             parser.error('--suite needs suite mode')
         if args.payload != 'image' and args.mode != 'default':

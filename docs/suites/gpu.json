@@ -5,6 +5,7 @@
   "summary": "Breenix renders on the GPU through a validated, per-process command stream that a hardware GPU executes on every target, and reads every result back from the device pixel-exact under the deterministic rendering profile, with modes up to 2560x1600 presented within the stated bounds.",
   "binary": "/sbin/suite-gpu",
   "timingSensitive": true,
+  "needs3dGpu": true,
   "categories": [
     {
       "id": "device",

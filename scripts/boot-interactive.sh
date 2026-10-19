@@ -15,6 +15,10 @@
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --case CATEGORY/CASE  for --mode suite: run only this case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
+#   --suite ID,ID,...|all  for --mode suite: several suites in one boot, in order (docs/suites/README.md,
+#                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
+#                        with --gpu-gl); --gate-timeout is each suite's own DONE deadline
+#                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
@@ -103,8 +107,11 @@ elif [ -n "$PROGRAM" ]; then
 fi
 if [ "$MODE" = suite ]; then
     [ -n "$SUITE" ] || { echo "--mode suite needs --suite ID" >&2; exit 2; }
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE" >&2; exit 2
+    GPU_3D=()
+    [ "$GPU_GL" -eq 0 ] || GPU_3D=(--gpu-3d)
+    SUITE=$(python3 "$ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target arm64-qemu ${GPU_3D[@]+"${GPU_3D[@]}"}) || exit 2
+    if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
+        echo "--case watches one case of one suite, not a list" >&2; exit 2
     fi
 elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
@@ -177,7 +184,7 @@ if [ "$MODE" = program ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/program,string=$PROGRAM")
 fi
 if [ "$MODE" = suite ]; then
-    MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=$SUITE")
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/suite,string=${SUITE%%,*}")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
 if [ -n "$FBCONSOLE" ]; then
@@ -240,6 +247,11 @@ mkdir -p "$(dirname "$SERIAL_LOG")"
 : > "$SERIAL_LOG"
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 cp "$DISK" "$WRITABLE"
+if [[ "$SUITE" == *,* ]]; then
+    # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
+    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
+        "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
+fi
 ROOT_DRIVE="if=none,id=ext2,format=raw,file=$WRITABLE"
 FIXTURE_ARGS=()
 if [ "$MODE" = tests ]; then
@@ -264,7 +276,10 @@ qemu_host_lock_acquire
 # Records the boot's start; a timing-sensitive suite first waits for a quiet host
 # (docs/boot-path.md, "Shared host slots").
 if [ "$MODE" = suite ]; then
-    host_slot_quiet "$ROOT/docs/suites/$SUITE.json"
+    MANIFESTS=()
+    IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
+    for id in "${SUITE_IDS[@]}"; do MANIFESTS+=("$ROOT/docs/suites/$id.json"); done
+    host_slot_quiet "${MANIFESTS[@]}"
 else
     host_slot_quiet
 fi
@@ -282,7 +297,7 @@ VIGIL_CPUS=
 # Vigil's capture takes socket paths of at most 103 bytes, counted in UTF-8 (macOS itself allows 104).
 if [ "$QMP_REQUESTED" -eq 0 ] && [ -n "$VIGIL_ID" ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
-    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID"
+    VIGIL_BOOT_DIR="$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/${VIGIL_ID%%,*}"
     VIGIL_QMP_SOCKET="$VIGIL_BOOT_DIR/qmp.sock"
     if [ ! -d "$VIGIL_BOOT_DIR" ]; then
         echo "==> Vigil QMP disabled: no boot folder at $VIGIL_BOOT_DIR"

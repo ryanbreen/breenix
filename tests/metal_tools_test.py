@@ -779,6 +779,7 @@ class RootStagingTest(unittest.TestCase):
             (tree / 'sbin/probe').write_bytes(b'\x7fELFprobe')
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
+            (tree / 'sbin/suite-time').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
@@ -815,6 +816,15 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'suite', 'absent', site)
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
+            # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
+            metal_root.stage_root(image, 'suite', 'smoke,time', site)
+            self.assertEqual(read('boot-target'), 'suite smoke\n')
+            self.assertEqual(read('suite-sequence'), 'smoke,time\n')
+            with self.assertRaises(ValueError):
+                metal_root.stage_root(image, 'suite', 'smoke,absent', site)
+            metal_root.stage_root(image, 'suite', 'time', site)
+            self.assertEqual(read('boot-target'), 'suite time\n')
+            self.assertEqual(read('suite-sequence'), '')
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root
@@ -1278,6 +1288,18 @@ class DriverTest(StateTest):
             d.check_deadlines()
         with patch.object(m, 'now', return_value=1420):
             self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
+
+    def test_each_suite_of_a_multi_suite_boot_gets_its_own_deadline(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'directories,processes,time'
+        self.assertEqual(boot.ceiling_seconds(d.args), boot.CEILING_SECONDS['suite'] + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
+        d.t0 = d.request_at = d.complete_at = d.kernel_started = 110
+        d.last_serial = 900
+        d.on_line('SUITE processes START cases=154', observed_at=500)
+        with patch.object(m, 'now', return_value=920):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=921):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
 
     def test_404_and_fatal_capture_graces(self):
         d = self.driver

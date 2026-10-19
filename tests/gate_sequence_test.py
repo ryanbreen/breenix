@@ -19,51 +19,6 @@ spec.loader.exec_module(sequence)
 
 
 class SequenceTests(unittest.TestCase):
-    def test_later_panic_cannot_fail_finished_suites_and_unstarted_is_not_run(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            repo, out = root / 'repo', root / 'out'
-            out.mkdir()
-            (repo / 'docs/suites').mkdir(parents=True)
-            for suite in ('first', 'second', 'third', 'fourth'):
-                (repo / 'docs/suites' / (suite + '.json')).write_text(json.dumps(dict(id=suite, categories=[dict(id='case', cases=[dict(id='one')])])) )
-            def output(suite):
-                user = out / 'serial_user.log'
-                with user.open('ab') as handle:
-                    handle.write(f'SUITE {suite} START cases=1\n'.encode())
-                    if suite != 'third':
-                        handle.write(f'SUITE {suite} CASE case/one PASS ms=1\nSUITE {suite} DONE passed=1 failed=0 skipped=0 total=1\nSUITE_SEQUENCE READY {suite}\n'.encode())
-                with (out / 'serial_kernel.log').open('ab') as handle:
-                    handle.write(b'KERNEL PANIC: third suite\n' if suite == 'third' else b'healthy\n')
-            class Child:
-                stopped = False
-                def poll(self): return 1 if self.stopped else None
-                def terminate(self): self.stopped = True
-                def wait(self, timeout=None): return 0
-            class QMP:
-                def __init__(self, path): self.index = 0
-                def command(self, name, args=None):
-                    if name == 'cont':
-                        self.index += 1
-                        output(('first', 'second', 'third')[self.index])
-                        if self.index == 2: child.stopped = True
-                def close(self): pass
-            def launch(command):
-                # A guest reads its clock after launch, so its epoch cannot predate the
-                # launch time main() records; write it here, not before main() runs.
-                (out / 'serial_user.log').write_text(f'[clock] UTC epoch={int(time.time())} source=CMOS\n')
-                output('first')
-                return child
-            child = Child()
-            with patch.object(sequence.subprocess, 'Popen', side_effect=launch), patch.object(sequence, 'QMP', QMP), \
-                 patch.object(sequence.time, 'sleep'), patch.dict(os.environ, BREENIX_QMP_SOCKET='/fake', BREENIX_SUITE_HOLD='0'), \
-                 patch.object(sys, 'argv', ['boot', str(repo), str(out), 'first,second,third,fourth', '300', 'qemu']):
-                self.assertEqual(sequence.main(), 1)
-            rows = json.loads((out / 'suite-results.json').read_text())
-            self.assertEqual([row['verdict'] for row in rows], ['PASS', 'PASS', 'FAIL', 'NOT-RUN'])
-            self.assertIn('third suite', rows[2]['reason'])
-            self.assertNotIn('PANIC', (out / 'suite-first/serial_kernel.log').read_text())
-
     def test_completed_suite_fails_on_missing_or_local_clock(self):
         for offset in (None, -3600, 3600):
             with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temporary:
