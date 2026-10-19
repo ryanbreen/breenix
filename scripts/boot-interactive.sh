@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the ARM64 kernel and userspace disk, then boot it once with the serial
+# Build the ARM64 kernel and userspace disk, then boot with the serial
 # console on this terminal. In the default `tests` mode this is the boot-path gate
 # (docs/boot-path.md) with a console you can watch and type into.
 #
@@ -17,14 +17,14 @@
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #   --suite ID,ID,...|all  for --mode suite: several suites in one boot, in order (docs/suites/README.md,
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
-#                        with --gpu-gl); --gate-timeout is each suite's own DONE deadline
+#                        with --gpu-gl); --gate-timeout bounds time without suite progress
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --fbconsole log      draw kernel log lines on the VM screen instead of the boot screen
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
-#   --gate-timeout SECONDS  suite DONE deadline (default 1800), even with --idle-exit 0
+#   --gate-timeout SECONDS  suite progress timeout (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
@@ -49,6 +49,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/host-slots.sh"
 host_slots_start "$ROOT/scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
+BOOT_ARGS=("$@")
 SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
 IDLE_EXIT=300
 GATE_TIMEOUT=1800
@@ -115,6 +116,9 @@ if [ "$MODE" = suite ]; then
     fi
 elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
+fi
+if [ "$MODE" = suite ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+    exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
 fi
 if [ -n "$ONLY" ]; then
     [ "$MODE" = suite ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {

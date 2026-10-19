@@ -44,9 +44,7 @@ def label(mode, suite):
 def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock, only=None):
     progress = BootProgress(serial)
     last_size = 0
-    started = last_output = time.monotonic()
-    # A boot of several suites gives each its own DONE deadline, from when it starts.
-    boundaries = 0
+    last_output = time.monotonic()
     done_at = None
     text = ""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -70,8 +68,6 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             progress.observe(text)
             if mode in COMPLETING_MODES:
                 clock.observe(text)
-                if mode == "suite" and "," in suite and SEQUENCE["boundaries"](text) > boundaries:
-                    boundaries, started = SEQUENCE["boundaries"](text), now
                 result = DONE["completion"](text, mode, suite, only)
                 if result is not None:
                     if result[1].startswith("fatal kernel output:"):
@@ -89,8 +85,8 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
         elif mode in COMPLETING_MODES and progress.stalled():
             progress.record()
             return "stalled"
-        elif mode == "suite" and gate_timeout > 0 and now - started >= gate_timeout:
-            print(f"==> No suite DONE within {gate_timeout:g}s; stopping the VM", flush=True)
+        elif mode == "suite" and gate_timeout > 0 and now - progress.last_at >= gate_timeout:
+            print(f"==> No suite progress within {gate_timeout:g}s; stopping the VM", flush=True)
             return "deadline"
         elif idle_exit > 0 and now - last_output >= idle_exit:
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)

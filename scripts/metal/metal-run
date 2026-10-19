@@ -108,6 +108,39 @@ def resolve_suites(env, sha, spec):
     return ','.join(ids)
 
 
+def sequence_tools():
+    source = HERE / 'suite-sequence.py' if (HERE / 'suite-sequence.py').exists() else HERE.parent / 'suite-sequence.py'
+    return runpy.run_path(str(source))
+
+
+def resume(args, first_id):
+    """Detached boot-host collector: every retry goes through the ordinary leased boot/build path."""
+    env = host_env()
+    args.resuming = True
+    current = first_id
+
+    def attempt(pending, number):
+        nonlocal current
+        if number > 1:
+            args.suite = ','.join(pending)
+            code = boot(args)
+            if code:
+                return '', code
+            current = args.boot_id
+        directory = f'{STATE}/boots/{current}'
+        print(f'[metal-run] collecting {current}: {",".join(pending)}', flush=True)
+        while in_metal(env, 'test', '-e', directory + '/ended').returncode != 0:
+            time.sleep(2)
+        result = in_metal(env, 'cat', directory + '/serial.txt', capture_output=True, text=True)
+        status = in_metal(env, 'cat', directory + '/exit-status', capture_output=True, text=True, check=True)
+        if result.returncode:
+            print('[metal-run] retained serial unavailable; no provable progress', flush=True)
+            return '', 1
+        return result.stdout, int(status.stdout.strip())
+
+    return sequence_tools()['collect'](args.suite.split(','), attempt)
+
+
 def boot(args):
     is_session = bool(getattr(args, 'session', False))
     attended = bool(getattr(args, 'attended', False))
@@ -207,6 +240,15 @@ def boot(args):
                              (['--readback'] if payload == 'disk-readback' else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
+    args.boot_id = boot_id
+    if args.mode == 'suite' and payload == 'image' and not getattr(args, 'resuming', False):
+        # Pin the commit before detaching, so branch movement cannot change a resumed boot.
+        args.sha = sha
+        with (logs / f'{boot_id}-sequence.log').open('w') as log:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_resume',
+                              json.dumps(vars(args)), boot_id], stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        print(json.dumps({'sequence': boot_id, 'status': 'collecting'}), flush=True)
     return 0
 
 
@@ -307,7 +349,12 @@ def main():
     p.add_argument('--features', choices=(FAULT_FEATURE, TESTING_FEATURE))
     p.add_argument('--suite')
     p.add_argument('--readback', action='store_true')
+    p = sub.add_parser('_resume')
+    p.add_argument('options')
+    p.add_argument('id')
     args = parser.parse_args()
+    if args.command == '_resume':
+        return resume(argparse.Namespace(**json.loads(args.options)), validate_id(args.id))
     if args.command == 'boot':
         return boot(args)
     if args.command == '_build':

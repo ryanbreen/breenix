@@ -21,6 +21,9 @@ BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))
 ROOT = Path(__file__).resolve().parents[1]
 FATAL = json.loads((ROOT / "docs/boot-path.json").read_text())["fatal"] + ["KERNEL PANIC:"]
 test_report_completion = runpy.run_path(str(ROOT / "scripts/test-report-verdict.py"))["completion"]
+# Failed checks are scored after collection. Only these indicate a dead kernel in suite mode.
+SUITE_DEATH = re.compile(r"panicked at kernel/src/|KERNEL PANIC[:!]|!!! SOFT LOCKUP DETECTED !!!|"
+                         r"\[(?:DATA|INSTRUCTION)_ABORT\].*from_el0=0|memory allocation of \d+ bytes failed|allocation error:")
 
 
 def completion(serial, mode, suite, only=None):
@@ -28,7 +31,8 @@ def completion(serial, mode, suite, only=None):
     # A logfile write can stop anywhere in a record; wait for its newline.
     lines = [line.rstrip("\r") for line in serial.split("\n")[:-1]]
     for line in serial.split("\n"):
-        if any(re.search(pattern, line) for pattern in FATAL):
+        if ((not line.startswith(("SUITE ", "SUITE_SEQUENCE ")) and SUITE_DEATH.search(line))
+                if mode == "suite" else any(re.search(pattern, line) for pattern in FATAL)):
             return False, f"fatal kernel output: {line}"
     if mode == "program":
         for line in lines:
@@ -81,11 +85,9 @@ def main():
             parser.error("BREENIX_SUITE_HOLD must be a nonnegative number of seconds")
     done_at = None
     deadline = time.monotonic() + args.timeout
-    # A boot of several suites gives each its own DONE deadline, from when it starts; the
-    # launcher scores them once the VM has stopped (suite-sequence.py score).
+    # Suite timeouts measure progress inactivity; the launcher scores the sequence
+    # after the VM stops (suite-sequence.py score).
     sequence = args.mode == "suite" and "," in args.suite
-    boundaries = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))["boundaries"] if sequence else None
-    started = 0
     while True:
         try:
             serial = args.serial.read_bytes().decode("utf-8", errors="replace")
@@ -94,8 +96,6 @@ def main():
             result = completion(serial, args.mode, args.suite, args.only)
         except FileNotFoundError:
             result = serial = None
-        if sequence and serial is not None and boundaries(serial) > started:
-            started, deadline = boundaries(serial), time.monotonic() + args.timeout
         if result is not None and sequence:
             ok, reason = result
             clock_ok, clock_reason = clock.verdict()
@@ -122,7 +122,7 @@ def main():
         if progress.stalled():
             progress.record()
             return 124
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= (progress.last_at + args.timeout if args.mode == "suite" else deadline):
             print(f"FAIL: no {args.mode} DONE within {args.timeout} seconds")
             return 1
         time.sleep(1)

@@ -80,6 +80,20 @@ class SuiteWatcherTest(unittest.TestCase):
             self.assertEqual(body, data + late)
             return result, elapsed
 
+    def test_sequence_keeps_collecting_after_failed_check_and_suite(self):
+        data = (b'[BOOT_TESTS:FAIL:1]\n[TEST:example:FAIL]\n'
+                b'SUITE directories START cases=1\n'
+                b'SUITE directories DONE passed=0 failed=1 skipped=0 total=1\n'
+                b'SUITE_SEQUENCE RESET time removed=0 changed=0 tcp=0 tcpwait=0\n'
+                b'SUITE time START cases=1\n')
+        late = (b'SUITE_SEQUENCE STALLED time cases=0/1\n'
+                b'SUITE_SEQUENCE DONE suites=2\n')
+        result, _ = self.replay(data, suite="directories,time", late=late)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("completed; stopping", result.stdout)
+        self.assertIn("FAIL directories", result.stdout)
+        self.assertIn("STALLED time", result.stdout)
+
     def test_one_case_completion_is_scored_only_when_requested(self):
         name = CASES[0]
         partial = (f"SUITE directories START cases=1 only={name}\n"

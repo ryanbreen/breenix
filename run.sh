@@ -215,7 +215,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
-            echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
+            echo "  --gate-timeout N           Suite progress timeout in seconds (default 1800)"
             echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
@@ -353,6 +353,10 @@ if [ "$PROBE" = true ]; then
     BOOT_MODE=probe
 elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
+fi
+if [ -n "$SUITE" ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+    exec python3 "$BREENIX_ROOT/scripts/suite-sequence.py" run "$SUITE" \
+        "${SERIAL_LOG_OVERRIDE:-${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}" "$BREENIX_ROOT/run.sh" "${RUN_ARGS[@]}"
 fi
 # The manifests of the suites this boot runs, for the quiet-host check.
 SUITE_MANIFESTS=()

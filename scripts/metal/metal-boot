@@ -161,7 +161,7 @@ class Driver:
         self.last_serial = None
         self.first_text = False
         self.kernel_started = None
-        # In a multi-suite boot, when the running suite started (its START, or the previous one's STALLED).
+        # The latest suite progress record; failed cases and resets are progress too.
         self.suite_started = None
         self.input_clock_alive = None
         self.last_stage = None
@@ -865,11 +865,21 @@ class Driver:
             self.event('payload-started', observed_at=observed_at, seconds=seconds)
             self.phase('Test payload running: interrupts masked, halted')
             self.last_stage = 'metal-hang started'
-        if self.kernel_started and self.fatal_at is None and any(p.search(line) for p in self.fatal_patterns):
+        suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
+        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        if (self.kernel_started and self.fatal_at is None and not suite_record
+                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if len(suites(self.args)) > 1 and re.search(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED ', line):
+        if self.args.mode == 'suite' and re.match(r'^(?:SUITE |SUITE_SEQUENCE )', line):
             self.suite_started = observed_at
+            # Suite work extends the safety ceiling; diagnostics alone do not.
+            if self.lease_ceiling is not None:
+                ceiling = observed_at + MODE_DEADLINE_SECONDS['suite']
+                if ceiling > self.lease_ceiling:
+                    self.lease_ceiling = ceiling
+                    if self.claimed:
+                        m.update_lease(self.id, ceilingAt=ceiling)
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
         if '[init] shell ready' in line:
@@ -891,11 +901,14 @@ class Driver:
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line, input_kind(self.args)):
                 stages.pop(0)
-        if (self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+        suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
+                      else re.fullmatch(r'SUITE ' + re.escape(self.args.suite or '') +
+                                        r' DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+', line)) if self.args.mode == 'suite' else True
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
                 and (self.args.mode != 'shell' or self.shell_sent)):
             self.final_seen = True
-        if (self.final_marker and self.final_seen and not any(self.required_stages)
-                and self.disk_evidence_seen()
+        if (self.final_marker and self.final_seen and (self.args.mode == 'suite' or not any(self.required_stages))
+                and (self.args.mode == 'suite' or self.disk_evidence_seen())
                 and not session(self.args)
                 and (self.args.mode != 'console' or self.console_done)
                 and self.fatal_at is None and not self.completion_reported):
@@ -1143,9 +1156,9 @@ class Driver:
             if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
                 raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
             return
-        # Each suite of a multi-suite boot has the deadline from when it started.
+        # Suite deadlines measure inactivity; other modes retain their boot deadline.
         if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
-            raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
+            raise Finish(m.EXIT_SHORT, 'suite progress stalled' if self.args.mode == 'suite' else 'the mode deadline passed with stages missing')
 
     # Power.
     def power_on(self):
