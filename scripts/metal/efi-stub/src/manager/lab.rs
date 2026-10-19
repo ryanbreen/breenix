@@ -311,25 +311,45 @@ unsafe fn load_path(boot: &BootServices, port: &[u8], out: &mut [u8; 1024]) -> O
         let Some(length) = path_length(path.cast()) else { continue };
         let bytes = core::slice::from_raw_parts(path.cast::<u8>(), length);
         if node_of(bytes, node::MESSAGING, node::MAC) == Some(mac) && node_of(bytes, node::MESSAGING, node::IPV4).is_some() {
-            let has_uri = node_of(bytes, node::MESSAGING, node::URI).is_some();
-            let total = length + if has_uri { 0 } else { uri.len() } + END_NODE.len();
-            if total <= out.len() {
-                out[..length].copy_from_slice(bytes);
-                let mut at = length;
-                if !has_uri {
+            // The child's own path, with its URI node (often an empty one before an HTTP boot has run) replaced by
+            // the recorded one, or the recorded one after it.
+            let mut at = 0;
+            let mut fits = true;
+            let mut replaced = None;
+            for (kind, subtype, node_bytes) in Nodes::new(bytes) {
+                let piece = if kind == node::MESSAGING && subtype == node::URI {
+                    replaced = Some(node_bytes.len());
+                    uri
+                } else {
+                    node_bytes
+                };
+                if at + piece.len() + uri.len() + END_NODE.len() > out.len() {
+                    fits = false;
+                    break;
+                }
+                out[at..at + piece.len()].copy_from_slice(piece);
+                at += piece.len();
+            }
+            if fits {
+                if replaced.is_none() {
                     out[at..at + uri.len()].copy_from_slice(uri);
                     at += uri.len();
                 }
                 out[at..at + END_NODE.len()].copy_from_slice(&END_NODE);
-                found = Some(total);
+                let mut kinds = [0u8; 96];
+                let kinds_len = options::kinds(bytes, &mut kinds);
+                match replaced {
+                    Some(len) => say!("test loop: the port's HTTP boot child is {}; its {}-byte URI node replaced by the recorded URI",
+                                      core::str::from_utf8(&kinds[..kinds_len]).unwrap_or("?"), len),
+                    None => say!("test loop: the port's HTTP boot child is {}; the recorded URI appended",
+                                 core::str::from_utf8(&kinds[..kinds_len]).unwrap_or("?")),
+                }
+                found = Some(at + END_NODE.len());
                 break;
             }
         }
     }
     (boot.free_pool)(handles.cast());
-    if found.is_some() {
-        say!("test loop: loading through the port's HTTP boot child with the recorded URI");
-    }
     found
 }
 

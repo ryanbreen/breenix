@@ -722,7 +722,8 @@ Starting an entry:
   firmware's boot options are vendor device paths without a URI node, so the manager loads the boot image through
   the port instead: `LoadImage` with `BootPolicy` set, as a boot manager loads a load-file device (sections 3.1.2
   and 24.7), of the recorded path when a load-file handle covers it, otherwise of the port's own HTTP boot child
-  with the recorded URI node. When the firmware has no such handle, or refuses the load, the manager sets `BootNext`
+  with its URI node replaced by the recorded one (or the recorded one added). When the firmware has no such handle,
+  or refuses the load, the manager sets `BootNext`
   to the HTTP boot option and resets, and the firmware boots that option as its own (one more POST). Either way the
   firmware fetches the boot URL itself, as under the one-time `UefiHttp` override; the manager prints which path it
   took.
