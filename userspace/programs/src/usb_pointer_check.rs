@@ -373,10 +373,13 @@ fn host(axes: &str, mut seq: usize, width: u32, height: u32, tally: &mut Tally) 
         );
         let target = if axes == "relative" { relative_target } else { (x, y) };
         let moved = name.starts_with("move");
+        // A move case whose expected position is where the pointer already is
+        // (an earlier step having failed) measures nothing, and fails.
+        let measurable = !moved || !near(before, target);
         let (state, passed) = wait_for(&|s| {
             // Button and wheel cases must not move the pointer.
             let position = if moved { near(s, target) } else { near(s, (before.0, before.1)) };
-            position && s.2 == buttons && s.3 == wheel
+            measurable && position && s.2 == buttons && s.3 == wheel
         });
         // A relative move shows its kind when the pointer moved somewhere the
         // requested position does not explain.
