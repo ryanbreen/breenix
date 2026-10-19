@@ -270,7 +270,8 @@ def stub_only(args):
     out, tmp = paths(args)[1:]
     if not args.inner:
         environment = dict(os.environ, CARGO_BUILD_JOBS='4', BREENIX_SLOT_WORKTREE=args.stub,
-                           BREENIX_SLOT_COMMIT=args.sha)
+                           BREENIX_SLOT_COMMIT=args.sha,
+                           PATH=str(Path.home() / '.cargo/bin') + os.pathsep + os.environ.get('PATH', ''))
         try:
             return subprocess.call([sys.executable, str(HELPER), 'supervise', '--', sys.executable,
                                     str(Path(__file__).resolve()), '--inner', *sys.argv[1:]], env=environment)
