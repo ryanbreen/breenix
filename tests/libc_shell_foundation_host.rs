@@ -120,6 +120,7 @@ pub mod dns {
         SendError,
         RecvError,
         Timeout,
+        ResolutionDeadline,
         ParseError,
         ServerError(u8),
         NoAddress,
@@ -143,6 +144,7 @@ pub mod dns {
         }
         Err(match name {
             "temporary.example" => DnsError::Timeout,
+            "deadline.example" => DnsError::ResolutionDeadline,
             "noaddress.example" => DnsError::NoAddress,
             _ => DnsError::ServerError(3),
         })
@@ -456,6 +458,8 @@ fn legacy_hostname_numeric_hosts_and_errors() {
         assert!(netdb::gethostbyname(b"missing.invalid\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 1);
         assert!(netdb::gethostbyname(b"temporary.example\0".as_ptr()).is_null());
+        assert_eq!(*pthread::__h_errno_location(), 2);
+        assert!(netdb::gethostbyname(b"deadline.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 2);
         assert!(netdb::gethostbyname(b"noaddress.example\0".as_ptr()).is_null());
         assert_eq!(*pthread::__h_errno_location(), 4);
