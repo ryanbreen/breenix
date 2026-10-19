@@ -1521,8 +1521,8 @@ fn reclaim_work_queued() -> bool {
         || crate::arch_without_interrupts(|| !PARKED_PROCESS_RECLAIMS.lock().is_empty())
 }
 
-/// Block on the scheduler's timer heap for `interval_ns`: the block, yield and
-/// halt sequence of `sys_nanosleep` and `net::rx_poll`'s `sleep_one_tick`.
+/// Block on the scheduler's timer heap for `interval_ns`, releasing the CPU
+/// immediately rather than retaining it in HLT until the next timer tick.
 fn reclaim_daemon_sleep(interval_ns: u64) {
     use crate::task::thread::ThreadState;
 
@@ -1538,7 +1538,7 @@ fn reclaim_daemon_sleep(interval_ns: u64) {
     scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
     scheduler::yield_current();
     loop {
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
             break;
         }

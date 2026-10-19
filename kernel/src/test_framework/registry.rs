@@ -8411,6 +8411,8 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
             let process = manager.get_process_mut(pid).expect("created pty process");
             process.fd_table.alloc(FdKind::PtyMaster(pair.clone()))
         };
+        // Removed rows are dropped after the process-manager guard.
+        let mut removed = alloc::vec::Vec::new();
         let result = fd
             .map_err(|_| TestResult::Fail("pty fd alloc failed"))
             .map(|fd| {
@@ -8454,16 +8456,17 @@ fn test_arm64_pty_ioctl_path() -> TestResult {
                 result
             });
 
-        let (removed, reclaim) = {
+        let reclaim = {
             let mut manager_guard = crate::process::manager();
             let manager = manager_guard.as_mut().expect("process manager initialized");
             let process = manager.get_process_mut(pid).expect("created pty process");
             let reclaim = crate::task::process_task::defer_process_resources(process);
             crate::task::process_task::release_process_resources(process);
             manager.remove_from_ready_queue(pid);
-            (manager.remove_process(pid), reclaim)
+            removed.push(manager.remove_process(pid));
+            reclaim
         };
-        drop(removed);
+        removed.clear();
         let queued = crate::task::process_task::enqueue_process_reclaim(reclaim);
         pty::close_master_ref(&pair);
         if !queued {
