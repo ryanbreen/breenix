@@ -20,7 +20,7 @@ fn finalize(text: String, tokens: u32, registers: usize) -> (String, u32) {
     (text.trim_end_matches('\0').to_string(), tokens)
 }
 
-pub(super) fn shape(pipe: u32) -> (String, u32) {
+fn shape(pipe: u32) -> (String, u32) {
     let mut c = Code::default();
     let a: Vec<_> = (0..16).map(|i| c.input(i)).collect();
     let x = c.input(16);
@@ -234,7 +234,7 @@ impl Asm {
     }
 }
 
-pub(super) fn sampled(pipe: u32) -> (String, u32) {
+fn sampled(pipe: u32) -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
     let one = s.k(1);
@@ -409,7 +409,7 @@ pub(super) fn sampled(pipe: u32) -> (String, u32) {
     s.finish()
 }
 
-pub(super) fn gradient() -> (String, u32) {
+fn gradient() -> (String, u32) {
     let mut c = Code::default();
     let a: Vec<_> = (0..16).map(|i| c.input(i)).collect();
     let y = c.input(17);
@@ -519,7 +519,7 @@ impl Asm {
 /// the vertices rotating between passes. Both are `Code::triangle`'s own helpers, so the
 /// program computes the predicate the probe's routine 23 does; it is about half the
 /// length of one with three edge copies, which on Parallels compiled for 0.43 to 0.75 s.
-pub(super) fn triangle() -> (String, u32) {
+fn triangle() -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
     let one = s.k(1);
@@ -558,7 +558,7 @@ pub(super) fn triangle() -> (String, u32) {
     s.finish()
 }
 
-pub(super) fn spans() -> (String, u32) {
+fn spans() -> (String, u32) {
     let mut s = Asm::new();
     let z = s.k(0);
     let one = s.k(1);

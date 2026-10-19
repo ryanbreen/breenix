@@ -1758,5 +1758,4 @@ fn runtime_zero_operands(declarations: &str, body: &str) -> String {
 #[path = "emitted_tests.rs"]
 mod emitted_tests;
 
-#[cfg(not(test))]
 mod pipelines;

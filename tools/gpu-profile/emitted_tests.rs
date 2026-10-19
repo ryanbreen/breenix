@@ -550,19 +550,13 @@ fn triangle_pipeline_matches_the_model_predicate() {
 
 #[test]
 fn committed_catalogue_matches_generator_text_and_token_counts() {
-    let directory = std::path::Path::new(file!()).parent().unwrap()
+    let committed = std::path::Path::new(file!()).parent().unwrap()
         .join("../../kernel/src/gpu/virgl/pipelines");
-    let module = std::fs::read_to_string(directory.join("mod.rs")).unwrap();
-    for pipe in 2..16 {
-        let (text, tokens) = match pipe {
-            8 => pipelines::spans(),
-            14 => pipelines::gradient(),
-            15 => pipelines::triangle(),
-            10..=13 => pipelines::shape(pipe),
-            _ => pipelines::sampled(pipe),
-        };
-        let name = format!("{pipe}.tgsi");
-        assert_eq!(std::fs::read_to_string(directory.join(&name)).unwrap(), text, "{name}");
-        assert!(module.contains(&format!("({pipe}, Program {{kind: pipe::SHADER_FRAGMENT, text: include_bytes!(\"{name}\"), tokens: {tokens}}})")), "{name} token count");
+    let generated = std::env::temp_dir().join(format!("gpu-catalogue-{}", std::process::id()));
+    pipelines::generate(&generated);
+    for name in (2..16).map(|p| format!("{p}.tgsi")).chain(["mod.rs".to_string()]) {
+        assert_eq!(std::fs::read(committed.join(&name)).unwrap(),
+            std::fs::read(generated.join(&name)).unwrap(), "{name}");
     }
+    std::fs::remove_dir_all(generated).unwrap();
 }
