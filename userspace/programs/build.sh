@@ -222,6 +222,7 @@ echo "[3/3] Installing std binaries..."
 # All std binaries to install
 # Format: "binary_name:elf_name" (elf_name defaults to binary_name.elf)
 STD_BINARIES=(
+    "gpu_fault_acceptance"
     "fifo_fs_test"
     # hello_std_real replaces hello_world on disk
     "hello_std_real:hello_world"

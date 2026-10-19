@@ -334,7 +334,13 @@ if [ -n "$HOSTKEYS_SOCKET" ]; then
         --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
     HOSTKEYS_PID=$!
 fi
-python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$MODE" \
+# Terminal profiles end in an intentional panic or fatal abort, not probe's
+# program completion. Their stopped serials are judged by the profile check below.
+WATCH_MODE=$MODE
+if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",gpu_fault_acceptance,"* || ",${BREENIX_KERNEL_FEATURES:-}," == *",capture_panic_oracle,"* ]]; then
+    WATCH_MODE=default
+fi
+python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \
@@ -370,6 +376,11 @@ fi
 # This special profile intentionally panics; judge its stopped serial as well.
 if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",capture_panic_oracle,"* ]]; then
     if ! python3 "$ROOT/scripts/check-gpu-panic.py" "$SERIAL_LOG"; then
+        [ "$code" -ne 0 ] || code=1
+    fi
+fi
+if [ "$GPU_GL" -eq 1 ] && [[ ",${BREENIX_KERNEL_FEATURES:-}," == *",gpu_fault_acceptance,"* ]]; then
+    if ! python3 "$ROOT/scripts/check-gpu-fault-routing.py" "$SERIAL_LOG"; then
         [ "$code" -ne 0 ] || code=1
     fi
 fi

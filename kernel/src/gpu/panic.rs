@@ -5,9 +5,9 @@ use super::console::{HEIGHT, WIDTH};
 use super::*;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 use core::sync::atomic::AtomicU8;
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 use noto_sans_mono_bitmap::{get_raster, FontWeight, RasterHeight};
 use virgl::emergency::{Command, Queue};
 
@@ -17,11 +17,11 @@ const CELLS: usize = COLS * ROWS;
 const BG: u32 = 0xff6e1216;
 const FG: u32 = 0xffffebeb;
 /// The glyph each cell was given, kept apart from the draw requests that carry it.
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 static SHOWN: [AtomicU8; CELLS] = [const { AtomicU8::new(b' ') }; CELLS];
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 static PREPARATION_FINISHED: AtomicBool = AtomicBool::new(false);
 static TERMINAL: AtomicBool = AtomicBool::new(false);
 /// Fatal takeover intentionally ends scheduler progress for the rest of this boot.
@@ -133,7 +133,7 @@ impl Drop for Access {
     }
 }
 
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub(super) fn initialized() {
     INITIALIZED.store(true, Ordering::Release);
 }
@@ -143,7 +143,7 @@ pub(super) fn invalidate() {
 }
 
 struct Screen {
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     observed: AtomicBool,
     console: console::Console,
     queue: Queue,
@@ -152,13 +152,13 @@ struct Screen {
     glyphs: Vec<(usize, usize)>,
     bind: Command,
     flush: Command,
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     reads: [Command; 2],
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     backing: Arc<Pages>,
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     first: Pages,
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     pitch: usize,
 }
 
@@ -177,7 +177,7 @@ pub(super) fn prepare() -> Result<(), i64> {
     })
     .flatten()
     .ok_or(EIO)?;
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     let (backing, pitch) = with_core(|core| {
         let r = core.resources.get(&c.target)?;
         Some((r.backing.clone(), r.pitch as usize))
@@ -279,7 +279,7 @@ pub(super) fn prepare() -> Result<(), i64> {
         WIDTH,
         HEIGHT,
     ));
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     let reads = [1, 2].map(|i| {
         Command::new(virgl::transfer_from_host(
             Tag::Background,
@@ -295,10 +295,10 @@ pub(super) fn prepare() -> Result<(), i64> {
             pitch as u32,
         ))
     });
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     let first = Pages::new(backing.count()).ok_or(ENOMEM)?;
     let screen = Box::into_raw(Box::new(Screen {
-        #[cfg(feature = "capture_panic_oracle")]
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         observed: AtomicBool::new(false),
         console: c,
         queue,
@@ -306,13 +306,13 @@ pub(super) fn prepare() -> Result<(), i64> {
         glyphs,
         bind,
         flush,
-        #[cfg(feature = "capture_panic_oracle")]
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         reads,
-        #[cfg(feature = "capture_panic_oracle")]
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         backing,
-        #[cfg(feature = "capture_panic_oracle")]
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         first,
-        #[cfg(feature = "capture_panic_oracle")]
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         pitch,
     }));
     let old = with_core(|core| {
@@ -353,7 +353,7 @@ impl Screen {
             };
             let (request, word) = self.glyphs[row * COLS + column];
             self.draws[request].patch(word, (glyph - 32) as u32 * self.console.glyph_width);
-            #[cfg(feature = "capture_panic_oracle")]
+            #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
             SHOWN[row * COLS + column].store(glyph, Ordering::Relaxed);
         }
     }
@@ -403,7 +403,7 @@ impl Screen {
     }
     /// The pixel the layout above puts at (x, y): each cell's glyph at scale 2,
     /// coverage-blended (gpu.md section 2) like the suite's console check.
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     fn expected(&self, x: usize, y: usize) -> u32 {
         let gw = self.console.glyph_width as usize;
         if x < 40 || y < 32 {
@@ -428,7 +428,7 @@ impl Screen {
     /// Device readback of the bound panic target (gpu-abi.md, READBACK's two-poison
     /// observation), then each of the target's pixels against `expected`. Returns the
     /// mismatch count and the first mismatch when the two reads agree.
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     fn observe(&self, deadline: u64) -> Option<(u64, Option<(usize, usize, u32, u32)>)> {
         let bytes = self.pitch * HEIGHT as usize;
         let mut a = [0u8; PAGE];
@@ -538,16 +538,16 @@ pub fn show(title: &str, headline: &str, details: &[(&str, &str)], stage: &str, 
     let s = unsafe { &*screen };
     let deadline = crate::arch_impl::aarch64::timer::rdtsc() + frequency * 2;
     if !(s.queue.drain(deadline) && s.show(title, headline, details, stage, log, deadline)) {
-        #[cfg(feature = "capture_panic_oracle")]
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         report(s, false, deadline);
         return;
     }
-    #[cfg(feature = "capture_panic_oracle")]
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     report(s, true, deadline);
 }
 
 /// The capture build's screen check, on serial after the panic record.
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 fn report(s: &Screen, shown: bool, deadline: u64) {
     let result = if shown { s.observe(deadline) } else { None };
     s.observed.store(result.is_some(), Ordering::Release);
@@ -576,7 +576,7 @@ fn report(s: &Screen, shown: bool, deadline: u64) {
     line.newline();
 }
 
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub fn test_ready() -> bool {
     !crate::platform_config::is_qemu()
         || (INITIALIZED.load(Ordering::Acquire)
@@ -584,7 +584,7 @@ pub fn test_ready() -> bool {
                 || (console::active() && PREPARATION_FINISHED.load(Ordering::Acquire))))
 }
 
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub fn test_with_locks(f: impl FnOnce()) {
     let Some(_core) = CORE.try_lock() else {
         return;
@@ -600,7 +600,7 @@ pub fn test_with_locks(f: impl FnOnce()) {
     });
 }
 
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub(super) fn preparation_finished() {
     PREPARATION_FINISHED.store(true, Ordering::Release);
 }

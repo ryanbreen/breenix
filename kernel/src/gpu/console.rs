@@ -238,7 +238,7 @@ impl Console {
             WIDTH,
             HEIGHT,
             true,
-            counted || cfg!(feature = "capture_panic_oracle"),
+            counted || cfg!(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")),
         )?;
         build.ids.push(target);
         let atlas = resource(ctx, kind::TEXTURE, format::R8, gw * 95, 16, false, true)?;
@@ -588,7 +588,7 @@ pub fn pump() {
                 if super::panic::prepare().is_ok() {
                     PANIC_EPOCH.store(epoch, Ordering::Release);
                 }
-                #[cfg(feature = "capture_panic_oracle")]
+                #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
                 super::panic::preparation_finished();
             }
         }
@@ -618,7 +618,7 @@ pub fn pump() {
     }
 }
 
-#[cfg(feature = "capture_panic_oracle")]
+#[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 pub(super) fn panic_with_lock(f: impl FnOnce()) {
     if !HANDOFF.load(Ordering::Acquire) {
         return;
