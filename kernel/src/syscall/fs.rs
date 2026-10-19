@@ -3588,7 +3588,13 @@ fn handle_procfs_getdents64(
     let pid_dir = dir_path
         .strip_prefix("/proc/")
         .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
-    let fixed: &[&str] = if pid_dir { &crate::fs::procfs::PID_DIR_ENTRIES } else { &[] };
+    let fixed: &[&str] = if pid_dir {
+        &crate::fs::procfs::PID_DIR_ENTRIES
+    } else if dir_path == "/proc/breenix" {
+        &["testing", "ext2", "frames"]
+    } else {
+        &[]
+    };
     let names = || [".", ".."].into_iter().chain(listed.iter().map(String::as_str)).chain(fixed.iter().copied());
 
     // The records are built in one buffer, no larger than the caller's.
