@@ -1541,7 +1541,8 @@ fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32) {
         let q = &h.q;
         let what = if h.submit { "submission" } else { "sync" };
         post(&|t| {
-            write!(t, "[gpu] watchdog: {} {} ctx {} cmd {:#x} unanswered {} ms", what, h.serial, h.ctx, q.cmd, h.age_ms)
+            write!(t, "[gpu] watchdog: {} {} ctx {} failed after {} ms", what, h.serial, h.ctx, h.age_ms)?;
+            if q.entry != 0 { write!(t, " cmd {:#x}", q.cmd) } else { Ok(()) }
         });
         let notified = match q.entry {
             0 => "returned",

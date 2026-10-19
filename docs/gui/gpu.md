@@ -309,12 +309,13 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   backing stays held, even after callers have received EIO. The watchdog examines the outstanding
   submissions at least once every 250 ms.
 - **The watchdog's account.** For each submission or synchronous request the watchdog fails, the kernel
-  log gets `[gpu] watchdog:` lines naming the request (serial, context, command, time waited), its entry
-  in control queue 0 (requests are numbered in the order they were made available) and descriptor head,
-  whether a completed doorbell write covered that entry, the latest entry the device returned, the used
-  ring's index as the device wrote it and as the driver took it, the time since the device last returned
-  a request, and the oldest request the device holds; a catalogue warm-up step on the device and answers
-  withheld by test point 31 are named. `kgpu` posts the lines to the kernel log's notice list outside the
+  log gets `[gpu] watchdog:` lines naming the request (serial, context, time waited, and its command while
+  the device holds it), its entry in control queue 0 (requests are numbered in the order they were made
+  available) and descriptor head, whether a completed doorbell write covered that entry or the device
+  already returned it, the latest entry the device returned, the used ring's index as the device wrote it
+  and as the driver took it, the time since the device last returned a request, and the oldest request
+  the device holds; a catalogue warm-up step on the device and answers withheld by test point 31 are
+  named. `kgpu` posts the lines to the kernel log's notice list outside the
   core's lock, so no GPU path masks interrupts to write them. At most four accounts are kept between two
   `kgpu` passes; accounts beyond them and lines that find no free notice are counted in a `dropped` line.
 - **Device errors quarantine one context; resets are for the device.** A submission the device answers with
