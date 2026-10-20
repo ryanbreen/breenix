@@ -1319,6 +1319,10 @@ if [ "$VMWARE" = true ]; then
         echo "ERROR: vmrun not found. Is VMware Fusion installed?"
         exit 1
     fi
+    if ! command -v mcopy >/dev/null 2>&1; then
+        echo "ERROR: mcopy not found. Install mtools to seed the VMware boot disk."
+        exit 1
+    fi
     prune_vmware_inventory
 
     # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
@@ -1477,7 +1481,9 @@ if [ "$VMWARE" = true ]; then
     trap 'exit 143' TERM
 
     # Copy VMDKs into the bundle
-    cp "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
+    # Seed this run's boot disk; keep the reusable image above seed-free.
+    # This step also runs with --no-build, before VMware power-on.
+    python3 "$BREENIX_ROOT/scripts/vmware/boot-seed.py" "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
     EXT2_VMDK_ARG=""
     if [ -f "$VMWARE_DIR/ext2-data.vmdk" ]; then
         cp "$VMWARE_DIR/ext2-data.vmdk" "$VM_BUNDLE/ext2-data.vmdk"

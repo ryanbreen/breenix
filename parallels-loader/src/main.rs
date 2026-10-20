@@ -281,6 +281,7 @@ fn main() -> Status {
             match source {
                 arm64_boot_contract::BOOT_SEED_EFI_RNG => "efi-rng",
                 arm64_boot_contract::BOOT_SEED_TPM => "tpm",
+                arm64_boot_contract::BOOT_SEED_HOST_FILE => "host-file",
                 _ => "none",
             }
         );

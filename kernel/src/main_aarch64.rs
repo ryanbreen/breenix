@@ -690,6 +690,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         let source = match config.boot_seed_source {
             arm64_boot_contract::BOOT_SEED_EFI_RNG => kernel::random::BootSeedSource::EfiRng,
             arm64_boot_contract::BOOT_SEED_TPM => kernel::random::BootSeedSource::Tpm,
+            arm64_boot_contract::BOOT_SEED_HOST_FILE => kernel::random::BootSeedSource::HostFile,
             _ => kernel::random::BootSeedSource::None,
         };
         kernel::random::take_boot_seed(source, &mut config.boot_seed);
