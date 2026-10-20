@@ -15,6 +15,11 @@ def manifest(suite, **fields):
     return json.dumps(dict(id=suite, categories=[dict(id="case", cases=[dict(id="one"), dict(id="two")])], **fields))
 
 
+def skeleton(suite):
+    """A manifest whose every category is planned: no cases, so no binary."""
+    return json.dumps(dict(id=suite, categories=[dict(id="later", cases=[])]))
+
+
 class ResolveTests(unittest.TestCase):
     def reader(self, manifests, efforts=()):
         files = {f"docs/suites/{suite}.json": text for suite, text in manifests.items()}
@@ -23,21 +28,24 @@ class ResolveTests(unittest.TestCase):
 
     def test_all_orders_first_and_last_and_leaves_out_what_the_target_cannot_run(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
-                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True)},
-                           efforts=("disk", "plain", "nomanifest", "gpu", "screen"))
+                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),
+                            "later": skeleton("later")},
+                           efforts=("disk", "plain", "nomanifest", "gpu", "screen", "later"))
         ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", False, read)
         self.assertEqual(ids, ["screen", "plain", "disk"])
-        self.assertEqual(dict(skipped), {"nomanifest": "no manifest", "gpu": "needs a 3D GPU"})
+        self.assertEqual(dict(skipped), {"nomanifest": "no manifest", "gpu": "needs a 3D GPU", "later": "no cases yet"})
         ids, _ = SEQUENCE["resolve"]("all", "arm64-qemu", True, read)
         self.assertEqual(ids, ["screen", "plain", "gpu", "disk"])
 
     def test_a_list_runs_in_the_given_order_and_is_refused_where_isolation_needs_another_place(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
-                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True)})
+                            "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),
+                            "later": skeleton("later")})
         self.assertEqual(SEQUENCE["resolve"]("screen,plain,disk", "vmware", True, read)[0], ["screen", "plain", "disk"])
         self.assertEqual(SEQUENCE["resolve"]("disk", "vmware", True, read)[0], ["disk"])
         for spec, why in (("plain,screen", "runs first"), ("disk,plain", "runs last"), ("plain,plain", "twice"),
-                          ("plain,missing", "no manifest"), ("plain,gpu", "3D GPU"), ("Plain", "not a suite id")):
+                          ("plain,missing", "no manifest"), ("plain,gpu", "3D GPU"), ("Plain", "not a suite id"),
+                          ("later", "no cases yet")):
             with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, why):
                 SEQUENCE["resolve"](spec, "x86-metal", False, read)
 

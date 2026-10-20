@@ -1,10 +1,13 @@
 //! Effort-suite manifests (`docs/suites/<id>.json`, see `docs/suites/README.md`).
 //!
-//! Every manifest has the shape Vigil reads, with ids that are lowercase words joined by
-//! '-'. Each manifest's suite binary exists and is built and installed, and the
+//! Each manifest has the shape Vigil reads, with ids that are lowercase words joined by
+//! '-'. A manifest with cases has a suite binary that is built and installed, and the
 //! categories and cases in the table its `main` runs (the `static` Suite in
-//! `userspace/programs/src/suite_<id>.rs`, read from the parsed source) are the
-//! manifest's, in the same order with the same titles. Every suite source has a manifest.
+//! `userspace/programs/src/suite_<id>.rs`, read from the parsed source) are the manifest's
+//! categories that have cases, in the same order with the same titles. Each suite source has
+//! a manifest. A category with no cases yet is planned: the binary leaves it out, and a
+//! manifest in which each category is planned is a skeleton with no suite source
+//! (docs/suites/README.md, "Planned categories").
 //!
 //! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
 //! docs/efforts/README.md).
@@ -44,6 +47,19 @@ struct Manifest {
     id: String,
     title: String,
     categories: Vec<Category>,
+}
+
+impl Manifest {
+    /// Each category is planned: the suite has no cases, no source and no binary yet.
+    fn is_skeleton(&self) -> bool {
+        self.categories.iter().all(|category| category.cases.is_empty())
+    }
+}
+
+/// A manifest value in which each category has an empty case list (`Manifest::is_skeleton`).
+fn is_skeleton_value(manifest: &Value) -> bool {
+    manifest["categories"].as_array().into_iter().flatten()
+        .all(|category| category["cases"].as_array().is_some_and(|cases| cases.is_empty()))
 }
 
 fn text<'a>(object: &'a Map<String, Value>, key: &str, at: &str, errors: &mut Vec<String>) -> &'a str {
@@ -181,8 +197,9 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                     errors.push(format!("{cat_at}: category id {:?} appears twice", category.id));
                 }
                 let mut cases = Vec::new();
+                // An empty list is a planned category: its cases arrive with the lane that implements it.
                 match value.get("cases") {
-                    Some(Value::Array(case_list)) if !case_list.is_empty() => {
+                    Some(Value::Array(case_list)) => {
                         let mut case_ids = HashSet::new();
                         for (k, case_value) in case_list.iter().enumerate() {
                             let case_at = format!("{cat_at} cases[{k}]");
@@ -194,7 +211,7 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                             }
                         }
                     }
-                    _ => errors.push(format!("{cat_at}: \"cases\" must be a non-empty array")),
+                    _ => errors.push(format!("{cat_at}: \"cases\" must be an array")),
                 }
                 categories.push(Category { entry: category, cases });
             }
@@ -478,6 +495,13 @@ fn suite_manifests_match_their_binaries() {
         let id = &manifest.id;
         let module = id.replace('-', "_");
         let source_rel = format!("userspace/programs/src/suite_{module}.rs");
+        if manifest.is_skeleton() {
+            // A suite with no cases cannot run, so it has no source, binary or install entry yet.
+            if root.join(&source_rel).exists() || bins.iter().any(|(name, _)| *name == format!("suite-{id}")) {
+                errors.push(format!("{id}: each category is planned, but {source_rel} or its binary exists; list its cases"));
+            }
+            continue;
+        }
         let Ok(source) = fs::read_to_string(root.join(&source_rel)) else {
             errors.push(format!("{id}: no suite source at {source_rel}"));
             continue;
@@ -507,12 +531,15 @@ fn suite_manifests_match_their_binaries() {
                 suite.id, suite.title, manifest.title
             ));
         }
-        if categories != manifest.categories {
+        // The binary runs the categories that have cases; planned ones wait for their lanes.
+        let populated: Vec<Category> =
+            manifest.categories.into_iter().filter(|category| !category.cases.is_empty()).collect();
+        if categories != populated {
             errors.push(format!(
                 "{id}: the categories and cases in {source_rel} differ from docs/suites/{id}.json\n\
                  binary:\n{}\nmanifest:\n{}",
                 describe(&categories),
-                describe(&manifest.categories)
+                describe(&populated)
             ));
         }
     }
@@ -646,6 +673,29 @@ fn sdk_record_tables_are_read_exactly() {
 }
 
 #[test]
+fn planned_categories_have_empty_case_lists_only() {
+    let dir = std::env::temp_dir().join(format!("suite-manifests-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let read = |categories: &str| {
+        let path = dir.join("s.json");
+        fs::write(&path, format!(r#"{{"id": "s", "title": "S", "area": "A", "summary": "S.", "binary": "/sbin/suite-s", "categories": {categories}}}"#)).unwrap();
+        let mut errors = Vec::new();
+        let manifest = read_manifest(&path, &mut errors);
+        (manifest, errors)
+    };
+    let (manifest, errors) = read(r#"[{"id": "later", "title": "Later", "cases": []}]"#);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(manifest.unwrap().is_skeleton());
+    let (manifest, errors) = read(r#"[{"id": "now", "title": "Now", "cases": [{"id": "a", "title": "A"}]}, {"id": "later", "title": "Later", "cases": []}]"#);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(!manifest.unwrap().is_skeleton());
+    for bad in [r#"[{"id": "later", "title": "Later"}]"#, r#"[{"id": "later", "title": "Later", "cases": {}}]"#, "[]"] {
+        assert!(!read(bad).1.is_empty(), "{bad}");
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn c_case_tables_are_read_exactly() {
     let table = "const struct libc_case libc_cases[] = {\n    { \"a-b\", a_b },\n    { \"c\", c },\n    { 0, 0 },\n};\n";
     assert_eq!(c_case_table(table).unwrap(), ["a-b", "c"]);
@@ -742,6 +792,7 @@ fn suites_using_time_or_concurrency_require_timing_metadata() {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|ext| ext != "json") { continue; }
         let manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        if is_skeleton_value(&manifest) { continue; }
         let id = manifest["id"].as_str().unwrap();
         let source = fs::read_to_string(root.join(format!(
             "userspace/programs/src/suite_{}.rs", id.replace('-', "_")
