@@ -746,25 +746,14 @@ pub(crate) fn give_back() -> i64 {
 
 /// Map the display (the caller owns it) and fill all of it with `colour` (BGRX), then FLUSH it.
 pub(crate) fn paint(colour: [u8; 4]) -> Result<(), String> {
-    let info = crate::show::fbinfo()?;
-    let mut width: u64 = 0;
-    // SAFETY: the kernel writes the mapped width into this live value.
-    let addr = unsafe { raw::syscall1(SYS_FB_MMAP, &mut width as *mut u64 as u64) as i64 };
-    if addr <= 0 {
-        return Err(format!("fb_mmap {}", outcome(addr)));
-    }
-    let stride = info.stride as usize * 4;
-    for y in 0..info.height as usize {
-        // SAFETY: fb_mmap mapped `height` rows of `stride` bytes at `addr`.
-        let row = unsafe { core::slice::from_raw_parts_mut((addr as usize + y * stride) as *mut u8, info.width as usize * 4) };
-        for px in row.chunks_exact_mut(4) {
-            px.copy_from_slice(&colour);
-        }
-    }
-    match flush(0, 0, info.width as i32, info.height as i32) {
-        0 => Ok(()),
-        r => Err(format!("FLUSH {}", outcome(r))),
-    }
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r)))?;
+    let mode=modes.modes[modes.current as usize];
+    let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r)))?;
+    let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height).map_err(|r|format!("gpu-display: scanout target {}",outcome(r)))?;
+    context.begin(target,mode.width,mode.height);context.clear(u32::from_le_bytes([colour[0],colour[1],colour[2],255]));
+    let result=context.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|context.present(target)).map(|_|());
+    libbreenix::gpu::resource_destroy(target);
+    result.map_err(|r|format!("gpu-display: GPU draw/present {}",outcome(r)))
 }
 
 #[repr(C)]
@@ -783,6 +772,7 @@ fn flush(x: i32, y: i32, w: i32, h: i32) -> i64 {
     unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const FbDrawCmd as u64) as i64 }
 }
 
+// gpu-display: B7 replaces retired fb_mmap/FLUSH painting with a GPU present; exact restoration stays.
 fn composition_takeover_giveback() -> CaseResult {
     interface()?;
     let (before, _) = screen()?;
