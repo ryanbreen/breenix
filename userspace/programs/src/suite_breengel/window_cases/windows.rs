@@ -42,6 +42,7 @@ pub(crate) const WINDOWS: &[Case] = &[
     pictured!("distinct-content", "Sixteen live windows each composite their own pixels, never another window's", windows_distinct_content),
     pictured!("raw-client", "A client using the raw libbreenix calls, without Breengel, creates, commits and destroys a window", windows_raw_client),
     pictured!("every-target", "Window creation works on this target's backend and reports the backend by name", windows_every_target),
+    pictured!("commit-waits-render", "Pending render fences are not composed and failed renders cannot replace the front", windows_commit_waits_render),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -1281,4 +1282,43 @@ interface()?;
     want_ok(libbreenix::gpu::readback(w.c.buffer[0],[0,0,16,16],&mut pixels,64,&mut record),"20.2","gpu-window: backend target readback")?;
     let word=|o|u32::from_le_bytes(record[o..o+4].try_into().unwrap());
     ensure(word(0)==2 && word(16)==caps.backend && word(20)==4,"20.2","gpu-window: target readback is not this GPU backend's record v2")
+}
+// gpu-window: §2.2 render handoff must not publish a pending target, and must refuse a failed render fence.
+fn windows_commit_waits_render()->CaseResult {
+    interface()?;
+    for error in [false,true] {
+        let mut k=super::composition::compositor()?;
+        let p=super::composition::Placed::new(20,20,16,16,0,7);
+        let w=W::new(16,16,3)?;super::composition::show(&mut k,&w,&p)?;super::composition::compose(&mut k)?;
+        let (_,old)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+        let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+        let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r))).cite("17.3")?;
+        c.begin(w.c.buffer[a.buffer as usize],16,16);c.clear(0xff112233);
+        let stream=c.encoded().to_vec();
+        use libbreenix::gpu::{self,abi as ga};
+        libbreenix::test_control::arm(ga::test_point::WITHHOLD_FENCE,0,if error{ga::test_point::WITHHOLD_ONE}else{ga::test_point::WITHHOLD_DEPTH}).cite("21")?;
+        let mut fences=Vec::new();
+        for _ in 0..if error{1}else{4} {let (r,s)=gpu::submit(c.handle(),&stream);want_ok(r,"17.3","gpu-window: pending render")?;fences.push(s.fence);}
+        for &fence in &fences {want_errno(gpu::wait(c.handle(),fence,0).0,ETIMEDOUT,"17.3","gpu-window: render must still be pending")?;}
+        if error {
+            want_errno(gpu::wait(c.handle(),fences[0],3_000_000_000).0,abi::errno::EIO,"17.3","gpu-window: held render watchdog")?;
+            let commit=w.commit(a.buffer,&[full(&w.c)]);
+            ensure(commit.err()==Some(-(abi::errno::EIO as i64)),"17.3","gpu-window: COMMIT accepted a failed render fence")?;
+        } else {
+            w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
+            let (pending,_)=super::composition::screen()?;
+            super::composition::screen_is(&pending,&[p],"gpu-window: scanout while the new render is pending")?;
+            let release=gpu::target_create(0,1,1).map_err(|r|format!("release target {}",outcome(r))).cite("17.3")?;
+            c.begin(release,1,1);c.clear(0xff000000);
+            let (r,last)=gpu::submit(c.handle(),c.encoded());want_ok(r,"17.3","gpu-window: release held render fences")?;
+            gpu::resource_destroy(release);
+            want_ok(gpu::wait(c.handle(),last.fence,2_000_000_000).0,"17.3","gpu-window: completed render")?;
+            super::composition::compose(&mut k)?;
+            let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+            ensure(front.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: completed render did not become the front")?;
+        }
+        libbreenix::test_control::disarm_all().cite("21")?;
+        if error {let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+            ensure(front==old,"17.3","gpu-window: failed render changed the previous front")?;}
+    }Ok(())
 }
