@@ -632,7 +632,9 @@ pub fn list_windows(out: &mut [WindowInfo]) -> Result<usize, Error> {
 ///
 /// Returns (width, height) of the window, or (0, 0) when it has no frame newer than
 /// the last read. The pixel data is copied to `dst`. Reading a frame consumes it: a
-/// client waiting in `mark_window_dirty` for that frame is released.
+/// client waiting in `mark_window_dirty` for that frame is released. If `dst` is
+/// smaller than width * height * 4, only the dimensions are returned; the frame
+/// remains pending and the caller must retry with enough space.
 pub fn read_window_buffer(buffer_id: u32, dst: &mut [u8]) -> Result<(u32, u32), Error> {
     let dst_ptr = dst.as_ptr() as u64;
     let cmd = FbDrawCmd {

@@ -954,8 +954,13 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     if buf.generation == buf.last_read_gen {
                         return SyscallResult::Ok(0); // 0 = no new data
                     }
-                    buf.last_read_gen = buf.generation;
-                    let copy_bytes = buf.size.min(max_bytes as usize);
+                    let dims = ((buf.width as u64) << 32) | buf.height as u64;
+                    // A resize may outgrow the compositor's destination. Report the
+                    // dimensions without consuming or releasing this frame so it can retry.
+                    if (max_bytes as usize) < buf.size {
+                        return SyscallResult::Ok(dims);
+                    }
+                    let copy_bytes = buf.size;
                     let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
                     // Copy page by page since MAP_SHARED pages are not contiguous
                     let mut offset = 0usize;
@@ -972,7 +977,7 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         }
                         offset += chunk;
                     }
-                    let dims = ((buf.width as u64) << 32) | buf.height as u64;
+                    buf.last_read_gen = buf.generation;
                     let released = buf.waiting_thread_id.take().is_some();
                     drop(reg);
                     if released {

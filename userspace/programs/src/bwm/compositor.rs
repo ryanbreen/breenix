@@ -47,8 +47,33 @@ struct Surface {
     width: u32,
     height: u32,
     pixels: Vec<u32>,
-    /// The texture holds a complete client frame.
+    /// The CPU snapshot holds a complete client frame, even if its upload failed.
+    valid: bool,
+    /// The texture holds the CPU snapshot.
     shown: bool,
+}
+
+impl Surface {
+    fn upload(&mut self, context: u64) -> Result<(), String> {
+        if self.texture == 0 {
+            self.texture = gpu::texture_create(abi::format::B8G8R8A8, self.width, self.height)
+                .map_err(|e| format!("window {} texture: errno {}", self.window_id, -e))?;
+        }
+        let (r, _) = gpu::upload(
+            context,
+            self.texture,
+            [0, 0, self.width, self.height],
+            as_bytes(&self.pixels),
+            self.width * 4,
+            abi::upload_source::B8G8R8A8,
+            abi::purpose::IMAGE,
+        );
+        if r != 0 {
+            return Err(format!("window {} upload: errno {}", self.window_id, -r));
+        }
+        self.shown = true;
+        Ok(())
+    }
 }
 
 pub struct Compositor {
@@ -59,6 +84,7 @@ pub struct Compositor {
     next: usize,
     desktop: u64,
     surfaces: Vec<Surface>,
+    read_pixels: Vec<u32>,
     appbar_top: i32,
 }
 
@@ -83,6 +109,7 @@ impl Compositor {
             next: 0,
             desktop,
             surfaces: Vec::new(),
+            read_pixels: Vec::new(),
             appbar_top: height.saturating_sub(appbar_height) as i32,
         })
     }
@@ -97,27 +124,19 @@ impl Compositor {
             }
         }
         let mut fresh = Self::open(self.width, self.height, self.height - self.appbar_top as u32)?;
-        for mut s in core::mem::take(&mut self.surfaces) {
+        fresh.surfaces = core::mem::take(&mut self.surfaces);
+        fresh.read_pixels = core::mem::take(&mut self.read_pixels);
+        for s in &mut fresh.surfaces {
             s.texture = 0;
-            if s.shown {
-                s.shown = false;
-                if let Ok(texture) = gpu::texture_create(abi::format::B8G8R8A8, s.width, s.height) {
-                    s.texture = texture;
-                    let (r, _) = gpu::upload(
-                        fresh.ctx.handle(),
-                        texture,
-                        [0, 0, s.width, s.height],
-                        as_bytes(&s.pixels),
-                        s.width * 4,
-                        abi::upload_source::B8G8R8A8,
-                        abi::purpose::IMAGE,
-                    );
-                    s.shown = r == 0;
-                }
-            }
-            fresh.surfaces.push(s);
+            s.shown = false;
         }
+        // Install first: a failed restoration must retain the snapshots for another retry.
         *self = fresh;
+        for s in &mut self.surfaces {
+            if s.valid {
+                s.upload(self.ctx.handle())?;
+            }
+        }
         Ok(())
     }
 
@@ -179,6 +198,7 @@ impl Compositor {
                         width: 0,
                         height: 0,
                         pixels: Vec::new(),
+                        valid: false,
                         shown: false,
                     });
                     self.surfaces.len() - 1
@@ -186,47 +206,41 @@ impl Compositor {
             };
             let s = &mut self.surfaces[index];
             let wanted = info.width as usize * info.height as usize;
-            if s.pixels.len() != wanted {
-                s.pixels = prefaulted(wanted);
+            if self.read_pixels.len() < wanted {
+                self.read_pixels = prefaulted(wanted);
             }
-            let (w, h) = match graphics::read_window_buffer(s.window_id, as_bytes_mut(&mut s.pixels)) {
-                Ok(dims) => dims,
-                Err(_) => continue,
-            };
-            if w == 0 && h == 0 {
-                continue; // no new frame
+            let mut frame = None;
+            for _ in 0..3 {
+                let (w, h) = match graphics::read_window_buffer(s.window_id, as_bytes_mut(&mut self.read_pixels)) {
+                    Ok(dims) => dims,
+                    Err(_) => break,
+                };
+                if w == 0 && h == 0 {
+                    break; // no new frame; keep the previous snapshot
+                }
+                let needed = w as usize * h as usize;
+                if needed > self.read_pixels.len() {
+                    // The kernel retained the generation and the blocked presenter.
+                    self.read_pixels = prefaulted(needed);
+                    continue;
+                }
+                self.read_pixels.truncate(needed);
+                frame = Some((w, h));
+                break;
             }
-            if w as usize * h as usize != s.pixels.len() || w != info.width {
-                // The window was resized between the listing and the read: this copy is
-                // partial, so it is not shown. The client's next frame replaces it.
-                s.pixels = prefaulted(w as usize * h as usize);
-                s.shown = false;
-                continue;
-            }
-            if s.texture == 0 || s.width != w || s.height != h {
+            let Some((w, h)) = frame else { continue };
+            if s.width != w || s.height != h {
                 if s.texture != 0 {
                     let _ = gpu::resource_destroy(s.texture);
+                    s.texture = 0;
                 }
-                s.texture = gpu::texture_create(abi::format::B8G8R8A8, w, h)
-                    .map_err(|e| format!("window {} texture: errno {}", s.window_id, -e))?;
-                s.width = w;
-                s.height = h;
-                s.shown = false;
             }
-            let (r, _) = gpu::upload(
-                self.ctx.handle(),
-                s.texture,
-                [0, 0, w, h],
-                as_bytes(&s.pixels),
-                w * 4,
-                abi::upload_source::B8G8R8A8,
-                abi::purpose::IMAGE,
-            );
-            if r != 0 {
-                s.shown = false;
-                return Err(format!("window {} upload: errno {}", s.window_id, -r));
-            }
-            s.shown = true;
+            core::mem::swap(&mut s.pixels, &mut self.read_pixels);
+            s.width = w;
+            s.height = h;
+            s.valid = true;
+            s.shown = false;
+            s.upload(self.ctx.handle())?;
             changed = true;
         }
         Ok(changed)
