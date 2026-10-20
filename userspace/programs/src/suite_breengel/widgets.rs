@@ -135,6 +135,7 @@ pub(crate) const WIDGETS: &[Case] = &[
         "An event that changes no widget state is reported as needing no redraw",
         widgets_no_change_ack,
     ),
+    pictured!("scale-2", "Scale-2 widgets double logical geometry and rasterize TrueType labels at twice the size", widgets_scale_2),
 ];
 
 pub(crate) const TEXT_ENTRY: &[Case] = &[
@@ -2668,4 +2669,20 @@ fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
 }
 fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
     sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
+}
+
+// gpu-text: R4 doubles logical geometry and uses DejaVu Sans at 32 px, never replicated 16 px pixels.
+fn widgets_scale_2()->CaseResult {
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("14")?;
+    ensure(modes.modes[modes.current as usize].scale==2,"14","gpu-display: widget case is not in scale-2 mode")?;
+    let theme=Theme::dark();let mut g=Guarded::bgrx(200,80);g.reset(PAPER);
+    Button::new(Rect::new(20,16,120,40),b"OK").draw(&mut g.fb(),&theme);
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").map_err(|e|e.to_string())?;
+    let mut font=CachedFont::new(Font::parse(&bytes).cite("14")?,256);
+    let width=ttf_font::text_width(&mut font,"OK",32.0);
+    same_as(&g,PAPER,"scale-2 TrueType button","14",|fb|{
+        shapes::fill_rect(fb,20,16,120,40,theme.widget_bg);
+        for inset in 0..2 {shapes::draw_rect(fb,20+inset,16+inset,120-2*inset,40-2*inset,theme.border);}
+        ttf_font::draw_text(fb,&mut font,"OK",20+(120-width)/2,20,32.0,theme.text_primary);
+    })
 }
