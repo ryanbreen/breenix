@@ -300,29 +300,6 @@ fn scanout_root_only() -> CaseResult {
     ensure(r == 0, "17.4", format!("root's SCANOUT_READBACK {}; root may read back", outcome(r)))
 }
 
-/// Arm `point`, commit and compose, read back; then disarm, compose again and require a clean
-/// readback of the new frame. Returns the faulted readback's return, pixels and record.
-fn fault(point: u32, seed: u32) -> Result<(i64, Vec<u8>, abi::ObservationRecord, u64, abi::ObservationRecord), libbreenix::suite::CaseError> {
-    let (mut k, w, mut p, _) = one_window(seed)?;
-    let (_, good) = screen()?;
-    p.seed = seed + 1;
-    w.frame(p.seed).cite("17.3")?;
-    libbreenix::test_control::arm(point, 0, 0).map_err(|e| format!("ARM point {point}: {e}")).cite("21")?;
-    let (serial, _) = compose(&mut k)?;
-    let (r, px, rec) = readback_raw();
-    let _ = libbreenix::test_control::disarm_all();
-    let fired = libbreenix::test_control::fired(point).unwrap_or(0);
-    ensure(fired >= 1, "21", format!("test-control point {point} never fired"))?;
-    p.seed = seed + 2;
-    w.frame(p.seed).cite("17.3")?;
-    let (recovered, _) = compose(&mut k)?;
-    let (clean, rec2) = screen()?;
-    ensure(rec2.serial == recovered, "20.3", format!("after the fault was disarmed, the readback names serial {}, not the next composite {recovered}", rec2.serial))?;
-    screen_is(&clean, &[p], "the composite after the fault was disarmed")?;
-    let _ = serial;
-    Ok((r, px, rec, serial, good))
-}
-
 // gpu-display: B6/B7 uses core point 19; a skipped readback transfer must leave poison, then recover.
 fn scanout_fault_skipped_transfer() -> CaseResult {
     let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::SKIP_TRANSFER,15)?;
@@ -347,18 +324,20 @@ let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::STALE_FENCE,
 }
 
 // gpu-display: B6/B7 uses core CORRUPT_PIXEL 22; compare the complete destination, outside damage too.
+// gpu-display: B6/B7 core point 22 corrupts device pixel (0,0); every destination pixel is checked, outside damage included.
 fn scanout_fault_outside_damage() -> CaseResult {
-    interface()?;
-    let (r, px, _, serial, _) = fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXEL, 24)?;
-    ensure(r == 0, "20.3", format!("readback of composite {serial} with corruption outside its damage {}", outcome(r)))?;
-    crate::remember_frame(&px,1280,800,None);
-    let scene = [Placed::new(320, 200, 200, 120, 0, 25)];
-    let f = formula(&scene);
-    let found = (0..1280u32).find(|&x| {
-        let i = ((799 * 1280 + x) * 4) as usize;
-        px[i..i + 4] != f(x, 799)
-    });
-    ensure(found.is_some(), "20.3", "with corrupt-outside-damage armed, the full destination's last row equals the formula: the planted corruption was not found")
+let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXEL,24)?;
+    ensure(status==0 && reason==0,"20.3","gpu-display: corrupt-pixel readback did not complete normally")?;
+    let scene=[Placed::new(320,200,200,120,0,25)];let want=formula(&scene);
+    let mut outside=0usize;
+    for y in 0..s.height {for x in 0..s.width {
+        let different=s.pixels[(y*s.width+x)*4..(y*s.width+x+1)*4]!=want(x as u32,y as u32);
+        if different {
+            ensure(!(320..520).contains(&x) || !(200..320).contains(&y),"20.3","gpu-display: corruption was inside the declared damage")?;
+            outside+=1;
+        }
+    }}
+    ensure(outside>0,"20.3","gpu-display: full-destination comparison did not detect planted corruption outside damage")
 }
 
 // gpu-display: §2.2 record v2 uses boundary 4 on both GPU backends; no legacy device-copy boundary remains.
@@ -371,8 +350,9 @@ interface()?;let (mut k,_w,_p,_)=one_window(26)?;
 fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapshot,u64),libbreenix::suite::CaseError>{
     let (mut k,w,mut p,_)=one_window(seed)?;
     let fired=libbreenix::test_control::fired(point).cite("21")?;
+    p.seed=seed+1;w.frame(p.seed).cite("17.3")?;
     libbreenix::test_control::arm(point,0,0).cite("21")?;
-    p.seed=seed+1;w.frame(p.seed).cite("17.3")?;let (fault_serial,_)=compose(&mut k)?;
+    let (fault_serial,_)=compose(&mut k)?;
     let result=super::composition::gpu_observe(&mut k);
     libbreenix::test_control::disarm_all().cite("21")?;
     ensure(libbreenix::test_control::fired(point).cite("21")?==fired+1,"21",format!("gpu-display: core fault point {point} did not fire exactly once"))?;
