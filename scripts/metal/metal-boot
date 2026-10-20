@@ -949,23 +949,19 @@ class Driver:
             self.shell_sent = True
             self.event('shell-challenge-sent')
 
-    def console_send(self, text):
+    def console_send(self, text, paced=False):
+        """One line to the SOL console; paced sends it a few bytes at a time, since a burst can lose a byte while
+        the shell echoes (#2105)."""
         if attended(self.args):
             raise RuntimeError('attended boots must never send console input')
         # stdin transport keeps a password out of process argv, events and logs.
-        subprocess.run(self.tmux + ['load-buffer', '-'], input=(text + '\r').encode(),
-                       check=True, capture_output=True)
-        subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
-
-    def console_type(self, text):
-        """Types a command a few characters at a time: a burst can lose a byte while the shell echoes (#2105)."""
-        if attended(self.args):
-            raise RuntimeError('attended boots must never send console input')
-        for at in range(0, len(text), 4):
-            subprocess.run(self.tmux + ['send-keys', '-t', 'sol', '-l', '--', text[at:at + 4]], check=True,
-                           capture_output=True)
-            time.sleep(0.04)
-        subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'Enter'], check=True, capture_output=True)
+        data = (text + '\r').encode()
+        step = 4 if paced else len(data)
+        for at in range(0, len(data), step):
+            subprocess.run(self.tmux + ['load-buffer', '-'], input=data[at:at + step], check=True, capture_output=True)
+            subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
+            if paced:
+                time.sleep(0.04)
 
     def challenge_console(self, text, complete=False):
         if xhci_fault(self.args):
@@ -988,26 +984,26 @@ class Driver:
         step = self.console_step
         if step in (0, 3) and 'login: ' in text:
             self.console_step += 1
-            self.console_send(self.site['CONSOLE_USER'])
+            self.console_send(self.site['CONSOLE_USER'], paced=True)
         elif step in (1, 4) and 'Password: ' in text:
             self.console_step += 1
-            self.console_send('deliberately-wrong-password' if step == 1 else self.site['CONSOLE_PASSWORD'])
+            self.console_send('deliberately-wrong-password' if step == 1 else self.site['CONSOLE_PASSWORD'], paced=True)
         elif step == 2 and 'Login incorrect' in text:
             self.console_step = 3
             self.event('console-wrong-password-refused')
         elif step == 5 and re.search(r'bsh [^\n]*>', text):
             self.console_step = 6
-            self.console_send('print("metal-login-ok", 6*7)')
+            self.console_send('print("metal-login-ok", 6*7)', paced=True)
         elif step == 6 and text.strip() == 'metal-login-ok 42':
             self.console_step = 7
             self.event('console-computation-answered')
-            self.console_send('cat /proc/fbcon/check')
+            self.console_send('cat /proc/fbcon/check', paced=True)
         elif step == 7 and complete and text.startswith('fbcon check: '):
             self.console_step = 8
         elif step == 8 and re.match(r'bsh [^\n]*>', text):
             # The prompt after cat: its rows are complete, so typing cannot interleave with them.
             self.console_step = 9
-            self.console_send('exit')
+            self.console_send('exit', paced=True)
         elif step == 9 and '[init] console session ended; restarting getty' in text:
             self.console_step = 10
         elif step == 10 and '[getty] console acquired' in text:
@@ -1201,21 +1197,21 @@ class Driver:
         last = 2 + len(commands)
         if self.run_step == 0 and fresh and text.rstrip().endswith('login:'):
             self.run_step, self.sent_at = 1, self.line_start
-            self.console_send(self.site['CONSOLE_USER'])
+            self.console_send(self.site['CONSOLE_USER'], paced=True)
         elif self.run_step == 1 and fresh and 'Password: ' in text:
             self.run_step, self.sent_at = 2, self.line_start
-            self.console_send(self.site['CONSOLE_PASSWORD'])
+            self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
         elif 2 <= self.run_step <= last and 'Login incorrect' in text:
             raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account')
         elif 2 <= self.run_step < last and fresh and prompt:
             self.sent_at = self.line_start
             self.event('persistent-command', index=self.run_step - 1, of=len(commands))
-            self.console_type(commands[self.run_step - 2])
+            self.console_send(commands[self.run_step - 2], paced=True)
             self.run_step += 1
         elif self.run_step == last and fresh and prompt:
             self.sent_at = self.line_start
             self.run_step = last + 1
-            self.console_type('exit')
+            self.console_send('exit', paced=True)
         elif self.run_step == last + 1 and fresh and text.rstrip().endswith('login:'):
             self.run_step = last + 2
             self.run_done = True

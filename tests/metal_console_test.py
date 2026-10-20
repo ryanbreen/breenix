@@ -158,6 +158,15 @@ class ConsoleTest(unittest.TestCase):
             boot.Driver.console_send(driver, secret)
         self.assertNotIn(secret, repr(run.call_args_list[0].args))
         self.assertEqual(run.call_args_list[0].kwargs['input'], (secret + '\r').encode())
+        # Paced, the secret goes on stdin a few bytes at a time and no piece of it reaches argv.
+        with patch.object(boot.subprocess, 'run') as run, patch.object(boot.time, 'sleep'):
+            boot.Driver.console_send(driver, secret, paced=True)
+        loads = [call for call in run.call_args_list if 'load-buffer' in call.args[0]]
+        self.assertEqual(b''.join(call.kwargs['input'] for call in loads), (secret + '\r').encode())
+        self.assertTrue(all(len(call.kwargs['input']) <= 4 for call in loads))
+        argv = {tuple(call.args[0]) for call in run.call_args_list}
+        self.assertEqual(argv, {tuple(driver.tmux + ['load-buffer', '-']),
+                                tuple(driver.tmux + ['paste-buffer', '-d', '-t', 'sol'])})
         self.assertNotIn(secret, existing.m.Redactor(driver.site)('Password: ' + secret))
 
     def test_disk_root_console_carries_current_boot_intent(self):

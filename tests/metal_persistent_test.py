@@ -188,7 +188,7 @@ class DriverPersistentTest(unittest.TestCase):
         d.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture'}
         d.kernel_started, d.t0 = 1, 0
         sent = []
-        d.console_send = d.console_type = sent.append
+        d.console_send = lambda text, paced=False: sent.append(text)
         offset = 0
 
         def prompt(text):
@@ -213,7 +213,7 @@ class DriverPersistentTest(unittest.TestCase):
         d.site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture'}
         d.kernel_started, d.t0 = 1, 0
         sent = []
-        d.console_send = sent.append
+        d.console_send = lambda text, paced=False: sent.append(text)
         d.dir.mkdir(parents=True, exist_ok=True)
         (d.dir / 'serial.txt').touch()
         (d.dir / 'serial.ts').touch()
