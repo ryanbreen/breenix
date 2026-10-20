@@ -155,6 +155,16 @@ The pixels `(x, y)` with `(x − cx)² + (y − cy)² ≤ r²`, computed in `i64
 
 ### 5.5 `draw_circle(fb, cx, cy, r, color)`
 
+The GPU predicate reflects a candidate into `X ≥ Y ≥ 0`. For r ≥ 1 it selects exactly
+`X² − X + Y² ≤ r² < (X+1)² − (X+1) + Y²`, using two-word integers after bounding both
+absolute offsets by r. At Y=0 the largest satisfying X is r. For X≥1 the expression is
+strictly increasing, so that largest X is unique. Advancing Y changes the expression by
+`2Y+1`; decrementing X changes it by `−2X+2`. These are precisely the midpoint walk's
+error increments, retaining equality on the lower side. Induction therefore yields the
+same X for each Y until X<Y. Reflection yields its eight symmetric pixels. Radius zero
+selects the centre and negative radii select nothing. This is the clean-room derivation
+in `gpu.md` §1.5.1; the literal table below remains the independent check.
+
 The midpoint circle. For `r ≥ 1` the first octant is walked from `(r, 0)`:
 
 ```text
