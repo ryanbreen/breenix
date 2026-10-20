@@ -61,3 +61,25 @@ pub(crate) fn guard_pages()->CaseResult {
     })();
     let _=memory::munmap(page,3*4096);result
 }
+
+// gpu-raster: padding belongs to the caller on both sides of a GPU transfer.
+pub(crate) fn stride_padding()->CaseResult {
+    let mut f=Fixture::new(14,18).cite("3")?;
+    for (source,bpp) in [(ga::upload_source::B8G8R8A8,4usize),(ga::upload_source::R8G8B8,3)] {
+        let stride=14*bpp+20;let mut bytes=vec![0xA5;stride*18];
+        for y in 0..18 {for x in 0..14 {let p=y*stride+x*bpp;
+            bytes[p..p+bpp].copy_from_slice(if bpp==4 {&[33,66,99,255]}else{&[99,66,33]});
+        }}
+        let unchanged=bytes.clone();
+        let (r,_)=gpu::upload(f.context.handle(),f.texture,[0,0,14,18],&bytes,stride as u32,source,ga::purpose::FIXTURE);
+        ensure(r==0,"3","gpu-raster: padded UPLOAD failed")?;
+        ensure(bytes==unchanged,"3","gpu-raster: UPLOAD changed its source or padding")?;
+        f.context.begin(f.target,14,18);f.context.copy(f.texture,&[[0,0,14,18,0,0]]);
+        f.context.submit().and_then(|s|s.wait(2_000_000_000)).map_err(|r|format!("gpu-raster: copy {}",outcome(r))).cite("3")?;
+        let pixels=f.pixels(14,18,76).cite("3")?;
+        for row in pixels.chunks_exact(76) {
+            ensure(row[..56].chunks_exact(4).all(|p|p==[33,66,99,255]),"3","gpu-raster: padded transfer changed a pixel")?;
+            ensure(row[56..].iter().all(|&p|p==0xA5),"3","gpu-raster: READBACK overwrote row padding")?;
+        }
+    }Ok(())
+}

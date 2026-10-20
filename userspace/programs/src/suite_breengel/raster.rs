@@ -497,16 +497,9 @@ fn scene(fb: &mut FrameBuf) {
     font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
+// gpu-raster: §2.2 keeps padding sentinels around UPLOAD and READBACK rows.
 fn raster_stride_padding() -> CaseResult {
-    for &(bpp, stride) in &[(4usize, 14 * 4 + 20), (3, 14 * 3 + 6)] {
-        let g = Guarded::new(14, 18, stride, bpp, bpp == 4);
-        let mut fb = g.fb();
-        scene(&mut fb);
-        step("3, 5", g.sentinels().map_err(|e| format!("{bpp}-byte surface, stride {stride}, after the scene: {e}")))?;
-        fb.clear(PAPER);
-        step("3, 5.9", g.sentinels().map_err(|e| format!("{bpp}-byte surface, stride {stride}, after clear: {e}")))?;
-    }
-    Ok(())
+crate::gpu_checks::stride_padding()
 }
 
 fn raster_surface_validate() -> CaseResult {
