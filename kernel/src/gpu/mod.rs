@@ -83,9 +83,8 @@ const EXAMINE_NS: u64 = 250_000_000;
 /// Initial context grace before catalogue warm-up. Resource creation does not extend it.
 /// It also bounds how long a warm-up step is held for other requests (`WARM_QUIET_NS`).
 const WARM_GRACE_NS: u64 = 20_000_000;
-/// A warm-up step waits until no other request has been sent for this long, for at most
-/// `WARM_GRACE_NS`, so a burst of requests, each sent when the one before it is answered,
-/// is split by a step at most once a grace rather than after each request (#2103).
+/// Quiet interval after other requests are sent or answered. Traffic between warm-up
+/// steps also spaces their starts by at least `WARM_GRACE_NS` (#2103, #2111).
 const WARM_QUIET_NS: u64 = 2_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
@@ -396,8 +395,10 @@ struct Core {
     resetting: bool,
     /// The one catalogue warm-up step the device has, if any.
     warm_step: Option<WarmStep>,
-    /// When a request other than a warm-up step's was last sent to the device.
+    /// When a request other than a warm-up step's was last sent or answered.
     traffic_ns: u64,
+    /// Start of the last warm-up step, to space steps interrupted by other traffic.
+    warm_started_ns: Option<u64>,
     /// Since when the next warm-up step has been held for that traffic.
     warm_held: Option<u64>,
     /// The watchdog's accounts of the requests it failed, for `kgpu` to post, and how
@@ -512,6 +513,7 @@ impl Core {
             resetting: false,
             warm_step: None,
             traffic_ns: 0,
+            warm_started_ns: None,
             warm_held: None,
             hung: [None; HUNG_KEPT],
             hung_dropped: 0,
@@ -985,6 +987,9 @@ impl Core {
     /// after a confirmed reset.
     fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
         let Some(s) = self.syncs.remove(&serial) else { return };
+        if s.warm.is_none() && d.is_some() {
+            self.traffic_ns = now_ns();
+        }
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
             self.fault();
         }
@@ -1744,7 +1749,8 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
 /// context takes the process's resources, and a new resource the process's contexts, in
 /// one wait instead of a round trip a pair (#2103). Each pair has its own outcome, a
 /// success answer or EIO; a signal or a kill ends the wait, and the pairs not yet answered
-/// then fail with EINTR.
+/// then fail with EINTR. A context that ends also fails its unanswered pairs with EIO,
+/// including requests still in the backlog, whose watchdog clock has not started.
 fn attach_all(pairs: &[(u32, u32)]) -> Vec<Result<(), i64>> {
     if pairs.is_empty() {
         return Vec::new();
@@ -1766,13 +1772,15 @@ fn attach_all(pairs: &[(u32, u32)]) -> Vec<Result<(), i64>> {
     })
     .unwrap_or_else(|| alloc::vec![Some(Err(ENODEV)); pairs.len()]);
     let _ = wait_for(None, true, |c| {
-        for (slot, serial) in out.iter_mut().zip(&serials) {
+        for ((slot, serial), &(ctx, _)) in out.iter_mut().zip(&serials).zip(pairs) {
             if slot.is_some() {
                 continue;
             }
             if let Some(d) = c.done.remove(serial) {
                 *slot = Some(if virgl::ok(d.answer) { Ok(()) } else { Err(EIO) });
-            } else if c.syncs.get(serial).is_some_and(|s| s.failed) {
+            } else if c.syncs.get(serial).is_some_and(|s| s.failed)
+                || !c.contexts.get(&ctx).is_some_and(|x| matches!(x.state, CtxState::Creating | CtxState::Live) && !x.dropped)
+            {
                 *slot = Some(Err(EIO));
             }
         }
@@ -1971,8 +1979,9 @@ fn reset_device(tid: u64) {
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
 /// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
-/// A step is held until no other request has been sent for `WARM_QUIET_NS`, for at most
-/// `WARM_GRACE_NS`; while it is held this returns when `kgpu` should look again.
+/// A step waits for `WARM_QUIET_NS` of send/answer quiet, for at most `WARM_GRACE_NS`.
+/// If other traffic followed the preceding step's start, the next start is also at least
+/// `WARM_GRACE_NS` after it; while held this returns when `kgpu` should look again.
 /// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
@@ -1995,6 +2004,8 @@ fn warm_next() -> Option<u64> {
         let now = now_ns();
         let held = *c.warm_held.get_or_insert(now);
         let due = c.traffic_ns.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
+        let due = c.warm_started_ns.filter(|&start| c.traffic_ns >= start)
+            .map_or(due, |start| due.max(start.saturating_add(WARM_GRACE_NS)));
         if now < due {
             return Err(Some(due));
         }
@@ -2034,6 +2045,7 @@ fn warm_next() -> Option<u64> {
                 if let Some(ctx) = c.contexts.get_mut(&id) {
                     ctx.objects = objects;
                 }
+                c.warm_started_ns = Some(now_ns());
                 c.warm_step = Some(WarmStep { ctx: id, pipeline, left: chunks.len() as u32, refused: false, lost: false });
                 for words in chunks {
                     let serial = c.serial();

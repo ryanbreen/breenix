@@ -1103,3 +1103,13 @@ that positive-time rule has no stronger measured negative-control claim here.
 | In the capture-panic test build, confirm scanout binding and flush, then fenced TRANSFER_FROM_HOST_3D twice under complementary poisons; retain the first observation in frames for post-mortem inspection | V section 5.7.6; O: `docs/gui/gpu.md` section 1.8 and the existing 3D transfer layout recorded above. The terminal requests currently reserve their fence identifiers during preparation; device acceptance after later normal requests remains unvalidated (review m5). Normal builds omit the observation buffers and the private target's guest backing. |
 
 | Panic preparation retries at most three times per device epoch, resetting the count on epoch change | O: bounded preparation policy for #2033; three is a Breenix retry budget, independent of device wire values or external driver implementations. |
+
+## Object creation follow-up to PR #2111
+
+| Value or design | Source |
+|---|---|
+| `WARM_QUIET_NS = 2_000_000` ns; defer a catalogue step for send/answer quiet, bounded by the existing `WARM_GRACE_NS = 20_000_000` ns; traffic after a step starts also spaces the next start by that grace | O: Breenix scheduling design for #2103 and the follow-up review of #2111. The 2 ms quiet interval is a Breenix policy choice, not a device requirement or an externally derived constant. The 20 ms grace is the existing bounded warm-up policy of ruling 33 (#1725). |
+| Unanswered batched attaches to a quarantined, reset, dropped or removed context finish with EIO and abandon their answers, including attaches not yet sent | O: `docs/gui/gpu.md` section 1.4.1 requires observing quarantine within 250 ms; abandonment retains device-access holds until completion or confirmed reset. |
+
+Source declaration: this change derives from Breenix's own GPU core, its contract,
+and PR #2111's review findings. No external implementation source was used.
