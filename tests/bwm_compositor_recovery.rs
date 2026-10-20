@@ -11,6 +11,7 @@ struct Device {
     listed: (u32, u32),
     frame: (u32, u32),
     pending: bool,
+    second_pending: bool,
     fail_upload: bool,
     fail_texture: bool,
     uploads: Vec<Vec<u8>>,
@@ -32,15 +33,21 @@ pub mod graphics {
     pub struct WindowInfo { pub buffer_id: u32, pub width: u32, pub height: u32 }
     pub mod cursor_shape { pub const RESIZE_NS: u32 = 1; pub const RESIZE_EW: u32 = 2; pub const RESIZE_NWSE: u32 = 3; pub const RESIZE_NESW: u32 = 4; }
     pub fn list_windows(out: &mut [WindowInfo]) -> Result<usize, &'static str> {
-        super::DEVICE.with(|d| { let d = d.borrow(); out[0] = WindowInfo { buffer_id: 1, width: d.listed.0, height: d.listed.1 }; }); Ok(1)
+        super::DEVICE.with(|d| { let d = d.borrow(); out[0] = WindowInfo { buffer_id: 1, width: d.listed.0, height: d.listed.1 }; });
+        super::DEVICE.with(|d| {
+            if d.borrow().second_pending {
+                out[1] = WindowInfo { buffer_id: 2, ..out[0] };
+                Ok(2)
+            } else { Ok(1) }
+        })
     }
-    pub fn read_window_buffer(_: u32, out: &mut [u8]) -> Result<(u32, u32), &'static str> {
+    pub fn read_window_buffer(id: u32, out: &mut [u8]) -> Result<(u32, u32), &'static str> {
         super::DEVICE.with(|d| {
             let mut d = d.borrow_mut();
-            if !d.pending { return Ok((0, 0)); }
+            if !(if id == 2 { d.second_pending } else { d.pending }) { return Ok((0, 0)); }
             let dims = d.frame;
             let size = dims.0 as usize * dims.1 as usize * 4;
-            if out.len() >= size { out[..size].fill(0x5a); d.pending = false; }
+            if out.len() >= size { out[..size].fill(0x5a); if id == 2 { d.second_pending = false; } else { d.pending = false; } }
             Ok(dims)
         })
     }
@@ -86,7 +93,7 @@ fn resize_between_list_and_read_keeps_the_static_frame() {
     for (listed, actual) in [((2, 2), (4, 4)), ((4, 4), (2, 2)), ((2, 4), (4, 2))] {
         let mut c = open(listed, actual);
         assert!(c.refresh_windows().unwrap());
-        assert_eq!(c.shows_client(&layers()), Some(1));
+        assert_eq!(c.shown_clients(&layers(), None).first().map(|(id, _)| *id), Some(1));
         assert!(!c.refresh_windows().unwrap());
         DEVICE.with(|d| { let d = d.borrow(); assert!(!d.pending); assert_eq!(d.uploads, vec![vec![0x5a; (actual.0 * actual.1 * 4) as usize]]); });
     }
@@ -100,7 +107,7 @@ fn upload_failure_retains_consumed_snapshot_and_reopen_reports_failure() {
     assert!(c.reopen().is_err());
     DEVICE.with(|d| d.borrow_mut().fail_upload = false);
     c.reopen().unwrap();
-    assert_eq!(c.shows_client(&layers()), Some(1));
+    assert_eq!(c.shown_clients(&layers(), None).first().map(|(id, _)| *id), Some(1));
     assert!(!c.refresh_windows().unwrap());
     DEVICE.with(|d| assert_eq!(d.borrow().uploads, vec![vec![0x5a; 16]]));
 }
@@ -112,5 +119,26 @@ fn texture_creation_failure_retains_snapshot_for_retry() {
     assert!(c.reopen().is_err());
     DEVICE.with(|d| d.borrow_mut().fail_texture = false);
     c.reopen().unwrap();
-    assert_eq!(c.shows_client(&layers()), Some(1));
+    assert_eq!(c.shown_clients(&layers(), None).first().map(|(id, _)| *id), Some(1));
+}
+
+#[test]
+fn covered_clients_wait_until_their_pixels_are_exposed() {
+    let mut c = open((4, 4), (4, 4));
+    DEVICE.with(|d| d.borrow_mut().second_pending = true);
+    c.refresh_windows().unwrap();
+    let lower = compositor::Layer { window_id: 1, frame: [[0; 4]; 3], frame_len: 0, content: [0, 0, 4, 4] };
+    let mut upper = compositor::Layer { window_id: 2, frame: [[0; 4]; 3], frame_len: 0, content: [0, 0, 4, 4] };
+    let ids = |layers: &[compositor::Layer]| c.shown_clients(layers, None).into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    assert_eq!(ids(&[lower, upper]), vec![2]);
+    // Moving the covering client uncovers the lower client without a new frame.
+    let lower = compositor::Layer { window_id: 1, frame: [[0; 4]; 3], frame_len: 0, content: [0, 0, 4, 4] };
+    upper = compositor::Layer { window_id: 2, frame: [[0; 4]; 3], frame_len: 0, content: [4, 0, 4, 4] };
+    assert_eq!(ids(&[lower, upper]), vec![2, 1]);
+    // Decorations alone also occlude client content.
+    let lower = compositor::Layer { window_id: 1, frame: [[0; 4]; 3], frame_len: 0, content: [0, 0, 4, 4] };
+    let upper = compositor::Layer { window_id: 2, frame: [[0, 0, 2, 4], [2, 0, 4, 4], [0; 4]], frame_len: 2, content: [4, 0, 4, 4] };
+    assert_eq!(ids(&[lower, upper]), vec![2]);
+    let hidden = compositor::Layer { window_id: 1, frame: [[0; 4]; 3], frame_len: 0, content: [0, 7, 4, 1] };
+    assert!(ids(&[hidden]).is_empty());
 }

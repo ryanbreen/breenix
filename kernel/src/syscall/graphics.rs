@@ -105,11 +105,19 @@ static COMPOSITOR_DIRTY_WAKE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// Wake the compositor thread if it's blocked in compositor_wait (op=23).
-/// Called from input interrupt handlers (mouse, keyboard) to provide low-latency
-/// input response without polling.
+/// Called from pointer input handlers to provide low-latency input response without
+/// polling.
 #[cfg(target_arch = "aarch64")]
 pub fn wake_compositor_if_waiting() {
     COMPOSITOR_FRAME_WQ.wake_up();
+}
+
+/// Wake the compositor for keyboard readiness (a latched Super tap, or bytes admitted to
+/// its stdin). Callers run in interrupt context, the xHCI worker, or task context under
+/// the stdin and pending-key locks, so the wake does not take the scheduler lock inline.
+#[cfg(target_arch = "aarch64")]
+pub fn wake_compositor_for_input() {
+    COMPOSITOR_FRAME_WQ.wake_up_deferred();
 }
 
 /// Clean up all window buffers owned by a terminated process.
