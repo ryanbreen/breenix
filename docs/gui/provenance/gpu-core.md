@@ -977,6 +977,131 @@ The facts these establish, for this host and renderer:
 - A full 2560x1600 readback measured 79,999 µs before and 73,989 µs after, against the 100 ms bound.
 
 
+## SVGA3D DX backend (VMware catch-up)
+
+The VMware backend is `kernel/src/gpu/svga/`: the SVGA3 device and command path (`mod.rs`, `memory.rs`,
+`objects.rs`, `commands.rs`, `wire.rs`), the SVGA3D DX translation of BGL streams (`encode.rs`) and the
+translator of the catalogue's TGSI programs to SM4 tokens (`sm4.rs`). The GPU core reaches it through
+`kernel/src/gpu/dev.rs`, which builds each device operation in the active backend's own commands.
+
+### Sources (ruling 54)
+
+<!-- claim-lint:ok: the rule is gpu.md section 1.9 and ruling 54; the files read are the nine pinned in the table below. -->
+VMware's `device_include` interface headers are allowed as interface facts (`docs/gui/gpu.md` section
+1.9, ruling 54): numeric values, enumerations and structure layouts only, never code, control flow or
+policy. They are the copies distributed in Linux's `drivers/gpu/drm/vmwgfx/device_include/`, pinned by
+commit and digest below; only these VMware-authored header files were read. The vmwgfx driver's C files,
+Mesa's SVGA driver and every other implementation were not read, including while debugging. Microsoft's
+token-format header supplies the SM4 token layout. The G0 VMware spike (`scratch/gpu-spike-vmware`,
+rendering commit `f3d6f9c0f89ad0b6c7405a7149614076ebc4e739`, Breenix's own code written from these same
+headers) was read for the device behaviour its runs established; its rows below cite the spike's Vigil run.
+
+| Key | Header | Pin | SHA-256 |
+|---|---|---|---|
+| S | `svga_reg.h` | Linux `v6.12`, `adc218676eef25575469234709c2d87185ca223a` | `1303b1df3983ea310862d1187a0d01797f3511fa6fc6bf406c9bb779beb4c4a4` |
+| C | `svga3d_cmd.h` | as S | `be97542a60591fccfaf40aaf72738d8ad8a5e7218404410850ab234eb513152c` |
+| D | `svga3d_dx.h` | as S | `3947fda4450d23ffe3a3ad8caf8d22f1512964039256b186463f0ef3a75e1608` |
+| T | `svga3d_types.h` | as S | `0e8b4172666e280837b87fbf8ac7ff8d76b09c3fc96a419688a3569779f80bff` |
+| A | `svga3d_devcaps.h` | as S | `847248f70f01fdf41f3cea3b82a3ba823a48ed1994b73052452d21393802fd63` |
+| SL | `svga3d_limits.h` | as S | `b3f5e85c61b6795cbadfdb2ada87a4bffd59229a090bed022545067bd74e2191` |
+| F | `svga3d_surfacedefs.h` | as S | `920bc0dc1ccdf1bcc0341f4cf7f395cbed94444520e110b6e807214247c543e1` |
+| S4 | `svga_reg.h`, for its explanatory comments on command-buffer statuses | Linux `v4.19`, `84df9525b0c27f3ebc2ebb1864fa62a97fdedb7d` | `9c854b1f24fb42c2281868828c081645f8771f9d56277d92263b18192dee7380` |
+| M | Microsoft `include/directx/D3D12TokenizedProgramFormat.hpp` (the D3D10_SB shader-model-4 token definitions) | microsoft/DirectX-Headers `461ef5138bd30922b44fbad77c4e47662812d2d5` | `5862ef7c8b819f0d02ba73563a9df4dc0e89f11fe59d8f598def39122273c626` |
+
+F was downloaded with the others and supplies no value the backend uses.
+
+### Device, command-buffer and object-table values
+
+| Wire fact used | Header and lines |
+|---|---|
+| Device version `0x90000003`; register indices ID, ENABLE, dimensions, capabilities, CONFIG_DONE, IRQMASK, COMMAND_LOW/HIGH, DEV_CAP, screen-target maxima, MOB maximum, IRQ_STATUS | S:79–208 (`SVGA_MAKE_ID`, register enum) |
+| PCI vendor `0x15ad` and device `0x0406` | the PCI ID Repository, `pci.ids` version 2026.10.17 (SHA-256 `09212c8b854a9571e3d3c8e00f6707a17c289c65e1e25b3f218dd3f42791bc22`), line 23083 and the device lines after it (`15ad VMware`, `0406 SVGA II Adapter (Fusion)`); the registers are BAR0, which this device's PCI configuration header reports (A, PCI Local Bus) and the G0 spike drove |
+| Register command-buffer and guest-backed-object capability bits | S:419,422 |
+| 64-byte command-buffer header: status, error offset, u64 id, flags, byte length, u64 device address, offset, DX context, six reserved words | S:251–303 |
+| Queue 0; device queue 63; NO_IRQ and DX_CONTEXT flags; 512 KB buffer and 32 KB command sizes the device supports, 32 buffers queued per queue | S:251–303; S4:347–415 |
+| Statuses: COMPLETED 1; COMMAND_ERROR 3 writes the failing command's byte offset and stops the queue; QUEUE_FULL, HEADER_ERROR, PREEMPTED, SUBMISSION_ERROR, PARTIAL_COMPLETE | S:268–285; S4:420–488,576–591 |
+| Device-context commands START_STOP_CONTEXT (enable, queue 0) and PREEMPT (queue 0, the ignore-id flag) | S:314–332 |
+| DX-context entry 95; BGRA 240, RGBA 167, R8 192; texture limits 19/20; context/surface limits 77/78; vertex-stream formats R32G32B32A32_UINT 146 and R32G32_FLOAT 224; supported/sample/render bits 0/1/2 and DX vertex-buffer bit 8 | A:78–79,143–145,171,227,248,273,305,321,356–364 |
+| Surface formats BUFFER 37, R32G32B32A32_UINT 47, RGBA 68, R8 93, R32G32_FLOAT 125, BGRA 141; screen-target, vertex-buffer, shader-resource and render-target bind bits 16, 20, 23, 24 | T:196,213,234,259,294,310,351–362 |
+| PT64_1/2 encodings 5/6; object-table indices MOB/surface/context/shader/screen/DX-context 0–5; context object tables RTVIEW 0, SRVIEW 2, ELEMENTLAYOUT 3, BLENDSTATE 4, DEPTHSTENCIL 5, RASTERIZERSTATE 6, DXSHADER 10 | T:1470–1524 |
+| Global table entry widths MOB 16, surface 64, context 8, shader 16, screen 64, DX-context 8 bytes | C:940–997; D:132–136 (sums of packed fields) |
+| SET_OTABLE_BASE64; DEFINE_GB_MOB64, DESTROY_GB_MOB | C:1097–1104,1124–1144; ids C:103,128,155 |
+| Version-1 DEFINE_GB_SURFACE; BIND, DESTROY, UPDATE and READBACK_GB_SURFACE | C:1163–1171,1220–1229,1260–1274; ids C:105–115 |
+| SURFACE_COPY: source and destination image ids, then copy boxes | C:48, T:78–88 (`SVGA3dCopyBox`), T:1448–1452 (`SVGA3dSurfaceImageId`) |
+| Screen targets: DEFINE (stid, size, root, flags, dpi), DESTROY, BIND (image), UPDATE (rect); PRIMARY flag | C:141–144,983–985,1416–1446 |
+| NOP_ERROR 1137, a command the device answers with COMMAND_ERROR (test point 27) | C:157 |
+| DX_DEFINE/BIND/DESTROY_CONTEXT; DX_SET_COTABLE | D:140–157,1555–1560; ids C:166–168,230 |
+| DX_DEFINE_SHADER (id, type, SM4 byte size), DX_BIND_SHADER (context, id, MOB, offset), DX_SET_SHADER; shader types VS 1, PS 2 | D:190–193,1419–1423,1443–1448; T:1253–1263; ids C:173,224,226 |
+| DX_DEFINE/DESTROY_RENDERTARGET_VIEW and _SHADERRESOURCE_VIEW (view, surface, format, TEXTURE2D 3, mip and slice ranges); DX_SET_RENDERTARGETS; DX_SET_SHADER_RESOURCES | D:386–389,182–186,889–903,939–953; T:45; ids C:172,184,208–211 |
+| DX_DEFINE_ELEMENTLAYOUT (input slot, aligned offset, format, per-vertex 0 or per-instance 1, step rate, register); DX_SET_INPUT_LAYOUT; DX_SET_VERTEX_BUFFERS (surface, stride, offset per buffer); DX_SET_TOPOLOGY, TRIANGLELIST 1 | D:43–44,303–320,380–382,1120–1143; T:1159; ids C:180–183,214 |
+| DX_DEFINE_BLEND_STATE (per-target enable, BLENDOP_ONE/BLENDOP_ZERO/BLENDEQ_ADD, write mask 0xf) and DX_SET_BLEND_STATE; DX_DEFINE_DEPTHSTENCIL_STATE (depth off, DEPTH_WRITE_MASK_ALL, COMPARISON_ALWAYS, STENCILOP_KEEP) and its set; DX_DEFINE_RASTERIZER_STATE (FILLMODE_FILL 3, CULL_NONE 1, depth clip on) and its set | D:46–94,393–410,1155–1187,1220–1241,1273–1291; T:739,774–775,799,855,884; ids C:185–187,216–221 |
+| DX_SET_VIEWPORTS (x, y, width, height, depth range as binary32); DX_CLEAR_RENDERTARGET_VIEW (RGBA binary32); DX_PRED_COPY_REGION (destination, source, copy box) | D:537–569,582–588; ids C:197,199,201 |
+| DX_DRAW (vertex count, first vertex); a single instance reads its constant record at the vertex-buffer binding's byte offset | D:234–237,308–312; id C:175; O: ruling 57 (#2019) |
+| DX_MOB_FENCE_64 (u64 value, MOB, offset) | D:1547–1551; id C:239 |
+| Signature trailer: header version `0x08a92d12`, input/output/patch counts; entries of register, semantic name (UNDEFINED 0, POSITION 1), mask, component type 0, precision 0 | D:1365–1415 (names 1365–1366, entry 1398–1404, header 1407–1415) |
+| Header bounds of 256 contexts and 32,768 surfaces | SL:38–39 |
+
+### SM4 token facts (M)
+
+| Fact | Lines of M |
+|---|---|
+| Version token (program type in bits 16–31: pixel 0, vertex 1; major 4, minor 0) and length token (the program's word count) | 55–121 |
+| Instruction token: opcode in bits 0–10, test-nonzero in bit 18, length in bits 24–30 | 123–139,421–458 |
+| Opcodes ADD 0, AND 1, BREAK 2, DISCARD 13, ELSE 18, ENDIF 21, ENDLOOP 22, FTOI 27, FTOU 28, IADD 30, IF 31, IEQ 32, INE 39, ISHL 41, LD 45, LOOP 48, MOV 54, MUL 56, OR 60, RET 62, ULT 79, UMUL 81, USHR 85, UTOF 86, XOR 87, DCL_RESOURCE 88, DCL_INPUT 95, DCL_INPUT_PS 98, DCL_INPUT_PS_SIV 100, DCL_OUTPUT 101, DCL_OUTPUT_SIV 103, DCL_TEMPS 104 | 140–419 |
+| Operand token: component count (four 2, one 1), selection mode (mask 0, swizzle 1, select-one 2) with mask, swizzle or component in bits 4–11, operand type in bits 12–19 (TEMP 0, INPUT 1, OUTPUT 2, IMMEDIATE32 4, RESOURCE 7, NULL 13), index dimension in bits 20–21 with 32-bit immediate indices | 695–1025 |
+| Interpolation modes CONSTANT 1 and LINEAR_NOPERSPECTIVE 4; system value POSITION 1; resource dimension TEXTURE2D 3 and return type FLOAT 5 per component | 1253–1310,2063–2075,2148–2210 |
+
+<!-- claim-lint:ok: the mapping is the table in sm4::arithmetic and sm4::instruction; tests/gpu_svga.rs every_catalogue_program_translates_to_whole_sm4_instructions translates the catalogue. -->
+Each TGSI instruction maps to the SM4 instruction with the same per-component result, from L's
+definition of the TGSI instruction and the SM4 opcode's name in M: `UADD`→`iadd`, `AND`, `OR`, `XOR`,
+`SHL`→`ishl`, `USHR`, `USLT`→`ult`, `USEQ`→`ieq`, `USNE`→`ine`, `UMUL`→`umul` (low half; the high half to
+the null register), `F2I`→`ftoi`, `F2U`→`ftou`, `U2F`→`utof`, `ADD`, `MUL`, `MOV`, `UIF`→`if_nz` on the first
+component, `ELSE`, `ENDIF`, `BGNLOOP`→`loop`, `ENDLOOP`, `BRK`→`break`, `KILL`→`discard_nz` of an all-ones
+immediate, `TXF`→`ld` of the view's `t` register, `END`→`ret`. TGSI immediates become four-component
+literal operands holding the swizzled values. `sm4::translate` refuses any other instruction, operand or
+declaration, naming its line; `tests/gpu_svga.rs` translates the catalogue fragment programs, including the solid and copy texts included from `pipelines/`; SVGA uses its own generated vertex program.
+
+### Black-box device facts
+
+| Fact | Experiment |
+|---|---|
+| The device takes a bare SM4 token stream followed by the signature trailer, without a DXBC container; a resource is declared with a component-less operand | G0 spike, Vigil run `20261016T201245Z-vmware` (`GPU_SPIKE shaders-bound programs=13 format=SM4+VMware-signature`) |
+| An upload is lazy: a SURFACE_COPY of the uploaded surface in the same buffer makes the device read its MOB before the buffer completes; READBACK_GB_SURFACE leaves the MOB unwritten for a surface the host has not modified, so readback copies into a dedicated surface first | #1656 describes an uncommitted scratch boot and its observed outputs: after a fenced update, rewriting the MOB changed 1,024,000 readback pixels; adding SURFACE_COPY kept the uploaded pixels. The experiment commit and run identity were not retained, so this dependency does not yet meet ruling 12 |
+| V1: the device refused each constant-buffer surface tried, 9 of 9. DEFINE_GB_SURFACE of format BUFFER with the constant-buffer bind bit (`1 << 22`) answers COMMAND_ERROR at offset 0 for 256 and 4,096 bytes, with the static or dynamic hint, in version 2, and with format 2; DX_SET_SINGLE_CONSTANT_BUFFER naming one, or a vertex-buffer surface, answers COMMAND_ERROR. A vertex-buffer surface of 4,096 bytes is accepted. The backend therefore passes each draw's constants as one record of a per-instance vertex stream (`sm4`, `encode`) | Vigil run `20261018T212612Z-vmware`, the reconstructed experiment harness at `scratch/cu-v-cb-experiment`, commit `306110d2c92dd1008889b3b86d240414024a6bbb` (committed after the run; its message identifies that reconstruction) (`[svga-exp] E1 cb 256 -> Err((3, 0))` to `E7`, `E6 vb 4096 -> Ok(1)`, `E17`–`E19` `Err((3, 0))`) |
+| V2: a surface defined without a MOB takes a shader-resource view; DX_SET_SHADER_RESOURCES accepts `SVGA3D_INVALID_ID` to unbind a slot; UPDATE_GB_SURFACE and SURFACE_COPY run in a DX-context buffer; DX_PRED_COPY_REGION copies between render-target surfaces | the same run and reconstructed harness commit `306110d2c92dd1008889b3b86d240414024a6bbb` (`E8`–`E16 -> Ok(1)`) |
+| V3: DEFINE_GB_SURFACE of a 16,384x2 target with the screen-target flag answers COMMAND_ERROR on a device whose screen-target maximum is 8,192, so scanout targets larger than that maximum are defined without the flag and are not bound (section 1.7) | Vigil run `20261018T215730Z-vmware` (`COMMAND_ERROR at=0 cmd=1097` with flags `0x1810000`, size `0x4000 x 2`); this run used an uncommitted working tree, and no experiment commit was retained, so its ruling-12 traceability remains incomplete |
+
+### Breenix values and policy
+
+| Value or policy | Source |
+|---|---|
+| Admission: the DX-context entry and each profile format's supported, sampleable and (BGRA, RGBA) render-target bits, texture and screen-target sizes of at least 2560x1600; the two vertex-stream formats' DX vertex-buffer bit, else initialization fails naming them | section 1.6.3 item 1; O |
+| CAPS for backend 5: feature bit 8 from the DX-context entry; one capability set, id 1 (the device-capability entries the profile is read from), version 1; shading level 40 (shader model 4); integer operations, integer texel fetch and region copies from the DX10 instruction set and `DX_PRED_COPY_REGION`; the renderer string empty (the device reports no renderer string) | O; the contract does not define capability-set identifiers for backend 5 (contract follow-up named in the PR) |
+| Table capacities: surfaces min(device, 32,768); MOBs one per surface, eight per DX context and eight for the device; DX contexts min(device, 256) | O, with SL's bounds |
+| Per context: 8,192-byte state MOB (D:1632–1707); view tables of 1,024 entries each (the 256-resource quota, the context's own surfaces and views awaiting removal); one entry each for the fixed states; shader table of `encode::SHADER_IDS` entries, two per pair of the catalogue's rendering pipelines plus `probe_int`, derived from the catalogue (#1921) | O |
+| One program MOB holds the shared vertex program and the fragment programs at 16-byte offsets; each context binds its shader ids into it on first use | O |
+| A draw's constants: eight vectors in a 128-byte record of a per-instance stream (R32G32B32A32_UINT, step rate 1), passed by the vertex program to fragment inputs 1–8 with constant interpolation | V1; O |
+| Clip coordinates `(2p - w) / w` and `(h - 2p) / h` against a viewport of the whole target, built as binary32 with integer code (`gpu_abi::float`) | O; D3D viewport convention |
+| Polling: `kgpu` reaps at 250 µs requested intervals (the 1 kHz ARM64 scheduler tick is 1 ms) while the device holds requests; ARM64 Fusion offers no interrupt this kernel takes | O |
+| Exact object tracking: each define and destroy records its byte offset; COMPLETED applies the recorded effects, COMMAND_ERROR those before the error offset; ids return to their pools when no request owns the object and the device no longer has it; objects a failed buffer leaves are destroyed by the backend's own buffer | O |
+| Reset: preempt queued buffers, wait until each buffer has a terminal status, destroy the objects made before the reset decision in one buffer; the reset is confirmed when that buffer completes | section 1.4.1; O |
+| Upload: UPDATE_GB_SURFACE of the texture's MOB (its packed rows are the backing), a one-texel SURFACE_COPY into a device-owned surface of the same format, fenced | section 1.8 table; #1656 fact |
+| Readback: per band and per poison, a dedicated readback surface of the band's size on a MOB over frames charged like staging, SURFACE_COPY of the band into it, READBACK_GB_SURFACE, destroy, fenced with DX_MOB_FENCE_64; the record names the first pass's surface and MOB | section 1.8; O |
+
+The layer is selected by the `gpu_svga_experimental` kernel feature until VMware's acceptance lands; default
+boots keep the existing VMware presentation. Build and launch, from the checkout root (Mac builds at
+background priority, the VM at normal priority with its window):
+
+```sh
+export CARGO_BUILD_JOBS=4
+# Build the selected kernel separately, then deploy it without rebuilding.
+taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json \
+    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
+    -p kernel --bin kernel-aarch64 --features gpu_svga_experimental
+BREENIX_CATCHUP=1 "$PWD/run.sh" --vmware --no-build --suite gpu
+```
+
+
 ## Parallels catch-up values
 
 The historical #1875 per-step warm-up timings cited in the catalogue derivation

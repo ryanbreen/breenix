@@ -330,18 +330,22 @@ pub fn init() -> usize {
 
         init_entropy_pci();
 
-        // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
-        match vmware::svga3::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VMware SVGA3 GPU initialized");
-                // SVGA3 with VRAM traces provides GPU-level compositing:
-                // BWM writes pixels to VRAM, device monitors and updates display.
-                crate::graphics::set_compositor_backend(
-                    crate::graphics::CompositorBackend::Svga3Stdu,
-                );
-                serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
+        // The DX backend changes the GOP aperture. It starts after the splash
+        // is verified and legacy display writers are stopped, in main_aarch64.
+        if !(crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental")) {
+            // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
+            match vmware::svga3::init() {
+                Ok(()) => {
+                    serial_println!("[drivers] VMware SVGA3 GPU initialized");
+                    // SVGA3 with VRAM traces provides GPU-level compositing:
+                    // BWM writes pixels to VRAM, device monitors and updates display.
+                    crate::graphics::set_compositor_backend(
+                        crate::graphics::CompositorBackend::Svga3Stdu,
+                    );
+                    serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
+                }
+                Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
             }
-            Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
         }
 
         // Initialize AHCI storage driver.

@@ -696,11 +696,39 @@ impl ShellFrameBuffer {
     /// Hash the display memory retained at framebuffer initialization, excluding a shadow.
     pub(crate) fn firmware_hash(&self) -> u64 {
         let mut hash = 14695981039346656037u64;
-        for offset in 0..self.firmware_len {
-            // SAFETY: legacy display backing is retained for the boot's lifetime. The
-            // framebuffer lock excludes kernel canvas writers; volatile reads observe memory.
-            let byte = unsafe { core::ptr::read_volatile((self.firmware_base as *const u8).add(offset)) };
-            hash = (hash ^ byte as u64).wrapping_mul(1099511628211);
+        let mut eat = |byte: u8| hash = (hash ^ byte as u64).wrapping_mul(1099511628211);
+        let (base, len) = (self.firmware_base, self.firmware_len);
+        // The bytes are hashed in address order whatever the load width. The memory is
+        // uncached (Normal non-cacheable or device), where each load costs about the same
+        // whatever its width, so the aligned middle is read sixteen bytes per load.
+        // SAFETY (each load below): legacy display backing is retained for the boot's
+        // lifetime and the framebuffer lock excludes kernel canvas writers; the loads stay
+        // inside [base, base + len) and are not elided, so they observe memory.
+        let byte = |offset: usize| unsafe { core::ptr::read_volatile((base as *const u8).add(offset)) };
+        let mut offset = 0;
+        while offset < len && (base + offset) % 16 != 0 {
+            eat(byte(offset));
+            offset += 1;
+        }
+        while offset + 16 <= len {
+            let (lo, hi): (u64, u64);
+            unsafe {
+                core::arch::asm!(
+                    "ldp {lo}, {hi}, [{p}]",
+                    p = in(reg) base + offset,
+                    lo = out(reg) lo,
+                    hi = out(reg) hi,
+                    options(nostack, readonly, preserves_flags),
+                );
+            }
+            for b in lo.to_le_bytes().into_iter().chain(hi.to_le_bytes()) {
+                eat(b);
+            }
+            offset += 16;
+        }
+        while offset < len {
+            eat(byte(offset));
+            offset += 1;
         }
         hash
     }

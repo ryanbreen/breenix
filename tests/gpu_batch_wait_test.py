@@ -54,18 +54,62 @@ mod virgl {
         pub struct Enc;
         impl Enc { pub fn new() -> Self { Self } pub fn finish(self) -> Option<Vec<super::Words>> { Some(vec![super::Words]) } }
         pub fn warm_pipeline(_: &mut Enc, _: &mut (), _: u32, _: u32, _: u32, _: u32, _: bool, _: u32) {}
+        pub struct TargetRes { pub id: u32, pub format: u32, pub info: super::super::TargetInfo }
+        pub struct SourceRes { pub id: u32, pub format: u32, pub width: u32, pub height: u32 }
     }
 }
+mod svga {
+    use super::*;
+    pub fn ok(answer: u32) -> bool { answer == 1 }
+    pub fn ctx_attach(tag: Tag) -> Request {
+        let Tag::Sync(serial) = tag else { panic!("attach must be synchronous") };
+        assert!(serial > 0);
+        Request
+    }
+    pub fn submit(_: Tag, _: u32, _: Option<u64>, _: encode::Chunk) -> Option<Request> { Some(Request) }
+    pub mod encode {
+        use crate::encode::{SourceRes, TargetRes};
+        use crate::{format, wire};
+        pub struct Chunk;
+        pub fn warm_pipeline(_: &mut (), target: &TargetRes, texel: &SourceRes, _: u32) -> Option<Vec<Chunk>> {
+            assert_eq!((target.id, target.format, texel.id, texel.format, texel.width, texel.height),
+                (2, wire::format::B8G8R8A8_UNORM, 3, wire::format::B8G8R8A8_UNORM, 1, 1));
+            let info = &target.info;
+            assert_eq!((info.width, info.height, info.invalid, info.format), (1, 1, false, format::B8G8R8A8));
+            Some(vec![Chunk])
+        }
+    }
+}
+thread_local! { static SVGA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+mod dev {
+    use super::*;
+    pub fn is_svga() -> bool { SVGA.with(|s| s.get()) }
+    pub fn ok(answer: u32) -> bool { if is_svga() { svga::ok(answer) } else { virgl::ok(answer) } }
+    pub fn ctx_attach(tag: Tag, ctx: u32, id: u32) -> Request {
+        if is_svga() { svga::ctx_attach(tag) } else { virgl::ctx_attach(tag, ctx, id) }
+    }
+    pub fn submit_virgl(tag: Tag, ctx: u32, fence: Option<u64>, words: Words) -> Request {
+        assert!(!is_svga());
+        virgl::submit(tag, ctx, fence, words)
+    }
+    pub fn submit_svga(tag: Tag, ctx: u32, fence: Option<u64>, chunk: svga::encode::Chunk) -> Option<Request> {
+        assert!(is_svga());
+        svga::submit(tag, ctx, fence, chunk)
+    }
+}
+mod format { pub const B8G8R8A8: u32 = 2; }
+struct TargetInfo { width: u32, height: u32, invalid: bool, format: u32 }
 #[derive(Clone, Copy, PartialEq)] enum CtxState { Creating, Live, Quarantined }
 use virgl::{encode, wire};
 const FLIP_Y: bool = false;
 struct Words;
+type WordBuf = Words;
 impl Words { fn page_count(&self) -> usize { 1 } }
 struct WarmStep { ctx: u32, pipeline: u32, left: u32, refused: bool, lost: bool }
 struct Ctx { state: CtxState, dropped: bool, owner: u64, device_alive: bool, warm: u32,
-    warm_after: u64, busy: bool, id: u32, objects: (), vb: u32, scratch: u32, scratch_texture: u32 }
+    warm_after: u64, busy: bool, id: u32, objects: (), dx: (), vb: u32, scratch: u32, scratch_texture: u32 }
 fn ctx() -> Ctx { Ctx { state: CtxState::Creating, dropped: false, owner: 1, device_alive: true,
-    warm: 0, warm_after: 0, busy: false, id: 1, objects: (), vb: 1, scratch: 2, scratch_texture: 3 } }
+    warm: 0, warm_after: 0, busy: false, id: 1, objects: (), dx: (), vb: 1, scratch: 2, scratch_texture: 3 } }
 thread_local! { static CLOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 fn now_ns() -> u64 { CLOCK.with(|c| c.get()) }
 fn notify() {}
@@ -124,10 +168,21 @@ fn wait_for<T>(_: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core)
 }
 '''
         harness = harness.replace("// PRODUCTION_METHODS", function("returned") + function("abandon"))
-        harness += interval + function("attach_all") + function("warm_next")
+        chunks = re.search(r"(?m)^enum Chunks \{[^}]*\}\n", CORE)
+        if chunks is None:
+            raise AssertionError("production enum Chunks is missing")
+        harness += interval + chunks.group(0) + function("attach_all") + function("warm_next")
         harness += r'''
 #[test]
 fn stalled_batched_context_creation_observes_quarantine_without_waiters() {
+    stalled_batch(false);
+}
+#[test]
+fn stalled_svga_batched_context_creation_observes_quarantine_without_waiters() {
+    stalled_batch(true);
+}
+fn stalled_batch(svga: bool) {
+    SVGA.with(|s| s.set(svga));
     let pairs: Vec<_> = (0..256).map(|id| (1, id)).collect();
     assert_eq!(attach_all(&pairs), vec![Err(EIO); 256]);
     with_core(|c| {
@@ -140,6 +195,15 @@ fn stalled_batched_context_creation_observes_quarantine_without_waiters() {
 }
 #[test]
 fn late_sync_and_submit_answers_space_real_warm_steps() {
+    warm_spacing(false);
+}
+#[test]
+fn late_svga_sync_and_submit_answers_space_real_warm_steps() {
+    warm_spacing(true);
+}
+fn warm_spacing(svga: bool) {
+    SVGA.with(|s| s.set(svga));
+    let answer = if svga { 1 } else { 0 };
     with_core(|c| c.contexts.get_mut(&1).unwrap().state = CtxState::Live);
     CLOCK.with(|t| t.set(2_000_000));
     assert_eq!(warm_next(), None);
@@ -148,20 +212,20 @@ fn late_sync_and_submit_answers_space_real_warm_steps() {
         let step = c.warm_step.take().unwrap();
         assert_eq!((step.ctx, step.pipeline, step.left, step.refused, step.lost), (1, 0, 1, false, false));
         let serial = *c.syncs.keys().next().unwrap();
-        c.returned(Done { tag: Tag::Sync(serial), answer: 0, echoed: 0 });
+        c.returned(Done { tag: Tag::Sync(serial), answer, echoed: 0 });
         assert_eq!(c.traffic_ns, 0, "warm answer is not competing traffic");
         c.start_sync(99, Request, 1, &[], &[], None).unwrap();
     });
     CLOCK.with(|t| t.set(4_000_000));
     with_core(|c| {
-        c.returned(Done { tag: Tag::Sync(99), answer: 0, echoed: 0 });
+        c.returned(Done { tag: Tag::Sync(99), answer, echoed: 0 });
         assert!(!c.syncs.contains_key(&99));
         assert_eq!(c.traffic_ns, 4_000_000);
     });
     assert_eq!(warm_next(), Some(22_000_000));
     CLOCK.with(|t| t.set(5_000_000));
     with_core(|c| {
-        c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer: 0, echoed: 0 });
+        c.returned(Done { tag: Tag::Submit { serial: 100, last: true }, answer, echoed: 0 });
         assert_eq!(c.traffic_ns, 5_000_000);
     });
     assert_eq!(warm_next(), Some(22_000_000));

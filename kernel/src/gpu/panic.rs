@@ -162,21 +162,44 @@ struct Screen {
     pitch: usize,
 }
 
+/// The private console on SVGA, kept for the reset epoch it was built in.
+static SVGA_CONSOLE: spin::Mutex<Option<console::Console>> = spin::Mutex::new(None);
+
+/// SVGA has no terminal queue, so no panic screen: refuse it. The console's atlas is still
+/// transferred (MODES' `console_fixture_bytes`), once per reset epoch, and the console is
+/// kept undrawn, so the epoch's later attempts return without building another.
+fn keep_svga_atlas() -> Result<(), i64> {
+    let epoch = with_core(|core| core.epoch).ok_or(EIO)?;
+    if SVGA_CONSOLE.lock().as_ref().is_some_and(|c| c.epoch == epoch) {
+        return Err(EIO);
+    }
+    // Released outside the lock: dropping it destroys its context.
+    let stale = SVGA_CONSOLE.lock().take();
+    drop(stale);
+    let c = console::Console::new()?;
+    *SVGA_CONSOLE.lock() = Some(c);
+    Err(EIO)
+}
+
 /// Called after console handoff, again when the console recovers from a reset. A private context keeps ordinary console draws out of the panic state.
 pub(super) fn prepare() -> Result<(), i64> {
     if VALID.load(Ordering::Acquire) {
         return Ok(());
     }
-    let mut c = console::Console::new()?;
-    c.draw()?;
-    let (mut objects, queue) = with_core(|core| {
-        Some((
-            core.contexts.get(&c.context)?.objects.clone(),
-            core.dev.as_ref()?.terminal_queue(),
-        ))
+    if with_core(|core| matches!(core.dev, Some(dev::Device::Svga(_)))).ok_or(EIO)? {
+        return keep_svga_atlas();
+    }
+    let queue = with_core(|core| match core.dev.as_ref()? {
+        dev::Device::Virgl(device) => Some(device.terminal_queue()),
+        dev::Device::Svga(_) => None,
     })
     .flatten()
     .ok_or(EIO)?;
+    let mut c = console::Console::new()?;
+    c.draw()?;
+    let mut objects = with_core(|core| Some(core.contexts.get(&c.context)?.objects.clone()))
+        .flatten()
+        .ok_or(EIO)?;
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     let (backing, pitch) = with_core(|core| {
         let r = core.resources.get(&c.target)?;

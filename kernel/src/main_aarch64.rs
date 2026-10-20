@@ -1160,7 +1160,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // log and the console TTY, and gives them the screen when the splash
         // gives way.
         kernel::console::attach();
+    } else if kernel::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
+        // The SVGA core can provide the console's screen without a firmware framebuffer.
+        // Attach installs the core and prepares that screen on this path too.
+        kernel::console::attach();
     }
+    // A core-owned screen also needs the render thread to pump owner restoration,
+    // even when firmware supplied no display for the framebuffer paths above.
+    let has_display = has_display || kernel::gpu::display_active();
 
     // Initialize input devices (capability-based detection)
     if kernel::platform_config::is_qemu() {

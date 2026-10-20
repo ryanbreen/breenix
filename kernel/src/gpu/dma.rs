@@ -92,7 +92,8 @@ impl DmaBox {
     pub fn new(len: usize) -> DmaBox {
         // The entire first and last cache lines belong to this allocation, so
         // invalidating a device response cannot discard a neighbour's CPU writes.
-        let line = dcache_line() as usize;
+        // SVGA command headers reserve the low six address bits for the queue.
+        let line = (dcache_line() as usize).max(64);
         let layout = Layout::from_size_align(len.max(1).next_multiple_of(line), line)
             .expect("DMA buffer layout");
         // SAFETY: nonzero layout; the allocation is owned until Drop.
