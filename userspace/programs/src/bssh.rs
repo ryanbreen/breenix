@@ -8,7 +8,7 @@
 //!   Default authentication: publickey with --identity, else ~/.ssh/id_ed25519
 //!   (an unencrypted OpenSSH Ed25519 key or a PKCS#1 PEM RSA key).
 //!   --publickey-wrong names the identity's public key but signs with a fresh
-//!   random key; the server's refusal exits 77.
+//!   random key. A refusal by the server (USERAUTH_FAILURE) exits 77.
 
 use libbreenix::fs;
 use libbreenix::io;
@@ -103,10 +103,8 @@ fn main() {
     {
         if matches!(e, libbreenix::ssh::SshError::Auth) {
             eprintln!("bssh: authentication failed");
-            // Reserved for server USERAUTH_FAILURE in the Auth error arm.
-            if matches!(opts.auth_choice, AuthChoice::PublicKey { wrong_key: true }) {
-                std::process::exit(77);
-            }
+            // Reserved for the server's USERAUTH_FAILURE: a refused key, signature or account.
+            std::process::exit(77);
         } else {
             eprintln!("bssh: handshake failed: {:?}", e);
         }
