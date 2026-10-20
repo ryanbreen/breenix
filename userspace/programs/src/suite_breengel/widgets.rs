@@ -1325,6 +1325,7 @@ fn widgets_layout_stack() -> CaseResult {
     )
 }
 
+// gpu-text: R3 adds certified DejaVu label pixels to the unchanged five-widget focus ring checks.
 fn widgets_focus_ring() -> CaseResult {
     let rect = Rect::new(20, 20, 100, 24);
     let theme = Theme::dark();
@@ -1369,6 +1370,11 @@ fn widgets_focus_ring() -> CaseResult {
             }
         }
     }
+    g.reset(PAPER);b.set_focused(true);b.draw(&mut g.fb(),&theme);
+    same_as(&g,PAPER,"focused TrueType button","14.3",|fb|{
+        shapes::fill_rect(fb,20,20,100,24,theme.widget_bg);shapes::draw_rect(fb,20,20,100,24,theme.border);
+        sans_center(fb,b"OK",rect,theme.text_primary);shapes::draw_rect(fb,18,18,104,28,theme.focus_ring);
+    })?;
     snapshot(&g)
 }
 
