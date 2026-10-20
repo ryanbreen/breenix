@@ -3,7 +3,7 @@
 //! cases live in `widgets.rs`.
 
 use crate::*;
-use libgfx::framebuf::{Format, Rect, SurfaceError};
+use libgfx::framebuf::{Format, Rect};
 use libgfx::{alpha, blit, work};
 
 pub(crate) const RASTER: &[Case] = &[

@@ -42,7 +42,7 @@ use libbui::widget::tab_bar::TabBar;
 use libfont::{CachedFont, Font};
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
-use libgfx::{bitmap_font, diagnostics, font as font5x7, shapes, ttf_font};
+use libgfx::{bitmap_font, font as font5x7, shapes, ttf_font};
 use libicon::icon::{Icon, IconBase, IconMouse, IconState};
 use libicon::icons::{arrow::ArrowIcon, home::HomeIcon, save::SaveIcon, search::SearchIcon};
 use libicon::particles::{Particle, ParticlePool};
@@ -149,7 +149,7 @@ fn unjoined() -> CaseResult {
 const TEXT_PARTS: &[&[Case]] = &[raster::TEXT, widgets::FONTWATCH];
 static TEXT: [Case; total(TEXT_PARTS)] = join(TEXT_PARTS);
 
-const COMPOSITION_PARTS: &[&[Case]] = &[window_cases::COMPOSITION, show::COMPOSITION, window_cases::COMPOSITION_FLUSH];
+const COMPOSITION_PARTS: &[&[Case]] = &[window_cases::COMPOSITION, show::COMPOSITION];
 static COMPOSITION: [Case; total(COMPOSITION_PARTS)] = join(COMPOSITION_PARTS);
 
 const PANEL_PARTS: &[&[Case]] = &[show::PANEL, window_cases::PANEL];

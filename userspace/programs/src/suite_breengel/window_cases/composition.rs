@@ -32,10 +32,6 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("target-lifetime", "Compositor, scanout, capture and replay holds retain GPU targets until their final release", composition_target_lifetime),
 ];
 
-pub(crate) const COMPOSITION_FLUSH: &[Case] = &[
-    pictured!("flush-clip", "FLUSH clips its rectangle to the screen", composition_flush_clip),
-];
-
 // ---------------------------------------------------------------------------------------
 // composition: commit, composition & present (contract section 18)
 // ---------------------------------------------------------------------------------------
@@ -747,7 +743,7 @@ pub(crate) fn give_back() -> i64 {
     unsafe { raw::syscall0(SYS_GIVE_BACK_DISPLAY) as i64 }
 }
 
-/// Map the display (the caller owns it) and fill all of it with `colour` (BGRX), then FLUSH it.
+/// Draw and present a solid GPU target in the caller's display-owner context.
 pub(crate) fn paint(colour: [u8; 4]) -> Result<(), String> {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r)))?;
     let mode=modes.modes[modes.current as usize];
@@ -757,22 +753,6 @@ pub(crate) fn paint(colour: [u8; 4]) -> Result<(), String> {
     let result=context.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|context.present(target)).map(|_|());
     libbreenix::gpu::resource_destroy(target);
     result.map_err(|r|format!("gpu-display: GPU draw/present {}",outcome(r)))
-}
-
-#[repr(C)]
-struct FbDrawCmd {
-    op: u32,
-    p1: i32,
-    p2: i32,
-    p3: i32,
-    p4: i32,
-    color: u32,
-}
-
-fn flush(x: i32, y: i32, w: i32, h: i32) -> i64 {
-    let cmd = FbDrawCmd { op: 6, p1: x, p2: y, p3: w, p4: h, color: 0 };
-    // SAFETY: the kernel reads one FbDrawCmd from this live stack value.
-    unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const FbDrawCmd as u64) as i64 }
 }
 
 // gpu-display: B7 replaces retired fb_mmap/FLUSH painting with a GPU present; exact restoration stays.
@@ -860,51 +840,6 @@ fn composition_ownership_stack() -> CaseResult {
         "after the compositor died the screen shows {:02x?} at (0, 0); the display returns to the giver and its frame is restored exactly", &px[..4]))
 }
 
-fn composition_flush_clip() -> CaseResult {
-    interface()?;
-    let mut f = || {
-        let took = take_over();
-        if took < 0 {
-            return stop(format!("take_over_display {}", outcome(took)));
-        }
-        if let Err(e) = paint([0, 0, 0, 0]) {
-            return stop(e);
-        }
-        let info = match crate::show::fbinfo() {
-            Ok(i) => i,
-            Err(e) => return stop(e),
-        };
-        let mut width: u64 = 0;
-        // SAFETY: the kernel writes the mapped width into this live value.
-        let addr = unsafe { raw::syscall1(SYS_FB_MMAP, &mut width as *mut u64 as u64) as i64 };
-        if addr <= 0 {
-            return stop(format!("fb_mmap {}", outcome(addr)));
-        }
-        let stride = info.stride as usize * 4;
-        for y in 700..800usize {
-            for x in 1180..1280usize {
-                // SAFETY: inside the mapped screen.
-                unsafe { core::ptr::copy_nonoverlapping([0x40u8, 0x50, 0x60, 0].as_ptr(), (addr as usize + y * stride + x * 4) as *mut u8, 4) };
-            }
-        }
-        let r = flush(1180, 700, 400, 300);
-        let _ = io::write(Fd::from_raw(1), format!("flushed {r}\n").as_bytes());
-        let mut b = [0u8; 1];
-        let _ = io::read(Fd::from_raw(0), &mut b);
-        let _ = give_back();
-        0
-    };
-    let mut h = Helper::call(&mut f).cite("24")?;
-    let said = h.line(5_000).cite("24")?;
-    ensure(said == "flushed 0", "18", format!("FLUSH of (1180, 700, 400, 300), running past the screen's edges: `{said}`; it is clipped to the screen and succeeds"))?;
-    let (px, _) = screen()?;
-    crate::remember_frame(&px,1280,800,None);
-    for (x, y, want) in [(1180usize, 700usize, [0x40u8, 0x50, 0x60, 0xFF]), (1279, 799, [0x40, 0x50, 0x60, 0xFF]), (1179, 700, [0, 0, 0, 0xFF])] {
-        let i = (y * 1280 + x) * 4;
-        ensure(px[i..i + 4] == want, "18", format!("after the clipped FLUSH the screen's pixel ({x}, {y}) is {:02x?}, not {want:02x?}", &px[i..i + 4]))?;
-    }
-    Ok(())
-}
 
 fn compositor_gpu_counts(k:&mut Helper)->Result<Vec<u64>,libbreenix::suite::CaseError>{
     let line=k.ask("gpu-counters").cite("24")?;

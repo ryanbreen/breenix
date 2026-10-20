@@ -1,7 +1,6 @@
 //! scanout: display observation on every target (contract section 20).
 
 use crate::*;
-use crate::show::fbinfo;
 
 pub(crate) const SCANOUT: &[Case] = &[
     pictured!("mode-set", "A GUI suite boot runs this target's display at 1280x800, and fbinfo agrees", scanout_mode_set),
