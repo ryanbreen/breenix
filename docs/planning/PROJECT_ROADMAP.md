@@ -15,7 +15,9 @@ PR #2132 selects the SVGA3D DX GPU core for ordinary VMware console attachment,
 gives Parallels' virtio-gpu device to the GPU core, and deletes the
 legacy VMware compositor. bwm composes through syscall 416 on ARM64 QEMU
 `--gpu-gl`, Parallels and VMware (#2133, #2060), and the `VIRGL_COMPOSITE` route is
-retired. Failed device admission also needs firmware diagnostics recovery (#2134).
+retired. PR #2132 remains blocked on the unexplained Parallels CPU0 timer stall
+(#2137); a later clean desktop boot does not establish its cause. Failed device
+admission also needs firmware diagnostics recovery (#2134).
 
 PR #2136 checks required ARM64 testing binaries on the disk before starting
 the VM, including `--no-build`. The preflight resolves directory symlinks,
