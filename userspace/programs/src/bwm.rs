@@ -9,6 +9,8 @@
 
 #[path = "bwm/compositor.rs"]
 mod compositor;
+#[path = "bwm/placement.rs"]
+mod placement;
 
 use std::process;
 
@@ -32,20 +34,69 @@ use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+// Chrome sizes are logical units: `px` multiplies them by the UI scale. Client windows
+// keep their pixel sizes.
 
-/// Title bar height in pixels
+/// Title bar height
 const TITLE_BAR_HEIGHT: usize = 32;
 
 /// Window border/shadow width
 const BORDER_WIDTH: usize = 2;
 
-/// Noto Sans Mono 16px cell dimensions for title bar text.
-const CELL_W: usize = 7;
-const CELL_H: usize = 18;
+/// How far a window's drop shadow is offset right and down
+const SHADOW_OFFSET: usize = 3;
 
-/// TrueType font pixel size for UI text.
+/// TrueType font size for UI text, in logical units.
 const TTF_FONT_SIZE: f32 = 14.0;
 
+/// The console's size rule (`docs/console/contract.md`): the largest font whose text grid
+/// on the display is at least this many columns by rows.
+const MIN_TEXT_COLS: usize = 128;
+const MIN_TEXT_ROWS: usize = 36;
+
+/// bwm's UI scale and the bitmap font it draws chrome text with.
+struct Ui {
+    scale: usize,
+    font: bitmap_font::RasterHeight,
+    /// Text cell: the glyph advance, and the glyph height with its line spacing.
+    cell_w: usize,
+    cell_h: usize,
+}
+
+impl Ui {
+    /// Choose the scale for a `width` x `height` display as the console chooses its font:
+    /// the largest of bwm's text sizes, 16 px at scale 1 and 32 px at scale 2 (each its
+    /// own raster), whose grid is at least 128 columns by 36 rows; otherwise scale 1.
+    fn for_display(width: usize, height: usize) -> Ui {
+        let sizes = [(2, bitmap_font::RasterHeight::Size32), (1, bitmap_font::RasterHeight::Size16)];
+        let uis = sizes.map(|(scale, font)| {
+            let m = bitmap_font::metrics_at(font);
+            Ui { scale, font, cell_w: m.char_width, cell_h: m.line_height() }
+        });
+        let [two, one] = uis;
+        if width / two.cell_w >= MIN_TEXT_COLS && height / two.cell_h >= MIN_TEXT_ROWS {
+            two
+        } else {
+            one
+        }
+    }
+}
+
+static UI: std::sync::OnceLock<Ui> = std::sync::OnceLock::new();
+
+fn ui() -> &'static Ui {
+    UI.get().expect("bwm's UI scale is chosen at start")
+}
+
+/// `n` logical units in pixels.
+fn px(n: usize) -> usize {
+    n * ui().scale
+}
+
+/// `n` logical units in pixels, signed.
+fn pxi(n: i32) -> i32 {
+    n * ui().scale as i32
+}
 
 /// Top taskbar height
 const TASKBAR_HEIGHT: usize = 28;
@@ -678,16 +729,16 @@ struct Window {
 
 impl Window {
     fn content_x(&self) -> i32 {
-        if self.chromeless { self.x } else { self.x + BORDER_WIDTH as i32 }
+        if self.chromeless { self.x } else { self.x + px(BORDER_WIDTH) as i32 }
     }
     fn content_y(&self) -> i32 {
-        if self.chromeless { self.y } else { self.y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32 }
+        if self.chromeless { self.y } else { self.y + px(TITLE_BAR_HEIGHT) as i32 + px(BORDER_WIDTH) as i32 }
     }
     fn content_width(&self) -> usize {
-        if self.chromeless { self.width } else { self.width.saturating_sub(BORDER_WIDTH * 2) }
+        if self.chromeless { self.width } else { self.width.saturating_sub(px(BORDER_WIDTH) * 2) }
     }
     fn content_height(&self) -> usize {
-        if self.chromeless { self.height } else { self.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2) }
+        if self.chromeless { self.height } else { self.height.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) }
     }
 
     fn total_height(&self) -> usize { self.height }
@@ -695,7 +746,7 @@ impl Window {
     fn hit_title(&self, mx: i32, my: i32) -> bool {
         if self.chromeless { return false; }
         mx >= self.x && mx < self.x + self.width as i32
-            && my >= self.y && my < self.y + TITLE_BAR_HEIGHT as i32
+            && my >= self.y && my < self.y + px(TITLE_BAR_HEIGHT) as i32
     }
 
     fn hit_any(&self, mx: i32, my: i32) -> bool {
@@ -712,22 +763,23 @@ impl Window {
         if self.chromeless {
             (self.x, self.y, self.x + self.width as i32, self.y + self.height as i32)
         } else {
-            // +3 accounts for the drop shadow drawn at (x+3, y+3) in draw_window_frame
-            (self.x, self.y, self.x + self.width as i32 + 3, self.y + self.total_height() as i32 + 3)
+            // The drop shadow is drawn SHADOW_OFFSET right of and below the frame (draw_window_frame)
+            let shadow = px(SHADOW_OFFSET) as i32;
+            (self.x, self.y, self.x + self.width as i32 + shadow, self.y + self.total_height() as i32 + shadow)
         }
     }
 
     fn close_btn_rect(&self) -> (i32, i32, usize, usize) {
-        let bx = self.x + self.width as i32 - BORDER_WIDTH as i32
-            - CHROME_BTN_PAD as i32 - CHROME_BTN_SIZE as i32;
-        let by = self.y + BORDER_WIDTH as i32
-            + ((TITLE_BAR_HEIGHT - BORDER_WIDTH - CHROME_BTN_SIZE) / 2) as i32;
-        (bx, by, CHROME_BTN_SIZE, CHROME_BTN_SIZE)
+        let bx = self.x + self.width as i32 - px(BORDER_WIDTH) as i32
+            - px(CHROME_BTN_PAD) as i32 - px(CHROME_BTN_SIZE) as i32;
+        let by = self.y + px(BORDER_WIDTH) as i32
+            + ((px(TITLE_BAR_HEIGHT) - px(BORDER_WIDTH) - px(CHROME_BTN_SIZE)) / 2) as i32;
+        (bx, by, px(CHROME_BTN_SIZE), px(CHROME_BTN_SIZE))
     }
 
     fn minimize_btn_rect(&self) -> (i32, i32, usize, usize) {
         let (cx, cy, _, _) = self.close_btn_rect();
-        (cx - CHROME_BTN_PAD as i32 - CHROME_BTN_SIZE as i32, cy, CHROME_BTN_SIZE, CHROME_BTN_SIZE)
+        (cx - px(CHROME_BTN_PAD) as i32 - px(CHROME_BTN_SIZE) as i32, cy, px(CHROME_BTN_SIZE), px(CHROME_BTN_SIZE))
     }
 
     fn hit_close_button(&self, mx: i32, my: i32) -> bool {
@@ -747,7 +799,7 @@ impl Window {
         let y0 = self.y;
         let x1 = self.x + self.width as i32;
         let y1 = self.y + self.total_height() as i32;
-        let g = RESIZE_GRAB as i32;
+        let g = px(RESIZE_GRAB) as i32;
 
         // Must be within or near the window bounds
         if mx < x0 - g || mx >= x1 + g || my < y0 - g || my >= y1 + g {
@@ -785,12 +837,13 @@ fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
         let s = unsafe { core::str::from_utf8_unchecked(text) };
-        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE, color);
+        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE * ui().scale as f32, color);
     } else {
+        let (cell_w, font) = (ui().cell_w as i32, ui().font);
         for (i, &ch) in text.iter().enumerate() {
-            let px = x + (i as i32) * CELL_W as i32;
-            if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
-            bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+            let cx = x + i as i32 * cell_w;
+            if cx < 0 || cx + cell_w > fb.width as i32 { continue; }
+            bitmap_font::draw_char_at(fb, ch as char, cx as usize, y as usize, color, font);
         }
     }
 }
@@ -801,34 +854,35 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
     let border_color = if focused { WIN_BORDER_FOCUSED } else { WIN_BORDER_COLOR };
     let title_bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
     let title_fg = if focused { TITLE_FOCUSED_TEXT } else { TITLE_TEXT };
-    let bw = BORDER_WIDTH;
+    let bw = px(BORDER_WIDTH);
 
     let shadow = Color::rgb(8, 10, 18);
-    fill_rect(fb, win.x + 3, win.y + 3, win.width, win.total_height(), shadow);
+    let offset = px(SHADOW_OFFSET) as i32;
+    fill_rect(fb, win.x + offset, win.y + offset, win.width, win.total_height(), shadow);
     fill_rect(fb, win.x, win.y, win.width, win.total_height(), border_color);
     let content_bg = Color::rgb(12, 14, 20);
     fill_rect(fb, win.content_x(), win.content_y(),
               win.content_width(), win.content_height(), content_bg);
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
-              win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
+              win.width - bw * 2, px(TITLE_BAR_HEIGHT) - bw, title_bg);
 
-    let max_title_w = win.width.saturating_sub(bw * 2 + 8 + CHROME_RESERVED);
-    let max_chars = max_title_w / CELL_W;
+    let max_title_w = win.width.saturating_sub(bw * 2 + px(8) + px(CHROME_RESERVED));
+    let max_chars = max_title_w / ui().cell_w;
     let text_len = win.title_len.min(max_chars);
-    let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
-    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg,
+    let text_y = win.y + bw as i32 + ((px(TITLE_BAR_HEIGHT) - bw - ui().cell_h) / 2) as i32;
+    draw_text_at(fb, &win.title[..text_len], win.x + pxi(8), text_y, title_fg,
                  ui_font.as_mut());
 
     let (cbx, cby, cbw, cbh) = win.close_btn_rect();
     fill_rect(fb, cbx, cby, cbw, cbh, CLOSE_BTN_BG);
-    let cx = cbx + (cbw as i32 - CELL_W as i32) / 2;
-    let cy = cby + (cbh as i32 - CELL_H as i32) / 2;
+    let cx = cbx + (cbw as i32 - ui().cell_w as i32) / 2;
+    let cy = cby + (cbh as i32 - ui().cell_h as i32) / 2;
     draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT, ui_font.as_mut());
 
     let (mbx, mby, mbw, mbh) = win.minimize_btn_rect();
     fill_rect(fb, mbx, mby, mbw, mbh, MINIMIZE_BTN_BG);
-    let mx = mbx + (mbw as i32 - CELL_W as i32) / 2;
-    let my = mby + (mbh as i32 - CELL_H as i32) / 2;
+    let mx = mbx + (mbw as i32 - ui().cell_w as i32) / 2;
+    let my = mby + (mbh as i32 - ui().cell_h as i32) / 2;
     draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, ui_font.as_mut());
 }
 
@@ -837,13 +891,14 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
 fn paint_background(fb: &mut FrameBuf) {
     let w = fb.width;
     let h = fb.height;
+    let step = px(64);
     for y in 0..h {
         for x in 0..w {
             let t = (y * 255 / h) as u8;
             let r = 12u8.saturating_add(t / 12);
             let g = 16u8.saturating_add(t / 20);
             let b = 38u8.saturating_add(t / 6);
-            let grid = (x % 64 == 0 || y % 64 == 0) as u8;
+            let grid = (x % step == 0 || y % step == 0) as u8;
             let r2 = r.saturating_add(grid * 6);
             let g2 = g.saturating_add(grid * 8);
             let b2 = b.saturating_add(grid * 12);
@@ -938,18 +993,18 @@ fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
 
 fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     let w = fb.width;
-    fill_rect(fb, 0, 0, w, TASKBAR_HEIGHT, TASKBAR_BG);
-    let label_y = ((TASKBAR_HEIGHT - CELL_H) / 2 + 1) as i32;
-    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT, ui_font.as_mut());
+    fill_rect(fb, 0, 0, w, px(TASKBAR_HEIGHT), TASKBAR_BG);
+    let label_y = ((px(TASKBAR_HEIGHT) - ui().cell_h) / 2 + px(1)) as i32;
+    draw_text_at(fb, b"Breenix", pxi(8), label_y, TASKBAR_TEXT, ui_font.as_mut());
     if !clock_text.is_empty() {
-        let clock_x = w as i32 - (clock_text.len() as i32 * CELL_W as i32) - 8;
+        let clock_x = w as i32 - (clock_text.len() as i32 * ui().cell_w as i32) - pxi(8);
         draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, ui_font.as_mut());
     }
 }
 
 fn appbar_button_width(title_len: usize) -> usize {
-    let text_w = title_len * CELL_W + 16;
-    text_w.max(60).min(180)
+    let text_w = title_len * ui().cell_w + px(16);
+    text_w.max(px(60)).min(px(180))
 }
 
 /// Build indices sorted by creation_order (stable appbar layout).
@@ -972,15 +1027,15 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
                ui_font: &mut Option<CachedFont>) {
     let screen_h = fb.height;
     let screen_w = fb.width;
-    let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
+    let bar_y = (screen_h - px(APPBAR_HEIGHT)) as i32;
 
-    fill_rect(fb, 0, bar_y, screen_w, APPBAR_HEIGHT, APPBAR_BG);
-    fill_rect(fb, 0, bar_y, screen_w, 1, APPBAR_BORDER);
+    fill_rect(fb, 0, bar_y, screen_w, px(APPBAR_HEIGHT), APPBAR_BG);
+    fill_rect(fb, 0, bar_y, screen_w, px(1), APPBAR_BORDER);
 
     let (sorted, n) = sorted_by_creation(windows);
-    let mut btn_x: i32 = 4;
-    let btn_h: usize = APPBAR_HEIGHT - 8;
-    let btn_y = bar_y + 4;
+    let mut btn_x: i32 = pxi(4);
+    let btn_h: usize = px(APPBAR_HEIGHT) - px(8);
+    let btn_y = bar_y + pxi(4);
 
     for k in 0..n {
         let i = sorted[k];
@@ -998,25 +1053,25 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
 
         fill_rect(fb, btn_x, btn_y, btn_w, btn_h, bg);
 
-        let max_chars = (btn_w.saturating_sub(12)) / CELL_W;
+        let max_chars = (btn_w.saturating_sub(px(12))) / ui().cell_w;
         let text_len = win.title_len.min(max_chars);
-        let text_y = btn_y + ((btn_h - CELL_H) / 2 + 1) as i32;
-        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT,
+        let text_y = btn_y + ((btn_h - ui().cell_h) / 2 + px(1)) as i32;
+        draw_text_at(fb, &win.title[..text_len], btn_x + pxi(6), text_y, APPBAR_BTN_TEXT,
                      ui_font.as_mut());
 
-        btn_x += btn_w as i32 + 2;
-        if btn_x >= screen_w as i32 - 4 { break; }
+        btn_x += btn_w as i32 + pxi(2);
+        if btn_x >= screen_w as i32 - pxi(4) { break; }
     }
 }
 
 fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usize, mx: i32, my: i32) -> Option<usize> {
-    let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
+    let bar_y = (screen_h - px(APPBAR_HEIGHT)) as i32;
     if my < bar_y || my >= screen_h as i32 { return None; }
 
     let (sorted, n) = sorted_by_creation(windows);
-    let mut btn_x: i32 = 4;
-    let btn_h = (APPBAR_HEIGHT - 8) as i32;
-    let btn_y = bar_y + 4;
+    let mut btn_x: i32 = pxi(4);
+    let btn_h = (px(APPBAR_HEIGHT) - px(8)) as i32;
+    let btn_y = bar_y + pxi(4);
 
     for k in 0..n {
         let i = sorted[k];
@@ -1027,8 +1082,8 @@ fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usize, mx: i32
         {
             return Some(i); // Returns the actual Vec index, not the sorted position
         }
-        btn_x += btn_w + 2;
-        if btn_x >= screen_w as i32 - 4 { break; }
+        btn_x += btn_w + pxi(2);
+        if btn_x >= screen_w as i32 - pxi(4) { break; }
     }
     None
 }
@@ -1144,11 +1199,6 @@ fn discover_windows(
         if windows.iter().any(|w| w.window_id == info.buffer_id) { continue; }
 
         let n = windows.len();
-        let usable_h = screen_h.saturating_sub(TASKBAR_HEIGHT + APPBAR_HEIGHT);
-        let cascade_x = 30 + (n as i32 * 50) % ((screen_w as i32 - 500).max(100));
-        let cascade_y = TASKBAR_HEIGHT as i32 + 10
-            + (n as i32 * 50) % ((usable_h as i32 - 500).max(100));
-
         let mut title = [0u8; 32];
         let title_len = (info.title_len as usize).min(32);
         title[..title_len].copy_from_slice(&info.title[..title_len]);
@@ -1159,12 +1209,12 @@ fn discover_windows(
         let total_w = if chromeless {
             info.width as usize
         } else {
-            info.width as usize + BORDER_WIDTH * 2
+            info.width as usize + px(BORDER_WIDTH) * 2
         };
         let total_h = if chromeless {
             info.height as usize
         } else {
-            info.height as usize + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2
+            info.height as usize + px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2
         };
 
         // Use saved defaults if available, otherwise cascade (or origin for fullscreen chromeless)
@@ -1181,7 +1231,12 @@ fn discover_windows(
                     let cy = screen_h as i32 / 5; // Spotlight-style: 1/5 from top
                     (cx.max(0), cy.max(0), total_w, total_h)
                 } else {
-                    (cascade_x, cascade_y, total_w, total_h)
+                    let (x, y) = placement::cascade_position(
+                        [0, px(TASKBAR_HEIGHT), screen_w,
+                         screen_h.saturating_sub(px(TASKBAR_HEIGHT) + px(APPBAR_HEIGHT))],
+                        [total_w, total_h], ui().scale, n,
+                    );
+                    (x, y, total_w, total_h)
                 }
             }
         };
@@ -1195,15 +1250,15 @@ fn discover_windows(
         let (content_x, content_y) = if chromeless {
             (win_x, win_y)
         } else {
-            (win_x + BORDER_WIDTH as i32, win_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32)
+            (win_x + px(BORDER_WIDTH) as i32, win_y + px(TITLE_BAR_HEIGHT) as i32 + px(BORDER_WIDTH) as i32)
         };
         let z_order = windows.len() as u32;
         let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
 
         // If saved defaults give different content dimensions, notify client
         if !chromeless {
-            let default_cw = win_w.saturating_sub(BORDER_WIDTH * 2);
-            let default_ch = win_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
+            let default_cw = win_w.saturating_sub(px(BORDER_WIDTH) * 2);
+            let default_ch = win_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
             if default_cw != info.width as usize || default_ch != info.height as usize {
                 let resize_event = WindowInputEvent {
                     event_type: input_event_type::WINDOW_RESIZED,
@@ -1322,7 +1377,7 @@ fn compose_partial_redraw(
             let end = row * screen_w + dx1;
             sbuf[start..end].copy_from_slice(&bg[start..end]);
         }
-        if dy0 < TASKBAR_HEIGHT {
+        if dy0 < px(TASKBAR_HEIGHT) {
             draw_taskbar(sfb, clock, ui_font);
         }
         for i in 0..windows.len() {
@@ -1334,7 +1389,7 @@ fn compose_partial_redraw(
                 draw_window_frame(sfb, &windows[i], i == focused, ui_font);
             }
         }
-        if dy1 > screen_h - APPBAR_HEIGHT {
+        if dy1 > screen_h - px(APPBAR_HEIGHT) {
             draw_appbar(sfb, windows, focused, ui_font);
         }
         for row in dy0..dy1 {
@@ -1348,7 +1403,7 @@ fn compose_partial_redraw(
             let end = row * screen_w + dx1;
             vram[start..end].copy_from_slice(&bg[start..end]);
         }
-        if dy0 < TASKBAR_HEIGHT {
+        if dy0 < px(TASKBAR_HEIGHT) {
             draw_taskbar(fb, clock, ui_font);
         }
         for i in 0..windows.len() {
@@ -1360,7 +1415,7 @@ fn compose_partial_redraw(
                 draw_window_frame(fb, &windows[i], i == focused, ui_font);
             }
         }
-        if dy1 > screen_h - APPBAR_HEIGHT {
+        if dy1 > screen_h - px(APPBAR_HEIGHT) {
             draw_appbar(fb, windows, focused, ui_font);
         }
     }
@@ -1382,7 +1437,8 @@ fn frame_layers(windows: &[Window]) -> Vec<Layer> {
             if !w.chromeless {
                 let (x0, y0) = (w.x, w.y);
                 let (x1, y1) = (w.x + w.width as i32, w.y + w.total_height() as i32);
-                frame = [[x0, y0, x1, y1], [x1, y0 + 3, x1 + 3, y1 + 3], [x0 + 3, y1, x1, y1 + 3]];
+                let d = px(SHADOW_OFFSET) as i32;
+                frame = [[x0, y0, x1, y1], [x1, y0 + d, x1 + d, y1 + d], [x0 + d, y1, x1, y1 + d]];
                 frame_len = 3;
             }
             Layer {
@@ -1438,6 +1494,52 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
     }
 }
 
+/// Show that the desktop covers the whole scanout at the chosen scale. bwm draws the
+/// desktop alone (no windows yet, and no pointer over the sampled pixels), then reads the
+/// scanout itself back where the scale puts the edges of the taskbar and the app bar: the
+/// top-left and bottom-right pixels of each bar, and the background pixel just past each.
+/// The read-back's record must name a scanout of the composed size, the one MODES reports
+/// bound, and the GPU core's current mode must have that size.
+fn check_desktop_fills(gpu: &mut Compositor, desktop: &[u32], fb: &FrameBuf, mode_index: u32) -> Result<String, String> {
+    gpu.compose(&[], None)?;
+    let (w, h) = (fb.width as u32, fb.height as u32);
+    let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
+    // (x, y, what the desktop buffer must hold there)
+    let taskbar = |c: Color| c == TASKBAR_BG;
+    let border = |c: Color| c == APPBAR_BORDER;
+    let appbar = |c: Color| c == APPBAR_BG;
+    let background = |c: Color| c != TASKBAR_BG && c != APPBAR_BORDER && c != APPBAR_BG;
+    let points: [(u32, u32, &dyn Fn(Color) -> bool, &str); 6] = [
+        (0, 0, &taskbar, "taskbar"),
+        (w - 1, tb - 1, &taskbar, "taskbar"),
+        (w - 1, tb, &background, "background"),
+        (w - 1, h - ab - 1, &background, "background"),
+        (0, h - ab, &border, "app bar border"),
+        (w - 1, h - 1, &appbar, "app bar"),
+    ];
+    let mut samples = Vec::new();
+    for (x, y, is, what) in points {
+        if !is(fb.get_pixel(x as usize, y as usize)) {
+            return Err(format!("bwm's desktop has no {} pixel at ({}, {})", what, x, y));
+        }
+        samples.push((x, y, desktop[(y * w + x) as usize]));
+    }
+    let shown = gpu.check_fills(&samples)?;
+    let bound = compositor::scanout_resource()?;
+    if bound != shown.resource {
+        return Err(format!("MODES reports resource {} bound, the read-back showed {}", bound, shown.resource));
+    }
+    let (_, mode) = compositor::display()?;
+    if (mode.width, mode.height) != (shown.width, shown.height) {
+        return Err(format!("the GPU core's mode is {}x{}, the scanout {}x{}", mode.width, mode.height, shown.width, shown.height));
+    }
+    Ok(format!(
+        "resource {} {}x{} bound (GPU core mode {}, {}x{}), composed {}x{}, UI scale {}; taskbar rows 0..{} at (0,0) and ({},{}), background at ({},{}); app bar rows {}..{} at (0,{}) and ({},{}), background at ({},{}); {} pixels exact",
+        shown.resource, shown.width, shown.height, mode_index, mode.width, mode.height, w, h, ui().scale,
+        tb, w - 1, tb - 1, w - 1, tb, h - ab, h, h - ab, w - 1, h - 1, w - 1, h - ab - 1, samples.len()
+    ))
+}
+
 fn monotonic_ms() -> Option<u64> {
     libbreenix::time::now_monotonic()
         .ok()
@@ -1467,12 +1569,26 @@ fn main() {
         result.unwrap()
     };
 
-    let screen_w = info.width as usize;
-    let screen_h = info.height as usize;
+    // The desktop is the GPU core's display, whole: its current mode's size.
+    let (mode_index, mode) = match compositor::display() {
+        Ok(d) => d,
+        Err(e) => {
+            print!("[bwm] ERROR: GPU compositing required: {}\n", e);
+            process::exit(1);
+        }
+    };
+    let screen_w = mode.width as usize;
+    let screen_h = mode.height as usize;
     let bpp = info.bytes_per_pixel as usize;
+    let _ = UI.set(Ui::for_display(screen_w, screen_h));
+    print!(
+        "[bwm] UI scale {}: font {} px ({}x{} cells, text grid {}x{}), taskbar {} px, app bar {} px; the GPU core's mode {} ({}x{}) publishes scale {}\n",
+        ui().scale, ui().font.val(), ui().cell_w, ui().cell_h, screen_w / ui().cell_w, screen_h / ui().cell_h,
+        px(TASKBAR_HEIGHT), px(APPBAR_HEIGHT), mode_index, mode.width, mode.height, mode.scale
+    );
 
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
-    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, APPBAR_HEIGHT as u32) {
+    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
         Ok(c) if bpp == 4 => c,
         Ok(_) => {
             print!("[bwm] ERROR: GPU compositing required: the screen has {} bytes per pixel, not 4\n", bpp);
@@ -1577,8 +1693,10 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite: the desktop alone, before any client window is discovered. It is
-    // read back from the scanout and compared with the desktop buffer (`compositor`).
+    // Initial composite: the desktop alone (background, taskbar and app bar), before any
+    // client window is discovered. It is read back from the scanout and compared with the
+    // desktop buffer (`compositor`).
+    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text, &mut ui_font);
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
     let first = gpu
         .upload_desktop(composite_buf, [0, 0, screen_w as u32, screen_h as u32])
@@ -1587,6 +1705,10 @@ fn main() {
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(e) => print!("[bwm] first frame check FAILED: {}\n", e),
+    }
+    match check_desktop_fills(&mut gpu, composite_buf, &fb, mode_index) {
+        Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
+        Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
     let mut client_frame_checked = false;
     let mut frame_failed = false;
@@ -1734,7 +1856,7 @@ fn main() {
                     if let Some((win_idx, off_x, off_y)) = dragging {
                         let new_x = mouse_x - off_x;
                         // Clamp drag to stay below taskbar
-                        let new_y = (mouse_y - off_y).max(TASKBAR_HEIGHT as i32);
+                        let new_y = (mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
                         if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
                             // Capture old bounds before moving
                             let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
@@ -1779,21 +1901,21 @@ fn main() {
                         }
 
                         // Enforce minimums
-                        if (new_w as usize) < MIN_WIN_WIDTH {
+                        if (new_w as usize) < px(MIN_WIN_WIDTH) {
                             if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
-                                new_x = orig_x + orig_w as i32 - MIN_WIN_WIDTH as i32;
+                                new_x = orig_x + orig_w as i32 - px(MIN_WIN_WIDTH) as i32;
                             }
-                            new_w = MIN_WIN_WIDTH as i32;
+                            new_w = px(MIN_WIN_WIDTH) as i32;
                         }
-                        if (new_h as usize) < MIN_WIN_HEIGHT {
+                        if (new_h as usize) < px(MIN_WIN_HEIGHT) {
                             if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
-                                new_y = orig_y + orig_h as i32 - MIN_WIN_HEIGHT as i32;
+                                new_y = orig_y + orig_h as i32 - px(MIN_WIN_HEIGHT) as i32;
                             }
-                            new_h = MIN_WIN_HEIGHT as i32;
+                            new_h = px(MIN_WIN_HEIGHT) as i32;
                         }
 
                         // Clamp top to taskbar
-                        new_y = new_y.max(TASKBAR_HEIGHT as i32);
+                        new_y = new_y.max(px(TASKBAR_HEIGHT) as i32);
 
                         let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
 
@@ -1885,8 +2007,8 @@ fn main() {
                         // Resize ended — notify client of new content dimensions
                         let new_cw = windows[win_idx].content_width();
                         let new_ch = windows[win_idx].content_height();
-                        let old_cw = orig_w.saturating_sub(BORDER_WIDTH * 2);
-                        let old_ch = orig_h.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2);
+                        let old_cw = orig_w.saturating_sub(px(BORDER_WIDTH) * 2);
+                        let old_ch = orig_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
                         print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
                             windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
                             windows[win_idx].width, windows[win_idx].height);
@@ -1938,11 +2060,11 @@ fn main() {
 
                 if new_click {
                     // Check taskbar area — ignore clicks
-                    if mouse_y < TASKBAR_HEIGHT as i32 {
+                    if mouse_y < px(TASKBAR_HEIGHT) as i32 {
                         // Taskbar click — no action
                     }
                     // Check appbar area
-                    else if mouse_y >= (screen_h - APPBAR_HEIGHT) as i32 {
+                    else if mouse_y >= (screen_h - px(APPBAR_HEIGHT)) as i32 {
                         if let Some(idx) = appbar_hit_test(&windows, screen_w, screen_h, mouse_x, mouse_y) {
                             if idx == focused_win && !windows[idx].minimized {
                                 // Click focused window button → minimize
@@ -2102,7 +2224,7 @@ fn main() {
                     dirty_x0 = 0;
                     dirty_y0 = 0;
                     dirty_x1 = dirty_x1.max(screen_w as i32);
-                    dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
+                    dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
                     content_dirty = true;
                 }
             }
