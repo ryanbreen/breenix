@@ -193,6 +193,26 @@ impl Kiosk {
                 let second = pages(1, 0, true).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
                 say(&format!("{} {}", answer(first), answer(second)));
             }
+            Some("gpu-counters") => {
+                let (ret,c)=libbreenix::gpu::counters(0);
+                if ret==0 {say(&format!("ok {} {} {} {} {} {}",c.draws,c.instances,c.uploads_image,c.uploads_fixture,c.resources,c.resource_bytes));}
+                else {say(&format!("err {}",-ret));}
+            }
+            Some("gpu-scanout") => {
+                let result=(||->Result<(),String>{
+                    let path=*words.get(1).ok_or("missing output file")?;
+                    let (ret,m)=libbreenix::gpu::modes();if ret!=0{return Err(format!("MODES {ret}"));}
+                    let mode=m.modes[m.current as usize];
+                    let mut pixels=vec![0u8;mode.width as usize*mode.height as usize*4];
+                    let mut record=[0u8;libbreenix::gpu::abi::record::SIZE];
+                    let ret=libbreenix::gpu::readback(0,[0,0,mode.width,mode.height],&mut pixels,mode.width*4,&mut record);
+                    if ret!=0{return Err(format!("READBACK {ret}"));}
+                    let mut out=Vec::with_capacity(8+record.len()+pixels.len());
+                    out.extend_from_slice(&mode.width.to_le_bytes());out.extend_from_slice(&mode.height.to_le_bytes());out.extend_from_slice(&record);out.extend_from_slice(&pixels);
+                    std::fs::write(path,out).map_err(|e|e.to_string())
+                })();
+                match result{Ok(())=>say("ok"),Err(e)=>say(&format!("gpu-display: {e}"))}
+            }
             Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
             Some("composite2") => {
                 let other = std::thread::spawn(|| window::composite());

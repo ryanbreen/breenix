@@ -27,6 +27,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate),
     pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
     pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
+    pictured!("gpu-composite", "GPU composition draws client targets without CPU pixel uploads", composition_gpu_composite),
 ];
 
 pub(crate) const COMPOSITION_FLUSH: &[Case] = &[
@@ -901,4 +902,20 @@ fn composition_flush_clip() -> CaseResult {
         ensure(px[i..i + 4] == want, "18", format!("after the clipped FLUSH the screen's pixel ({x}, {y}) is {:02x?}, not {want:02x?}", &px[i..i + 4]))?;
     }
     Ok(())
+}
+
+fn compositor_gpu_counts(k:&mut Helper)->Result<Vec<u64>,libbreenix::suite::CaseError>{
+    let line=k.ask("gpu-counters").cite("24")?;
+    let nums=line.strip_prefix("ok ").ok_or_else(||format!("gpu-display: compositor COUNTERS: {line}"))?
+        .split_whitespace().map(str::parse).collect::<Result<Vec<u64>,_>>().map_err(|e|e.to_string())?;
+    ensure(nums.len()==6,"18","gpu-display: incomplete compositor counters")?;Ok(nums)
+}
+// gpu-display: §2.2 requires actual GPU draws, no client-pixel upload by the compositor, and exact composed pixels.
+fn composition_gpu_composite()->CaseResult {
+    interface()?;let mut k=compositor()?;
+    let p=Placed::new(20,30,64,48,0,9);let w=W::new(64,48,2)?;show(&mut k,&w,&p)?;
+    let before=compositor_gpu_counts(&mut k)?;compose(&mut k)?;let after=compositor_gpu_counts(&mut k)?;
+    ensure(after[0]>before[0] && after[2]==before[2] && after[3]==before[3],"18",
+        "gpu-display: composition did not execute GPU draws without CPU pixel uploads")?;
+    let (pixels,_)=screen()?;screen_is(&pixels,&[p],"GPU composition")
 }
