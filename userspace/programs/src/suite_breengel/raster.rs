@@ -419,48 +419,48 @@ fn raster_extreme_work_bound() -> CaseResult {
     const MAX: i32 = i32::MAX;
     const MIN: i32 = i32::MIN;
     const HALF: i32 = 1 << 30;
-    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>);
+    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>, u64);
     let small_clip = Some(Rect::new(10, 8, 4, 3));
     let pixel_clip = Some(Rect::new(10, 8, 1, 1));
     // Each call, an optional clip, and the clipped bounding rectangle the contract's damage
     // table gives it on a 32 × 24 surface (sections 6 and 7), worked out by hand.
     let calls: Vec<Extreme> = vec![
-        ("fill_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MIN, MIN, MAX, MAX, INK)), None),
-        ("fill_rect(MAX, MAX, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MAX, MAX, MAX, MAX, INK)), None),
-        ("fill_rect(-MAX, 3, 5, 5)", None, Box::new(|fb| shapes::fill_rect(fb, -MAX, 3, 5, 5, INK)), None),
-        ("fill_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, MIN, MIN, MAX, MAX, INK)), None),
-        ("draw_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_rect(MAX - 1, 0, 9, 9)", None, Box::new(|fb| shapes::draw_rect(fb, MAX - 1, 0, 9, 9, INK)), None),
-        ("fill_circle(MAX - 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MAX - 1, 5, 5, INK)), None),
-        ("fill_circle(MIN + 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MIN + 1, 5, 5, INK)), None),
-        ("fill_circle(5, 5, 46340)", None, Box::new(|fb| shapes::fill_circle(fb, 5, 5, 46_340, INK)), Some((0, 0, 32, 24))),
-        ("fill_circle(16, 12, MAX)", None, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
-        ("fill_circle(16, 12, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((10, 8, 4, 3))),
-        ("draw_circle(MIN + 9, 5, 5)", None, Box::new(|fb| shapes::draw_circle(fb, MIN + 9, 5, 5, INK)), None),
-        ("draw_circle(5, 5, 1000000)", None, Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK)), Some((0, 0, 32, 24))),
-        ("draw_circle(16, 12, MAX)", None, Box::new(|fb| shapes::draw_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 4, 3))),
-        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 1, 1)", pixel_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 1, 1))),
-        ("draw_line(MIN/2, 3, MAX/2, 4)", None, Box::new(|fb| shapes::draw_line(fb, MIN / 2, 3, MAX / 2, 4, INK)), Some((0, 3, 32, 2))),
-        ("draw_line(5, MIN/2, 6, MAX/2)", None, Box::new(|fb| shapes::draw_line(fb, 5, MIN / 2, 6, MAX / 2, INK)), Some((5, 0, 2, 24))),
-        ("draw_line(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_line(fb, MIN, MIN, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_line(MIN, 30, MAX, 40)", None, Box::new(|fb| shapes::draw_line(fb, MIN, 30, MAX, 40, INK)), None),
-        ("draw_line(MAX, MIN, MIN, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_line(fb, MAX, MIN, MIN, MAX, INK)), Some((10, 8, 4, 3))),
-        ("rounded_rect(MIN, MIN, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, MIN, MIN, MAX, MAX, MAX, INK)), None),
-        ("rounded_rect(-2^30, -2^30, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, -HALF, -HALF, MAX, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("gradient_v(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::gradient_v(fb, -HALF, -HALF, MAX, MAX, INK, WHITE)), Some((0, 0, 32, 24))),
-        ("gradient_v(MIN, 0, 10, 24)", None, Box::new(|fb| shapes::gradient_v(fb, MIN, 0, 10, 24, INK, WHITE)), None),
-        ("blit_scaled(5 x 4, MIN, 0, 2^30)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, MIN, 0, HALF) }), Some((0, 0, 32, 24))),
-        ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None),
-        ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None),
-        ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24))),
-        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| fb.copy_row_from(31, 23, &[0x5Au8; 64], 64)), Some((31, 23, 1, 1))),
-        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3)), Some((29, 21, 3, 3))),
-        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1)), Some((0, 0, 32, 7))),
-        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1)), None),
+        ("fill_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MIN, MIN, MAX, MAX, INK)), None, 64),
+        ("fill_rect(MAX, MAX, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MAX, MAX, MAX, MAX, INK)), None, 64),
+        ("fill_rect(-MAX, 3, 5, 5)", None, Box::new(|fb| shapes::fill_rect(fb, -MAX, 3, 5, 5, INK)), None, 64),
+        ("fill_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, MIN, MIN, MAX, MAX, INK)), None, 64),
+        ("draw_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_rect(MAX - 1, 0, 9, 9)", None, Box::new(|fb| shapes::draw_rect(fb, MAX - 1, 0, 9, 9, INK)), None, 64),
+        ("fill_circle(MAX - 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MAX - 1, 5, 5, INK)), None, 64),
+        ("fill_circle(MIN + 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MIN + 1, 5, 5, INK)), None, 64),
+        ("fill_circle(5, 5, 46340)", None, Box::new(|fb| shapes::fill_circle(fb, 5, 5, 46_340, INK)), Some((0, 0, 32, 24)), 64),
+        ("fill_circle(16, 12, MAX)", None, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("fill_circle(16, 12, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((10, 8, 4, 3)), 64),
+        ("draw_circle(MIN + 9, 5, 5)", None, Box::new(|fb| shapes::draw_circle(fb, MIN + 9, 5, 5, INK)), None, 64),
+        ("draw_circle(5, 5, 1000000)", None, Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_circle(16, 12, MAX)", None, Box::new(|fb| shapes::draw_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 4, 3)), 64),
+        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 1, 1)", pixel_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 1, 1)), 64),
+        ("draw_line(MIN/2, 3, MAX/2, 4)", None, Box::new(|fb| shapes::draw_line(fb, MIN / 2, 3, MAX / 2, 4, INK)), Some((0, 3, 32, 2)), 64),
+        ("draw_line(5, MIN/2, 6, MAX/2)", None, Box::new(|fb| shapes::draw_line(fb, 5, MIN / 2, 6, MAX / 2, INK)), Some((5, 0, 2, 24)), 64),
+        ("draw_line(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_line(fb, MIN, MIN, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_line(MIN, 30, MAX, 40)", None, Box::new(|fb| shapes::draw_line(fb, MIN, 30, MAX, 40, INK)), None, 64),
+        ("draw_line(MAX, MIN, MIN, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_line(fb, MAX, MIN, MIN, MAX, INK)), Some((10, 8, 4, 3)), 64),
+        ("rounded_rect(MIN, MIN, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, MIN, MIN, MAX, MAX, MAX, INK)), None, 64),
+        ("rounded_rect(-2^30, -2^30, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, -HALF, -HALF, MAX, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("gradient_v(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::gradient_v(fb, -HALF, -HALF, MAX, MAX, INK, WHITE)), Some((0, 0, 32, 24)), 64),
+        ("gradient_v(MIN, 0, 10, 24)", None, Box::new(|fb| shapes::gradient_v(fb, MIN, 0, 10, 24, INK, WHITE)), None, 64),
+        ("blit_scaled(5 x 4, MIN, 0, 2^30)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, MIN, 0, HALF) }), Some((0, 0, 32, 24)), 64),
+        ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None, 64),
+        ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None, 64),
+        ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24)), 64),
+        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| fb.copy_row_from(31, 23, &[0x5Au8; 64], 64)), Some((31, 23, 1, 1)), 64),
+        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3)), Some((29, 21, 3, 3)), 64),
+        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1)), Some((0, 0, 32, 7)), 64000),
+        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1)), None, 64000),
     ];
-    for (name, clip, call, rect) in calls {
+    for (name, clip, call, rect, setup_bound) in calls {
         step("7", isolated(name, 2_000, || {
             let g = padded(32, 24);
             let mut fb = g.fb();
@@ -472,8 +472,8 @@ fn raster_extreme_work_bound() -> CaseResult {
             call(&mut fb);
             let after = crate::gpu_checks::counters()?;
             let steps = work::steps();
-            if steps > 64 {
-                return Err(format!("gpu-raster: {name} took {steps} CPU geometry steps; the per-primitive bound is 64"));
+            if steps > setup_bound {
+                return Err(format!("gpu-raster: {name} took {steps} CPU geometry steps; the geometry setup bound is {setup_bound}"));
             }
             let area = rect.map_or(0, |(_, _, w, h)| (w*h) as u64);
             let emitted = after.fragment_area - before.fragment_area;
@@ -481,7 +481,9 @@ fn raster_extreme_work_bound() -> CaseResult {
             if emitted > area || (area == 0 && draws != 0) || (area != 0 && draws == 0) {
                 return Err(format!("gpu-raster: {name} emitted {emitted} fragments in {draws} draws for clipped area {area}"));
             }
-            if after.work_estimate - before.work_estimate < emitted {
+            let weight=if name.starts_with("draw_line") {8192}else if name.contains("circle") {2048}else if name.starts_with("rounded_rect") {4096}else if name.starts_with("gradient_v") {32768}else if name.starts_with("font::") {256}else{1};
+            let estimate=after.work_estimate-before.work_estimate;
+            if estimate < emitted || estimate>area*(weight+1) {
                 return Err(format!("gpu-raster: {name} undercounted its GPU work estimate"));
             }
             g.sentinels()

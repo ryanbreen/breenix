@@ -39,22 +39,23 @@ pub(crate) fn guard_pages()->CaseResult {
     let mut canary=Fixture::new(8,4).cite("3")?;
     canary.clear(8,4,0xff634221).cite("3")?;
     let before=canary.pixels(8,4,32).cite("3")?;
-    let page=unsafe{memory::mmap(core::ptr::null_mut(),3*4096,memory::PROT_READ|memory::PROT_WRITE,
-        memory::MAP_PRIVATE|memory::MAP_ANONYMOUS,-1,0)}.cite("3")?;
+    let page=memory::mmap(core::ptr::null_mut(),3*4096,memory::PROT_READ|memory::PROT_WRITE,
+        memory::MAP_PRIVATE|memory::MAP_ANONYMOUS,-1,0).cite("3")?;
     let result=(||->CaseResult{
         // SAFETY: the mapping has three pages; only the middle page is a user buffer.
-        unsafe {memory::mprotect(page,4096,memory::PROT_NONE)}.cite("3")?;
-        unsafe {memory::mprotect(page.add(8192),4096,memory::PROT_NONE)}.cite("3")?;
+        memory::mprotect(page,4096,memory::PROT_NONE).cite("3")?;
+        memory::mprotect(unsafe{page.add(8192)},4096,memory::PROT_NONE).cite("3")?;
         let end=unsafe{page.add(8192)} as u64;
         for rect in [[0,0,8,4],[u32::MAX,0,8,4],[0,u32::MAX,8,4],[0,0,u32::MAX,u32::MAX]] {
+            let expected=if rect==[0,0,8,4]{-14}else{-22};
             let (r,_)=gpu::upload_raw(f.context.handle(),f.texture,rect,end-127,128,32,
                 ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
-            ensure(r== -14 || r== -22,"3, 4","gpu-raster: guarded/extreme UPLOAD was not refused with EFAULT/EINVAL")?;
+            ensure(r==expected,"3, 4","gpu-raster: guarded/extreme UPLOAD was not refused with EFAULT/EINVAL")?;
             let mut rb=ga::Readback{target:f.target,x:rect[0],y:rect[1],width:rect[2],height:rect[3],
                 pixels:end-127,pixels_len:128,stride:32,..ga::Readback::ZERO};
             let mut record=[0u8;ga::record::SIZE];rb.record=record.as_mut_ptr() as u64;
             let r=gpu::call_with(ga::op::READBACK,&mut rb);
-            ensure(r== -14 || r== -22,"3, 4","gpu-raster: guarded/extreme READBACK was not refused with EFAULT/EINVAL")?;
+            ensure(r==expected,"3, 4","gpu-raster: guarded/extreme READBACK was not refused with EFAULT/EINVAL")?;
         }
         f.clear(8,4,0xff112233).cite("3")?;
         ensure(canary.pixels(8,4,32).cite("3")?==before,"3","gpu-raster: draw changed the adjacent canary target")
