@@ -810,6 +810,7 @@ fn composition_takeover_giveback() -> CaseResult {
     }
 }
 
+// gpu-display: B7 replaces the giver's framebuffer paint with GPU PRESENT; owner death restores that binding.
 fn composition_ownership_stack() -> CaseResult {
     interface()?;
     // The giver: takes the display, paints it, and hands it to a compositor it names.
@@ -841,11 +842,15 @@ fn composition_ownership_stack() -> CaseResult {
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     compose(&mut k)?;
+    let (ret,binding)=libbreenix::gpu::modes();
+    ensure(ret==0 && binding.binding_known==1 && binding.scanout_resource!=0,"18","gpu-display: ownership stack has no completed GPU binding")?;
     let (px, _) = screen()?;
     crate::remember_frame(&px,1280,800,None);
     ensure(px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 3] == pattern(28, 50, 50)[..3], "18", "the compositor given the display does not show its composition")?;
     k.kill_checked().cite("24")?;
     let _ = time::sleep_ms(50);
+    let (ret,restored)=libbreenix::gpu::modes();
+    ensure(ret==0 && restored.binding_known==1 && restored.scanout_resource!=binding.scanout_resource,"18","gpu-display: compositor death did not restore the giver's GPU target")?;
     let (px, _) = screen()?;
     crate::remember_frame(&px,1280,800,None);
     ensure(px[..4] == [0x11, 0x99, 0x33, 0xFF] && px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 4] == [0x11, 0x99, 0x33, 0xFF], "18", format!(
