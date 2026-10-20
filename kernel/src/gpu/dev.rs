@@ -289,10 +289,14 @@ pub fn flush_resource(tag: Tag, ctx: u32, fence: u64, resource: u32, width: u32,
 }
 
 /// Read a BGRA kernel screen rectangle. VirGL transfers into its attached backing;
-/// SVGA copies into a dedicated surface over the caller's separate, tightly packed band.
+/// SVGA copies into a dedicated surface over the caller's separate, tightly packed band,
+/// so it refuses any other offset or stride.
 #[allow(clippy::too_many_arguments)]
 pub fn transfer_from_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pages>, x: u32, y: u32, w: u32, h: u32, offset: u64, stride: u32) -> Option<Request> {
     if is_svga() {
+        if offset != 0 || u64::from(stride) != u64::from(w) * 4 {
+            return None;
+        }
         svga::readback(tag, ctx, fence, id, None, gpu_abi::format::B8G8R8A8, x, y, w, h, backing)
             .map(|(request, _, _)| Request::Svga(request))
     } else {

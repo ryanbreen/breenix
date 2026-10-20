@@ -2,15 +2,18 @@
 //! one display-sized scanout target the core shows whenever no process owns the display.
 //!
 //! The screen console draws on the CPU into its shadow and copies the rows that changed into
-//! this target's guest backing (`write`); `present` uploads those rows (TRANSFER_TO_HOST_3D),
-//! binds the target to scanout 0 when it is not the binding, and flushes them. A process that
+//! this target's guest backing (`write`); `present` uploads those rows (TRANSFER_TO_HOST_3D on
+//! VirGL; SVGA updates the surface from its backing), binds the target to scanout 0 when it is
+//! not the binding, and flushes them. A process that
 //! owns the display through the framebuffer interface (`fb_mmap` and its flushes) has its pane
 //! copied into a private target and presented as its own frame (`present_pane`), so the
 //! kernel does not write the firmware framebuffer after the core has shown a frame.
 //!
 //! A read-back (`settle`) presents the whole screen, requires the target to be the completed
-//! binding of scanout 0, then poisons the backing and transfers the target back from the
-//! device, so what the console then reads (`read`) is what the device scans out.
+//! binding of scanout 0, then reads the target back from the device into the backing, so what
+//! the console then reads (`read`) is what the device scans out. VirGL poisons the backing and
+//! transfers into it; SVGA, whose surface may still take its pixels from that backing, copies
+//! the target into a poisoned read-back surface and writes the backing from that.
 //!
 //! The entries run inside a display transition, which serializes users of the target; the
 //! spin lock only moves it in and out, and device waits run without it.
@@ -305,12 +308,19 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
         let (offset, len) = (y as usize * PITCH, rows as usize * PITCH);
-        let saved = Pages::new(len.div_ceil(PAGE)).ok_or("no frames to preserve the screen's read-back band")?;
         let mut row = vec![0; PITCH];
-        for n in 0..rows as usize {
-            pages.read(offset + n * PITCH, &mut row);
-            saved.write(n * PITCH, &row);
-        }
+        // Only a transfer into the backing itself poisons it: keep its band until that succeeds.
+        let saved = match &readback {
+            Some(_) => None,
+            None => {
+                let saved = Pages::new(len.div_ceil(PAGE)).ok_or("no frames to preserve the screen's read-back band")?;
+                for n in 0..rows as usize {
+                    pages.read(offset + n * PITCH, &mut row);
+                    saved.write(n * PITCH, &row);
+                }
+                Some(saved)
+            }
+        };
         let (backing, transfer_offset) = match &readback {
             Some(band) => (band.clone(), 0),
             None => (pages.clone(), offset),
@@ -322,9 +332,11 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
             .fenced(|t, fence| dev::transfer_from_host(t, context, fence, id, backing.clone(), 0, y, WIDTH, rows, transfer_offset as u64, PITCH as u32));
         backing.maintain(transfer_offset, len, true);
         if transferred.is_err() {
-            for n in 0..rows as usize {
-                saved.read(n * PITCH, &mut row);
-                pages.write(offset + n * PITCH, &row);
+            if let Some(saved) = &saved {
+                for n in 0..rows as usize {
+                    saved.read(n * PITCH, &mut row);
+                    pages.write(offset + n * PITCH, &row);
+                }
             }
             return Err("the device did not transfer the screen back");
         }
