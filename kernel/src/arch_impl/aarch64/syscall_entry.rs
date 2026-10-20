@@ -434,7 +434,10 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 ///
 /// `custody` is the exit syscall's own kill-custody section, held until the
 /// row has exited. `report_exit` prints the `[syscall] exit` line; a signal
-/// death (`exit_by_signal_aarch64`) has printed its own.
+/// death (`exit_by_signal_aarch64`) has printed its own. A thread's row, which
+/// ends no process, prints neither that line nor the ASID census: both are
+/// written to the UART synchronously, at about 2.5 ms per exit on ARM64 QEMU,
+/// which made a program's thread creation and join cost that much each (#2088).
 fn sys_exit_aarch64(
     exit_code: i32,
     custody: Option<crate::task::thread::KillCustody>,
@@ -443,24 +446,25 @@ fn sys_exit_aarch64(
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
-        let (pid_for_log, name_for_log, clear_child_tid) = {
+        let (pid_for_log, name_for_log, clear_child_tid, thread_row) = {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     process.exit_started = true;
                     let pid_val = _pid.as_u64();
-                    let name_val = process.name.clone();
+                    let thread_row = process.is_non_leader_thread();
+                    let name_val = (!thread_row).then(|| process.name.clone());
                     let clear_child_tid = process.clear_child_tid.map(|tid_addr| {
                         let address_space_id = process.address_space_lifetime.as_ref()
                             .map_or(pid_val, |lifetime| lifetime.id);
                         (address_space_id, tid_addr)
                     });
-                    (Some(pid_val), Some(name_val), clear_child_tid)
+                    (Some(pid_val), name_val, clear_child_tid, thread_row)
                 } else {
-                    (None, None, None)
+                    (None, None, None, false)
                 }
             } else {
-                (None, None, None)
+                (None, None, None, false)
             }
         }; // PM lock dropped here
 
@@ -471,7 +475,7 @@ fn sys_exit_aarch64(
         }
 
         // Log outside PM lock
-        if report_exit {
+        if report_exit && !thread_row {
             if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
                 crate::diag_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
             } else {
@@ -513,7 +517,9 @@ fn sys_exit_aarch64(
         // claim-lint:ok: 1 of 1 emission is this call; the 15 census lines a
         // production boot prints are in
         // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
-        crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+        if !thread_row {
+            crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+        }
 
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
