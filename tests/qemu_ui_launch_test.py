@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,9 @@ static void *create_from_thread(void *unused) {
 }
 int main(int argc, char **argv) {
     for (int i = 1; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--echo-args") == 0) {
+            for (int j = 1; j < argc; j++) puts(argv[j]);
+        }
         if (strcmp(argv[i], "--exit") == 0) return atoi(argv[i + 1]);
         if (strcmp(argv[i], "--signal") == 0) raise(atoi(argv[i + 1]));
         if (strcmp(argv[i], "--sleep") == 0) {
@@ -191,6 +195,16 @@ class LauncherTest(unittest.TestCase):
                                  str(self.probe), "--exit", "37"], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 37, result.stderr)
 
+    def test_accelerator_and_real_launcher_preserve_arguments_and_exit_status(self):
+        args = ["-M", "virt", "-cpu", "max", "-drive", "file=a disk.img",
+                "--echo-args", "--exit", "37"]
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/qemu-arm64.py"),
+                                 "--launcher", self.launcher, str(self.probe), *args],
+                                env={**os.environ, "BREENIX_ARM64_QEMU_ACCEL": "tcg"},
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["-accel", "tcg", *args])
+
     def test_clamped_launch_preserves_payload_signal(self):
         for number in (signal.SIGTERM, signal.SIGKILL):
             with self.subTest(signal=number):
@@ -306,6 +320,7 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(dict(line.split("=", 1) for line in result.stdout.splitlines())["inserted"], "")
 
+    @unittest.skipUnless(shutil.which("gtimeout"), "requires Homebrew coreutils gtimeout")
     def test_timeout_outside_the_launcher_preserves_qos(self):
         _, values = self.run_probe("gtimeout", "30", self.launcher)
         for name in ("main", "child", "grandchild"):
