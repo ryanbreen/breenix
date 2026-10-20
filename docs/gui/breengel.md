@@ -935,6 +935,8 @@ Plan §3.1 is the contract, transcribed here.
   non-empty damage starts a new pixel generation (`pixel_gen`, strictly increasing).
 - After COMMIT the validator refuses any submission writing that front or retired target;
   its separately mapped committed tree page remains read-only and writes raise SIGSEGV.
+  A composition attempt while that fence is pending must wait or return EAGAIN without
+  publishing a new binding; after the fence completes, composition must show its render.
   COMMIT records the last accepted render fence. A submission accepted before COMMIT may
   finish, but the compositor samples it only after that fence completes OK. A failed render
   is refused with EIO and leaves the previous published front unchanged. The previous front becomes retired, and returns to free only when every composite that used it has

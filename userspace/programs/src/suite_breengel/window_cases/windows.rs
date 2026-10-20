@@ -1306,14 +1306,27 @@ fn windows_commit_waits_render()->CaseResult {
             ensure(commit.err()==Some(-(abi::errno::EIO as i64)),"17.3","gpu-window: COMMIT accepted a failed render fence")?;
         } else {
             w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
-            let (pending,_)=super::composition::screen()?;
-            super::composition::screen_is(&pending,&[p],"gpu-window: scanout while the new render is pending")?;
+            let (ret,before)=gpu::modes();want_ok(ret,"17.3","gpu-window: binding before pending composition")?;
+            let (sent,received)=std::sync::mpsc::channel();
+            let composing=std::thread::spawn(move||{let reply=k.ask("composite");let _=sent.send(reply);k});
+            let _=time::sleep_ms(50);
+            let early=match received.try_recv(){Ok(r)=>Some(r),Err(std::sync::mpsc::TryRecvError::Empty)=>None,
+                Err(e)=>return at("17.3",format!("gpu-window: composition worker: {e}"))};
+            if let Some(reply)=&early {ensure(matches!(reply,Ok(s) if s=="err 11"),"17.3","gpu-window: composition published a pending render instead of waiting or EAGAIN")?;}
+            want_errno(gpu::wait(c.handle(),fences[3],0).0,ETIMEDOUT,"17.3","gpu-window: render still held during composition attempt")?;
+            let (ret,pending)=gpu::modes();want_ok(ret,"17.3","gpu-window: pending binding")?;
+            ensure(pending.binding_known==1 && pending.scanout_resource==before.scanout_resource,"17.3","gpu-window: pending rendering changed the scanout binding")?;
             let release=gpu::target_create(0,1,1).map_err(|r|format!("release target {}",outcome(r))).cite("17.3")?;
             c.begin(release,1,1);c.clear(0xff000000);
             let (r,last)=gpu::submit(c.handle(),c.encoded());want_ok(r,"17.3","gpu-window: release held render fences")?;
             gpu::resource_destroy(release);
             want_ok(gpu::wait(c.handle(),last.fence,2_000_000_000).0,"17.3","gpu-window: completed render")?;
-            super::composition::compose(&mut k)?;
+            k=composing.join().map_err(|_|"gpu-window: composition worker panicked".to_string()).cite("17.3")?;
+            let reply=match early{Some(r)=>r,None=>received.recv().map_err(|e|e.to_string())?}.cite("17.3")?;
+            if reply=="err 11" {super::composition::compose(&mut k)?;}
+            else {ensure(reply.starts_with("ok "),"17.3",format!("gpu-window: completed composition: {reply}"))?;}
+            let (screen,_)=super::composition::screen()?;
+            same(&screen,1280,800,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
             let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
             ensure(front.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: completed render did not become the front")?;
         }
