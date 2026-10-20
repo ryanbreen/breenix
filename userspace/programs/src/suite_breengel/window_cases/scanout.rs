@@ -344,9 +344,10 @@ fn scanout_fault_wrong_resource() -> CaseResult {
         rec.serial, rec.resource, good.resource))
 }
 
+// gpu-display: B6/B7 uses core STALE_FENCE 20; another serial must never certify this composite.
 fn scanout_fault_stale_fence() -> CaseResult {
     interface()?;
-    let (r, _, rec, serial, good) = fault(abi::tc_point::STALE_FENCE, 21)?;
+    let (r, _, rec, serial, good) = fault(libbreenix::gpu::abi::test_point::STALE_FENCE, 21)?;
     ensure(r == -(abi::errno::EIO as i64), "20.3", format!("readback of composite {serial} with a fence answered for another serial {}; the contract gives EIO, serial", outcome(r)))?;
     ensure(rec.serial == serial && rec.resource == good.resource, "20.3", format!(
         "the serial failure's record names serial {} and resource {:#x}; it names composite {serial} and the composed resource {:#x}, the binding being right",
