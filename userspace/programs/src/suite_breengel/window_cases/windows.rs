@@ -603,22 +603,22 @@ fn windows_stale_base_commit() -> CaseResult {
     same(w3.buf(next.buffer), 64, 16, false, "the buffer after the stale commit", "17.3", |x, y| pattern(1, x, y))
 }
 
+// gpu-window: §2.2 accepted render work survives COMMIT; later front writes are refused without changing pixels.
 fn windows_commit_immutable() -> CaseResult {
     interface()?;
-    let ended = child_end(5_000, || {
-        let Ok(w) = W::new(16, 16, 2) else { return 2 };
-        let Ok(a) = w.acquire(1_000_000_000) else { return 3 };
-        w.buf(a.buffer)[0] = 1; // writable while acquired
-        if w.commit(a.buffer, &[full(&w.c)]).is_err() { return 4; }
-        w.buf(a.buffer)[0] = 2; // the committed buffer: must fault
-        5
-    }).cite("17.3")?;
-    match ended {
-        Ended::Signal(11) => Ok(()),
-        Ended::Exit(5) => at("17.3", "writing a committed buffer did not fault; it is read-only to its owner"),
-        Ended::Exit(c) => at("17.3", format!("the child exited {c} before the write")),
-        Ended::Signal(s) => at("17.3", format!("the child died of signal {s}, not SIGSEGV")),
-    }?;
+    let w=W::new(16,16,2)?;
+    let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+    let mut context=bgl::Context::new().map_err(|r|format!("gpu-window: context {}",outcome(r))).cite("17.3")?;
+    context.begin(w.c.buffer[a.buffer as usize],16,16);context.clear(0xff112233);
+    let accepted=context.submit().map_err(|r|format!("gpu-window: acquired-target render {}",outcome(r))).cite("17.3")?;
+    w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
+    accepted.wait(2_000_000_000).map_err(|r|format!("gpu-window: pre-COMMIT fence {}",outcome(r))).cite("17.3")?;
+    let (_,before)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+    ensure(before.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: commit lost accepted render work")?;
+    context.begin(w.c.buffer[a.buffer as usize],16,16);context.clear(0xff556677);
+    ensure(context.submit().is_err(),"17.3","gpu-window: submission wrote a committed target")?;
+    let (_,after)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+    ensure(after==before,"17.3","gpu-window: refused front write changed committed pixels")?;
     // A tree size below a page: acquiring the second buffer must not open the first
     // buffer's committed tree page.
     let ended = child_end(5_000, || {
