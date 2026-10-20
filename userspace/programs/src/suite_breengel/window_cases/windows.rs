@@ -192,32 +192,24 @@ fn windows_multi_window() -> CaseResult {
     Ok(())
 }
 
+// gpu-window: §2.2 replaces unmapped pixel addresses with revoked target handles and exact GPU accounting.
 fn windows_destroy() -> CaseResult {
-    interface()?;
-    // In a child, so the read of the unmapped buffer faults the child, not the case.
-    let ended = child_end(5_000, || {
-        let Ok(mut w) = W::new(16, 16, 2) else { return 2 };
-        if w.register(b"destroy") < 0 || listed(w.id()).ok().flatten().is_none() {
-            return 3;
-        }
-        let addr = w.c.buffer[0] as *const u8;
-        // SAFETY: the buffer is mapped until DESTROY; this read is the positive control.
-        let _ = unsafe { core::ptr::read_volatile(addr) };
-        if w.destroy() < 0 || listed(w.id()).ok().flatten().is_some() {
-            return 4;
-        }
-        // SAFETY: deliberately reading the unmapped buffer; the case expects SIGSEGV.
-        let _ = unsafe { core::ptr::read_volatile(addr) };
-        5
-    }).cite("17.2")?;
-    match ended {
-        Ended::Signal(11) => Ok(()),
-        Ended::Exit(3) => at("17.2", "the registered window is not listed"),
-        Ended::Exit(4) => at("17.2", "after DESTROY the window is still listed, or DESTROY failed"),
-        Ended::Exit(5) => at("17.2", "after DESTROY its buffer is still mapped: reading it did not fault"),
-        Ended::Exit(c) => at("17.2", format!("the child exited {c} before DESTROY")),
-        Ended::Signal(s) => at("17.2", format!("the child died of signal {s}, not SIGSEGV from the unmapped buffer")),
+interface()?;
+    let before=crate::gpu_checks::counters().cite("17.2")?;
+    let mut w=W::new(64,48,2)?;let id=w.id();let handles=w.c.buffer;
+    want_ok(w.destroy(),"17.2","gpu-window: DESTROY")?;
+    ensure(listed(id).cite("17.2")?.is_none(),"17.2","gpu-window: destroyed window remains listed")?;
+    for handle in &handles[..2] {
+        let mut pixels=vec![0xA5;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+        want_errno(libbreenix::gpu::readback(*handle,[0,0,64,48],&mut pixels,256,&mut record),EINVAL,"17.2","gpu-window: destroyed GPU handle")?;
+        ensure(pixels.iter().all(|&b|b==0xA5),"17.2","gpu-window: revoked handle returned pixels")?;
     }
+    let start=now_ms();loop {
+        let after=crate::gpu_checks::counters().cite("17.2")?;
+        if after.resources==before.resources && after.resource_bytes==before.resource_bytes {break;}
+        ensure(since(start)<1_000,"17.2","gpu-window: DESTROY leaked target handles or backing")?;
+        let _=time::sleep_ms(5);
+    }Ok(())
 }
 
 fn windows_drop_destroys() -> CaseResult {
