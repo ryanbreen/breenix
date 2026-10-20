@@ -326,10 +326,11 @@ fn fault(point: u32, seed: u32) -> Result<(i64, Vec<u8>, abi::ObservationRecord,
     Ok((r, px, rec, serial, good))
 }
 
+// gpu-display: B6/B7 uses core point 19; a skipped readback transfer must leave poison, then recover.
 fn scanout_fault_skipped_transfer() -> CaseResult {
     interface()?;
-    let (r, px, _, serial, _) = fault(abi::tc_point::SKIP_TRANSFER, 15)?;
-    ensure(r == -(EAGAIN as i64), "20.3", format!("readback of composite {serial} with a skipped transfer {}; the contract gives EAGAIN, completion missing", outcome(r)))?;
+    let (r, px, _, serial, _) = fault(libbreenix::gpu::abi::test_point::SKIP_TRANSFER, 15)?;
+    ensure(r == -(abi::errno::EIO as i64), "20.3", format!("gpu-display: readback of composite {serial} with core point 19 {}; record v2 must refuse unwritten pixels with EIO", outcome(r)))?;
     ensure(px.iter().all(|&b| b == 0), "20.1", "a refused readback returned pixels without its record")
 }
 
