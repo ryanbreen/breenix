@@ -23,7 +23,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("cursor-no-trail", "Moving the cursor over a static scene restores every pixel it covered", composition_cursor_no_trail),
     pictured!("cursor-shape", "Setting a cursor shape draws that shape at the pointer", composition_cursor_shape),
     pictured!("cursor-stationary-repaint", "Content committed under a stationary cursor is shown, with the cursor redrawn above it", composition_cursor_stationary_repaint),
-    pictured!("flush-irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_flush_irq_bound),
+    pictured!("irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_irq_bound),
     pictured!("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate),
     pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
     pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
@@ -666,12 +666,13 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
     Ok(())
 }
 
-/// The trace gauge `display_irq_masked_max_us`.
+/// The GPU path gauge, including validation, translation, fences and readback copies.
 fn irq_gauge() -> Result<u64, libbreenix::suite::CaseError> {
-    counter("display_irq_masked_max_us").cite("18")
+    counter("gpu_irq_masked_max_us").cite("18")
 }
 
-fn composition_flush_irq_bound() -> CaseResult {
+// gpu-display: §2.2 keeps the calibrated 500 us bound over the entire GPU composition path.
+fn composition_irq_bound() -> CaseResult {
     interface()?;
     let mut k = compositor()?;
     let p = Placed::new(0, 0, 1280, 800, 0, 26);
@@ -692,10 +693,11 @@ fn composition_flush_irq_bound() -> CaseResult {
     for i in 0..20 {
         w.frame(28 + i).cite("17.3")?;
         compose(&mut k)?;
+        let _=screen()?;
     }
     let bound = irq_gauge()?;
     value("irq-masked-max", bound as i64, "us", Some((0, 500)));
-    ensure(bound <= 500, "18", format!("over 20 composites of full-screen damage the longest IRQ-masked interval in the display copy was {bound} us; the bound is 500"))
+    ensure(bound <= 500, "18", format!("over 20 composites of full-screen damage the longest IRQ-masked interval in GPU composition and readback was {bound} us; the bound is 500"))
 }
 
 fn composition_present_rate() -> CaseResult {
