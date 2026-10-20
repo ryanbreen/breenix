@@ -432,7 +432,8 @@ and home, which are copied off the machine first.
    Mount shared state before running the users design's `etc-reconcile`, then start services. Reconcile
    generation defaults from `/usr/share/factory/etc` into shared `/etc`, preserving machine-owned accounts,
    shadow entries, SSH host keys and admin policy. Upgrades and cowfs generation rollbacks keep these binds
-   and the same shared state; selecting an older generation must not restore old credentials.
+   and the same shared state; selecting an older cowfs generation must not restore old credentials. The frozen ext2 rescue boot below
+   uses the pre-migration accounts and keys instead.
 6. **Rollback.** The ext2 copy stays frozen and never mounts writable (S4). PREVIOUS becomes the migrating commit
    with both ext2 partitions read-only and a RAM-disk cowfs for `/tmp` and `/run`, a rescue boot with every file
    readable over SSH. Making ext2 writable again is an operator action. <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
