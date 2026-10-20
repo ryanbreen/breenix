@@ -230,18 +230,20 @@ fn isolation_other_read() -> CaseResult {
     }))
 }
 
+// gpu-window: §2.2 replaces retired mapping authority with validator ownership of GPU handles (EINVAL).
 fn isolation_other_map() -> CaseResult {
-    interface()?;
-    let w = shown(16, 16, 8, b"other-map")?;
-    let id = w.id();
-    as_unrelated("MAP_COMMITTED", |who| {
-        let mut m = abi::MapBuffers::ZERO;
-        m.id = id;
-        errno_is(call(op::MAP_COMMITTED, &mut m), EPERM, who, &format!("MAP_COMMITTED of window {id}"))?;
-        if m.buffer.iter().any(|&a| a != 0) {
-            return Err(format!("a refused MAP_COMMITTED still reported buffer addresses {:x?}", m.buffer));
-        }
-        Ok(())
+interface()?;
+    let w=W::new(16,16,2)?;let target=w.c.buffer[0];
+    let mut px=vec![0;1024];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+    want_ok(libbreenix::gpu::readback(target,[0,0,16,16],&mut px,64,&mut record),"17.4","gpu-window: owner's GPU target readback")?;
+    as_unrelated("foreign GPU handle",|who| {
+        let mut c=bgl::Context::new().map_err(|r|format!("CONTEXT_CREATE {}",outcome(r)))?;
+        c.begin(target,16,16);c.clear(0xff112233);
+        let result=c.submit();
+        if result.err()!=Some(-(EINVAL as i64)){return Err(format!("gpu-window: {who} submitted to another owner's GPU target"));}
+        let mut px=vec![0xA5;1024];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+        errno_is(libbreenix::gpu::readback(target,[0,0,16,16],&mut px,64,&mut record),EINVAL,who,"foreign GPU target")?;
+        if px.iter().any(|&b|b!=0xA5){return Err("gpu-window: foreign readback returned pixels".into());}Ok(())
     })
 }
 
