@@ -83,3 +83,24 @@ pub(crate) fn stride_padding()->CaseResult {
         }
     }Ok(())
 }
+
+// gpu-raster: three-byte pixels are transfer formats, never render targets (§2).
+pub(crate) fn bpp3_bpp4()->CaseResult {
+    let mut f=Fixture::new(14,18).cite("2")?;
+    let rgb:Vec<u8>=(0..14*18).flat_map(|n|[(n%251) as u8,73,29]).collect();
+    let (r,_)=gpu::upload(f.context.handle(),f.texture,[0,0,14,18],&rgb,42,ga::upload_source::R8G8B8,ga::purpose::FIXTURE);
+    ensure(r==0,"2","gpu-raster: three-byte RGB upload failed")?;
+    f.context.begin(f.target,14,18);f.context.copy(f.texture,&[[0,0,14,18,0,0]]);
+    f.context.submit().and_then(|s|s.wait(2_000_000_000)).map_err(|e|format!("gpu-raster: conversion fence {}",outcome(e))).cite("2")?;
+    let mut bgra=f.pixels(14,18,56).cite("2")?;
+    ensure(bgra.chunks_exact(4).zip(rgb.chunks_exact(3)).all(|(b,r)|b==[r[2],r[1],r[0],255]),"2","gpu-raster: three-byte upload changed channel order or alpha")?;
+    // Exercise the public pixel-format conversion on the device's actual readback, with
+    // a three-byte destination and row sentinels, rather than drawing a three-byte target.
+    let source=unsafe{FrameBuf::from_raw(bgra.as_mut_ptr(),14,18,56,4,true)}.cite("2")?;
+    let mut rgb_out=vec![0xA5;48*18];
+    let mut dest=unsafe{FrameBuf::from_raw(rgb_out.as_mut_ptr(),14,18,48,3,false)}.cite("2")?;
+    libgfx::blit::blit(&mut dest,&source,0,0);
+    for (n,row) in rgb_out.chunks_exact(48).enumerate(){
+        ensure(row[..42]==rgb[n*42..(n+1)*42] && row[42..].iter().all(|&b|b==0xA5),"2","gpu-raster: three-byte readback conversion changed a pixel or padding")?;
+    }Ok(())
+}

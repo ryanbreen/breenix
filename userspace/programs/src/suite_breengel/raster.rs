@@ -518,23 +518,9 @@ use libbreenix::gpu::{self, abi as ga};
     }Ok(())
 }
 
+// gpu-raster: §2.2 preserves three-byte upload and readback conversion; three-byte drawing retires.
 fn raster_bpp3_bpp4() -> CaseResult {
-    let three = Guarded::new(14, 18, 14 * 3 + 2, 3, false);
-    let four = Guarded::new(14, 18, 14 * 4, 4, true);
-    scene(&mut three.fb());
-    scene(&mut four.fb());
-    ensure(drawn_pixels(&four, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the 4-byte surface")?;
-    *three.reference.borrow_mut() = Some(canonical_pixels(&four));
-    three.judge();
-    for y in 0..18 {
-        for x in 0..14 {
-            if three.color(x, y) != four.color(x, y) {
-                return at("2", format!("pixel ({x},{y}) is {} on the 3-byte RGB surface and {} on the 4-byte BGRX one",
-                    hex(three.color(x, y)), hex(four.color(x, y))));
-            }
-        }
-    }
-    step("3", three.sentinels())
+crate::gpu_checks::bpp3_bpp4()
 }
 
 fn raster_bgr_order() -> CaseResult {
