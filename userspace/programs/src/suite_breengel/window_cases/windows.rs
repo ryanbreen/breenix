@@ -812,6 +812,7 @@ fn windows_resize_error() -> CaseResult {
     Ok(())
 }
 
+// gpu-window: §2.2 charges GPU backing to RLIMIT_AS and the GPU quota; refusal is atomic.
 fn windows_resize_rlimit() -> CaseResult {
     interface()?;
     child("the limited child", 10_000, None, || {
@@ -826,12 +827,16 @@ fn windows_resize_rlimit() -> CaseResult {
         if set_rlimit_as(base + 1024 * 1024) != 0 {
             return Err(String::from("prlimit(RLIMIT_AS) failed"));
         }
+        let gpu_before=crate::gpu_checks::counters()?;
+        if gpu_before.resources<2 {return Err("gpu-window: window buffers are not GPU resources".into());}
         let mut r = abi::Resize::ZERO;
         r.id = w.id();
         r.width = 1024;
         r.height = 1024;
         let ret = call(op::RESIZE, &mut r);
         let after = vm_size()?;
+        let gpu_after=crate::gpu_checks::counters()?;
+        if gpu_after.resource_bytes!=gpu_before.resource_bytes || gpu_after.resources!=gpu_before.resources {return Err("gpu-window: refused resize changed GPU accounting".into());}
         if ret != -(ENOMEM as i64) {
             return Err(format!("RESIZE past RLIMIT_AS {}; the contract gives ENOMEM (section 17.2)", outcome(ret)));
         }
