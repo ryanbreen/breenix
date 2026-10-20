@@ -344,21 +344,19 @@ fn windows_exec_cleanup() -> CaseResult {
     ensure(reply == "err 2", "17.2", format!("the exec'd image's DESTROY of its old window {id} answered `{reply}`; the window is gone (ENOENT)"))
 }
 
+// gpu-window: §2.2 fork-no-mapping becomes no inherited GPU handles, with an actual forked child.
 fn windows_fork_no_mapping() -> CaseResult {
-    interface()?;
-    let w = W::new(16, 16, 2)?;
-    fill(w.buf(0), 16, 16, 7);
-    let addr = w.c.buffer[0];
-    let ended = child_end(5_000, move || {
-        // SAFETY: deliberately reading the parent's buffer address; the child has no mapping.
-        let _ = unsafe { core::ptr::read_volatile(addr as *const u8) };
-        0
-    }).cite("17.2")?;
-    match ended {
-        Ended::Signal(11) => Ok(()),
-        Ended::Exit(_) => at("17.2", "a forked child read its parent's window buffer; window mappings are not inherited"),
-        Ended::Signal(s) => at("17.2", format!("the child died of signal {s} instead of SIGSEGV")),
-    }
+interface()?;
+    let w=W::new(16,16,2)?;let handles=w.c.buffer;
+    step("17.2",child("GPU handles after fork",3_000,None,|| {
+        let (ret,c)=libbreenix::gpu::counters(0);
+        if ret!=0 || c.resources!=0 || c.contexts!=0 {return Err("gpu-window: fork inherited GPU resources or contexts".into());}
+        for target in &handles[..2] {
+            let mut pixels=vec![0xA5;16*16*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+            errno_is(libbreenix::gpu::readback(*target,[0,0,16,16],&mut pixels,64,&mut record),EINVAL,"child","parent GPU target")?;
+            if pixels.iter().any(|&b|b!=0xA5){return Err("gpu-window: refused inherited target wrote pixels".into());}
+        }Ok(())
+    }))
 }
 
 fn windows_fork_no_authority() -> CaseResult {
