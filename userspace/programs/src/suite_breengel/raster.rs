@@ -478,10 +478,11 @@ fn raster_extreme_work_bound() -> CaseResult {
             let area = rect.map_or(0, |(_, _, w, h)| (w*h) as u64);
             let emitted = after.fragment_area - before.fragment_area;
             let draws = after.draws - before.draws;
-            if emitted > area || (area == 0 && draws != 0) || (area != 0 && draws == 0) {
+            let written=(0..24).flat_map(|y|(0..32).map(move|x|(x,y))).filter(|&(x,y)|g.color(x,y)!=PAPER).count();
+            if emitted > area || (area == 0 && draws != 0) || (written != 0 && draws == 0) {
                 return Err(format!("gpu-raster: {name} emitted {emitted} fragments in {draws} draws for clipped area {area}"));
             }
-            let weight=if name.starts_with("draw_line") {8192}else if name.contains("circle") {2048}else if name.starts_with("rounded_rect") {4096}else if name.starts_with("gradient_v") {32768}else if name.starts_with("font::") {256}else{1};
+            let weight=if name.starts_with("draw_line") || name.starts_with("blit_scaled") {8192}else if name.contains("circle") {2048}else if name.starts_with("rounded_rect") {4096}else if name.starts_with("gradient_v") {32768}else if name.starts_with("font::") {256}else{1};
             let estimate=after.work_estimate-before.work_estimate;
             if estimate < emitted || estimate>area*(weight+1) {
                 return Err(format!("gpu-raster: {name} undercounted its GPU work estimate"));
