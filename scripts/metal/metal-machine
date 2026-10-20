@@ -35,6 +35,9 @@ WATCHED_SAMPLE_SECONDS = 60
 BOOT_SAMPLE_SECONDS = 30
 WATCH_FRESH_SECONDS = 120
 QUARANTINE_SETTLE_SECONDS = 4
+# A power-on with no lease is left alone this long before it is turned off: POST and the boot manager's question,
+# which makes an operator's power-on a persistent session (docs/metal/README.md, "Persistent sessions").
+STRAY_GRACE_SECONDS = 120
 
 
 def log(text):
@@ -249,6 +252,7 @@ class Machine:
     def __init__(self, site):
         self.site = site
         self.last_power_check = 0.0
+        self.stray_since = None
         self.last_sample = 0.0
         self.sample = {}
         self.events = []
@@ -283,11 +287,19 @@ class Machine:
                 power = m.power_state()
             except m.BmcError:
                 return None
+            if power != 'On':
+                self.stray_since = None
             if power == 'On':
                 with m.locked('lease'):
                     current = m.read_lease()
                     if current and (current.get('state') != 'claimed'):
+                        self.stray_since = None
                         return None
+                    if not current:
+                        self.stray_since = self.stray_since or m.now()
+                        if m.now() - self.stray_since < STRAY_GRACE_SECONDS:
+                            return None
+                    self.stray_since = None
                     off = m.force_off_and_wait()
                     self.remember(machine_event('stray-power-on', off=off))
                     if not current:

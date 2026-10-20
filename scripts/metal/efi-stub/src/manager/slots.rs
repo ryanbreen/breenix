@@ -1,0 +1,273 @@
+//! The manager's files on the EFI system partition (docs/metal/README.md, "Disk layout" and "Slot actions"):
+//! `MANAGER.CFG`, the kernel slots `CURRENT.IMG` and `PREVIOUS.IMG` with their `.TXT` notes, and `NEXT.*` while an
+//! upgrade is staged.
+use metal_efi::bootdisk;
+use metal_efi::files::Root;
+use metal_efi::say;
+use metal_efi::uefi::*;
+
+use crate::lab::Entry;
+
+pub const DIR: &str = "\\EFI\\BREENIX\\";
+const CONFIG_MAGIC: &str = "BREENIX-MANAGER 1";
+pub const URL_MAX: usize = 512;
+pub const PATH_MAX: usize = 512;
+
+/// How the manager starts the test loop: loading the HTTP boot port's path with `LoadImage`, or setting `BootNext`
+/// to the firmware's HTTP boot option and resetting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TestPath {
+    LoadFile,
+    BootNext,
+}
+
+pub struct Config {
+    pub url: [u8; URL_MAX],
+    pub url_len: usize,
+    pub countdown: u32,
+    /// The device path the firmware's HTTP boot loaded the install's stub from: the network port, its address and
+    /// the boot URL. A site value, kept off COM1 and the screen.
+    pub port: [u8; PATH_MAX],
+    pub port_len: usize,
+    pub http_option: Option<u16>,
+    pub test_path: TestPath,
+}
+
+impl Config {
+    pub fn url(&self) -> &[u8] {
+        &self.url[..self.url_len]
+    }
+
+    pub fn port(&self) -> &[u8] {
+        &self.port[..self.port_len]
+    }
+}
+
+fn unhex(text: &str, out: &mut [u8]) -> Option<usize> {
+    if text.len() % 2 != 0 || text.len() / 2 > out.len() {
+        return None;
+    }
+    for (index, pair) in text.as_bytes().chunks(2).enumerate() {
+        out[index] = u8::from_str_radix(core::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(text.len() / 2)
+}
+
+/// `MANAGER.CFG`: the magic line, then `query <url>`, `countdown <seconds>`, `port <device path in hex>`,
+/// `http-option <option number in hex>` and `test-path load-file|boot-next`.
+pub fn parse_config(text: &[u8]) -> Option<Config> {
+    let text = core::str::from_utf8(text).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != CONFIG_MAGIC {
+        return None;
+    }
+    let mut config = Config {
+        url: [0; URL_MAX],
+        url_len: 0,
+        countdown: 5,
+        port: [0; PATH_MAX],
+        port_len: 0,
+        http_option: None,
+        test_path: TestPath::BootNext,
+    };
+    for line in lines {
+        match line.split_once(' ') {
+            Some(("query", url)) if url.starts_with("http://") && url.len() < URL_MAX && url.is_ascii() => {
+                config.url[..url.len()].copy_from_slice(url.as_bytes());
+                config.url_len = url.len();
+            }
+            Some(("countdown", seconds)) => config.countdown = seconds.parse().ok().filter(|&s| (1..=60).contains(&s))?,
+            Some(("port", hex)) => {
+                config.port_len = unhex(hex, &mut config.port)?;
+                if !is_whole_path(&config.port[..config.port_len]) {
+                    return None;
+                }
+            }
+            Some(("http-option", hex)) if hex.len() == 4 => config.http_option = Some(u16::from_str_radix(hex, 16).ok()?),
+            Some(("test-path", "load-file")) => config.test_path = TestPath::LoadFile,
+            Some(("test-path", "boot-next")) => config.test_path = TestPath::BootNext,
+            _ if line.is_empty() => {}
+            _ => return None,
+        }
+    }
+    (config.url_len > 0 && config.port_len > 0).then_some(config)
+}
+
+/// A slot's note: the commit it holds.
+#[derive(Clone, Copy)]
+pub struct Note {
+    pub commit: [u8; 40],
+    pub present: bool,
+}
+
+impl Note {
+    pub const ABSENT: Note = Note { commit: [b'?'; 40], present: false };
+
+    pub fn short(&self) -> &str {
+        core::str::from_utf8(&self.commit[..8]).unwrap_or("?")
+    }
+
+    /// The commit, or `empty` for a slot that holds no kernel.
+    pub fn full(&self) -> &str {
+        if !self.present {
+            return "empty";
+        }
+        core::str::from_utf8(&self.commit).unwrap_or("?")
+    }
+}
+
+pub fn slot_name(entry: Entry) -> &'static str {
+    match entry {
+        Entry::Current => "CURRENT",
+        Entry::Previous => "PREVIOUS",
+    }
+}
+
+fn path(name: &str, extension: &str, out: &mut [u8; 64]) -> usize {
+    let mut len = 0;
+    for part in [DIR, name, ".", extension] {
+        out[len..len + part.len()].copy_from_slice(part.as_bytes());
+        len += part.len();
+    }
+    len
+}
+
+/// The note of slot `name` (`CURRENT`, `PREVIOUS` or `NEXT`), absent when its image is.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root.
+pub unsafe fn note(root: &Root, name: &str) -> Note {
+    let mut image = [0u8; 64];
+    let image_len = path(name, "IMG", &mut image);
+    if !root.exists(core::str::from_utf8(&image[..image_len]).unwrap_or("")) {
+        return Note::ABSENT;
+    }
+    let mut text_path = [0u8; 64];
+    let len = path(name, "TXT", &mut text_path);
+    let mut text = [0u8; 256];
+    let Ok(size) = root.read(core::str::from_utf8(&text_path[..len]).unwrap_or(""), &mut text) else {
+        return Note { commit: [b'?'; 40], present: true };
+    };
+    let mut note = Note { commit: [b'?'; 40], present: true };
+    if let Ok(text) = core::str::from_utf8(&text[..size]) {
+        for line in text.lines() {
+            if let Some(commit) = line.strip_prefix("commit ") {
+                if commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    note.commit.copy_from_slice(commit.as_bytes());
+                }
+            }
+        }
+    }
+    note
+}
+
+/// Boots slot `entry`: reads its image into memory, attaches it as a RAM disk and starts its bootloader. Returns only
+/// when the slot could not be started, or its bootloader returned.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root; `image` this application's handle.
+pub unsafe fn boot(boot: &BootServices, image: Handle, root: &Root, entry: Entry) -> Status {
+    let mut image_path = [0u8; 64];
+    let len = path(slot_name(entry), "IMG", &mut image_path);
+    let image_path = core::str::from_utf8(&image_path[..len]).unwrap_or("");
+    let (base, size) = match root.read_pages(boot, image_path) {
+        Ok(read) => read,
+        Err(status) => {
+            say!("could not read the {} slot ({:#x})", slot_name(entry), status);
+            return status;
+        }
+    };
+    say!("read the {} slot: {} bytes", slot_name(entry), size);
+    if !bootdisk::looks_like_disk(base, size) {
+        say!("the {} slot is not a boot disk", slot_name(entry));
+        return LOAD_ERROR;
+    }
+    let disk = match bootdisk::attach(boot, base, size, "kernel slot") {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let volume = match bootdisk::connect(boot, disk, "kernel slot") {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    bootdisk::start_bootloader(boot, image, volume, "kernel slot")
+}
+
+struct SlotStore<'a>(&'a Root);
+
+impl metal_efi::slot_transaction::Store for SlotStore<'_> {
+    type Error = Status;
+    fn exists(&self, name: &str) -> bool {
+        let mut path = [0u8; 96];
+        unsafe { self.0.exists(slot_path(name, &mut path)) }
+    }
+    fn read(&self, name: &str, bytes: &mut [u8]) -> Result<usize, Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.read(slot_path(name, &mut path), bytes) }
+    }
+    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.write(slot_path(name, &mut path), bytes) }
+    }
+    fn delete(&self, name: &str) -> Result<(), Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.delete(slot_path(name, &mut path)) }
+    }
+    fn rename(&self, from: &str, to: &str) -> Result<(), Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.rename(slot_path(from, &mut path), to) }
+    }
+    fn invalid(&self) -> Status { VOLUME_CORRUPTED }
+}
+
+fn slot_path<'a>(name: &str, out: &'a mut [u8; 96]) -> &'a str {
+    out[..DIR.len()].copy_from_slice(DIR.as_bytes());
+    out[DIR.len()..DIR.len() + name.len()].copy_from_slice(name.as_bytes());
+    core::str::from_utf8(&out[..DIR.len() + name.len()]).unwrap_or("")
+}
+
+/// Recover an interrupted slot action before reading or booting a slot.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root.
+pub unsafe fn recover(root: &Root) -> Result<(), Status> {
+    metal_efi::slot_transaction::recover(&SlotStore(root))
+}
+
+/// `NEXT` becomes `CURRENT` and the old current `PREVIOUS`. Repeating a commit with no staged slot leaves the slots as they are.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root.
+pub unsafe fn commit(root: &Root) -> Result<(), Status> {
+    recover(root)?;
+    if !note(root, "NEXT").present {
+        say!("slot commit: nothing is staged; current {}", note(root, "CURRENT").full());
+        return Ok(());
+    }
+    metal_efi::slot_transaction::begin(&SlotStore(root), false)?;
+    say!(
+        "slot commit: current {}, previous {}",
+        note(root, "CURRENT").full(),
+        note(root, "PREVIOUS").full()
+    );
+    Ok(())
+}
+
+/// `CURRENT` and `PREVIOUS` change places.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root.
+pub unsafe fn rollback(root: &Root) -> Result<(), Status> {
+    recover(root)?;
+    if !note(root, "PREVIOUS").present || !note(root, "CURRENT").present {
+        say!("slot rollback refused: there is no previous slot to return to");
+        return Err(NOT_FOUND);
+    }
+    metal_efi::slot_transaction::begin(&SlotStore(root), true)?;
+    say!(
+        "slot rollback: current {}, previous {}",
+        note(root, "CURRENT").full(),
+        note(root, "PREVIOUS").full()
+    );
+    Ok(())
+}

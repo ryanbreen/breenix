@@ -177,7 +177,7 @@ fn by_cwd(change: Change) -> SyscallResult {
             Ok(ino) => ino,
             Err(_) => return SyscallResult::Err(EIO as u64),
         },
-        None => ext2::EXT2_ROOT_INO,
+        None => ext2::root_inode(),
     };
     update(fs, ino, change, &cred)
 }

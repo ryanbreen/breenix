@@ -810,9 +810,12 @@ impl VirtioBlockDevice {
     }
 
     fn write_chunk(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        if self.is_read_only() { return Err("Read-only filesystem"); }
         if buffer.len() < SECTOR_SIZE {
             return Err("Buffer too small");
+        }
+        let disk = crate::block::HardwareDisk::Virtio(self as *const Self as usize);
+        if self.read_only || !crate::block::hardware_write_allowed(disk, sector, buffer.len() / SECTOR_SIZE) {
+            return Err("Read-only filesystem");
         }
         if sector >= self.capacity {
             return Err("Sector out of range");

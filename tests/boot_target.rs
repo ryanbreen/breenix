@@ -8,6 +8,8 @@ extern crate alloc;
 #[path = "../kernel/src/boot/target.rs"]
 mod target;
 
+// root_partition, home_partition, tests and refused serve root selection, which this test does not exercise.
+#[allow(dead_code)]
 #[path = "../kernel/src/boot/intent.rs"]
 pub mod intent;
 mod boot { pub use crate::intent; }
@@ -61,7 +63,8 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe | Target::Default | Target::Desktop | Target::Shell | Target::Console { .. } | Target::Program { .. }) => {
+        Ok(Target::Probe | Target::Default | Target::Persistent | Target::PersistentInstall | Target::Desktop
+            | Target::Shell | Target::Console { .. } | Target::Program { .. }) => {
             panic!("{text:?} parsed as another mode")
         }
         Err(why) => panic!("{text:?} was refused: {why}"),
@@ -94,6 +97,8 @@ fn suite_and_probe_lines_parse() {
     );
     assert!(matches!(parse("probe\n"), Ok(Target::Probe)));
     assert!(matches!(parse("default\n"), Ok(Target::Default)));
+    assert!(matches!(parse("persistent\n"), Ok(Target::Persistent)));
+    assert!(matches!(parse("persistent-install\n"), Ok(Target::PersistentInstall)));
     assert!(matches!(parse("shell\n"), Ok(Target::Shell)));
     assert!(matches!(parse("console\n"), Ok(Target::Console { .. })));
 }

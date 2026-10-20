@@ -9,10 +9,15 @@ use core::fmt;
 #[cfg(target_arch = "x86_64")]
 mod read_only;
 
+#[cfg(all(target_arch = "x86_64", feature = "block_fence_inject"))]
+pub mod fence_fault;
+pub mod gpt;
 #[cfg(target_arch = "x86_64")]
 pub mod install;
 #[cfg(target_arch = "x86_64")]
 pub mod nvme;
+#[cfg(target_arch = "x86_64")]
+pub mod partition;
 #[cfg(target_arch = "x86_64")]
 pub mod ramdisk;
 pub mod virtio;
@@ -20,67 +25,190 @@ pub mod virtio;
 pub mod testing_fixture;
 
 mod write_policy;
-pub use write_policy::{hardware_read_only, hardware_disk_read_only, HardwareDisk};
+pub use write_policy::{hardware_read_only, hardware_disk_read_only, hardware_write_allowed, HardwareDisk};
 #[cfg(target_arch = "x86_64")]
-pub use write_policy::init_hardware_policy;
+pub use write_policy::{fence, fence_seal, init_hardware_policy, Fence};
 #[cfg(target_arch = "x86_64")]
-use write_policy::hardware_writes;
+use write_policy::{fence_add, fence_clear};
 
-/// Whether this boot's root is the installed hardware disk (`install`).
+/// Which partition of the installed disk this boot's root is (docs/metal/README.md, "Boot intents and root
+/// selection"): not chosen yet, the test root, or the persistent install's system partition.
 #[cfg(target_arch = "x86_64")]
-static ROOT_ON_INSTALLED_DISK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static ROOT_ROLE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+#[cfg(target_arch = "x86_64")]
+const ROLE_TEST_ROOT: u8 = 1;
+#[cfg(target_arch = "x86_64")]
+const ROLE_SYSTEM: u8 = 2;
 
-/// Prefer a supplied bootloader RAM disk; refuse hardware root fallback on physical x86 (issue #1702),
-/// except for the one disk the storage lane installed a root on.
+/// Prefer a supplied bootloader RAM disk; on physical x86 otherwise mount exactly the partition the boot intent
+/// names, and refuse any other hardware root (issue #1702).
 #[cfg(target_arch = "x86_64")]
 pub fn root_devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
     if let Some(device) = ramdisk::device() {
         alloc::vec![device]
     } else if hardware_read_only() {
-        installed_root().into_iter().collect()
+        named_root().into_iter().collect()
     } else {
         devices()
     }
 }
 
-/// Whether root was taken from the installed hardware disk.
+/// Whether root was taken from the test root partition the delivery stub installed.
 #[cfg(target_arch = "x86_64")]
 pub fn root_on_installed_disk() -> bool {
-    ROOT_ON_INSTALLED_DISK.load(core::sync::atomic::Ordering::Acquire)
+    ROOT_ROLE.load(core::sync::atomic::Ordering::Acquire) == ROLE_TEST_ROOT
 }
 
-/// On a physical boot without a RAM disk, the one hardware disk holding a root
-/// record, with writes granted for it.
+/// Whether root was taken from the persistent install's system partition.
 #[cfg(target_arch = "x86_64")]
-fn installed_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
-    let (disk, record) = match install::find_root(discovered()) {
+pub fn root_on_system_partition() -> bool {
+    ROOT_ROLE.load(core::sync::atomic::Ordering::Acquire) == ROLE_SYSTEM
+}
+
+/// The one partition on the attached hardware disks whose unique GUID is `text`, of one of `types`, as a block
+/// device without the read-only barrier (the fence guards it), with its table entry and disk.
+#[cfg(target_arch = "x86_64")]
+fn named_partition(
+    text: &str,
+    types: &[gpt::Guid],
+) -> Result<(partition::Partition, gpt::Partition, HardwareDisk), &'static str> {
+    let unique = gpt::parse_guid(text).ok_or("the boot intent's GUID does not parse")?;
+    let mut found = None;
+    let mut matches = 0;
+    for disk in discovered() {
+        if disk.block_size() != gpt::SECTOR {
+            continue;
+        }
+        let mut lba1 = [0u8; gpt::SECTOR];
+        if disk.read_block(1, &mut lba1).is_err() {
+            continue;
+        }
+        let Ok(header) = gpt::header(&lba1, disk.num_blocks()) else { continue };
+        let entry = gpt::find(&header, &unique, |lba, sector| {
+            disk.read_block(lba, sector).map_err(|_| "a partition table sector is unreadable")
+        })?;
+        if let Some(entry) = entry {
+            matches += 1;
+            found = Some((disk, entry));
+        }
+    }
+    let (disk, entry) = match (matches, found) {
+        (1, Some(found)) => found,
+        (0, _) => return Err("no attached disk has a partition with the boot intent's GUID"),
+        _ => return Err("more than one attached disk has a partition with the boot intent's GUID"),
+    };
+    if !types.contains(&entry.type_guid) {
+        return Err("the named partition's type is not one this role may have");
+    }
+    let hardware = disk.hardware_disk().ok_or("the partition's disk has no hardware identity")?;
+    Ok((partition::Partition::new(disk, entry.first, entry.sectors())?, entry, hardware))
+}
+
+/// The root the boot intent names: the test root (a test boot, or an install's migration) or the system partition
+/// (a persistent boot), with the fence opened for its range alone.
+#[cfg(target_arch = "x86_64")]
+fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
+    let Some(text) = crate::boot::intent::root_partition() else {
+        let why = crate::boot::intent::refused().unwrap_or("the boot intent names no root partition");
+        log::warn!("[storage] root refused: {}", why);
+        return None;
+    };
+    let (device, entry, hardware) = match named_partition(text, &[gpt::TEST_ROOT_TYPE, gpt::SYSTEM_TYPE]) {
         Ok(found) => found,
         Err(why) => {
-            log::info!("[storage] no installed root: {}", why);
+            log::warn!("[storage] root refused: {}", why);
             return None;
         }
     };
-    let install::Record::Root { boot, bytes, sha256 } = record else { return None };
+    let test_root = entry.type_guid == gpt::TEST_ROOT_TYPE;
     log::info!(
-        "[storage] root record: installed by boot {}, {} bytes, sha256 {}",
-        boot,
-        bytes,
-        install::hex(&sha256)
+        "[storage] root partition: {} {} LBA {}-{} on {}",
+        if test_root { "test root" } else { "system" },
+        text,
+        entry.first,
+        entry.last,
+        hardware
     );
-    match install::matches(&*disk, bytes, &sha256) {
-        Ok(true) => log::info!("[storage] root image matches its install record"),
-        Ok(false) => log::info!("[storage] root image differs from its install record: written since"),
-        Err(why) => log::warn!("[storage] root image unreadable: {}", why),
+    if test_root {
+        if let Err(why) = report_root_record(&device) {
+            log::warn!("[storage] root refused: {}", why);
+            return None;
+        }
     }
-    hardware_writes(disk.hardware_disk()?, true);
-    log::info!("[block] hardware disk writes granted: the root the storage lane installed");
-    ROOT_ON_INSTALLED_DISK.store(true, core::sync::atomic::Ordering::Release);
-    Some(disk)
+    if let Err(why) = fence_add(hardware, entry.first, entry.last) {
+        log::warn!("[storage] root refused: {}", why);
+        return None;
+    }
+    if test_root {
+        log::info!("[block] hardware disk writes granted: the root the storage lane installed");
+    }
+    ROOT_ROLE.store(if test_root { ROLE_TEST_ROOT } else { ROLE_SYSTEM }, core::sync::atomic::Ordering::Release);
+    Some(alloc::boxed::Box::new(device))
 }
 
-/// Before root mounts: when the RAM disk's first sector asks for an install,
-/// copy the RAM disk onto the machine's only hardware disk, read it back, and
-/// return the disks to read-only.
+/// The storage record in the test root partition's first sector, which the delivery stub wrote last.
+#[cfg(target_arch = "x86_64")]
+fn report_root_record(device: &dyn BlockDevice) -> Result<(), &'static str> {
+    let install::Record::Root { boot, bytes, sha256 } = install::root_record(device)? else {
+        return Err("the test root holds no valid root record");
+    };
+    log::info!("[storage] root record: installed by boot {}, {} bytes, sha256 {}", boot, bytes, install::hex(&sha256));
+    match install::matches(device, bytes, &sha256) {
+        Ok(true) => log::info!("[storage] root image matches its install record"),
+        Ok(false) => log::info!("[storage] root image differs from its install record: written since"),
+        Err(why) => return Err(why),
+    }
+    Ok(())
+}
+
+/// Whether the boot intent names a home partition.
+#[cfg(target_arch = "x86_64")]
+pub fn home_named() -> bool {
+    crate::boot::intent::home_partition().is_some()
+}
+
+/// The home the boot intent names: the home partition beside the system root (a persistent boot), or the system
+/// partition beside the test root (an install's migration, which fills it). Any other pairing is refused.
+#[cfg(target_arch = "x86_64")]
+pub fn named_home() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
+    let text = crate::boot::intent::home_partition()?;
+    let wanted = match ROOT_ROLE.load(core::sync::atomic::Ordering::Acquire) {
+        ROLE_SYSTEM => gpt::HOME_TYPE,
+        ROLE_TEST_ROOT => gpt::SYSTEM_TYPE,
+        _ => {
+            log::warn!("[storage] home refused: no partition root was chosen");
+            return None;
+        }
+    };
+    if Some(text) == crate::boot::intent::root_partition() {
+        log::warn!("[storage] home refused: it names the root partition");
+        return None;
+    }
+    let (device, entry, hardware) = match named_partition(text, &[wanted]) {
+        Ok(found) => found,
+        Err(why) => {
+            log::warn!("[storage] home refused: {}", why);
+            return None;
+        }
+    };
+    log::info!(
+        "[storage] home partition: {} {} LBA {}-{} on {}",
+        if wanted == gpt::HOME_TYPE { "home" } else { "system" },
+        text,
+        entry.first,
+        entry.last,
+        hardware
+    );
+    if let Err(why) = fence_add(hardware, entry.first, entry.last) {
+        log::warn!("[storage] home refused: {}", why);
+        return None;
+    }
+    Some(alloc::boxed::Box::new(device))
+}
+
+/// Before root mounts: when the RAM disk's first sector asks for a recovery install, copy the RAM disk into the
+/// test root partition the request names, read it back, and close the fence again. A request that names no
+/// partition is refused: this layout has no whole-disk root.
 #[cfg(target_arch = "x86_64")]
 pub fn install_requested_root() {
     let Some(ram) = ramdisk::device() else { return };
@@ -88,26 +216,35 @@ pub fn install_requested_root() {
     if ram.read_block(0, &mut first).is_err() {
         return;
     }
-    let Some(install::Record::Install { boot }) = install::Record::parse(&first) else { return };
-    let disks = discovered();
-    if disks.len() != 1 {
-        log::warn!("[storage] install refused: {} hardware disks, expected exactly one", disks.len());
-        return;
-    }
-    let Some(target) = disks[0].hardware_disk() else {
-        log::warn!("[storage] install refused: disk has no hardware identity");
+    let Some(install::Record::Install { boot, partition }) = install::Record::parse(&first) else { return };
+    let Some(partition) = partition else {
+        log::warn!("[storage] install refused: the request names no partition");
         return;
     };
+    let (target, entry, hardware) = match named_partition(&partition, &[gpt::TEST_ROOT_TYPE]) {
+        Ok(found) => found,
+        Err(why) => {
+            log::warn!("[storage] install refused: {}", why);
+            return;
+        }
+    };
+    if let Err(why) = fence_add(hardware, entry.first, entry.last) {
+        log::warn!("[storage] install refused: {}", why);
+        return;
+    }
     let bytes = ram.num_blocks() * install::SECTOR as u64;
-    log::info!("[storage] install requested by boot {}: {} bytes onto the hardware disk", boot, bytes);
+    log::info!("[storage] install requested by boot {}: {} bytes onto the test root partition", boot, bytes);
     let started = crate::time::get_monotonic_time();
-    let result = install::install(&*ram, &*disks[0], &boot, &mut |granted| {
-        hardware_writes(target, granted)
+    // The fence holds the partition's range for the copy and is cleared once writing ends.
+    let result = install::install(&*ram, &target, &boot, &mut |granted| {
+        if !granted {
+            fence_clear();
+        }
     });
     let elapsed = crate::time::get_monotonic_time().saturating_sub(started);
     match result {
         Ok(done) => {
-            log::info!("[storage] wrote {} bytes to the hardware disk from LBA 0", done.bytes);
+            log::info!("[storage] wrote {} bytes to the test root partition from its first sector", done.bytes);
             match done.verified {
                 Ok(()) => log::info!(
                     "[storage] read back identical: {} bytes, sha256 after the record sector {} ({} ms)",
@@ -120,6 +257,7 @@ pub fn install_requested_root() {
         }
         Err(why) => log::warn!("[storage] install failed: {}", why),
     }
+    fence_clear();
 }
 
 /// The x86 disks the drivers attached, in backend order: VirtIO block

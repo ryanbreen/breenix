@@ -73,7 +73,7 @@ class TestsBuildTest(unittest.TestCase):
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
             stub = tmp / 'stub-target' / build.STUB_TARGET / 'release/metal-efi-stub.efi'
-            for path in (image, stub, clone / 'testdata/ext2.img', clone / build.TEST_BINARIES):
+            for path in (image, stub, stub.with_name('metal-boot-manager.efi'), clone / 'testdata/ext2.img', clone / build.TEST_BINARIES):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'BXTEST\0\0' if path.name == 'test_binaries.img' else b'bytes')
             for name in ('docs/boot-path.json', 'xtask/src/boot_stages.rs'):

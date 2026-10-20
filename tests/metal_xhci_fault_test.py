@@ -102,7 +102,7 @@ class FaultBuildTest(unittest.TestCase):
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
             stub = tmp / 'stub-target' / build.STUB_TARGET / 'release/metal-efi-stub.efi'
-            for path in (image, stub, clone / 'testdata/ext2.img'):
+            for path in (image, stub, stub.with_name('metal-boot-manager.efi'), clone / 'testdata/ext2.img'):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'bytes')
             calls = []
