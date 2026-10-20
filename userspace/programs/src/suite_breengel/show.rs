@@ -3,7 +3,7 @@
 use crate::*;
 
 pub(crate) const COMPOSITION: &[Case] = &[
-    case("fbinfo-geometry", "fbinfo's stride, bytes per pixel and pixel format agree with the mode", composition_fbinfo_geometry),
+    case("fbinfo-geometry", "GPU MODES and the composed binding agree on physical dimensions and scale", composition_fbinfo_geometry),
 ];
 
 pub(crate) const PANEL: &[Case] = &[

@@ -2,12 +2,13 @@
 
 This is the contract the `breengel` suite (`docs/suites/breengel.json`, `/sbin/suite-breengel`) cites, as
 the POSIX suites cite the standard. It fixes BreenGL's 2D library, its text, font, image and widget layers,
-and the kernel window interface, compositor and display observation path, to the precision the cases need:
+and the window protocol, userspace GPU compositor and device observation path, to the precision the cases need:
 the API each case calls, the formula or literal table its expected pixels come from, the parser and decoder
 bounds, the window interface's semantics and the error each operation returns. The plan of record is
 `docs/gui/plan.md`; section numbers written "plan §N" refer to it. Where the plan already fixes a rule, this
 document transcribes it and gives it a section number; where it leaves a detail to this contract, the detail
-is fixed here.
+is fixed here. The GPU rebuild follows `gpu.md` section 2 and rulings B1–B7; its
+[case reconciliation](breengel-gpu-cases.md) assigns all 399 cases and the five retired identities.
 
 Each case's failure message names the section it checks. A case whose layer is not present fails with a
 message naming the missing piece and its section, never skips, and never passes because a layer is missing.
@@ -34,7 +35,9 @@ message naming the missing piece and its section, never skips, and never passes 
 
 - **Formats.** A 4-byte pixel is stored `B, G, R, X` when the surface is BGR (the canonical format,
   BGRX8888) and `R, G, B, X` when it is not. A 3-byte pixel is `B, G, R` or `R, G, B` the same way. The
-  BGR flag swaps the order of the three colour bytes and changes nothing else.
+  BGR flag swaps the order of the three colour bytes and changes nothing else. Render targets use the
+  GPU profile's B8G8R8A8 or R8G8B8A8 formats; three-byte formats exist only for upload and
+  conversion of completed readback into capture/encoding output, never as render targets.
 - **X byte.** Every primitive writes the X byte of a 4-byte opaque pixel as `0xFF`. Every capture and
   every comparison normalizes X to `0xFF` first (section 20.1), so a case that compares colours compares the
   three colour bytes. `raster/x-byte` checks X itself.
@@ -67,33 +70,26 @@ message naming the missing piece and its section, never skips, and never passes 
 
 ## 3. Surfaces
 
-The plan calls the drawing target a surface. In libgfx it is `libgfx::framebuf::FrameBuf`.
+Surfaces own GPU targets, created through BGL on syscall 416, not CPU pixel mappings.
+`RESOURCE_CREATE` with kind target creates distinct, zeroed resource handles; the device maximum
+reported by `CAPS` (capped at 16,384) bounds each dimension. Empty dimensions, dimensions past
+that maximum and unsupported render formats are EINVAL (the library reports Empty, TooLarge
+and Format respectively). Null and Misaligned are no longer surface errors: no pixel pointer
+is accepted. A handle is never an address. Guest backing is charged to `RLIMIT_AS` and the
+process GPU quota; `COUNTERS.resource_bytes` and resource count return exactly to baseline
+when destruction and the final device unref complete, within the one-second release window.
+A resource can retain its backing after handle destruction while a holder exists (§17.3).
 
-- `FrameBuf::new(width, height, format) -> Result<FrameBuf, SurfaceError>` allocates and owns its memory
-  (stride `width × bytes_per_pixel`), cleared to zero; `FrameBuf::new_filled(width, height, format, color)`
-  clears it to `color`. Dropping an owned surface frees its memory.
-- `unsafe FrameBuf::from_raw(base, width, height, stride, bpp, is_bgr) -> Result<FrameBuf, SurfaceError>`
-  wraps memory the caller owns. It checks every numeric rule below and returns the same errors as `new`. Its
-  one unchecked obligation is that `base` stays valid for reads and writes of `stride × height` bytes, and is
-  not accessed through another mutable path, for the surface's lifetime.
-- `format` is `{ bpp: 3 | 4, is_bgr: bool, premultiplied: bool }`; `premultiplied` needs `bpp = 4`.
-
-| Rule | Error |
-|---|---|
-| width or height is 0 | `SurfaceError::Empty` |
-| width or height above 16,384 | `SurfaceError::TooLarge` |
-| bpp other than 3 or 4 | `SurfaceError::Format` |
-| stride below `width × bpp` | `SurfaceError::StrideTooShort` |
-| `stride × height` above 2³¹ − 1, or overflowing | `SurfaceError::SizeOverflow` |
-| base null | `SurfaceError::Null` |
-| base not 4-byte aligned | `SurfaceError::Misaligned` |
-
-Rows are `stride` bytes apart. The bytes of a row past `width × bpp` (the padding) belong to the caller and
-no primitive reads or writes them. The suite draws surface cases into memory bracketed by `PROT_NONE` guard
-pages, and fills every row's padding with a sentinel pattern of its own that every case checks
-(`raster/guard-pages`, `stride-padding`).
+`UPLOAD` accepts padded rows, including three-byte RGB/BGR input; `READBACK` returns canonical
+four-byte rows, which may be converted to three-byte capture/encoding output. Neither transfer
+reads or writes the caller's row padding. User buffers are guarded on both sides; extreme
+rectangles cannot escape those buffers. Device draws preserve a separate canary target and the
+caller clip. Clipped row copies upload whole pixels and use a clipped GPU copy; a rectangle
+starting at the row end writes nothing and never wraps into another row (§5.9).
 
 ## 4. Clipping
+
+The clip stack emits GPU scissors; every pixel-set rule below is unchanged.
 
 - Every primitive draws only inside the surface and inside the current clip.
 - `push_clip(rect)` sets the clip to the intersection of `rect` and the current clip; `pop_clip()` restores
@@ -103,6 +99,14 @@ pages, and fills every row's padding with a sentinel pattern of its own that eve
   `i64`, and never wraps an end coordinate into the surface (`raster/fill-rect-overflow`).
 
 ## 5. Primitives
+
+All coordinates and expected pixel sets below stand. Rectangles use `solid`; lines, filled
+and outlined circles, rounded rectangles and gradients use their corresponding profile
+predicate pipelines. Blits use `copy`, `copy_scaled`, `over` or `over_straight`; single pixels
+are one solid instance and clear is a GPU clear. No primitive produces CPU pixels. The closed
+forms and their proofs are `gpu.md` §1.5.1; they implement the tables below without walking an
+unclipped path. The midpoint-circle predicate uses the exact integer closed form specified
+there and its eightfold symmetry, so the literal octant table remains its independent oracle.
 
 All primitives write opaque pixels (section 2) unless they say otherwise, and change exactly the pixels given
 here, intersected with the surface and the clip.
@@ -229,13 +233,14 @@ Row `i` of `(x, y, w, h)` (`0 ≤ i < h`) is one colour; each channel is
 - `blit_scaled(dst, src, x, y, n)`, `n ≥ 1`: source pixel `(i, j)` fills the `n × n` square at
   `(x + i·n, y + j·n)`.
 
-### 5.9 Row copies and single pixels
+### 5.9 Uploaded rows and single pixels
 
-- `copy_row_from(fb, x, y, src, byte_count)` writes `min(byte_count, src.len(), (width − x) × bpp)` bytes
-  starting at pixel `(x, y)`, and nothing when `x ≥ width` or `y ≥ height`. It never writes past the end of
-  row `y` into the next row or into the row's padding (`raster/copy-row-clip`).
-- `put_pixel(fb, x, y, color)` writes one pixel inside the surface and clip; `get_pixel` reads one.
-- `clear(fb, color)` fills the current clip (the whole surface when none is pushed), never the padding.
+`copy_row_from` and byte-granular partial pixels leave the drawing API. A whole-pixel upload
+followed by a GPU region copy clips to the destination row and clip. Uploading eight pixels
+and copying them at (5,1) into an 8×4 destination changes exactly pixels (5..8,1); the same
+copy at x=8 changes nothing. No row wrap or padding access is permitted.
+`put_pixel` emits a single solid instance; pixels can be read only from completed device
+readback. `clear` fills the current clip on the GPU.
 
 ## 6. Damage
 
@@ -251,7 +256,7 @@ accumulates one bounding rectangle, the union of every mark since it was last ta
 | `draw_line(x0, y0, x1, y1)` | `(min(x0, x1), min(y0, y1), |x1 − x0| + 1, |y1 − y0| + 1)` |
 | `fill_circle`, `draw_circle` `(cx, cy, r ≥ 0)` | `(cx − r, cy − r, 2r + 1, 2r + 1)` |
 | blits at `(x, y)` of a `w × h` source, scale `n` | `(x, y, w·n, h·n)` |
-| `copy_row_from(x, y, …)` writing `k` bytes | `(x, y, ⌈k / bpp⌉, 1)` |
+| uploaded row copy at `(x, y)` of `k` whole pixels | `(x, y, k, 1)` |
 | `clear` | the clip |
 | text | the union of every drawn glyph's bitmap rectangle |
 
@@ -267,23 +272,37 @@ wrapper, which counts calls and bytes per thread.
 
 | Work | Bound |
 |---|---|
-| a raster primitive at any coordinates | at most `2 × (A + R + C) + 64` steps, where `A`, `R` and `C` are the area, rows and columns of the primitive's clipped bounding rectangle; a primitive wholly outside the surface or clip does at most 64 |
+| a raster primitive at any coordinates | CPU geometry setup at most 64 steps per primitive (a text run is one primitive per glyph); emitted fragment area at most the clipped bounding rectangle; work estimate at most that area times the pipeline weight plus its required blend-copy area; a wholly clipped primitive emits no draw or work |
 | font load | at most `16 × file bytes + 65,536` steps and `2 × file bytes + 64 KiB` allocated |
 | one glyph's outline | compound depth ≤ 8, ≤ 256 components, ≤ 65,535 points and no more than maxp declares (`maxPoints` for a simple glyph, `maxCompositePoints` for a compound after expansion), ≤ `16 × glyph bytes + 8 × P + 4,096` steps for its `P` points after compound expansion, ≤ `64 × points + 64 KiB` allocated |
 | one glyph's flattening | quadratic subdivision depth ≤ 9 (≤ 512 segments per curve), ≤ 65,536 segments per glyph (else `GlyphTooComplex`), ≤ `1,028 × P` steps for `P` points after compound expansion |
-| one glyph's rasterization at `s` px | bitmap ≤ `4s × 4s`; ≤ `E + H × (10C + 8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64` steps and ≤ `H × C + 4C + 48E + 4,096` bytes, for `H` rows, `C` sampled columns (3× width for LCD) and `E` segments; a glyph whose bound exceeds 2²⁸ is refused with `GlyphTooExpensive` before any raster loop |
+| one glyph's rasterization at `s` px | target ≤ `4s × 4s`; CPU crossings and sort ≤ `E + H × (8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64` steps; GPU fragment work is the `coverage_spans` formula in `gpu-abi.md`, including its blend copy. The existing allocation bound `H × C + 4C + 48E + 4,096` and admission test against the original total bound 2²⁸ remain; GlyphTooExpensive precedes all crossing, raster and device work |
 | inflate | ≤ `4 × output + 16 × input + 1,024 × blocks` steps; 32 KiB window plus ≤ 64 KiB of tables besides the caller's output |
 | image dimensions (BMP, PNG decode and encode) | width and height ≤ 16,384 and `width × height` ≤ 16,777,216, checked before any allocation |
 | PNG decompressed size | rejected at the first byte beyond `rows × (1 + row bytes)` for the image's own dimensions, per pass for Adam7 |
 
-**The independent square.** `font-parser/work-bound` rasterizes a four-edge square 1,022 px on a side,
-built in the suite without libfont, whose bitmap is 1,024 × 1,024 (the outline plus the two-pixel margin).
-With `H = C = 1,024` and `E = 4` the bound is **10,699,844** steps, and the case also requires at least
-**8,388,608** (8 × 1,024 × 1,024), so a counter that skips the span fill is caught.
+**The independent square.** Four independently specified edges surround a 1,022 px square
+at (1,1) within a 1,024×1,024 target. The CPU crossing bound is **214,084**, with at least
+8,192 sub-scanline visits. There are 16 crossings per interior row, on 1,022 rows. The exact
+GPU estimate is `8192 × (1024² + 1024 × 16 × 1022) + 1024²` = **145,761,501,184**, including
+the blend copy. It is summed over submissions individually below the unchanged 2³¹ cap.
+Neither omitting CPU crossing/sort work nor omitting GPU span fill can satisfy both checks.
+
+**GPU-only enforcement.** `COUNTERS` records upload bytes by Image/Fixture and instances,
+fragment area and work estimate. Primitive output has zero Image uploads; only declared
+bitmap tables, decoded images and fixtures may upload their declared bytes. A draw must
+actually reach the GPU and stay within its constant instance budget. The same accounting
+guard refuses planted renamed CPU-fill uploads (`cpu-image`), per-pixel solid draws
+(`cpu-instances`), and a passing case's uploaded expected image (`passing-oracle`). A host
+structure check in gpu-raster also refuses the raw mutable-pixel library fixture and forbidden
+`libgfx-ref` consumers, as `gpu.md` §2.4 specifies. Expected/diff image uploads are allowed
+only as labelled failure artifacts, never as the passing actual image.
 
 ## 8. Text
 
 ### 8.1 The 5×7 bitmap font (`libgfx::font`)
+
+These tables and checks stand, drawn by GPU `bitmap_text`.
 
 `draw_char(fb, byte, x, y, color, scale)`, `draw_text(fb, bytes, x, y, color, scale)`,
 `text_width(bytes, scale)`. A glyph is seven row bytes; pixel `(col, row)`, `0 ≤ col < 5`, is set when bit
@@ -301,6 +320,8 @@ seven rows `0x1F`. Literal glyphs the cases use:
 | replacement | 1F 1F 1F 1F 1F 1F 1F |
 
 ### 8.2 The 16 px anti-aliased bitmap font (`libgfx::bitmap_font`)
+
+These cells and checks stand, drawn by GPU `bitmap_text`.
 
 `draw_char(fb, ch, x, y, fg)` draws the `noto-sans-mono-bitmap` 0.3 raster (`Regular`, `Size16`) of `ch`
 with its top-left at `(x, y)`, each pixel by the coverage blend (section 2) of `fg` over the pixel already
@@ -343,11 +364,32 @@ crate version libgfx draws from and reads the raster directly. A character the c
 - **Non-goals:** shaping (GSUB, GPOS), hinting, bidirectional text, combining-mark positioning, CFF outlines,
   colour and bitmap glyphs.
 
+**Normative binary32 coverage order.** CPU crossing preparation visits rows, then sub-scans
+0..7 at `row + (sub + 0.5) × (1/8)`, then segments in outline order. It rejects an edge
+whose endpoints are both below that y or both at/above it, skips zero dy, and computes
+`dy = y1-y0`, `t = (y-y0)/dy`, `x = x0 + t×(x1-x0)` in that order, in binary32. Direction
+is +1 for increasing y, otherwise −1. Stable bottom-up merge sort orders equal-x crossings
+without changing their source order. No reassociation or fused multiply-add is allowed.
+The sorted crossings and directions are uploaded as geometry, not coverage pixels.
+
+GPU `coverage_spans` starts each pixel's accumulator at binary32 zero, visits sub-scans in
+that same order and walks their sorted crossings in order with winding initially zero and
+fill_start zero. A zero-to-nonzero transition saves x; a nonzero-to-zero transition adds
+the span from max(fill_start,0) to min(x,width). A nonzero final winding adds through width.
+For each span, right≤left adds nothing; a one-pixel span adds right−left; otherwise the first
+pixel adds `(start+1)−left`, interior pixels add 1, and the last adds `right−(end−1)`, with
+start=floor(left) and end=min(ceil(right),width). Additions occur in sub-scan and span order.
+Conversion is `(coverage × (1/8)) × 255`, binary32 at each operation, clamped at 0/255 and
+otherwise truncated to u8. LCD scales segment x by 3 first and applies the identical order.
+The frozen CPU reference and four reviewed references remain unchanged; different device
+pixels are defects. At display scale 2, text rasterizes at twice its logical size, equals
+that size's certified reference and differs from 2× replication.
+
 ### 8.4 The glyph cache
 
-`CachedFont::new(font, capacity)` caches rasterized glyphs keyed by `(glyph, size26)` and evicts the least
+`CachedFont::new(font, capacity)` caches GPU-atlas glyphs keyed by `(glyph, size26)` and evicts the least
 recently used entry when full. `CachedFont::with_default_cache(font)` uses the contract's capacity: at most
-256 entries and at most 4 MiB of bitmaps, evicting until both hold. `cache_stats() -> CacheStats { entries,
+256 entries and at most 4 MiB of atlas storage, evicting until both hold. `cache_stats() -> CacheStats { entries,
 bytes, hits, misses }` reports the cache. A glyph served from the cache, or evicted and rasterized again, is
 identical to a fresh rasterization.
 
@@ -589,8 +631,11 @@ BMP's published BITMAPCOREHEADER layout specifies the 12-byte header's 16-bit fi
 ## 14. Widgets (`libbui`)
 
 Widgets are driven in-process with explicit `InputState` values (pointer position, button level and its press
-and release edges) and drawn into a surface. Text in widgets is the 5×7 font at scale 1 (section 8.1), 7
-pixels high, when `Theme::use_bitmap_font` is false.
+and release edges) and drawn into GPU surfaces. R3 uses pinned DejaVu Sans at the theme's 16 px logical size
+with a 16 px line box and §8.3 advances; R4 multiplies geometry and font size by display
+scale. Expected text uses that certified lower layer; widget rendering never supplies its
+own expectation. Editing and event rules in §15 remain unchanged, and cursor scrolling
+uses those TrueType advances. Bitmap-font APIs and their independent text cases remain.
 
 ### 14.1 The theme
 
@@ -618,7 +663,7 @@ its label in `text_secondary`, its background unchanged, and reports no events.
 
 - **Button** `(x, y, w, h)`: background `fill_rect` of the rectangle in `widget_bg` (idle), `widget_bg_hover`
   (pointer inside) or `widget_bg_active` (pressed); a one-pixel `draw_rect` border in `border`; the label in
-  `text_primary` at `(x + (w − tw) / 2, y + (h − 7) / 2)`, `tw` its `text_width`, in Rust integer division.
+  `text_primary` at `(x + (w − tw) / 2, y + (h − 16) / 2)`, `tw` its `text_width`, in Rust integer division.
   A press inside followed by a release inside reports exactly one `Clicked`, on the release; a press inside
   released outside reports none.
 - **Checkbox** `(x, y, w, h)`: a 14 × 14 box at `(x, y + (h − 14) / 2)`. A press inside the rectangle toggles
@@ -631,7 +676,7 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   `ValueChanged(min + value × (max − min))` is reported whenever `value` changes. Left and Right step a
   focused slider by its step size, clamped.
 - **Label**: text wider than its bounds is drawn cut at the last whole glyph that fits with `...` (three
-  dots, 17 pixels at scale 1), and nothing outside the bounds.
+  dots, width from §8.3 advances), and nothing outside the bounds.
 - **Tab bar** `(x, y, w, h)` of `n` tabs: tabs are at least `text_width(label) + 16` wide; when they fit,
   tab `i` is `(x + i·⌊w / n⌋, y, ⌊w / n⌋, h)`. A release over tab `j` other than the selected one selects it
   and reports `ValueChanged(j)`. When they do not fit, the bar scrolls (`scroll_by(tabs)`) so that every tab
@@ -647,7 +692,7 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   `widget_bg` and bordered in `border`, `W = max(140, widest row)`, `H` the sum of its rows (22 per item, 9
   per separator). An item's row is `18 + 24 + text_width(label)` wide, plus `24 + text_width(shortcut) + 8`
   when it has a shortcut and `24` when it has none; a shortcut is written `Ctrl+`, `Shift+`, `Alt+` (those it
-  has, in that order) and its key in upper case. Item `k`'s label is drawn at `(x_i + 18, row_y + 7)` in `text_primary`, or `text_secondary`
+  has, in that order) and its key in upper case. Item `k`'s label is drawn at `(x_i + 18, row_y + (22 − 16) / 2)` in `text_primary`, or `text_secondary`
   when disabled. A release over an enabled item activates it and closes the menu; a disabled item cannot be
   chosen; a press outside the bar and dropdown closes the menu without choosing.
   `match_shortcut(ascii, ctrl, shift, alt)` returns the enabled item bound to that shortcut, accepting the
@@ -783,15 +828,15 @@ architecture only.
 | 11 | `WRITE_EVENTS` | `WriteEvents` (24) | events queued | EINVAL type or length; ENOENT |
 | 12 | `EVENT_FD` | `WinId` (8) | a descriptor | ENOENT, EMFILE |
 | 13 | `SET_GEOMETRY` | `Geometry` (24) | 0 | ENOENT |
-| 14 | `MAP_COMMITTED` | `MapBuffers` (40) | 0 | ENOENT |
+| 14 | retired `MAP_COMMITTED` | `MapBuffers` (40) | ENOSYS | after size validation, including a stale id |
 | 15 | `CAPTURE` | `Capture` (56) | 0 | EINVAL short destination; ENOENT |
 | 16 | `MAP_TREE` | `MapTree` (24) | 0 | ENOENT |
 | 17 | `CLAIM_COMPOSITOR` | `Claim` (16) | 0 | EBUSY while a claim lives |
 | 18 | `RELEASE_COMPOSITOR` | none (0) | 0 | — |
 | 19 | `COMPOSITE` | `Composite` (24) | 0 | EIO backend failure, with the record's reason |
 | 20 | `COMPOSITE_RECORD` | `RecordQuery` (24) | 0 | ENOENT serial no longer kept |
-| 21 | `MAP_COMPOSITOR_TEXTURE` | `MapTree` (24) | 0 | — |
-| 22 | `SCANOUT_READBACK` | `Readback` (40) | 0 | EAGAIN completion missing; EIO binding or serial mismatch; EINVAL short destination |
+| 21 | retired `MAP_COMPOSITOR_TEXTURE` | `MapTree` (24) | ENOSYS | after size validation |
+| 22 | `SCANOUT_READBACK` | `Readback` (40) | 0 | EIO with the core observation reason; EAGAIN while composition is pending; EINVAL short destination |
 | 23 | `SET_CURSOR` | `Cursor` (16) | 0 | EINVAL shape |
 | 24 | `HOLD_EVIDENCE` | `WinId` (8) | 0 | EBUSY another holder; ENOENT |
 | 25 | `READ_REMNANT` | `Capture` (56) | 0 | ENOENT |
@@ -805,7 +850,7 @@ Argument structures (offsets in bytes):
 - `Create`: `width: u32 @0`, `height: u32 @4`, `buffers: u32 @8` (2 or 3), `tree_kib: u32 @12` (0 means 64;
   at most 1,024; the kernel rounds it up to whole 4 KiB pages, so no two buffers share a tree page, and writes
   the size it used back), *out* `id: u64 @16`, *out* `stride: u32 @24`, reserved `@28`, *out*
-  `buffer: [u64; 3] @32` (the mapped address of each buffer, 0 past `buffers`), *out* `tree: u64 @56` (the
+  `buffer: [u64; 3] @32` (the owner's GPU target handle for each buffer, 0 past `buffers`), *out* `tree: u64 @56` (the
   first tree page; buffer `i`'s page is `tree + i × tree_kib × 1024`, with the `tree_kib` written back).
 - `Title`: `id: u64 @0`, `ptr: u64 @8`, `len: u32 @16`, reserved `@20`.
 - `List`: `ptr: u64 @0` (an array of `WinInfo`), `capacity: u32 @8`, reserved `@12`.
@@ -849,17 +894,21 @@ Argument structures (offsets in bytes):
 ### 17.2 Ids, limits and lifetime
 
 - Window ids, commit ids, composite serials and input serials are 64-bit, start at 1 and are never reused
-  within a boot. Every op on a destroyed window's id is ENOENT.
+  within a boot. Every live window operation on a destroyed id is ENOENT, including GPU
+  ACQUIRE without publishing a buffer. Retired ops 14/21 remain ENOSYS: they no longer resolve ids.
 - A window is 1 to 4,096 pixels on each side (EINVAL outside). A title is valid UTF-8 of at most 64 bytes
   (EINVAL otherwise) and is stored and listed byte for byte. A process may own at most 16 windows; the
   seventeenth `CREATE` is EAGAIN and leaves the first sixteen unaffected.
 - A new window's buffers are all zero. `LIST` reports registered windows only; `DESTROY` removes a window
-  from the listing and unmaps its buffers in the owner.
-- Window buffers count against the owner's `RLIMIT_AS`. `CREATE`, `REGISTER` and `RESIZE` each have one
+  from the listing, revokes the owner's GPU buffer handles and unmaps its tree pages. Target
+  backing remains held until the last holder and device unref finish.
+- Guest buffer backing counts against the owner's `RLIMIT_AS`, device resources against the
+  GPU quota; mapped tree pages remain separately charged. `COUNTERS` reports GPU resources
+  and backing exactly. `CREATE`, `REGISTER` and `RESIZE` each have one
   commit point; a failure before it, at any allocation step, leaves the registry, every mapping and the
   accounting exactly as before. A failed `RESIZE` leaves the old buffers intact.
-- Window mappings are not inherited across `fork` (the kernel marks them do-not-copy), so a child has neither
-  a mapping nor authority. A process's windows are destroyed at `exec` and at exit.
+- GPU handles and contexts are not inherited across `fork`, nor are the tree mappings, so a
+  child has neither GPU handle authority nor window authority. A process's windows are destroyed at `exec` and at exit.
 - Breengel's `Window` destroys its window on `Drop`, and `Window::new` destroys the window it created when
   registration fails.
 
@@ -874,8 +923,11 @@ Plan §3.1 is the contract, transcribed here.
   `processed_serial`, `epoch` and `damage` (at most 16 rectangles covering every pixel that differs from the
   previous front). It returns a `commit_id` that increases by exactly 1 per commit of the window. A commit with
   non-empty damage starts a new pixel generation (`pixel_gen`, strictly increasing).
-- After a commit the buffer is mapped read-only in the owner until it is released; a write to it raises
-  SIGSEGV. The previous front becomes retired, and returns to free only when every composite that used it has
+- After COMMIT the validator refuses any submission writing that front or retired target;
+  its separately mapped committed tree page remains read-only and writes raise SIGSEGV.
+  COMMIT records the last accepted render fence. A submission accepted before COMMIT may
+  finish, but the compositor samples it only after that fence completes OK. A failed render
+  is refused with EIO and leaves the previous published front unchanged. The previous front becomes retired, and returns to free only when every composite that used it has
   finished, no capture is copying it and no `ACQUIRE` is replaying from it.
 - **Bases and the damage log.** A buffer's base is the commit id whose pixels it holds: the id it was last
   committed under, the commit `ACQUIRE` last replayed it to, or none (new, or reallocated by a resize). The
@@ -884,7 +936,8 @@ Plan §3.1 is the contract, transcribed here.
   a replay pin on *F*'s buffer, and computes the replay set: the union of the damage of every commit after the
   acquired buffer's base up to *F* (its bounding rectangle when that needs more than 16 rectangles), or the
   whole window (`replay_full = 1`) when the base is none or a commit in that range has left the damage log.
-  It drops the lock, copies the replay set from *F* into the acquired buffer, drops the pin, sets the buffer's
+  It drops the lock, issues GPU region copies of the replay set from *F* into the acquired
+  target, waits for their fences, drops the pin, sets the buffer's
   base to *F*'s commit id and returns the buffer, its base and the set. The returned buffer equals exactly the
   committed generation its base names. Nothing is copied when the window has no front or the base is already
   *F*. With no free buffer `ACQUIRE` blocks until a release, the timeout (ETIMEDOUT), a signal (EINTR) or the
@@ -898,7 +951,8 @@ Plan §3.1 is the contract, transcribed here.
   composed once a compositor claims.
 - `COMMIT_NO_CHANGE(meta)` publishes metadata against the current front's pixels: a new `commit_id`, the same
   `pixel_gen`, empty damage, and no composite of its own.
-- **Captures** (`CAPTURE`, `SCANOUT_READBACK`) pin the buffer they read only while copying inside the call. A
+- **Captures** (`CAPTURE`, `SCANOUT_READBACK`) device-read back the pinned committed target,
+  retaining it through the transfer fence and the call's copies. A
   resize or destroy during a capture retires the buffer and frees it after the copy, so a capture returns a
   whole committed generation, or ENOENT when the window was destroyed before the copy began. With a tree
   destination, `CAPTURE` copies the same buffer's tree page under the same pin and returns the one commit id
@@ -923,9 +977,9 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `RESIZE` | yes | EPERM (requests go through events) | EPERM | EPERM |
 | `READ_EVENTS`, `EVENT_FD` | yes | — | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
-| `MAP_COMMITTED` | yes | yes | EPERM | EPERM |
+| retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
 | `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
-| `COMPOSITE`, `COMPOSITE_RECORD`, `MAP_COMPOSITOR_TEXTURE`, `SET_CURSOR` | — | yes | EPERM | EPERM |
+| `COMPOSITE`, `COMPOSITE_RECORD`, `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
 | `HOLD_EVIDENCE`, `READ_REMNANT`, `RELEASE_REMNANT` | EPERM | EPERM | yes (EBUSY if another holder) | EPERM |
@@ -946,10 +1000,11 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 
 ### 17.6 Retired operations
 
-The graphics system call `fb_draw` (411) keeps op 6 (`FLUSH`) and op 8 (`FLUSH_BATCH`). Its demo ops 0 to 5,
-7 and 9 and the version 1 window ops 10 to 26 and 31 return ENOSYS (`isolation/retired-ops`), and its
-wait-stress ops 27 to 30 return ENOSYS in the production kernel; they exist only in `boot_tests` builds
-(`isolation/test-hooks-absent`). The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
+System calls 410 (`fb_info`), 411 (`fb_draw`, including FLUSH and FLUSH_BATCH) and
+412 (`fb_mmap`), version-1 drawing/window operations, and v2 MAP_COMMITTED/MAP_COMPOSITOR_TEXTURE
+return ENOSYS. Their final retirement belongs to gpu-apps with the last consumer migration.
+The old wait-stress operations are absent from the production interface too.
+The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
 (the latched Super presses), is the 8-byte form of `get_mouse_pos` (413): `[modifiers, super_taps]` as
 `u32`s, where the 16-byte form is the pointer's `[x, y, buttons, scroll]`; any other length is EINVAL.
 
@@ -960,7 +1015,7 @@ wait-stress ops 27 to 30 return ENOSYS in the production kernel; they exist only
   the role can be claimed again with a higher epoch. Windows outlive the compositor with their last geometry,
   stacking and visibility. Each claim delivers `CompositorChanged { epoch }` to every window (section 19).
 - **Composition.** `COMPOSITE` composes every visible window at its geometry, in increasing `z` (later over
-  earlier), over black, onto the 1280 × 800 screen, clipped at the screen's edges, exactly: each output pixel
+  earlier), over black, by userspace `bwm` on the GPU core onto the active mode's target, clipped at its edges, exactly: each output pixel
   is the topmost visible window's committed pixel there, or black. It processes exactly the pixels of the
   damage union since the previous composite, and the full screen the first time; the frame equals a full
   recomposition. At most one composite per window is in flight.
@@ -981,17 +1036,23 @@ wait-stress ops 27 to 30 return ENOSYS in the production kernel; they exist only
   (432) pops it, and `GIVE_DISPLAY(pid)` hands it to another process, which becomes owner above the giver.
   When an owner dies the display returns to the process that gave it, never to the runner, and the previous
   owner's frame is restored exactly. Direct take-over requires uid 0; explicit GIVE_DISPLAY retains its
-  owner authority. On ARM64 QEMU the snapshot stack holds at most four covered owners; another push or a
-  cycle returns EBUSY without changing ownership, and allocation failure returns ENOMEM. This bounds
-  retained 1280×800×4 snapshots to 16,384,000 bytes on the 64 MiB kernel heap.
-- **The framebuffer.** In a GUI suite boot every target runs its display at **1280 × 800**: `fbinfo` (410)
-  reports width 1280, height 800, 4 bytes per pixel, a stride of at least 1280 (`fbinfo` counts the stride in
-  pixels per row) and a pixel format of RGB (0) or BGR (1). `fb_mmap` (412) gives the display owner the whole screen, every row of all 1280 columns,
-  and `FLUSH` clips its rectangle to the screen.
+  owner authority. GPU targets and their backing are retained on the ownership stack; no
+  CPU framebuffer snapshot or firmware copy replaces a saved target. The core's ownership
+  depth and cycle refusals stand, and release restores the prior binding and exact pixels.
+- **The display.** `MODES` reports 1280×800 at scale 1 and 2560×1600 at scale 2. This suite
+  runs at scale 2. Clients own GPU targets; bwm samples committed targets, draws the cursor
+  as a top GPU layer and presents/flips a scanout target. No CPU compositor, display copy,
+  fb_info, fb_mmap or FLUSH remains. Existing 1280×800 scene fixtures retain their exact
+  pixel formulas at their stated coordinates; dedicated scale-2 fixtures double logical
+  placement and compare every pixel of the 2560×1600 destination.
+- **Lifetimes.** Handle destruction does not end holds by a queued submission, committed
+  front, remnant, compositor sample, scanout binding, capture/readback or replay copy. Each
+  holds backing through actual completion or confirmed reset; a reported error alone never
+  proves device access ended. The last hold and device unref return the charge exactly.
 - **Numbers** (plan §12.2): one 256 × 256 window committing as fast as its buffers are released is composed at
   least 60 times a second (300 commits, the first 30 discarded); the longest IRQ-masked interval in the
-  display copy during full-screen damage is at most 500 µs. The counters: trace counters `composites`,
-  `composite_pixels`, `damage_rects`, `window_buffer_allocs`, and the gauge `display_irq_masked_max_us`, in
+  GPU path (validation, translation, submission, fence completion and readback copies) during full-screen damage is at most 500 µs. The counters: trace counters `composites`,
+  `composite_pixels`, `damage_rects`, `window_buffer_allocs`, and the gauge `gpu_irq_masked_max_us`, in
   `/proc/trace/counters`.
 
 ## 19. Window events, version 2
@@ -1060,58 +1121,52 @@ metadata the newest commit published, with that commit's id.
 
 ### 20.1 `SCANOUT_READBACK`
 
-Root or the compositor reads the whole composed destination, as canonical BGRX rows of `1280 × 4` bytes, with
-an `ObservationRecord` (512 bytes) produced atomically for one composite serial:
+Root or the compositor observes the whole composed destination through the userspace GPU
+compositor, as canonical BGRX rows and the same **1,024-byte record version 2** as GPU READBACK.
+The complete little-endian offset table is normative in `gpu.md` §1.8 and `gpu-abi.md`.
+It includes version/size, backend 4 or 5, boundary 4, scanout/composite flags, physical rectangle,
+stride/format, actual resource identity, generation, native render/readback/present fences
+and statuses, complementary-poison result, composite serial and the 16 window entries
+(window, commit, render fence and generation). All reserved bytes are zero.
+The record and pixels are atomic; no sampled band represents the destination. More than
+16 windows is composite-overflow EIO without partial record or pixels, not a global
+window limit. Composition and COMPOSITE_RECORD still include every window.
+A pending composition is EAGAIN. Core EIO reasons are never interchanged; a failed GPU
+READBACK writes only its argument's reason, with destination and record untouched.
+Window capture normalizes opaque X to FF. The observation of a flip names that flip's
+actual bound resource, completed present fence and composite, rather than assuming a fixed
+resource across frames. Device readback of target 0 remains display-owner-only; a root
+window-protocol request is serviced by the compositor, without exposing a foreign handle.
 
-| Offset | Field |
-|---|---|
-| 0 | `serial: u64` |
-| 8 | `backend: u32`: 1 virtio-gpu 2D, 2 GOP framebuffer, 3 SVGA3 screen target, 4 VirGL |
-| 12 | `flags: u32`: bit 0 the device's copy is outside the guest's view |
-| 16 | `width: u32`, `height: u32`, `stride: u32`, `source_format: u32` (0 RGB, 1 BGR) |
-| 32 | `resource: u64`: the scanout resource id, screen-target id or framebuffer address bound to the device |
-| 40 | `window_count: u32`, `completion_count: u32` |
-| 48 | `windows: [(id: u64, commit_id: u64); 16]` |
-| 304 | `completions: [(fence: u64, kind: u32, status: u32); 12]`: `kind` is the command answered and `status` its answer, both nonzero; on virtio-gpu, the command's and the response's `type` (`TRANSFER_TO_HOST_2D` 0x0105, `RESOURCE_FLUSH` 0x0104, `RESP_OK_NODATA` 0x1100); on SVGA3, the SVGA3D command id (`UPDATE_GB_SCREENTARGET` 1127, `READBACK_GB_SURFACE` 1104) and the command buffer's status (`COMPLETED` 1) |
-| 496 | `boundary: u32`: what stays outside the guest's view (section 20.2) |
-| 500 | reserved |
+### 20.2 GPU backend rows
 
-The full destination is read; no sampled band stands for the frame. A readback never returns pixels without
-its record. It refuses with EAGAIN while serial *S*'s completions are unanswered, and with EIO and a named
-reason when the device's binding differs from the composed resource or a fence belongs to another serial.
-The 16 entries in this fixed-size observation ABI are not a global window limit: the §17.2 limit is per
-process, and composition plus COMPOSITE_RECORD still cover every window. If more than 16 windows are in
-that frame, SCANOUT_READBACK returns EIO without copying a partial record or pixels; the fixed ABI cannot
-represent the complete observation. It never truncates a successful observation.
-RGB and BGR destinations read back as the same canonical pixels, and X is normalized to 0xFF in every
-capture (`CAPTURE` and `SCANOUT_READBACK`).
-
-### 20.2 Per-backend rows (from the entry spikes)
-
-| Target | Backend | What the guest reads | Completion | Boundary code and meaning |
+| Target | Backend | Device observation | Completion | Boundary |
 |---|---|---|---|---|
-| ARM64 QEMU | virtio-gpu 2D | the full guest backing of the resource bound by `SET_SCANOUT` | a fenced `TRANSFER_TO_HOST_2D` per damaged rectangle of *S*, then a fenced `RESOURCE_FLUSH`, each answered `OK_NODATA` with its fence echoed | 1: the host's copy of the resource and the host window |
-| x86-64 | GOP framebuffer, 1280 × 800 set by the kernel through virtio-vga's DISPI registers | the complete framebuffer memory after the copy, converted from BGR | each damaged band's copy returned, with a store barrier | 2: the host's scanning of that memory into its window |
-| VMware | SVGA3 screen target, read back through a host-side copy | the surface bound to the screen target by `BIND_GB_SCREENTARGET`, copied on the host by `SURFACE_COPY` into a readback surface, which `READBACK_GB_SURFACE` writes into its own guest MOB, fenced; the MOB is cleared first and any pixel the device did not write is refused. `READBACK_GB_SURFACE` writes nothing for a surface whose contents came only from guest uploads, which is why the host copy comes first | per damaged rectangle, `UPDATE_GB_IMAGE`, a `SURFACE_COPY` of the rectangle into the readback surface and `UPDATE_GB_SCREENTARGET`, followed by `SVGA_CMD_FENCE`, with `SVGA_REG_FENCE` reaching the fence. The device reads an updated rectangle from the MOB lazily, even after its fence; the copy in the same command buffer makes it read the rectangle before the fence. Then the readback's own fence, recorded as `READBACK_GB_SURFACE` | 3: the host window |
-| Parallels | VirGL | the scanout resource read back by a fenced `TRANSFER_FROM_HOST_3D` into a guest buffer | the composite's `SUBMIT_3D` fence and the transfer fence, both answered | 3: the host window |
+| ARM64 QEMU; later Parallels catch-up | 4, VirGL | SUBMIT_3D, two TRANSFER_FROM_HOST_3D observations under complementary poisons, cache invalidation | native kinds 0x207 and 0x206, status 0x1100, nonzero render/readback/present fences | 4, host renderer and window outside guest view |
+| Later VMware catch-up | 5, SVGA3D DX | DX_DRAW, host SURFACE_COPY to dedicated readback surface/MOB, two poisoned READBACK_GB_SURFACE observations | render 1152, readback 1104, copy 1042; status 1; dedicated nonzero surface/MOB | 4, host renderer and window outside guest view |
 
-Observation flags are exactly 1 (`DEVICE_COPY_OUTSIDE`) for virtio-gpu 2D,
-and 0 for GOP, SVGA3 and VirGL. Unknown flag bits or a different boundary code are invalid.
-
-The VirGL path reads X as 0xFF; nearest sampling, integer-aligned quads and no sRGB conversion are contract,
-so Parallels' frames use the same formula expectations as the software targets. Parallels runs at
-1280 × 800 like the others. The SVGA3 path presents every pixel with X 0xFF, so its readback reads X as 0xFF
-too. On SVGA3, `corrupt-outside-damage` (section 20.3) presents the corrupted pixel to the device and then
-restores the guest backing, so only an observation of the device's copy finds it.
+Backend must equal CAPS and the window's backend. Backend 4 has zero VMware copy fields;
+backend 5 has its own native values and a readback surface distinct from the judged resource.
+`unwritten` is zero on success. Flags contain only scanout bit 0 and composite bit 1;
+a composed scanout sets exactly both. Legacy CPU backends and boundary codes are retired.
+The effort runs ARM64 QEMU `--gpu-gl` only (B5); no x86 QEMU evidence is admitted (S23).
 
 ### 20.3 Planted faults
 
-Test controls (section 21) plant one fault each, and the matching `scanout` case requires the exact reason,
-then recovery on the next composite once the fault is disarmed: `skip-transfer` (a skipped transfer or update:
-EAGAIN, missing completion), `wrong-resource` (a flush or scanout bound to another resource: EIO,
-`binding`), `stale-fence` (a fence answered for another serial: EIO, `serial`), and `corrupt-outside-damage`
-(bytes written into the destination's last row outside any damage, found by comparing the full destination
-with the composition formula).
+Each case requires exactly one firing, the observable fault, and an exact clean next
+composition after disarming, through the core's points:
+
+| Case | Old point → core point | Exact observation |
+|---|---|---|
+| fault-skipped-transfer | 6 → 19 | EIO, unwritten reason 1; pixels and record untouched |
+| fault-wrong-resource | 7 → 26, wrong-scanout | PRESENT completes; observation names the actual wrong binding/composite and different pixels; compare it to the intended composite, never invent an EIO from knowing the fault fired |
+| fault-stale-fence | 8 → 20 | EIO, fence-mismatch reason 2; pixels and record untouched |
+| fault-outside-damage | 9 → 22 | device pixel (0,0) is outside the damaged window; full-destination comparison finds it while every in-damage pixel stays exact |
+
+Arm point 22 after the client render and before GPU composition, so it plants on the
+composed target. Point 26 needs another live scanout target; absent that target the point
+stays armed and the case fails. A wrong transfer resource (point 21) is not the binding
+negative control: the device reports no resource identity and it is observed as unwritten.
 
 ## 21. Suite-mode test controls
 
@@ -1123,21 +1178,22 @@ with the composition formula).
   them (EPERM otherwise).
 - Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }`
   arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
-  `display_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
+  `gpu_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
   reports how many times a point fired. Arming or reading a point this section does not define is EINVAL. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
   every op above 4 are EINVAL.
-- Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next display
-  copy holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
+- Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU
+  SUBMIT validation holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
-  released or 1 s), 5 `backend-error`, 6 `skip-transfer`, 7 `wrong-resource`, 8 `stale-fence`, 9
-  `corrupt-outside-damage`, 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
+  released or 1 s), 5 `backend-error`; old scanout points 6–9 are retired in favour of core points 19,26,20,22; 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
   16 `composite-stall` (target: a window; the next composite that includes it pauses before the backend
   composes, with every window's front pinned, until released, a signal reaches the compositor, or 1 s), 17
   `move-pointer` (param: x in bits 0 to 31, y in bits 32 to 63; the next time the kernel reads the pointing
   device's position, for the panel cursor, the position is (x, y), as if the device had moved there), 18
   `capture-stall` (target: a window; the next `CAPTURE` of it pauses after copying half its rows, with its pins
   held, until released or 1 s). Points 12 to 15 are the run stage's (section 23). Faults are branches in the
-  real code paths, disarmed at case end by the suite.
+  real code paths, disarmed at case end by the suite. GPU points 19–31 have the exact
+  definitions in `gpu-abi.md`, including point 31's pending-fence depth mode used by the
+  render-handoff check. All watchdog and kill bounds remain unchanged.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
   as a child (in a suite boot) it prints `[init] not PID 1: test-control check skipped` and makes no absence
   claim.
@@ -1174,34 +1230,21 @@ aarch64 kernel's `log` sink writes each warning and error as this record.
 
 ## 23. The suite panel and run stage
 
-### 23.1 Existing panel
+### 23.1 Retired diagnostics panel
 
-`libgfx::diagnostics::draw` with `scored: true` on a 1280 × 800 surface, two groups and no output or live
-strip, draws at scale 2. For the fixture the cases use (title `BREENGEL PANEL`, subtitle `fixture`, verdict
-`Running("run")`, group `alpha` with checks `a1` PASS, `a2` FAIL `bad pixel`, `a3` PASS; group `beta` with `b1`
-FAIL `no frame`, `b2` pending, `b3` PASS) the rectangles are:
-
-| Element | Rectangle | Content |
-|---|---|---|
-| background | the whole surface | (12, 19, 31) |
-| banner | (0, 0, 1280, 108) | (24, 39, 59) |
-| score | text at (32, 124), scale 4, white | `3 / 6 PASSED  50%` |
-| counts | text right-aligned to x = 1248 at y = 138, scale 2, (161, 183, 204) | `2 failed  0 skipped  1 to run` |
-| score bar | (32, 162, 1216, 18) | passed (32..640) (26, 112, 77), failed (640..1045) (145, 50, 58), the rest (57, 67, 80) |
-| group `alpha` | heading at (32, 204), bar (32, 224, 596, 12) | bar: passed (32..429), failed (429..628) |
-| group `beta` | heading at (652, 204), bar (652, 224, 596, 12) | bar: passed (652..850), failed (850..1049), pending (1049..1248) |
-| cards | group x, y = 248 + 52k, 596 × 46 | fill by state: pass (26, 112, 77), fail (145, 50, 58), pending (57, 67, 80); name at (x + 12, y + 4), state label right-aligned to x + 584 at y + 4, detail at (x + 12, y + 26), all scale 2, white |
-| verdict bar | (0, 724, 1280, 76) | (48, 67, 96), text at (32, 746), scale 2, white |
-
-Text is the 5×7 font (section 8.1), which `text/bitmap-glyph` and `bitmap-scale` certify, so the cases
-draw the expected text with it. In a GUI suite the runner draws the panel only between cases and restores it
-exactly after each; the panel cursor is saved and restored, so moving the pointer over the panel leaves no
-trail; the kernel's console screen redraws exactly after the display is given back.
+R3 removes the old 5×7 diagnostics panel and its counts, fail-rows and layout cases. The
+run stage replaces it; handoff, between-case drawing, cursor restoration and kernel-screen
+restoration checks stand, with GPU presents replacing framebuffer paint (B7).
 
 ### 23.2 Stage layout
 
-The run stage is `libgfx::stage`, a pure integer renderer with explicit UI time. It draws at 1280 × 800.
-The 5×7 font of §8.1 is used throughout. Rectangles are half-open. The palette, in RGB, is background
+The run stage uses BreenGL on BGL, with explicit UI time and logical coordinates in a
+1280×800 space. R4 multiplies every coordinate, extent, gap and border by display scale;
+this suite observes all 2560×1600 device pixels at scale 2. R3 uses pinned DejaVu Sans.
+A legacy text scale n below denotes 7n logical pixels per em, rasterized at 7n×display-scale,
+with §8.3 advances; expected text comes from that certified lower layer, never from stage
+rendering. Thumbnail box-filter and spotlight nearest-scaling formulas below are unchanged.
+Rectangles are half-open. The palette, in RGB, is background
 (12,19,31), header (24,39,59), inset (18,29,44), white (255,255,255), dim (161,183,204), pass (26,112,77),
 fail (145,50,58), not reached (57,67,80), pending outline (48,67,96), and timing bar (64,160,224).
 
@@ -1314,7 +1357,8 @@ The ribbon is restored with the kernel screen after display giveback.
 ### 23.8 Agreement
 
 The runner derives CASE serial bytes and tile state and numbers from one stored result. A picture case
-calls `libbreenix::suite::judged(&FrameBuf)` with the exact surface it judged, before modifying it. The
+hands off the exact completed device readback it judged through `judged_readback`, before
+modifying its target. A CPU-rendered actual image is never a passing picture. The
 handoff canonicalizes BGRX and snapshots it with SHA-256 (FIPS 180-4); the runner verifies the complete
 snapshot and appends ` sha256=<64 lowercase hex digits>` after `ms=<n>` on PASS and FAIL CASE lines
 (before `msg=` on FAIL). The stage uses only that verified snapshot for the tile and actual pane. An independently constructed
@@ -1343,9 +1387,8 @@ case deadlines and timing samples, with its SHOW mutex released. Elapsed UI time
 The finale preserves the last judged picture on an all-pass run as well as the first failure
 on a failed run. A stage error fails the affected case and preserves the serial DONE record.
 
-The stage's boundary notice is `host copy and window outside guest view` for boundary 1 on virtio 2D,
-`host scanning outside guest view` for boundary 2, and `host window outside guest view` for boundary 3
-(VirGL and SVGA3).
+The stage's boundary notice is `host renderer and window outside guest view` for boundary 4
+on GPU backends 4 and 5.
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.
 The live showcase checks arm the matching fault, require its detection, disarm it and require the clean result:
 12 `stage-lie`, 13 `stage-substitute-frame`, 14 `stage-draw-in-window`, 15 `ribbon-drop-stage`.
@@ -1356,7 +1399,10 @@ overlay, verdict, category headings and boot ribbon, with individual pixel subst
 ## 24. Helpers and boots
 
 - `/usr/local/test/bin/kiosk_test` is a test compositor: it claims the compositor, places windows where its
-  command pipe tells it, composes on every commit and writes events through `WRITE_EVENTS`.
+  command pipe tells it, composes on the GPU core after render completion and writes events
+  through `WRITE_EVENTS`. `gpu-counters` returns the helper's actual GPU counters;
+  `gpu-scanout <guest-file>` performs target-0 device readback as its display owner and
+  publishes dimensions, record v2 and pixels, with exact status/reason on failure.
   `/usr/local/test/bin/raw-window_test` is a client that uses the raw system calls without Breengel. The
   `windows`, `isolation`, `composition`, `events` and `scanout` cases create their helpers through
   `libbreenix::suite::spawn`.

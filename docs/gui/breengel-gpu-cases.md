@@ -1,0 +1,434 @@
+# BreenGL GPU contract case reconciliation
+
+This is the normative DISPLAY-owned reconciliation for `gpu.md` section 2.7 step 5, from `f0ed099e`.
+The 393-case baseline becomes 399: **336 kept, 52 changed, 5 removed, 11 added**.
+The 52 changed cases comprise 37 GPU-only and 15 R3/R4 changes. Check-first commits precede this manifest and contract update.
+No row asserts GPU acceptance; lane implementations and final proof are recorded by the contract PR.
+
+B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps the core and pure libraries; B4 excludes the obsolete x86 lane; B5 limits this effort to ARM64 QEMU with `--gpu-gl`. B6 and B7 reclassify mechanisms while preserving their guarded properties.
+
+## Reclassifications from kept to changed
+
+| Case | Reason |
+|---|---|
+| `windows/stale-id` | MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. |
+| `events/resized` | MAP_COMMITTED retired; RESIZE target readback must have the delivered size and stride. |
+| `isolation/efault-mouse` | fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. |
+| `composition/takeover-giveback` | fb_mmap/FLUSH paint retired; GPU PRESENT must restore the prior frame exactly. |
+| `composition/ownership-stack` | fb_mmap/FLUSH paint retired; compositor death must restore the giver's GPU binding and exact frame. |
+| `panel/handoff` | Shared paint used fb_mmap/FLUSH; child now presents a GPU target and restores the stage exactly. |
+| `panel/kernel-screens` | Shared paint used fb_mmap/FLUSH; GPU console resource and exact restoration replace that path. |
+| `scanout/binding` | Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. |
+| `scanout/fault-skipped-transfer` | B6/B7: point 6 becomes GPU point 19; EIO reason unwritten (1), no partial output, then recovery. |
+| `scanout/fault-wrong-resource` | B6/B7: point 7 becomes GPU wrong-scanout 26; actual binding/composite identity and pixels expose the mismatch, then recovery. |
+| `scanout/fault-stale-fence` | B6/B7: point 8 becomes GPU point 20; EIO reason fence-mismatch (2), no partial output, then recovery. |
+| `scanout/fault-outside-damage` | B6/B7: point 9 becomes GPU point 22; corruption at (0,0) replaces last-row planting; full-destination comparison still finds corruption outside damage. |
+
+## Every case
+
+| Case | Classification | Owner | Contract row or ruling |
+|---|---|---|---|
+| `raster/fill-rect` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/fill-rect-clip-left` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/fill-rect-offscreen-left` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/fill-rect-offscreen-top` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/fill-rect-overflow` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/fill-rect-empty` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/draw-rect` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/line-axes` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/line-bresenham` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/line-clip` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/circle-fill` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/circle-fill-offscreen-left` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/circle-outline` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/guard-pages` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/extreme-work-bound` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/stride-padding` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/surface-validate` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/bpp3-bpp4` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/bgr-order` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/x-byte` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/copy-row-clip` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/premultiply` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/alpha-over-examples` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/alpha-over-sweep` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/alpha-extremes` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/alpha-output` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/blit` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/blit-clip` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/blit-alpha` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/blit-straight` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/blit-scale` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/clip-rect` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/clip-stack` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/clip-empty` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/rounded-rect` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/gradient` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/damage-exact` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/damage-noop` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/damage-sound` | kept | unchanged | gpu.md 2.2 raster Keep row |
+| `raster/surface-owned` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/cpu-pixels-zero` | added | gpu-raster | gpu.md 2.2 New GPU-only row |
+| `raster/cpu-render-planted` | added | gpu-raster | gpu.md 2.2 New GPU-only row |
+| `text/fonts-pinned` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/raster-identical` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/metrics-independent` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/cmap-independent` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/bitmap-glyph` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/bitmap-scale` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/bitmap-unknown` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/noto-ascii` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/noto-coverage` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-glyph` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-sizes` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-advance` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-kerning` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-width` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-clip-left` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-clip-top` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-subpixel` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/ttf-notdef` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/utf8-text` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/utf8-invalid` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/compound-glyph` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/compound-transform` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/line-metrics` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/size-range` | changed | gpu-text | gpu.md 2.2 text GPU-only row |
+| `text/many-args-abi` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/cache-hit` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/cache-bound` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/cache-evict-correct` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-reload` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-size` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-missing` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-malformed-config` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-partial` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-repeated` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-independent` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-idle` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/fontwatch-file-replaced` | kept | unchanged | gpu.md 2.2 text Keep row |
+| `text/hidpi-sizes` | added | gpu-text | gpu.md 2.2 New R4 row |
+| `font-parser/truncated` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/table-offsets` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/loca-range` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/loca-order` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/numglyphs` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/cmap4-segments` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/cmap4-odd-segments` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/cmap4-range-offset` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/cmap12-groups` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/glyf-endpoints` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/glyf-points` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/glyf-flags` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/compound-depth` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/compound-cycle` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/compound-missing` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/hmtx-compressed` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/hmtx-truncated` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/units-per-em` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/coords-extreme` | changed | gpu-text | gpu.md 2.2 font-parser GPU-only row |
+| `font-parser/work-bound` | changed | gpu-text | gpu.md 2.2 font-parser GPU-only row |
+| `font-parser/alloc-bound` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `font-parser/corpus` | kept | unchanged | gpu.md 2.2 font-parser Keep row |
+| `inflate/stored` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/stored-length` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/fixed-huffman` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/dynamic-huffman` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/block-sequence` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/block-type-invalid` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/code-oversubscribed` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/code-incomplete` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/code-single` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/no-distance-codes` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/repeat-first` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/symbols-invalid` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/distance-too-far` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/distance-max` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/length-258` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/truncated` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/zlib-header` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/adler32` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/output-limit` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/byte-split` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `inflate/independent-fixtures` | kept | unchanged | gpu.md 2.2 inflate Keep row |
+| `bmp/decode-fixtures` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/orientation` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/padding` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/encode-bytes` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/roundtrip` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/truncated` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/size-overflow` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/huge` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `bmp/unsupported` | kept | unchanged | gpu.md 2.2 bmp Keep row |
+| `png-decode/gray-depths` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/gray-alpha` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/rgb` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/rgba` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/palette-depths` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/trns-gray` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/trns-rgb` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/trns-palette` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/invalid-combos` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/rounding-16bit` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/filters` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/filter-invalid` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/interlace` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/interlace-small` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/multi-idat` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/crc` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/chunk-order` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/plte-required` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/plte-size` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/palette-index` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/critical-unknown` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/ancillary-ignored` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/ihdr-invalid` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/chunk-length` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/huge` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/bomb` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/truncated` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/signature` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/independent-fixtures` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/blit` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-decode/from-disk` | kept | unchanged | gpu.md 2.2 png-decode Keep row |
+| `png-encode/decodes` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `png-encode/stable` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `png-encode/format` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `png-encode/chunk-crc` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `png-encode/zlib-adler` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `png-encode/sizes` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `png-encode/limits` | kept | unchanged | gpu.md 2.2 png-encode Keep row |
+| `widgets/button-draw` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/button-click` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/button-cancel` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/button-disabled` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/checkbox-toggle` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/checkbox-space` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/slider-drag` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/slider-clamp` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/slider-keys` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/label-clip` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/tabbar-select` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/tabbar-overflow` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/scrollbar-drag` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/scrollbar-wheel` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/scrollbar-thumb` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/menubar-open` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/menubar-shortcut` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/menu-keys` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/menu-disabled` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/menu-dismiss` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/layout-stack` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/focus-ring` | changed | gpu-text | gpu.md 2.2 widgets R3 row |
+| `widgets/no-change-ack` | kept | unchanged | gpu.md 2.2 widgets Keep row |
+| `widgets/scale-2` | added | gpu-text | gpu.md 2.2 New R4 row |
+| `text-entry/insert` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/delete` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/move` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/select` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/utf8` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/maxlen` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/scroll-to-cursor` | changed | gpu-text | gpu.md 2.2 text-entry R3 row |
+| `text-entry/selection-text` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/paste-insert` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/focus-tab` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/focus-shift-tab` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/focus-skip-disabled` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/focus-click` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/filepicker-list` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/filepicker-keys` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/filepicker-path` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/filepicker-mouse` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/filepicker-scroll` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `text-entry/filepicker-errors` | kept | unchanged | gpu.md 2.2 text-entry Keep row |
+| `icons/states` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/spring-steps` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/step-invariance` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/settles` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/interrupt` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/reversal` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/reset` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/bounded` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/easing` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/sin-approx` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/particles-bounded` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `icons/assets` | kept | unchanged | gpu.md 2.2 icons Keep row |
+| `windows/create` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/create-zeroed` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/register-listed` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/title-limit` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/title-utf8` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/title-change` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/size-zero` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/size-too-big` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/limit` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/multi-window` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/destroy` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/drop-destroys` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/stale-id` | changed | gpu-window | B7: MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. |
+| `windows/register-unwinds` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/exit-cleanup` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/exec-cleanup` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/fork-no-mapping` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/fork-no-authority` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/commit-swaps` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/acquire-replays-damage` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/acquire-full-copy` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/stale-base-commit` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/commit-immutable` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/commit-busy` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/thread-commit` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/release-order` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/acquire-timeout` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/resize` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/resize-error` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/resize-rlimit` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/resize-rollback` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/rlimit-accounting` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/capture-across-destroy` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/two-buffer-capture-load` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/remnant-on-death` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/churn` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/distinct-content` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/raw-client` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/every-target` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
+| `windows/commit-waits-render` | added | gpu-window | gpu.md 2.2 New GPU-only row |
+| `isolation/other-register` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-position` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-inject` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-read` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-map` | changed | gpu-window | gpu.md 2.2 isolation GPU-only row |
+| `isolation/other-resize` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-destroy` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/other-tree` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/texture-map` | changed | gpu-window | gpu.md 2.2 isolation GPU-only row |
+| `isolation/composite-denied` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/claim-unprivileged` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/claim-twice` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/claim-after-death` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/compositor-authorized` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/pid-reuse` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-create` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-register` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-list` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-capture` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-events` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-inject` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-composite` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-mouse` | changed | gpu-display | B7: fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. |
+| `isolation/efault-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-readback` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-claim` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-cross-page` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-overflow` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-readonly` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/cow-output` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/destroy-during-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/test-hooks-absent` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/retired-ops` | changed | gpu-apps | gpu.md 2.2 isolation GPU-only row |
+| `isolation/unknown-op` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/killable` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/quiet-errors` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/controls-latched` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `composition/compose-position` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/compose-overlap` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/compose-offscreen` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/compose-fullscreen` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/compose-many` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/generation` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/no-compositor` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/compositor-dies` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/eintr` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/damage-metadata` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/damage-work` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/damage-screen` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/composite-record` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/backend-error` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/inflight-bound` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/no-change-commit` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/cursor-hidden` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/cursor-no-trail` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/cursor-shape` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/cursor-stationary-repaint` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/flush-irq-bound → composition/irq-bound` | changed | gpu-display | gpu.md 2.2 composition GPU-only row |
+| `composition/present-rate` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/takeover-giveback` | changed | gpu-display | B7: fb_mmap/FLUSH paint retired; GPU PRESENT must restore the prior frame exactly. |
+| `composition/ownership-stack` | changed | gpu-display | B7: fb_mmap/FLUSH paint retired; compositor death must restore the giver's GPU binding and exact frame. |
+| `composition/fbinfo-geometry` | changed | gpu-display | gpu.md 2.2 composition GPU-only row |
+| `composition/fbmmap-pane` | removed | gpu-display | gpu.md 2.2 retired fb_mmap/FLUSH |
+| `composition/flush-clip` | removed | gpu-display | gpu.md 2.2 retired fb_mmap/FLUSH |
+| `composition/gpu-composite` | added | gpu-display | gpu.md 2.2 New GPU-only row |
+| `composition/target-lifetime` | added | gpu-display | gpu.md 2.2 New GPU-only row |
+| `composition/scale-2` | added | gpu-display | gpu.md 2.2 New R4 row |
+| `events/key-press-release` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/key-text` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/key-modifiers` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/key-repeat` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/text-event` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/mouse-move` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/mouse-buttons` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/scroll` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/focus` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/close-requested` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/resized` | changed | gpu-window | B7: MAP_COMMITTED retired; RESIZE target readback must have the delivered size and stride. |
+| `events/resize-failed` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/font-changed` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/compositor-changed` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/unknown-type` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/order` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/serial` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/processed-serial` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/processed-not-polled` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/processed-at-acquire` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/no-change-after-redraw` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/processed-ack` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/overflow` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/wait-timeout` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/wait-eintr` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/wait-targeted` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/pollable` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/per-window` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/after-destroy` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/abi-layout` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/no-overloaded-fields` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `events/malformed-write` | kept | unchanged | gpu.md 2.2 events Keep row |
+| `scanout/mode-set` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
+| `scanout/device-path` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
+| `scanout/changing-scene` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/full-destination` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/binding` | changed | gpu-display | B7: Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. |
+| `scanout/completion` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/atomic-record` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/window-commits` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/format-canonical` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/root-only` | kept | unchanged | gpu.md 2.2 scanout Keep row |
+| `scanout/fault-skipped-transfer` | changed | gpu-display | B7: B6/B7: point 6 becomes GPU point 19; EIO reason unwritten (1), no partial output, then recovery. |
+| `scanout/fault-wrong-resource` | changed | gpu-display | B7: B6/B7: point 7 becomes GPU wrong-scanout 26; actual binding/composite identity and pixels expose the mismatch, then recovery. |
+| `scanout/fault-stale-fence` | changed | gpu-display | B7: B6/B7: point 8 becomes GPU point 20; EIO reason fence-mismatch (2), no partial output, then recovery. |
+| `scanout/fault-outside-damage` | changed | gpu-display | B7: B6/B7: point 9 becomes GPU point 22; corruption at (0,0) replaces last-row planting; full-destination comparison still finds corruption outside damage. |
+| `scanout/boundary-stated` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
+| `scanout/present-flip` | added | gpu-display | gpu.md 2.2 New GPU-only row |
+| `scanout/hidpi-mode` | added | gpu-display | gpu.md 2.2 New R4 row |
+| `panel/counts` | removed | gpu-display | gpu.md 2.2 R3 diagnostics panel |
+| `panel/fail-rows` | removed | gpu-display | gpu.md 2.2 R3 diagnostics panel |
+| `panel/layout` | removed | gpu-display | gpu.md 2.2 R3 diagnostics panel |
+| `panel/stage-layout` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/tile-stamps` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/tile-thumbnail` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/spotlight-picture` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/spotlight-timing` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/milestone-ribbon` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/finale` | changed | gpu-display | gpu.md 2.2 panel R3/R4 row |
+| `panel/deterministic` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/judged-frame-shown` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/serial-agreement` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/quiet-window` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/boot-ribbon` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/boundary-notice` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/handoff` | changed | gpu-display | B7: Shared paint used fb_mmap/FLUSH; child now presents a GPU target and restores the stage exactly. |
+| `panel/between-cases` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/cursor-restore` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/cursor-trail-detected` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/kernel-screens` | changed | gpu-display | B7: Shared paint used fb_mmap/FLUSH; GPU console resource and exact restoration replace that path. |
+| `panel/stage-hidpi` | added | gpu-display | gpu.md 2.2 New R4 row |
