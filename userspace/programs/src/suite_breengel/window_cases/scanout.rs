@@ -29,16 +29,6 @@ use super::composition::{compose, compositor, formula, place, screen, screen_is,
 use super::kit::*;
 use abi::{backend, op, Plain};
 
-/// The boundary code section 20.2 gives each backend.
-fn boundary_of(code: u32) -> Option<u32> {
-    match code {
-        backend::VIRTIO_GPU_2D => Some(1),
-        backend::GOP_FRAMEBUFFER => Some(2),
-        backend::VIRGL | backend::SVGA3_SCREEN_TARGET => Some(3),
-        _ => None,
-    }
-}
-
 /// A one-window scene, composed: the compositor, the window and its composite serial.
 fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), libbreenix::suite::CaseError> {
     let mut k = compositor()?;
@@ -372,18 +362,10 @@ fn scanout_fault_outside_damage() -> CaseResult {
     ensure(found.is_some(), "20.3", "with corrupt-outside-damage armed, the full destination's last row equals the formula: the planted corruption was not found")
 }
 
+// gpu-display: §2.2 record v2 uses boundary 4 on both GPU backends; no legacy device-copy boundary remains.
 fn scanout_boundary_stated() -> CaseResult {
-    interface()?;
-    let (_k, _w, _p, _) = one_window(26)?;
-    let (_, rec) = screen()?;
-    let want = boundary_of(rec.backend);
-    ensure(want == Some(rec.boundary), "20.2", format!(
-        "the record of backend {} ({}) states boundary {}; section 20.2 gives {want:?}", rec.backend, backend::name(rec.backend), rec.boundary))?;
-    // Section 20.2: exactly DEVICE_COPY_OUTSIDE for virtio-gpu 2D, 0 for GOP, SVGA3 and VirGL.
-    let flags = match rec.backend {
-        backend::VIRTIO_GPU_2D => abi::OBSERVATION_DEVICE_COPY_OUTSIDE,
-        _ => 0,
-    };
-    ensure(rec.flags == flags, "20.2", format!(
-        "the record of backend {} ({}) has flags {:#x}; section 20.2 gives exactly {flags:#x}", rec.backend, backend::name(rec.backend), rec.flags))
+interface()?;let (mut k,_w,_p,_)=one_window(26)?;
+    let s=super::composition::gpu_snapshot(&mut k)?;
+    ensure([4,5].contains(&s.word(16)) && s.word(20)==4,"20.2","gpu-display: record must state that the host renderer and host window lie outside guest observation")?;
+    ensure(s.word(24)==3,"20.2","gpu-display: composed scanout must set exactly the scanout and composite bits")
 }
