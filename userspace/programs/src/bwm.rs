@@ -154,7 +154,10 @@ const MINIMIZE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 // handle internally (F-key focus switching) or route to the focused client
 // window as WindowInputEvents.
 
+const ESCAPE_TIMEOUT_MS: u64 = 30;
+
 struct InputParser {
+    escape_started_ms: u64,
     state: InputState,
     esc_buf: [u8; 16],
     esc_len: usize,
@@ -173,12 +176,23 @@ enum InputEvent {
 }
 
 impl InputParser {
-    fn new() -> Self { Self { state: InputState::Normal, esc_buf: [0; 16], esc_len: 0 } }
+    fn new() -> Self { Self { escape_started_ms: 0, state: InputState::Normal, esc_buf: [0; 16], esc_len: 0 } }
 
-    fn feed(&mut self, byte: u8) -> Option<InputEvent> {
+    /// Resolve a bare Escape before admitting a later key as an Alt chord.
+    fn expire_escape(&mut self, now_ms: u64) -> Option<InputEvent> {
+        if self.state == InputState::Escape
+            && now_ms.saturating_sub(self.escape_started_ms) >= ESCAPE_TIMEOUT_MS {
+            self.state = InputState::Normal;
+            Some(Self::byte_to_key_event(0x1b))
+        } else {
+            None
+        }
+    }
+
+    fn feed(&mut self, byte: u8, now_ms: u64) -> Option<InputEvent> {
         match self.state {
             InputState::Normal => {
-                if byte == 0x1b { self.state = InputState::Escape; self.esc_len = 0; None }
+                if byte == 0x1b { self.state = InputState::Escape; self.escape_started_ms = now_ms; self.esc_len = 0; None }
                 else { Some(Self::byte_to_key_event(byte)) }
             }
             InputState::Escape => {
@@ -1795,7 +1809,9 @@ fn main() {
             0
         } else {
             let (ready, new_reg_gen) =
-                graphics::compositor_wait(0, registry_gen).unwrap_or((0, registry_gen));
+                graphics::compositor_wait(
+                    if input_parser.state == InputState::Escape { ESCAPE_TIMEOUT_MS as u32 } else { 0 },
+                    registry_gen).unwrap_or((0, registry_gen));
             registry_gen = new_reg_gen;
             ready
         };
@@ -1835,46 +1851,51 @@ fn main() {
         let _ = io::poll(&mut poll_fds, 0);
 
         // ── 3. Process keyboard input ──
+        let now_ms = monotonic_ms().expect("bwm input requires the monotonic clock");
+        let mut input_events: Vec<InputEvent> = input_parser.expire_escape(now_ms).into_iter().collect();
         if poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0 {
             if let Ok(n) = io::read(Fd::from_raw(0), &mut read_buf) {
                 for i in 0..n {
-                    if let Some(event) = input_parser.feed(read_buf[i]) {
-                        match event {
-                            InputEvent::FunctionKey(k) if (k as usize) <= windows.len() => {
-                                let new_focus = (k - 1) as usize;
-                                if new_focus < windows.len() && new_focus != focused_win {
-                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                                    focused_win = new_focus;
-                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                                    full_redraw = true;
-                                }
-                            }
-                            InputEvent::Key { ascii, keycode, modifiers, repeat } => {
-                                match hotkey_mgr.key_pressed(modifiers as u8, current_mods, ascii, repeat) {
-                                    Chord::Fire(action) => {
-                                        hotkey_actions.push(action);
-                                        continue;
-                                    }
-                                    Chord::Consumed => continue,
-                                    Chord::None => {}
-                                }
-                                if !windows.is_empty() {
-                                    let win_event = WindowInputEvent {
-                                        event_type: input_event_type::KEY_PRESS,
-                                        keycode,
-                                        mouse_x: ascii as i16,
-                                        mouse_y: 0,
-                                        modifiers,
-                                        scroll_y: 0,
-                                    };
-                                    route_keyboard_to_focused(&windows, focused_win, &win_event);
-                                }
-                            }
-                            _ => {}
-                        }
+                    if let Some(event) = input_parser.feed(read_buf[i], now_ms) {
+                        input_events.push(event);
                     }
                 }
+            }
+        }
+        for event in input_events {
+            match event {
+                InputEvent::FunctionKey(k) if (k as usize) <= windows.len() => {
+                    let new_focus = (k - 1) as usize;
+                    if new_focus < windows.len() && new_focus != focused_win {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = new_focus;
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                InputEvent::Key { ascii, keycode, modifiers, repeat } => {
+                    match hotkey_mgr.key_pressed(modifiers as u8, current_mods, ascii, repeat) {
+                        Chord::Fire(action) => {
+                            hotkey_actions.push(action);
+                            continue;
+                        }
+                        Chord::Consumed => continue,
+                        Chord::None => {}
+                    }
+                    if !windows.is_empty() {
+                        let win_event = WindowInputEvent {
+                            event_type: input_event_type::KEY_PRESS,
+                            keycode,
+                            mouse_x: ascii as i16,
+                            mouse_y: 0,
+                            modifiers,
+                            scroll_y: 0,
+                        };
+                        route_keyboard_to_focused(&windows, focused_win, &win_event);
+                    }
+                }
+                _ => {}
             }
         }
 
