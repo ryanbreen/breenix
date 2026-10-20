@@ -230,11 +230,13 @@ struct TxRing {
     bytes: [u8; TX_BYTES],
     head: usize,
     len: usize,
+    /// Records popped by transmitters whose UART write has not returned.
+    in_flight: usize,
 }
 
 impl TxRing {
     const fn new() -> Self {
-        Self { bytes: [0; TX_BYTES], head: 0, len: 0 }
+        Self { bytes: [0; TX_BYTES], head: 0, len: 0, in_flight: 0 }
     }
 
     fn put(&mut self, byte: u8) {
@@ -277,6 +279,7 @@ impl TxRing {
                 *slot = byte;
             }
         }
+        self.in_flight += 1;
         n.min(CAPACITY)
     }
 }
@@ -320,15 +323,19 @@ fn queue_terminal(bytes: &[u8]) -> bool {
 /// one ownership, so records keep their order and each goes out whole. Returns
 /// the ring bytes it took, or 0 when the ring was empty.
 fn send_queued() -> usize {
-    let mut ownership = Ownership::acquire();
+    send_queued_owned(&mut Ownership::acquire())
+}
+
+fn send_queued_owned(ownership: &mut Ownership) -> usize {
     let mut record = [0u8; CAPACITY];
     let n = with_ring(|ring| ring.pop(&mut record));
     if n == 0 {
         return 0;
     }
     if let Some(sent) = record.get(..n) {
-        uart_owner::write::<Uart, false>(Writer::Tty, sent, Kind::Plain, &mut ownership);
+        uart_owner::write::<Uart, false>(Writer::Tty, sent, Kind::Plain, ownership);
     }
+    with_ring(|ring| ring.in_flight -= 1);
     TX_HEADER + n
 }
 
@@ -394,7 +401,20 @@ pub fn start_transmitter() {
 /// Wait until the terminal output queued so far has gone to the UART (TCSETSW,
 /// TCSETSF): the caller writes it out itself.
 pub fn drain_output() {
-    write_queued();
+    loop {
+        // Take ownership even with an empty ring: a transmitter may have
+        // popped its last record but not yet written it to the UART.
+        let mut ownership = Ownership::acquire();
+        if with_ring(|ring| ring.len == 0 && ring.in_flight == 0) {
+            return;
+        }
+        if !TX_STOPPED.load(Ordering::Acquire) {
+            send_queued_owned(&mut ownership);
+        }
+        drop(ownership);
+        // In particular, let the input path resume IXON-stopped output.
+        crate::task::scheduler::yield_current();
+    }
 }
 
 /// Discard queued terminal output (TCFLSH, TCSETSF).
