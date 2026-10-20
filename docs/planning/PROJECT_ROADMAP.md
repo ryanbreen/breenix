@@ -11,6 +11,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Launcher work enables the VMware host-key path by default for console suite
+boots, including multi-suite lists, with loopback VNC and owned watcher cleanup.
+The unrelated boot-wait host-test matcher failure is tracked in #2097.
+
 PR #2054 carries the GPU-core handoff and repairs ARM64 scheduler-lock holds
 and GPU suite memory accounting (#2056). S37 updates the self-death receipt
 contract (#2058) to require one deferral and one reclaim on both architectures.

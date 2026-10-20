@@ -546,7 +546,14 @@ impl Suite {
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
             let _ = sweep();
-            let after = memory_sample(self.id, "after");
+            let display = if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) };
+            let after = match display {
+                Ok(()) => memory_sample(self.id, "after"),
+                Err(error) => {
+                    emit(&std::format!("SUITE {} ERROR memory {}", self.id, error));
+                    None
+                }
+            };
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
             reclaimed

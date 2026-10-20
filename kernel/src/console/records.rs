@@ -24,7 +24,7 @@ impl Write for Line {
 /// Put a kernel log record on the console, as its own line.
 #[cfg(any(target_arch = "x86_64", test))]
 pub fn log_record(level: log::Level, args: &fmt::Arguments) {
-    if SESSION.load(Ordering::Acquire) && level > log::Level::Warn {
+    if level > log::Level::Info || (SESSION.load(Ordering::Acquire) && level > log::Level::Warn) {
         return;
     }
     let mut line = Line {
@@ -51,10 +51,14 @@ pub fn log_bytes(bytes: &[u8]) {
 }
 
 /// A serial record with a known severity, retained even during a quiet session
-/// when it is a warning or error. Untyped serial output is INFO.
+/// when it is a warning or error. Untyped serial output is INFO; diagnostics
+/// (`diag_println!`) are DEBUG and stay on serial.
 #[cfg(target_arch = "aarch64")]
 pub fn log_bytes_at(level: log::Level, bytes: &[u8]) {
-    if bytes.is_empty() || (SESSION.load(Ordering::Acquire) && level > log::Level::Warn) {
+    if bytes.is_empty()
+        || level > log::Level::Info
+        || (SESSION.load(Ordering::Acquire) && level > log::Level::Warn)
+    {
         return;
     }
     with_grid(|console| {

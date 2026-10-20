@@ -2304,7 +2304,7 @@ fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
     let result = match syscall_num {
         syscall_nums::EXIT => {
             let exit_code = arg1 as i32;
-            crate::serial_println!("[syscall] exit({})", exit_code);
+            crate::diag_println!("[syscall] exit({})", exit_code);
             crate::serial_println!();
             crate::serial_println!("========================================");
             crate::serial_println!("  Userspace Test Complete!");

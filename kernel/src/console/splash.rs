@@ -485,6 +485,16 @@ impl Bands {
     }
 }
 
+/// The logo scale `k`, pixels per design unit, which follows the font size `S`
+/// (contract section 2).
+pub fn logo_scale(font: &super::raster::Font) -> usize {
+    match font.size() {
+        32 => 4,
+        24 => 3,
+        _ => 2,
+    }
+}
+
 /// Where the splash sits on a framebuffer (contract section 6.2).
 #[derive(Clone, Copy)]
 pub(super) struct Look {
@@ -499,11 +509,7 @@ pub(super) struct Look {
 
 impl Look {
     pub fn new(layout: Layout, bgr: bool) -> Self {
-        let k = match layout.font.size() {
-            32 => 4,
-            24 => 3,
-            _ => 2,
-        };
+        let k = logo_scale(&layout.font) as u16;
         let format = match (bgr, layout.bytes_per_pixel) {
             (true, 3) => PixelFormat::Bgr,
             (true, _) => PixelFormat::Bgra,

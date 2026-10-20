@@ -70,8 +70,14 @@ fn colour(n: u64) -> u32 {
 /// Read back the rectangle `r` of target `t` (0 for the current scanout).
 fn read_rect(t: u64, r: [u32; 4]) -> R<Vec<u8>> {
     let mut px = vec![0u8; (r[2] * r[3] * 4) as usize];
+    read_into(t, r, &mut px)?;
+    Ok(px)
+}
+
+/// Read back the rectangle `r` of target `t` into `px`, rows packed.
+fn read_into(t: u64, r: [u32; 4], px: &mut [u8]) -> R<()> {
     let mut rec = [0u8; record::SIZE];
-    let (ret, a) = gpu::readback_why(t, r, &mut px, r[2] * 4, &mut rec);
+    let (ret, a) = gpu::readback_why(t, r, px, r[2] * 4, &mut rec);
     ensure(ret == 0, || {
         format!(
             "READBACK returned {} (reason {}, failed submission {}, unwritten {})",
@@ -80,8 +86,7 @@ fn read_rect(t: u64, r: [u32; 4]) -> R<Vec<u8>> {
             a.failed_submission,
             u32_at(&rec, record::UNWRITTEN)
         )
-    })?;
-    Ok(px)
+    })
 }
 
 /// `Ok` when each pixel of `px` is `c`, else the first that differs.

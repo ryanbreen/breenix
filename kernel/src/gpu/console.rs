@@ -1,4 +1,9 @@
-//! Kernel console rendered with the core's bitmap_text pipeline and a fixture glyph atlas.
+//! The core's own console: a bitmap_text pipeline and a fixture glyph atlas, prepared once
+//! the core shows the kernel's screen and drawn only by the terminal panic screen (`panic`,
+//! gpu.md section 1.7.1). The kernel's screen itself is the screen console's (`screen`,
+//! ruling F25). This module also keeps the firmware framebuffer's retirement and the handoff
+//! that MODES reports, and the render thread's pump: panic preparation and the restores an
+//! ended owner asks for.
 use super::*;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight};
@@ -7,17 +12,12 @@ pub(super) const WIDTH: u32 = 2560;
 pub(super) const HEIGHT: u32 = 1600;
 const BG: u32 = 0xff181512;
 const FG: u32 = 0xffe8edf2;
-const LINES: usize = 16;
-const COLUMNS: usize = 96;
 const VB_BYTES: u32 = 128 * 1024;
-static CONSOLE: crate::irq_safe_mutex::IrqSafeMutex<Option<Console>> = crate::irq_safe_mutex::IrqSafeMutex::new(None);
 static RESTORE: AtomicBool = AtomicBool::new(false);
 static RETIRED: AtomicBool = AtomicBool::new(false);
 static HANDOFF: AtomicBool = AtomicBool::new(false);
 static HASH: AtomicU64 = AtomicU64::new(0);
-static DRAWN: AtomicU64 = AtomicU64::new(0);
 static FIXTURE: AtomicU64 = AtomicU64::new(0);
-static RESOURCE: AtomicU64 = AtomicU64::new(0);
 static PANIC_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
 static PANIC_ATTEMPT_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
 static PANIC_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
@@ -34,10 +34,6 @@ pub(super) struct Console {
     pub(super) scratch: u32,
     pub(super) vertices: u32,
     pub(super) glyph_width: u32,
-    lines: [[u8; COLUMNS]; LINES],
-    row: usize,
-    column: usize,
-    counted: bool,
 }
 
 pub fn active() -> bool {
@@ -54,8 +50,7 @@ pub(super) fn restored_pending() {
 }
 
 pub(super) fn describe(a: &mut abi::Modes) {
-    a.console_resource = RESOURCE.load(Ordering::Acquire);
-    a.console_draws = DRAWN.load(Ordering::Acquire);
+    (a.console_resource, a.console_draws) = super::screen::describe();
     a.console_fixture_bytes = FIXTURE.load(Ordering::Acquire);
     a.handoff = HANDOFF.load(Ordering::Acquire) as u64;
     a.firmware_hash_at_handoff = HASH.load(Ordering::Acquire);
@@ -76,12 +71,13 @@ fn firmware_hash() -> u64 {
     guard.firmware_hash()
 }
 
-fn quiesce() {
+/// The core is about to show the kernel's screen: the firmware framebuffer is no longer
+/// shown, so no kernel writer may write it from here on. The screen console draws through
+/// the core (`screen`) and keeps drawing.
+pub(super) fn retire_firmware() {
     if RETIRED.load(Ordering::Acquire) {
         return;
     }
-    // Stops the screen console's splash and terminals too (`console::take_display`).
-    crate::graphics::boot_screen::stop_drawing();
     // Quiesce direct canvas writers under the framebuffer lock before retiring it.
     if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
         let _guard = fb.lock();
@@ -92,14 +88,23 @@ fn quiesce() {
     HASH.store(firmware_hash(), Ordering::Release);
 }
 
-fn handoff() {
-    crate::graphics::firmware_writes::handoff();
-    HANDOFF.store(true, Ordering::Release);
-    crate::graphics::log_capture::init();
+/// The first frame of the kernel's screen completed: count firmware writes from here on.
+pub(super) fn handed_off() {
+    if !HANDOFF.load(Ordering::Acquire) {
+        crate::graphics::firmware_writes::handoff();
+        HANDOFF.store(true, Ordering::Release);
+    }
 }
 
-/// A console resource has no process handle; its backing is frames and its device holds
-/// use the same resource table as clients, so reset and DMA lifetime use the core's rules.
+fn pitch_of(kind_: u32, fmt: u32, w: u32) -> u32 {
+    if kind_ == kind::BUFFER {
+        w
+    } else {
+        (w * format::bytes(fmt)).next_multiple_of(256)
+    }
+}
+
+/// A kernel resource with fresh backing of its size when `backed`, else without backing.
 fn resource(
     ctx: u32,
     kind_: u32,
@@ -109,17 +114,29 @@ fn resource(
     scanout: bool,
     backed: bool,
 ) -> Result<u32, i64> {
-    let pitch = if kind_ == kind::BUFFER {
-        w
-    } else {
-        (w * format::bytes(fmt)).next_multiple_of(256)
-    };
     let bytes = if backed {
-        pitch as usize * h as usize
+        pitch_of(kind_, fmt, w) as usize * h as usize
     } else {
         0
     };
     let pages = Arc::new(Pages::new(bytes.div_ceil(PAGE)).ok_or(ENOMEM)?);
+    resource_with(ctx, kind_, fmt, w, h, scanout, pages)
+}
+
+/// A kernel resource has no process handle; its backing (`pages`, attached when it has any
+/// frames) and its device holds use the same resource table as clients, so reset and DMA
+/// lifetime use the core's rules.
+pub(super) fn resource_with(
+    ctx: u32,
+    kind_: u32,
+    fmt: u32,
+    w: u32,
+    h: u32,
+    scanout: bool,
+    pages: Arc<Pages>,
+) -> Result<u32, i64> {
+    let pitch = pitch_of(kind_, fmt, w);
+    let backed = pages.count() > 0;
     let id = with_core(|c| {
         let id = c.next_res;
         c.next_res += 1;
@@ -212,13 +229,11 @@ impl Drop for Console {
             }
         });
         destroy_context(0, self.handle);
-        let _ =
-            RESOURCE.compare_exchange(self.target as u64, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 }
 
 impl Console {
-    pub(super) fn new(counted: bool) -> Result<Self, i64> {
+    pub(super) fn new() -> Result<Self, i64> {
         let (handle, _) = create_context(0)?;
         let mut build = Building {
             ids: Vec::new(),
@@ -240,7 +255,7 @@ impl Console {
             WIDTH,
             HEIGHT,
             true,
-            counted || cfg!(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")),
+            cfg!(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")),
         )?;
         build.ids.push(target);
         let atlas = resource(ctx, kind::TEXTURE, format::R8, gw * 95, 16, false, true)?;
@@ -295,9 +310,7 @@ impl Console {
         if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
             return Err(EIO);
         }
-        if counted {
-            FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
-        }
+        FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
         build.armed = false;
         Ok(Self {
             epoch,
@@ -308,23 +321,9 @@ impl Console {
             scratch,
             vertices,
             glyph_width: gw,
-            lines: [[b' '; COLUMNS]; LINES],
-            row: 0,
-            column: 0,
-            counted,
         })
     }
-    fn live(&self) -> bool {
-        with_core(|c| {
-            c.epoch == self.epoch
-                && c.contexts
-                    .get(&self.context)
-                    .is_some_and(|x| x.state == CtxState::Live && x.device_alive)
-                && c.resources.get(&self.target).is_some_and(|r| !r.lost)
-        })
-        .unwrap_or(false)
-    }
-    fn text(&self, s: &mut Vec<u32>, text: &[u8], y: i32) -> u64 {
+    fn text(&self, s: &mut Vec<u32>, text: &[u8], y: i32) {
         let mut instances = Vec::new();
         for (i, &ch) in text.iter().enumerate() {
             if !(33..=126).contains(&ch) {
@@ -348,7 +347,7 @@ impl Console {
             });
         }
         if instances.is_empty() {
-            return 0;
+            return;
         }
         abi::draw::encode(
             s,
@@ -359,16 +358,13 @@ impl Console {
             0,
             &instances,
         );
-        1
     }
-    pub(super) fn draw(&mut self, bind: bool) -> Result<(), i64> {
+    /// Draw the console's offscreen frame, so its target has a completed write.
+    pub(super) fn draw(&mut self) -> Result<(), i64> {
         let mut s = Vec::new();
         stream::encode::begin(&mut s, self.target as u64);
         stream::encode::clear(&mut s, BG);
-        let mut draws = self.text(&mut s, b"Breenix GPU console", 16);
-        for (i, line) in self.lines.iter().enumerate() {
-            draws += self.text(&mut s, line, 48 + i as i32 * 18);
-        }
+        self.text(&mut s, b"Breenix GPU console", 16);
         let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.objects.clone()))
             .flatten()
             .ok_or(EIO)?;
@@ -426,75 +422,7 @@ impl Console {
                 r.invalid = false;
             }
         });
-        if bind {
-            quiesce();
-            self.bind(display::Binding {
-                id: self.target,
-                fence: 0,
-                answer: 0,
-            })?;
-            handoff();
-        }
-        if self.counted {
-            DRAWN.fetch_add(draws, Ordering::Release);
-        }
         Ok(())
-    }
-    fn bind(&self, mut b: display::Binding) -> Result<(), i64> {
-        let (w, h) = with_core(|c| {
-            c.resources
-                .get(&b.id)
-                .filter(|r| !r.lost)
-                .map(|r| (r.width, r.height))
-        })
-        .flatten()
-        .ok_or(EIO)?;
-        with_core(|c| {
-            c.display.known = false;
-            if c.display.holds.insert(b.id) {
-                if let Some(r) = c.resources.get_mut(&b.id) {
-                    r.holds += 1;
-                }
-            }
-        });
-        exec_ok(
-            |t| Some(virgl::set_scanout(t, self.context, b.id, w, h)),
-            self.context,
-            &[b.id],
-        )?;
-        let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
-        let d = exec_ok(
-            |t| Some(virgl::flush_resource(t, self.context, fence, b.id, w, h)),
-            self.context,
-            &[b.id],
-        )?;
-        if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
-            return Err(EIO);
-        }
-        b.answer = d.answer;
-        display::restored(b);
-        Ok(())
-    }
-    fn bytes(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            if b == b'\r' {
-                continue;
-            }
-            if b == b'\n' || self.column == COLUMNS {
-                self.column = 0;
-                if self.row + 1 == LINES {
-                    self.lines.copy_within(1.., 0);
-                    self.lines[LINES - 1] = [b' '; COLUMNS];
-                } else {
-                    self.row += 1;
-                }
-                if b == b'\n' {
-                    continue;
-                }
-            }
-            self.lines[self.row][self.column] = if (32..=126).contains(&b) { b } else { b'?' };
-            self.column += 1;
-        }
     }
 }
 impl encode::Bindings for Console {
@@ -526,43 +454,8 @@ impl encode::Bindings for Console {
     }
 }
 
-/// The transition guard serializes users; the spin lock only moves the value.
-/// Device waits run with the console owned by this lease, with no spin lock held.
-struct ConsoleLease(Option<Console>);
-impl ConsoleLease {
-    fn take() -> Self {
-        Self(super::panic::lock_irq(&CONSOLE).take())
-    }
-    fn ensure(&mut self) -> Result<&mut Console, i64> {
-        if self.0.as_ref().is_none_or(|c| !c.live()) {
-            self.0 = None;
-            let mut console = Console::new(true)?;
-            // Preparing a replacement must not change a live owner's scanout.
-            console.draw(false)?;
-            RESOURCE.store(console.target as u64, Ordering::Release);
-            self.0 = Some(console);
-        }
-        self.0.as_mut().ok_or(EIO)
-    }
-}
-impl Drop for ConsoleLease {
-    fn drop(&mut self) {
-        // Releasing resources may wait for the device. Move the displaced
-        // console out while masked, then destroy it after the guard restores IRQs.
-        let displaced = {
-            let mut slot = super::panic::lock_irq(&CONSOLE);
-            core::mem::replace(&mut *slot, self.0.take())
-        };
-        drop(displaced);
-    }
-}
-pub(super) fn redraw() -> Result<(), i64> {
-    ConsoleLease::take().ensure()?.draw(true)
-}
-pub(super) fn bind_saved(b: display::Binding) -> Result<(), i64> {
-    ConsoleLease::take().ensure()?.bind(b)
-}
-/// Called on the render thread. It replaces its legacy CPU console loop after handoff.
+/// Called on the render thread once the core owns the display: prepares the panic screen
+/// after the kernel's screen was first shown, and makes the restores ended owners asked for.
 pub fn pump() {
     let _path = GpuPath::enter();
     if !display::active() {
@@ -601,23 +494,6 @@ pub fn pump() {
         }
         notify();
     }
-    let Some(_transition) = display::Transition::for_console() else {
-        return;
-    };
-    let mut lease = ConsoleLease::take();
-    let Ok(c) = lease.ensure() else {
-        return;
-    };
-    let mut bytes = [0u8; 1024];
-    let n = crate::graphics::log_capture::drain(&mut bytes);
-    let visible = with_core(|core| {
-        core.display.known && core.display.binding.is_some_and(|b| b.id == c.target)
-    })
-    .unwrap_or(false);
-    if n > 0 || !visible {
-        c.bytes(&bytes[..n]);
-        let _ = c.draw(true);
-    }
 }
 
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
@@ -625,8 +501,5 @@ pub(super) fn panic_with_lock(f: impl FnOnce()) {
     if !HANDOFF.load(Ordering::Acquire) {
         return;
     }
-    let Some(_console) = CONSOLE.try_lock() else {
-        return;
-    };
-    f();
+    super::screen::with_lock(f);
 }

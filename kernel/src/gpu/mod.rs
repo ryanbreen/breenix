@@ -14,8 +14,11 @@
 //! `CONTEXT_CREATE` sends only the context's fixed state; `kgpu` warms the fixed rendering
 //! catalogue afterwards, one pipeline per step and one step on the device at a time, and
 //! after a process-local grace for successful creations, so other requests wait behind
-//! at most one step. A draw whose pipeline has not warmed creates its programs in its
-//! own submission and waits for no other pipeline (ruling 33, #1725).
+//! at most one step. A step also waits, for at most that grace, for a pause in other
+//! requests, so a burst of requests, each sent when the one before it is answered, is
+//! split by a step at most once a grace rather than after each request. A draw whose
+//! pipeline has not warmed creates its programs in its own submission and waits for no
+//! other pipeline (ruling 33, #1725).
 //!
 //! A fence's result reaching its callers and the device's use of the memory behind it
 //! ending are separate events. Every request goes through one queue in order (the backlog,
@@ -35,6 +38,7 @@ mod present_answers;
 mod display;
 pub mod console;
 pub mod panic;
+pub mod screen;
 mod observation;
 mod quota;
 mod staging;
@@ -77,7 +81,12 @@ const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
 /// Initial context grace before catalogue warm-up. Resource creation does not extend it.
+/// It also bounds how long a warm-up step is held for other requests (`WARM_QUIET_NS`).
 const WARM_GRACE_NS: u64 = 20_000_000;
+/// A warm-up step waits until no other request has been sent for this long, for at most
+/// `WARM_GRACE_NS`, so a burst of requests, each sent when the one before it is answered,
+/// is split by a step at most once a grace rather than after each request (#2103).
+const WARM_QUIET_NS: u64 = 2_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
@@ -88,6 +97,9 @@ static ISR: AtomicU64 = AtomicU64::new(0);
 /// was last written: see [`ring_doorbell`].
 static DOORBELL: AtomicU64 = AtomicU64::new(0);
 static KICK: AtomicBool = AtomicBool::new(false);
+/// The highest request number (`Device::made`) a completed doorbell write covered: the
+/// requests up to it were published before the device was notified.
+static RUNG: AtomicU64 = AtomicU64::new(0);
 /// A configuration change was signalled: the device may have set DEVICE_NEEDS_RESET.
 static CONFIG_CHANGED: AtomicBool = AtomicBool::new(false);
 /// The level interrupt is masked until normal GPU work reads its ISR byte.
@@ -108,11 +120,16 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     let (r, kick) = {
         let mut core = panic::lock(&CORE);
         let r = core.as_mut().map(f);
-        // Claim this operation's notification before another CPU can enter the core.
-        (r, KICK.swap(false, Ordering::AcqRel))
+        // Claim this operation's notification before another CPU can enter the core, with
+        // the requests made available so far, which the notification covers.
+        let kick = KICK.swap(false, Ordering::AcqRel).then(|| {
+            core.as_ref().and_then(|c| c.dev.as_ref()).map_or(0, |d| d.made())
+        });
+        (r, kick)
     };
-    if kick {
+    if let Some(made) = kick {
         ring_doorbell();
+        RUNG.fetch_max(made, Ordering::AcqRel);
     }
     crate::per_cpu::preempt_enable();
     r
@@ -268,9 +285,8 @@ struct Sub {
     requests: u32,
     /// Its result has reached callers.
     published: bool,
-    /// Kept by test point 31's fence-depth mode.
-    kept: bool,
-    /// A kept submission's result, until it is published.
+    /// A submission kept by test point 31's fence-depth mode: its result, until it is
+    /// published.
     result: Option<(u32, u32)>,
     written: Vec<u32>,
     whole: Vec<u32>,
@@ -380,6 +396,14 @@ struct Core {
     resetting: bool,
     /// The one catalogue warm-up step the device has, if any.
     warm_step: Option<WarmStep>,
+    /// When a request other than a warm-up step's was last sent to the device.
+    traffic_ns: u64,
+    /// Since when the next warm-up step has been held for that traffic.
+    warm_held: Option<u64>,
+    /// The watchdog's accounts of the requests it failed, for `kgpu` to post, and how
+    /// many found no room.
+    hung: [Option<Hung>; HUNG_KEPT],
+    hung_dropped: u32,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -487,6 +511,10 @@ impl Core {
             reset_wanted: false,
             resetting: false,
             warm_step: None,
+            traffic_ns: 0,
+            warm_held: None,
+            hung: [None; HUNG_KEPT],
+            hung_dropped: 0,
         }
     }
 
@@ -728,12 +756,16 @@ impl Core {
                 Tag::Sync(serial) => {
                     if let Some(s) = self.syncs.get_mut(&serial) {
                         s.sent_ns = Some(now);
+                        if s.warm.is_none() {
+                            self.traffic_ns = now;
+                        }
                     }
                 }
                 Tag::Submit { serial, .. } => {
                     if let Some(s) = self.subs.get_mut(&serial) {
                         s.sent_ns.get_or_insert(now);
                     }
+                    self.traffic_ns = now;
                 }
                 Tag::Background => {}
             }
@@ -779,8 +811,9 @@ impl Core {
         }
     }
 
-    /// Register synchronous request `serial`, take its holds and queue it.
-    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<(), i64> {
+    /// Register synchronous request `serial`, take its holds and queue it. A request of the
+    /// warm-up step carries the step's fence in `warm`; nobody waits for it.
+    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
         if !self.can_queue(&req) {
             return Err(EIO);
         }
@@ -796,8 +829,8 @@ impl Core {
         let upload = (req.command_type() == wire::cmd::TRANSFER_TO_HOST_3D)
             .then(|| holds.first().copied().zip(req.fence)).flatten();
         self.syncs.insert(serial, SyncReq {
-            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
-            warm: None,
+            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: warm.is_some(), failed: false,
+            why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -1028,7 +1061,7 @@ impl Core {
                 (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
                 (None, false) => (fence_status::OK, answer),
             };
-            let (ctx, kept) = (sub.ctx, sub.kept);
+            let ctx = sub.ctx;
             // Test point 31, `withhold-fence`, parameters 0 and 1: ignore this completion,
             // or every completion from now until the device is reset.
             let withheld = if submitted {
@@ -1043,8 +1076,14 @@ impl Core {
                     }
                 }
                 None => {
-                    // Fence depth keeps the answer until a fifth SUBMIT waits for room.
-                    let keep = kept && self.contexts.get(&ctx).is_some_and(|c| c.depth.is_some());
+                    // Fence depth keeps the answer until a fifth SUBMIT waits for room. Only
+                    // the depth that kept this submission holds it: an answer that comes after
+                    // that depth ended is published, even if a later depth has begun.
+                    let keep = self
+                        .contexts
+                        .get(&ctx)
+                        .and_then(|c| c.depth.as_ref())
+                        .is_some_and(|d| d.kept.contains(&serial));
                     if keep {
                         if let Some(sub) = self.subs.get_mut(&serial) {
                             sub.result = Some(result);
@@ -1233,13 +1272,14 @@ impl Core {
                 return;
             }
         }
-        let hung: Vec<u32> = self
+        let hung: Vec<(u64, u32, u64)> = self
             .subs
-            .values()
-            .filter(|s| !s.published && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
-            .map(|s| s.ctx)
+            .iter()
+            .filter(|(_, s)| !s.published && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
+            .map(|(&serial, s)| (serial, s.ctx, s.sent_ns.unwrap_or(now)))
             .collect();
-        for ctx in hung {
+        for (serial, ctx, sent) in hung {
+            self.note_hung(serial, true, ctx, sent, now);
             self.quarantine(ctx, now);
         }
         let late: Vec<u64> = self
@@ -1249,6 +1289,10 @@ impl Core {
             .map(|(&serial, _)| serial)
             .collect();
         for serial in late {
+            if let Some(s) = self.syncs.get(&serial) {
+                let (ctx, sent) = (s.ctx, s.sent_ns.unwrap_or(now));
+                self.note_hung(serial, false, ctx, sent, now);
+            }
             let Some(s) = self.syncs.get_mut(&serial) else { continue };
             s.failed = true;
             s.why = fence_status::DEVICE_HUNG;
@@ -1260,6 +1304,45 @@ impl Core {
                 notify();
             }
         }
+    }
+
+    /// Keep the watchdog's account of request `serial` (a submission when `submit`) of
+    /// device context `ctx`, sent at `sent`, for `kgpu` to post.
+    fn note_hung(&mut self, serial: u64, submit: bool, ctx: u32, sent: u64, now: u64) {
+        let Some(dev) = self.dev.as_ref() else { return };
+        let q = dev.view(|t| match *t {
+            Tag::Sync(s) => !submit && s == serial,
+            Tag::Submit { serial: s, .. } => submit && s == serial,
+            Tag::Background => false,
+        });
+        let (oldest_serial, oldest_sent) = match q.oldest_tag {
+            Some(Tag::Sync(s)) => (s, self.syncs.get(&s).and_then(|x| x.sent_ns)),
+            Some(Tag::Submit { serial: s, .. }) => (s, self.subs.get(&s).and_then(|x| x.sent_ns)),
+            _ => (0, None),
+        };
+        let h = Hung {
+            serial,
+            submit,
+            ctx,
+            age_ms: now.saturating_sub(sent) / 1_000_000,
+            quiet_ms: now.saturating_sub(self.last_progress) / 1_000_000,
+            rung: RUNG.load(Ordering::Acquire),
+            backlog: self.backlog.len() as u32,
+            warm: self.warm_step.as_ref().map(|w| (w.ctx, w.pipeline)),
+            withheld: self.stalled,
+            oldest_serial,
+            oldest_age_ms: oldest_sent.map_or(0, |at| now.saturating_sub(at) / 1_000_000),
+            q,
+        };
+        match self.hung.iter_mut().find(|x| x.is_none()) {
+            Some(slot) => *slot = Some(h),
+            None => self.hung_dropped += 1,
+        }
+    }
+
+    /// Take the watchdog's accounts and the count of those that found no room.
+    fn take_hung(&mut self) -> ([Option<Hung>; HUNG_KEPT], u32) {
+        (core::mem::replace(&mut self.hung, [None; HUNG_KEPT]), core::mem::take(&mut self.hung_dropped))
     }
 
     /// Quarantine context `id`: its pending fences fail with `DEVICE_HUNG`, its targets
@@ -1414,6 +1497,113 @@ impl Core {
 }
 
 // ---------------------------------------------------------------------------------------
+// The watchdog's attribution (#2065).
+
+/// Accounts the core keeps between two `kgpu` passes.
+const HUNG_KEPT: usize = 4;
+/// Notice lines per account.
+const HUNG_LINES: usize = 4;
+
+/// The watchdog's account of a request it failed: which request, its place in the control
+/// queue (queue 0), whether a completed doorbell write covered it, and what the device did
+/// while it waited.
+#[derive(Clone, Copy)]
+struct Hung {
+    serial: u64,
+    submit: bool,
+    ctx: u32,
+    age_ms: u64,
+    /// Since the device last returned a request.
+    quiet_ms: u64,
+    /// `RUNG` when the watchdog failed it.
+    rung: u64,
+    backlog: u32,
+    /// The catalogue warm-up step on the device: its context and pipeline.
+    warm: Option<(u32, u32)>,
+    /// Test point 31 is withholding the device's answers.
+    withheld: bool,
+    /// The serial of the oldest request the device holds, and its age.
+    oldest_serial: u64,
+    oldest_age_ms: u64,
+    q: virgl::QueueView,
+}
+
+/// The nodes the accounts are posted through; a node is reused once its line is written.
+// Summaries use a separate node from account lines. If this node is still
+// posted, kgpu retains the new counts and retries them after its next wake.
+static HUNG_LOSS_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
+static HUNG_NODES: [crate::log_notice::Node; HUNG_KEPT * HUNG_LINES] =
+    [const { crate::log_notice::Node::new() }; HUNG_KEPT * HUNG_LINES];
+
+/// One notice line, composed on the stack.
+struct NoticeText {
+    bytes: [u8; 80],
+    len: usize,
+}
+
+impl core::fmt::Write for NoticeText {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let n = s.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+        self.len += n;
+        Ok(())
+    }
+}
+
+/// Post the watchdog's accounts as log notices, from `kgpu` outside the core's lock: the
+/// UART is written later by a thread that logs, or by the idle loop, rather than by this
+/// GPU path with its interrupts masked (section 1.16). `accounts` found no room in the core; a line
+/// that finds no free node is dropped too, and both are counted.
+fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32, pending: &mut (u64, u64)) {
+    use core::fmt::Write;
+    let mut lines = 0u32;
+    let mut post = |f: &dyn Fn(&mut NoticeText) -> core::fmt::Result| {
+        let mut t = NoticeText { bytes: [0; 80], len: 0 };
+        let _ = f(&mut t);
+        let text = core::str::from_utf8(&t.bytes[..t.len]).unwrap_or("[gpu] watchdog");
+        if !HUNG_NODES.iter().any(|n| n.post_again(text)) {
+            lines += 1;
+        }
+    };
+    for h in hung.iter().flatten() {
+        let q = &h.q;
+        let what = if h.submit { "submission" } else { "sync" };
+        post(&|t| {
+            write!(t, "[gpu] watchdog: {} {} ctx {} failed after {} ms", what, h.serial, h.ctx, h.age_ms)?;
+            if q.entry != 0 { write!(t, " cmd {:#x}", q.cmd) } else { Ok(()) }
+        });
+        let notified = match q.entry {
+            0 => "returned",
+            e if h.rung >= e => "notified",
+            _ => "NOT notified",
+        };
+        post(&|t| {
+            write!(t, "[gpu]  queue 0 entry {} head {} {} rung {}", q.entry, q.head, notified, h.rung)?;
+            if let Some((c, p)) = h.warm {
+                write!(t, " warm {c}.{p}")?;
+            }
+            if h.withheld { write!(t, " withheld") } else { Ok(()) }
+        });
+        post(&|t| {
+            write!(t, "[gpu]  made {} answered {} used {}/{} quiet {} ms", q.made, q.answered, q.used, q.taken, h.quiet_ms)
+        });
+        post(&|t| {
+            write!(t, "[gpu]  out {} oldest {} cmd {:#x} serial {} age {} ms bl {}",
+                q.outstanding, q.oldest, q.oldest_cmd, h.oldest_serial, h.oldest_age_ms, h.backlog)
+        });
+    }
+    pending.0 += u64::from(accounts);
+    pending.1 += u64::from(lines);
+    if *pending != (0, 0) {
+        let mut t = NoticeText { bytes: [0; 80], len: 0 };
+        let _ = write!(t, "[gpu] watchdog: {} accounts and {} lines dropped", pending.0, pending.1);
+        if HUNG_LOSS_NODE.post_again(core::str::from_utf8(&t.bytes[..t.len]).unwrap_or("")) {
+            *pending = (0, 0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
 // Waiting.
 
 enum Stop {
@@ -1500,12 +1690,25 @@ fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32])
 /// the wait, `DEVICE_RESET` when a reset was decided with the request outstanding or the
 /// device is out after one, else 0.
 fn exec_req_why(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, (i64, u32)> {
+    send_sync(serial, req, ctx, holds, reading)?;
+    await_sync(serial)
+}
+
+/// The sending half of [`exec_req_why`]: queue synchronous request `serial` with its holds
+/// and `reading` marks. Its answer is taken with [`await_sync`], or left with
+/// `Core::abandon` by a caller that stops waiting.
+fn send_sync(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<(), (i64, u32)> {
     if !ensure_reaper() {
         return Err((ENOMEM, 0));
     }
-    with_core(|c| c.start_sync(serial, req, ctx, holds, reading))
+    with_core(|c| c.start_sync(serial, req, ctx, holds, reading, None))
         .unwrap_or(Err(ENODEV))
-        .map_err(|e| (e, if e == EIO { fence_status::DEVICE_RESET } else { 0 }))?;
+        .map_err(|e| (e, if e == EIO { fence_status::DEVICE_RESET } else { 0 }))
+}
+
+/// The waiting half of [`exec_req_why`]: the answer to sent request `serial`, or its EIO
+/// cause, or EINTR. A request that ends without its answer is abandoned.
+fn await_sync(serial: u64) -> Result<Done, (i64, u32)> {
     let outcome = wait_for(None, true, |c| {
         if let Some(d) = c.done.remove(&serial) {
             return Some(Ok(d));
@@ -1534,6 +1737,57 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
     } else {
         Err(EIO)
     }
+}
+
+/// Attach resources to device contexts, one synchronous `(context, resource)` command a
+/// pair, queued together in one batch so the device answers them back to back: a new
+/// context takes the process's resources, and a new resource the process's contexts, in
+/// one wait instead of a round trip a pair (#2103). Each pair has its own outcome, a
+/// success answer or EIO; a signal or a kill ends the wait, and the pairs not yet answered
+/// then fail with EINTR.
+fn attach_all(pairs: &[(u32, u32)]) -> Vec<Result<(), i64>> {
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    if !ensure_reaper() {
+        return alloc::vec![Err(ENOMEM); pairs.len()];
+    }
+    let Some(serials) = with_core(|c| pairs.iter().map(|_| c.serial()).collect::<Vec<u64>>()) else {
+        return alloc::vec![Err(ENODEV); pairs.len()];
+    };
+    let reqs: Vec<Request> =
+        pairs.iter().zip(&serials).map(|(&(ctx, id), &serial)| virgl::ctx_attach(Tag::Sync(serial), ctx, id)).collect();
+    // A pair that could not be queued has its outcome already.
+    let mut out: Vec<Option<Result<(), i64>>> = with_core(|c| {
+        reqs.into_iter()
+            .zip(pairs.iter().zip(&serials))
+            .map(|(req, (&(ctx, _), &serial))| c.start_sync(serial, req, ctx, &[], &[], None).err().map(Err))
+            .collect()
+    })
+    .unwrap_or_else(|| alloc::vec![Some(Err(ENODEV)); pairs.len()]);
+    let _ = wait_for(None, true, |c| {
+        for (slot, serial) in out.iter_mut().zip(&serials) {
+            if slot.is_some() {
+                continue;
+            }
+            if let Some(d) = c.done.remove(serial) {
+                *slot = Some(if virgl::ok(d.answer) { Ok(()) } else { Err(EIO) });
+            } else if c.syncs.get(serial).is_some_and(|s| s.failed) {
+                *slot = Some(Err(EIO));
+            }
+        }
+        out.iter().all(Option::is_some).then_some(())
+    });
+    if out.iter().any(|o| !matches!(o, Some(Ok(())))) {
+        // The waits that failed or were interrupted leave; the device's answers to them are
+        // dropped when they come.
+        with_core(|c| {
+            for &serial in &serials {
+                c.abandon(serial);
+            }
+        });
+    }
+    out.into_iter().map(|o| o.unwrap_or(Err(EINTR))).collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1656,15 +1910,17 @@ fn reaper() {
     let _path = GpuPath::enter();
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
     let mut next_sweep = now_ns();
+    let mut hung_losses = (0, 0);
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
         acknowledge_interrupt();
         let now = now_ns();
-        let (deadline, busy, reset) = with_core(|c| {
+        let (deadline, busy, reset, hung) = with_core(|c| {
             c.pump();
-            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted)
+            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung())
         })
-        .unwrap_or((None, false, false));
+        .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0)));
+        post_hung(&hung.0, hung.1, &mut hung_losses);
         if reset {
             reset_device(tid);
             continue;
@@ -1673,12 +1929,20 @@ fn reaper() {
             sweep();
             next_sweep = now + 1_000_000_000;
         }
-        warm_next();
+        let deadline = match (deadline, warm_next()) {
+            (Some(d), Some(w)) => Some(d.min(w)),
+            (d, w) => d.or(w),
+        };
         let wake = match (deadline, busy) {
             (Some(d), true) => Some(d.min(next_sweep)),
             (Some(d), false) => Some(d),
             (None, true) => Some(next_sweep),
             (None, false) => None,
+        };
+        let wake = if hung_losses != (0, 0) {
+            Some(wake.unwrap_or(u64::MAX).min(now + EXAMINE_NS))
+        } else {
+            wake
         };
         reaper_block(tid, seen, wake);
     }
@@ -1707,11 +1971,13 @@ fn reset_device(tid: u64) {
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
 /// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
+/// A step is held until no other request has been sent for `WARM_QUIET_NS`, for at most
+/// `WARM_GRACE_NS`; while it is held this returns when `kgpu` should look again.
 /// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
 /// context under the watchdog that nobody waits on; their answers go to `warm_returned`.
-fn warm_next() {
+fn warm_next() -> Option<u64> {
     let ready = |c: &Core| {
         c.warm_step.is_none()
             && c.dev.is_some()
@@ -1721,8 +1987,23 @@ fn warm_next() {
             && c.quarantined_at.is_none()
     };
     let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
-    if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
-        return;
+    let due = with_core(|c| {
+        if !(ready(c) && c.contexts.values().any(warming)) {
+            c.warm_held = None;
+            return Err(None);
+        }
+        let now = now_ns();
+        let held = *c.warm_held.get_or_insert(now);
+        let due = c.traffic_ns.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
+        if now < due {
+            return Err(Some(due));
+        }
+        c.warm_held = None;
+        Ok(())
+    })
+    .unwrap_or(Err(None));
+    if let Err(wake) = due {
+        return wake;
     }
     // A context whose process has exited is not warmed.
     sweep();
@@ -1736,7 +2017,7 @@ fn warm_next() {
         Some((ctx.id, pipeline, ctx.objects.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
-    let Some((id, pipeline, mut objects, internal)) = picked else { return };
+    let Some((id, pipeline, mut objects, internal)) = picked else { return None };
     let [vb, scratch, scratch_texture] = internal;
     let mut enc = encode::Enc::new();
     encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
@@ -1758,13 +2039,8 @@ fn warm_next() {
                     let serial = c.serial();
                     let fence = c.device_fence();
                     let req = virgl::submit(Tag::Sync(serial), id, Some(fence), words);
-                    if c.start_sync(serial, req, id, &internal, &[]).is_err() {
+                    if c.start_sync(serial, req, id, &internal, &[], Some(fence)).is_err() {
                         c.warm_returned(None);
-                        continue;
-                    }
-                    if let Some(sync) = c.syncs.get_mut(&serial) {
-                        sync.abandoned = true;
-                        sync.warm = Some(fence);
                     }
                 }
             }
@@ -1775,6 +2051,7 @@ fn warm_next() {
         c.settle(id);
     });
     notify();
+    None
 }
 
 /// Whether thread group `tgid` has a row, other than `except`, that has not terminated.
@@ -2222,12 +2499,8 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         ids
     })
     .unwrap_or_default();
-    let mut attached = Ok(());
-    for &rid in &theirs {
-        if attached.is_ok() {
-            attached = exec_ok(|t| Some(virgl::ctx_attach(t, id, rid)), id, &[]).map(drop);
-        }
-    }
+    let pairs: Vec<(u32, u32)> = theirs.iter().map(|&rid| (id, rid)).collect();
+    let attached = attach_all(&pairs).into_iter().find(Result::is_err).unwrap_or(Ok(()));
     with_core(|c| {
         for &rid in &theirs {
             c.unhold(rid);
@@ -2373,14 +2646,16 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         c.procs.get(&tgid).map(|p| p.contexts.values().copied().collect()).unwrap_or_default()
     })
     .unwrap_or_default();
-    for ctx in ctxs {
-        if outcome.is_ok() {
-            if let Err(e) = exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]) {
+    if outcome.is_ok() {
+        let pairs: Vec<(u32, u32)> = ctxs.iter().map(|&ctx| (ctx, id)).collect();
+        for (&ctx, attached) in ctxs.iter().zip(attach_all(&pairs)) {
+            if let Err(e) = attached {
                 // A context that ended meanwhile needs no attachment.
                 let ended = with_core(|c| !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped))
                     .unwrap_or(true);
                 if !ended {
                     outcome = Err(e);
+                    break;
                 }
             }
         }
@@ -3197,14 +3472,10 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         {
             ctx.depth = Some(Depth { left: limits::IN_FLIGHT as u32, kept: Vec::new() });
         }
-        let kept = match ctx.depth.as_mut() {
-            Some(d) if d.left > 0 => {
-                d.left -= 1;
-                d.kept.push(serial);
-                true
-            }
-            _ => false,
-        };
+        if let Some(d) = ctx.depth.as_mut().filter(|d| d.left > 0) {
+            d.left -= 1;
+            d.kept.push(serial);
+        }
         ctx.objects = objects;
         ctx.issued += 1;
         let n = ctx.issued;
@@ -3249,7 +3520,6 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             mismatch: false,
             requests: reqs.len() as u32,
             published: false,
-            kept,
             result: None,
             written: written.clone(),
             whole,
@@ -3847,17 +4117,20 @@ const STAGING_CHUNK: usize = 512;
 
 
 /// The bytes that differ between two observations of the same span.
+/// Equal words, the case of a written target, cost one comparison each; only a word that
+/// differs has its bytes counted.
 fn differing(a: &[u8], b: &[u8]) -> u32 {
     let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
     let tail = wa.remainder().iter().zip(wb.remainder()).filter(|(p, q)| p != q).count() as u32;
-    wa.zip(wb)
-        .map(|(x, y)| {
-            let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
-                ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
-            d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32
-        })
-        .sum::<u32>()
-        + tail
+    let mut count = tail;
+    for (x, y) in wa.zip(wb) {
+        let d = u64::from_le_bytes(x.try_into().unwrap_or_default())
+            ^ u64::from_le_bytes(y.try_into().unwrap_or_default());
+        if d != 0 {
+            count += d.to_le_bytes().iter().filter(|&&b| b != 0).count() as u32;
+        }
+    }
+    count
 }
 
 struct Observation {
@@ -3886,12 +4159,38 @@ fn wrong_resource(tgid: u64, id: u32, pitch: u32, x: u32, y: u32, w: u32, h: u32
     .flatten()
 }
 
+/// A transfer of [`observe`] the device has: the request, the fence it carries, its place
+/// in band-then-pass order, and test point 21's other resource when it names one.
+#[derive(Clone, Copy)]
+struct Sent {
+    serial: u64,
+    fence: u64,
+    order: usize,
+    other: Option<u32>,
+}
+
+/// A band of [`observe`]'s rectangle: its first row and row count, the pass it is on
+/// (0 the poison, 1 its complement) and that pass's transfer, unless test point 22
+/// skipped it.
+#[derive(Clone, Copy)]
+struct Band {
+    index: usize,
+    by: usize,
+    rows: usize,
+    pass: usize,
+    sent: Option<Sent>,
+}
+
 /// Read a rectangle of target `id` into `staging`, band by band: each band is transferred
 /// twice, into the poison and into its complement, and the bytes that differ between the
 /// two are counted as unwritten (section 1.8). A transfer is a synchronous request
 /// under the watchdog that holds the resource it names and the backing the device writes,
-/// until the device returns it. Returns that count and the first transfer's fence and
-/// answer. The reason of an EIO comes only from what the kernel observes.
+/// until the device returns it. Two bands are observed at once, so the CPU fills, reads and
+/// compares one band while the device transfers the other; within a band the two passes stay
+/// in order. Bands begin on row boundaries and `op_resource_create` rounds a pitch up to a
+/// multiple of 256 bytes, so two bands share no cache line. Returns the unwritten count and the fence and answer of the
+/// first transfer in band-then-pass order. The reason of an EIO comes only from what the
+/// kernel observes.
 #[allow(clippy::too_many_arguments)]
 fn observe(
     tgid: u64,
@@ -3927,125 +4226,189 @@ fn observe(
     })?;
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
-    let band_rows = (READBACK_BAND / pitch as usize)
-        .max(1)
-        .min(a.height as usize);
+    let height = a.height as usize;
+    let band_rows = (READBACK_BAND / pitch as usize).max(1).min(height);
+    let bands = height.div_ceil(band_rows);
+    let offset = |b: &Band| (a.y as usize + b.by) * pitch as usize + a.x as usize * px;
+    // Poison band `b` with its pass's pattern and send its transfer, unless test point 22
+    // skips it.
+    let start = |b: &mut Band| -> Result<(), (i64, u32)> {
+        let pattern = if b.pass == 0 { POISON } else { !POISON };
+        let at = offset(b);
+        for r in 0..b.rows {
+            backing.fill(at + r * pitch as usize, row, pattern);
+        }
+        backing.maintain(at, (b.rows - 1) * pitch as usize + row, false);
+        b.sent = None;
+        if crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some() {
+            return Ok(());
+        }
+        let ty = (a.y as usize + b.by) as u32;
+        let other = wrong_resource(tgid, id, pitch, a.x, ty, a.width, b.rows as u32, a.target);
+        let other_id = other.as_ref().map(|(rid, _)| *rid);
+        let (named, written) = other.unwrap_or((id, backing.clone()));
+        let (serial, fence) = with_core(|c| (c.serial(), c.device_fence()))
+            .ok_or((ENODEV, readback_reason::NONE))?;
+        let req = virgl::transfer_from_host(
+            Tag::Sync(serial),
+            ctx,
+            fence,
+            named,
+            written,
+            a.x,
+            ty,
+            a.width,
+            b.rows as u32,
+            at as u64,
+            pitch,
+        );
+        // The target, and the other resource when the transfer names one.
+        let both = [id, named];
+        let marks = if named == id { &both[..1] } else { &both[..] };
+        let sent = send_sync(serial, req, ctx, marks, marks);
+        if sent.is_err() {
+            release_other(other_id);
+        }
+        sent.map_err(device_reason)?;
+        b.sent = Some(Sent { serial, fence, order: 2 * b.index + b.pass, other: other_id });
+        Ok(())
+    };
+    let mut first: Option<(usize, u64, u32)> = None;
+    // Take band `b`'s transfer back from the device and check its answer.
+    let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
+        let Some(s) = b.sent.take() else { return Ok(()) };
+        let done = await_sync(s.serial);
+        release_other(s.other);
+        let mut d = done.map_err(device_reason)?;
+        // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
+        if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
+            d.echoed = d.echoed.wrapping_add(1);
+        }
+        if !virgl::ok(d.answer) {
+            return Err((EIO, readback_reason::DEVICE_ERROR));
+        }
+        if d.echoed != s.fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+            return Err((EIO, readback_reason::FENCE_MISMATCH));
+        }
+        if first.is_none_or(|(order, _, _)| s.order < order) {
+            first = Some((s.order, s.fence, d.answer));
+        }
+        Ok(())
+    };
     let mut seen = [0u8; PAGE];
     let mut chunk = [0u8; STAGING_CHUNK];
     let mut unwritten = 0u32;
-    let mut first: Option<(u64, u32)> = None;
-    let mut by = 0usize;
-    while by < a.height as usize {
-        let rows = band_rows.min(a.height as usize - by);
-        let ty = a.y as usize + by;
-        let offset = ty * pitch as usize + a.x as usize * px;
-        for (pass, pattern) in [POISON, !POISON].into_iter().enumerate() {
-            for r in 0..rows {
-                backing.fill(offset + r * pitch as usize, row, pattern);
+    // The first observation lands straight in the staging; the second is compared with it
+    // a frame at a time.
+    let mut read = |b: &Band| {
+        let at = offset(b);
+        for r in 0..b.rows {
+            let src = at + r * pitch as usize;
+            let _ = staging.try_spans((b.by + r) * row, row, |done, ptr, n| {
+                // SAFETY: the span lies inside one of the staging's frames, which only
+                // this call uses.
+                let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
+                if b.pass == 0 {
+                    observation::read(backing.as_ref(), src + done, kept);
+                } else {
+                    observation::read(backing.as_ref(), src + done, &mut seen[..n]);
+                    unwritten += differing(&seen[..n], kept);
+                }
+                Ok::<(), ()>(())
+            });
+        }
+    };
+    let mut lanes: [Option<Band>; 2] = [None, None];
+    let mut next = 0usize;
+    let outcome = (|| -> Result<(), (i64, u32)> {
+        // Start the next band, if any, in `lane`.
+        let mut open = |lane: &mut Option<Band>| -> Result<(), (i64, u32)> {
+            if next < bands {
+                let by = next * band_rows;
+                let b = lane.insert(Band { index: next, by, rows: band_rows.min(height - by), pass: 0, sent: None });
+                next += 1;
+                start(b)?;
             }
-            backing.maintain(offset, (rows - 1) * pitch as usize + row, false);
-            let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
-            if !skip {
-                let other = wrong_resource(
-                    tgid,
-                    id,
-                    pitch,
-                    a.x,
-                    ty as u32,
-                    a.width,
-                    rows as u32,
-                    a.target,
-                );
-                let (named, written) = other.clone().unwrap_or((id, backing.clone()));
-                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence()))
-                    .ok_or((ENODEV, readback_reason::NONE))?;
-                let req = virgl::transfer_from_host(
-                    Tag::Sync(serial),
-                    ctx,
-                    fence,
-                    named,
-                    written,
-                    a.x,
-                    ty as u32,
-                    a.width,
-                    rows as u32,
-                    offset as u64,
-                    pitch,
-                );
-                // The target, and the other resource when the transfer names one.
-                let both = [id, named];
-                let marks = if named == id { &both[..1] } else { &both[..] };
-                let done = exec_req_why(serial, req, ctx, marks, marks);
-                if let Some((rid, _)) = other {
-                    // The mark stays with the request if its waiter left before the answer.
-                    with_core(|c| {
-                        if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
-                            if let Some(r) = c.resources.get_mut(&rid) {
-                                r.reading = false;
-                            }
-                            c.free_if_unused(rid);
+            Ok(())
+        };
+        for lane in lanes.iter_mut() {
+            open(lane)?;
+        }
+        loop {
+            let mut active = false;
+            for lane in lanes.iter_mut() {
+                let Some(b) = lane.as_mut() else { continue };
+                active = true;
+                finish(b)?;
+                read(b);
+                if b.pass == 0 {
+                    b.pass = 1;
+                    start(b)?;
+                    continue;
+                }
+                if fmt == format::R8G8B8A8 {
+                    // Canonical bytes are BGRA (record v2's `canonical` 0).
+                    let bytes = b.rows * row;
+                    let mut done = 0;
+                    while done < bytes {
+                        let n = (bytes - done).min(STAGING_CHUNK);
+                        let at = b.by * row + done;
+                        staging.read(at, &mut chunk[..n]);
+                        for px in chunk[..n].chunks_exact_mut(4) {
+                            px.swap(0, 2);
                         }
-                    });
-                    notify();
-                }
-                let mut d = done.map_err(|(e, status)| match status {
-                    fence_status::DEVICE_HUNG => (e, readback_reason::DEVICE_HUNG),
-                    fence_status::DEVICE_RESET => (e, readback_reason::DEVICE_RESET),
-                    _ => (e, readback_reason::DEVICE_ERROR),
-                })?;
-                // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
-                if crate::test_control::take(test_point::STALE_FENCE, a.target).is_some() {
-                    d.echoed = d.echoed.wrapping_add(1);
-                }
-                if !virgl::ok(d.answer) {
-                    return Err((EIO, readback_reason::DEVICE_ERROR));
-                }
-                if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
-                    return Err((EIO, readback_reason::FENCE_MISMATCH));
-                }
-                first.get_or_insert((fence, d.answer));
-            }
-            // The first observation lands straight in the staging; the second is compared
-            // with it a frame at a time.
-            for r in 0..rows {
-                let src = offset + r * pitch as usize;
-                let _ = staging.try_spans((by + r) * row, row, |done, ptr, n| {
-                    // SAFETY: the span lies inside one of the staging's frames, which only
-                    // this call uses.
-                    let kept = unsafe { core::slice::from_raw_parts_mut(ptr, n) };
-                    if pass == 0 {
-                        observation::read(backing.as_ref(), src + done, kept);
-                    } else {
-                        observation::read(backing.as_ref(), src + done, &mut seen[..n]);
-                        unwritten += differing(&seen[..n], kept);
+                        staging.write(at, &chunk[..n]);
+                        done += n;
                     }
-                    Ok::<(), ()>(())
-                });
-            }
-        }
-        if fmt == format::R8G8B8A8 {
-            // Canonical bytes are BGRA (record v2's `canonical` 0).
-            let bytes = rows * row;
-            let mut done = 0;
-            while done < bytes {
-                let n = (bytes - done).min(STAGING_CHUNK);
-                let at = by * row + done;
-                staging.read(at, &mut chunk[..n]);
-                for px in chunk[..n].chunks_exact_mut(4) {
-                    px.swap(0, 2);
                 }
-                staging.write(at, &chunk[..n]);
-                done += n;
+                *lane = None;
+                open(lane)?;
+            }
+            if !active {
+                return Ok(());
             }
         }
-        by += rows;
+    })();
+    if let Err(e) = outcome {
+        // A transfer still with the device keeps its marks and holds until it returns.
+        for b in lanes.iter_mut().flatten() {
+            if let Some(s) = b.sent.take() {
+                with_core(|c| c.abandon(s.serial));
+                release_other(s.other);
+            }
+        }
+        return Err(e);
     }
-    let (fence, answer) = first.unwrap_or((0, 0));
+    let (_, fence, answer) = first.unwrap_or((0, 0, 0));
     Ok(Observation {
         unwritten,
         fence,
         answer,
     })
+}
+
+/// An EIO's readback reason from a synchronous request's failure status.
+fn device_reason((e, status): (i64, u32)) -> (i64, u32) {
+    match status {
+        fence_status::DEVICE_HUNG => (e, readback_reason::DEVICE_HUNG),
+        fence_status::DEVICE_RESET => (e, readback_reason::DEVICE_RESET),
+        _ => (e, readback_reason::DEVICE_ERROR),
+    }
+}
+
+/// Clear test point 21's mark on resource `rid` once no request reads it. The mark stays
+/// with a request whose waiter left before the answer.
+fn release_other(rid: Option<u32>) {
+    let Some(rid) = rid else { return };
+    with_core(|c| {
+        if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
+            if let Some(r) = c.resources.get_mut(&rid) {
+                r.reading = false;
+            }
+            c.free_if_unused(rid);
+        }
+    });
+    notify();
 }
 
 fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
@@ -4118,7 +4481,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
 pub fn display_active() -> bool {
     display::active()
 }
-pub fn take_display() -> SyscallResult {
+pub fn take_display(vt: usize) -> SyscallResult {
     let _path = GpuPath::enter();
     let tid = match crate::task::scheduler::current_thread_id() {
         Some(t) => t,
@@ -4140,13 +4503,15 @@ pub fn take_display() -> SyscallResult {
     if uid != 0 {
         return result(Err(abi::errno::EPERM));
     }
-    let outcome = display::take(group, pid);
+    let outcome = display::take(group, pid, vt);
     if outcome.is_ok() {
         crate::process::with_process_manager(|m| {
             if let Some(p) = m.get_process_mut(crate::process::ProcessId::new(pid)) {
                 p.has_display_ownership = true;
             }
         });
+        // The screen console stops drawing until the display comes back (`screen::restore`).
+        crate::console::take_display();
     }
     result(outcome.map(|()| 0))
 }

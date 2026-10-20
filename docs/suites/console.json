@@ -32,6 +32,10 @@
           "title": "The font size and grid follow the size rule for the display"
         },
         {
+          "id": "scanout-grid",
+          "title": "The scanned-out screen shows the foreground terminal's grid at the size rule's scale, and no diagnostic-only kernel line"
+        },
+        {
           "id": "cursor-drawn",
           "title": "The cursor band is drawn in the cursor cell and in no other cell"
         },

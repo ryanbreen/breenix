@@ -1271,7 +1271,7 @@ impl ProcessManager {
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: ENTRY - name='{}', elf_size={}, argc={}",
             name,
             elf_data.len(),
@@ -1279,13 +1279,13 @@ impl ProcessManager {
         );
 
         // Report the PID selected by the caller.
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Generated PID {}",
             pid.as_u64()
         );
 
         // Create a new page table for this process
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
         );
         let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -1301,14 +1301,14 @@ impl ProcessManager {
         );
 
         // Load the ELF binary into the process's page table
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Loading ELF into page table"
         );
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             page_table.as_mut(),
         )?;
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: ELF loaded, entry={:#x}",
             loaded_elf.entry_point
         );
@@ -1354,7 +1354,7 @@ impl ProcessManager {
         let user_stack_top = USER_STACK_REGION_START;
         let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: User stack will be at {:#x}-{:#x}",
             user_stack_bottom,
             user_stack_top
@@ -1409,7 +1409,7 @@ impl ProcessManager {
             return Err("Process page table not available for argv setup");
         };
 
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP={:#x}",
             initial_sp
         );
@@ -1429,7 +1429,7 @@ impl ProcessManager {
             pid.as_u64(),
             argv.len()
         );
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: SUCCESS - returning PID {}",
             pid.as_u64()
         );
@@ -1548,7 +1548,7 @@ impl ProcessManager {
             parent.children.push(child_pid);
         }
 
-        crate::serial_println!(
+        crate::diag_println!(
             "[spawn] Created child PID {} for parent PID {}",
             child_pid.as_u64(),
             parent_pid.as_u64()

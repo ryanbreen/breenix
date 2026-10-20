@@ -1,7 +1,8 @@
 # The screen console contract
 
 This is the contract of the `console` effort (`docs/efforts/path.json`): the boot logo, the text console and
-its six virtual terminals on the firmware or boot framebuffer of each target. Lanes build to it, and the
+its six virtual terminals on the firmware or boot framebuffer of each target, or, where the GPU core owns the
+display, on the kernel's scanout target the core shows (ruling F25). Lanes build to it, and the
 `console` suite (`docs/suites/console.json`) measures it. A lane that needs a decision this document does not
 make records it here in the same pull request as its code.
 
@@ -64,6 +65,12 @@ scrolling, and discard control bytes other than LF (which starts a new line). TT
 modes are preserved; an active alternate screen is left so warnings remain visible. Records written while
 another VT is in the foreground go into tty1's grid and scrollback and are not drawn over the foreground VT. While the splash is up, records go into tty1's grid, so
 Shift+PageUp after the hand-over shows the boot log.
+
+**Diagnostic records are not drawn on the screen**, on ARM64 or x86-64: census and trace lines the kernel
+writes for gates and debugging (`diag_println!`: the `[syscall] exit` trace, the `TTBR0_ASID_CENSUS`
+census, the `PT_ROOT_CUSTODY` and `TOMBSTONE_CENSUS` censuses, the process-creation and `[spawn]` traces). They are DEBUG records: serial and the kernel log
+(`/proc/kmsg`) keep them, and the INFO-and-above rule above keeps them off tty1. On x86-64 only `log`
+records reach the screen; serial lines do not.
 
 ### 1.4 Terminals in the background
 
@@ -132,7 +139,7 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 | 1280x960 | Parallels and VMware defaults | 20 | 9x22 | 142x43 | 2 |
 | 1920x1080 | x86-64 QEMU (`virtio-vga`) | 24 | 11x26 | 174x41 | 3 |
 | 1920x1200 | VMware `--retina` | 24 | 11x26 | 174x46 | 3 |
-| 2560x1600 | Parallels `--retina` | 32 | 14x34 | 182x47 | 4 |
+| 2560x1600 | Parallels `--retina`; any boot whose display the GPU core owns (its kernel mode) | 32 | 14x34 | 182x47 | 4 |
 
 The console enables the font crate's `size_20`, `size_24`, `size_32`, `bold`, `unicode-latin-1-supplement`
 and `unicode-latin-extended-a` features (V1).
@@ -216,9 +223,11 @@ On a pseudo-terminal or any other device they fail with ENOTTY. "The descriptor'
 
 ### 4.2 Display ownership
 
-The **display owner** is the process holding the screen through `sys_take_over_display`, or, on `--gpu-gl`
-boots once the GPU effort's console draws the VTs, the top of the GPU display ownership stack
-(`kernel/src/gpu/display.rs`).
+The **display owner** is the process holding the screen through `sys_take_over_display`. On boots whose
+display the GPU core owns (Parallels with the core, ARM64 QEMU with `--gpu-gl`) the take-over makes the
+VT bookkeeping below and then pushes the caller on the GPU display ownership stack
+(`kernel/src/gpu/display.rs`), whose top is the owner; giving the display back pops it, and an empty stack
+shows the kernel's screen, which the console redraws.
 
 - Taking the display puts the owner's VT into `KD_GRAPHICS` with the owner as its graphics owner. The owner's
   VT is its controlling terminal when that is a VT, else tty1. Taking the display is refused with EBUSY while
@@ -234,7 +243,11 @@ boots once the GPU effort's console draws the VTs, the top of the GPU display ow
   restoration of the owner's mode and target (Q8); V4 implements it for the framebuffer path. There, an
   owner's `fb_mmap` mapping is a pane the kernel copies at each flush, not the scanout, so the suspension
   is of the framebuffer draw and flush requests (`fbdraw`): they return success without drawing, and a
-  switch away waits for any of them already under way before the new VT is drawn.
+  switch away waits for any of them already under way before the new VT is drawn. Where the GPU core owns
+  the display, a framebuffer owner's flush copies its pane into a private scanout target retained for that owner
+  and presents it as the owner's frame; while the owner's VT is released the console presents the
+  foreground VT through the kernel's own target;
+  suspending an owner's own GPU `PRESENT` is the GPU effort's (Q8).
 - A panic or fatal fault takes the screen regardless of VT state.
 
 ### 4.3 KD mode
@@ -588,7 +601,9 @@ the oracle covers antialiased edges and the wordmark as well as interiors.
 The splash is tty1 in `KD_GRAPHICS` owned by the kernel. It is drawn as soon as the target has a framebuffer:
 at `fbcon::init_early` on x86-64 (written straight to the framebuffer until the render thread owns it), when
 `arm64_fb` initializes the GOP path on Parallels and VMware, and when `virtio-gpu-device` is up on ARM64
-QEMU. Stages are recorded lock-free from the first instruction, so stages reached before the screen exists
+QEMU. Where the GPU core owns the display, the console's render thread draws it on the kernel's scanout
+target when it first runs (presents wait on the device, which the boot thread may not); on Parallels the GOP
+shows the early splash until then. Stages are recorded lock-free from the first instruction, so stages reached before the screen exists
 show as reached when it is first drawn.
 
 **It gives way to tty1's text on the first of these triggers**, once; later triggers have no effect:
@@ -646,7 +661,11 @@ the backstop does not pass.
   boots, the guest backing of the resource bound to the scanout, after a completed transfer and flush of each
   row checked; the check names that resource as the device reported it at the last `SET_SCANOUT` and the flush
   it read after, and fails when the backing read is not the bound resource's or the flush had not completed.
-  Marker lines on those boots say `backing after flush`.
+  Marker lines on those boots say `backing after flush`. Where the GPU core owns the display, the guest
+  backing of the kernel's scanout target (`kernel/src/gpu/screen.rs`), after the core presented the whole
+  screen and required that target to be the completed binding of scanout 0, filled with a poison and then
+  transferred back from the device: what is read is what the device scans out. Marker lines say
+  `backing after flush <n> of resource <id> bound to scanout 0, transferred back from the device`.
 - **A switch logs** `[console] foreground ttyN (<source>)` (`key alt-f2`, `key ctrl-alt-f2`, `ioctl`, or
   `chvt`, which is a `VT_ACTIVATE` from a process whose command is `chvt`) once its acquisition completes,
   then the check's verdict: `[console] ttyN shown: read back identical; digest <first 16 hex digits of
@@ -661,6 +680,9 @@ the backstop does not pass.
 
   ```text
   console foreground: tty3
+  console display: <width>x<height> <what draws it>, font <S> (<w>x<h> pixel cells), grid <columns>x<rows>
+  console logo scale: <k>
+  console scanout: <what was read>
   console check: shadow and screen identical
   console oracle: cells=<n> mismatches=0
   console row: <text>
@@ -781,11 +803,18 @@ framebuffer updates and accepted key events after enabling the built-in VNC
 server, but no observed guest key effect. The guest reported
 `XHCI command IRQ unavailable`. This is transport evidence only, predates the
 final HOSTKEY format, and is not a successful VMware keyboard self-test.
-V7 must repair the guest keyboard and rerun the host-key self-test during the
-catch-up before VMware key coverage can pass. Without the opt-in VNC port,
-the launcher declares no path and cases fail `no host key path`.
-The VNC server is unauthenticated; its exposure must be resolved before using
-it outside an isolated test environment.
+For current console suite boots, `run.sh` enables Fusion's VNC server on a free
+port bound to `127.0.0.1` with `RemoteDisplay.vnc.ip`, declares the VNC key path
+in the guest boot target and starts the serial key watcher. This also applies
+when console appears in a multi-suite list. `BREENIX_VMWARE_VNC_PORT` overrides
+the selected port and can enable VNC for other boot modes. The server is
+unauthenticated and remains bound to loopback, so console suite boots assume
+a trusted local host: any local process can send guest input through that server.
+It stops with the owned VM, and cleanup reaps the watcher's recorded PID.
+Relative pointer motion remains a VMware host limitation: with the absolute
+tablet disabled, Fusion's VNC path supplies the USB mouse's buttons and wheel,
+but supplies no motion (the launcher records this limitation beside its
+`BREENIX_VMWARE_POINTER=relative` configuration).
 
 ---
 

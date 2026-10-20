@@ -923,7 +923,7 @@ pub fn snapshot() -> [u64; COUNTER_COUNT] {
 /// cold procfs path repeats this line as the hardware run progresses. Both
 /// architecture boot paths also emit it once before launching userspace.
 pub fn emit_root_custody_summary() {
-    crate::serial_println!(
+    crate::diag_println!(
         "[PT_ROOT_CUSTODY:no_proof={}:no_arch={}:terminated={}:undecided={}:mid_retire={}:retired={}]",
         PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
         PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
@@ -944,7 +944,7 @@ pub fn emit_root_custody_summary() {
 /// reaped and back to zero once the drain has retired them. A `resident` that
 /// never returns to zero is a visible leak with a counter naming it.
 pub fn emit_tombstone_census() {
-    crate::serial_println!(
+    crate::diag_println!(
         "[TOMBSTONE_CENSUS:resident={}:removed={}:reap_second={}:retire_second={}:abandoned_unqueued={}]",
         TOMBSTONE_RESIDENT.aggregate(),
         TOMBSTONE_REMOVED.aggregate(),

@@ -6,7 +6,9 @@
 # what the operator's other work runs at, and the guest's timers fire late when the host does not
 # run those threads. On a Mac this caches the launcher, thread library and unclamping helper
 # (again whenever any of their three source files changes). Elsewhere, with
-# BREENIX_QEMU_UI=0 (an explicit policy bypass for diagnostics), the launcher is `env`.
+# BREENIX_QEMU_UI=0 (an explicit policy bypass for diagnostics), this script runs `env`
+# after clearing DYLD_INSERT_LIBRARIES. The printed fallback names this script so
+# callers that request a launcher path also pass through that cleanup.
 # Launcher build failures stop the boot rather than inheriting an unknown policy.
 #
 #     qemu-ui-launch.sh qemu-system-aarch64 ...   prepares the launcher and execs it with the command
@@ -60,7 +62,14 @@ if [ "$(uname -s)" = Darwin ] && [ "${BREENIX_QEMU_UI:-1}" != 0 ]; then
     fi
 fi
 if [ "$#" -eq 0 ]; then
-    echo "$LAUNCHER"
+    if [ "$LAUNCHER" = env ]; then
+        echo "$HERE/qemu-ui-launch.sh"
+    else
+        echo "$LAUNCHER"
+    fi
     exit 0
+fi
+if [ "$LAUNCHER" = env ]; then
+    unset DYLD_INSERT_LIBRARIES
 fi
 exec "$LAUNCHER" "$@"
