@@ -22,7 +22,10 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<(usize, usize)> {
     (0..1280 * 800).find(|&i| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4]).map(|i| (i % 1280, i / 1280))
 }
 
+// gpu-display: B7 replaces the child's retired framebuffer paint with GPU PRESENT; exact restoration stays.
 fn panel_handoff() -> CaseResult {
+    let (ret,modes)=libbreenix::gpu::modes();
+    ensure(ret==0 && modes.binding_known==1,"23","gpu-display: panel handoff has no known GPU binding")?;
     interface()?;
     let (before, _) = screen()?;
     let f = || {
