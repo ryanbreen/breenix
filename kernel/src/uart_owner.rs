@@ -293,17 +293,39 @@ fn wait_ready<P: Port>() {
 /// normally the only writer, but a CPU whose ticket was skipped may still be
 /// inside them, so they have their own exclusion. A byte that finds another
 /// writer there (or a fault taken inside them on this CPU) goes to the UART only.
-fn capture<P: Port>(byte: u8, tag: u32) {
+fn capturing<P: Port>(tag: u32, write: impl FnOnce()) -> bool {
     let state = P::state();
     if state
         .capturing
         .compare_exchange(0, tag, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return;
+        return false;
     }
-    P::capture(byte);
+    write();
     state.capturing.store(0, Ordering::Release);
+    true
+}
+
+fn capture<P: Port>(byte: u8, tag: u32) {
+    capturing::<P>(tag, || P::capture(byte));
+}
+
+/// Capture a record without writing the UART. Own the UART to keep ordinary
+/// loggers out, and share their capture exclusion even if this ticket is
+/// skipped or a fault reenters. A busy capture is dropped rather than waited on.
+pub fn capture_only<P: Port>(args: core::fmt::Arguments) -> bool {
+    struct Capture<P>(PhantomData<P>);
+    impl<P: Port> core::fmt::Write for Capture<P> {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            text.bytes().for_each(P::capture);
+            Ok(())
+        }
+    }
+    let ownership = Ownership::<P>::acquire();
+    capturing::<P>(ownership.tag, || {
+        let _ = core::fmt::Write::write_fmt(&mut Capture::<P>(PhantomData), args);
+    })
 }
 
 /// Write `byte` if this CPU still owns the UART. False, having written

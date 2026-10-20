@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 mod acpi_discovery;
+mod entropy;
 mod gop_discovery;
 pub mod hw_config;
 mod kernel_entry;
@@ -267,6 +268,22 @@ fn main() -> Status {
         Err(e) => {
             log::warn!("UEFI GetTime failed: {:?}", e);
         }
+    }
+
+    // Seed the kernel's random pool from the firmware while boot services last.
+    {
+        use core::fmt::Write;
+        let source = entropy::collect(config);
+        let mut u = LoaderSerial(config.uart_base_phys, config.uart_type);
+        let _ = writeln!(
+            u,
+            "[entropy] boot seed: {}",
+            match source {
+                arm64_boot_contract::BOOT_SEED_EFI_RNG => "efi-rng",
+                arm64_boot_contract::BOOT_SEED_TPM => "tpm",
+                _ => "none",
+            }
+        );
     }
 
     // --- Platform-specific page table configuration ---

@@ -28,6 +28,7 @@ static MARKERS: [&str; 2] = [UDP, STAGE];
 
 static STATE: State = State::new();
 static WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static CAPTURED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static OPEN: AtomicU8 = AtomicU8::new(0);
 static NEXT_CPU: AtomicU32 = AtomicU32::new(1);
 /// Bytes the second CPU of a race has written.
@@ -131,7 +132,9 @@ impl Port for Test {
         }
     }
 
-    fn capture(_: u8) {}
+    fn capture(byte: u8) {
+        CAPTURED.lock().unwrap().push(byte);
+    }
 
     fn lead(writer: u8, unit: &[u8]) -> &'static [u8] {
         let open = OPEN.load(Ordering::Relaxed);
@@ -299,4 +302,43 @@ fn a_breadcrumb_does_not_wait_for_another_cpus_record() {
     release_tx.send(()).unwrap();
     holder.join().unwrap();
     assert!(Ownership::<Test>::try_acquire().is_some());
+}
+
+#[test]
+fn a_capture_only_record_excludes_a_logger_even_after_its_ticket_is_skipped() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    WIRE.lock().unwrap().clear();
+    CAPTURED.lock().unwrap().clear();
+    OPEN.store(0, Ordering::Relaxed);
+    struct Record;
+    impl std::fmt::Display for Record {
+        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            out.write_str("census ")?;
+            // Reentry must not wait on its own capture or append nested bytes.
+            assert!(!uart_owner::capture_only::<Test>(format_args!("nested")));
+            // The logger skips this stalled ticket while formatting is paused.
+            // It reaches the UART while capture excludes its bytes.
+            thread::spawn(|| {
+                uart_owner::write::<Test, true>(
+                    1,
+                    b"logger\n",
+                    Kind::Plain,
+                    &mut Ownership::acquire(),
+                );
+            })
+            .join()
+            .unwrap();
+            out.write_str("done\n")
+        }
+    }
+    assert!(uart_owner::capture_only::<Test>(format_args!("{Record}")));
+    assert_eq!(&*WIRE.lock().unwrap(), b"logger\n");
+    assert_eq!(&*CAPTURED.lock().unwrap(), b"census done\n");
+    uart_owner::write::<Test, true>(
+        1,
+        b"after\n",
+        Kind::Plain,
+        &mut Ownership::acquire(),
+    );
+    assert_eq!(&*CAPTURED.lock().unwrap(), b"census done\nafter\n");
 }
