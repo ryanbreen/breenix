@@ -1063,7 +1063,17 @@ fn isolation_test_hooks_absent() -> CaseResult {
     ensure(live.is_empty(), "17.6", format!("the wait-stress ops do not return ENOSYS in this production kernel: fb_draw {}; the contract requires ENOSYS from each", live.join(", ")))
 }
 
+// gpu-apps: §2.2 retires framebuffer syscalls and pixel mappings with their last consumers.
 fn isolation_retired_ops() -> CaseResult {
+    for number in [SYS_FB_INFO,SYS_FB_DRAW,SYS_FB_MMAP] {
+        let mut storage=[0u64;16];
+        let ret=unsafe{raw::syscall1(number,storage.as_mut_ptr() as u64) as i64};
+        want_errno(ret,38,"17.6",&format!("gpu-apps: retired syscall {number}"))?;
+    }
+    let mut buffers=abi::MapBuffers::ZERO;
+    let mut texture=abi::MapTree::ZERO;
+    want_errno(call(op::MAP_COMMITTED,&mut buffers),38,"17.6","gpu-apps: MAP_COMMITTED")?;
+    want_errno(call(op::MAP_COMPOSITOR_TEXTURE,&mut texture),38,"17.6","gpu-apps: MAP_COMPOSITOR_TEXTURE")?;
     // The demo ops 0 to 5, 7 and 9 and the version 1 window ops 10 to 26 and 31. Arguments
     // that would do nothing were an op live: empty rectangles, a zero radius, a one-pixel line,
     // null descriptors and pointers, window id 0 and a zero timeout; op 0 clears with black.
