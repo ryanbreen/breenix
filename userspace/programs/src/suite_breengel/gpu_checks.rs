@@ -133,6 +133,11 @@ fn accounting_refusal(before:&ga::Counters,after:&ga::Counters,image:u64,fixture
     else {None}
 }
 
+pub(crate) fn enforce_accounting(before:&ga::Counters,after:&ga::Counters,fixture:u64,instances:u64)->CaseResult{
+    ensure(accounting_refusal(before,after,0,fixture,instances).is_none(),"7",
+        format!("gpu-raster: runtime accounting refused {:?}",accounting_refusal(before,after,0,fixture,instances)))
+}
+
 // gpu-raster: §2.4 each runtime planting must be refused by the same accounting guard.
 pub(crate) fn cpu_render_planted()->CaseResult {
     let mut f=Fixture::new(8,4).cite("7")?;

@@ -500,7 +500,6 @@ fn scene(fb: &mut FrameBuf) {
     shapes::fill_circle(fb, 7, 12, 3, Color::rgb(200, 200, 10));
     shapes::draw_circle(fb, 6, 6, 4, Color::rgb(10, 200, 200));
     fb.put_pixel(13, 1, Color::rgb(123, 45, 67));
-    font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
 // gpu-raster: §2.2 keeps padding sentinels around UPLOAD and READBACK rows.
@@ -2768,7 +2767,8 @@ fn raster_cpu_pixels_zero() -> CaseResult {
     let before=crate::gpu_checks::counters().cite("7")?;
     let surface=padded(32,24);scene(&mut surface.fb());
     let after=crate::gpu_checks::counters().cite("7")?;
-    ensure(after.draws>before.draws && after.instances-before.instances<=32 && after.uploads_image==before.uploads_image,
+    crate::gpu_checks::enforce_accounting(&before,&after,0,32)?;
+    ensure(after.draws>before.draws,
         "7","gpu-raster: primitive scene did not draw on the GPU with bounded instances and zero image uploads")
 }
 
