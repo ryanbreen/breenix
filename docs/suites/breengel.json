@@ -222,7 +222,7 @@
         },
         {
           "id": "ttf-glyph",
-          "title": "DejaVu Sans Mono \\"
+          "title": "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference"
         },
         {
           "id": "ttf-sizes",
@@ -234,7 +234,7 @@
         },
         {
           "id": "ttf-kerning",
-          "title": "\\"
+          "title": "\"AV\" in DejaVu Sans is narrower than \"A\" plus \"V\" by the kern table's literal value"
         },
         {
           "id": "ttf-width",
@@ -258,7 +258,7 @@
         },
         {
           "id": "utf8-text",
-          "title": "UTF-8 input draws \\"
+          "title": "UTF-8 input draws \"é\" from the font's glyph for U+00E9"
         },
         {
           "id": "utf8-invalid",
