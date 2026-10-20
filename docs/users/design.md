@@ -11,12 +11,13 @@ The program this belongs to is [the server plan](../metal/server-plan.md).
   su and a sudo-style admin path, the FHS layout with owners and modes, and the operator's own account on the
   console and over SSH.
 - **D4:** LAN only, keys only, an operator account for daily use, and root over SSH off once that account exists.
-- **S7:** the operator's account is `wrb` (uid 1000, group `wrb`, home `/home/wrb`, login shell `sh`).
+- **S7:** the private site file supplies the operator's account name, group and home (uid 1000, login shell `sh`).
+  Examples below use `operator` as a placeholder, not a fixed account name.
 - **S8** (7:45 PM): machine state that must survive upgrades (SSH host keys, accounts, shadow entries, admin policy)
   lives in `/.breenix-shared` on the system partition, outside the generation trees, and is reconciled into `/etc`
   at boot (section 4); generations keep shipping `/etc` defaults.
 - **S9:** root gets its own password from a private site field (`ROOT_PASSWORD_HASH`, a hash kept out of the repository) for
-  su and the console; root cannot log in over SSH. A broken `wrb` account is recovered by a test-root boot, with no
+  su and the console; root cannot log in over SSH. A broken `operator` account is recovered by a test-root boot, with no
   back door in the persistent install.
 - **D6** (8:00 PM): the effort covers each target. x86-64 on the R240 leads, and the catch-up brings ARM64 QEMU,
   Parallels and VMware to the same bar, each VM with its own persistent install (S10).
@@ -38,7 +39,7 @@ shadow(5) format descriptions. No other system's source is read.
 | Other objects | SysV IPC, message queues, `/dev/shm`, FIFOs, ptys and AF_UNIX socket files check modes; device mknod is root-only. `/proc/kmsg` is root-only and `<pid>/exe` is checked (`procfs/mod.rs:1827`). ext2 stores 32-bit owners (`ext2/inode.rs:200`). |
 | Suites | processes: 26 credential and set-ID cases; directories: 18 permission cases; signals: `kill-eperm`. |
 | Login | login verifies sha512-crypt from `/etc/shadow` (staged 0600 by `scripts/metal/metal_root.py:182`), drops to the account and execs its shell. |
-| SSH (ssh-doors, in progress) | `auth.rs` is publickey-only through an `Authorizer` trait, with Ed25519. The lane covers host keys in `/etc/ssh`, per-account `authorized_keys`, the bsshd privilege drop, the `wrb` account and the end of telnetd. |
+| SSH (ssh-doors, in progress) | `auth.rs` is publickey-only through an `Authorizer` trait, with Ed25519. The lane covers host keys in `/etc/ssh`, per-account `authorized_keys`, the bsshd privilege drop, the `operator` account and the end of telnetd. |
 
 **Kernel gaps:**
 - **K1:** `Credentials::current` starts at euid 0 (`permissions.rs:16`), so a user thread whose process lookup
@@ -245,7 +246,7 @@ stated in its PR, and finish the layout milestone before any upgrade that relies
 
 ## 5. The operator account
 
-`wrb:x:1000:1000:Ryan Breen:/home/wrb:/bin/sh` (BusyBox ash), group `wrb` 1000, a member of `wheel` (S7).
+Example only: `operator:x:1000:1000:Operator:/home/operator:/bin/sh` (BusyBox ash), group `operator` 1000, a member of `wheel` (S7). Actual account values come from the private site file.
 
 **Staging.**
 - `install-persistent` writes the account into `/.breenix-shared/etc` from site fields: `OPERATOR_USER`,
@@ -253,18 +254,18 @@ stated in its PR, and finish the layout milestone before any upgrade that relies
   and the public-key field that ssh-doors adds.
 - `ROOT_PASSWORD_HASH` gives root a password for su.
 - The home partition is not mounted during the install, so the installer leaves a root-only
-  `/.breenix-shared/var/lib/accounts/pending/wrb`. The first persistent boot's reconcile creates `/home/wrb` (0700)
+  `/.breenix-shared/var/lib/accounts/pending/operator`. The first persistent boot's reconcile creates `/home/operator` (0700)
   and `~/.ssh/authorized_keys` (0600) from it, then deletes it.
 
 **Logging in.**
-- **Console:** getty and login as `wrb` with its password; root is refused.
-- **SSH:** port 22, keys only, as `wrb`. Root's staged `authorized_keys` from ssh-doors is removed after the first
-  successful wrb login over SSH (D4).
-- **Root:** reached through `sudo` (wrb's password) or `su -` (root's password, wheel only).
+- **Console:** getty and login as `operator` with its password; root is refused.
+- **SSH:** port 22, keys only, as `operator`. Root's staged `authorized_keys` from ssh-doors is removed after the first
+  successful operator login over SSH (D4).
+- **Root:** reached through `sudo` (operator's password) or `su -` (root's password, wheel only).
 - **Recovery:** a test-root boot through metal-run runs as root on the RAM disk and can repair
   `/.breenix-shared`.
 
-The metal-console `console-login` challenge moves from root to `wrb`. The ARM64 desktop still runs as root; a
+The metal-console `console-login` challenge moves from root to `operator`. The ARM64 desktop still runs as root; a
 graphical login is later main-path work.
 
 ## 6. The `users` suite
@@ -309,7 +310,7 @@ arrive with the lane that implements it.
 | 3 | `accounts`: the library, the write protocol, the tools | suite `users`: `accounts` | A suite boot. Then `useradd` in a persistent session, an upgrade, and the account still present. |
 | 4 | `login`: `become`, any-account login, bsshd on the library, tty owners, `ROOT_LOGIN` | suite `users`: `login`, `ssh` | Console login as a fixture user on the test root. |
 | 5 | `admin`: su, sudo, policy, auth.log | suite `users`: `su`, `sudo` | A suite boot, with the auth.log lines in the serial capture. |
-| 6 | `operator-login`: wrb from the site, root login off | suite `users`: `operator` (host-driven, from the boot host's OpenSSH and the console challenge) | `install-persistent`, then OpenSSH from the boot host with strict host-key checking. `id` shows `uid=1000(wrb) gid=1000(wrb) groups=1000(wrb),10(wheel)`; `sudo -n true` is refused; `sudo id` with the password shows uid 0; SSH as root is refused; the console challenge passes as wrb. |
+| 6 | `operator-login`: operator from the site, root login off | suite `users`: `operator` (host-driven, from the boot host's OpenSSH and the console challenge) | `install-persistent`, then OpenSSH from the boot host with strict host-key checking. `id` shows `uid=1000(operator) gid=1000(operator) groups=1000(operator),10(wheel)`; `sudo -n true` is refused; `sudo id` with the password shows uid 0; SSH as root is refused; the console challenge passes as operator. |
 
 Milestone 6 is measured by a suite category because main-path efforts resolve `bootPath` measures against
 `docs/boot-path.json`, the ARM testing-kernel gate, which has no persistent modes; the persistent boot stages stay
@@ -323,7 +324,7 @@ in `docs/metal/boot-path.json` for the metal stream.
     installer rather than bsshd.
   - Milestone 2 precedes `services` and `logs`, which need shared `/var` and `/run`.
   - Milestone 6 precedes `resting-state` and the 24-hour session (D4: daily non-root login, root SSH off).
-- **toolchain:** `deliver` uploads into `/home/wrb` as wrb, after milestone 4. `sdk-on-box` installs into
+- **toolchain:** `deliver` uploads into `/home/operator` as operator, after milestone 4. `sdk-on-box` installs into
   `/usr/include` and `/usr/lib`, after milestone 2.
 - **filesystem:**
   - `fs-interface` follows milestone 1's K12, so the trait carries `InodeAttrs`.

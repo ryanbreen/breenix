@@ -46,13 +46,13 @@ Coordinator rulings:
 - **S5:** Rust on the box is deferred until our C toolchain rebuilds itself.
 - **S6:** the kernel may drive the BMC's IPMI watchdog over KCS (IPMI 2.0). It does not reset or write BCM5720 APE
   state, and Vigil still does not talk to the management controller.
-- **S7:** the operator's account is `wrb` (uid 1000, group `wrb`, home `/home/wrb`, login shell `sh`), matching the
-  operator's other machines.
+- **S7:** the private site file supplies the operator's account name, group and home; the account uses uid 1000
+  and login shell `sh`. Examples below use `operator` as a placeholder, not a fixed account name.
 - **S8 (7:45 PM):** machine state that must survive upgrades (SSH host keys, accounts, shadow entries, admin policy)
   lives in `/.breenix-shared` on the system partition, outside the generation trees, and is reconciled into `/etc`
   at boot; generations keep shipping `/etc` defaults.
 - **S9:** root gets its own password from a private site field (`ROOT_PASSWORD_HASH`, a hash kept out of the repository) for
-  su and the console; root cannot log in over SSH (D4). A broken `wrb` account is recovered by a test-root boot (the
+  su and the console; root cannot log in over SSH (D4). A broken `operator` account is recovered by a test-root boot (the
   boot manager's test path), with no back door in the persistent install.
 - **S10:** a persistent VM install mirrors the R240's: a persistent disk image per VM (system and home partitions,
   the generation and shared-state layout, upgrade and rollback), booted by each launcher in a persistent mode that
@@ -167,7 +167,7 @@ brings `watchdog` to it.
 3. In parallel, needing little R240 time: the filesystem effort's `fs-interface` (after the users effort's
    neutral-attribute check, so the interface carries `InodeAttrs`), `buffer-cache` and the host-harness milestones
    `format` through `snapshots`; and the toolchain effort's `deliver` (after the users effort's `login`, uploading
-   into `/home/wrb` as `wrb`) through `cc-hello`, which are userland work on ext2.
+   into `/home/operator` as `operator`) through `cc-hello`, which are userland work on ext2.
 4. The rest of the server milestones; `operator-login` before `resting-state`.
 5. Last: the filesystem effort's `power-cut` and `persistent-root`, which need reboot, the watchdog, automatic
    rollback and the accounts in place.

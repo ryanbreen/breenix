@@ -406,7 +406,7 @@ and home, which are copied off the machine first.
    writable. `/sbin/persistent-migrate`:
    - copies the current generation (`/bin /sbin /usr /etc /opt`) into root `gen-<id>`;
    - copies `/root` and `/var` into roots that every generation mounts (D5); <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
-   - copies `/home`, including `/home/wrb` (S7);
+   - copies `/home`, including `/home/operator` (S7);
    - preserves bytes, owners, modes, times, symlinks, hard links, devices and FIFOs; all-zero 4 KiB runs become
      holes; <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
    - writes a manifest per side (hex path, type, mode, uid, gid, link group, size, mtime, SHA-256), and prints
