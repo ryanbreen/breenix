@@ -74,7 +74,9 @@ class X86QemuPolicyTests(unittest.TestCase):
                                 env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(result.stdout, '')
-        self.assertEqual(result.stderr, 'error: ' + REFUSAL + '\n')
+        self.assertEqual(result.stderr, 'error: x86 QEMU execution is retired in breenix-runs under S23; '
+                         'use the x86-metal boot loop (scripts/metal/metal-run). '
+                         'BREENIX_ALLOW_X86_QEMU=1 permits only --dry-run planning.\n')
         print('REFUSED breenix-runs run x86: ' + result.stderr.strip(), flush=True)
 
     def test_shell_requires_exact_override(self):
