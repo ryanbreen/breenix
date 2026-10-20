@@ -27,7 +27,7 @@ fn same_guard_check_prepare_and_common_enqueue_wake() {
     let push = storage.split("fnpush_byte(&mutself").nth(1).unwrap()
         .split("fnread_bytes").next().unwrap();
     assert!(push.contains("self.len+=1;"));
-    for producer in ["pubfnpush_byte(byte", "pubfnpush_byte_from_irq(byte"] {
+    for producer in ["pubfnpush_byte(byte", "pubfnpush_byte_from_irq(byte", "pub(crate)fnadmit(num"] {
         let body = s.split(producer).nth(1).unwrap().split("pubfn").next().unwrap();
         let publish = body.find("buffer.push_byte(byte)").unwrap();
         let wake = body.find("INPUT_READERS.wake_up_deferred();").unwrap();

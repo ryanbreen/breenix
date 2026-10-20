@@ -57,6 +57,11 @@ impl StdinBuffer {
         self.len + self.eof_len >= STDIN_BUF_SIZE - 1
     }
 
+    /// How many more bytes or EOF records the buffer takes.
+    pub(super) fn room(&self) -> usize {
+        (STDIN_BUF_SIZE - 1).saturating_sub(self.len + self.eof_len)
+    }
+
     /// Read bytes from the buffer into the provided slice
     /// Returns the number of bytes actually read
     pub(super) fn read_bytes(&mut self, buf: &mut [u8]) -> usize {
