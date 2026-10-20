@@ -120,3 +120,31 @@ pub(crate) fn copy_row_clip()->CaseResult {
         ensure(actual[(y*8+x)*4..(y*8+x+1)*4]==want,"5.9",format!("gpu-raster: clipped uploaded row wrapped or missed pixel {x},{y}"))?;
     }}Ok(())
 }
+
+/// The runtime guard used for declared uploads and per-primitive instance budgets.
+fn accounting_refusal(before:&ga::Counters,after:&ga::Counters,image:u64,fixture:u64,instances:u64)->Option<&'static str>{
+    if after.uploads_image-before.uploads_image!=image {Some("cpu-image")}
+    else if after.uploads_fixture-before.uploads_fixture!=fixture {Some("passing-oracle")}
+    else if after.instances-before.instances>instances {Some("cpu-instances")}
+    else {None}
+}
+
+// gpu-raster: §2.4 each runtime planting must be refused by the same accounting guard.
+pub(crate) fn cpu_render_planted()->CaseResult {
+    let mut f=Fixture::new(8,4).cite("7")?;
+    let mut rendered=vec![0;128];for pixel in rendered.chunks_exact_mut(4){pixel.copy_from_slice(&[17,34,51,255]);}
+    for (purpose,reason) in [(ga::purpose::IMAGE,"cpu-image"),(ga::purpose::FIXTURE,"passing-oracle")] {
+        let before=counters().cite("7")?;
+        let (ret,_)=gpu::upload(f.context.handle(),f.texture,[0,0,8,4],&rendered,32,ga::upload_source::B8G8R8A8,purpose);
+        ensure(ret==0,"7","gpu-raster: planted upload did not execute; no negative control was exercised")?;
+        let after=counters().cite("7")?;
+        ensure(accounting_refusal(&before,&after,0,0,1)==Some(reason),"7",format!("gpu-raster: CPU upload was not refused as {reason}"))?;
+    }
+    let before=counters().cite("7")?;
+    f.context.begin(f.target,8,4);
+    let per_pixel:Vec<_>=(0..4).flat_map(|y|(0..8).map(move|x|[x,y,x+1,y+1])).collect();
+    f.context.solid(0xff112233,&per_pixel);
+    f.context.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|e|format!("planted draw {}",outcome(e))).cite("7")?;
+    let after=counters().cite("7")?;
+    ensure(accounting_refusal(&before,&after,0,0,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")
+}

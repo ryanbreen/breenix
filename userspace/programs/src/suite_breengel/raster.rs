@@ -48,6 +48,7 @@ pub(crate) const RASTER: &[Case] = &[
     pictured!("damage-sound", "Over a seeded random scene, every changed pixel lies inside the accumulated damage", raster_damage_sound),
     pictured!("surface-owned", "An owned surface allocates, clears to a colour and frees its memory when dropped", raster_surface_owned),
     pictured!("cpu-pixels-zero", "Raster primitives execute GPU draws without CPU pixel uploads", raster_cpu_pixels_zero),
+    pictured!("cpu-render-planted", "Planted CPU-rendered uploads and per-pixel draws are refused with their reasons", raster_cpu_render_planted),
 ];
 
 pub(crate) const TEXT: &[Case] = &[
@@ -2748,3 +2749,6 @@ fn raster_cpu_pixels_zero() -> CaseResult {
     ensure(after.draws>before.draws && after.instances-before.instances<=32 && after.uploads_image==before.uploads_image,
         "7","gpu-raster: primitive scene did not draw on the GPU with bounded instances and zero image uploads")
 }
+
+// gpu-raster: §2.4 runtime negative controls; the raw pixel-slice dependency is a host structural fixture.
+fn raster_cpu_render_planted() -> CaseResult { crate::gpu_checks::cpu_render_planted() }
