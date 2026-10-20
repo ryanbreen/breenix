@@ -7,7 +7,7 @@
 
 `resolve` prints the suite ids a boot runs, comma-separated, in order. SPEC is a suite id, ids joined by commas, or
 `all`: every suite of docs/efforts/path.json the target runs (x86-metal runs every main-path effort's), in path order,
-leaving out suites with no manifest and, on a target without a 3D GPU, suites that need one. TARGET is arm64-qemu,
+leaving out suites with no manifest or no cases yet and, on a target without a 3D GPU, suites that need one. TARGET is arm64-qemu,
 parallels, vmware or x86-metal; ARM64 QEMU has a 3D GPU only with `--gpu-3d` (boot-interactive.sh --gpu-gl). In a list
 of two or more, a manifest's `"sequence": "first"` suite must run first and its `"sequence": "last"` suite last.
 
@@ -56,6 +56,10 @@ def resolve(spec, target, has_3d=False, read=read_repo):
             manifests[suite] = json.loads(text) if text else None
         return manifests[suite]
 
+    def planned(suite):
+        """Every category is planned (no cases yet), so the suite has no binary to boot."""
+        return all(not category.get("cases") for category in manifest(suite).get("categories", []))
+
     skipped = []
     if spec == "all":
         ids = []
@@ -67,6 +71,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 skipped.append((suite, f"not an effort target of {target}"))
             elif manifest(suite) is None:
                 skipped.append((suite, "no manifest"))
+            elif planned(suite):
+                skipped.append((suite, "no cases yet"))
             elif manifest(suite).get("needs3dGpu") and not has_3d:
                 skipped.append((suite, "needs a 3D GPU"))
             elif suite not in ids:
@@ -85,6 +91,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
             loaded = manifest(suite)
             if loaded is None:
                 raise ValueError(f"no manifest docs/suites/{suite}.json")
+            if planned(suite):
+                raise ValueError(f"suite {suite} has no cases yet: every category in docs/suites/{suite}.json is planned")
             if loaded.get("needs3dGpu") and not has_3d:
                 raise ValueError(f"suite {suite} needs a 3D GPU, which this {target} boot does not have")
     if not ids:

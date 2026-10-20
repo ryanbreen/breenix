@@ -1,0 +1,79 @@
+{
+  "id": "users",
+  "title": "Users & permissions",
+  "area": "Users & permissions",
+  "summary": "Credentials, access checks, set-ID execution, accounts, su and sudo-style administration, the standard filesystem layout and non-root logins on the console and over SSH behave as POSIX and the users design specify.",
+  "binary": "/sbin/suite-users",
+  "categories": [
+    {
+      "id": "credentials",
+      "title": "Real, effective and saved IDs, supplementary groups and their thread-group commit",
+      "cases": []
+    },
+    {
+      "id": "files",
+      "title": "File access classes, ownership, chmod, chown and set-ID clearing",
+      "cases": []
+    },
+    {
+      "id": "sticky",
+      "title": "Sticky world-writable directories: removal, rename, symlinks and hard links",
+      "cases": []
+    },
+    {
+      "id": "setid-exec",
+      "title": "Set-user-ID and set-group-ID execution, nosuid and AT_SECURE",
+      "cases": []
+    },
+    {
+      "id": "signals",
+      "title": "Signal and priority permission between users",
+      "cases": []
+    },
+    {
+      "id": "proc-dev",
+      "title": "/proc, device nodes and privileged ports by owner and mode",
+      "cases": []
+    },
+    {
+      "id": "umask",
+      "title": "File creation mask across files, directories, fork and threads",
+      "cases": []
+    },
+    {
+      "id": "layout",
+      "title": "The standard filesystem layout with its owners and modes",
+      "cases": []
+    },
+    {
+      "id": "accounts",
+      "title": "passwd, group and shadow files and the account tools",
+      "cases": []
+    },
+    {
+      "id": "su",
+      "title": "su: passwords, wheel, login environment and the auth log",
+      "cases": []
+    },
+    {
+      "id": "sudo",
+      "title": "sudo-style administration: policy, password cache, environment and the auth log",
+      "cases": []
+    },
+    {
+      "id": "login",
+      "title": "Console login as any account, tty ownership and umask",
+      "cases": []
+    },
+    {
+      "id": "ssh",
+      "title": "SSH sessions as the account: identity, groups, PTY owner and key-file modes",
+      "cases": []
+    },
+    {
+      "id": "operator",
+      "title": "The operator account logs in over SSH and at the console; root SSH is refused",
+      "cases": []
+    }
+  ]
+}

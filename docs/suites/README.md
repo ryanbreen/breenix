@@ -35,6 +35,16 @@ parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in th
 as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
 calls outside that table do not count.
 
+### Planned categories
+
+A category whose `cases` list is empty is planned: an effort names it before its cases exist,
+and its cases arrive with the lane that implements it. The binary leaves planned categories out
+and runs the others exactly as above, so a boot does not report an empty category. A manifest
+in which each category is planned is a skeleton (`server`, `users`, `filesystem` and `toolchain`
+today): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
+refuses it in a `--suite` list, and `all` leaves it out with "no cases yet". An effort
+milestone measured by a planned category reads as not measured yet. <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
+
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
 `tests/suite_manifests.rs` checks this classification as well as manifest shape.
