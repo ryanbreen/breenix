@@ -237,7 +237,7 @@ class GDBChat:
             ]
 
         # scripts/qemu-ui-launch.sh prints the launcher that runs QEMU's vCPU threads in
-        # macOS's user-interactive priority band (`env` off a Mac or with BREENIX_QEMU_UI=0).
+        # macOS's user-interactive priority band (the helper path off a Mac or with BREENIX_QEMU_UI=0).
         launcher = subprocess.run([str(self.breenix_dir / "scripts" / "qemu-ui-launch.sh")],
                                   capture_output=True, text=True, check=True).stdout.strip()
         cmd = [

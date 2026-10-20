@@ -113,3 +113,28 @@ impl GpuScreen {
 /// How long the view waits for its context's warm-up: several times the slowest
 /// target's catalogue warm-up, and well inside the host's progress supervision.
 const SETTLE_LIMIT_NS: i128 = 10_000_000_000;
+
+/// Finish the display handoff after the cases have been reaped. An exited owner's
+/// target remains held until the console's restore completes, independently of
+/// process reclaim receipts and of a temporarily steady free-page count.
+pub(super) fn await_console() -> Result<(), String> {
+    // The runner may still own its panel; give it back before waiting for the
+    // console. If the cases already displaced it, give-back refuses the non-owner.
+    let _ = graphics::give_back_display();
+    let start = super::monotonic_ns();
+    loop {
+        let (r, modes) = gpu::modes();
+        if r != 0 {
+            return Err(std::format!("display handoff: MODES errno {}", -r));
+        }
+        if modes.owner_depth == 0 && modes.binding_known != 0
+            && modes.console_resource != 0 && modes.scanout_resource == modes.console_resource
+        {
+            return Ok(());
+        }
+        if start.zip(super::monotonic_ns()).is_none_or(|(start, now)| now - start >= 5_000_000_000) {
+            return Err(String::from("display handoff: console binding did not complete within 5 s"));
+        }
+        let _ = time::sleep_ms(5);
+    }
+}
