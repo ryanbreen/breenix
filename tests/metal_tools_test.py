@@ -796,10 +796,15 @@ class RootStagingTest(unittest.TestCase):
                     'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
                     'CONSOLE_IDENTITY_KEY': 'ab' * 32}
             helper = os.environ.get('CONSOLE_HASH_HELPER', str(Path(__file__).resolve().parents[1] / 'target/host-test-tools/sha512-crypt'))
-            self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
-                            'Missing console hash helper: run scripts/build-host-test-tools.sh '
+            prep_message = ('Missing or stale console hash helper: run scripts/build-host-test-tools.sh '
                             '(CONSOLE_HASH_HELPER may select an existing executable)')
+            self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
+                            prep_message)
             hasher = Path(helper)
+            if 'CONSOLE_HASH_HELPER' not in os.environ:
+                source = Path(__file__).resolve().parents[1] / 'scripts/metal/sha512-crypt.rs'
+                self.assertGreaterEqual(hasher.stat().st_mtime_ns, source.stat().st_mtime_ns,
+                                        prep_message)
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
                                           ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:

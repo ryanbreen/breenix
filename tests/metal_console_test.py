@@ -237,10 +237,15 @@ class ConsoleTest(unittest.TestCase):
 
     def test_staged_shadow_permissions_and_target_and_malformed_hash_refusal(self):
         helper = os.environ.get('CONSOLE_HASH_HELPER', str(Path(__file__).resolve().parents[1] / 'target/host-test-tools/sha512-crypt'))
-        self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
-                        'Missing console hash helper: run scripts/build-host-test-tools.sh '
+        prep_message = ('Missing or stale console hash helper: run scripts/build-host-test-tools.sh '
                         '(CONSOLE_HASH_HELPER may select an existing executable)')
+        self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
+                        prep_message)
         hasher = Path(helper)
+        if 'CONSOLE_HASH_HELPER' not in os.environ:
+            source = Path(__file__).resolve().parents[1] / 'scripts/metal/sha512-crypt.rs'
+            self.assertGreaterEqual(hasher.stat().st_mtime_ns, source.stat().st_mtime_ns,
+                                    prep_message)
         prefix = Path('/opt/homebrew/opt/e2fsprogs/sbin')
         debugfs = shutil.which('debugfs') or str(prefix / 'debugfs')
         mke2fs = shutil.which('mke2fs') or str(prefix / 'mke2fs')
