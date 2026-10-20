@@ -80,6 +80,7 @@ pub(crate) const TEXT: &[Case] = &[
     pictured!("cache-hit", "A cached glyph renders identically to a fresh one, and the cache reports a hit", text_cache_hit),
     pictured!("cache-bound", "2,000 distinct glyph and size pairs keep the cache within 256 entries and 4 MiB", text_cache_bound),
     pictured!("cache-evict-correct", "A glyph evicted and rasterized again renders identically", text_cache_evict_correct),
+    pictured!("hidpi-sizes", "Scale-2 text equals twice-size coverage and differs from replicated pixels", text_hidpi_sizes),
 ];
 
 pub(crate) const FONT_PARSER: &[Case] = &[
@@ -2767,3 +2768,20 @@ fn raster_cpu_pixels_zero() -> CaseResult {
 
 // gpu-raster: §2.4 runtime negative controls; the raw pixel-slice dependency is a host structural fixture.
 fn raster_cpu_render_planted() -> CaseResult { crate::gpu_checks::cpu_render_planted() }
+
+// gpu-text: R4 rasterizes at 2x size; certified coverage is the oracle, never a nearest-neighbour bitmap upscale.
+fn text_hidpi_sizes() -> CaseResult {
+    let file=read_file(SANS_PATH).cite("8.3")?;let font=Font::parse(&file).cite("8.3")?;
+    let glyph=font.glyph_index('H');
+    let large=font.rasterize_glyph(glyph,48.0).cite("8.3")?;
+    let small=font.rasterize_glyph(glyph,24.0).cite("8.3")?;
+    let mut cached=CachedFont::new(font,256);
+    let before=crate::gpu_checks::counters().cite("8.3")?;
+    let g=white_on_black(192,128,|fb|{ttf_font::draw_char(fb,&mut cached,'H',32,16,48.0,WHITE);});
+    same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
+    let big=glyph_pixels(&large,32,16,192,128);let low=glyph_pixels(&small,16,8,96,64);
+    ensure((0..128).any(|y|(0..192).any(|x|big[y*192+x]!=low[(y/2)*96+x/2])),"8.3",
+        "gpu-text: twice-size text is only replicated scale-1 coverage")?;
+    let after=crate::gpu_checks::counters().cite("8.3")?;
+    ensure(after.draws>before.draws && after.uploads_image==before.uploads_image,"8.3","gpu-text: HiDPI text did not execute GPU coverage draws")
+}
