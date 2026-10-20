@@ -1550,12 +1550,14 @@ driver runs, and nowhere else (ruling R7); after the driver starts, the console 
   a `libimg::Decoded` that only libimg constructs, and the fixture path, which takes only the built-in font
   tables or a suite's declared fixtures.
 - <!-- claim-lint:ok: Operator ruling B9 in docs/gui/breengel-gpu-rulings.md and #2177 specify the required identity check. -->
-  **Runtime.** `COUNTERS` reports upload bytes by purpose and instances per draw. For
-  `raster/cpu-pixels-zero`, the only legal Fixture uploads are declared static source tables
+  **Runtime.** `COUNTERS` reports upload bytes by purpose and instances per draw. In every raster case
+  (`raster/*`), the only legal Fixture uploads are declared static source tables
   (the complete 5×7 font table, bitmap font tables, or another static table the case declares), each uploaded
   whole and byte-identical by content comparison, recorded by hash. Any other CPU pixel upload under any
   purpose fails. There is no per-run byte equality or per-case byte allowance: clipping, culling and
-  once-per-context table uploads pass. Each primitive may emit at most a constant number of instances set by its pipeline
+  once-per-context table uploads pass. The bitmap font table layout is fixed by this contract (ruling B10): for
+  each bitmap size, one table holds the glyphs U+0020 to U+007E in order, then U+FFFD, each glyph's coverage rows
+  stacked vertically, and libgfx uploads it whole, once per context. Each primitive may emit at most a constant number of instances set by its pipeline
   (so a CPU loop drawing one-pixel rectangles is caught). Suite binaries are held to the same counters: in a
   passing run they upload no expected image; on a failure they may upload expected and diff images, tagged
   `Fixture` and reported as failure artifacts.
