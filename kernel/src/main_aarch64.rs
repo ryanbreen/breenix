@@ -685,6 +685,15 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         );
         kernel::drivers::xhci::set_firmware_rsdp(config.rsdp_addr);
 
+        // The pool keeps the loader's boot seed and the loader's copy is zeroed.
+        let config = unsafe { &mut *(hw_config_ptr as *mut kernel::platform_config::HardwareConfig) };
+        let source = match config.boot_seed_source {
+            arm64_boot_contract::BOOT_SEED_EFI_RNG => kernel::random::BootSeedSource::EfiRng,
+            arm64_boot_contract::BOOT_SEED_TPM => kernel::random::BootSeedSource::Tpm,
+            _ => kernel::random::BootSeedSource::None,
+        };
+        kernel::random::take_boot_seed(source, &mut config.boot_seed);
+
         // Breadcrumb: 'H' = linked HHDM entry and platform setup complete.
         unsafe {
             let uart_phys = kernel::platform_config::uart_base_phys();
@@ -940,11 +949,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Seed the random pool before the network stack picks ports and IDs.
     let random = kernel::random::init();
     serial_println!(
-        "[boot] random: pool ready={} rndr={} hardware_bits={} device_bits={} jitter_windows={}/{} jitter_bits={} jitter_run={}/{} jitter_common={}/{}",
+        "[boot] random: pool ready={} rndr={} hardware_bits={} device_bits={} boot_seed={} boot_seed_bits={} jitter_windows={}/{} jitter_bits={} jitter_run={}/{} jitter_common={}/{}",
         random.ready,
         random.rndr,
         random.hardware_bits,
         random.device_bits,
+        random.boot_seed.name(),
+        random.boot_seed_bits,
         random.jitter.passed,
         random.jitter.windows,
         random.jitter.bits,

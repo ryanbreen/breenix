@@ -742,6 +742,9 @@ pub struct HardwareConfig {
     pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
     pub boot_flags: u32,
     pub _pad9: u32,
+    pub boot_seed_source: u32,
+    pub _pad10: u32,
+    pub boot_seed: [u8; arm64_boot_contract::BOOT_SEED_BYTES],
 }
 
 #[cfg(target_arch = "aarch64")]
