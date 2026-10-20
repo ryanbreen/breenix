@@ -1607,7 +1607,7 @@ fn text_entry_maxlen() -> CaseResult {
 fn text_entry_scroll_to_cursor() -> CaseResult {
     let mut f = entry_field(100);
     f.insert_str("abcdefghijklmnopqrstuvwxyz");
-    let visible:String=f.text().chars().skip(f.scroll_offset()).collect();
+    let visible:String=f.text().chars().enumerate().filter_map(|(i,c)| (i>=f.scroll_offset()).then_some(c)).collect();
     ensure(f.cursor_x()==14+sans_width(visible.as_bytes()),"15",format!("gpu-text: caret x {} disagrees with the visible substring advance {}",f.cursor_x(),sans_width(visible.as_bytes())))?;
     ensure(
         f.scroll_offset() > 0 && f.cursor_x() >= 14 && f.cursor_x() < 70,
