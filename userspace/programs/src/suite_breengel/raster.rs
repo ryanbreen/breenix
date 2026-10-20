@@ -47,6 +47,7 @@ pub(crate) const RASTER: &[Case] = &[
     pictured!("damage-noop", "A draw clipped to nothing marks nothing, and a same-colour draw still marks its rectangle", raster_damage_noop),
     pictured!("damage-sound", "Over a seeded random scene, every changed pixel lies inside the accumulated damage", raster_damage_sound),
     pictured!("surface-owned", "An owned surface allocates, clears to a colour and frees its memory when dropped", raster_surface_owned),
+    pictured!("cpu-pixels-zero", "Raster primitives execute GPU draws without CPU pixel uploads", raster_cpu_pixels_zero),
 ];
 
 pub(crate) const TEXT: &[Case] = &[
@@ -2729,4 +2730,21 @@ fn font_parser_corpus() -> CaseResult {
         }))?;
     }
     Ok(())
+}
+
+// gpu-raster: §2.4 runtime proof covers every primitive exercised by the category's extreme fixture.
+fn raster_cpu_pixels_zero() -> CaseResult {
+    for (name,call) in extreme_calls() {
+        let before=crate::gpu_checks::counters().cite("7")?;
+        let surface=padded(32,24);
+        call(&mut surface.fb());
+        let after=crate::gpu_checks::counters().cite("7")?;
+        ensure(after.uploads_image==before.uploads_image && after.uploads_fixture==before.uploads_fixture,
+            "7",format!("gpu-raster: {name} uploaded CPU-rendered pixels"))?;
+    }
+    let before=crate::gpu_checks::counters().cite("7")?;
+    let surface=padded(32,24);scene(&mut surface.fb());
+    let after=crate::gpu_checks::counters().cite("7")?;
+    ensure(after.draws>before.draws && after.instances-before.instances<=32 && after.uploads_image==before.uploads_image,
+        "7","gpu-raster: primitive scene did not draw on the GPU with bounded instances and zero image uploads")
 }
