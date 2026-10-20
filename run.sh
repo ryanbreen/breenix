@@ -1319,6 +1319,10 @@ if [ "$VMWARE" = true ]; then
         echo "ERROR: vmrun not found. Is VMware Fusion installed?"
         exit 1
     fi
+    if ! command -v mcopy >/dev/null 2>&1; then
+        echo "ERROR: mcopy not found. Install mtools to seed the VMware boot disk."
+        exit 1
+    fi
     prune_vmware_inventory
 
     # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0

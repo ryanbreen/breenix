@@ -48,7 +48,7 @@ def esp_offset(image):
 def stage(source, destination):
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError('the reusable boot image must remain seed-free')
-    with tempfile.TemporaryDirectory(prefix='.boot-seed-', dir=Path(destination).parent) as work:
+    with tempfile.TemporaryDirectory(prefix='breenix-boot-seed-') as work:
         raw = Path(work) / 'boot.img'
         seed = Path(work) / 'random-seed'
         subprocess.run(['qemu-img', 'convert', '-f', 'vmdk', '-O', 'raw', source, str(raw)], check=True)

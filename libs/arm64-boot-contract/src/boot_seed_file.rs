@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_is_overwritten_and_flushed_before_handoff_and_cannot_be_reused() {
+    fn fresh_is_overwritten_and_flushed_and_cannot_be_reused() {
         let mut file = File::new(&[42; BOOT_SEED_BYTES]);
         let mut seed = [0; BOOT_SEED_BYTES];
         assert!(consume(Some(&mut file), &mut seed));
@@ -129,10 +129,10 @@ mod tests {
 
     #[test]
     fn write_or_flush_failure_earns_nothing() {
-        for writable in [false, true] {
+        for (writable, flush_ok) in [(false, true), (true, false)] {
             let mut file = File::new(&[42; BOOT_SEED_BYTES]);
             file.writable = writable;
-            file.flush_ok = false;
+            file.flush_ok = flush_ok;
             let mut seed = [99; BOOT_SEED_BYTES];
             assert!(!consume(Some(&mut file), &mut seed));
             assert_eq!(seed, [0; BOOT_SEED_BYTES]);

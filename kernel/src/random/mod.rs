@@ -8,8 +8,8 @@
 //!   device where the machine has one (virtio-rng), and windows of timer
 //!   jitter: the counter time of a fixed memory walk (`jitter.rs`).
 //! - On ARM64 machines booted through the UEFI loader, the loader's boot seed
-//!   (`take_boot_seed`): bytes from a consumed host seed file, EFI_RNG_PROTOCOL, or the
-//!   TPM's TPM2_GetRandom, taken before ExitBootServices.
+//!   (`take_boot_seed`): bytes from EFI_RNG_PROTOCOL, then the TPM's
+//!   TPM2_GetRandom, then a consumed host seed file, taken before ExitBootServices.
 //! - Device events (`add_event`): the cycle counter at each received network
 //!   frame and each terminal input byte, gathered lock-free and folded in at
 //!   the next read.
