@@ -347,6 +347,7 @@ impl InitLaunch {
 fn release_boot_preempt_pin() {
     kernel::per_cpu_aarch64::preempt_enable();
     kernel::task::softirqd::init_online_daemons();
+    kernel::drivers::ahci::start_completion_pollers();
 }
 
 /// Create a userspace process from a pre-loaded ELF and jump to it.
@@ -1252,6 +1253,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     //   cursor for a process that owns the display.
     // - Skip render_task when VirGL owns the display — no 2D rendering needed.
     kernel::console::start();
+    // Terminal output goes to the UART from its own thread once that runs.
+    kernel::serial_line::start_transmitter();
     if has_display && !virgl_display {
         match kernel::graphics::render_task::spawn_render_thread() {
             Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
@@ -1760,6 +1763,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     kernel::task::softirqd::init_online_daemons();
+    kernel::drivers::ahci::start_completion_pollers();
     #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
     kernel::task::softirq_tests::test_deferral();
 

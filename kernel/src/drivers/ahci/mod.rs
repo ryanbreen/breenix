@@ -18,7 +18,7 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use spin::{Mutex, MutexGuard};
 
 use crate::task::completion::Completion;
@@ -238,6 +238,13 @@ static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Serialize no-interrupt command publication, status sampling and retirement.
+/// A poller must not carry sampled status across another poller's retirement
+/// and the waiter's reuse of the slot. IRQ masking keeps a holder runnable;
+/// pollers skip a busy port rather than spinning on another CPU.
+static PORT_POLL: [crate::irq_safe_mutex::IrqSafeMutex<()>; MAX_PORTS] =
+    [const { crate::irq_safe_mutex::IrqSafeMutex::new(()) }; MAX_PORTS];
+
 /// Per-port token for the command currently issued in slot 0. 0 = none.
 static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
     [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
@@ -806,6 +813,9 @@ struct CmdToken {
     cmd_num: u32,
     has_irq: bool,
     scheduler_running: bool,
+    /// No completion interrupt: this CPU's completion poller completes the
+    /// command, and the waiter parks as it would for the interrupt.
+    polled: bool,
 }
 
 #[inline]
@@ -866,8 +876,18 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // lock, preventing a race with complete() from the ISR.
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
+        if token.polled {
+            kick_poller();
+        }
         let wait_result =
             AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible(cmd_num, TIMEOUT_NS);
+        // The pollers stop looking at a command its waiter gave up on.
+        if token.polled && !matches!(wait_result, Ok(true)) {
+            let poll_guard = PORT_POLL[port].lock();
+            PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
+            let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(cmd_num, 0, Ordering::AcqRel, Ordering::Acquire);
+            drop(poll_guard);
+        }
         match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
@@ -895,7 +915,8 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         }
         AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
         // ============================================================
-        // PORT_CI POLLING PATH (scheduler not running)
+        // PORT_CI POLLING PATH (scheduler not running, or no interrupt and
+        // no completion poller on this CPU yet)
         //
         // Completions are NOT armed (setup_cmd_slot0 skips arming when
         // !scheduler_running). The ISR still fires but sees cmd_num==0
@@ -937,6 +958,167 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             }
             #[cfg(not(target_arch = "aarch64"))]
             core::hint::spin_loop();
+        }
+    }
+}
+
+// =============================================================================
+// Completion pollers (no completion interrupt)
+// =============================================================================
+
+/// Each CPU's completion poller, once it runs; 0 before. On a controller whose
+/// completions raise no interrupt this kernel can take (VMware's ARM64 platform
+/// has no GICv2m), a command used to be busy-polled by the thread that issued
+/// it, inside its system call, so that thread did not sleep in the command's
+/// completion wait and the block EINTR oracle could not land a signal on a
+/// parked reader (#2139). The waiter now hands its command to its own CPU's
+/// poller and parks in that wait, as it would for the interrupt; the CPU runs
+/// the poller next, which reads the ports while a command is active and
+/// completes it as the interrupt handler does, then yields to the waiter.
+const POLLER_CPUS: usize = 8;
+static POLLER_TID: [AtomicU64; POLLER_CPUS] = [const { AtomicU64::new(0) }; POLLER_CPUS];
+/// A poller is blocked with no command armed (IDLE) or looking (RUNNING).
+/// Waiters move IDLE to RUNNING and wake it; only the poller moves it back.
+static POLLER_STATE: [AtomicU8; POLLER_CPUS] = [const { AtomicU8::new(POLLER_IDLE) }; POLLER_CPUS];
+#[cfg(target_arch = "aarch64")]
+static POLLER_SPAWNED: [AtomicBool; POLLER_CPUS] = [const { AtomicBool::new(false) }; POLLER_CPUS];
+const POLLER_IDLE: u8 = 0;
+const POLLER_RUNNING: u8 = 1;
+/// Spin hints between a poller's looks at the ports.
+#[cfg(target_arch = "aarch64")]
+const POLLER_PAUSE: u32 = 32;
+
+fn this_cpu() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        POLLER_CPUS
+    }
+}
+
+fn poller_on_this_cpu() -> bool {
+    POLLER_TID.get(this_cpu()).is_some_and(|tid| tid.load(Ordering::Acquire) != 0)
+}
+
+/// Hand an armed command to this CPU's poller. The caller runs with preemption
+/// disabled until it parks, so the poller is the CPU's next thread.
+fn kick_poller() {
+    let cpu = this_cpu();
+    let (Some(tid), Some(state)) = (POLLER_TID.get(cpu), POLLER_STATE.get(cpu)) else { return };
+    let tid = tid.load(Ordering::Acquire);
+    if tid != 0 && state.swap(POLLER_RUNNING, Ordering::AcqRel) == POLLER_IDLE {
+        crate::task::scheduler::wake_thread_any_context(tid);
+    }
+}
+
+/// Complete each port's active slot-0 command that has finished, as the interrupt
+/// handler does. Returns whether a command is still active.
+#[cfg(target_arch = "aarch64")]
+fn poll_ports() -> bool {
+    let abar = AHCI_ABAR.load(Ordering::Relaxed);
+    let implemented = AHCI_PORTS_IMPLEMENTED.load(Ordering::Relaxed);
+    let mut active_left = false;
+    let mut completed_any = false;
+    for port in 0..MAX_PORTS {
+        if implemented & (1 << port) == 0 {
+            continue;
+        }
+        let Some(poll_guard) = PORT_POLL[port].try_lock() else {
+            active_left = true;
+            continue;
+        };
+        let active = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+        if active & 1 == 0 {
+            continue;
+        }
+        let is = port_read(abar, port, PORT_IS);
+        let ci = port_read(abar, port, PORT_CI);
+        if detect_completed_slots(active, ci, is) & 1 == 0 {
+            active_left = true;
+            continue;
+        }
+        ack_port_interrupt(abar, port, is);
+        if PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel) & 1 != 0 {
+            let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+            if cmd_num != 0 {
+                AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                completed_any = true;
+            }
+        }
+        drop(poll_guard);
+    }
+    // The completion buffered the waiter's wake: a scheduling pass applies it,
+    // and the waiter runs ahead of this poller.
+    if completed_any {
+        crate::task::scheduler::yield_current();
+    }
+    active_left
+}
+
+/// Block the poller until a waiter hands it a command (RUNNING), as an I/O wait,
+/// the one blocked state a wake from interrupt context applies to.
+#[cfg(target_arch = "aarch64")]
+fn poller_wait(tid: u64, state: &AtomicU8) {
+    while state.load(Ordering::Acquire) != POLLER_RUNNING {
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io_with_timeout(None);
+            if state.load(Ordering::Acquire) == POLLER_RUNNING {
+                sched.unblock(tid);
+            }
+        });
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_while_blocked();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn completion_poller(cpu: usize) {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
+    let (Some(slot), Some(state)) = (POLLER_TID.get(cpu), POLLER_STATE.get(cpu)) else { return };
+    slot.store(tid, Ordering::Release);
+    loop {
+        poller_wait(tid, state);
+        // ALLOWLIST: P12-Site-9 completion poller; bounded by each waiter's 5 s timeout,
+        // which disarms its command. See docs/polling-allowlist.md.
+        while poll_ports() {
+            for _ in 0..POLLER_PAUSE {
+                core::hint::spin_loop();
+            }
+        }
+        state.store(POLLER_IDLE, Ordering::Release);
+        // A command armed after the last look found the state RUNNING and did not wake us.
+        let implemented = AHCI_PORTS_IMPLEMENTED.load(Ordering::Relaxed);
+        let armed = (0..MAX_PORTS).any(|port| {
+            implemented & (1 << port) != 0 && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0
+        });
+        if armed {
+            state.store(POLLER_RUNNING, Ordering::Release);
+        }
+    }
+}
+
+/// Start a completion poller on each online CPU without one, when the
+/// controller's completions raise no interrupt this kernel takes. CPU 0's waits
+/// until the boot sequence releases it, as its softirq daemon does.
+#[cfg(target_arch = "aarch64")]
+pub fn start_completion_pollers() {
+    if AHCI_ABAR.load(Ordering::Relaxed) == 0 || AHCI_IRQ.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    for cpu in 0..online.min(POLLER_CPUS) {
+        if cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0 {
+            continue;
+        }
+        if POLLER_SPAWNED[cpu].swap(true, Ordering::AcqRel) {
+            continue;
+        }
+        let name = alloc::format!("kahci_poll/{cpu}");
+        if let Err(error) = crate::task::kthread::kthread_run_on_cpu(move || completion_poller(cpu), &name, cpu) {
+            crate::serial_println!("[ahci] no completion poller on CPU {}: {:?}", cpu, error);
         }
     }
 }
@@ -1407,7 +1589,12 @@ impl AhciController {
         // The polling path uses PORT_CI polling directly and does not
         // need ISR-driven completion.  This matches Linux's AHCI driver,
         // which masks device-level interrupts during polling mode.
-        let arm_completion = has_irq && scheduler_running;
+        // Without an interrupt, this CPU's completion poller completes the command
+        // once it runs, and the waiter parks as it would for the interrupt.
+        let polled = !has_irq && port < MAX_PORTS && poller_on_this_cpu() && scheduler_sleep_ready(true);
+        let arm_completion = (has_irq && scheduler_running) || polled;
+        let scheduler_running = scheduler_running || polled;
+        let poll_guard = polled.then(|| PORT_POLL[port].lock());
         if arm_completion {
             AHCI_COMPLETIONS[port][0].reset();
             PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
@@ -1435,11 +1622,13 @@ impl AhciController {
             core::arch::asm!("isb", options(nostack, preserves_flags));
         }
 
+        drop(poll_guard);
         Ok(CmdToken {
             port,
             cmd_num,
             has_irq,
             scheduler_running,
+            polled,
         })
     }
 
