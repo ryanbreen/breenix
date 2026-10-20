@@ -42,7 +42,7 @@ final class StageCatalogStateMachineTests: XCTestCase {
         XCTAssertEqual(both[0].reachedLine, 2)
     }
 
-    func testHistoricalStrictFixtureReportsMissingSMPMarkers() throws {
+    func testHistoricalStrictFixtureReportsMissingProducerMarkers() throws {
         let catalog = try StageCatalog.load(for: .aarch64)
         let bootCompleteIndex = try XCTUnwrap(catalog.firstIndex { $0.name == "ARM64 boot complete" })
         let index = try MarkerScanner().scanFile(at: fixtureURL("05-runtime-anti-vacuity-strict-serial.txt"))

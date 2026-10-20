@@ -221,7 +221,7 @@ unsafe fn text(p: *const u8) -> String {
 
 #[test]
 fn getpwnam_and_getpwuid_find_entries_and_skip_malformed_lines() {
-    let _storage = PASSWD_STORAGE.lock().unwrap();
+    let _storage = PASSWD_STORAGE.lock().unwrap_or_else(|e| e.into_inner());
     databases();
     unsafe {
         let name = CString::new("wrb").unwrap();
@@ -268,7 +268,7 @@ fn getpwuid_r_reports_erange_for_a_small_buffer() {
 
 #[test]
 fn getpwent_walks_every_well_formed_entry() {
-    let _storage = PASSWD_STORAGE.lock().unwrap();
+    let _storage = PASSWD_STORAGE.lock().unwrap_or_else(|e| e.into_inner());
     databases();
     unsafe {
         pwd::endpwent();
