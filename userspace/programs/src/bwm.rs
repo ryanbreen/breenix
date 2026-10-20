@@ -304,6 +304,8 @@ struct HotkeyManager {
     tap_count: u8,
     /// Whether any non-modifier key was pressed during current modifier hold
     combo_used: bool,
+    /// Super chords must not inherit ordinary typing with Shift.
+    super_combo_used: bool,
     /// Cooldown frames remaining (prevents rapid re-trigger)
     cooldown: u32,
 }
@@ -317,6 +319,7 @@ impl HotkeyManager {
             tap_release_ns: 0,
             tap_count: 0,
             combo_used: false,
+            super_combo_used: false,
             cooldown: 0,
         }
     }
@@ -456,6 +459,9 @@ impl HotkeyManager {
         if modifiers != 0 {
             self.combo_used = true;
         }
+        if modifiers & modifier::SUPER != 0 {
+            self.super_combo_used = true;
+        }
         if self.cooldown == 0 {
             for binding in &self.bindings {
                 if binding.key != 0 && binding.taps == 1
@@ -490,7 +496,7 @@ impl HotkeyManager {
         // tap is treated as dirty and resets the sequence rather than counting.
         if super_taps > 0 {
             for _ in 0..super_taps {
-                if self.combo_used {
+                if self.super_combo_used {
                     // Combo in progress: this Super press is part of a combo, not
                     // a clean tap. Reset the tap sequence; do not fire the launcher.
                     self.tap_count = 0;
@@ -535,10 +541,9 @@ impl HotkeyManager {
 
         // Reset combo tracking when Super is fully released so the next clean
         // tap sequence isn't suppressed by a stale combo flag.
-        let super_was = (prev & modifier::SUPER) != 0;
         let super_now = (current_mods & modifier::SUPER) != 0;
-        if !super_now && super_was {
-            self.combo_used = false;
+        if !super_now {
+            self.super_combo_used = false;
         }
 
         // ── Multi-tap detection for ALT / CTRL / SHIFT via level edges ──
