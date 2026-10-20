@@ -11,8 +11,15 @@ pub const LINKED_RAM_START: u64 = 0x4000_0000;
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
 /// HardwareConfig v5 carries only final-map conventional memory as free RAM.
 /// Earlier versions included boot-services memory before loader allocations.
-/// v6 adds `boot_flags`.
-pub const HARDWARE_CONFIG_VERSION: u32 = 6;
+/// v6 adds `boot_flags`. v7 adds the boot seed (`boot_seed_source`, `boot_seed`).
+pub const HARDWARE_CONFIG_VERSION: u32 = 7;
+
+/// Bytes of boot seed the loader hands the kernel's random pool.
+pub const BOOT_SEED_BYTES: usize = 64;
+/// `boot_seed_source`: the seed came from the firmware's EFI_RNG_PROTOCOL.
+pub const BOOT_SEED_EFI_RNG: u32 = 1;
+/// `boot_seed_source`: the seed came from the TPM's TPM2_GetRandom.
+pub const BOOT_SEED_TPM: u32 = 2;
 
 /// `boot_flags` bit: the ESP carries `\EFI\BREENIX\GPUCORE`, so the GPU core
 /// (`kernel/src/gpu/`) owns the display device instead of the legacy display driver.
