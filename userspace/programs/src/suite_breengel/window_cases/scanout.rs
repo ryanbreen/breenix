@@ -71,17 +71,20 @@ let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).c
     ensure((s.width,s.height)==(2560,1600) && s.word(56)==2560*4,"20.1","gpu-display: record/readback dimensions or stride disagree with MODES")
 }
 
+// gpu-display: §2.2 uses record version 2 and ruling 47 native backend-specific completion identities.
 fn scanout_device_path() -> CaseResult {
-    interface()?;
-    let (_k, w, _p, _) = one_window(2)?;
-    let (_, rec) = screen()?;
-    let listed = listed(w.id()).cite("17.1")?.ok_or("the window is not listed").cite("17.2")?;
-    value("backend", rec.backend as i64, "", Some((1, 4)));
-    ensure(rec.backend == listed.backend && boundary_of(rec.backend).is_some(), "20.2", format!(
-        "the observation record names backend {} ({}) and WinInfo names {}; one of the four backends of section 20.2 observes this target",
-        rec.backend, backend::name(rec.backend), listed.backend))?;
-    let arm64 = [backend::VIRTIO_GPU_2D, backend::SVGA3_SCREEN_TARGET, backend::VIRGL];
-    ensure(arm64.contains(&rec.backend), "20.2", format!("backend {} ({}) is not one of this architecture's", rec.backend, backend::name(rec.backend)))
+interface()?;let (mut k,w,_p,serial)=one_window(2)?;
+    let s=super::composition::gpu_snapshot(&mut k)?;
+    let (ret,caps)=libbreenix::gpu::caps();let backend=s.word(16);
+    ensure(ret==0 && [4,5].contains(&backend) && backend==caps.backend,"20.2","gpu-display: record backend differs from admitted GPU backend")?;
+    ensure(listed(w.id()).cite("17.1")?.ok_or("window not listed")?.backend==backend,"20.2","gpu-display: window backend differs from readback backend")?;
+    let (status,render,readback)=if backend==4 {(0x1100,0x207,0x206)}else{(1,1152,1104)};
+    ensure(s.word(112)==status && s.word(116)==render && s.word(128)==status && s.word(132)==readback,"20.2","gpu-display: record does not contain native render and readback completions")?;
+    ensure(s.quad(104)!=0 && s.quad(120)!=0 && s.quad(184)!=0 && s.word(192)==status && s.quad(176)==serial,
+        "20.2","gpu-display: record lacks this composite's render/readback/present fences")?;
+    if backend==4 {ensure(s.quad(136)==0 && s.quad(144)==0 && s.word(152)==0 && s.word(156)==0,"20.2","gpu-display: VirGL record invented VMware copy fields")?;}
+    else {ensure(s.quad(136)!=0 && s.quad(136)!=s.quad(80) && s.quad(144)!=0 && s.word(152)==1042 && s.word(156)==1,"20.2","gpu-display: VMware record lacks its dedicated readback surface/MOB and completed copy")?;}
+    ensure(s.word(164)==0 && s.word(20)==4,"20.2","gpu-display: readback has unwritten bytes or the wrong boundary")
 }
 
 fn scanout_changing_scene() -> CaseResult {
