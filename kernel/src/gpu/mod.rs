@@ -85,6 +85,14 @@ const RESET_BUDGET_NS: u64 = 100_000_000;
 const EXAMINE_NS: u64 = 250_000_000;
 /// How often kgpu looks for an SVGA3 device's answers while it holds requests.
 const POLL_NS: u64 = 250_000;
+/// How long a waiter looks for its answer itself, on a device that raises no interrupt,
+/// before it sleeps until kgpu's next look. kgpu's timed block ends at the next timer
+/// tick, so its 250 us looks came about 0.8 ms late on average, once per request: 5.6 s
+/// of the 950-glyph corpus's 9.1 s on VMware (#1980). After a tick, kgpu's look is as
+/// timely as the waiter's.
+const SPIN_POLL_NS: u64 = 1_000_000;
+/// Spin hints between a polling waiter's looks, to leave the core's lock to others.
+const SPIN_POLL_PAUSE: u32 = 64;
 /// Initial context grace before catalogue warm-up. Resource creation does not extend it.
 /// It also bounds how long a warm-up step is held for other requests (`WARM_QUIET_NS`).
 const WARM_GRACE_NS: u64 = 20_000_000;
@@ -1765,14 +1773,17 @@ enum Stop {
 /// Wait until `f` (run under the core's lock after taking completions) returns a value,
 /// the absolute `deadline` passes, or a signal arrives.
 fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
+    let start = now_ns();
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
-        if let Some(v) = with_core(|c| {
+        let (found, polled) = with_core(|c| {
             c.poll();
-            f(c)
+            // The device's answers reach this waiter only when someone looks for them.
+            let polled = dev::is_svga() && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
+            (f(c), polled)
         })
-        .flatten()
-        {
+        .unwrap_or((None, false));
+        if let Some(v) = found {
             return Ok(v);
         }
         if deadline.is_some_and(|d| now_ns() >= d) {
@@ -1780,6 +1791,12 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         }
         if interruptible && crate::syscall::check_signals_for_wait().is_some() {
             return Err(Stop::Interrupted);
+        }
+        if polled && now_ns().saturating_sub(start) < SPIN_POLL_NS {
+            for _ in 0..SPIN_POLL_PAUSE {
+                core::hint::spin_loop();
+            }
+            continue;
         }
         let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(EXAMINE_NS)));
         // A queued wait holds the one preemption level syscall entry takes, and

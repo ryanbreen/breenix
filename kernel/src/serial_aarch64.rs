@@ -365,7 +365,7 @@ pub fn write_byte(writer: Writer, byte: u8) {
 /// Write one caller-defined output unit from `writer` as a single record (see
 /// `serial_line`).
 pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
-    crate::serial_line::Line::for_writer(writer).bytes(bytes);
+    crate::serial_line::write_bytes(writer, bytes);
 }
 
 #[doc(hidden)]
@@ -415,16 +415,22 @@ pub fn write_str_bounded(s: &str) {
     });
 }
 
-/// Wait until the output written so far has left for the UART (TCSETSW,
-/// TCSETSF). Aarch64 writers give the UART their output before they return,
-/// so there is nothing to wait for.
-pub fn drain_output() {}
+/// Wait until the terminal output written so far has left for the UART
+/// (TCSETSW, TCSETSF). Kernel records are written before they return; queued
+/// terminal output is written out here (`serial_line`).
+pub fn drain_output() {
+    crate::serial_line::drain_output();
+}
 
-/// ARM64 UART output is synchronous; no software transmit queue remains.
-pub fn flush_output() {}
+/// Discard queued terminal output.
+pub fn flush_output() {
+    crate::serial_line::flush_output();
+}
 
-/// The TTY driver gates synchronous ARM64 writes before they reach the UART.
-pub fn set_output_stopped(_stopped: bool) {}
+/// Stop or resume terminal output (IXON); queued output waits while stopped.
+pub fn set_output_stopped(stopped: bool) {
+    crate::serial_line::set_output_stopped(stopped);
+}
 
 /// Write out the lines posted on paths that may not log (`log_notice`).
 pub fn write_notices() {

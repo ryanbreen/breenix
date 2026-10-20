@@ -97,7 +97,7 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 
 - **File:** `kernel/src/drivers/ahci/mod.rs`, polling branch of `wait_cmd_slot0()`.
 - **Loop:** Poll `PORT_CI` until slot 0 clears, taskfile error, or the counter deadline.
-- **Justification:** Runtime completion uses `Completion::wait_timeout()` when registered and parkable. ARM64 uses this fallback during early boot; x86 IDENTIFY uses it after scheduler initialization with CPU interrupts enabled and HBA global interrupts disabled, before MSI or INTx registration.
+- **Justification:** Runtime completion uses `Completion::wait_timeout()` when registered and parkable. ARM64 uses this fallback during early boot, and on a CPU whose completion poller (P12-Site-9) does not run yet; x86 IDENTIFY uses it after scheduler initialization with CPU interrupts enabled and HBA global interrupts disabled, before MSI or INTx registration.
 - **Linux precedent:** libata/AHCI uses interrupt-driven runtime completions and bounded polling for controller setup.
 - **Bounded:** `AHCI_TIMEOUT_SECS` using CNTPCT on ARM64 and calibrated TSC on x86.
 - **Frequency:** Controller initialization or when scheduler-backed completion is unavailable.
@@ -112,6 +112,16 @@ This document formalizes the **Linux-rigor polling-elimination gate** for cases 
 - **Bounded:** `AHCI_CI_COMPLETION_LOOP_LIMIT` caps the drain at 8 iterations.
 - **Frequency:** Runtime AHCI interrupt handling.
 - **Status:** ALLOWLISTED — interrupt-context site with deliberately minimal inline comment; not subject to polling-elimination conversion.
+
+## P12-Site-9: AHCI completion pollers where completions raise no interrupt (ARM64)
+
+- **File:** `kernel/src/drivers/ahci/mod.rs`, `completion_poller()` and `poll_ports()`.
+- **Loop:** While a slot-0 command is armed on any port, read that port's `PORT_IS` and `PORT_CI` and complete the command as the interrupt handler does; with no command armed, block until a waiter hands one over.
+- **Justification:** VMware's ARM64 platform has no GICv2m, and this kernel routes no INTx there, so the controller's completions raise no interrupt it can take. The waiter parks in the command's uninterruptible completion wait, as it would for the interrupt, and hands the command to its own CPU's poller, which that CPU runs next. Without it the waiter busy-polled `PORT_CI` in its own system call for the whole command, so it did not park (#2139).
+- **Precedent:** the AHCI 1.3.1 specification: `PxIS` records a port's completion and error status whether or not `PxIE` enables the interrupt for it, so software without the interrupt learns of completion by reading `PxIS` and `PxCI`. The clean-room rule of P12-Site-8 applies, so no donor driver is cited.
+- **Bounded:** each armed command is disarmed when its waiter's 5 s timeout passes, and a poller blocks once no command is armed.
+- **Frequency:** Runtime AHCI commands on a controller without a completion interrupt.
+- **Status:** ALLOWLISTED.
 
 ## P12-Site-8: AHCI link establishment after the HBA reset (x86)
 
