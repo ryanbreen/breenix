@@ -184,6 +184,7 @@ pub(crate) fn audit_finish(before:Option<(ga::Counters,u64)>){
 }
 // gpu-raster: aggregate the actual category execution, including isolated children, without repeating cases.
 pub(crate) fn audit_category(expected:&[Case])->CaseResult{
+    if let Ok(error)=std::env::var("BREENIX_RASTER_AUDIT_ERROR"){return at("7",error);}
     let directory=std::env::var("BREENIX_RASTER_AUDIT").map_err(|e|format!("gpu-raster: accounting directory: {e}"))?;
     let mut results:std::collections::BTreeMap<String,(u64,u64,u64,u64,u64,bool)>=std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(directory).map_err(|e|e.to_string())? {

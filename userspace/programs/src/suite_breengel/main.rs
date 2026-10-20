@@ -175,7 +175,9 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
 ]).gui();
 
 fn main() {
-    let _ = prepare_raster_audit();
+    if let Err(error) = prepare_raster_audit() {
+        std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);
+    }
     SUITE.run()
 }
 
@@ -183,7 +185,7 @@ fn main() {
 // as a failure if preparation fails; setup cannot terminate the suite instead.
 fn prepare_raster_audit() -> Result<(), String> {
     let pid=process::getpid().map_err(|e|format!("suite pid: {e:?}"))?;
-    let directory=format!("/dev/shm/breengel-raster-audit-{}",pid.raw());
+    let directory=format!("/tmp/breengel-raster-audit-{}",pid.raw());
     std::fs::create_dir_all(&directory).map_err(|e|format!("gpu-raster: create accounting directory: {e}"))?;
     std::env::set_var("BREENIX_RASTER_AUDIT",directory);
     Ok(())
