@@ -291,12 +291,35 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         ((*con_out).enable_cursor)(con_out, 0);
     }
     let esp = files::own_root(boot, image).ok();
+    if let Some(root) = esp.as_ref() {
+        if let Err(status) = slots::recover(root) {
+            say!("slot recovery failed ({:#x}); returning to firmware", status);
+            (boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
+            return status;
+        }
+    }
     let mut config_text = [0u8; 1024];
     let config: Option<Config> = esp
         .as_ref()
         .and_then(|root| root.read("\\EFI\\BREENIX\\MANAGER.CFG", &mut config_text).ok())
         .and_then(|len| slots::parse_config(&config_text[..len]));
-    let probe = config.is_none();
+    let mut network_url = [0u8; slots::URL_MAX];
+    let network_probe = probe_query_url(boot, image, &mut network_url).is_some();
+    if config.is_none() && !network_probe {
+        say!("installed configuration unavailable; trying existing slots before returning to firmware");
+        (boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
+        if let Some(root) = esp.as_ref() {
+            for entry in [Entry::Current, Entry::Previous] {
+                let note = slots::note(root, slots::slot_name(entry));
+                if note.present {
+                    say!("booting {} {}", if entry == Entry::Current { "current" } else { "previous" }, note.full());
+                    slots::boot(boot, image, root, entry);
+                }
+            }
+        }
+        return LOAD_ERROR;
+    }
+    let probe = config.is_none() && network_probe;
     let mut manager = Manager {
         boot,
         runtime,

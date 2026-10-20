@@ -8,3 +8,5 @@ pub mod com1;
 pub mod files;
 pub mod http;
 pub mod uefi;
+
+pub mod slot_transaction;

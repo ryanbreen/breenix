@@ -116,6 +116,17 @@ impl Root {
         if self.size(path)? != data.len() as u64 {
             return Err(VOLUME_CORRUPTED);
         }
+        let file = self.open(path, FILE_MODE_READ)?;
+        let mut buffer = [0u8; 4096];
+        let mut at = 0;
+        while at < data.len() {
+            let mut size = buffer.len().min(data.len() - at);
+            ok(((*file.file).read)(file.file, &mut size, buffer.as_mut_ptr().cast()))?;
+            if size == 0 || size > data.len() - at || buffer[..size] != data[at..at + size] {
+                return Err(VOLUME_CORRUPTED);
+            }
+            at += size;
+        }
         Ok(())
     }
 
@@ -157,7 +168,8 @@ impl Root {
         }
         let total = (FILE_INFO_FIXED + 2 * name_units) as u64;
         bytes[..8].copy_from_slice(&total.to_le_bytes());
-        ok(((*file.file).set_info)(file.file, &FILE_INFO, total as usize, info.as_ptr().cast()))
+        ok(((*file.file).set_info)(file.file, &FILE_INFO, total as usize, info.as_ptr().cast()))?;
+        ok(((*file.file).flush)(file.file))
     }
 
     /// Reads a whole file into pages of its own; their address and the file's length.

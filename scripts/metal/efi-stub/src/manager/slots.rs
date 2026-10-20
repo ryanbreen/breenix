@@ -193,33 +193,45 @@ pub unsafe fn boot(boot: &BootServices, image: Handle, root: &Root, entry: Entry
     bootdisk::start_bootloader(boot, image, volume, "kernel slot")
 }
 
-unsafe fn rename_slot(root: &Root, from: &str, to: &str) -> Result<(), Status> {
-    for extension in ["IMG", "TXT"] {
-        let mut source = [0u8; 64];
-        let len = path(from, extension, &mut source);
-        let source = core::str::from_utf8(&source[..len]).unwrap_or("");
-        let mut target = [0u8; 16];
-        target[..to.len()].copy_from_slice(to.as_bytes());
-        target[to.len()] = b'.';
-        target[to.len() + 1..to.len() + 4].copy_from_slice(extension.as_bytes());
-        let target = core::str::from_utf8(&target[..to.len() + 4]).unwrap_or("");
-        if root.exists(source) {
-            root.rename(source, target)?;
-        }
+struct SlotStore<'a>(&'a Root);
+
+impl metal_efi::slot_transaction::Store for SlotStore<'_> {
+    type Error = Status;
+    fn exists(&self, name: &str) -> bool {
+        let mut path = [0u8; 96];
+        unsafe { self.0.exists(slot_path(name, &mut path)) }
     }
-    Ok(())
+    fn read(&self, name: &str, bytes: &mut [u8]) -> Result<usize, Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.read(slot_path(name, &mut path), bytes) }
+    }
+    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.write(slot_path(name, &mut path), bytes) }
+    }
+    fn delete(&self, name: &str) -> Result<(), Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.delete(slot_path(name, &mut path)) }
+    }
+    fn rename(&self, from: &str, to: &str) -> Result<(), Status> {
+        let mut path = [0u8; 96];
+        unsafe { self.0.rename(slot_path(from, &mut path), to) }
+    }
+    fn invalid(&self) -> Status { VOLUME_CORRUPTED }
 }
 
-unsafe fn delete_slot(root: &Root, name: &str) -> Result<(), Status> {
-    for extension in ["IMG", "TXT"] {
-        let mut file = [0u8; 64];
-        let len = path(name, extension, &mut file);
-        let file = core::str::from_utf8(&file[..len]).unwrap_or("");
-        if root.exists(file) {
-            root.delete(file)?;
-        }
-    }
-    Ok(())
+fn slot_path<'a>(name: &str, out: &'a mut [u8; 96]) -> &'a str {
+    out[..DIR.len()].copy_from_slice(DIR.as_bytes());
+    out[DIR.len()..DIR.len() + name.len()].copy_from_slice(name.as_bytes());
+    core::str::from_utf8(&out[..DIR.len() + name.len()]).unwrap_or("")
+}
+
+/// Recover an interrupted slot action before reading or booting a slot.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root.
+pub unsafe fn recover(root: &Root) -> Result<(), Status> {
+    metal_efi::slot_transaction::recover(&SlotStore(root))
 }
 
 /// `NEXT` becomes `CURRENT` and the old current `PREVIOUS`. Repeating a commit with no staged slot leaves the slots as they are.
@@ -227,15 +239,12 @@ unsafe fn delete_slot(root: &Root, name: &str) -> Result<(), Status> {
 /// # Safety
 /// `root` must be the EFI system partition's open root.
 pub unsafe fn commit(root: &Root) -> Result<(), Status> {
+    recover(root)?;
     if !note(root, "NEXT").present {
         say!("slot commit: nothing is staged; current {}", note(root, "CURRENT").full());
         return Ok(());
     }
-    if note(root, "CURRENT").present {
-        delete_slot(root, "PREVIOUS")?;
-        rename_slot(root, "CURRENT", "PREVIOUS")?;
-    }
-    rename_slot(root, "NEXT", "CURRENT")?;
+    metal_efi::slot_transaction::begin(&SlotStore(root), false)?;
     say!(
         "slot commit: current {}, previous {}",
         note(root, "CURRENT").full(),
@@ -249,14 +258,12 @@ pub unsafe fn commit(root: &Root) -> Result<(), Status> {
 /// # Safety
 /// `root` must be the EFI system partition's open root.
 pub unsafe fn rollback(root: &Root) -> Result<(), Status> {
+    recover(root)?;
     if !note(root, "PREVIOUS").present || !note(root, "CURRENT").present {
         say!("slot rollback refused: there is no previous slot to return to");
         return Err(NOT_FOUND);
     }
-    delete_slot(root, "SWAP")?;
-    rename_slot(root, "CURRENT", "SWAP")?;
-    rename_slot(root, "PREVIOUS", "CURRENT")?;
-    rename_slot(root, "SWAP", "PREVIOUS")?;
+    metal_efi::slot_transaction::begin(&SlotStore(root), true)?;
     say!(
         "slot rollback: current {}, previous {}",
         note(root, "CURRENT").full(),
