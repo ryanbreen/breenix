@@ -409,7 +409,9 @@ fn raster_guard_pages() -> CaseResult {
 crate::gpu_checks::guard_pages()
 }
 
+// gpu-raster: §2.2 replaces CPU per-pixel loop accounting with setup and GPU estimates.
 fn raster_extreme_work_bound() -> CaseResult {
+    // gpu-raster: §7 bounds setup separately; COUNTERS certifies emitted device work.
     const MAX: i32 = i32::MAX;
     const MIN: i32 = i32::MIN;
     const HALF: i32 = 1 << 30;
@@ -461,19 +463,22 @@ fn raster_extreme_work_bound() -> CaseResult {
             if let Some(c) = clip {
                 fb.push_clip(c);
             }
+            let before = crate::gpu_checks::counters()?;
             work::reset();
             call(&mut fb);
+            let after = crate::gpu_checks::counters()?;
             let steps = work::steps();
-            let (bound, what) = match rect {
-                None => (64, "a call wholly outside the surface and clip".to_string()),
-                Some((_, _, w, h)) => ((2 * (w * h + h + w) + 64) as u64, format!("its clipped {w} x {h} rectangle")),
-            };
-            if steps > bound {
-                return Err(format!("{name} took {steps} steps of libgfx::work; section 7 allows {bound} for {what}"));
+            if steps > 64 {
+                return Err(format!("gpu-raster: {name} took {steps} CPU geometry steps; the per-primitive bound is 64"));
             }
-            let written = (0..24).flat_map(|y| (0..32).map(move |x| (x, y))).filter(|&(x, y)| g.color(x, y) != PAPER).count() as u64;
-            if written >= 8 && steps < written {
-                return Err(format!("{name} changed {written} pixels in {steps} counted steps; every loop iteration is a step, so a primitive writing n pixels counts at least n"));
+            let area = rect.map_or(0, |(_, _, w, h)| (w*h) as u64);
+            let emitted = after.fragment_area - before.fragment_area;
+            let draws = after.draws - before.draws;
+            if emitted > area || (area == 0 && draws != 0) || (area != 0 && draws == 0) {
+                return Err(format!("gpu-raster: {name} emitted {emitted} fragments in {draws} draws for clipped area {area}"));
+            }
+            if after.work_estimate - before.work_estimate < emitted {
+                return Err(format!("gpu-raster: {name} undercounted its GPU work estimate"));
             }
             g.sentinels()
         }))?;
