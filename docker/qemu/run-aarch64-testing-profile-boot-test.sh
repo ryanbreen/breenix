@@ -220,6 +220,12 @@ if [ ! -f "$EXT2_DISK" ]; then
     echo "Build it with: userspace/programs/build.sh --arch aarch64 && scripts/create_ext2_disk.sh --arch aarch64"
     exit 1
 fi
+# This gate builds the kernel but boots the disk already in target/; refuse one that lacks a test binary.
+if ! python3 "$BREENIX_ROOT/scripts/check-test-binaries.py" "$EXT2_DISK"; then
+    echo "FAIL: ext2 disk at $EXT2_DISK lacks testing binaries"
+    echo "Build it with: userspace/programs/build.sh --arch aarch64 && scripts/create_ext2_disk.sh --arch aarch64"
+    exit 1
+fi
 
 for i in $(seq 1 "$ITERATIONS"); do
     OUTPUT_DIR="$OUTPUT_ROOT/$i"
