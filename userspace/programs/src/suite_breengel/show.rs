@@ -176,7 +176,8 @@ fn panel_spotlight_timing() -> CaseResult {
 }
 // gpu-display: R3/R4 keeps milestone completion and gaps exact at physical scale, with certified TrueType labels.
 fn panel_milestone_ribbon() -> CaseResult { scaled_stage("milestone-ribbon") }
-fn panel_finale() -> CaseResult { stage_fixture("finale") }
+// gpu-display: R3/R4 scales the summary and TrueType labels; the exact five-second UI-clock hold remains.
+fn panel_finale() -> CaseResult { scaled_stage("finale") }
 fn panel_deterministic() -> CaseResult {
     let path=format!("/dev/shm/stage-clock-{}",process::getpid()?.raw());
     let mut page=[0u8;4096];page[..8].copy_from_slice(b"BGCLK001");page[16..24].copy_from_slice(&250_000_000u64.to_le_bytes());
