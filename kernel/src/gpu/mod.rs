@@ -14,8 +14,11 @@
 //! `CONTEXT_CREATE` sends only the context's fixed state; `kgpu` warms the fixed rendering
 //! catalogue afterwards, one pipeline per step and one step on the device at a time, and
 //! after a process-local grace for successful creations, so other requests wait behind
-//! at most one step. A draw whose pipeline has not warmed creates its programs in its
-//! own submission and waits for no other pipeline (ruling 33, #1725).
+//! at most one step. A step also waits, for at most that grace, for a pause in other
+//! requests, so a burst of requests, each sent when the one before it is answered, is
+//! split by a step at most once a grace rather than after each request. A draw whose
+//! pipeline has not warmed creates its programs in its own submission and waits for no
+//! other pipeline (ruling 33, #1725).
 //!
 //! A fence's result reaching its callers and the device's use of the memory behind it
 //! ending are separate events. Every request goes through one queue in order (the backlog,
@@ -78,7 +81,12 @@ const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
 /// Initial context grace before catalogue warm-up. Resource creation does not extend it.
+/// It also bounds how long a warm-up step is held for other requests (`WARM_QUIET_NS`).
 const WARM_GRACE_NS: u64 = 20_000_000;
+/// A warm-up step waits until no other request has been sent for this long, for at most
+/// `WARM_GRACE_NS`, so a burst of requests, each sent when the one before it is answered,
+/// is split by a step at most once a grace rather than after each request (#2103).
+const WARM_QUIET_NS: u64 = 2_000_000;
 static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// Counts interrupts and the state changes waiters wait for; a waiter sleeps only while it
 /// is unchanged.
@@ -388,6 +396,10 @@ struct Core {
     resetting: bool,
     /// The one catalogue warm-up step the device has, if any.
     warm_step: Option<WarmStep>,
+    /// When a request other than a warm-up step's was last sent to the device.
+    traffic_ns: u64,
+    /// Since when the next warm-up step has been held for that traffic.
+    warm_held: Option<u64>,
     /// The watchdog's accounts of the requests it failed, for `kgpu` to post, and how
     /// many found no room.
     hung: [Option<Hung>; HUNG_KEPT],
@@ -499,6 +511,8 @@ impl Core {
             reset_wanted: false,
             resetting: false,
             warm_step: None,
+            traffic_ns: 0,
+            warm_held: None,
             hung: [None; HUNG_KEPT],
             hung_dropped: 0,
         }
@@ -742,12 +756,16 @@ impl Core {
                 Tag::Sync(serial) => {
                     if let Some(s) = self.syncs.get_mut(&serial) {
                         s.sent_ns = Some(now);
+                        if s.warm.is_none() {
+                            self.traffic_ns = now;
+                        }
                     }
                 }
                 Tag::Submit { serial, .. } => {
                     if let Some(s) = self.subs.get_mut(&serial) {
                         s.sent_ns.get_or_insert(now);
                     }
+                    self.traffic_ns = now;
                 }
                 Tag::Background => {}
             }
@@ -793,8 +811,9 @@ impl Core {
         }
     }
 
-    /// Register synchronous request `serial`, take its holds and queue it.
-    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<(), i64> {
+    /// Register synchronous request `serial`, take its holds and queue it. A request of the
+    /// warm-up step carries the step's fence in `warm`; nobody waits for it.
+    fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
         if !self.can_queue(&req) {
             return Err(EIO);
         }
@@ -810,8 +829,8 @@ impl Core {
         let upload = (req.command_type() == wire::cmd::TRANSFER_TO_HOST_3D)
             .then(|| holds.first().copied().zip(req.fence)).flatten();
         self.syncs.insert(serial, SyncReq {
-            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: false, failed: false, why: 0,
-            warm: None,
+            upload, ctx, sent_ns: None, holds: holds.to_vec(), reading: reading.to_vec(), abandoned: warm.is_some(), failed: false,
+            why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
         self.flush();
@@ -1682,7 +1701,7 @@ fn send_sync(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]
     if !ensure_reaper() {
         return Err((ENOMEM, 0));
     }
-    with_core(|c| c.start_sync(serial, req, ctx, holds, reading))
+    with_core(|c| c.start_sync(serial, req, ctx, holds, reading, None))
         .unwrap_or(Err(ENODEV))
         .map_err(|e| (e, if e == EIO { fence_status::DEVICE_RESET } else { 0 }))
 }
@@ -1718,6 +1737,57 @@ fn exec_ok(build: impl FnOnce(Tag) -> Option<Request>, ctx: u32, holds: &[u32]) 
     } else {
         Err(EIO)
     }
+}
+
+/// Attach resources to device contexts, one synchronous `(context, resource)` command a
+/// pair, queued together in one batch so the device answers them back to back: a new
+/// context takes the process's resources, and a new resource the process's contexts, in
+/// one wait instead of a round trip a pair (#2103). Each pair has its own outcome, a
+/// success answer or EIO; a signal or a kill ends the wait, and the pairs not yet answered
+/// then fail with EINTR.
+fn attach_all(pairs: &[(u32, u32)]) -> Vec<Result<(), i64>> {
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    if !ensure_reaper() {
+        return alloc::vec![Err(ENOMEM); pairs.len()];
+    }
+    let Some(serials) = with_core(|c| pairs.iter().map(|_| c.serial()).collect::<Vec<u64>>()) else {
+        return alloc::vec![Err(ENODEV); pairs.len()];
+    };
+    let reqs: Vec<Request> =
+        pairs.iter().zip(&serials).map(|(&(ctx, id), &serial)| virgl::ctx_attach(Tag::Sync(serial), ctx, id)).collect();
+    // A pair that could not be queued has its outcome already.
+    let mut out: Vec<Option<Result<(), i64>>> = with_core(|c| {
+        reqs.into_iter()
+            .zip(pairs.iter().zip(&serials))
+            .map(|(req, (&(ctx, _), &serial))| c.start_sync(serial, req, ctx, &[], &[], None).err().map(Err))
+            .collect()
+    })
+    .unwrap_or_else(|| alloc::vec![Some(Err(ENODEV)); pairs.len()]);
+    let _ = wait_for(None, true, |c| {
+        for (slot, serial) in out.iter_mut().zip(&serials) {
+            if slot.is_some() {
+                continue;
+            }
+            if let Some(d) = c.done.remove(serial) {
+                *slot = Some(if virgl::ok(d.answer) { Ok(()) } else { Err(EIO) });
+            } else if c.syncs.get(serial).is_some_and(|s| s.failed) {
+                *slot = Some(Err(EIO));
+            }
+        }
+        out.iter().all(Option::is_some).then_some(())
+    });
+    if out.iter().any(|o| !matches!(o, Some(Ok(())))) {
+        // The waits that failed or were interrupted leave; the device's answers to them are
+        // dropped when they come.
+        with_core(|c| {
+            for &serial in &serials {
+                c.abandon(serial);
+            }
+        });
+    }
+    out.into_iter().map(|o| o.unwrap_or(Err(EINTR))).collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1859,7 +1929,10 @@ fn reaper() {
             sweep();
             next_sweep = now + 1_000_000_000;
         }
-        warm_next();
+        let deadline = match (deadline, warm_next()) {
+            (Some(d), Some(w)) => Some(d.min(w)),
+            (d, w) => d.or(w),
+        };
         let wake = match (deadline, busy) {
             (Some(d), true) => Some(d.min(next_sweep)),
             (Some(d), false) => Some(d),
@@ -1898,11 +1971,13 @@ fn reset_device(tid: u64) {
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
 /// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
+/// A step is held until no other request has been sent for `WARM_QUIET_NS`, for at most
+/// `WARM_GRACE_NS`; while it is held this returns when `kgpu` should look again.
 /// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
 /// context under the watchdog that nobody waits on; their answers go to `warm_returned`.
-fn warm_next() {
+fn warm_next() -> Option<u64> {
     let ready = |c: &Core| {
         c.warm_step.is_none()
             && c.dev.is_some()
@@ -1912,8 +1987,23 @@ fn warm_next() {
             && c.quarantined_at.is_none()
     };
     let warming = |x: &Ctx| x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != encode::ALL_WARM && now_ns() >= x.warm_after;
-    if !with_core(|c| ready(c) && c.contexts.values().any(warming)).unwrap_or(false) {
-        return;
+    let due = with_core(|c| {
+        if !(ready(c) && c.contexts.values().any(warming)) {
+            c.warm_held = None;
+            return Err(None);
+        }
+        let now = now_ns();
+        let held = *c.warm_held.get_or_insert(now);
+        let due = c.traffic_ns.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
+        if now < due {
+            return Err(Some(due));
+        }
+        c.warm_held = None;
+        Ok(())
+    })
+    .unwrap_or(Err(None));
+    if let Err(wake) = due {
+        return wake;
     }
     // A context whose process has exited is not warmed.
     sweep();
@@ -1927,7 +2017,7 @@ fn warm_next() {
         Some((ctx.id, pipeline, ctx.objects.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
-    let Some((id, pipeline, mut objects, internal)) = picked else { return };
+    let Some((id, pipeline, mut objects, internal)) = picked else { return None };
     let [vb, scratch, scratch_texture] = internal;
     let mut enc = encode::Enc::new();
     encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
@@ -1949,13 +2039,8 @@ fn warm_next() {
                     let serial = c.serial();
                     let fence = c.device_fence();
                     let req = virgl::submit(Tag::Sync(serial), id, Some(fence), words);
-                    if c.start_sync(serial, req, id, &internal, &[]).is_err() {
+                    if c.start_sync(serial, req, id, &internal, &[], Some(fence)).is_err() {
                         c.warm_returned(None);
-                        continue;
-                    }
-                    if let Some(sync) = c.syncs.get_mut(&serial) {
-                        sync.abandoned = true;
-                        sync.warm = Some(fence);
                     }
                 }
             }
@@ -1966,6 +2051,7 @@ fn warm_next() {
         c.settle(id);
     });
     notify();
+    None
 }
 
 /// Whether thread group `tgid` has a row, other than `except`, that has not terminated.
@@ -2413,12 +2499,8 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
         ids
     })
     .unwrap_or_default();
-    let mut attached = Ok(());
-    for &rid in &theirs {
-        if attached.is_ok() {
-            attached = exec_ok(|t| Some(virgl::ctx_attach(t, id, rid)), id, &[]).map(drop);
-        }
-    }
+    let pairs: Vec<(u32, u32)> = theirs.iter().map(|&rid| (id, rid)).collect();
+    let attached = attach_all(&pairs).into_iter().find(Result::is_err).unwrap_or(Ok(()));
     with_core(|c| {
         for &rid in &theirs {
             c.unhold(rid);
@@ -2564,14 +2646,16 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
         c.procs.get(&tgid).map(|p| p.contexts.values().copied().collect()).unwrap_or_default()
     })
     .unwrap_or_default();
-    for ctx in ctxs {
-        if outcome.is_ok() {
-            if let Err(e) = exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[]) {
+    if outcome.is_ok() {
+        let pairs: Vec<(u32, u32)> = ctxs.iter().map(|&ctx| (ctx, id)).collect();
+        for (&ctx, attached) in ctxs.iter().zip(attach_all(&pairs)) {
+            if let Err(e) = attached {
                 // A context that ended meanwhile needs no attachment.
                 let ended = with_core(|c| !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && x.device_alive && !x.dropped))
                     .unwrap_or(true);
                 if !ended {
                     outcome = Err(e);
+                    break;
                 }
             }
         }
