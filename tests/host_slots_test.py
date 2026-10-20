@@ -28,7 +28,7 @@ class HostSlotsTest(unittest.TestCase):
     def test_vmware_names_are_reused_per_held_mac_boot_slot(self):
         # Use the launcher's actual naming expression against two real leases.
         source = (HELPER.parents[1] / 'run.sh').read_text()
-        name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
+        name = next(line.strip() for line in source.splitlines() if line.strip().startswith('VM_NAME='))
         script = (f'source {HELPER.with_suffix(".sh")}; '
                   + self.vmware_name_function(source) + '; host_slot_acquire mac-boot; ' + name + '; '
                   'echo READY:$VM_NAME; read -r release')
@@ -50,7 +50,7 @@ class HostSlotsTest(unittest.TestCase):
 
     def test_unqueued_vmware_names_do_not_require_or_reuse_a_slot(self):
         source = (HELPER.parents[1] / 'run.sh').read_text()
-        name = next(line.strip() for line in source.splitlines() if 'VM_NAME=' in line)
+        name = next(line.strip() for line in source.splitlines() if line.strip().startswith('VM_NAME='))
         script = (f'source {HELPER.with_suffix(".sh")}; '
                   + self.vmware_name_function(source) + '; set -e; '
                   'host_slot_acquire mac-boot; ' + name + '; echo NAME:$VM_NAME; '

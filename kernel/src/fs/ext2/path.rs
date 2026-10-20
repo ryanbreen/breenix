@@ -9,9 +9,9 @@ impl Ext2Fs {
     pub fn lookup_in_dir(
         &self,
         dir_inode: &Ext2Inode,
-        name: &str,
+        name: impl AsRef<[u8]>,
     ) -> Result<Option<u32>, &'static str> {
-        self.lookup_in_dir_bytes(dir_inode, name.as_bytes())
+        self.lookup_in_dir_bytes(dir_inode, name.as_ref())
     }
     pub fn lookup_in_dir_bytes(&self, dir_inode: &Ext2Inode, name: &[u8]) -> Result<Option<u32>, &'static str> {
         let dir_data = self.read_directory(dir_inode)?;

@@ -518,7 +518,8 @@ impl Ext2Inode {
     ///
     /// # Returns
     /// A new inode configured as a symbolic link
-    pub fn new_symlink(target: &str) -> Self {
+    pub fn new_symlink(target: impl AsRef<[u8]>) -> Self {
+        let target = target.as_ref();
         let now = crate::time::current_unix_time() as u32;
         let target_len = target.len();
 
@@ -546,7 +547,7 @@ impl Ext2Inode {
         // Fast symlink: store target in i_block array if it fits (up to 60 bytes)
         // i_block is 15 * 4 = 60 bytes
         if target_len <= 60 {
-            let target_bytes = target.as_bytes();
+            let target_bytes = target;
             // Safety: We're writing bytes into the i_block array which is u32[15]
             // We treat it as a byte array of 60 bytes
             // Use addr_of_mut! to get a raw pointer without creating a reference to packed field

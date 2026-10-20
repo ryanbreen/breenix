@@ -144,6 +144,25 @@ impl Resolved {
         }
     }
 
+    /// The final component of the physical pathname.
+    pub fn final_name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or("")
+    }
+}
+
+impl Resolved<Vec<u8>> {
+    /// The exact final directory-entry name, including bytes outside UTF-8.
+    pub fn final_name(&self) -> &[u8] {
+        self.path.rsplit(|byte| *byte == b'/').next().unwrap_or(&[])
+    }
+
+    /// An exact text view for the virtual namespace, without replacement decoding.
+    pub fn virtual_path(&self) -> Option<&str> {
+        if self.target == Target::Virtual { core::str::from_utf8(&self.path).ok() } else { None }
+    }
+}
+
+impl<P: AsRef<[u8]>> Resolved<P> {
     /// The ext2 filesystem that holds the target, if any.
     pub fn mount(&self) -> Option<Mount> {
         match self.target {
@@ -158,15 +177,11 @@ impl Resolved {
         match self.target {
             Target::Inode { mount: Mount::Root, ino, .. } => ext2::root_namespace().is_mount(ino),
             Target::Inode { mount: Mount::Home, ino, .. } => ino == EXT2_ROOT_INO,
-            Target::Virtual => self.path == "/dev" || self.path == "/proc",
+            Target::Virtual => self.path.as_ref() == b"/dev" || self.path.as_ref() == b"/proc",
             Target::Absent { .. } => false,
         }
     }
 
-    /// The final component of the physical pathname.
-    pub fn final_name(&self) -> &str {
-        self.path.rsplit('/').next().unwrap_or("")
-    }
 }
 
 impl<P> Resolved<P> {
@@ -376,35 +391,35 @@ pub fn resolve_create(path: &str) -> Result<Resolved, u64> {
 /// Resolve with the caller's chosen credentials (access uses real IDs) and
 /// optionally a directory descriptor, using the same component walk.
 pub(crate) fn resolve_from(
-    path: &str,
+    path: &[u8],
     follow: bool,
     start: Option<WorkingDir>,
     cred: &super::permissions::Credentials,
-) -> Result<Resolved, u64> {
-    walk_with(path, Mode::Lookup { follow }, start, cred)
+) -> Result<Resolved<Vec<u8>>, u64> {
+    walk_bytes(path, Mode::Lookup { follow }, start, cred)
 }
 
 pub(crate) fn resolve_create_from(
-    path: &str,
+    path: &[u8],
     start: Option<WorkingDir>,
     cred: &super::permissions::Credentials,
-) -> Result<Resolved, u64> {
-    walk_with(path, Mode::Create, start, cred)
+) -> Result<Resolved<Vec<u8>>, u64> {
+    walk_bytes(path, Mode::Create, start, cred)
 }
 pub(crate) fn resolve_entry_from(
-    path: &str,
+    path: &[u8],
     start: Option<WorkingDir>,
     cred: &super::permissions::Credentials,
-) -> Result<Resolved, u64> {
-    walk_with(path, Mode::Entry, start, cred)
+) -> Result<Resolved<Vec<u8>>, u64> {
+    walk_bytes(path, Mode::Entry, start, cred)
 }
 
 pub(crate) fn resolve_rename_from(
-    path: &str,
+    path: &[u8],
     start: Option<WorkingDir>,
     cred: &super::permissions::Credentials,
-) -> Result<Resolved, u64> {
-    walk_with(path, Mode::Rename, start, cred)
+) -> Result<Resolved<Vec<u8>>, u64> {
+    walk_bytes(path, Mode::Rename, start, cred)
 }
 
 fn walk(path: &str, mode: Mode) -> Result<Resolved, u64> {

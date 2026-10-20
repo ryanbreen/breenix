@@ -54,13 +54,13 @@ impl Ext2Fs {
     pub fn create_node(
         &mut self,
         parent: u32,
-        name: &str,
+        name: impl AsRef<[u8]>,
         mode: u16,
         uid: u32,
         gid: u32,
         dev: u32,
     ) -> Result<u32, &'static str> {
-        self.create_node_prepared(parent, name.as_bytes(), mode, uid, gid, dev, |_, ino| Ok(ino))
+        self.create_node_prepared(parent, name.as_ref(), mode, uid, gid, dev, |_, ino| Ok(ino))
     }
 
     /// Create a node and name it, with `prepare` readying the caller's
