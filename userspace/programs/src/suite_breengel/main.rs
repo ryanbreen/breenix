@@ -97,6 +97,7 @@ macro_rules! pictured {
 
 mod images;
 mod raster;
+mod gpu_checks;
 mod show;
 mod stage_fixtures;
 mod stage_serial;

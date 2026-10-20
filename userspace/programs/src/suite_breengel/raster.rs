@@ -404,15 +404,9 @@ fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
     ]
 }
 
+// gpu-raster: GPU copies must respect guarded user buffers; device draws must preserve a canary target.
 fn raster_guard_pages() -> CaseResult {
-    for (name, call) in extreme_calls() {
-        step("3, 4, 7", isolated(name, 2_000, || {
-            let g = padded(32, 24);
-            call(&mut g.fb());
-            g.sentinels().map_err(|e| format!("{name}: {e}"))
-        }))?;
-    }
-    Ok(())
+crate::gpu_checks::guard_pages()
 }
 
 fn raster_extreme_work_bound() -> CaseResult {
