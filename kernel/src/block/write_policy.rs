@@ -42,9 +42,12 @@ impl core::fmt::Display for HardwareDisk {
     }
 }
 
+// The fence exists on physical x86 boots; host tests compile it too.
+#[cfg(any(target_arch = "x86_64", test))]
 const RANGES: usize = 2;
 
 /// The disk writes may reach and the inclusive LBA ranges on it.
+#[cfg(any(target_arch = "x86_64", test))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Fence {
     pub disk: Option<HardwareDisk>,
@@ -53,6 +56,7 @@ pub struct Fence {
     pub sealed: bool,
 }
 
+#[cfg(any(target_arch = "x86_64", test))]
 impl Fence {
     pub const CLOSED: Fence = Fence { disk: None, ranges: [(0, 0); RANGES], count: 0, sealed: false };
 
