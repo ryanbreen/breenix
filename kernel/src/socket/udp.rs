@@ -310,9 +310,37 @@ pub enum Delivery {
     RegistryBusy,
 }
 
+// FORCING (scratch, never for main): treat every lookup of port 54321 as
+// contended for 50 ms from the first one that finds it bound, as a 50 ms
+// registry hold on another CPU would. udp_socket_test's loopback datagram goes
+// to that port.
+static FORCE_REFUSE_SINCE_MS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+fn forced_refusal(port: u16, bound: bool) -> bool {
+    use core::sync::atomic::Ordering;
+    if port != 54321 {
+        return false;
+    }
+    let now = crate::time::get_monotonic_time().max(1);
+    let since = FORCE_REFUSE_SINCE_MS.load(Ordering::Acquire);
+    let since = if since != 0 {
+        since
+    } else if !bound {
+        return false;
+    } else {
+        match FORCE_REFUSE_SINCE_MS.compare_exchange(0, now, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => now,
+            Err(since) => since,
+        }
+    };
+    now.saturating_sub(since) < 50
+}
+
 fn receivers(dst: [u8; 4], port: u16) -> Result<Vec<Weak<Socket>>, Delivery> {
     crate::arch_without_interrupts(|| {
-        let registry = match SOCKET_REGISTRY.try_lock() {
+        let registry = match SOCKET_REGISTRY
+            .try_lock()
+            .filter(|registry| !forced_refusal(port, !registry.range(port).is_empty())) {
             Some(registry) => registry,
             None => {
                 UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
