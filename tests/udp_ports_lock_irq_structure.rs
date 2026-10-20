@@ -390,8 +390,8 @@ fn handle_udp_contended_arm_has_no_logging_rule_is_not_vacuous() {
     let source = repo_text(NET_UDP);
     let start = source.find("pub fn handle_udp(").unwrap();
     let mutated = format!("{}{}", &source[..start], source[start..].replacen(
-        "pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {",
-        "pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {\n        log::debug!(\"UDP: contended\");",
+        "pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) -> Handled {",
+        "pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) -> Handled {\n        log::debug!(\"UDP: contended\");",
         1,
     ));
     assert_ne!(source, mutated, "mutation text must match real source");
