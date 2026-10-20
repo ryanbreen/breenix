@@ -1,4 +1,3 @@
-<!-- claim-lint:ok: Coordinator requirements for docs/gui/gpu.md section 2.7; normative rulings, not measured acceptance. -->
 # BreenGL on the GPU core: coordinator rulings
 
 B1 (2026-10-20, 3:20 PM ET). Route: docs/gui/gpu.md section 2.7 as written, the plan of record. Merge origin/main into
@@ -32,4 +31,4 @@ B8 (2026-10-20, 8:15 PM ET). Same principle as B7 for screen size: a kept case t
    (first-composite pixel counts such as composition/damage-work and damage-screen's 1,024,000; SCANOUT_READBACK into a
    1280x800 buffer in the screen()-based cases) becomes a changed case checking the same property at the mode the
    contract mandates (2560x1600, so 4,096,000 for a full first composite), with every screen-sized buffer derived from
-   the display's reported mode, never a constant. Recount the partition and list each case (#2174).
+   the display's reported mode, never a constant. Recount the partition and list each case (#2174; coordinator requests closure).

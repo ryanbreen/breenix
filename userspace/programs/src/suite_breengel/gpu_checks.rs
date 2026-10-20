@@ -8,8 +8,7 @@ pub(crate) fn counters() -> Result<ga::Counters, String> {
     if r == 0 { Ok(c) } else { Err(format!("gpu COUNTERS {}", outcome(r))) }
 }
 
-// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
-/// Case-owned device resources; all handles are released even when an assertion fails.
+/// Case-owned device resources with handle cleanup in Drop.
 struct Fixture { context: bgl::Context, target: u64, texture: u64 }
 impl Fixture {
     fn new(w:u32,h:u32) -> Result<Self,String> {
@@ -91,8 +90,7 @@ pub(crate) fn stride_padding()->CaseResult {
     }Ok(())
 }
 
-// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
-// gpu-raster: three-byte pixels are transfer formats, never render targets (§2).
+// gpu-raster: three-byte upload and readback conversion (§2).
 pub(crate) fn bpp3_bpp4()->CaseResult {
     let mut f=Fixture::new(14,18).cite("2")?;
     declare_fixture(14*18*3);
@@ -164,7 +162,6 @@ pub(crate) fn cpu_render_planted()->CaseResult {
     ensure(accounting_refusal(&before,&after,0,0,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")
 }
 
-// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 static DECLARED_FIXTURE:AtomicU64=AtomicU64::new(0);
 pub(crate) fn declared_fixture()->u64 {DECLARED_FIXTURE.load(Relaxed)}
 pub(crate) fn declare_fixture(bytes:u64){DECLARED_FIXTURE.fetch_add(bytes,Relaxed);}

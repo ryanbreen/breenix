@@ -2,8 +2,8 @@
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
 This is the normative DISPLAY-owned reconciliation for `gpu.md` section 2.7 step 5, from `f0ed099e`.
-The 393-case baseline becomes 399: **318 kept, 70 changed, 5 removed, 11 added**.
-The changed cases comprise 55 GPU-only and 15 R3/R4 changes; the table below assigns their lanes.
+The 393-case baseline becomes 399: **310 kept, 78 changed, 5 removed, 11 added**.
+The changed cases comprise 63 GPU-only and 15 R3/R4 changes; the table below assigns their lanes.
 No row asserts GPU acceptance; lane implementations and final proof are recorded by the contract PR.
 
 B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps the core and pure libraries; B4 excludes the obsolete x86 lane; B5 limits this effort to ARM64 QEMU with `--gpu-gl`. B6 and B7 reclassify mechanisms; B8 also reclassifies retired screen dimensions.
@@ -37,33 +37,39 @@ scratch copy area. Guarded extreme UPLOAD clips its rectangle before testing use
 the oversized rectangle at (0,0) is EFAULT; an origin outside the target is EINVAL.
 `surface-validate` retains StrideTooShort and SizeOverflow on conversion layouts.
 Destroy registers and lists its window; destroy and fork check successful target readback
-before testing revocation or inheritance. Scale-2 composition compares at `(x/2,y/2)`;
-widgets double the rectangle and surface as well as text and border. HiDPI text uses the
-reported scale and compares actual drawn pixels against replicated small reference pixels.
+before testing revocation or inheritance. The dedicated scale-2 composition fixture uses
+GPU-scaled source patterns in double-sized client targets and double physical placement, including overlap
+and edge clipping; legacy pattern scenes still use physical coordinates. The widget takes
+logical Rect(20,16,120,40) and must draw at physical Rect(40,32,240,80). HiDPI text calls
+the production UI text entry point in logical coordinates at the theme's logical size;
+the reference uses native-size outline coverage and rejects replicated small pixels.
 
-Raster input declarations cover the 7-byte 5×7 glyph rows per input character, the
-16 px bitmap glyph's width × 16 coverage bytes, and the literal copy-row input bytes.
-These are input fixtures (§2.4), not generated expected images; accounting still requires
-exact declared Fixture bytes and no Image uploads. Declared bytes are measured separately
-for the extreme calls; shapes still declare no fixtures. Accounting files are removed
-when the category is checked.
+### Unresolved fixture accounting
 
-### Landed-core checks
+Major 5 remains a landing blocker: exact declared Fixture-byte equality rejects culling
+and cached font tables. The extreme 1,000-W runs still declare 7,000 bytes, including
+when outside the target; a 32×24 BGRX image is 3,072 bytes. A byte ceiling alone cannot establish
+that a Fixture upload contains only source font tables rather than rendered pixels.
+The check is retained pending an operator decision on source provenance and representation.
 
-The following former changed cases use available core interfaces and are kept. Their
-mechanism descriptions remain in gpu.md §2.2; they impose no missing lane work:
+### B7 mechanism migrations
 
-- `raster/guard-pages`: retains its property on the landed GPU core.
-- `raster/stride-padding`: retains its property on the landed GPU core.
-- `raster/surface-validate`: retains its property on the landed GPU core.
-- `raster/bpp3-bpp4`: retains its property on the landed GPU core.
-- `raster/copy-row-clip`: retains its property on the landed GPU core.
-- `raster/surface-owned`: retains its property on the landed GPU core.
-- `isolation/efault-mouse`: retains its property on the landed GPU core.
-- `windows/stale-id`: retains its property on the landed GPU core.
+Availability on the GPU core does not make a changed check kept. These cases change their
+interface, guarded mechanism or expected error, and remain changed under B7 and the Keep
+definition in gpu.md §2.2. Passing their bodies does not establish unchanged coverage:
 
-`raster/cpu-render-planted` remains added because it has no baseline identity; its runtime
-negative controls already execute on the core and are expected to pass before lane work.
+| Case | Lane | Migration and lost CPU coverage |
+|---|---|---|
+| `raster/guard-pages` | gpu-raster | Guard UPLOAD/READBACK user copies and a device canary; CPU drawing into guard-paged surfaces goes. Extreme UPLOAD clips before user access and expects EFAULT for an inaccessible clipped source. |
+| `raster/stride-padding` | gpu-raster | Check padded upload/readback rows instead of CPU drawing row sentinels. |
+| `raster/surface-validate` | gpu-raster | Target creation replaces CPU surface validation; Null and Misaligned are retired, and conversion layouts retain StrideTooShort and SizeOverflow. |
+| `raster/bpp3-bpp4` | gpu-raster | Three-byte render targets go; RGB upload and readback conversion remain. |
+| `raster/copy-row-clip` | gpu-raster | Pixel-granular GPU row clipping replaces byte-granular CPU partial-pixel writes. |
+| `raster/surface-owned` | gpu-raster | GPU resource allocation/release accounting replaces CPU-owned surface allocation. |
+| `isolation/efault-mouse` | gpu-display | Retired framebuffer descriptor/stream copies become GPU descriptor/stream copies; mouse checks remain. |
+| `windows/stale-id` | gpu-window | Retired MAP_COMMITTED becomes GPU ACQUIRE; stale ids remain ENOENT and publish no buffer. |
+
+`raster/cpu-render-planted` remains added because it has no baseline identity.
 
 ### B8 screen migration
 
@@ -119,8 +125,9 @@ Commit-message and PR-body lint records are retained in the PR description.
 ### Minor findings
 
 Fixed: guard both ends and check the canary after rejected uploads; set the composed
-stage fixture flags to 3; remove accounting files; remove duplicate prose; provide
-claim-lint records and a PR body without host execution details.
+stage fixture flags to 3; avoid accounting-directory creation on filtered runs that
+exclude the category auditor; restore mechanism reasons, lane attribution and GPU row
+references; restore the GPU suite total; provide claim-lint records.
 
 Deferred: per-primitive instance ceilings across the category; static dependency/upload
 scanner scope and alias gaps; retired CPU helper dependencies pending their lanes;
@@ -147,14 +154,14 @@ acceptance and remain review follow-up work.
 | `raster/circle-fill` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/circle-fill-offscreen-left` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/circle-outline` | kept | unchanged | gpu.md 2.2 raster Keep row |
-| `raster/guard-pages` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/guard-pages` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row; B7 mechanism migration above. |
 | `raster/extreme-work-bound` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
-| `raster/stride-padding` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
-| `raster/surface-validate` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
-| `raster/bpp3-bpp4` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/stride-padding` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row; B7 mechanism migration above. |
+| `raster/surface-validate` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row; B7 mechanism migration above. |
+| `raster/bpp3-bpp4` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row; B7 mechanism migration above. |
 | `raster/bgr-order` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/x-byte` | kept | unchanged | gpu.md 2.2 raster Keep row |
-| `raster/copy-row-clip` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/copy-row-clip` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row; B7 mechanism migration above. |
 | `raster/premultiply` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/alpha-over-examples` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/alpha-over-sweep` | kept | unchanged | gpu.md 2.2 raster Keep row |
@@ -173,7 +180,7 @@ acceptance and remain review follow-up work.
 | `raster/damage-exact` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/damage-noop` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/damage-sound` | kept | unchanged | gpu.md 2.2 raster Keep row |
-| `raster/surface-owned` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/surface-owned` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row; B7 mechanism migration above. |
 | `raster/cpu-pixels-zero` | added | gpu-raster | gpu.md 2.2 New GPU-only row | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | `raster/cpu-render-planted` | added | gpu-raster | gpu.md 2.2 New GPU-only row |
 | `text/fonts-pinned` | kept | unchanged | gpu.md 2.2 text Keep row |
@@ -371,7 +378,7 @@ acceptance and remain review follow-up work.
 | `windows/multi-window` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/destroy` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
 | `windows/drop-destroys` | kept | unchanged | gpu.md 2.2 windows Keep row |
-| `windows/stale-id` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `windows/stale-id` | changed | gpu-window | gpu.md 2.2; B7 mechanism migration above. |
 | `windows/register-unwinds` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/exit-cleanup` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/exec-cleanup` | kept | unchanged | gpu.md 2.2 windows Keep row |
@@ -398,7 +405,7 @@ acceptance and remain review follow-up work.
 | `windows/distinct-content` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `windows/raw-client` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/every-target` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
-| `windows/commit-waits-render` | added | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `windows/commit-waits-render` | added | gpu-window | gpu.md 2.2 New GPU-only row; COMMIT publication waits for successful GPU rendering. |
 | `isolation/other-register` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/other-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/other-position` | kept | unchanged | gpu.md 2.2 isolation Keep row |
@@ -422,7 +429,7 @@ acceptance and remain review follow-up work.
 | `isolation/efault-events` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-inject` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-composite` | kept | unchanged | gpu.md 2.2 isolation Keep row |
-| `isolation/efault-mouse` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `isolation/efault-mouse` | changed | gpu-display | gpu.md 2.2; B7 mechanism migration above. |
 | `isolation/efault-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-readback` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `isolation/efault-claim` | kept | unchanged | gpu.md 2.2 isolation Keep row |
@@ -459,13 +466,13 @@ acceptance and remain review follow-up work.
 | `composition/cursor-stationary-repaint` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/flush-irq-bound → composition/irq-bound` | changed | gpu-display | gpu.md 2.2 composition GPU-only row |
 | `composition/present-rate` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/takeover-giveback` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
-| `composition/ownership-stack` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/takeover-giveback` | changed | gpu-display | B7: fb_mmap/FLUSH retired; GPU PRESENT restores the prior frame exactly. B8: reported-mode readback. |
+| `composition/ownership-stack` | changed | gpu-display | B7: fb_mmap/FLUSH retired; owner death restores the giver's GPU binding and exact frame. B8: reported-mode readback. |
 | `composition/fbinfo-geometry` | changed | gpu-display | gpu.md 2.2 composition GPU-only row |
 | `composition/fbmmap-pane` | removed | gpu-display | gpu.md 2.2 retired fb_mmap/FLUSH |
 | `composition/flush-clip` | removed | gpu-display | gpu.md 2.2 retired fb_mmap/FLUSH |
-| `composition/gpu-composite` | added | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
-| `composition/target-lifetime` | added | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/gpu-composite` | added | gpu-display | gpu.md 2.2 New GPU-only row; GPU composition without CPU uploads. B8: reported-mode readback. |
+| `composition/target-lifetime` | added | gpu-display | gpu.md 2.2 New GPU-only row; retain backing through the last hold. B8: reported-mode readback. |
 | `composition/scale-2` | added | gpu-display | gpu.md 2.2 New R4 row |
 | `events/key-press-release` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/key-text` | kept | unchanged | gpu.md 2.2 events Keep row |
@@ -532,9 +539,9 @@ acceptance and remain review follow-up work.
 | `panel/quiet-window` | kept | unchanged | gpu.md 2.2 panel Keep row |
 | `panel/boot-ribbon` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `panel/boundary-notice` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/handoff` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/handoff` | changed | gpu-display | B7: shared fb_mmap/FLUSH paint retired; child presents a GPU target and restores the stage exactly. B8: reported-mode readback. |
 | `panel/between-cases` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `panel/cursor-restore` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `panel/cursor-trail-detected` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
-| `panel/kernel-screens` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/kernel-screens` | changed | gpu-display | B7: shared fb_mmap/FLUSH paint retired; GPU console resource and exact restoration replace it. B8: reported-mode readback. |
 | `panel/stage-hidpi` | added | gpu-display | gpu.md 2.2 New R4 row |

@@ -1016,7 +1016,7 @@ and judges nothing with it.
 | `isolation`: per-process isolation | 25 | `handle-private`, `handle-guess`, `fork-no-handles`, `exec-reclaims`, `exit-reclaims`, `kill-mid-submit`, `killed-work-drains`, `quota-memory`, `quota-handles`, `quota-contexts`, `work-estimate-refused`, `foreign-target-draw`, `foreign-readback`, `display-context-unreachable`, `no-addresses`, `fuzz-streams`, `bounded-validation`, `efault-submit`, `efault-readonly`, `quiet-errors`, `unknown-op`, `test-hooks-absent`, `killable-wait`, `client-cannot-scanout`, `irq-masked-bound` |
 | `present`: modes, HiDPI & present | 16 | `modes-listed`, `mode-1280x800`, `mode-2560x1600`, `scale-reported`, `scanout-bind`, `flip`, `present-completion`, `present-owner-only`, `readback-presented`, `takeover-giveback`, `ownership-stack`, `console-restored`, `firmware-handoff`, `mode-change-content`, `fault-skip-flush`, `fault-wrong-scanout` |
 | `performance`: frame rate & latency | 9 | `clear-rate-2560`, `rect-throughput`, `submit-latency`, `first-draw-latency`, `readback-time-2560`, `upload-bandwidth`, `coverage-throughput`, `wait-no-spin`, `present-rate-2560` |
-| **Total** | **393** | **318** | **55** | **2** | **15** | **3** | **6** | **5** | **399** |
+| **Total** | **170** | |
 
 Notes on the cases that carry the most weight:
 
@@ -1375,7 +1375,7 @@ implementation. This amendment states those interfaces, in its own PR before the
 
 | Category | Before | Keep | Change GPU-only | Go GPU-only | Change R3/R4 | Go R3 | Add GPU-only | Add R4 | After |
 |---|---|---|---|---|---|---|---|---|---|
-| `raster` | 40 | 39 | 1 | 0 | 0 | 0 | 2 | 0 | 42 |
+| `raster` | 40 | 33 | 7 | 0 | 0 | 0 | 2 | 0 | 42 |
 | `text` | 37 | 36 | 1 | 0 | 0 | 0 | 0 | 1 | 38 |
 | `font-parser` | 22 | 20 | 2 | 0 | 0 | 0 | 0 | 0 | 22 |
 | `inflate` | 21 | 21 | 0 | 0 | 0 | 0 | 0 | 0 | 21 |
@@ -1385,13 +1385,13 @@ implementation. This amendment states those interfaces, in its own PR before the
 | `widgets` | 23 | 16 | 0 | 0 | 7 | 0 | 0 | 1 | 24 |
 | `text-entry` | 19 | 18 | 0 | 0 | 1 | 0 | 0 | 0 | 19 |
 | `icons` | 12 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 12 |
-| `windows` | 39 | 31 | 8 | 0 | 0 | 0 | 1 | 0 | 40 |
-| `isolation` | 38 | 34 | 4 | 0 | 0 | 0 | 0 | 0 | 38 |
+| `windows` | 39 | 30 | 9 | 0 | 0 | 0 | 1 | 0 | 40 |
+| `isolation` | 38 | 33 | 5 | 0 | 0 | 0 | 0 | 0 | 38 |
 | `composition` | 27 | 8 | 17 | 2 | 0 | 0 | 2 | 1 | 28 |
 | `events` | 32 | 31 | 1 | 0 | 0 | 0 | 0 | 0 | 32 |
 | `scanout` | 15 | 0 | 15 | 0 | 0 | 0 | 1 | 1 | 17 |
 | `panel` | 21 | 5 | 6 | 0 | 7 | 3 | 0 | 1 | 19 |
-| **Total** | **393** | **318** | **55** | **2** | **15** | **3** | **6** | **5** | **399** |
+| **Total** | **393** | **310** | **63** | **2** | **15** | **3** | **6** | **5** | **399** |
 
 <!-- claim-lint:ok: Normative classification defined by docs/gui/breengel-gpu-cases.md and docs/gui/breengel-gpu-rulings.md. -->
 **Keep** means the check, its contract section and its expected values stand; only the implementation under
@@ -1401,7 +1401,7 @@ cases including `raster-identical`, the bitmap-font cases and the four reviewed-
 now judges a device readback of GPU output. A pixel the GPU draws differently is a defect in a pipeline,
 never a new expectation.
 
-**GPU-only mechanisms** (including already-landed checks), with how each stays exact and what it no longer covers:
+**GPU-only mechanisms** (classified changed even when already implemented on the core), with how each stays exact and what it no longer covers:
 
 - `raster`:
   - `guard-pages` splits into its two remaining risks: guard pages around the user buffers of `UPLOAD` and
@@ -1438,23 +1438,22 @@ never a new expectation.
   translation, submission, fence completion and readback copies) during full-screen damage.
 - `scanout`: `mode-set` checks the mode reported by `MODES` instead of `fb_info` (2560×1600 at scale 2,
   ruling R4); `device-path` and `boundary-stated` use record version 2's rows and boundary code 4.
-
 - `events` and `panel`: B7 replaces their retired mapping/paint mechanisms; the
   delivered resize dimensions and exact stage/console restoration properties remain.
 
 **B6/B7/B8 reconciliation.** The [coordinator rulings](breengel-gpu-rulings.md) and
 [case document](breengel-gpu-cases.md) record the mechanism and screen migrations, including
-the return of already-landed core checks to kept. The partition is **318 kept and
-70 changed**, with five removals and eleven additions: 399 cases. The case document
+the eight core mechanism migrations classified changed. The partition is **310 kept and
+78 changed**, with five removals and eleven additions: 399 cases. The case document
 lists the B8 cases individually; buffers and screen indexing use MODES, and first composite
 counts are the full reported mode. The table above is generated from those case identities.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 | Reclassified case | Replacement and retained property |
 |---|---|
-| `windows/stale-id` | MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. Already landed; counted kept. |
+| `windows/stale-id` | MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. Classified changed under B7. |
 | `events/resized` | MAP_COMMITTED retired; RESIZE target readback must have the delivered size and stride. |
-| `isolation/efault-mouse` | fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. Already landed; counted kept. |
+| `isolation/efault-mouse` | fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. Classified changed under B7. |
 | `composition/takeover-giveback` | fb_mmap/FLUSH paint retired; GPU PRESENT must restore the prior frame exactly. |
 | `composition/ownership-stack` | fb_mmap/FLUSH paint retired; compositor death must restore the giver's GPU binding and exact frame. |
 | `panel/handoff` | Shared paint used fb_mmap/FLUSH; child now presents a GPU target and restores the stage exactly. |
