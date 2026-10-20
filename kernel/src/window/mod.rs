@@ -323,9 +323,6 @@ pub mod who {
     pub fn compositor(_: bool, compositor: bool, _: &Caller) -> bool {
         compositor
     }
-    pub fn owner_or_compositor(owner: bool, compositor: bool, _: &Caller) -> bool {
-        owner || compositor
-    }
     pub fn owner_compositor_or_root(owner: bool, compositor: bool, caller: &Caller) -> bool {
         owner || compositor || caller.is_root()
     }

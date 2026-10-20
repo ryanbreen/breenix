@@ -9,10 +9,10 @@
 //! leaves no trace (section 17.5). No path here writes to any kernel output, except the
 //! payload of an armed `emit-diagnostic`.
 
-use breengel_abi::errno::{EFAULT, EINVAL, EPERM};
+use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
-    Create, Cursor, Geometry, Give, List, MapBuffers, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
+    Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
@@ -142,7 +142,9 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::WRITE_EVENTS => ops::write_events(&caller, &input::<WriteEvents>(arg)?),
         op::EVENT_FD => ops::event_fd(&caller, input::<WinId>(arg)?.id),
         op::SET_GEOMETRY => ops::set_geometry(&caller, &input::<Geometry>(arg)?),
-        op::MAP_COMMITTED => committing::<MapBuffers>(arg, |m, out| ops::map_committed(&caller, m, out)),
+        // TODO(gpu-display): B2 retires CPU buffer mappings; the GPU compositor must use
+        // GPU resources instead (docs/gui/gpu.md section 2.7).
+        op::MAP_COMMITTED => Err(ENOSYS),
         op::CAPTURE => inout::<Capture>(arg, |c| ops::capture(&caller, c)),
         op::MAP_TREE => committing::<MapTree>(arg, |m, out| ops::map_tree(&caller, m, out)),
         op::CLAIM_COMPOSITOR => committing::<Claim>(arg, |c, out| ops::claim(&caller, c, out)),

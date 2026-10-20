@@ -11,9 +11,8 @@ use breengel_abi::errno::{
     EAGAIN, EBUSY, EFAULT, EINTR, EINVAL, EMFILE, ENOENT, ENOMEM, EPERM, ETIMEDOUT,
 };
 use breengel_abi::{
-    event_kind, limits, Acquire, Capture, Claim, Commit, Create, Geometry, List, MapBuffers,
-    MapTree, Meta, NoChange, Plain, ReadEvents, Rect, Resize, Title, WinInfo, WindowEvent,
-    WriteEvents, READ_EVENTS_BLOCK,
+    event_kind, limits, Acquire, Capture, Claim, Commit, Create, Geometry, List, MapTree, Meta,
+    NoChange, Plain, ReadEvents, Rect, Resize, Title, WinInfo, WindowEvent, WriteEvents, READ_EVENTS_BLOCK,
 };
 
 use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
@@ -1088,44 +1087,6 @@ pub fn set_geometry(caller: &Caller, g: &Geometry) -> Result<u64, i32> {
     w.y = g.y;
     w.z = g.z;
     w.geometry = g.flags;
-    Ok(0)
-}
-
-/// `MAP_COMMITTED` (owner or compositor): every buffer mapped read-only into the caller. The
-/// mappings are undone when the output cannot be copied to `out`.
-pub fn map_committed(caller: &Caller, m: &mut MapBuffers, out: u64) -> Result<u64, i32> {
-    if m.reserved != 0 {
-        return Err(EINVAL);
-    }
-    let (mems, stride) = {
-        let mut reg = REGISTRY.lock();
-        let w = reg.window(m.id, caller, who::owner_or_compositor)?;
-        let mems: Vec<Arc<Mem>> = w.buffers.iter().map(|b| b.mem.clone()).collect();
-        (mems, w.stride())
-    };
-    let mut mapped: Vec<(Arc<Mem>, u64)> = Vec::new();
-    for mem_i in mems.into_iter() {
-        match mem::map(&mem_i, false) {
-            Ok(addr) => mapped.push((mem_i, addr)),
-            Err(e) => {
-                for (mm, addr) in mapped.iter() {
-                    mem::unmap(mm, *addr);
-                }
-                return Err(e);
-            }
-        }
-    }
-    m.buffer = [0; 3];
-    for (i, (_, addr)) in mapped.iter().enumerate() {
-        m.buffer[i] = *addr;
-    }
-    m.stride = stride;
-    if let Err(e) = crate::syscall::window::copy_out(out, &*m) {
-        for (mm, addr) in mapped.iter() {
-            mem::unmap(mm, *addr);
-        }
-        return Err(e);
-    }
     Ok(0)
 }
 
