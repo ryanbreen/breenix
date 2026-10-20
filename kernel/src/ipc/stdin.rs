@@ -107,6 +107,7 @@ impl StdinBufferLock {
                 drop(buffer);
                 if received {
                     wake_blocked_readers_try();
+                    wake_compositor();
                 }
                 return;
             };
@@ -122,6 +123,7 @@ impl StdinBufferLock {
         drop(buffer);
         if received {
             wake_blocked_readers_try();
+            wake_compositor();
         }
     }
 }
@@ -299,6 +301,7 @@ pub fn push_byte(byte: u8) {
 
         // Wake any blocked readers
         wake_blocked_readers();
+        wake_compositor();
     } else {
         log::warn!("stdin buffer full, dropping byte: 0x{:02x}", byte);
     }
@@ -318,6 +321,7 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
             wake_blocked_readers_try();
+            wake_compositor();
             return true;
         }
     }
@@ -331,10 +335,19 @@ pub fn push_eof_from_irq() -> bool {
             INPUT_READERS.wake_up_deferred();
             drop(buffer);
             wake_blocked_readers_try();
+            wake_compositor();
             return true;
         }
     }
     false
+}
+
+/// The window manager reads this queue (its stdin is the console's) and waits in
+/// `compositor_wait`, which reports it ready while the queue holds data. Each admission
+/// to the queue wakes it, including a key a busy console TTY admits later from its pending queue.
+fn wake_compositor() {
+    #[cfg(target_arch = "aarch64")]
+    crate::syscall::graphics::wake_compositor_for_input();
 }
 
 /// Flush type-ahead already transferred from the console line discipline.

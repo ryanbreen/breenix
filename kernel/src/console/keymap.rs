@@ -26,25 +26,71 @@ const CTRL_ALT_F1: u8 = 6;
 const ALT_LEFT: u8 = 12;
 const ALT_RIGHT: u8 = 13;
 
-/// The bytes one key sends; the longest is Alt with a 5-byte sequence.
+/// The bytes one key sends; the longest is a Super repeat, `ESC [ 127 ; 16 : 2 u`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bytes {
     len: u8,
-    data: [u8; 6],
+    data: [u8; 12],
 }
 
 impl Bytes {
     fn of(bytes: &[u8]) -> Self {
-        let mut data = [0; 6];
+        let mut data = [0; 12];
         data[..bytes.len()].copy_from_slice(bytes);
         Self { len: bytes.len() as u8, data }
     }
 
     fn with_escape(self) -> Self {
-        let mut data = [0; 6];
+        let mut data = [0; 12];
         data[0] = ESC;
         data[1..=self.len as usize].copy_from_slice(self.as_slice());
         Self { len: self.len + 1, data }
+    }
+
+    fn push(&mut self, byte: u8) {
+        self.data[self.len as usize] = byte;
+        self.len += 1;
+    }
+
+    fn push_decimal(&mut self, value: u8) {
+        if value >= 100 {
+            self.push(b'0' + value / 100);
+        }
+        if value >= 10 {
+            self.push(b'0' + value / 10 % 10);
+        }
+        self.push(b'0' + value % 10);
+    }
+
+    /// The key's bytes with the held modifiers as a parameter (section 5.5): a byte `c`
+    /// becomes `ESC [ c ; m u`, a sequence `ESC [ p X` or `ESC O X` becomes
+    /// `ESC [ p ; m X` (`p` 1 when absent), and a repeat adds `:2` to `m`.
+    fn with_modifiers(self, modifiers: Modifiers, repeat: bool) -> Self {
+        let m = 1 + modifiers.shift() as u8 + 2 * modifiers.alt() as u8 + 4 * modifiers.ctrl() as u8
+            + 8 * modifiers.meta() as u8;
+        let key = self.as_slice();
+        let mut out = Self::of(b"\x1b[");
+        let last = if key.len() == 1 {
+            out.push_decimal(key[0]);
+            b'u'
+        } else {
+            let params = &key[2..key.len() - 1];
+            if params.is_empty() {
+                out.push(b'1');
+            }
+            for &digit in params {
+                out.push(digit);
+            }
+            key[key.len() - 1]
+        };
+        out.push(b';');
+        out.push_decimal(m);
+        if repeat {
+            out.push(b':');
+            out.push(b'2');
+        }
+        out.push(last);
+        out
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -117,6 +163,9 @@ pub fn action(code: u16, value: i32, modifiers: Modifiers, reserved: bool, state
         return if value == PRESS { Action::Lock(lock) } else { Action::None };
     }
     match bytes(code, modifiers, state) {
+        // A graphics terminal learns of Super from the key's own bytes (section 5.5).
+        Some(bytes) if !state.text && modifiers.meta() => Action::Bytes(bytes.with_modifiers(modifiers, value == REPEAT)),
+        Some(bytes) if modifiers.alt() => Action::Bytes(bytes.with_escape()),
         Some(bytes) => Action::Bytes(bytes),
         None => Action::None,
     }
@@ -226,18 +275,18 @@ fn keypad(code: u16, num: bool) -> Option<Keypad> {
     })
 }
 
-/// The bytes key `code` sends under `modifiers`, in the US layout.
+/// The bytes key `code` sends under `modifiers`, in the US layout, before Alt's `ESC`.
 fn bytes(code: u16, modifiers: Modifiers, state: State) -> Option<Bytes> {
     let (ctrl, shift) = (modifiers.ctrl(), modifiers.shift());
     let byte = |b: u8| Some(Bytes::of(&[b]));
     let code = match keypad(code, state.num) {
-        Some(Keypad::Digit(digit)) => return with_alt(byte(digit), modifiers),
+        Some(Keypad::Digit(digit)) => return byte(digit),
         Some(Keypad::Navigation(key)) => key,
         Some(Keypad::Nothing) => return None,
         None => code,
     };
     let letter = LETTERS.iter().find_map(|&(first, row)| row.get(code.checked_sub(first)? as usize).copied());
-    let bytes = if let Some(lower) = letter {
+    if let Some(lower) = letter {
         if ctrl {
             byte(lower - b'a' + 1)
         } else if shift != state.caps {
@@ -275,13 +324,7 @@ fn bytes(code: u16, modifiers: Modifiers, state: State) -> Option<Bytes> {
             KEY_KPEQUAL => byte(b'='),
             _ => sequence(code).map(Bytes::of),
         }
-    };
-    with_alt(bytes, modifiers)
-}
-
-/// Alt sends ESC before a key's bytes.
-fn with_alt(bytes: Option<Bytes>, modifiers: Modifiers) -> Option<Bytes> {
-    bytes.map(|b| if modifiers.alt() { b.with_escape() } else { b })
+    }
 }
 
 #[cfg(test)]
@@ -461,6 +504,23 @@ mod tests {
         assert_eq!(sent(KEY_PAGEUP, &[KEY_LEFTSHIFT], GRAPHICS), b"\x1b[5~");
         // There, a repeat is input too.
         assert_eq!(action(KEY_F1 + 1, REPEAT, alt, false, GRAPHICS), Action::Bytes(Bytes::of(b"\x1b\x1bOQ")));
+    }
+
+    #[test]
+    fn a_graphics_terminal_gets_super_in_the_keys_bytes() {
+        assert_eq!(sent(KEY_ENTER, &[KEY_LEFTMETA], GRAPHICS), b"\x1b[13;9u");
+        assert_eq!(sent(KEY_Z + 6, &[KEY_RIGHTMETA, KEY_LEFTCTRL], GRAPHICS), b"\x1b[13;13u");
+        assert_eq!(sent(KEY_TAB, &[KEY_LEFTMETA, KEY_LEFTALT, KEY_LEFTSHIFT], GRAPHICS), b"\x1b[9;12u");
+        assert_eq!(sent(KEY_BACKSPACE, &[KEY_LEFTMETA, KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTSHIFT], GRAPHICS), b"\x1b[127;16u");
+        assert_eq!(sent(KEY_UP, &[KEY_LEFTMETA], GRAPHICS), b"\x1b[1;9A");
+        assert_eq!(sent(KEY_F1, &[KEY_LEFTMETA], GRAPHICS), b"\x1b[1;9P");
+        assert_eq!(sent(KEY_F12, &[KEY_LEFTMETA, KEY_LEFTSHIFT], GRAPHICS), b"\x1b[24;10~");
+        let repeat = action(KEY_BACKSPACE, REPEAT, mods(&[KEY_LEFTMETA, KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTSHIFT]), false, GRAPHICS);
+        assert_eq!(repeat, Action::Bytes(Bytes::of(b"\x1b[127;16:2u")));
+        // Ctrl is not Super, and a text terminal ignores Super.
+        assert_eq!(sent(KEY_ENTER, &[KEY_LEFTCTRL], GRAPHICS), b"\r");
+        assert_eq!(sent(KEY_Z + 6, &[KEY_LEFTCTRL], GRAPHICS), b"\r");
+        assert_eq!(sent(KEY_ENTER, &[KEY_LEFTMETA], TEXT), b"\r");
     }
 
     #[test]

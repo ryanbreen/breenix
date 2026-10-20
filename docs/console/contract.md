@@ -466,6 +466,14 @@ that has no console action sends `ESC` followed by the key's bytes.
 | Insert, Delete | `ESC [ 2 ~`, `ESC [ 3 ~` | F9-F12 | `ESC [ 20 ~`, `21 ~`, `23 ~`, `24 ~` |
 | Page Up, Page Down | `ESC [ 5 ~`, `ESC [ 6 ~` | Backspace, Enter, Tab, Esc | 0x7F, CR, HT, ESC |
 
+On a text VT, Super does not change a key's bytes. On a graphics VT, a key pressed with Super held carries its
+modifiers in its bytes, so that a window manager reading the VT knows which modifiers each key had. The
+modifier value `m`, in decimal, is 1 plus Shift 1, Alt 2, Ctrl 4 and Super 8. A key that sends one byte `c`
+sends `ESC [ c ; m u` with the byte's value in decimal (Super+Enter sends `ESC [ 13 ; 9 u`, Super+Ctrl+M `ESC [ 13 ; 13 u`); a
+key that sends `ESC [ p X` or `ESC O X` sends `ESC [ p ; m X`, with `p` 1 for a key that sends no parameter (Super+Up
+sends `ESC [ 1 ; 9 A`, Super+F1 `ESC [ 1 ; 9 P`, Super+F5 `ESC [ 15 ; 9 ~`). Alt adds 2 to `m` rather than an
+`ESC`. A repeat has `m:2` in place of `m`. Ctrl is not Super: Ctrl+Enter and Ctrl+M send CR.
+
 ---
 
 ## 6. The boot logo

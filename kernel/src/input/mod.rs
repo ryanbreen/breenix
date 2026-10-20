@@ -69,7 +69,7 @@ pub fn poll_modifier_state() -> u8 {
     modifiers.shift() as u8
         | (modifiers.ctrl() as u8) << 1
         | (modifiers.alt() as u8) << 2
-        | ((modifiers.meta() || modifiers.ctrl()) as u8) << 3
+        | (modifiers.meta() as u8) << 3
 }
 pub fn has_pending_super_tap() -> bool {
     SUPER_TAPS.load(Ordering::Acquire) != 0
@@ -85,11 +85,12 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
     let previous = slot.load(Ordering::Relaxed);
     let next = event::update_modifiers(previous, code, value);
     slot.store(next, Ordering::Relaxed);
-    // Preserve the graphics ABI's Ctrl-as-Super launcher gesture.
-    let was_super = Modifiers(previous).meta() || Modifiers(previous).ctrl();
-    let is_super = Modifiers(next).meta() || Modifiers(next).ctrl();
-    if !was_super && is_super {
+    if !Modifiers(previous).meta() && Modifiers(next).meta() {
         SUPER_TAPS.fetch_add(1, Ordering::Release);
+        // The compositor is ready while a tap is latched. Bytes wake it where they are
+        // admitted to its stdin (`ipc::stdin`), including those a busy TTY admits later.
+        #[cfg(target_arch = "aarch64")]
+        crate::syscall::graphics::wake_compositor_for_input();
     }
     let modifiers = Modifiers(
         HELD.iter()
@@ -105,16 +106,12 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
             reserved = event::reserved(&mut held, code, value, modifiers);
             Some(held)
         });
-    let sent = crate::console::keys::key(
+    crate::console::keys::key(
         device.index(),
         code,
         value,
         modifiers,
         reserved,
         device.source(),
-    );
-    // Wake for both modifier edges and bytes admitted to the compositor's stdin.
-    #[cfg(target_arch = "aarch64")]
-    crate::syscall::graphics::wake_compositor_if_waiting();
-    sent
+    )
 }
