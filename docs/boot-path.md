@@ -119,7 +119,11 @@ instructions cannot be emulated by this QEMU version.
   `default` stages require bwm's `[bwm] first frame read back:` and
   `[bwm] composited client frame:` lines, which it prints only after reading the
   presented frame back from the device and matching it, pixel for pixel, with the frame
-  it composed (in `default` mode the client is `bounce`). Between them,
+  it composed (in `default` mode the client is `bounce`). The client-frame line is the
+  initial client's: the first frame that shows a client is read back whole. Each window
+  shown later is read back over the area it covers, and prints `[bwm] window <id> shown:`
+  when it matches. Any client frame that does not match prints
+  `[bwm] client frame check FAILED`, which is fatal. Between them,
   `[bwm] desktop fills the scanout:` shows that the desktop covers the whole display at
   bwm's UI scale: bwm reads the scanout itself back (READBACK target 0) at the top-left
   and bottom-right pixels of its taskbar and app bar and the background pixel past each,

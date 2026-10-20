@@ -1770,6 +1770,7 @@ fn main() {
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
     let mut frame_failed = false;
+    let mut initial_client_checked = false;
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
@@ -2326,11 +2327,26 @@ fn main() {
             match frame {
                 Ok(()) => {
                     frame_failed = false;
-                    // Check each client's first visible frame, including windows opened
-                    // by a hotkey after the desktop's initial client was checked.
-                    if let Some(id) = gpu.shows_client(&layers) {
-                        if let Some(win) = windows.iter_mut().find(|win| win.window_id == id && !win.frame_checked) {
-                            win.frame_checked = true;
+                    // Each client window's first shown frame is read back and compared.
+                    // The first frame that shows a client is the desktop's initial client:
+                    // the whole frame is checked and only its pass prints the desktop
+                    // stage's marker. A later window is checked over the area it covers,
+                    // which bounds the read-back to that window. Any failure prints the
+                    // line docs/boot-path.json lists as fatal.
+                    let unchecked: Vec<(u32, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
+                        gpu.shown_clients(&layers)
+                            .into_iter()
+                            .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    if !initial_client_checked {
+                        if let Some(&(id, _)) = unchecked.first() {
+                            initial_client_checked = true;
+                            for win in windows.iter_mut().filter(|win| unchecked.iter().any(|(id, _)| *id == win.window_id)) {
+                                win.frame_checked = true;
+                            }
                             match gpu.check(composite_buf, &layers, pointer) {
                                 Ok(pixels) => print!(
                                     "[bwm] composited client frame: window {} on screen, {} pixels exact\n",

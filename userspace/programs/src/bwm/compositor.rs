@@ -7,7 +7,8 @@
 //! one of two scanout targets in stacking order, draws the pointer, and presents the target.
 //!
 //! The first frame and the first frame that shows a client's pixels are read back from the
-//! scanout and compared, pixel for pixel, with the frame bwm meant to show. `check_fills`
+//! scanout and compared, pixel for pixel, with the frame bwm meant to show. Each later
+//! window's first frame is compared the same way over the area that window covers. `check_fills`
 //! reads the scanout itself back (target 0) to show that the frame bwm composed is what the
 //! display shows, whole.
 
@@ -294,19 +295,35 @@ impl Compositor {
         Ok(())
     }
 
-    /// Whether a frame composed from `layers` shows any client pixels.
-    pub fn shows_client(&self, layers: &[Layer]) -> Option<u32> {
-        layers.iter().rev().find_map(|l| {
-            let (_, r) = self.content_rect(l)?;
-            let visible = r[0].max(0) < r[2].min(self.width as i32) && r[1].max(0) < r[3].min(self.height as i32);
-            visible.then_some(l.window_id)
-        })
+    /// The client windows a frame composed from `layers` shows, top first: each window's id
+    /// and the screen area its decorations and content cover (x0, y0, x1, y1).
+    pub fn shown_clients(&self, layers: &[Layer]) -> Vec<(u32, [u32; 4])> {
+        layers.iter().rev().filter_map(|l| {
+            let (_, content) = self.content_rect(l)?;
+            let area = l.frame[..l.frame_len].iter().fold(content, |a, r| {
+                [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]
+            });
+            let clip = |v: i32, max: u32| v.clamp(0, max as i32) as u32;
+            let area = [clip(area[0], self.width), clip(area[1], self.height), clip(area[2], self.width), clip(area[3], self.height)];
+            let visible = content[0].max(0) < content[2].min(self.width as i32)
+                && content[1].max(0) < content[3].min(self.height as i32);
+            visible.then_some((l.window_id, area))
+        }).collect()
     }
 
     /// Read the displayed frame back from the device and compare each pixel with the frame
     /// `compose` drew from the same inputs. Returns the number of pixels compared.
     pub fn check(&self, desktop: &[u32], layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, String> {
-        let (w, h) = (self.width, self.height);
+        self.check_area(desktop, layers, pointer, [0, 0, self.width, self.height])
+    }
+
+    /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
+    pub fn check_area(&self, desktop: &[u32], layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, String> {
+        let [x0, y_top, x1, y1] = area;
+        let w = x1.saturating_sub(x0);
+        if w == 0 || y_top >= y1 {
+            return Err(format!("the area ({}, {})..({}, {}) is empty", x0, y_top, x1, y1));
+        }
         // READBACK refuses pages that are not yet mapped, so both buffers are touched first.
         let mut band = prefaulted((w * CHECK_BAND_ROWS) as usize);
         let band = as_bytes_mut(&mut band);
@@ -315,18 +332,18 @@ impl Compositor {
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let pointer = pointer.map(|p| (p, pointer_bitmap(p.shape)));
         let mut compared = 0u64;
-        let mut y0 = 0;
-        while y0 < h {
-            let rows = CHECK_BAND_ROWS.min(h - y0);
+        let mut y0 = y_top;
+        while y0 < y1 {
+            let rows = CHECK_BAND_ROWS.min(y1 - y0);
             let len = (w * rows * 4) as usize;
-            let (r, a) = gpu::readback_why(0, [0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
+            let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
             if r != 0 {
                 return Err(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason));
             }
             for row in 0..rows {
                 let y = (y0 + row) as i32;
-                for x in 0..w as i32 {
-                    let o = ((row * w) as usize + x as usize) * 4;
+                for x in x0 as i32..x1 as i32 {
+                    let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);
                     let want = self.expected(desktop, layers, pointer, x, y);
                     if got != want {
