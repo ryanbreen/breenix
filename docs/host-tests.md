@@ -36,7 +36,9 @@ normal policy, and background policy can exhaust subprocess deadlines.
 The Rust host checks are the root integration tests, xtask, and the standalone
 `tools/*-host-tests` crates. Build their test executables with `cargo test
 --no-run` under `scripts/build-background.sh`, then run the executables at normal
-priority. The root command uses `--release --features testing,external_test_bins
+priority. When invoking root test executables directly, export
+`CARGO_MANIFEST_DIR="$PWD"`, which Cargo normally supplies at runtime.
+The root command uses `--release --features testing,external_test_bins
 --tests`; do not also run `scripts/run-structure-tests.sh`, since Cargo includes
 those same suites. The console crate also has a behavioral input executable:
 `cargo run --manifest-path tools/console-host-tests/Cargo.toml --bin input`.
