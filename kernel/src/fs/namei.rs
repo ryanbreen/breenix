@@ -156,7 +156,8 @@ impl Resolved {
     /// or `/proc`.
     pub fn is_mount_point(&self) -> bool {
         match self.target {
-            Target::Inode { ino, .. } => ino == EXT2_ROOT_INO,
+            Target::Inode { mount: Mount::Root, ino, .. } => ext2::root_namespace().is_mount(ino),
+            Target::Inode { mount: Mount::Home, ino, .. } => ino == EXT2_ROOT_INO,
             Target::Virtual => self.path == "/dev" || self.path == "/proc",
             Target::Absent { .. } => false,
         }
@@ -204,10 +205,10 @@ struct Frame {
     node: Node,
 }
 
-const ROOT: Node = Node::Ext2(Mount::Root, EXT2_ROOT_INO);
+fn namespace_root() -> Node { Node::Ext2(Mount::Root, ext2::root_inode()) }
 
 fn top(stack: &[Frame]) -> Node {
-    stack.last().map_or(ROOT, |frame| frame.node)
+    stack.last().map_or(namespace_root(), |frame| frame.node)
 }
 
 /// Whether `stack` is the directory `root` names.
@@ -506,7 +507,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         // the whole root filesystem lock here makes even /proc/net/pnp wait
         // behind unrelated file writes. Other callers still check the real
         // directory's search permissions below.
-        let entering_virtual_mount = top(&stack) == ROOT
+        let entering_virtual_mount = top(&stack) == namespace_root()
             && matches!(name.as_slice(), b"dev" | b"proc");
         let searched_inode = if entering_virtual_mount && cred.euid == 0 {
             None
@@ -579,7 +580,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 }
             }
             Node::Ext2(mount, dir) => {
-                if mount == Mount::Root && dir == EXT2_ROOT_INO {
+                if mount == Mount::Root && dir == ext2::root_inode() {
                     let entered = match name.as_slice() {
                         b"dev" | b"proc" => Some(Node::Virtual),
                         b"home" if home_mounted => Some(Node::Ext2(Mount::Home, EXT2_ROOT_INO)),
@@ -593,7 +594,13 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 }
                 let fs = held.fs(mount)?;
                 let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
-                let found = fs.lookup_in_dir_bytes(&dir_inode, &name).map_err(fs_errno)?;
+                let found = if mount == Mount::Root {
+                    ext2::root_namespace().shared(dir, &name)
+                } else { None };
+                let found = match found {
+                    Some(ino) => Some(ino),
+                    None => fs.lookup_in_dir_bytes(&dir_inode, &name).map_err(fs_errno)?,
+                };
                 let Some(ino) = found else {
                     if !is_final {
                         return Err(ENOENT as u64);
@@ -675,7 +682,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             };
             // The final name's directory is the frame below it, on the same
             // filesystem unless the name is a filesystem root.
-            let below = stack.len().checked_sub(2).map_or(ROOT, |i| stack[i].node);
+            let below = stack.len().checked_sub(2).map_or(namespace_root(), |i| stack[i].node);
             let entry_dir = match (mode, last, below) {
                 (Mode::Rename | Mode::Entry, Last::Name, Node::Ext2(dir_mount, dir))
                     if dir_mount == mount =>
@@ -902,9 +909,9 @@ pub fn working_dir<P: AsRef<[u8]>>(resolved: &Resolved<P>) -> Result<WorkingDir,
         Target::Inode { file_type, .. } if file_type != FileType::Directory => Err(ENOTDIR as u64),
         Target::Inode {
             mount: Mount::Root,
-            ino: EXT2_ROOT_INO,
+            ino,
             ..
-        } => Ok(WorkingDir::Root),
+        } if ino == ext2::root_inode() => Ok(WorkingDir::Root),
         Target::Inode { mount, .. } => {
             let dir = resolved.pin.clone().ok_or(ENOENT as u64)?;
             Ok(WorkingDir::Ext2 { mount, dir })
@@ -927,7 +934,7 @@ pub(crate) fn may_search(
     let fs = held.fs(mount)?;
     let ino = match handle {
         Some(handle) => handle.verify(fs).map_err(|_| ENOENT as u64)?,
-        None => EXT2_ROOT_INO,
+        None => ext2::root_inode(),
     };
     let inode = fs.read_inode(ino).map_err(fs_errno)?;
     if !inode.is_dir() {
@@ -998,7 +1005,21 @@ fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
 /// it with a pathname the directory never had.
 fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u32) -> Result<Vec<Frame>, u64> {
     let mut frames = Vec::new();
-    while ino != EXT2_ROOT_INO {
+    let root = if mount == Mount::Root { ext2::root_inode() } else { EXT2_ROOT_INO };
+    while ino != root {
+        // Shared data directories have a physical parent at the partition
+        // root, but appear directly under the selected namespace's root.
+        if mount == Mount::Root {
+            let namespace = ext2::root_namespace();
+            if namespace.root != EXT2_ROOT_INO && (ino == namespace.etc || ino == namespace.data) {
+                frames.try_reserve(1).map_err(|_| 12u64)?;
+                frames.push(Frame {
+                    name: copy_bytes(if ino == namespace.etc { b"etc" } else { b"root" })?,
+                    node: Node::Ext2(mount, ino),
+                });
+                break;
+            }
+        }
         let inode = read_dir_inode(fs, ino)?;
         let data = fs.read_directory(&inode).map_err(fs_errno)?;
         let parent = ext2::dir::find_inode(&data, "..").ok_or(ENOENT as u64)?;

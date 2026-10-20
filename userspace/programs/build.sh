@@ -413,6 +413,8 @@ STD_BINARIES=(
     "chvt"
     "login"
     "probe"
+    "persistent-install"
+    "sync"
 
     # Effort suites, installed as /sbin/suite-<id>
     "suite-smoke"

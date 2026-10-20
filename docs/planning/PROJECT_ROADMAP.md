@@ -49,6 +49,12 @@ records the conditional idle probe and the separate completion-accounting failur
 
 The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
+
+PR #2112's persistent install work now stages slot-paired userland generations for
+#2114, retaining shared `/etc`, `/root` and the home partition across upgrade and
+rollback. Its [protocol](../metal/README.md#install-and-upgrade) remains pending
+review and a later hardware window.
+
 The R240 disk-root work in [#1972](https://github.com/ryanbreen/breenix/issues/1972)
 extends installed-disk console boots to default and suite modes, with a fresh root
 installation before each boot and cold raw writeback verification. The

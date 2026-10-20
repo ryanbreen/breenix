@@ -118,6 +118,10 @@ fs_fault_disarm_corrupt_inode = ["fs_fault_inject"]
 # `tests/xhci_fault_production_clean.rs` prove a production metal image carries
 # none of it.
 xhci_fault_inject = []
+# x86-metal write fence exercise (docs/metal/README.md, "The write fence"). Fault-test
+# boots only: `block::fence_fault` and its one call site are behind this feature, so a
+# production kernel has no code that writes outside its partitions on purpose.
+block_fence_inject = []
 # #728 gate-observable repro oracle for ext2 lock discipline. Test profile
 # only: the module and both of its call sites are behind this feature, and it
 # requires boot_tests for kthread_run_on_cpu_for_test's aarch64 CPU pinning.

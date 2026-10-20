@@ -2941,9 +2941,12 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
-        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Err(BlockError::IoError); }
         if block_count == 0 {
             return Ok(());
+        }
+        // The write fence: on a physical boot only the chosen partitions' sectors take writes.
+        if !crate::block::hardware_write_allowed(crate::block::HardwareDisk::Ahci(self.port_num), start_block, block_count) {
+            return Err(BlockError::IoError);
         }
         if start_block >= self.sector_count
             || start_block.saturating_add(block_count as u64) > self.sector_count

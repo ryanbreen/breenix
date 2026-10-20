@@ -10,6 +10,7 @@ mod directory_io;
 mod directory_extension;
 mod fifo_times;
 pub mod file;
+pub mod generation;
 pub mod inode;
 mod inode_index;
 pub mod live_inode;
@@ -51,6 +52,7 @@ pub struct FsStats {
 /// Holds the superblock, block group descriptors, and a reference
 /// to the underlying block device for filesystem operations.
 pub struct Ext2Fs {
+    namespace: generation::Namespace,
     /// The filesystem superblock
     pub superblock: Ext2Superblock,
     /// Block group descriptors
@@ -118,6 +120,32 @@ impl Finalize {
     }
 }
 
+static ROOT_NAMESPACE: spin::Once<generation::Namespace> = spin::Once::new();
+
+/// Root inode selected at mount time; unchanged throughout the boot.
+pub fn root_inode() -> u32 { root_namespace().root }
+
+pub fn root_namespace() -> generation::Namespace {
+    ROOT_NAMESPACE.get().copied().unwrap_or(generation::Namespace::RAW)
+}
+
+impl generation::Tree for Ext2Fs {
+    fn directory(&self, parent: u32, name: &str) -> Result<u32, &'static str> {
+        let parent = self.read_inode(parent)?;
+        let ino = self.lookup_in_dir(&parent, name)?.ok_or("missing userland directory")?;
+        if !self.read_inode(ino)?.is_dir() { return Err("userland mount point is not a directory"); }
+        Ok(ino)
+    }
+
+    fn contents(&self, parent: u32, name: &str) -> Result<Vec<u8>, &'static str> {
+        let parent = self.read_inode(parent)?;
+        let ino = self.lookup_in_dir(&parent, name)?.ok_or("missing userland completion record")?;
+        let inode = self.read_inode(ino)?;
+        if !inode.is_file() || inode.size() > 128 { return Err("invalid userland completion record"); }
+        self.read_file_content(&inode)
+    }
+}
+
 impl Ext2Fs {
     /// Create a new ext2 filesystem instance from a block device
     ///
@@ -159,6 +187,7 @@ impl Ext2Fs {
 
         let failed = alloc::sync::Arc::new(AtomicBool::new(false));
         Ok(Self {
+            namespace: generation::Namespace::RAW,
             superblock,
             block_groups,
             device: alloc::boxed::Box::new(mount_device::MountDevice::new(device, failed.clone(), cached)),
@@ -593,13 +622,18 @@ impl Ext2Fs {
             return Err("Path must be absolute");
         }
 
-        // Start at root inode (always inode 2 in ext2)
-        let mut current_inode_num = EXT2_ROOT_INO;
+        // Start at the selected namespace root (inode 2 on a flat partition).
+        let mut current_inode_num = self.namespace.root;
 
         // Collect components so we can detect the final one
         let components: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
         for (i, component) in components.iter().enumerate() {
+            if *component == "." { continue; }
+            if *component == ".." && self.namespace.is_mount(current_inode_num) {
+                current_inode_num = self.namespace.root;
+                continue;
+            }
             // Read the current directory inode
             let current_inode = self.read_inode(current_inode_num)?;
 
@@ -609,7 +643,11 @@ impl Ext2Fs {
             }
 
             // Look up the component in this directory
-            match self.lookup_in_dir(&current_inode, component)? {
+            let child = match self.namespace.shared(current_inode_num, component.as_bytes()) {
+                Some(ino) => Some(ino),
+                None => self.lookup_in_dir(&current_inode, component)?,
+            };
+            match child {
                 Some(inode_num) => {
                     current_inode_num = inode_num;
 
@@ -1480,7 +1518,7 @@ impl Ext2Fs {
         let target_inode_num = self
             .lookup_in_dir(&parent_inode, dir_name)?
             .ok_or("Directory not found")?;
-        if target_inode_num == EXT2_ROOT_INO {
+        if target_inode_num == EXT2_ROOT_INO || self.namespace.is_mount(target_inode_num) {
             return Err("Cannot remove root directory");
         }
         let target_inode = self.read_inode(target_inode_num)?;
@@ -2812,6 +2850,18 @@ pub fn init_root_fs() -> Result<(), &'static str> {
         })
         .ok_or("No mountable 512-byte-sector ext2 block device")?;
 
+    #[cfg(target_arch = "x86_64")]
+    let fs = {
+        let mut fs = fs;
+        if crate::block::root_on_system_partition() {
+            if let Some(id) = crate::boot::intent::userland() {
+                fs.namespace = generation::select(&fs, id)?;
+            }
+        }
+        ROOT_NAMESPACE.call_once(|| fs.namespace);
+        fs
+    };
+
     crate::drivers::device_class::storage_read();
 
     // Read packed struct fields safely before logging
@@ -3009,9 +3059,10 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     // Prefer the attached home device so VM acceptance boots exercise the
     // transport's read-only feature. Physical disks remain protected by the
     // hardware write-refusal policy rather than selected by index here.
+    // On a physical boot the home is the partition the boot intent names, when it names one.
     #[cfg(target_arch = "x86_64")]
     let device = if crate::block::hardware_read_only() {
-        None
+        crate::block::named_home()
     } else {
         crate::block::disk(3).or_else(|| crate::block::disk(1))
     };

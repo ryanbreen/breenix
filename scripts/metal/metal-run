@@ -2,9 +2,11 @@
 """Starts, follows and stops x86-metal boots from the boot host (docs/metal/README.md, "Running a boot").
 
   # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-  metal-run boot [--payload image|hang|none] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
+  metal-run boot [--payload image|hang|none|manager] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
+  metal-run boot --persistent [--entry previous] [--run CMD ...] [--verify]
+  metal-run install-persistent [--sha SHA | --branch NAME] | --rollback
   metal-run stop ID
   metal-run status
   metal-run follow ID
@@ -18,6 +20,10 @@ A suite boot may run several suites in turn: a list, or `all` (every main-path e
 resolved against the commit's own docs/efforts/path.json and manifests (docs/suites/README.md, "Several suites in one boot").
 A tests boot builds the testing kernel (--features testing, as run.sh --tests does) and runs its test binaries until the
 userspace test report; it is scored against the commit's docs/boot-path.json (docs/metal/README.md, "Tests mode").
+`boot --persistent` boots the persistent install through the boot manager and keeps the machine until `stop`; with
+`--run` it logs in over SOL, runs the commands and powers off. `install-persistent` installs a commit's kernel and
+userland as the persistent install, or upgrades it, and verifies the new slot; `--rollback` swaps the current and
+previous kernels (docs/metal/README.md, "Boot manager and persistent install").
 """
 import argparse
 import json
@@ -35,6 +41,9 @@ HERE = Path(__file__).resolve().parent
 XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
 # The kernel feature that compiles the xHCI recovery exercise in; production kernels never carry it.
 FAULT_FEATURE = 'xhci_fault_inject'
+# The write fence's fault-test feature (docs/metal/README.md, "The write fence").
+FENCE_FEATURE = 'block_fence_inject'
+FENCE_FAULT = 'fence-out-of-partition'
 # The testing kernel's feature, as run.sh --tests builds it.
 TESTING_FEATURE = 'testing'
 
@@ -150,7 +159,28 @@ def catchup_from_env():
     raise SystemExit('BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset')
 
 
+def install_persistent(args):
+    """An install or upgrade boot of a commit, verified by a persistent boot under the same lease; or a rollback."""
+    common = dict(sha=None, branch=None, no_wait=False, inject=None, nmi=False, ramdisk=True, disk=None, suite=None,
+                  input=None, attended=False, wait=None, session=False, idle_minutes=30, source_boot=None,
+                  serve_as=None, content_type=None, linux_directory=None, catchup=False, run=None, verify=False,
+                  entry=None, slot_action=None, persistent=False)
+    if args.rollback:
+        if args.sha or args.branch:
+            raise SystemExit('--rollback boots the installed slots; it takes no commit')
+        return boot(argparse.Namespace(**dict(common, payload='persistent', mode='persistent', persistent=True,
+                                              slot_action='rollback', verify=True)))
+    return boot(argparse.Namespace(**dict(common, payload='image', mode='persistent-install', sha=args.sha,
+                                          branch=args.branch, disk='root')))
+
+
 def boot(args):
+    if getattr(args, 'persistent', False):
+        args.payload, args.mode = 'persistent', 'persistent'
+    if (getattr(args, 'run', None) or getattr(args, 'verify', False) or getattr(args, 'entry', None)) and args.payload != 'persistent':
+        raise SystemExit('--run, --verify and --entry need --persistent')
+    if getattr(args, 'inject', None) == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk == 'install'):
+        raise SystemExit('the fence fault needs a default disk-root image boot')
     catchup = bool(getattr(args, 'catchup', False)) or catchup_from_env()
     is_session = bool(getattr(args, 'session', False))
     attended = bool(getattr(args, 'attended', False))
@@ -181,7 +211,7 @@ def boot(args):
     env = host_env()
     payload = args.payload
     sha = target = ''
-    if payload in ('image', 'disk-readback'):
+    if payload in ('image', 'disk-readback', 'manager'):
         if args.sha:
             verify_target(env, args.sha, args.branch or 'main')
             sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
@@ -213,6 +243,14 @@ def boot(args):
         command.append('--no-wait')
     if args.inject:
         command += ['--inject', args.inject]
+    if payload == 'persistent':
+        for flag, value in (('--entry', getattr(args, 'entry', None)), ('--slot-action', getattr(args, 'slot_action', None))):
+            if value:
+                command += [flag, value]
+        for each in getattr(args, 'run', None) or []:
+            command += ['--run', each]
+        if getattr(args, 'verify', False):
+            command.append('--verify')
     if args.nmi:
         command.append('--nmi')
     if payload == 'linux' and not args.linux_directory:
@@ -240,18 +278,21 @@ def boot(args):
         except Exception:
             in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, 'Linux staging failed')
             raise
-    if payload in ('image', 'disk-readback'):
+    if payload in ('image', 'disk-readback', 'manager'):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
             # An xHCI fault boot gets a fault-test kernel, a tests boot the testing kernel; every other boot the
             # production one.
             features = (['--features', FAULT_FEATURE] if args.inject in XHCI_FAULTS else
+                        ['--features', FENCE_FEATURE] if args.inject == FENCE_FAULT else
                         ['--features', TESTING_FEATURE] if args.mode == 'tests' else [])
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
+            tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
+                          'manager': ['--tools-profile', 'boot-manager']}.get(payload, [])
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_build', boot_id, sha] + features + suite +
-                             (['--readback'] if payload == 'disk-readback' else []) + (['--catchup'] if catchup else []),
+                             tools_only + (['--catchup'] if catchup else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     args.boot_id = boot_id
@@ -266,7 +307,13 @@ def boot(args):
     return 0
 
 
-def build(boot_id, sha, features=None, suite=None, readback=False, catchup=False):
+def stub_sources(stub):
+    """The EFI applications' sources: the manifests and every Rust file under src/, never a build tree."""
+    return ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'] + sorted(
+        str(path.relative_to(stub)) for path in (stub / 'src').rglob('*.rs'))
+
+
+def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -289,7 +336,7 @@ def build(boot_id, sha, features=None, suite=None, readback=False, catchup=False
         incus('file', 'push', str(source), f"{env['BUILD_INSTANCE']}{tools}/{name}", check=True)
     # Push source files only: an old target tree or ignored local files must never reach staging.
     stub = HERE / 'efi-stub'
-    for name in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src/main.rs', 'src/suite_disk.rs'):
+    for name in stub_sources(stub):
         target = f'{tools}/efi-stub/{name}'
         in_build(env, 'mkdir', '-p', str(Path(target).parent), check=True)
         incus('file', 'push', str(stub / name), f"{env['BUILD_INSTANCE']}{target}", check=True)
@@ -299,7 +346,8 @@ def build(boot_id, sha, features=None, suite=None, readback=False, catchup=False
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
                       '--stub', f'{tools}/efi-stub', *(['--features', features] if features else []),
                       *(['--suite', suite] if suite else []),
-                      *(['--stub-only'] if readback else []), *(['--catchup'] if catchup else [])).returncode
+                      *(['--stub-only', '--tools-profile', tools_profile] if tools_profile else []),
+                      *(['--catchup'] if catchup else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
         return failed('the effort-target guard refused the commit')
@@ -334,10 +382,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
-    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback'), default='image')
+    p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager'),
+                   default='image', help='manager serves the boot manager over the network in probe mode')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default',
                    help='default boots the framebuffer console with virtual-terminal logins')
+    p.add_argument('--persistent', action='store_true', help='boot the persistent install through the boot manager')
+    p.add_argument('--entry', choices=('previous',), help='a persistent boot of the previous kernel, once')
+    p.add_argument('--run', action='append', metavar='CMD', help='a persistent boot logs in over SOL and runs CMD')
+    p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--attended', action='store_true', help='score the fixed challenge typed by the operator; send no input')
     p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
@@ -351,20 +404,25 @@ def main():
     p.add_argument('--branch')
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
-    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount'))
+    p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
+                                        FENCE_FAULT))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
     p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'))
     p.add_argument('--content-type', choices=('application/octet-stream',))
     p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
+    p = sub.add_parser('install-persistent')
+    p.add_argument('--sha')
+    p.add_argument('--branch')
+    p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
     for name in ('stop', 'follow'):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, TESTING_FEATURE))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, TESTING_FEATURE))
     p.add_argument('--suite')
-    p.add_argument('--readback', action='store_true')
+    p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--catchup', action='store_true')
     p = sub.add_parser('_resume')
     p.add_argument('options')
@@ -374,8 +432,10 @@ def main():
         return resume(argparse.Namespace(**json.loads(args.options)), validate_id(args.id))
     if args.command == 'boot':
         return boot(args)
+    if args.command == 'install-persistent':
+        return install_persistent(args)
     if args.command == '_build':
-        return build(args.id, args.sha, args.features, args.suite, args.readback, args.catchup)
+        return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)

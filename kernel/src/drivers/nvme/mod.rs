@@ -854,9 +854,12 @@ impl NvmeController {
 
     /// Write up to eight consecutive sectors from `buffer`.
     pub fn write_sectors(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Nvme(self as *const Self as usize)) { return Err("Hardware disks are read-only"); }
         if buffer.is_empty() || buffer.len() % SECTOR_SIZE != 0 {
             return Err("Buffer size must be a non-zero multiple of 512");
+        }
+        let disk = crate::block::HardwareDisk::Nvme(self as *const Self as usize);
+        if !crate::block::hardware_write_allowed(disk, sector, buffer.len() / SECTOR_SIZE) {
+            return Err("Hardware disks are read-only outside the chosen partitions");
         }
         let count = buffer.len() / SECTOR_SIZE;
         self.check_range(sector, count)?;

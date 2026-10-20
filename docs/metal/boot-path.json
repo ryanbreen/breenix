@@ -28,6 +28,14 @@
     "console": {
       "title": "Console",
       "summary": "A login prompt on the console, typed at the keyboard."
+    },
+    "persistent-install": {
+      "title": "Persistent install",
+      "summary": "Install or upgrade the persistent install: the request, the new userland on the test root and its migration onto the system partition."
+    },
+    "persistent": {
+      "title": "Persistent boot",
+      "summary": "The boot manager boots the persistent install from the disk: the system partition as root, the home partition at /home."
     }
   },
   "milestones": [
@@ -106,7 +114,8 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ]
     },
     {
@@ -134,7 +143,8 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ]
     },
     {
@@ -158,7 +168,8 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ]
     },
     {
@@ -205,12 +216,27 @@
             "name": "Console login prompt",
             "marker": "Breenix login:"
           }
+        ],
+        "persistent": [
+          {
+            "name": "Init started",
+            "marker": "[init] Breenix init starting (PID 1)"
+          },
+          {
+            "name": "Boot script completed",
+            "marker": "[init] Boot script completed"
+          },
+          {
+            "name": "Console login prompt",
+            "marker": "Breenix login:"
+          }
         ]
       },
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ]
     },
     {
@@ -276,7 +302,8 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ]
     },
     {
@@ -301,7 +328,8 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ]
     },
     {
@@ -444,12 +472,14 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ],
       "bootModes": [
         "default",
         "shell",
-        "console"
+        "console",
+        "persistent"
       ],
       "kernel": true,
       "stages": {
@@ -480,7 +510,8 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ],
       "kernel": true,
       "stages": {
@@ -515,10 +546,36 @@
       "bootShapes": [
         "ramdisk",
         "install",
-        "disk-root"
+        "disk-root",
+        "persistent"
       ],
       "stages": {
         "console": [
+          {
+            "name": "Boot keyboard attached",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "Boot keyboard detached and reclaimed",
+            "marker": "[usb] boot keyboard detached: "
+          },
+          {
+            "name": "Boot keyboard attached again",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "First key report",
+            "marker": "[hid] first key report",
+            "input": "keyboard"
+          },
+          {
+            "name": "Keys reached the console TTY",
+            "marker": "[console] first input byte input=keyboard",
+            "input": "keyboard",
+            "match": "line"
+          }
+        ],
+        "persistent": [
           {
             "name": "Boot keyboard attached",
             "marker": "[usb] boot keyboard attached: "
@@ -649,6 +706,57 @@
           "marker": "Breenix login: "
         }
       ]
+    },
+    {
+      "id": "persistent-install",
+      "title": "Persistent install from the boot manager",
+      "summary": "The boot manager draws its menu and reads it back, is told by the lab that no test boot is pending, and boots a kernel slot from the EFI system partition; the kernel mounts the system partition the slot's intent names as root and the home partition at /home, fences writes to those two partitions, and reaches the login prompt.",
+      "bootShapes": [
+        "persistent"
+      ],
+      "bootModes": [
+        "persistent"
+      ],
+      "stages": {
+        "persistent": [
+          {
+            "name": "Boot manager menu read back",
+            "marker": "breenix-manager: screen read back identical: "
+          },
+          {
+            "name": "The lab answered: no test boot pending",
+            "marker": "breenix-manager: row: No test boot is pending; session "
+          },
+          {
+            "name": "Kernel slot booted",
+            "marker": "breenix-manager: booting current |breenix-manager: booting previous "
+          },
+          {
+            "name": "Root is the system partition",
+            "marker": "[storage] root partition: system "
+          },
+          {
+            "name": "Root mounted from the system partition",
+            "marker": "[fs] root mounted from the system partition"
+          },
+          {
+            "name": "Home is the home partition",
+            "marker": "[storage] home partition: home "
+          },
+          {
+            "name": "Home mounted",
+            "marker": "ext2 home filesystem mounted at /home"
+          },
+          {
+            "name": "Writes fenced to the two partitions",
+            "marker": "[block] write fence: "
+          },
+          {
+            "name": "Console login prompt",
+            "marker": "Breenix login:"
+          }
+        ]
+      }
     }
   ],
   "firsts": [
