@@ -667,6 +667,7 @@ fn same_as(
     Ok(())
 }
 
+// gpu-text: R3 centers the certified DejaVu Sans 16 px label using 26.6 advances.
 fn widgets_button_draw() -> CaseResult {
     let theme = Theme::dark();
     let mut g = Guarded::bgrx(100, 40);
@@ -681,8 +682,8 @@ fn widgets_button_draw() -> CaseResult {
         |fb| {
             shapes::fill_rect(fb, 10, 8, 60, 20, theme.widget_bg);
             shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
-            // text_width("OK") = 11 and the glyphs are 7 high: (10 + 49 / 2, 8 + 13 / 2).
-            font5x7::draw_text(fb, b"OK", 34, 14, theme.text_primary, 1);
+            // R3 uses font advances and a 16 px line box.
+            sans_center(fb,b"OK",Rect::new(10,8,60,20),theme.text_primary);
         },
     )
 }
@@ -2634,4 +2635,21 @@ fn watch_frame(w: &mut FontWatcher, mono: bool) -> Guarded {
     .expect("loaded watcher font");
     ttf_font::draw_text(&mut g.fb(), font, "Wi é A", 8, 40, size, Color::WHITE);
     g
+}
+
+/// R3 lower-layer oracle: the pinned font and §8.3's already-certified 26.6 metrics.
+fn sans_width(text:&[u8])->i32 {
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
+    let font=Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid");
+    let glyphs:Vec<_>=ttf_font::decode_utf8(text).map(|cp|font.glyph_for(cp)).collect();
+    let pen:i32=glyphs.iter().enumerate().map(|(i,&g)|font.advance26(g,1024)+glyphs.get(i+1).map_or(0,|&next|font.kern26(g,next,1024))).sum();
+    (pen+32)/64
+}
+fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
+    let mut font=CachedFont::new(Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid"),256);
+    ttf_font::draw_text_bytes(fb,&mut font,text,x,y,16.0,colour);
+}
+fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
+    sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
 }
