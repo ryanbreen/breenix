@@ -852,8 +852,8 @@ fn composition_gpu_composite()->CaseResult {
     interface()?;let mut k=compositor()?;
     let p=Placed::new(20,30,64,48,0,9);let w=W::new(64,48,2)?;show(&mut k,&w,&p)?;
     let before=compositor_gpu_counts(&mut k)?;compose(&mut k)?;let after=compositor_gpu_counts(&mut k)?;
-    ensure(after[0]>before[0] && after[2]==before[2] && after[3]==before[3],"18",
-        "gpu-display: composition did not execute GPU draws without CPU pixel uploads")?;
+    ensure(after[0]>before[0] && after[1]-before[1]<=4 && after[2]==before[2] && after[3]==before[3],"18",
+        "gpu-display: composition did not use bounded GPU instances without CPU pixel uploads")?;
     let (pixels,_)=screen()?;screen_is(&pixels,&[p],"GPU composition")
 }
 
