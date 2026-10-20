@@ -479,8 +479,8 @@ pub mod memory {
                 .get(&frame.start_address().as_u64())
                 .unwrap()
                 .1
-                .fetch_sub(1, Ordering::SeqCst);
-            assert!(refs > 0);
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |refs| refs.checked_sub(1))
+                .expect("frame reference count underflow");
             refs == 1
         }
         pub fn refs(frame: Frame) -> u32 {
@@ -488,7 +488,8 @@ pub mod memory {
                 accounts
                     .borrow()
                     .get(&frame.start_address().as_u64())
-                    .map_or(0, |refs| refs.load(Ordering::SeqCst))
+                    .expect("frame was not allocated by this test thread")
+                    .load(Ordering::SeqCst)
             })
         }
         pub fn is_shared(frame: Frame) -> bool {
@@ -520,24 +521,25 @@ pub mod memory {
                 .remove(&frame.start_address().as_u64())
                 .unwrap();
             assert_eq!(old_refs.load(Ordering::SeqCst), 0);
-            let reused = std::sync::Barrier::new(2);
-            std::thread::scope(|scope| {
-                scope.spawn(|| {
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+            std::thread::scope(move |scope| {
+                scope.spawn(move || {
                     let replacement = allocate_bytes(bytes);
                     assert_eq!(
                         replacement.start_address().as_u64(),
                         frame.start_address().as_u64()
                     );
                     register(replacement);
-                    reused.wait();
-                    reused.wait();
+                    ready_tx.send(()).unwrap();
+                    observed_rx.recv().unwrap();
                     assert_eq!(refs(replacement), 1);
                     assert!(decref(replacement));
                     deallocate_frame(replacement);
                 });
-                reused.wait();
+                ready_rx.recv().unwrap();
                 let observed = refs(frame);
-                reused.wait();
+                observed_tx.send(()).unwrap();
                 assert_eq!(observed, 0);
             });
         }
