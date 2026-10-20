@@ -9,6 +9,8 @@
 
 #[path = "bwm/compositor.rs"]
 mod compositor;
+#[path = "bwm/placement.rs"]
+mod placement;
 
 use std::process;
 
@@ -1197,13 +1199,6 @@ fn discover_windows(
         if windows.iter().any(|w| w.window_id == info.buffer_id) { continue; }
 
         let n = windows.len();
-        let usable_h = screen_h.saturating_sub(px(TASKBAR_HEIGHT) + px(APPBAR_HEIGHT));
-        // Cascade margins and steps are chrome (scaled); the room left for the window is
-        // in client pixels.
-        let cascade_x = pxi(30) + (n as i32 * pxi(50)) % ((screen_w as i32 - 500).max(100));
-        let cascade_y = px(TASKBAR_HEIGHT) as i32 + pxi(10)
-            + (n as i32 * pxi(50)) % ((usable_h as i32 - 500).max(100));
-
         let mut title = [0u8; 32];
         let title_len = (info.title_len as usize).min(32);
         title[..title_len].copy_from_slice(&info.title[..title_len]);
@@ -1236,7 +1231,12 @@ fn discover_windows(
                     let cy = screen_h as i32 / 5; // Spotlight-style: 1/5 from top
                     (cx.max(0), cy.max(0), total_w, total_h)
                 } else {
-                    (cascade_x, cascade_y, total_w, total_h)
+                    let (x, y) = placement::cascade_position(
+                        [0, px(TASKBAR_HEIGHT), screen_w,
+                         screen_h.saturating_sub(px(TASKBAR_HEIGHT) + px(APPBAR_HEIGHT))],
+                        [total_w, total_h], ui().scale, n,
+                    );
+                    (x, y, total_w, total_h)
                 }
             }
         };
