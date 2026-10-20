@@ -942,22 +942,26 @@ fn widgets_slider_keys() -> CaseResult {
     Ok(())
 }
 
+// gpu-text: R3 derives ellipsis prefixes from 26.6 DejaVu advances; clipping and empty areas remain exact.
 fn widgets_label_clip() -> CaseResult {
     let theme = Theme::dark();
     let mut g = Guarded::bgrx(80, 40);
     g.reset(PAPER);
-    Label::new(Rect::new(10, 8, 35, 7), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
+    Label::new(Rect::new(10, 8, 35, 16), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
     snapshot(&g)?;
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
-        font5x7::draw_text(fb, b"ABC...", 10, 8, theme.text_primary, 1);
+        let mut prefix=Vec::new();
+        for c in b"ABCDEFGHIJKLM" {let mut next=prefix.clone();next.push(*c);next.extend_from_slice(b"...");if sans_width(&next)>35 {break;}prefix.push(*c);}
+        prefix.extend_from_slice(b"...");fb.push_clip(libgfx::framebuf::Rect::new(10,8,35,16));
+        sans_draw(fb,&prefix,10,8,theme.text_primary);fb.pop_clip();
     })?;
     let mut narrow = Guarded::bgrx(80, 40);
     narrow.reset(PAPER);
-    Label::new(Rect::new(10, 8, 12, 7), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
+    Label::new(Rect::new(10, 8, 12, 16), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
     snapshot(&narrow)?;
     for y in 0..40 {
         for x in 0..80 {
-            if !in_rect(x as i64, y as i64, 10, 8, 12, 7) {
+            if !in_rect(x as i64, y as i64, 10, 8, 12, 16) {
                 ensure(
                     narrow.color(x, y) == PAPER,
                     "14.3",
@@ -971,10 +975,10 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         "small label drew no visible ellipsis",
     )?;
-    // Coordinator ruling 2026-10-15 (confirmed by the operator brief): include the dot rows;
-    // its clipped third dot has no ink inside the twelve-pixel width.
-    same_as(&narrow, PAPER, "12x7 ellipsis", "14.3", |fb| {
-        font5x7::draw_text(fb, b"..", 10, 8, theme.text_primary, 1);
+    // R3 uses the certified glyph pixels and clips the final dot at the physical bounds.
+    same_as(&narrow, PAPER, "12x16 DejaVu ellipsis", "14.3", |fb| {
+        fb.push_clip(libgfx::framebuf::Rect::new(10,8,12,16));
+        sans_draw(fb,b"...",10,8,theme.text_primary);fb.pop_clip();
     })?;
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 3), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
