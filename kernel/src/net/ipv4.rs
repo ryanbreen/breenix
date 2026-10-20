@@ -173,28 +173,40 @@ impl<'a> Ipv4Packet<'a> {
     }
 }
 
+/// What became of one received IPv4 packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handled {
+    /// Delivered, or discarded as its protocol allows.
+    Done,
+    /// A receive structure it needs was held on another CPU, so the packet
+    /// was not delivered and can be offered again unchanged.
+    Retry,
+}
+
 /// Handle an incoming IPv4 packet
 pub fn handle_ipv4(_eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
-    handle_ipv4_packet(ip, false);
+    // A frame from the NIC is not kept for another try: one that finds its
+    // receive structure held is lost, as a congested network loses it.
+    let _ = handle_ipv4_packet(ip, false);
 }
 
 /// Only the kernel's local-delivery queue may supply loopback addresses.
 /// Ethernet addresses cannot establish this provenance: peers can spoof them.
-pub fn handle_loopback_ipv4(ip: &Ipv4Packet) {
-    handle_ipv4_packet(ip, true);
+pub fn handle_loopback_ipv4(ip: &Ipv4Packet) -> Handled {
+    handle_ipv4_packet(ip, true)
 }
 
-fn handle_ipv4_packet(ip: &Ipv4Packet, local_delivery: bool) {
+fn handle_ipv4_packet(ip: &Ipv4Packet, local_delivery: bool) -> Handled {
     // RFC 1122 3.2.1.3: 127/8 must never arrive from a physical network.
     if !local_delivery && (ip.src_ip[0] == 127 || ip.dst_ip[0] == 127) {
-        return;
+        return Handled::Done;
     }
     // Reject corrupt headers and fragments before DHCP can configure an address.
     if ip.flags_fragment & 0x3fff != 0 || internet_checksum(ip.header) != 0 {
-        return;
+        return Handled::Done;
     }
     if ip.protocol == PROTOCOL_UDP && super::dhcp::receive(ip) {
-        return;
+        return Handled::Done;
     }
 
     let config = super::config();
@@ -205,25 +217,23 @@ fn handle_ipv4_packet(ip: &Ipv4Packet, local_delivery: bool) {
         && !super::is_broadcast_addr_in(&config, ip.dst_ip)
     {
         // Not for us, ignore (we don't do routing)
-        return;
+        return Handled::Done;
     }
 
     if super::is_broadcast_addr_in(&config, ip.dst_ip) && ip.protocol != PROTOCOL_UDP {
-        return;
+        return Handled::Done;
     }
     match ip.protocol {
-        PROTOCOL_ICMP => {
-            if let Some(icmp_packet) = icmp::IcmpPacket::parse(ip.payload) {
-                icmp::handle_icmp(ip, &icmp_packet);
-            }
-        }
+        PROTOCOL_ICMP => match icmp::IcmpPacket::parse(ip.payload) {
+            Some(icmp_packet) => icmp::handle_icmp(ip, &icmp_packet),
+            None => Handled::Done,
+        },
         PROTOCOL_TCP => {
             super::tcp::handle_tcp(ip, ip.payload);
+            Handled::Done
         }
-        PROTOCOL_UDP => {
-            super::udp::handle_udp(ip, ip.payload);
-        }
-        _ => {}
+        PROTOCOL_UDP => super::udp::handle_udp(ip, ip.payload),
+        _ => Handled::Done,
     }
 }
 
