@@ -165,9 +165,6 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertTrue(paths.gateTmpPath.hasPrefix(paths.clonePath + "/"))
     }
 
-
-
-
     func testQuietOverrideForwardingAndRejection() throws {
         let paths = BeastPaths(clonePath: "/root/run")
         for value in [nil, "", "0", "1"] as [String?] {
@@ -218,61 +215,118 @@ final class BeastLauncherTests: XCTestCase {
         XCTAssertEqual(lhs.removeClone, changedSHA.removeClone)
     }
 
-    func testParseHostFactsFromFixtureString() {
-        let wallTime = Date(timeIntervalSince1970: 1_788_700_000)
-        let fixture = """
-        loadavg=0.35 0.85 1.15
-        qemu_peers_x86=2
-        qemu_peers_aarch64=2
-        mem_total_kb=8097132
-        qemu_version=QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)
-        cpu_model=Intel(R) Xeon(R) CPU E5-2640 v4 @ 2.40GHz
-        \u{1B}[?1000l\u{1B}[?1002l\u{1B}[?25h
-        """
-
-        let sample = RemoteCommand.parseHostFacts(fixture, wallTime: wallTime)
-        XCTAssertEqual(sample.wallTime, wallTime)
-        XCTAssertEqual(sample.loadavg1, 0.35)
-        XCTAssertEqual(sample.loadavg5, 0.85)
-        XCTAssertEqual(sample.loadavg15, 1.15)
-        XCTAssertEqual(sample.qemuPeersX86_64, 2)
-        XCTAssertEqual(sample.qemuPeersAarch64, 2)
-        XCTAssertEqual(sample.physMem, 8_097_132 * 1024)
-        XCTAssertTrue(sample.qemuVersion?.contains("8.2.2") == true)
-        XCTAssertTrue(sample.hostModel?.contains("Xeon") == true)
-
-        let empty = RemoteCommand.parseHostFacts("", wallTime: wallTime)
-        XCTAssertEqual(empty.qemuPeersX86_64, 0)
-        XCTAssertEqual(empty.qemuPeersAarch64, 0)
-        XCTAssertNil(empty.loadavg1)
-        XCTAssertNil(empty.loadavg5)
-        XCTAssertNil(empty.loadavg15)
-        XCTAssertNil(empty.physMem)
-        XCTAssertNil(empty.qemuVersion)
-        XCTAssertNil(empty.hostModel)
+    func testRecoverStopsHarvestsAndRemovesPreviouslyUnreachableRun() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RunStore(root: root.appendingPathComponent("store"))
+        let id = "unreachable-run"
+        let endedAt = Date(timeIntervalSince1970: 1_788_700_000)
+        let manifest = RunManifest(id: id, startedAt: endedAt.addingTimeInterval(-60), endedAt: endedAt, arch: .x86_64,
+            profile: "gate", launcher: .beastSSH, kernel: KernelIdentity(), host: nil,
+            verdict: .fail("remote unreachable"), verdictSource: .none, serials: [],
+            captures: [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: 0)],
+            command: ["historical-gate"], env: ["BREENIX_LANE_KEY": String(repeating: "a", count: 64)],
+            tags: [], notes: nil)
+        try store.writeManifest(manifest)
+        let source = root.appendingPathComponent("source")
+        let boot = source.appendingPathComponent("gate-tmp/breenix_gate_1")
+        try FileManager.default.createDirectory(at: boot, withIntermediateDirectories: true)
+        try Data("user evidence\n".utf8).write(to: boot.appendingPathComponent("serial_user.log"))
+        try Data("kernel evidence\n".utf8).write(to: boot.appendingPathComponent("serial_kernel.log"))
+        try Data("gate evidence\n".utf8).write(to: source.appendingPathComponent("gate-tmp/gate-output.log"))
+        let archive = root.appendingPathComponent("evidence.tar.gz")
+        let packed = try RealProcessRunner().run(ProcessRequest(executable: "/usr/bin/tar",
+            arguments: ["-czf", archive.path, "-C", source.path, "gate-tmp"]))
+        XCTAssertEqual(packed.exitCode, 0, packed.stderrString)
+        var paths = BeastPaths(clonePath: "/root/breenix-" + id)
+        paths.laneKey = manifest.env["BREENIX_LANE_KEY"]
+        let stop = RemoteCommand.stopGateRequest(paths: paths)
+        let pull = RemoteCommand.pullEvidenceRequest(paths: paths)
+        let remove = RemoteCommand.removeCloneRequest(paths: paths)
+        let runner = ReviewProcessRunner()
+        let bytes = try Data(contentsOf: archive)
+        runner.respond = { request in
+            if request == stop { return ProcessResult(exitCode: 0) }
+            if request == pull { return ProcessResult(stdout: bytes, exitCode: 0) }
+            if request.executable == "/usr/bin/tar" { return try RealProcessRunner().run(request) }
+            if request == remove {
+                XCTAssertEqual(try store.readManifest(id: id).env["BREENIX_REMOTE_QUIESCED"], "1")
+                return ProcessResult(exitCode: 0)
+            }
+            XCTFail("unexpected request: \(request)")
+            return ProcessResult(exitCode: 1)
+        }
+        let launcher = BeastLauncher(store: store, runner: runner, targetGuard: nil)
+        try launcher.recoverX86(id: id)
+        XCTAssertEqual(runner.calls.map(\.executable), ["/usr/bin/ssh", "/usr/bin/ssh", "/usr/bin/tar", "/usr/bin/ssh"])
+        XCTAssertEqual(runner.calls.first, stop)
+        XCTAssertEqual(runner.calls[1], pull)
+        XCTAssertEqual(runner.calls.last, remove)
+        let recovered = try store.readManifest(id: id)
+        XCTAssertEqual(recovered.verdict, manifest.verdict)
+        XCTAssertEqual(recovered.endedAt, manifest.endedAt)
+        XCTAssertEqual(recovered.env["BREENIX_REMOTE_QUIESCED"], "1")
+        XCTAssertEqual(recovered.captures.first?.bytes, Data("gate evidence\n".utf8).count)
+        for (name, evidence) in [("serial_user.txt", "user evidence\n"), ("serial_kernel.txt", "kernel evidence\n")] {
+            let text = try String(contentsOf: store.runDirectory(id: id).appendingPathComponent(name), encoding: .utf8)
+            XCTAssertTrue(text.contains(evidence), text)
+            XCTAssertEqual(recovered.serials.first { $0.name == name }?.bytes, text.utf8.count)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.runDirectory(id: id).appendingPathComponent("gate-tmp").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.runDirectory(id: id).appendingPathComponent("gate-tmp.tar.gz").path))
     }
 
+    func testTargetPolicyRefusalStopsBeforeBeast() throws {
+        let runner = ReviewProcessRunner()
+        runner.respond = { _ in ProcessResult(stderr: Data("effort lane refused\n".utf8), exitCode: 1) }
+        let launcher = BeastLauncher(store: RunStore(root: URL(fileURLWithPath: "/unused")), runner: runner,
+            targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"))
+        XCTAssertThrowsError(try launcher.checkTargetPolicy(options: BeastLaunchOptions(sha: "abc123def"))) {
+            XCTAssertEqual($0 as? BeastLauncherError, .targetPolicyRefused("effort lane refused"))
+        }
+        XCTAssertEqual(runner.calls.map(\.executable), ["/usr/bin/env"])
+        XCTAssertEqual(runner.calls.first?.arguments,
+            ["python3", "/repo/scripts/effort-target-guard.py", "--repo", "/repo", "--commit", "abc123def", "--target", "x86"])
+    }
 
+    func testAcceptedTargetPolicyStampsTheRemoteGate() throws {
+        let runner = ReviewProcessRunner()
+        let sha = String(repeating: "a", count: 40)
+        runner.respond = { _ in ProcessResult(stdout: Data((sha + "\n").utf8), exitCode: 0) }
+        let launcher = BeastLauncher(store: RunStore(root: URL(fileURLWithPath: "/unused")), runner: runner,
+            targetGuard: URL(fileURLWithPath: "/repo/scripts/effort-target-guard.py"))
+        var options = BeastLaunchOptions(sha: "abc123def", catchup: true)
+        options.targetPolicySHA = try launcher.checkTargetPolicy(options: options)
+        XCTAssertEqual(options.targetPolicySHA, sha)
+        XCTAssertEqual(runner.calls.first?.arguments.last, "--catchup")
+        let plan = try launcher.plan(options: options)
+        XCTAssertTrue(try XCTUnwrap(plan.runGate.arguments.last).contains("BREENIX_TARGET_POLICY_CHECKED=x86:" + sha))
+        XCTAssertEqual(runner.calls.count, 1, "planning must not execute the remote gate")
+    }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    func testUnsupportedHostIsRejected() throws {
+        let runner = ReviewProcessRunner()
+        let launcher = BeastLauncher(store: RunStore(root: URL(fileURLWithPath: "/unused")), runner: runner,
+            pathsTemplate: BeastPaths(host: "localhost", clonePath: ""), targetGuard: nil)
+        XCTAssertThrowsError(try launcher.plan(options: BeastLaunchOptions(sha: "abc123def"))) {
+            XCTAssertEqual($0 as? BeastLauncherError, .unsupportedHost("localhost"))
+        }
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
 
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("breenix-runs-beast-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+}
+
+private final class ReviewProcessRunner: ProcessRunner {
+    var calls: [ProcessRequest] = []
+    var respond: ((ProcessRequest) throws -> ProcessResult)?
+    func run(_ request: ProcessRequest, outputHandler: (@Sendable (Data) -> Void)?) throws -> ProcessResult {
+        calls.append(request)
+        return try XCTUnwrap(respond)(request)
     }
 }

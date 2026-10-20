@@ -80,7 +80,6 @@ final class DetachedGateTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("invocations"), encoding: .utf8), "invocation\n")
     }
 
-
     func testUnsupportedLANAliasIsRejected() throws {
         let launcher = BeastLauncher(store: RunStore(root: URL(fileURLWithPath: "/unused")),
                                      pathsTemplate: BeastPaths(host: "beast-lan", clonePath: ""), targetGuard: nil)

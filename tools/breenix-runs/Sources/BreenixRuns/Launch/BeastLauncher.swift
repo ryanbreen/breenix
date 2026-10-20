@@ -357,8 +357,6 @@ public struct BeastLauncher {
         }
     }
 
-    /// The per-boot screens `keepScreens` kept, in boot order.
-
     private func mergeSerials(from gateTmp: URL, userURL: URL, kernelURL: URL) throws {
         guard let iterationDirectories = try? FileManager.default.contentsOfDirectory(
             at: gateTmp,

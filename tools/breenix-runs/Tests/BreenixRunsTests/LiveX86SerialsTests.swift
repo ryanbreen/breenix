@@ -15,7 +15,6 @@ final class LiveX86SerialsTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
-
     func testDisconnectCleanupFindsDetachedWorkerAndExcludesReusedPIDAndPeer() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
