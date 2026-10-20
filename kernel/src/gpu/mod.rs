@@ -955,6 +955,10 @@ impl Core {
 
     /// The device returned a request.
     fn returned(&mut self, d: Done) {
+        let warm = matches!(d.tag, Tag::Sync(serial) if self.syncs.get(&serial).is_some_and(|s| s.warm.is_some()));
+        if !warm {
+            self.traffic_ns = now_ns();
+        }
         match d.tag {
             Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
             Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
@@ -987,9 +991,6 @@ impl Core {
     /// after a confirmed reset.
     fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
         let Some(s) = self.syncs.remove(&serial) else { return };
-        if s.warm.is_none() && d.is_some() {
-            self.traffic_ns = now_ns();
-        }
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !virgl::ok(d.answer)) {
             self.fault();
         }
