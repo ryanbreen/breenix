@@ -663,8 +663,8 @@ fn circles(outline: bool) -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
     let t = scanout_target(format::B8G8R8A8, 83, 83)?;
-    // As in the glyph corpus, retain one display-sized view while checking every
-    // source and every presented frame. Reallocating it per radius dominates SVGA.
+    // As in the glyph corpus, retain one display-sized view while checking the sources
+    // and the presented frames. Reallocating it per radius dominates SVGA.
     libbreenix::graphics::take_over_display()
         .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let mut modes = gpu::abi::Modes::ZERO;
