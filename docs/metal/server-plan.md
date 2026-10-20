@@ -12,6 +12,9 @@ the operator's decisions and the coordinator's rulings below chose among them. T
 
 ## Operator decisions and rulings
 
+The [original D1–D4 decision record](server-decisions-2026-10-20.md) is retained verbatim
+for comparison with the summaries below (PR #2176 follow-up).
+
 Operator decisions, 2026-10-20 (times ET):
 
 - **D1 Filesystem (7:05 PM):** Breenix's own copy-on-write B-tree filesystem with Btrfs's properties (atomic commits,

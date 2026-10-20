@@ -14,7 +14,8 @@ of two or more, a manifest's `"sequence": "first"` suite must run first and its 
 `score` scores each suite of SUITES (comma-separated) from the serial as scripts/suite-verdict.py scores it alone,
 and prints one line per suite: PASS, FAIL, STALLED (the runner's watchdog, or the boot, stopped it with the cases
 shown), NOT-RUN (it never printed START) or NOT-ISOLATED (its RESET named state it could not restore; its own
-verdict follows). The last suite's manifest diskChecks are read from --disk. Exits 0 only when every suite passes.
+verdict follows). Planned categories with no cases block PASS even when the populated categories pass.
+The last suite's manifest diskChecks are read from --disk. Exits 0 only when every suite passes.
 """
 
 import argparse

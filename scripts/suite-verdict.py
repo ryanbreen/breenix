@@ -50,6 +50,9 @@ def read_lines(path):
 
 def verdict(manifest, records_log, logs, only=None):
     suite = manifest["id"]
+    planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
+    if not only and planned:
+        return False, f"planned categories have no cases: {', '.join(planned)}; suite acceptance is blocked"
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"] for case in category["cases"]]
     if only:
         selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]

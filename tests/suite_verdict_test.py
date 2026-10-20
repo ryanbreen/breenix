@@ -41,6 +41,26 @@ EXPECTATIONS = {
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_planned_categories_block_full_suite_acceptance(self):
+        serial = FIXTURES / "all-pass.txt"
+        for categories in (
+            MANIFEST["categories"] + [dict(id="later", cases=[])],
+            [dict(id="later", cases=[])],
+        ):
+            with self.subTest(categories=categories):
+                manifest = dict(MANIFEST, categories=categories)
+                ok, reason = SCORER.verdict(manifest, serial, [serial])
+                self.assertFalse(ok)
+                self.assertIn("planned categories have no cases: later", reason)
+        with tempfile.TemporaryDirectory() as directory:
+            selected = Path(directory) / "selected.txt"
+            selected.write_text("SUITE fixture START cases=1 only=first/one\n"
+                                "SUITE fixture CASE first/one PASS ms=1\n"
+                                "SUITE fixture DONE passed=1 failed=0 skipped=0 total=1 only=first/one\n")
+            mixed = dict(MANIFEST, categories=MANIFEST["categories"] + [dict(id="later", cases=[])])
+            self.assertTrue(SCORER.verdict(mixed, selected, [selected], only="first/one")[0])
+            self.assertFalse(SCORER.verdict(mixed, selected, [selected], only="later")[0])
+
     def test_memory_only_log_fails_without_start(self):
         with tempfile.TemporaryDirectory() as directory:
             serial = Path(directory) / "serial.txt"

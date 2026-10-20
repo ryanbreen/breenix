@@ -51,7 +51,7 @@ class ResolveTests(unittest.TestCase):
 
 
 class ScoreTests(unittest.TestCase):
-    def score(self, serial, suites):
+    def score(self, serial, suites, manifests=None):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / "scripts").mkdir()
@@ -59,7 +59,8 @@ class ScoreTests(unittest.TestCase):
             (repo / "docs/suites").mkdir(parents=True)
             shutil.copy(ROOT / "docs/boot-path.json", repo / "docs")
             for suite in suites:
-                (repo / "docs/suites" / f"{suite}.json").write_text(manifest(suite))
+                (repo / "docs/suites" / f"{suite}.json").write_text(
+                    manifests[suite] if manifests and suite in manifests else manifest(suite))
             log = repo / "serial.txt"
             log.write_text(serial)
             return SEQUENCE["score"](suites, log, [log], repo=repo)
@@ -73,6 +74,16 @@ class ScoreTests(unittest.TestCase):
                 f"SUITE {suite} MEMORY after free=990 heap_free_kb=496 {owners}\n"
                 f"SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n"
                 f"SUITE_SEQUENCE READY {suite}\n")
+
+    def test_passing_populated_categories_cannot_complete_a_planned_suite(self):
+        mixed = json.loads(manifest("users"))
+        mixed["categories"].extend(dict(id=f"planned-{i}", cases=[]) for i in range(6))
+        ok, rows = self.score(self.passing("users"), ["users"], {"users": json.dumps(mixed)})
+        self.assertFalse(ok)
+        self.assertEqual(rows[0][1], "FAIL")
+        self.assertIn("planned categories have no cases", rows[0][2])
+        for i in range(6):
+            self.assertIn(f"planned-{i}", rows[0][2])
 
     def test_each_suite_is_scored_from_its_own_part_of_the_serial(self):
         serial = ("SUITE_SEQUENCE BEGIN suites=a,b,c,d,e baseline=9\n" + self.passing("a")

@@ -177,7 +177,8 @@ root:adm, O_APPEND, fsync) and to `/dev/kmsg`. No password or hash is written.
 1. Validate the account: a shadow line, not expired, a shell listed in `/etc/shells`.
 2. Give the user the tty at 0620.
 3. initgroups, setresgid, setresuid.
-4. Confirm `setuid(0)` fails.
+4. For a non-root target (uid != 0), confirm `setuid(0)` fails. For a root target, skip this no-regain-root
+   assertion: su and sudo have intentionally become root, so `setuid(0)` succeeds.
 5. Set the umask from `/etc/login.defs`.
 6. Install a clean environment and chdir to the home.
 7. Exec the login shell.

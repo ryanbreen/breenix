@@ -47,7 +47,8 @@ directories, chmod and chown rules, a new node's owner and setgid group). <!-- c
   `MapState`); dropping the last handle does no I/O (`kernel/src/fs/ext2/live_inode.rs:2`). Open files hold an `Arc<VNode>`
   and a position or getdents cookie; directory entries cross as `DirEnt { ino, kind, name }`.
 - **Mounts.** A mount table replaces `namei::Mount`; `/home` and the `/etc` and `/root` generation binds become
-  mounts and bind mounts, retiring `strip_home_prefix`, `is_home_path` and `Namespace`. Boot probes formats by magic.
+  mounts and bind mounts, including the shared directories defined in section 6, retiring `strip_home_prefix`,
+  `is_home_path` and `Namespace`. Boot probes formats by magic.
 - **mmap and fsync.** `MapState` moves into `VNode`; writeback calls `writeback_pages` (ext2: `write_mapped_range`;
   cowfs: joins the transaction). The lock order is filesystem, PROCESS_MANAGER, VNode table, MapState, frame ledger;
   faults never enter a filesystem (`kernel/src/memory/file_map.rs:27`). ext2's fsync is unchanged. <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 1.1, not a measured result. -->
@@ -404,8 +405,13 @@ and home, which are copied off the machine first.
 2. **Intent format 3** adds `mount <guid> <path> ro|rw` lines, with at most two writable fence ranges.
 3. **Migration boot.** The migrator runs from the test root; the ext2 partitions mount read-only and the cowfs pair
    writable. `/sbin/persistent-migrate`:
-   - copies the current generation (`/bin /sbin /usr /etc /opt`) into root `gen-<id>`;
-   - copies `/root` and `/var` into roots that every generation mounts (D5); <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
+   - copies the current generation's OS (`/bin /sbin /usr`, including `/usr/share/factory/etc`) and mount points
+     into root `gen-<id>`; `/etc` and `/opt` are shared state, not generation contents;
+   - copies the active machine state from `/.breenix-shared/{etc,var,opt,srv,tmp,run}` into a shared root
+     exposed as `/.breenix-shared` on the cowfs system partition, outside `gen-<id>` (S8 and
+     [the users layout](../users/design.md#4-the-standard-filesystem-layout)); copies the existing shared
+     `/root` separately. A legacy source must first receive the users layout migration; do not seed accounts,
+     host keys or policy from a generation's factory defaults;
    - copies `/home`, including `/home/operator` (S7);
    - preserves bytes, owners, modes, times, symlinks, hard links, devices and FIFOs; all-zero 4 KiB runs become
      holes; <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
@@ -414,14 +420,28 @@ and home, which are copied off the machine first.
 4. **Host check.** On a cold readback of all four partitions, debugfs (an independent ext2 reader) and
    `cowfs-extract` (after `cowfs-check --full`) build the two manifests, which must match. <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
 5. **Cutover.** Only then is `NEXT` built with the cowfs GUIDs and `userland <id>` naming `gen-<id>`. A failed
-   verification boot rolls back automatically (D3).
+   verification boot rolls back automatically (D3). The persistent mount layout is:
+
+   | Source | Persistent path |
+   |---|---|
+   | System root `gen-<id>` | OS tree (`/bin`, `/sbin`, `/usr`) and mount points |
+   | System shared root `/.breenix-shared/{etc,var,opt,srv,tmp,run}` | Bind each directory at `/etc`, `/var`, `/opt`, `/srv`, `/tmp`, `/run`, respectively |
+   | System shared root for root's home | `/root` |
+   | Home partition root | `/home` (nosuid,nodev) |
+
+   Mount shared state before running the users design's `etc-reconcile`, then start services. Reconcile
+   generation defaults from `/usr/share/factory/etc` into shared `/etc`, preserving machine-owned accounts,
+   shadow entries, SSH host keys and admin policy. Upgrades and cowfs generation rollbacks keep these binds
+   and the same shared state; selecting an older generation must not restore old credentials.
 6. **Rollback.** The ext2 copy stays frozen and never mounts writable (S4). PREVIOUS becomes the migrating commit
    with both ext2 partitions read-only and a RAM-disk cowfs for `/tmp` and `/run`, a rescue boot with every file
    readable over SSH. Making ext2 writable again is an operator action. <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 6, not a measured result. -->
 7. **Upgrades on cowfs.**
    - The installer fills root `<id>.new` and renames it `gen-<id>` in one transaction.
    - `home` is snapshotted read-only before each upgrade.
-   - `/tmp` is a root emptied at boot (mode 1777).
+   - Shared `/tmp` is emptied at boot (mode 1777); shared `/run` is emptied by init before services start
+     (mode 0755). Their backing directories stay in `/.breenix-shared`, outside generations. `/var/tmp`
+     remains in shared `/var` and is not cleared by this boot cleanup.
    - Reclamation (#2117) deletes roots no slot names.
 8. **Reclaim.** After two upgrades verified on cowfs, a stub boot removes GPT entries 3 and 4.
 

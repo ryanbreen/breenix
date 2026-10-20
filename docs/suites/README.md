@@ -43,7 +43,9 @@ and runs the others exactly as above, so a boot does not report an empty categor
 in which each category is planned is a skeleton (`server`, `users`, `filesystem` and `toolchain`
 today): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
 refuses it in a `--suite` list, and `all` leaves it out with "no cases yet". An effort
-milestone measured by a planned category reads as not measured yet. <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
+milestone measured by a planned category is not complete, including when its other categories pass.
+Full-suite scoring refuses acceptance while a manifest category has no cases; targeted runs of populated
+categories remain available for development. See [effort measures](../efforts/README.md#measures). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
 
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
