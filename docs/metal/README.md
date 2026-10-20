@@ -861,7 +861,11 @@ ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 i
    installer's first argument. `/sbin/persistent-install` copies the new userland into
    `/.breenix-generations/<id>.new` on the system partition. It preserves file bytes, ownership, modes, symlinks
    and hard links within the copied tree. It copies `/etc` into each generation and keeps existing `/root`; when absent, it copies `/root` into
-   private scratch space outside the generation, flushes it, and publishes it with a rename. The generation has empty directory mount
+   private scratch space outside the generation, flushes it, and publishes it with a rename. It also creates the
+   machine state store `/.breenix-shared` (root's, mode 0700) when absent and stages the operator's account in it
+   ("SSH and the machine state store", below). It leaves the test image's SSH credentials behind: the test-only client
+   key and the `sshtest` account's home in `/etc/breenix/test-ssh`, that account's lines in `/etc/passwd` and
+   `/etc/group`, a copied `/root/.ssh`, and the staged `/etc/breenix/operator-account`. The generation has empty directory mount
    points for `/root`, `/home` and the virtual filesystems. The installer writes and flushes a completion
    record (`.complete`, containing the ID), flushes the staging directory, renames the tree once to
    `/.breenix-generations/<id>`, then flushes its parent. Only then does it print
@@ -894,10 +898,56 @@ current tree. Reclamation must account for the manager's recovered slots before 
 `metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
 the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the
 previous slot once without swapping. Rollback restores the previous kernel and selects its unchanged userland
-tree. `/etc` follows the selected userland generation; operator data in `/root` and the separate home filesystem stay shared across promotion and rollback.
+tree. `/etc` follows the selected userland generation; operator data in `/root`, the machine state store and the
+separate home filesystem stay shared across promotion and rollback.
 Host transaction tests in `persistent_install.rs` interrupt filesystem operations and the manager's slot actions;
 they check retained bytes and metadata, shared data and selection of the paired tree. Hardware validation of this
 generation protocol is pending review and a later hardware window (#2114).
+
+### SSH and the machine state store
+
+The persistent install runs bsshd on port 2222 and no telnetd: x86 images start no telnet service.
+
+- **Logins** are publickey only (ssh-ed25519, rsa-sha2-256 and rsa-sha2-512 user keys), against the account's
+  `~/.ssh/authorized_keys`. The file, `~/.ssh`, the home directory and each directory above it must be owned by root
+  or the account and not writable by group or others, and a symbolic link is refused. Key options are not
+  implemented, so a line that carries them is ignored. There is no password login, an unknown user is refused,
+  and bsshd refuses root (an account with uid 0).
+- **Sessions** run as the account: bsshd sets its supplementary groups, gid and uid, confirms that root cannot be
+  regained, then starts the account's shell as a login shell in its home with `HOME`, `USER`, `LOGNAME`, `SHELL`,
+  `PATH` and the client's `TERM`.
+- **The host key** is `/etc/ssh/ssh_host_ed25519_key` (RFC 8709), generated from the kernel's random pool on the
+  first start that finds no key, root's and mode 0600. bsshd prints `bsshd: host key ED25519 SHA256:...` on each
+  start, on the console and the serial port; compare it with `ssh-keygen -lf` output before trusting the key. A key
+  file that others can read, that is not root's, that is a symbolic link or that does not parse stops bsshd rather
+  than being replaced.
+
+**The machine state store.** An upgrade copies the new image's `/etc`, so the state the machine owns lives in
+`/.breenix-shared` on the system partition, outside the generations. The kernel binds it at `/.breenix-shared` in
+each generation, as it binds `/root`. Before bsshd starts, init reconciles it into the running generation's `/etc`
+(`libs/libbreenix/src/ssh/machine_state.rs`):
+
+| In the store | Reconciled as |
+|---|---|
+| `etc/passwd`, `etc/group`, `etc/shadow` | Each line replaces the generation's line for the same name or is added; a passwd line with uid 0, or with a uid another account has, is refused |
+| `etc/ssh/*` | Copied into `/etc/ssh` with its mode; bsshd adds a key it generates here |
+| `var/lib/accounts/pending/<account>` | Once the home partition is mounted, added to the account's `~/.ssh/authorized_keys` (home and `~/.ssh` 0700, the file 0600, created when absent), then removed |
+
+The store must be root's and mode 0700, and each file read from it root's and not group- or world-writable (the
+shadow file and private keys also unreadable by others); otherwise init prints `[init] machine state refused: ...`
+and leaves `/etc` as it was. init reports what it applied as `[init] machine state: ...` lines.
+
+**The operator account.** `metal-run install-persistent` reads two private site fields: `OPERATOR_USER`, the
+account name, and `OPERATOR_SSH_PUBLIC_KEY`, one `ssh-ed25519` or `ssh-rsa` public key line (quoted in the site
+file; a private key is refused). It stages them as `/etc/breenix/operator-account` (root's, 0600) on the install boot's
+test root, and the installer writes the account into the store: uid and gid 1000, a group of the same name, home
+`/home/<name>`, shell `/bin/sh` and a locked password (a shadow line already in the store is kept), with the key as
+its pending authorized key. Each upgrade stages them again; a key already listed is not added twice.
+
+Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
+account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback
+oracle logs in with it: `[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]` for the key and a forged signature, and
+`[BSSH_ACCOUNT_ORACLE:root=refused:id=sshtest:PASS]` for root's refusal and the session's `id`.
 
 ### Persistent sessions
 
@@ -1142,8 +1192,9 @@ The pure parts have host tests in their own files, run with `rustc --edition=202
 
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
 `IDRAC_ACCOUNT_SLOT`, `INTERNAL_USB`, `USB_MANAGED_PORT` (fresh as-found BIOS values), `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
-`static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`) and `REDACT_IDENTIFIERS`. It must also be valid
-`sh`, because `metal-sol` sources it.
+`static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`), `REDACT_IDENTIFIERS`, and for
+`install-persistent` `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"). It must also
+be valid `sh`, because `metal-sol` sources it.
 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`
 (the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,
