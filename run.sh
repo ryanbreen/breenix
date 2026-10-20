@@ -242,7 +242,7 @@ while [[ $# -gt 0 ]]; do
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  BREENIX_PARALLELS_3D=off   Parallels: create the VM with 3D acceleration off (attestation control)"
             echo "  BREENIX_VMWARE_POINTER=relative  VMware: tablet disabled, VNC buttons and wheel go to the USB mouse"
-            echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
+            echo "  --retina                   VMware: keep the firmware's display autodetection (default: capped at 1280x800); both VMs show the GPU core's display at native Retina resolution"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
             echo "  -h, --help                 Show this help"
@@ -737,11 +737,11 @@ cleanup_vmware_bundle() {
     prune_vmware_inventory
 }
 
-# Fusion opens a VM's window at the frame saved in <name>.plist in its bundle and, unless
-# the VMX says otherwise, resizes the window to whatever display size the guest sets: a
-# guest that sets a 256x256 screen gets a 256-point window. Write a frame whose content
-# area shows WIDTH x HEIGHT points (shrunk to fit the screen, aspect kept), centred on the
-# main screen; the VMX's stretch mode then scales any guest display into it.
+# Fusion opens a VM's window at the origin of the frame saved in <name>.plist in its bundle
+# and sizes the window's content to the display the guest sets, following each new one (the
+# firmware's 640x480 screen gets a 320x240-point view at native Retina resolution). Write a
+# frame whose content area shows WIDTH x HEIGHT points (shrunk to fit the screen, aspect
+# kept), centred on the main screen, so the window sits centred once it shows that size.
 write_vmware_window_frame() {
     local plist="$1" width="$2" height="$3" frame
     frame=$(/usr/bin/osascript -l JavaScript - "$width" "$height" <<'JS'
@@ -1323,8 +1323,10 @@ if [ "$VMWARE" = true ]; then
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
-    # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
-    if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
+    # The GPU core shows a 2560x1600 display (docs/gui/gpu.md section 1.7). Fusion's "Use full
+    # resolution for Retina display" shows it at one guest pixel per Retina pixel, in a
+    # 1280x800-point window, as Parallels' high-resolution policy does.
+    VMWARE_NATIVE_RESOLUTION=TRUE
     EXT2_DISK="${DISK_OVERRIDE:-$BREENIX_ROOT/target/ext2-aarch64.img}"
     VM_MACHINES="$HOME/Virtual Machines.localized"
     LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
@@ -1569,20 +1571,19 @@ VMXEOF
         echo "BREENIX_VMWARE_POINTER takes only 'relative'"; exit 2
     fi
 
-    # Keep the default scaled viewport bounded; --retina retains GOP autodetection.
+    # Keep the firmware's screen bounded; --retina retains GOP autodetection. The cap makes
+    # the firmware pick 1280x800, the aspect of the GPU core's 2560x1600 display (16:10,
+    # docs/gui/gpu.md section 1.7).
     if [ "${RETINA:-false}" != true ]; then
         cat >> "$VMX_FILE" <<VMXEOF
 svga.autodetect = "FALSE"
 svga.maxWidth = "1280"
-svga.maxHeight = "960"
+svga.maxHeight = "800"
 VMXEOF
     fi
 
     cat >> "$VMX_FILE" <<VMXEOF
 gui.fitGuestUsingNativeDisplayResolution = "${VMWARE_NATIVE_RESOLUTION}"
-gui.perVMWindowAutofitMode = "stretch"
-gui.enableStretchGuest = "TRUE"
-gui.stretchGuestMode = "aspect"
 mks.enable3d = "TRUE"
 
 vmci0.present = "TRUE"
@@ -1598,9 +1599,10 @@ msg.autoAnswer = "TRUE"
 VMXEOF
 
     echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
-    # The window shows the 1280x960 guest at two Retina pixels per guest pixel; the VMX's
-    # stretch mode keeps it that size whatever display the guest sets.
-    write_vmware_window_frame "$VM_BUNDLE/$VM_NAME.plist" 1280 960 \
+    # The window follows the guest's display: its content is 1280x800 points once the GPU
+    # core shows its 2560x1600 display, with no letterbox. A stretch mode would instead keep
+    # the size of the firmware's first screen, 4:3, and letterbox the 16:10 desktop in it.
+    write_vmware_window_frame "$VM_BUNDLE/$VM_NAME.plist" 1280 800 \
         || { echo "ERROR: could not write the VM window frame"; exit 1; }
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
@@ -1612,6 +1614,8 @@ VMXEOF
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    export BREENIX_VIGIL_DISPLAY=true
+    [ -z "${BREENIX_VMWARE_NOGUI:-}" ] || export BREENIX_VIGIL_DISPLAY=false
     record_launch_metadata
     # A one-case run is not registered: Vigil would score it as a suite boot.
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
