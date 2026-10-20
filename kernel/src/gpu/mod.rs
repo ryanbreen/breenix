@@ -97,6 +97,10 @@ static CORE: spin::Mutex<Option<Core>> = spin::Mutex::new(None);
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
+/// Counts sends to the device. `kgpu` blocks only while it is unchanged since kgpu chose its
+/// deadline: a send made after that would otherwise wait for that deadline, because an
+/// SVGA3 device raises no interrupt and only kgpu polls it for the answers.
+static SENT: AtomicU64 = AtomicU64::new(0);
 static ISR: AtomicU64 = AtomicU64::new(0);
 /// The control queue's notification address, and whether requests were queued since it
 /// was last written: see [`ring_doorbell`].
@@ -898,6 +902,9 @@ impl Core {
         }
         if sent {
             KICK.store(true, Ordering::Release);
+            // A kgpu that has chosen its deadline but not yet blocked is running, and this
+            // wake does not reach it; the count does (`reaper_block`).
+            SENT.fetch_add(1, Ordering::AcqRel);
             wake_reaper();
         }
     }
@@ -2021,17 +2028,18 @@ fn ensure_reaper() -> bool {
     }
 }
 
-/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen`. It
+/// Block `kgpu` until `wake` (or indefinitely) or until a GPU event after `seen` or a send
+/// after `sent`. It
 /// blocks for I/O: the scheduler applies a wake from interrupt context, such as
 /// `handle_interrupt`'s, only to a thread blocked for I/O, so a timer block would leave
 /// the device's answers waiting for the next deadline. Once woken it returns without
 /// halting for a further interrupt.
-fn reaper_block(tid: u64, seen: u64, wake: Option<u64>) {
+fn reaper_block(tid: u64, seen: u64, sent: u64, wake: Option<u64>) {
     // One scheduler section publishes the block and checks for an event since `seen`, so
     // the lock is taken once and waited for with interrupts enabled (section 1.16, #2003).
     crate::task::scheduler::with_scheduler(|sched| {
         sched.block_current_for_io_with_timeout(wake);
-        if EVENTS.load(Ordering::Acquire) != seen {
+        if EVENTS.load(Ordering::Acquire) != seen || SENT.load(Ordering::Acquire) != sent {
             sched.unblock(tid);
         }
     });
@@ -2053,11 +2061,12 @@ fn reaper() {
         let seen = EVENTS.load(Ordering::Acquire);
         acknowledge_interrupt();
         let now = now_ns();
-        let (deadline, busy, reset, hung) = with_core(|c| {
+        // Sends happen under the core's lock, so the deadline accounts for the sends counted here.
+        let (deadline, busy, reset, hung, sent) = with_core(|c| {
             c.pump();
-            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung())
+            (c.next_deadline(now), !c.procs.is_empty(), c.reset_wanted, c.take_hung(), SENT.load(Ordering::Acquire))
         })
-        .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0)));
+        .unwrap_or((None, false, false, ([None; HUNG_KEPT], 0), SENT.load(Ordering::Acquire)));
         post_hung(&hung.0, hung.1, &mut hung_losses);
         if reset {
             reset_device(tid);
@@ -2082,7 +2091,7 @@ fn reaper() {
         } else {
             wake
         };
-        reaper_block(tid, seen, wake);
+        reaper_block(tid, seen, sent, wake);
     }
 }
 
@@ -2095,7 +2104,7 @@ fn reset_device(tid: u64) {
     dev.begin_reset();
     let start = now_ns();
     while !dev.reset_done() && now_ns().saturating_sub(start) < RESET_BUDGET_NS {
-        reaper_block(tid, EVENTS.load(Ordering::Acquire), Some(now_ns() + 1_000_000));
+        reaper_block(tid, EVENTS.load(Ordering::Acquire), SENT.load(Ordering::Acquire), Some(now_ns() + 1_000_000));
     }
     if dev.reset_done() {
         let (held, up) = dev.restart();
