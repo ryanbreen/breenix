@@ -3,9 +3,9 @@
 //! Provides the same professional Noto Sans Mono font used in the kernel,
 //! with alpha-blended glyph rendering for smooth text output.
 
-use noto_sans_mono_bitmap::{
-    get_raster, get_raster_width, FontWeight, RasterHeight,
-};
+use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight};
+/// The raster sizes this crate carries: 16 px and 32 px.
+pub use noto_sans_mono_bitmap::RasterHeight;
 
 use crate::color::Color;
 use crate::framebuf::FrameBuf;
@@ -30,10 +30,15 @@ impl FontMetrics {
 
 /// Get the font metrics for the 16px regular Noto Sans Mono font.
 pub fn metrics() -> FontMetrics {
+    metrics_at(RasterHeight::Size16)
+}
+
+/// The font metrics at raster size `height`; line spacing is an eighth of the size.
+pub fn metrics_at(height: RasterHeight) -> FontMetrics {
     FontMetrics {
-        char_width: get_raster_width(FontWeight::Regular, RasterHeight::Size16),
-        char_height: 16,
-        line_spacing: 2,
+        char_width: get_raster_width(FontWeight::Regular, height),
+        char_height: height.val(),
+        line_spacing: height.val() / 8,
     }
 }
 
@@ -43,9 +48,14 @@ pub fn metrics() -> FontMetrics {
 /// Background pixels are read from the framebuffer and blended with the
 /// glyph intensity for smooth anti-aliased edges.
 pub fn draw_char(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color) {
-    let rc = match get_raster(ch, FontWeight::Regular, RasterHeight::Size16) {
+    draw_char_at(fb, ch, x0, y0, fg, RasterHeight::Size16);
+}
+
+/// Draw a single character from the raster of size `height`, as `draw_char` does at 16 px.
+pub fn draw_char_at(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color, height: RasterHeight) {
+    let rc = match get_raster(ch, FontWeight::Regular, height) {
         Some(rc) => rc,
-        None => match get_raster('?', FontWeight::Regular, RasterHeight::Size16) {
+        None => match get_raster('?', FontWeight::Regular, height) {
             Some(rc) => rc,
             None => return,
         },

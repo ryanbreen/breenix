@@ -51,11 +51,18 @@ pub mod gpu {
         pub mod upload_source { pub const B8G8R8A8: u32 = 1; }
         pub mod purpose { pub const IMAGE: u32 = 1; }
         pub mod status { pub const ADMITTED: u32 = 1; }
-        pub mod record { pub const SIZE: usize = 64; }
+        pub mod record { pub const SIZE: usize = 64; pub const FLAGS: usize = 24; pub const TARGET_WIDTH: usize = 48; pub const TARGET_HEIGHT: usize = 52; pub const RESOURCE: usize = 80; }
+        #[derive(Clone, Copy)]
+        pub struct Mode { pub width: u32, pub height: u32, pub scale: u32 }
+        pub struct Modes { pub count: u32, pub current: u32, pub binding_known: u32, pub modes: [Mode; 2], pub scanout_resource: u64 }
     }
     pub struct Caps { pub status: u32, pub reason: [u8; 8] }
     pub struct Answer { pub reason: u32 }
     pub fn caps() -> (i64, Caps) { (0, Caps { status: 1, reason: [0; 8] }) }
+    pub fn modes() -> (i64, abi::Modes) {
+        let mode = abi::Mode { width: 8, height: 8, scale: 1 };
+        (0, abi::Modes { count: 2, current: 0, binding_known: 1, modes: [mode; 2], scanout_resource: 0 })
+    }
     pub fn scanout_target_create(_: u32, _: u32, _: u32) -> Result<u64, i64> { Ok(2) }
     pub fn texture_create(_: u32, _: u32, _: u32) -> Result<u64, i64> {
         super::DEVICE.with(|d| if d.borrow().fail_texture { Err(-5) } else { Ok(3) })
@@ -69,7 +76,7 @@ pub mod gpu {
 }
 fn open(listed: (u32, u32), frame: (u32, u32)) -> compositor::Compositor {
     DEVICE.with(|d| *d.borrow_mut() = Device { listed, frame, pending: true, ..Device::default() });
-    compositor::Compositor::open(8, 8, 1).unwrap()
+    compositor::Compositor::open(8, 8, 1, 1).unwrap()
 }
 fn layers() -> [compositor::Layer; 1] {
     [compositor::Layer { window_id: 1, frame: [[0; 4]; 3], frame_len: 0, content: [0, 0, 8, 8] }]

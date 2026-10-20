@@ -890,6 +890,10 @@
             "marker": "[bwm] first frame read back:"
           },
           {
+            "name": "Window manager desktop fills the scanout",
+            "marker": "[bwm] desktop fills the scanout:"
+          },
+          {
             "name": "Window manager composited a client frame",
             "marker": "[bwm] composited client frame:"
           }
@@ -902,6 +906,10 @@
           {
             "name": "Window manager first frame read back",
             "marker": "[bwm] first frame read back:"
+          },
+          {
+            "name": "Window manager desktop fills the scanout",
+            "marker": "[bwm] desktop fills the scanout:"
           },
           {
             "name": "Window manager composited a client frame",

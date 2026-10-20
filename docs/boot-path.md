@@ -119,7 +119,13 @@ instructions cannot be emulated by this QEMU version.
   `default` stages require bwm's `[bwm] first frame read back:` and
   `[bwm] composited client frame:` lines, which it prints only after reading the
   presented frame back from the device and matching it, pixel for pixel, with the frame
-  it composed (in `default` mode the client is `bounce`).
+  it composed (in `default` mode the client is `bounce`). Between them,
+  `[bwm] desktop fills the scanout:` shows that the desktop covers the whole display at
+  bwm's UI scale: bwm reads the scanout itself back (READBACK target 0) at the top-left
+  and bottom-right pixels of its taskbar and app bar and the background pixel past each,
+  where its scale puts them, and requires the read-back's record to name a scanout of the
+  size bwm composed, the resource MODES reports bound, at the GPU core's current mode's
+  size. The line carries the chosen scale; bwm's `[bwm] UI scale` line says how it was chosen.
 - `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
   an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
   runs that one program, relays its output, and prints `RUN PATH START` once the program has
