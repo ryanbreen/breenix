@@ -3541,6 +3541,9 @@ pub fn sys_take_over_display() -> SyscallResult {
     let Some((group, vt)) = owner else {
         return SyscallResult::Err(3);
     };
+    // The boot splash gives way before the new owner's first frame (bounded).
+    #[cfg(target_arch = "aarch64")]
+    crate::console::await_splash();
     #[cfg(target_arch = "aarch64")]
     if crate::gpu::display_active() {
         return crate::gpu::take_display(vt);

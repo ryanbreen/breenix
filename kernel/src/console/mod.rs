@@ -375,8 +375,56 @@ pub fn take_display() {
     wait_until_not_presenting();
 }
 
+/// The longest a process taking the display waits for the splash to give way.
+#[cfg(target_arch = "aarch64")]
+const SPLASH_WAIT_MS: u64 = 1000;
+
+/// Before a process takes the display, let the splash finish: ask it to give
+/// way, then wait until the render thread has made its read-backs and handed
+/// over, at most `SPLASH_WAIT_MS`. On the GPU core only the render thread
+/// draws the splash, and a window manager started at once by init would
+/// otherwise take the screen before the splash is first drawn. When the wait
+/// runs out the display is taken anyway, and one log line says so. Blocks as
+/// an I/O wait like `wait_until_not_presenting`, woken at the end of each pass.
+#[cfg(target_arch = "aarch64")]
+pub fn await_splash() {
+    use crate::task::waitqueue::PrepareOutcome;
+    if !splash::is_up() || !RUNNING.load(Ordering::Acquire) {
+        return;
+    }
+    splash::request(splash::Reason::DisplayTaken);
+    let now_ns = || {
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        seconds * 1_000_000_000 + nanos
+    };
+    let deadline = now_ns() + SPLASH_WAIT_MS * 1_000_000;
+    while splash::is_up() {
+        let now = now_ns();
+        if now >= deadline {
+            log::warn!(
+                "[splash] display taken before the splash gave way: its read-backs were not done after {} ms",
+                SPLASH_WAIT_MS
+            );
+            return;
+        }
+        let recheck = deadline.min(now + PASS_INTERVAL_MS * 1_000_000);
+        let outcome = PASS_ENDED.prepare_to_wait_checked(
+            crate::task::thread::ThreadState::BlockedOnIO,
+            Some(recheck),
+            splash::is_up,
+        );
+        if outcome == PrepareOutcome::Mismatch {
+            PASS_ENDED.finish_wait();
+            continue;
+        }
+        if crate::syscall::blocking_io::wait_prepared(&PASS_ENDED, outcome).is_err() {
+            crate::task::scheduler::yield_current();
+        }
+    }
+}
+
 /// Woken at the end of each render pass, for the processes waiting in
-/// `wait_until_not_presenting`.
+/// `wait_until_not_presenting` and `await_splash`.
 static PASS_ENDED: crate::task::waitqueue::WaitQueueHead = crate::task::waitqueue::WaitQueueHead::new();
 
 /// The render thread's pass is over: it has no row on its way to the screen.
@@ -955,11 +1003,15 @@ impl SplashRun {
         self.hand_over(reason);
     }
 
-    /// The progress read-back can still be made: the bar has moved since the
-    /// first, and the cursor's other phase is at most half a blink away.
+    /// The progress read-back can still be made: the boot's progress has moved
+    /// the bar since the first, and the cursor's other phase is at most half a
+    /// blink away. The progress is the boot's, not the shadow's: a trigger seen
+    /// in the pass that made the first read-back still waits for the next pass
+    /// to draw the bar that moved.
     fn progress_pending(&self) -> bool {
         match (self.first, self.painter.drawn()) {
-            (Some(first), Some(now)) => {
+            (Some(first), Some(_)) => {
+                let now = splash::View::now(splash::now_ms());
                 !self.failed && !self.progress_checked && now.reached != first.reached && now.bar_units() != first.bar_units()
             }
             _ => false,
