@@ -276,17 +276,18 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             }
             c.display.known = false;
             c.display.latest_ok = false;
-            c.background(virgl::set_scanout(
-                Tag::Background,
-                ctx_id,
-                id,
-                width,
-                height,
-            ));
+            if let Some(req) = dev::set_scanout(Tag::Background, ctx_id, id, width, height) {
+                c.background(req);
+            }
             return Some(Err(EIO));
         }
         let serial = c.serial();
         let fence = c.device_fence();
+        let bind = dev::set_scanout(Tag::Submit { ctx: ctx_id, serial, last: false }, ctx_id, id, width, height);
+        let flush = dev::flush_resource(Tag::Submit { ctx: ctx_id, serial, last: true }, ctx_id, fence, id, width, height);
+        let (Some(bind), Some(flush)) = (bind, flush) else {
+            return Some(Err(EIO));
+        };
         c.display.sent += 1;
         c.display.outstanding += 1;
         c.display.known = false;
@@ -331,35 +332,8 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
             },
         );
         let epoch = c.epoch;
-        c.backlog.push_back((
-            epoch,
-            virgl::set_scanout(
-                Tag::Submit {
-                    ctx: ctx_id,
-                    serial,
-                    last: false,
-                },
-                ctx_id,
-                id,
-                width,
-                height,
-            ),
-        ));
-        c.backlog.push_back((
-            epoch,
-            virgl::flush_resource(
-                Tag::Submit {
-                    ctx: ctx_id,
-                    serial,
-                    last: true,
-                },
-                ctx_id,
-                fence,
-                id,
-                width,
-                height,
-            ),
-        ));
+        c.backlog.push_back((epoch, bind));
+        c.backlog.push_back((epoch, flush));
         c.flush();
         Some(Ok((ctx_id, n, bgl_fence)))
     });
@@ -435,7 +409,8 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
             .display
             .binding
             .filter(|_| c.display.known)
-            .map_or(0, |b| b.id as u64);
+            .and_then(|b| dev::resource_id(b.id))
+            .map_or(0, u64::from);
         a
     })
     .ok_or(ENODEV)?;
@@ -589,8 +564,8 @@ pub(super) fn back(group: u64) -> Result<(), i64> {
             with_core(|c| {
                 c.display.stack.push(removed);
                 c.display.known = false;
+                super::console::request_restore(c.display.owner_sequence);
             });
-            super::console::request_restore();
             Err(e)
         }
     }
@@ -610,7 +585,7 @@ pub(super) fn ended(c: &mut Core, group: u64) {
         if was_top {
             publish_owner(c);
             c.display.known = false;
-            super::console::request_restore();
+            super::console::request_restore(c.display.owner_sequence);
         }
     }
 }
@@ -661,7 +636,18 @@ pub(super) fn restored(b: Binding) {
 
 pub(super) fn restore_pending() -> Result<(), i64> {
     let _transition = Transition::acquire()?;
-    let seq = with_core(|c| c.display.owner_sequence).ok_or(ENODEV)?;
+    // Owner exit publishes its request under the core lock too: deciding that a request
+    // is obsolete and clearing it must not straddle publication of the next request.
+    let seq = with_core(|c| {
+        let seq = c.display.owner_sequence;
+        if super::console::restoring(seq) {
+            Some(seq)
+        } else {
+            super::console::restored_pending();
+            None
+        }
+    }).ok_or(ENODEV)?;
+    let Some(seq) = seq else { return Ok(()) };
     let outcome = restore();
     with_core(|c| {
         if outcome.is_ok() && c.display.owner_sequence == seq {

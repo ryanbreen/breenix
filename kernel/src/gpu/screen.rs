@@ -2,15 +2,18 @@
 //! one display-sized scanout target the core shows whenever no process owns the display.
 //!
 //! The screen console draws on the CPU into its shadow and copies the rows that changed into
-//! this target's guest backing (`write`); `present` uploads those rows (TRANSFER_TO_HOST_3D),
-//! binds the target to scanout 0 when it is not the binding, and flushes them. A process that
+//! this target's guest backing (`write`); `present` uploads those rows (TRANSFER_TO_HOST_3D on
+//! VirGL; SVGA updates the surface from its backing), binds the target to scanout 0 when it is
+//! not the binding, and flushes them. A process that
 //! owns the display through the framebuffer interface (`fb_mmap` and its flushes) has its pane
 //! copied into a private target and presented as its own frame (`present_pane`), so the
 //! kernel does not write the firmware framebuffer after the core has shown a frame.
 //!
 //! A read-back (`settle`) presents the whole screen, requires the target to be the completed
-//! binding of scanout 0, then poisons the backing and transfers the target back from the
-//! device, so what the console then reads (`read`) is what the device scans out.
+//! binding of scanout 0, then reads the target back from the device into the backing, so what
+//! the console then reads (`read`) is what the device scans out. VirGL poisons the backing and
+//! transfers into it; SVGA, whose surface may still take its pixels from that backing, copies
+//! the target into a poisoned read-back surface and writes the backing from that.
 //!
 //! The entries run inside a display transition, which serializes users of the target; the
 //! spin lock only moves it in and out, and device waits run without it.
@@ -79,10 +82,10 @@ impl Target {
     }
 
     /// Run fenced request `build` in the target's context and require its answer.
-    fn fenced(&self, build: impl FnOnce(Tag, u64) -> Request) -> Result<Done, i64> {
+    fn fenced(&self, build: impl FnOnce(Tag, u64) -> Option<Request>) -> Result<Done, i64> {
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
-        let d = exec_ok(|t| Some(build(t, fence)), self.context, &[self.id])?;
-        if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+        let d = exec_ok(|t| build(t, fence), self.context, &[self.id])?;
+        if d.echoed != fence || !d.fenced {
             return Err(EIO);
         }
         Ok(d)
@@ -98,7 +101,7 @@ impl Target {
         pages.maintain(offset, rows.len() * PITCH, false);
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
-        let req = virgl::transfer_to_host(
+        let req = dev::transfer_to_host(
             Tag::Sync(serial),
             self.context,
             fence,
@@ -110,19 +113,20 @@ impl Target {
             rows.len() as u32,
             offset as u64,
             PITCH as u32,
-        );
+        ).ok_or(EIO)?;
         let d = exec_req(serial, req, self.context, &[self.id], &[])?;
-        if !virgl::ok(d.answer) || d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+        if !dev::ok(d.answer) || d.echoed != fence || !d.fenced {
             return Err(EIO);
         }
         with_core(|c| {
             if let Some(r) = c.resources.get_mut(&self.id) {
                 r.last = Some(LastWrite {
                     ctx: self.context,
+                    device_ctx: dev::context_id(self.context),
                     fence,
                     serial,
                     answer: d.answer,
-                    kind: wire::cmd::TRANSFER_TO_HOST_3D,
+                    kind: dev::upload_kind(),
                 });
                 r.generation += 1;
                 r.invalid = false;
@@ -137,7 +141,7 @@ impl Target {
             return Ok(());
         }
         let (id, context, len) = (self.id, self.context, rows.len() as u32);
-        self.fenced(|t, fence| virgl::flush_rect(t, context, fence, id, 0, rows.start, WIDTH, len)).map(drop)
+        self.fenced(|t, fence| dev::flush_rect(t, context, fence, id, 0, rows.start, WIDTH, len)).map(drop)
     }
 
     /// Bind `b.id`, a target of this size, to scanout 0 and flush it whole. The kernel's
@@ -154,10 +158,10 @@ impl Target {
                 }
             }
         });
-        exec_ok(|t| Some(virgl::set_scanout(t, self.context, b.id, w, h)), self.context, &[b.id])?;
+        exec_ok(|t| dev::set_scanout(t, self.context, b.id, w, h), self.context, &[b.id])?;
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
-        let d = exec_ok(|t| Some(virgl::flush_resource(t, self.context, fence, b.id, w, h)), self.context, &[b.id])?;
-        if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+        let d = exec_ok(|t| dev::flush_resource(t, self.context, fence, b.id, w, h), self.context, &[b.id])?;
+        if d.echoed != fence || !d.fenced {
             return Err(EIO);
         }
         b.answer = d.answer;
@@ -294,33 +298,57 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     }
     let pages = BACKING.get().ok_or("the screen has no backing")?;
     let band = (READBACK_BAND / PITCH).max(1) as u32;
+    // An uploaded SVGA surface may still use its MOB as the source of its pixels.
+    // Poison only a separate destination, then GPU-copy the band before reading it back.
+    let readback = if dev::is_svga() {
+        Some(Arc::new(Pages::new((band as usize * PITCH).div_ceil(PAGE))
+            .ok_or("no frames for the screen's read-back surface")?))
+    } else { None };
     let mut y = 0;
     while y < HEIGHT {
         let rows = band.min(HEIGHT - y);
         let (offset, len) = (y as usize * PITCH, rows as usize * PITCH);
-        let saved = Pages::new(len.div_ceil(PAGE)).ok_or("no frames to preserve the screen's read-back band")?;
         let mut row = vec![0; PITCH];
-        for n in 0..rows as usize {
-            pages.read(offset + n * PITCH, &mut row);
-            saved.write(n * PITCH, &row);
-        }
-        pages.fill(offset, len, POISON);
-        pages.maintain(offset, len, false);
+        // Only a transfer into the backing itself poisons it: keep its band until that succeeds.
+        let saved = match &readback {
+            Some(_) => None,
+            None => {
+                let saved = Pages::new(len.div_ceil(PAGE)).ok_or("no frames to preserve the screen's read-back band")?;
+                for n in 0..rows as usize {
+                    pages.read(offset + n * PITCH, &mut row);
+                    saved.write(n * PITCH, &row);
+                }
+                Some(saved)
+            }
+        };
+        let (backing, transfer_offset) = match &readback {
+            Some(band) => (band.clone(), 0),
+            None => (pages.clone(), offset),
+        };
+        backing.fill(transfer_offset, len, POISON);
+        backing.maintain(transfer_offset, len, false);
         let (id, context) = (target.id, target.context);
-        let backing = pages.clone();
         let transferred = target
-            .fenced(|t, fence| virgl::transfer_from_host(t, context, fence, id, backing, 0, y, WIDTH, rows, offset as u64, PITCH as u32));
-        pages.maintain(offset, len, true);
+            .fenced(|t, fence| dev::transfer_from_host(t, context, fence, id, backing.clone(), 0, y, WIDTH, rows, transfer_offset as u64, PITCH as u32));
+        backing.maintain(transfer_offset, len, true);
         if transferred.is_err() {
-            for n in 0..rows as usize {
-                saved.read(n * PITCH, &mut row);
-                pages.write(offset + n * PITCH, &row);
+            if let Some(saved) = &saved {
+                for n in 0..rows as usize {
+                    saved.read(n * PITCH, &mut row);
+                    pages.write(offset + n * PITCH, &row);
+                }
             }
             return Err("the device did not transfer the screen back");
         }
+        if readback.is_some() {
+            for n in 0..rows as usize {
+                backing.read(n * PITCH, &mut row);
+                pages.write(offset + n * PITCH, &row);
+            }
+        }
         y += rows;
     }
-    Ok((target.id, flush))
+    Ok((dev::resource_id(target.id).ok_or("the screen has no device resource")?, flush))
 }
 
 /// A framebuffer owner has its own resource and backing: nested owners must not
@@ -406,8 +434,8 @@ pub unsafe fn present_pane(pane: *const u8, stride: usize, rows: Range<usize>, c
     .ok_or(ENODEV)?;
     let presenting = display::Presenting { id: target.id, seq, owner: tgid };
     let (id, context) = (target.id, target.context);
-    let sent = exec_ok(|t| Some(virgl::set_scanout(t, context, id, WIDTH, HEIGHT)), context, &[id])
-        .and_then(|_| target.fenced(|t, fence| virgl::flush_resource(t, context, fence, id, WIDTH, HEIGHT)));
+    let sent = exec_ok(|t| dev::set_scanout(t, context, id, WIDTH, HEIGHT), context, &[id])
+        .and_then(|_| target.fenced(|t, fence| dev::flush_resource(t, context, fence, id, WIDTH, HEIGHT)));
     let answer = sent.as_ref().map_or(0, |d| d.answer);
     with_core(|c| c.presented(presenting, sent.is_ok(), 0, answer));
     notify();
@@ -437,7 +465,7 @@ pub(super) fn bind_saved(b: Binding) -> Result<(), i64> {
 
 /// MODES' kernel screen fields: its resource and its completed presents.
 pub(super) fn describe() -> (u64, u64) {
-    (RESOURCE.load(Ordering::Acquire), PRESENTS.load(Ordering::Acquire))
+    (dev::resource_id(RESOURCE.load(Ordering::Acquire) as u32).map_or(0, u64::from), PRESENTS.load(Ordering::Acquire))
 }
 
 /// Hold the target's lock for `f`: the panic path's acceptance runs it while holding the

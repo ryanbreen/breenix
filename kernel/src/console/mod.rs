@@ -594,6 +594,11 @@ pub fn read_display_pixel(x: usize, y: usize) -> Option<u32> {
 #[cfg(target_arch = "aarch64")]
 pub fn attach() {
     use crate::graphics::arm64_fb;
+    // The SVGA core takes the screen from the GOP framebuffer, so it is installed before
+    // the display is picked: the splash's stages are then met on the screen it shows.
+    if crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
+        crate::gpu::init_vmware();
+    }
     // When the GPU core owns the display the console draws through it, sized for
     // the mode the core shows the kernel's screen at (ruling F25); the GOP
     // framebuffer keeps the early splash only until the core shows that screen.

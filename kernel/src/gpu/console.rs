@@ -14,6 +14,8 @@ const BG: u32 = 0xff181512;
 const FG: u32 = 0xffe8edf2;
 const VB_BYTES: u32 = 128 * 1024;
 static RESTORE: AtomicBool = AtomicBool::new(false);
+/// The owner sequence a pending restore was requested for.
+static RESTORE_SEQ: AtomicU64 = AtomicU64::new(0);
 static RETIRED: AtomicBool = AtomicBool::new(false);
 static HANDOFF: AtomicBool = AtomicBool::new(false);
 static HASH: AtomicU64 = AtomicU64::new(0);
@@ -23,6 +25,8 @@ static PANIC_ATTEMPT_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
 static PANIC_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 const PANIC_MAX_ATTEMPTS: u64 = 3;
 static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
+/// When a failed restore is tried again.
+static NEXT_RESTORE: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
 pub(super) struct Console {
@@ -39,11 +43,17 @@ pub(super) struct Console {
 pub fn active() -> bool {
     RETIRED.load(Ordering::Acquire)
 }
-pub(super) fn request_restore() {
+/// Ask the render thread to restore the frame of the owner stack as it is at owner sequence
+/// `seq`.
+pub(super) fn request_restore(seq: u64) {
+    RESTORE_SEQ.store(seq, Ordering::Release);
     RESTORE.store(true, Ordering::Release);
 }
-pub(super) fn restoring() -> bool {
-    RESTORE.load(Ordering::Acquire)
+/// Whether a restore is pending for owner sequence `seq`. A request made for an earlier
+/// sequence is obsolete: a later change of owner (a take, a give-back, another ended owner)
+/// decides what the display shows itself.
+pub(super) fn restoring(seq: u64) -> bool {
+    RESTORE.load(Ordering::Acquire) && RESTORE_SEQ.load(Ordering::Acquire) == seq
 }
 pub(super) fn restored_pending() {
     RESTORE.store(false, Ordering::Release);
@@ -85,12 +95,12 @@ pub(super) fn retire_firmware() {
     } else {
         RETIRED.store(true, Ordering::Release);
     }
-    HASH.store(firmware_hash(), Ordering::Release);
 }
 
 /// The first frame of the kernel's screen completed: count firmware writes from here on.
 pub(super) fn handed_off() {
     if !HANDOFF.load(Ordering::Acquire) {
+        HASH.store(firmware_hash(), Ordering::Release);
         crate::graphics::firmware_writes::handoff();
         HANDOFF.store(true, Ordering::Release);
     }
@@ -99,6 +109,8 @@ pub(super) fn handed_off() {
 fn pitch_of(kind_: u32, fmt: u32, w: u32) -> u32 {
     if kind_ == kind::BUFFER {
         w
+    } else if dev::is_svga() {
+        w * format::bytes(fmt)
     } else {
         (w * format::bytes(fmt)).next_multiple_of(256)
     }
@@ -147,42 +159,12 @@ pub(super) fn resource_with(
         id
     })
     .ok_or(ENODEV)?;
-    let target = if kind_ == kind::BUFFER {
-        wire::target::BUFFER
-    } else {
-        wire::target::TEXTURE_2D
-    };
-    let bind = if kind_ == kind::BUFFER {
-        wire::bind::VERTEX_BUFFER
-    } else {
-        wire::bind::SAMPLER_VIEW
-            | if kind_ == kind::TARGET {
-                wire::bind::RENDER_TARGET
-            } else {
-                0
-            }
-            | if scanout { wire::bind::SCANOUT } else { 0 }
-    };
     let result = (|| {
-        exec_ok(
-            |t| {
-                Some(virgl::resource_create(
-                    t,
-                    id,
-                    target,
-                    virgl_format(fmt),
-                    bind,
-                    w,
-                    h,
-                ))
-            },
-            0,
-            &[id],
-        )?;
+        exec_ok(|t| dev::resource_create(t, id, kind_, fmt, w, h, scanout), 0, &[id])?;
         if backed {
-            exec_ok(|t| virgl::attach_backing(t, id, pages.clone()), 0, &[id])?;
+            exec_ok(|t| dev::attach_backing(t, id, pages.clone()), 0, &[id])?;
         }
-        exec_ok(|t| Some(virgl::ctx_attach(t, ctx, id)), ctx, &[id])?;
+        exec_ok(|t| Some(dev::ctx_attach(t, ctx, id)), ctx, &[id])?;
         Ok(id)
     })();
     if result.is_err() {
@@ -289,25 +271,11 @@ impl Console {
         pages.maintain(0, pitch as usize * 16, false);
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let d = exec_ok(
-            |t| {
-                Some(virgl::transfer_to_host(
-                    t,
-                    ctx,
-                    fence,
-                    atlas,
-                    pages.clone(),
-                    0,
-                    0,
-                    gw * 95,
-                    16,
-                    0,
-                    pitch,
-                ))
-            },
+            |t| dev::transfer_to_host(t, ctx, fence, atlas, pages.clone(), 0, 0, gw * 95, 16, 0, pitch),
             ctx,
             &[atlas],
         )?;
-        if d.echoed != fence || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0 {
+        if d.echoed != fence || !d.fenced {
             return Err(EIO);
         }
         FIXTURE.fetch_add((gw * 95 * 16) as u64, Ordering::Release);
@@ -365,54 +333,87 @@ impl Console {
         stream::encode::begin(&mut s, self.target as u64);
         stream::encode::clear(&mut s, BG);
         self.text(&mut s, b"Breenix GPU console", 16);
-        let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.objects.clone()))
-            .flatten()
-            .ok_or(EIO)?;
-        let mut enc = encode::Enc::new();
-        encode::translate(
-            &mut enc,
-            &mut o,
-            s.as_slice(),
-            self,
-            encode::Extras {
-                vertex_buffer: self.vertices,
-                scratch: [self.scratch, 0],
-                data: 0,
-                data_width: 0,
-                flip_y: FLIP_Y,
+        let requests: Vec<Request> = if dev::is_svga() {
+            let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.dx.clone()))
+                .flatten()
+                .ok_or(EIO)?;
+            let extras = || svga::encode::Extras {
+                scratch: [[WIDTH, HEIGHT], [0, 0]],
+                data_width: 1,
                 corrupt: None,
                 suppress: None,
                 swap: None,
-            },
-        );
-        let chunks = enc.finish().ok_or(ENOMEM)?;
-        with_core(|c| {
-            if let Some(ctx) = c.contexts.get_mut(&self.context) {
-                ctx.objects = o;
+            };
+            let (sized, _) = svga::encode::translate(&mut o.clone(), &[], s.as_slice(), self, extras(), None, None).ok_or(ENOMEM)?;
+            let backing = svga::encode::Backing::allocate(&sized.sizes).ok_or(ENOMEM)?;
+            let (out, _) = svga::encode::translate(&mut o, &[], s.as_slice(), self, extras(), Some(backing), None).ok_or(ENOMEM)?;
+            with_core(|c| {
+                if let Some(ctx) = c.contexts.get_mut(&self.context) {
+                    ctx.dx = o;
+                }
+            });
+            let mut reqs = Vec::new();
+            for chunk in out.chunks {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                reqs.push(dev::submit_svga(Tag::Sync(serial), self.context, Some(fence), chunk).ok_or(EIO)?);
             }
-        });
+            reqs
+        } else {
+            let mut o = with_core(|c| c.contexts.get(&self.context).map(|x| x.objects.clone()))
+                .flatten()
+                .ok_or(EIO)?;
+            let mut enc = encode::Enc::new();
+            encode::translate(
+                &mut enc,
+                &mut o,
+                s.as_slice(),
+                self,
+                encode::Extras {
+                    vertex_buffer: self.vertices,
+                    scratch: [self.scratch, 0],
+                    data: 0,
+                    data_width: 0,
+                    flip_y: FLIP_Y,
+                    corrupt: None,
+                    suppress: None,
+                    swap: None,
+                },
+            );
+            let chunks = enc.finish().ok_or(ENOMEM)?;
+            with_core(|c| {
+                if let Some(ctx) = c.contexts.get_mut(&self.context) {
+                    ctx.objects = o;
+                }
+            });
+            let mut reqs = Vec::new();
+            for words in chunks {
+                let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+                reqs.push(dev::submit_virgl(Tag::Sync(serial), self.context, Some(fence), words));
+            }
+            reqs
+        };
         let mut last = None;
-        for words in chunks {
-            let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
+        let device_ctx = dev::context_id(self.context);
+        for req in requests {
+            let Tag::Sync(serial) = req.tag() else { return Err(EIO) };
+            let fence = req.fence();
             let d = exec_req(
                 serial,
-                virgl::submit(Tag::Sync(serial), self.context, Some(fence), words),
+                req,
                 self.context,
                 &[self.target, self.atlas, self.scratch, self.vertices],
                 &[],
             )?;
-            if !virgl::ok(d.answer)
-                || d.echoed != fence
-                || d.resp.u32_at(wire::HDR_FLAGS) & wire::FLAG_FENCE == 0
-            {
+            if !dev::ok(d.answer) || Some(d.echoed) != fence || !d.fenced {
                 return Err(EIO);
             }
             last = Some(LastWrite {
                 ctx: self.context,
-                fence,
+                device_ctx,
+                fence: d.echoed,
                 serial,
                 answer: d.answer,
-                kind: wire::cmd::SUBMIT_3D,
+                kind: dev::draw_kind(),
             });
         }
         with_core(|c| {
@@ -462,14 +463,11 @@ pub fn pump() {
         return;
     }
     let now = now_ns();
-    if now < NEXT_DRAW.load(Ordering::Acquire) {
-        return;
-    }
-    // Includes restore failures and construction failures, not just successful draws.
-    NEXT_DRAW.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
+    // Preparation is attempted at most once per interval, construction failures included.
     // The private target is drawn offscreen during preparation. Prepare outside
     // display transitions, including while a process owns the display after reset.
-    if HANDOFF.load(Ordering::Acquire) {
+    if now >= NEXT_DRAW.load(Ordering::Acquire) && HANDOFF.load(Ordering::Acquire) {
+        NEXT_DRAW.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
         if let Some(epoch) = with_core(|c| {
             (!c.stalled && !c.resetting && !c.reset_wanted).then_some(c.epoch)
         }).flatten() {
@@ -488,8 +486,11 @@ pub fn pump() {
             }
         }
     }
-    if RESTORE.load(Ordering::Acquire) {
+    // A pending restore is made on the next pass, not after the preparation interval: the
+    // ended owner's frame stays bound until it is (#2110). A failed restore waits an interval.
+    if RESTORE.load(Ordering::Acquire) && now >= NEXT_RESTORE.load(Ordering::Acquire) {
         if display::restore_pending().is_err() {
+            NEXT_RESTORE.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
             return;
         }
         notify();
