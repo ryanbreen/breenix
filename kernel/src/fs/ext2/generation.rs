@@ -1,5 +1,5 @@
-//! A kernel slot selects its retained userland tree. Only `/etc` and `/root`
-//! are bound from the partition root; the home mount remains a separate disk.
+//! A kernel slot selects its retained userland and configuration tree. `/root`
+//! is bound from the partition root; the home mount remains a separate disk.
 
 pub const DIRECTORY: &str = ".breenix-generations";
 pub const READY: &str = ".complete";
@@ -45,5 +45,5 @@ pub fn select(tree: &impl Tree, id: &str) -> Result<Namespace, &'static str> {
     // Require directory mount points so selection does not follow symlinks
     // out of the generation.
     for name in ["etc", "root", "home", "dev", "proc"] { tree.directory(root, name)?; }
-    Ok(Namespace { root, etc: tree.directory(2, "etc")?, data: tree.directory(2, "root")? })
+    Ok(Namespace { root, etc: tree.directory(root, "etc")?, data: tree.directory(2, "root")? })
 }

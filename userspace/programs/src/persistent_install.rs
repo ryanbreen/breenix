@@ -1,7 +1,7 @@
 //! Stage a userland beside the running install, then publish it with one rename.
 //! The kernel slot embeds the generation ID, so no independently mutable current
-//! pointer can pair a kernel with the wrong userland. `/etc` and `/root` remain
-//! at the partition root; this program mounts no home partition.
+//! pointer can pair a kernel with the wrong userland. `/etc` belongs to the
+//! generation; `/root` stays shared. This program mounts no home partition.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const TARGET: &str = "/home";
-const KEPT: [&str; 2] = ["etc", "root"];
+const KEPT: [&str; 1] = ["root"];
 const UNTOUCHED: [&str; 7] = ["home", "lost+found", "proc", "dev", "sys", ".breenix-generations", ".complete"];
 const GENERATIONS: &str = ".breenix-generations";
 const READY: &str = ".complete";
@@ -166,10 +166,19 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
         copier.sync(target)?;
     }
     require_directory(&generations)?;
-    // Only this install ID's unpublished scratch tree can be removed. Final
-    // generations may still be referenced by either slot after recovery.
-    if present(&staged)? {
-        copier.change("remove scratch", &staged, || fs::remove_dir_all(&staged))?;
+    // Boot IDs change on retry. Reclaim scratch from any unpublished ID, but
+    // retain final generations and shared scratch: a torn shared rename can
+    // leave a second name for live operator data.
+    for entry in fs::read_dir(&generations).map_err(|error| fail("read directory", &generations, error))? {
+        let entry = entry.map_err(|error| fail("read directory", &generations, error))?;
+        let name = entry.file_name();
+        if let Some(scratch_id) = name.to_str().and_then(|name| name.strip_suffix(".new")) {
+            if !scratch_id.is_empty() && scratch_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !present(&generations.join(scratch_id))? {
+                let scratch = entry.path();
+                copier.change("remove scratch", &scratch, || fs::remove_dir_all(&scratch))?;
+            }
+        }
     }
     copier.change("mkdir", &staged, || fs::create_dir(&staged))?;
     let mut names = Vec::new();
@@ -206,7 +215,7 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
             copier.sync(&generations)?;
         }
     }
-    for name in ["etc", "root", "home", "dev", "proc", "sys"] {
+    for name in ["root", "home", "dev", "proc", "sys"] {
         let mount = staged.join(name);
         copier.change("mkdir mount", &mount, || fs::create_dir(&mount))?;
     }
@@ -215,6 +224,9 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     let mut file = copier.change("create completion record", &ready, || File::create(&ready))?;
     copier.change("write completion record", &ready, || file.write_all(record.as_bytes()))?;
     copier.change("sync completion record", &ready, || file.sync_all())?;
+    let root_meta = fs::symlink_metadata(source).map_err(|error| fail("stat", source, error))?;
+    copier.change("chown root", &staged, || own(&staged, &root_meta, true))?;
+    copier.change("chmod root", &staged, || fs::set_permissions(&staged, fs::Permissions::from_mode(root_meta.mode() & 0o7777)))?;
     copier.sync(&staged)?;
     copier.change("publish generation", &published, || fs::rename(&staged, &published))?;
     copier.sync(&generations)?;
@@ -282,7 +294,7 @@ mod tests {
             fs::set_permissions(path.join("bin/payload"), fs::Permissions::from_mode(0o6755)).unwrap();
             fs::hard_link(path.join("bin/payload"), path.join("sbin/init")).unwrap();
             std::os::unix::fs::symlink("../bin/payload", path.join("sbin/link")).unwrap();
-            fs::write(path.join("etc/config"), b"source config").unwrap();
+            fs::write(path.join("etc/config"), name.as_bytes()).unwrap();
             fs::write(path.join("root/data"), b"source data").unwrap();
             path
         }
@@ -350,7 +362,7 @@ mod tests {
         let tree = Tree::new(system);
         let namespace = generation::select(&tree, id).unwrap();
         assert!(namespace.is_mount(namespace.root));
-        assert_eq!(tree.path(namespace.shared(namespace.root, b"etc").unwrap()), system.join("etc"));
+        assert_eq!(tree.path(namespace.shared(namespace.root, b"etc").unwrap()), system.join(GENERATIONS).join(id).join("etc"));
         assert_eq!(tree.path(namespace.shared(namespace.root, b"root").unwrap()), system.join("root"));
         assert_eq!(namespace.shared(namespace.root, b"home"), None);
         assert!(namespace.is_mount(namespace.etc));
@@ -402,6 +414,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn retry_with_new_boot_id_reclaims_only_unpublished_scratch() {
+        let fixture = Fixture::new();
+        let system = fixture.system();
+        let source = fixture.source("old");
+        install_tree(&source, &system, "old", &mut || Ok(())).unwrap();
+        let generations = system.join(GENERATIONS);
+        fs::create_dir(generations.join("failed.new")).unwrap();
+        fs::write(generations.join("failed.new/partial"), vec![0u8; 65536]).unwrap();
+        // Model second names left after publication; retain both aliases.
+        std::os::unix::fs::symlink(system.join("root"), generations.join("old.shared-root")).unwrap();
+        std::os::unix::fs::symlink(generations.join("old"), generations.join("old.new")).unwrap();
+        install_tree(&fixture.source("new"), &system, "new", &mut || Ok(())).unwrap();
+        assert!(!generations.join("failed.new").exists());
+        assert!(generations.join("old.shared-root").exists());
+        assert!(generations.join("old.new").exists());
+        assert_eq!(fs::read(selected(&system, "old").join("etc/config")).unwrap(), b"old");
+        assert_eq!(fs::read(selected(&system, "new").join("etc/config")).unwrap(), b"new");
+        assert_eq!(fs::read(system.join("root/data")).unwrap(), b"operator data\0\xff");
+    }
+
+    #[test]
+    fn generation_root_keeps_source_mode_after_writing_completion() {
+        let fixture = Fixture::new();
+        let source = fixture.source("new");
+        let system = fixture.system();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o555)).unwrap();
+        install_tree(&source, &system, "new", &mut || Ok(())).unwrap();
+        let root = selected(&system, "new");
+        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o7777, 0o555);
+        assert_eq!(fs::metadata(&root).unwrap().uid(), fs::metadata(&source).unwrap().uid());
+        // Restore write access for fixture cleanup on unprivileged hosts.
+        fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(source, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     struct SlotDisk {
@@ -470,6 +518,9 @@ mod tests {
                     disk.left.set(usize::MAX);
                     slots::recover(&disk).unwrap();
                     let id = disk.id("CURRENT");
+                    let selected_root = selected(&system, &id);
+                    assert_eq!(fs::read(selected_root.join("bin/payload")).unwrap(), id.as_bytes());
+                    assert_eq!(fs::read(selected_root.join("etc/config")).unwrap(), id.as_bytes());
                     let expected = if id == "old" { &old } else { assert_eq!(id, "new"); &new };
                     assert_eq!(&snapshot(&selected(&system, &id)), expected);
                     assert_eq!(disk.files.borrow()["CURRENT.TXT"], id.as_bytes());
