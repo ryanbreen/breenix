@@ -1,18 +1,22 @@
 //! A boot seed for the kernel's random pool, taken from the firmware before
 //! ExitBootServices.
 //!
-//! Two sources, in order:
+//! Sources, in order:
 //! - EFI_RNG_PROTOCOL (UEFI 2.10 section 37.5), where the firmware has one.
 //! - The TPM's TPM2_GetRandom (TPM 2.0 Library, Part 3, section 16.1), sent
 //!   through EFI_TCG2_PROTOCOL.SubmitCommand (TCG EFI Protocol Specification,
 //!   section 6.6.5). A hypervisor's virtual TPM answers it from the host.
+//! - A one-use host seed on this loader's ESP, consumed before handoff (S43).
 //!
 //! Neither VM the loader boots offers CPU RNG instructions or a virtio entropy
 //! device, so without this the kernel's pool has no credited source there.
 
 use crate::hw_config::HardwareConfig;
-use arm64_boot_contract::{BOOT_SEED_BYTES, BOOT_SEED_EFI_RNG, BOOT_SEED_TPM};
+use arm64_boot_contract::{
+    boot_seed_file, BOOT_SEED_BYTES, BOOT_SEED_EFI_RNG, BOOT_SEED_HOST_FILE, BOOT_SEED_TPM,
+};
 use uefi::boot::{self, SearchType};
+use uefi::proto::media::file::{File, FileAttribute, FileMode, RegularFile};
 use uefi::proto::rng::Rng;
 use uefi::proto::tcg::v2::Tcg;
 
@@ -28,13 +32,15 @@ const RESPONSE_HEADER: usize = 10;
 const TPM_ATTEMPTS: usize = 8;
 
 /// Fill `config`'s boot seed from the first source that supplies the full
-/// seed. Returns the source, or 0 when neither did.
+/// seed. Returns the source, or 0 if unavailable.
 pub fn collect(config: &mut HardwareConfig) -> u32 {
     let mut seed = [0u8; BOOT_SEED_BYTES];
     let source = if efi_rng(&mut seed) {
         BOOT_SEED_EFI_RNG
     } else if tpm_get_random(&mut seed) {
         BOOT_SEED_TPM
+    } else if host_seed(&mut seed) {
+        BOOT_SEED_HOST_FILE
     } else {
         0
     };
@@ -44,6 +50,45 @@ pub fn collect(config: &mut HardwareConfig) -> u32 {
     }
     wipe(&mut seed);
     source
+}
+
+/// Open the ESP identified by the loaded image, using an existing read/write
+/// file. Distributed images are seed-free; a missing seed fails closed.
+fn host_seed(out: &mut [u8; BOOT_SEED_BYTES]) -> bool {
+    let Ok(mut fs) = boot::get_image_file_system(boot::image_handle()) else {
+        return false;
+    };
+    let Ok(mut root) = fs.open_volume() else {
+        return false;
+    };
+    let Ok(handle) = root.open(
+        uefi::cstr16!("\\EFI\\BREENIX\\random-seed"),
+        FileMode::ReadWrite,
+        FileAttribute::empty(),
+    ) else {
+        return false;
+    };
+    let Some(file) = handle.into_regular_file() else {
+        return false;
+    };
+    boot_seed_file::consume(Some(&mut HostSeedFile(file)), out)
+}
+
+struct HostSeedFile(RegularFile);
+
+impl boot_seed_file::SeedFile for HostSeedFile {
+    fn read(&mut self, bytes: &mut [u8]) -> Option<usize> {
+        self.0.read(bytes).ok()
+    }
+    fn rewind(&mut self) -> bool {
+        self.0.set_position(0).is_ok()
+    }
+    fn write(&mut self, bytes: &[u8]) -> bool {
+        self.0.write(bytes).is_ok()
+    }
+    fn flush(&mut self) -> bool {
+        self.0.flush().is_ok()
+    }
 }
 
 fn efi_rng(out: &mut [u8]) -> bool {

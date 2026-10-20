@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod boot_seed_file;
 pub mod phys_memory;
 pub mod uefi_time;
 
@@ -20,6 +21,8 @@ pub const BOOT_SEED_BYTES: usize = 64;
 pub const BOOT_SEED_EFI_RNG: u32 = 1;
 /// `boot_seed_source`: the seed came from the TPM's TPM2_GetRandom.
 pub const BOOT_SEED_TPM: u32 = 2;
+/// `boot_seed_source`: fresh host randomness, consumed on the boot disk before handoff.
+pub const BOOT_SEED_HOST_FILE: u32 = 3;
 
 /// `boot_flags` bit: the ESP carries `\EFI\BREENIX\GPUCORE`, so the GPU core
 /// (`kernel/src/gpu/`) owns the display device instead of the legacy display driver.

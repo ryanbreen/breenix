@@ -1477,7 +1477,9 @@ if [ "$VMWARE" = true ]; then
     trap 'exit 143' TERM
 
     # Copy VMDKs into the bundle
-    cp "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
+    # Seed this run's boot disk; keep the reusable image above seed-free.
+    # This step also runs with --no-build, before VMware power-on.
+    python3 "$BREENIX_ROOT/scripts/vmware/boot-seed.py" "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
     EXT2_VMDK_ARG=""
     if [ -f "$VMWARE_DIR/ext2-data.vmdk" ]; then
         cp "$VMWARE_DIR/ext2-data.vmdk" "$VM_BUNDLE/ext2-data.vmdk"
