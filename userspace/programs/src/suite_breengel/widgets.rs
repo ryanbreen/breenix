@@ -763,6 +763,7 @@ fn widgets_button_cancel() -> CaseResult {
     )
 }
 
+// gpu-text: R3 changes only the label metrics and certified text pixels; disabled input and colours remain exact.
 fn widgets_button_disabled() -> CaseResult {
     let theme = Theme::dark();
     let mut b = Button::new(Rect::new(10, 8, 60, 20), b"OK");
@@ -783,7 +784,7 @@ fn widgets_button_disabled() -> CaseResult {
     same_as(&g, PAPER, "disabled button", "14.2", |fb| {
         shapes::fill_rect(fb, 10, 8, 60, 20, theme.widget_bg);
         shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
-        font5x7::draw_text(fb, b"OK", 34, 14, theme.text_secondary, 1);
+        sans_center(fb,b"OK",Rect::new(10,8,60,20),theme.text_secondary);
     })?;
     snapshot(&g)
 }
