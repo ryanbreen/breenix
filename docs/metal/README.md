@@ -657,7 +657,7 @@ partition starts on a 1 MiB boundary.
 
 | # | Partition | Type GUID | Size | Holds | Written by |
 |---|---|---|---|---|---|
-| 1 | EFI system partition | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 512 MiB, FAT32 | `\EFI\BREENIX\BOOTMGR.EFI` (the manager), `MANAGER.CFG`, the kernel slots `CURRENT.IMG` and `PREVIOUS.IMG` with their `.TXT` notes, `NEXT.IMG` while an upgrade is staged, and `\EFI\BOOT\BOOTX64.EFI` (a copy of the manager on the removable-media path) | the install's delivery stub; the manager when it commits or rolls back a slot |
+| 1 | EFI system partition | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 2 GiB, FAT32 | `\EFI\BREENIX\BOOTMGR.EFI` (the manager), `MANAGER.CFG`, the kernel slots `CURRENT.IMG` and `PREVIOUS.IMG` with their `.TXT` notes, `NEXT.IMG` while an upgrade is staged, and `\EFI\BOOT\BOOTX64.EFI` (a copy of the manager on the removable-media path) | the install's delivery stub; the manager when it commits or rolls back a slot |
 | 2 | Breenix test root | `DAC951C3-27DF-4E3D-8B9E-487906AC2C81` | 4 GiB, ext2 | the root test boots get | the delivery stub, before each test boot |
 | 3 | Breenix system | `2EF14A34-ABBD-48F8-83D6-F2A8C7B4A9FE` | 8 GiB, ext2 | the persistent install's root: userland, `/etc`, `/root` | persistent boots; the install boot's migration |
 | 4 | Breenix home | `9BFEAEF9-4F51-45DE-8BCF-5CEC1603B862` | 16 GiB, ext2 | `/home` of the persistent install | persistent boots |
@@ -687,7 +687,9 @@ manager leaves the test loop working.
 On start the manager:
 
 1. Writes `breenix-manager: started: firmware <vendor> revision <n>` to COM1 and reads `MANAGER.CFG` and the slot
-   notes from its own volume. `MANAGER.CFG` holds `query <url>` (the lab's question), `countdown <seconds>`,
+   notes from its own volume, recovering a pending slot transaction first. An installed manager with missing or
+   unreadable configuration tries existing slots, then returns to firmware with its watchdog armed. Network probe
+   mode requires a URI in the image's own device path. `MANAGER.CFG` holds `query <url>` (the lab's question), `countdown <seconds>`,
    `test-path load-file`, and two lines the install's stub adds: `port <hex>` (the device path the firmware's HTTP
    boot loaded the stub from: the network port, its address and the boot URL) and `http-option <hex>` (the HTTP boot
    option's number, the stub's `BootCurrent`). These are site values; the manager does not print them.
@@ -736,9 +738,13 @@ A failure returns to the menu with its reason and no countdown.
 
 Slot actions. `commit` renames `CURRENT.*` to `PREVIOUS.*` (replacing the old previous slot) and `NEXT.*` to
 `CURRENT.*`; `rollback` swaps `CURRENT.*` and `PREVIOUS.*`. The manager does them through the firmware's FAT
-driver (the file protocol, section 13.5: `SetInfo` with the new name) and reads the notes back before it boots.
-Each prints one line, `breenix-manager: slot commit: current <commit>, previous <commit>` or `slot rollback: ...`
-(`previous empty` when no previous kernel is kept), which the driver records in `disk.json` (`slots`). A commit with no staged `NEXT` leaves the slots as they are.
+driver (the file protocol, section 13.5: `SetInfo` with the new name), flushing each rename. `SLOT.TXN` and
+phase markers record the action; startup completes a pending action before reading the slot notes. Image and note
+moves resume independently, so interruption between those renames does not skip the note. Each prints one line, `breenix-manager: slot commit: current <commit>, previous <commit>` or `slot rollback: ...`
+(`previous empty` when no previous kernel is kept), which the driver records in `disk.json` (`slots`). A successful
+observed action is removed from the lease before later manager queries. The `booting current|previous <commit>`
+line selects the run's commit and saved definition; a missing or mismatched slot record refuses evidence.
+A commit with no staged `NEXT` leaves the slots as they are.
 
 **The screen.** The manager draws its own text with the console font the kernel's screen console uses
 (`noto-sans-mono-bitmap`, size 20, regular), in white and black, through the graphics output protocol's `Blt`
@@ -832,7 +838,9 @@ partition. A tests boot's RAM disk is its intent followed by the BXTEST image.
 ### Install and upgrade
 
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the
-persistent install with one leased run of two boots:
+persistent install with one leased run of two boots. Populated-system upgrades are currently refused by the
+migration before any userland path is changed; recoverable userland generations are pending in #2114. The
+one-time installation path is:
 
 1. **The install boot.** The build is the production kernel and userland of the commit, the delivery stub and the
    manager. The driver makes the slot image `NEXT.IMG` (the commit's kernel, intent `target persistent`, the system
@@ -850,9 +858,9 @@ persistent install with one leased run of two boots:
      comes through the manager.
 
    The stub then stages the new userland on the test root and starts the kernel with `target persistent-install`,
-   the test root as root and the system partition at `/home`. `/sbin/persistent-install` replaces each top-level
-   directory of the system partition with the new root's copy, except `/etc`, `/root`, `/home` and `lost+found`,
-   which it copies only when the system partition lacks them (the one-time install), syncs, and prints
+   the test root as root and the system partition at `/home`. `/sbin/persistent-install` first refuses a populated
+   managed top-level path. On an empty system it copies the new root, keeps existing `/etc` and `/root`, and leaves
+   `/home`, `lost+found` and virtual filesystems untouched, syncs, and prints
    `[persistent] install complete: ...`. The home partition is not mounted. The kernel's path calls refuse names
    that are not UTF-8 (#2102), so such a name is reported (`[persistent] left out ...`) and counted (`left-out=`);
    the root image's one such name is the rust-std suite's second link to a file the migration copies.
@@ -862,8 +870,8 @@ persistent install with one leased run of two boots:
 
 `metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
 the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the
-previous slot once without swapping. Rollback restores the previous kernel; the userland on the system partition
-stays the one the last upgrade installed.
+previous slot once without swapping. Rollback restores the previous kernel; it does not restore shared userland.
+This is why populated-system migration is refused until #2114 provides recoverable userland generations.
 
 ### Persistent sessions
 
@@ -883,11 +891,13 @@ session already holds the lease when setup runs.
 Each persistent boot is recorded and scored like a default boot, with boot shape and mode `persistent`: the boot
 manager's milestone, the kernel's storage milestone for the system and home partitions, `fb-console`, `xhci`,
 `usb-keyboard` and the login prompt. The operator's input is `operator`: a keyboard stage the operator has not
-typed yet counts as not measured rather than missed, and the first keys typed at the machine measure it.
+typed yet counts as not measured rather than missed. Once a keyboard input marker is captured, missing keyboard
+stages (including TTY delivery) count as failures.
 
 ### Measured on the R240
 
-Boots of this change on 2026-10-19 and 2026-10-20, through the boot loop:
+Historical boots before the review repairs, on 2026-10-19 and 2026-10-20, through the boot loop. These do not
+validate the changed root refusal, ESP capacity, configuration recovery or slot transaction:
 
 | What | Result |
 |---|---|
@@ -1484,3 +1494,13 @@ attempt sends the same request with a 19-byte length.
 A Status stage failing after a short read did not occur on these boots;
 that path is covered by the host tests in `tests/xhci_recovery.rs`, which also
 drive the reset loop to its refused third reset.
+
+
+Review safety limits for persistent upgrades: the ESP reserves capacity for three bounded kernel slots plus
+manager files and FAT metadata; an oversized slot is refused before an install request is written. Slot actions
+carry a durable intent and phase markers, recovered before startup reads the slot notes. An installed manager
+with an unreadable configuration tries its existing slots and then returns to firmware with the watchdog armed.
+
+Userland upgrades are currently refused before any tree is changed when a managed top-level path already
+exists. Both kernel slots share the system partition, so deleting an old tree would invalidate rollback. A
+recoverable userland generation switch is required before populated-system upgrades can be enabled.
