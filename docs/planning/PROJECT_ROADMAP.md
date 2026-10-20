@@ -16,6 +16,12 @@ the VM, including `--no-build`. The preflight resolves directory symlinks,
 honors the first resolved search path, and rejects dangling targets without
 normalizing away missing path components (#2127).
 
+PR #2140 keeps a pending ARM64 timer tick when the scheduler re-arms the
+timer. `rearm_timer()` moved the deadline one interval ahead on each dispatch,
+so a CPU switching more often than once a millisecond lost its ticks; under
+the Parallels GPU-core desktop CPU0 fell below the regression guard's line
+(#2137). heartbeat prints per-CPU tick counts at 30-second intervals.
+
 Launcher work enables the VMware host-key path by default for console suite
 boots, including multi-suite lists, with loopback VNC and owned watcher cleanup.
 The unrelated boot-wait host-test matcher failure is tracked in #2097.
