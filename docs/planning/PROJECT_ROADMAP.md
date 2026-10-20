@@ -51,8 +51,9 @@ The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/m
 with its production boot stages in [the metal boot path](../metal/boot-path.json).
 
 PR #2112's persistent install work now stages slot-paired userland generations for
-#2114, retaining shared `/etc`, `/root` and the home partition across upgrade and
-rollback. Its [protocol](../metal/README.md#install-and-upgrade) remains pending
+#2114, retaining generation-local `/etc` and shared `/root` and home data across
+upgrade and rollback. Follow-up review repairs completed-install retries, namespace
+visibility and path traversal, and strengthens the host rollback and home checks. Its [protocol](../metal/README.md#install-and-upgrade) remains pending
 review and a later hardware window.
 
 The R240 disk-root work in [#1972](https://github.com/ryanbreen/breenix/issues/1972)

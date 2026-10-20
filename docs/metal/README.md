@@ -886,7 +886,7 @@ previous-slot boot. There is no second current-userland pointer to update across
 without a userland item still uses the flat partition root, which migration leaves intact.
 
 Published generations are retained, including those left by an interrupted verification boot. The installer removes
-unpublished `<id>.new` scratch directories whose IDs have no published generation on a retry and refuses to overwrite a published ID. It does
+unpublished `<id>.new` scratch directories whose IDs have no published generation on a retry and accepts a retry of a completed published ID without rewriting it. An incomplete published ID is refused. It does
 not guess which completed tree is safe to reclaim from the boot host's potentially stale slot record. Thus this
 version needs space for the retained trees plus the new tree; lack of space fails the upgrade while keeping the
 current tree. Reclamation must account for the manager's recovered slots before deleting a generation (#2117).

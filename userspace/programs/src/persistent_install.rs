@@ -155,7 +155,20 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     let generations = target.join(GENERATIONS);
     let staged = generations.join(format!("{}.new", id));
     let published = generations.join(id);
-    if present(&published)? { return Err(String::from("userland generation already exists")); }
+    if present(&published)? {
+        require_directory(&published)?;
+        let expected = format!("BREENIX-USERLAND 1\n{}\n", id);
+        let ready = published.join(READY);
+        if fs::symlink_metadata(&ready).map_err(|error| fail("stat", &ready, error))?.is_file()
+            && fs::read(&ready).map_err(|error| fail("read", &ready, error))? == expected.as_bytes() {
+            for name in ["etc", "root", "home", "dev", "proc", "sys"] {
+                require_directory(&published.join(name))?;
+            }
+            require_directory(&target.join("root"))?;
+            return Ok(Totals::default());
+        }
+        return Err(String::from("incomplete published userland generation"));
+    }
     for name in KEPT {
         require_directory(&source.join(name))?;
         if present(&target.join(name))? { require_directory(&target.join(name))?; }
@@ -303,9 +316,10 @@ mod tests {
             fs::write(path.join("etc/config"), b"operator config").unwrap();
             fs::write(path.join("root/data"), b"operator data\0\xff").unwrap();
             fs::write(path.join("home/untouched"), b"home mount point data").unwrap();
-            // A distinct home filesystem is represented beside the system.
-            fs::create_dir(self.0.join("home-partition")).unwrap();
-            fs::write(self.0.join("home-partition/data"), b"operator home\0\xff").unwrap();
+            // The installer reaches the home mount point through the target.
+            // Put the stand-in filesystem there so an erroneous recursive copy
+            // or removal can actually damage it.
+            fs::write(path.join("home/data"), b"operator home\0\xff").unwrap();
             path
         }
     }
@@ -392,7 +406,7 @@ mod tests {
                     };
                     let old_bin = snapshot(&current.join("bin"));
                     let old_sbin = snapshot(&current.join("sbin"));
-                    let data: Vec<_> = [system.join("etc"), system.join("root"), system.join("home"), fixture.0.join("home-partition")]
+                    let data: Vec<_> = [system.join("etc"), system.join("root"), system.join("home")]
                         .iter().map(|path| (path.clone(), snapshot(path))).collect();
                     let mut left = fault;
                     let result = install_tree(&source, &system, "new", &mut || {
@@ -446,7 +460,10 @@ mod tests {
         install_tree(&source, &system, "new", &mut || Ok(())).unwrap();
         let root = selected(&system, "new");
         assert_eq!(fs::metadata(&root).unwrap().mode() & 0o7777, 0o555);
+        // These ownership equalities cover the host-accessible values only;
+        // they do not prove chown preserves a distinct source uid or gid.
         assert_eq!(fs::metadata(&root).unwrap().uid(), fs::metadata(&source).unwrap().uid());
+        assert_eq!(fs::metadata(&root).unwrap().gid(), fs::metadata(&source).unwrap().gid());
         // Restore write access for fixture cleanup on unprivileged hosts.
         fs::set_permissions(root, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(source, fs::Permissions::from_mode(0o755)).unwrap();
@@ -497,11 +514,31 @@ mod tests {
     fn promotion_and_rollback_recover_paired_trees_byte_for_byte() {
         let fixture = Fixture::new();
         let system = fixture.system();
+        let mut recorded = BTreeMap::new();
+        let mut published = BTreeMap::new();
         for id in ["old", "new"] {
-            install_tree(&fixture.source(id), &system, id, &mut || Ok(())).unwrap();
+            let source = fixture.source(id);
+            // Record the source before installation, independently of whatever
+            // selection later returns. Compare ownership available to this host:
+            // unprivileged tests cannot chown to arbitrary uid/gid values.
+            recorded.insert(id, snapshot(&source));
+            install_tree(&source, &system, id, &mut || Ok(())).unwrap();
+            published.insert(id, snapshot(&selected(&system, id)));
         }
-        let old = snapshot(&selected(&system, "old"));
-        let new = snapshot(&selected(&system, "new"));
+        let old = &recorded["old"];
+        let new = &recorded["new"];
+        let assert_contents = |root: &Path, expected: &BTreeMap<PathBuf, (u32, u32, u32, Vec<u8>, Option<u64>)>| {
+            let actual = snapshot(root);
+            let contents = |tree: &BTreeMap<PathBuf, (u32, u32, u32, Vec<u8>, Option<u64>)>| {
+                tree.iter().filter(|(path, _)| {
+                    !["root", "home", "dev", "proc", "sys", READY].iter().any(|name| path.starts_with(name))
+                }).map(|(path, (mode, uid, gid, bytes, _))| {
+                    (path.clone(), (*mode, *uid, *gid, bytes.clone()))
+                }).collect::<BTreeMap<_, _>>()
+            };
+            assert_eq!(contents(&actual), contents(expected));
+            assert_eq!(actual[Path::new("bin/payload")].4, actual[Path::new("sbin/init")].4);
+        };
         let initial: BTreeMap<_, _> = [("CURRENT.IMG", b"old".to_vec()), ("CURRENT.TXT", b"old".to_vec()),
             ("NEXT.IMG", b"new".to_vec()), ("NEXT.TXT", b"new".to_vec())].into_iter().map(|(k,v)| (k.into(),v)).collect();
         for rollback in [false, true] {
@@ -521,21 +558,29 @@ mod tests {
                     let selected_root = selected(&system, &id);
                     assert_eq!(fs::read(selected_root.join("bin/payload")).unwrap(), id.as_bytes());
                     assert_eq!(fs::read(selected_root.join("etc/config")).unwrap(), id.as_bytes());
-                    let expected = if id == "old" { &old } else { assert_eq!(id, "new"); &new };
-                    assert_eq!(&snapshot(&selected(&system, &id)), expected);
+                    let expected = if id == "old" { old } else { assert_eq!(id, "new"); new };
+                    assert_contents(&selected_root, expected);
+                    // Slot recovery must leave both complete trees unchanged,
+                    // including mount placeholders, the record and every link.
+                    for retained in ["old", "new"] {
+                        assert_eq!(snapshot(&selected(&system, retained)), published[retained]);
+                    }
                     assert_eq!(disk.files.borrow()["CURRENT.TXT"], id.as_bytes());
                     // Complete promotion then rollback without a fault: the
                     // actual slot transaction must return exactly the old tree.
                     if !rollback && id == "new" {
                         slots::begin(&disk, true).unwrap();
                         assert_eq!(disk.id("CURRENT"), "old");
-                        assert_eq!(snapshot(&selected(&system, "old")), old);
+                        assert_contents(&selected(&system, &disk.id("CURRENT")), old);
+                        for retained in ["old", "new"] {
+                            assert_eq!(snapshot(&selected(&system, retained)), published[retained]);
+                        }
                     }
                 }
             }
         }
         assert_eq!(fs::read(system.join("root/data")).unwrap(), b"operator data\0\xff");
-        assert_eq!(fs::read(fixture.0.join("home-partition/data")).unwrap(), b"operator home\0\xff");
+        assert_eq!(fs::read(system.join("home/data")).unwrap(), b"operator home\0\xff");
     }
 
     #[test]
@@ -565,9 +610,7 @@ mod tests {
                     data.push((path.clone(), snapshot(&path)));
                 }
             }
-            if !target.join(GENERATIONS).join("first").exists() {
-                install_tree(&source, &target, "first", &mut || Ok(())).unwrap();
-            }
+            install_tree(&source, &target, "first", &mut || Ok(())).unwrap();
             assert_eq!(fs::read(selected(&target, "first").join("bin/payload")).unwrap(), b"new");
             for (path, before) in data { assert_eq!(snapshot(&path), before); }
         }
@@ -592,7 +635,7 @@ mod tests {
         assert_eq!(fs::metadata(root.join("bin/payload")).unwrap().ino(), fs::metadata(root.join("sbin/init")).unwrap().ino());
         assert_eq!(fs::metadata(root.join("bin/payload")).unwrap().mode() & 0o7777, 0o6755);
         let before = snapshot(&system);
-        assert!(install_tree(&source, &system, "first", &mut || panic!("mutated published tree")).is_err());
+        install_tree(&source, &system, "first", &mut || panic!("mutated published tree")).unwrap();
         assert_eq!(snapshot(&system), before);
         for id in ["../first", "first.new", "", ".", ".."] {
             assert!(generation::select(&Tree::new(&system), id).is_err());
@@ -600,5 +643,6 @@ mod tests {
         }
         fs::write(root.join(READY), b"wrong generation\n").unwrap();
         assert!(generation::select(&Tree::new(&system), "first").is_err());
+        assert!(install_tree(&source, &system, "first", &mut || panic!("mutated incomplete publication")).is_err());
     }
 }
