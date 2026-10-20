@@ -52,35 +52,24 @@ use super::kit::*;
 use abi::op;
 use abi::Plain;
 
+// gpu-window: §2.2 CREATE returns GPU target handles; zeroing, count, identity and tree metadata remain guarded.
 fn windows_create() -> CaseResult {
-    interface()?;
-    for buffers in [2u32, 3] {
-        let w = W::new(64, 48, buffers)?;
-        ensure(w.id() >= 1, "17.2", format!("CREATE gave window id {}; ids start at 1", w.id()))?;
-        ensure(w.c.stride == 64 * 4, "17.1", format!("CREATE gave stride {} for a 64-pixel-wide window; BGRX rows are 256 bytes", w.c.stride))?;
+interface()?;
+    for buffers in [2u32,3] {
+        let w=W::new(64,48,buffers)?;
+        ensure(w.id()>=1 && w.c.stride==256,"17.1","gpu-window: CREATE returned invalid identity or stride")?;
+        let mut handles=std::collections::BTreeSet::new();
         for i in 0..3 {
-            let addr = w.c.buffer[i as usize];
-            if i < buffers {
-                ensure(addr != 0, "17.1", format!("CREATE with {buffers} buffers left buffer {i}'s address 0"))?;
-                let b = w.buf(i);
-                let (first, last) = (b[0], b[b.len() - 1]);
-                ensure(first == 0 && last == 0, "17.2", format!("buffer {i} of a new window holds {first}/{last} at its ends"))?;
-            } else {
-                ensure(addr == 0, "17.1", format!("CREATE with {buffers} buffers gave buffer {i} the address {addr:#x}; past `buffers` it is 0"))?;
-            }
+            let target=w.c.buffer[i];
+            if i>=buffers as usize {ensure(target==0,"17.1","gpu-window: CREATE published a target past its buffer count")?;continue;}
+            ensure(target!=0 && handles.insert(target),"17.1","gpu-window: CREATE returned zero or repeated GPU handles")?;
+            let mut px=vec![0xA5;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+            let r=libbreenix::gpu::readback(target,[0,0,64,48],&mut px,256,&mut record);
+            want_ok(r,"17.1","gpu-window: readback of CREATE target")?;
+            ensure(px.iter().all(|&b|b==0),"17.2","gpu-window: a new target is not cleared to zero")?;
         }
-        let mut seen = std::collections::BTreeSet::new();
-        for i in 0..buffers {
-            let a = w.c.buffer[i as usize];
-            ensure(seen.insert(a), "17.3", format!("buffers of one window share the address {a:#x}"))?;
-            for j in 0..buffers {
-                let b = w.c.buffer[j as usize];
-                ensure(i == j || a + w.len() as u64 <= b || b + w.len() as u64 <= a, "17.3", format!("buffers {i} and {j} overlap"))?;
-            }
-        }
-        ensure(w.c.tree != 0 && w.c.tree_kib == 64, "17.1", format!("CREATE with tree_kib 0 gave tree {:#x} of {} KiB; 0 means 64", w.c.tree, w.c.tree_kib))?;
-    }
-    Ok(())
+        ensure(w.c.tree!=0 && w.c.tree_kib==64,"17.1","gpu-window: CREATE lost its separately mapped tree pages")?;
+    }Ok(())
 }
 
 fn windows_create_zeroed() -> CaseResult {
