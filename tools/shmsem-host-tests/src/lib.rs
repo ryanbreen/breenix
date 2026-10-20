@@ -433,15 +433,28 @@ pub mod memory {
     pub mod frame_allocator {
         use super::Frame;
         use std::collections::BTreeMap;
-        use std::sync::{LazyLock, Mutex};
+        use std::sync::{
+            atomic::{AtomicU32, Ordering},
+            Arc, LazyLock, Mutex,
+        };
         #[repr(align(4096))]
         struct FrameBytes([u8; 4096]);
-        static FRAMES: LazyLock<Mutex<BTreeMap<u64, (Box<FrameBytes>, u32)>>> =
+        static FRAMES: LazyLock<Mutex<BTreeMap<u64, (Box<FrameBytes>, Arc<AtomicU32>)>>> =
             LazyLock::new(|| Mutex::new(BTreeMap::new()));
+        // Keep each allocating test's counter alive after the backing page is freed.
+        // Another test may reuse the address, but cannot replace this observation.
+        thread_local! {
+            static ACCOUNTS: std::cell::RefCell<BTreeMap<u64, Arc<AtomicU32>>> =
+                const { std::cell::RefCell::new(BTreeMap::new()) };
+        }
         pub fn allocate_frame() -> Frame {
-            let mut bytes = Box::new(FrameBytes([0; 4096]));
+            allocate_bytes(Box::new(FrameBytes([0; 4096])))
+        }
+        fn allocate_bytes(mut bytes: Box<FrameBytes>) -> Frame {
             let key = bytes.0.as_mut_ptr() as u64;
-            FRAMES.lock().unwrap().insert(key, (bytes, 0));
+            let refs = Arc::new(AtomicU32::new(0));
+            ACCOUNTS.with(|accounts| accounts.borrow_mut().insert(key, refs.clone()));
+            FRAMES.lock().unwrap().insert(key, (bytes, refs));
             #[cfg(target_arch = "aarch64")]
             {
                 super::arch_stub::PhysFrame(key, core::marker::PhantomData)
@@ -457,21 +470,33 @@ pub mod memory {
                 .unwrap()
                 .get_mut(&frame.start_address().as_u64())
                 .unwrap()
-                .1 += 1;
+                .1
+                .fetch_add(1, Ordering::SeqCst);
         }
         pub fn decref(frame: Frame) -> bool {
-            let mut frames = FRAMES.lock().unwrap();
-            let refs = &mut frames.get_mut(&frame.start_address().as_u64()).unwrap().1;
-            assert!(*refs > 0);
-            *refs -= 1;
-            *refs == 0
+            let frames = FRAMES.lock().unwrap();
+            let refs = frames
+                .get(&frame.start_address().as_u64())
+                .unwrap()
+                .1
+                .fetch_sub(1, Ordering::SeqCst);
+            assert!(refs > 0);
+            refs == 1
         }
         pub fn refs(frame: Frame) -> u32 {
+            ACCOUNTS.with(|accounts| {
+                accounts
+                    .borrow()
+                    .get(&frame.start_address().as_u64())
+                    .map_or(0, |refs| refs.load(Ordering::SeqCst))
+            })
+        }
+        pub fn is_shared(frame: Frame) -> bool {
             FRAMES
                 .lock()
                 .unwrap()
                 .get(&frame.start_address().as_u64())
-                .map_or(0, |f| f.1)
+                .is_some_and(|entry| entry.1.load(Ordering::SeqCst) > 1)
         }
         pub fn deallocate_frame(frame: Frame) {
             let entry = FRAMES
@@ -479,7 +504,42 @@ pub mod memory {
                 .unwrap()
                 .remove(&frame.start_address().as_u64())
                 .unwrap();
-            assert_eq!(entry.1, 0);
+            assert_eq!(entry.1.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn recycled_address_keeps_each_tests_frame_accounting() {
+            let frame = allocate_frame();
+            register(frame);
+            assert!(decref(frame));
+            // Hand the released storage to a second test thread to force reuse
+            // deterministically, without relying on the host allocator's timing.
+            let (bytes, old_refs) = FRAMES
+                .lock()
+                .unwrap()
+                .remove(&frame.start_address().as_u64())
+                .unwrap();
+            assert_eq!(old_refs.load(Ordering::SeqCst), 0);
+            let reused = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let replacement = allocate_bytes(bytes);
+                    assert_eq!(
+                        replacement.start_address().as_u64(),
+                        frame.start_address().as_u64()
+                    );
+                    register(replacement);
+                    reused.wait();
+                    reused.wait();
+                    assert_eq!(refs(replacement), 1);
+                    assert!(decref(replacement));
+                    deallocate_frame(replacement);
+                });
+                reused.wait();
+                let observed = refs(frame);
+                reused.wait();
+                assert_eq!(observed, 0);
+            });
         }
     }
     pub mod frame_metadata {
@@ -491,7 +551,7 @@ pub mod memory {
             frame_allocator::register(f);
         }
         pub fn frame_is_shared(f: Frame) -> bool {
-            frame_allocator::refs(f) > 1
+            frame_allocator::is_shared(f)
         }
         pub fn frame_decref(f: Frame) -> bool {
             frame_allocator::decref(f)

@@ -165,6 +165,34 @@ class LauncherTest(unittest.TestCase):
         for name in ("main", "child", "grandchild"):
             self.assertEqual(values[name], "46", name)
 
+    def test_path_skips_directories_and_non_executable_files(self):
+        for kind in ("directory", "non-executable"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                candidate = Path(directory) / self.probe.name
+                if kind == "directory":
+                    candidate.mkdir()
+                else:
+                    candidate.write_bytes(self.probe.read_bytes())
+                    candidate.chmod(0o644)
+                result = subprocess.run([self.launcher, self.probe.name, "--exit", "37"],
+                                        env={**os.environ, "PATH": f"{directory}:{self.probe.parent}:{os.environ['PATH']}"},
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 37, result.stderr)
+
+    def test_path_remembers_permission_denied_but_reports_missing_as_127(self):
+        for kind, expected in (("directory", 126), ("non-executable", 126), ("missing", 127)):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                candidate = Path(directory) / self.probe.name
+                if kind == "directory":
+                    candidate.mkdir()
+                elif kind == "non-executable":
+                    candidate.write_bytes(self.probe.read_bytes())
+                    candidate.chmod(0o644)
+                result = subprocess.run([self.launcher, self.probe.name],
+                                        env={**os.environ, "PATH": f"{directory}:{directory}/missing"},
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_a_thread_created_with_its_own_class_keeps_it(self):
         _, values = self.run_probe(self.launcher)
         self.assertEqual(int(values["utility"], 16), 0x11)  # QOS_CLASS_UTILITY
