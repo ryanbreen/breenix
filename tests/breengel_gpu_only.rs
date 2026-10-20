@@ -26,7 +26,7 @@ impl<'ast> Visit<'ast> for Uploads {
         if let Expr::Path(p)=&*e.func {if let Some(last)=p.path.segments.last(){
             let name=last.ident.to_string();if self.aliases.contains(&name){self.upload("upload");}else{self.upload(&name);}
             if name.starts_with("syscall") && !self.bgl && e.args.iter().any(|a|match a {
-                Expr::Lit(l)=>matches!(&l.lit,syn::Lit::Int(n) if n.base10_parse::<u64>()==Ok(416)),
+                Expr::Lit(l)=>matches!(&l.lit,syn::Lit::Int(n) if n.base10_parse::<u64>().is_ok_and(|v|v==416)),
                 Expr::Path(p)=>p.path.segments.last().is_some_and(|s|s.ident=="SYS_GPU"),_=>false,
             }) {self.violations.push("direct syscall 416 outside BGL".into());}
         }}visit::visit_expr_call(self,e);
