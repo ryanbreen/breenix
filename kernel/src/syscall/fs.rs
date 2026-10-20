@@ -1665,7 +1665,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     // Read the records of the directory this descriptor holds, through the
     // mount and inode its handle pins: a position is never applied to any
     // other directory's data.
-    let dir_data = {
+    let (dir_data, namespace, directory_inode) = {
         let fs_guard = match ext2::read_mount(handle.object.mount) {
             Ok(guard) => guard,
             Err(e) => {
@@ -1689,7 +1689,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
             }
         };
         match fs.read_directory(&inode) {
-            Ok(data) => data,
+            Ok(data) => (data, fs.namespace(), inode_num),
             Err(e) => {
                 log::error!("sys_getdents64: failed to read directory: {}", e);
                 return SyscallResult::Err(crate::fs::namei::fs_errno(e));
@@ -1733,6 +1733,11 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         }
         let entry = &positioned;
 
+        let Some(visible_inode) = namespace.entry(directory_inode, entry.name, entry.inode) else {
+            new_position = positioned.next as u64;
+            continue;
+        };
+
         let name_len = entry.name.len();
         // d_reclen = header + name + null terminator, aligned to 8 bytes
         let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
@@ -1749,7 +1754,7 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 
         push_dirent64(
             &mut records,
-            entry.inode as u64,
+            visible_inode as u64,
             positioned.next as i64,
             ext2_file_type_to_dt(entry.file_type),
             entry.name,

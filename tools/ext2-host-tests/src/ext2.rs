@@ -6,6 +6,10 @@ pub mod file;
 pub mod inode;
 #[path = "../../../kernel/src/fs/ext2/dir.rs"]
 pub mod dir;
+#[path = "../../../kernel/src/fs/ext2/generation.rs"]
+pub mod generation;
+#[path = "../../../kernel/src/fs/ext2/path.rs"]
+mod path;
 #[path = "../../../kernel/src/fs/ext2/create_node.rs"]
 pub mod create_node;
 #[path = "../../../kernel/src/fs/ext2/directory_io.rs"]
@@ -47,10 +51,11 @@ pub struct Ext2Fs {
     pub block_groups: Vec<Ext2BlockGroupDesc>,
     durable_epoch: core::sync::atomic::AtomicU64,
     live_inodes: LiveInodes,
+    namespace: generation::Namespace,
 }
 impl Ext2Fs {
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
-        Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes }
+        Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW }
     }
     /// Lay down a fixture directory's records, block by block.
     pub fn write_directory_for_host(&self, ino: u32, data: &[u8]) -> Result<(), &'static str> {
@@ -194,6 +199,7 @@ mod reclaim_checks {
             superblock: sb, block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
             live_inodes: LiveInodes,
+            namespace: generation::Namespace::RAW,
         };
         for ino in 1..=2 {
             let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
@@ -336,6 +342,7 @@ mod reclaim_checks {
             block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
             live_inodes: LiveInodes,
+            namespace: generation::Namespace::RAW,
         };
         fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0))
             .unwrap();
@@ -360,7 +367,7 @@ mod reclaim_checks {
         group.bg_used_dirs_count = 1;
         data.lock().unwrap()[4 * 4096] = 1;
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
-            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes };
+            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW };
         let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
         inode.i_mode = EXT2_S_IFDIR | 0o700;
         // remove_directory commits the namespace and zero-link inode before
@@ -400,7 +407,7 @@ mod reclaim_checks {
             bytes[20 * 4096 + 4..20 * 4096 + 8].copy_from_slice(&512u32.to_le_bytes());
         }
         let mut fs = Ext2Fs { device: Box::new(Disk { data: data.clone(),
-            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes };
+            fail: Arc::new(Mutex::new(None)) }), superblock: sb, block_groups: vec![group], durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW };
         fs.write_inode(1, &inode).unwrap();
         let mut progress = reclaim::Reclaim::shrink(inode, 13);
         inode.i_links_count = 2;
@@ -458,6 +465,7 @@ mod reclaim_checks {
             block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
             live_inodes: LiveInodes,
+            namespace: generation::Namespace::RAW,
         };
         fs.write_inode(1, &inode).unwrap();
         let mut progress = reclaim::Reclaim::shrink(inode, 14);
@@ -550,6 +558,7 @@ mod reclaim_checks {
             block_groups: vec![group],
             durable_epoch: core::sync::atomic::AtomicU64::new(0),
             live_inodes: LiveInodes,
+            namespace: generation::Namespace::RAW,
         };
         let mut parent = Ext2Inode::new_regular_file(0o777, 0, 0);
         parent.i_mode = 0o40777;
@@ -561,6 +570,25 @@ mod reclaim_checks {
         fs.superblock.write_to(fs.device.as_ref()).unwrap();
         Ext2BlockGroupDesc::write_table(fs.device.as_ref(), &fs.superblock, &fs.block_groups).unwrap();
         (fs, data, fail)
+    }
+
+    #[test]
+    fn path_dot_requires_directory_in_flat_and_generation_roots() {
+        let (mut fs, _, _) = directory_fixture();
+        fs.create_node(2, "file", 0o100644, 0, 0, 0).unwrap();
+        for generation in [false, true] {
+            if generation {
+                // Select the same directory through a non-flat inode so the
+                // namespace branch is exercised using real ext2 records.
+                let root = fs.read_inode(2).unwrap();
+                fs.write_inode(100, &root).unwrap();
+                fs.namespace = generation::Namespace { root: 100, etc: 101, data: 102 };
+            }
+            assert_eq!(fs.resolve_path("/file/."), Err("Not a directory in path"));
+            assert_eq!(fs.resolve_path_no_follow("/file/."), Err("Not a directory in path"));
+            assert_eq!(fs.resolve_path("/./."), Ok(fs.namespace.root));
+            assert_eq!(fs.resolve_path("/../."), Ok(fs.namespace.root));
+        }
     }
 
     #[test]

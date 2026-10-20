@@ -594,6 +594,9 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 }
                 let fs = held.fs(mount)?;
                 let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
+                if mount == Mount::Root && ext2::root_namespace().hidden(dir, &name) {
+                    return Err(ENOENT as u64);
+                }
                 let found = if mount == Mount::Root {
                     ext2::root_namespace().shared(dir, &name)
                 } else { None };
