@@ -486,7 +486,6 @@ func main() -> Int32 {
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
                     progressBundleBase64: try BeastLauncher.progressBundle(repoRoot: root),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
-                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh"),
                     targetGuard: root.appendingPathComponent("scripts/effort-target-guard.py")
                 )
                 var options = BeastLaunchOptions(
@@ -508,19 +507,9 @@ func main() -> Int32 {
                     return 0
                 }
 
-                // Register Vigil when remote serials appear; harvest remains authoritative.
-                let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
-                options.runID = runID
-                let result = try launcher.runX86(options: options)
-                print("")
-                let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
-                switch result.manifest.verdictSource {
-                case .gateScript(_, let exitCode):
-                    return exitCode != 0 ? Int32(exitCode) : (result.manifest.verdict.isFailure ? 1 : 0)
-                default:
-                    return result.manifest.verdict.isFailure ? 1 : 0
-                }
+                // The remote QEMU runner was retired under S23. Historical
+                // plans and evidence remain inspectable; execution uses metal.
+                throw CLIError(description: X86QemuPolicy.refusal)
             default:
                 throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")
             }

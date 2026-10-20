@@ -346,54 +346,6 @@ while True:
 
     /// Nonblocking output keeps the heartbeat deadline active under backpressure.
     /// Catch up in bounded bursts; the final evidence is harvested independently.
-    static let serialReader = #"""
-import base64, json, os, pathlib, select, sys, time
-root = pathlib.Path(sys.argv[1])
-count = int(sys.argv[2])
-offsets = {tuple([int(k.split(":")[0]), k.split(":")[1]]): v for k, v in json.loads(sys.argv[3] if len(sys.argv) > 3 else "{}").items()}
-last = time.monotonic()
-pending = bytearray()
-os.set_blocking(1, False)
-while time.monotonic() - last < 5:
-    ready, writable, _ = select.select([0], [1] if pending else [], [], .01 if pending else 1)
-    if ready:
-        if not os.read(0, 4096):
-            break
-        last = time.monotonic()
-    if len(pending) < 4 * 1024 * 1024:
-        for boot in range(1, count + 1):
-            directory = root / ("breenix_gate_%d" % boot)
-            if not all((directory / ("serial_%s.log" % stream)).exists() for stream in ("user", "kernel")):
-                continue
-            for stream in ("user", "kernel"):
-                key = (boot, stream)
-                path = directory / ("serial_%s.log" % stream)
-                try:
-                    with path.open("rb") as log:
-                        log.seek(offsets.get(key, 0))
-                        data = log.read(1024 * 1024)
-                        if key not in offsets or data:
-                            offsets[key] = log.tell()
-                            pending.extend((json.dumps(dict(boot=boot, stream=stream, offset=offsets[key] - len(data), data=base64.b64encode(data).decode())) + "\n").encode())
-                except FileNotFoundError:
-                    pass
-    if pending:
-        try:
-            written = os.write(1, pending)
-            del pending[:written]
-        except BlockingIOError:
-            pass
-        except BrokenPipeError:
-            break
-"""#
-
-    public static func streamSerialsRequest(paths: BeastPaths, boots: Int, offsets: [String: Int] = [:]) -> ProcessRequest {
-        let resume = String(data: try! JSONSerialization.data(withJSONObject: offsets, options: [.sortedKeys]), encoding: .utf8)!
-        let encoded = Data(serialReader.utf8).base64EncodedString()
-        let python = "import base64;exec(base64.b64decode(\"\(encoded)\"))"
-        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots) '\(resume)'", combineOutput: false, liveStream: true)
-    }
-
     /// Signal this run's supervisor and detached worker, including a worker whose
     /// foreground handle died during disconnect. PID birth checks exclude reused PIDs.
     static let gateStopper = #"""

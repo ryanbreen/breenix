@@ -42,8 +42,15 @@ pub struct Row {
     pub exit_started: bool,
     pub terminated: bool,
     pub cred: credentials::ProcessCredentials,
+    pub published_identity: std::cell::Cell<(u32, u32, u32)>,
 }
-impl Row { fn is_terminated(&self) -> bool { self.terminated } }
+impl Row {
+    fn is_terminated(&self) -> bool { self.terminated }
+    // This harness has no signal mirror; retain the published credential identity.
+    fn publish_identity(&self) {
+        self.published_identity.set((self.cred.uid, self.cred.euid, self.cred.suid));
+    }
+}
 pub struct Rows(BTreeMap<ProcessId, Row>);
 impl Rows {
     fn live_row(&self, pid: &ProcessId) -> Option<&Row> { self.0.get(pid) }
@@ -60,7 +67,8 @@ METHODS
 }
 fn row(group: u64, children: &[u64]) -> Row {
     Row { thread_group_id: Some(group), children: children.iter().map(|&p| ProcessId(p)).collect(),
-          parent: Some(ProcessId(1)), exit_started: false, terminated: false, cred: credentials::ProcessCredentials::root() }
+          parent: Some(ProcessId(1)), exit_started: false, terminated: false, cred: credentials::ProcessCredentials::root(),
+          published_identity: std::cell::Cell::new((0, 0, 0)) }
 }
 fn manager() -> Manager {
     let mut rows = BTreeMap::new();
@@ -100,6 +108,7 @@ CHANGE
                 let state = crate::process::manager();
                 let c = &state.as_ref().unwrap().processes.live_row(&crate::ProcessId(pid)).unwrap().cred;
                 assert_eq!((c.uid, c.euid, c.gid, c.egid), (1000, 1000, 1000, 1000));
+                assert_eq!(state.as_ref().unwrap().processes.live_row(&crate::ProcessId(pid)).unwrap().published_identity.get(), (1000, 1000, 1000));
             }
             assert_eq!(change_credentials(|c| c.setuid(0)), SyscallResult::Err(1));
             let state = crate::process::manager();
@@ -133,6 +142,6 @@ with tempfile.TemporaryDirectory(prefix="breenix-process-group-") as tmp:
     test = Path(tmp) / "tests.rs"
     test.write_text(harness)
     binary = Path(tmp) / "tests"
-    env = dict(os.environ, CARGO_BUILD_JOBS="6")
+    env = dict(os.environ, CARGO_BUILD_JOBS="4")
     subprocess.run(["rustc", "--edition=2021", "--test", str(test), "-o", str(binary)], cwd=ROOT, env=env, check=True)
     subprocess.run([str(binary), "--test-threads=1"], check=True)

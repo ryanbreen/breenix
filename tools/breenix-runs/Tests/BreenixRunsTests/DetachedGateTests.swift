@@ -80,26 +80,6 @@ final class DetachedGateTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("invocations"), encoding: .utf8), "invocation\n")
     }
 
-    func testSerialReconnectDiscardsPartialFramesAndDeduplicatesReplayAcrossBoots() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let live = try LiveX86Serials(directory: root, id: "replay", options: BeastLaunchOptions(sha: "abc"), script: nil, runner: RealProcessRunner())
-        func frame(_ boot: Int, _ offset: Int, _ text: String) throws -> Data {
-            try JSONSerialization.data(withJSONObject: ["boot": boot, "stream": "user", "offset": offset, "data": Data(text.utf8).base64EncodedString()]) + Data([10])
-        }
-        live.receive(try frame(1, 0, "first"))
-        live.receive(Data("{partial".utf8))
-        live.resetConnection()
-        live.receive(try frame(1, 0, "first-second"))
-        live.receive(try frame(2, 0, "next"))
-        live.resetConnection()
-        live.receive(try frame(1, 0, "first-second"))
-        live.receive(try frame(2, 0, "next-last"))
-        live.finish(status: 0)
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("serial_user.txt"), encoding: .utf8),
-            "==== breenix-runs boot 1: breenix_gate_1/serial_user.log ====\nfirst-second\n==== breenix-runs boot 2: breenix_gate_2/serial_user.log ====\nnext-last")
-    }
 
     func testUnsupportedLANAliasIsRejected() throws {
         let launcher = BeastLauncher(store: RunStore(root: URL(fileURLWithPath: "/unused")),
