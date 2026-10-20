@@ -399,7 +399,8 @@ class EffortTargetGuardTest(unittest.TestCase):
         for platform in ('parallels', 'vmware'):
             self.assertRegex(source, r'\n    install_vm_boot_traps\n'
                                      r'(?:    export BREENIX_VIGIL_DISPLAY=true\n'
-                                     r'    \[ -z "\$\{BREENIX_PARALLELS_NOGUI:-\}" \] \|\| export BREENIX_VIGIL_DISPLAY=false\n)?'
+                                     r'    \[ -z "\$\{BREENIX_' + platform.upper() +
+                                     r'_NOGUI:-\}" \] \|\| export BREENIX_VIGIL_DISPLAY=false\n)?'
                                      r'    record_launch_metadata\n(?:    #[^\n]*\n)*'
                                      r'    [^\n]*VIGIL_ID=\$\("\$BREENIX_ROOT/scripts/vigil-record\.sh" start '
                                      + platform + ' ')
