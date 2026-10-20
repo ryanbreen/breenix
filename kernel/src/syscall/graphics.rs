@@ -681,13 +681,11 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
         }
     };
 
-    // Copy to userspace (pointer already validated above)
-    unsafe {
-        let info_out = info_ptr as *mut FbInfo;
-        core::ptr::write(info_out, info);
+    // An unmapped or read-only page is EFAULT, as on x86_64.
+    match crate::syscall::userptr::copy_to_user(info_ptr as *mut FbInfo, &info) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
     }
-
-    SyscallResult::Ok(0)
 }
 
 /// sys_fbinfo - x86_64 form: the bootloader framebuffer the screen console
@@ -2268,7 +2266,11 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     }
 
     // Read the command from userspace
-    let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
+    let cmd: FbDrawCmd = match crate::syscall::userptr::copy_from_user(cmd_ptr as *const FbDrawCmd)
+    {
+        Ok(cmd) => cmd,
+        Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
+    };
 
     // Read the caller's fb_mmap info and display ownership BEFORE acquiring
     // SHELL_FRAMEBUFFER. This prevents holding PROCESS_MANAGER (which disables
@@ -2785,8 +2787,16 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
                     h: i32,
                 }
 
-                let rects =
-                    unsafe { core::slice::from_raw_parts(rects_ptr as *const FlushRect, count) };
+                // Copied in, so an unmapped or unreadable array is EFAULT.
+                let mut copied = [FlushRect { x: 0, y: 0, w: 0, h: 0 }; 16];
+                for (i, rect) in copied.iter_mut().take(count).enumerate() {
+                    let at = rects_ptr + (i as u64) * 16;
+                    match crate::syscall::userptr::copy_from_user(at as *const FlushRect) {
+                        Ok(r) => *rect = r,
+                        Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
+                    }
+                }
+                let rects = &copied[..count];
 
                 let fb_mmap_info = fb_mmap_info_pre;
 
@@ -3044,12 +3054,11 @@ pub fn sys_get_mouse_pos(out_ptr: u64) -> SyscallResult {
 
     let scroll = crate::input::pointer::mouse_wheel_consume() as u32;
 
-    unsafe {
-        let out = out_ptr as *mut [u32; 4];
-        core::ptr::write(out, [mx, my, buttons, scroll]);
+    // An unmapped or read-only buffer is EFAULT.
+    match crate::syscall::userptr::copy_to_user(out_ptr as *mut [u32; 4], &[mx, my, buttons, scroll]) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(_) => SyscallResult::Err(super::ErrorCode::Fault as u64),
     }
-
-    SyscallResult::Ok(0)
 }
 
 /// sys_get_mouse_pos - Stub for non-aarch64
