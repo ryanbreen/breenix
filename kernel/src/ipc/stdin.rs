@@ -107,6 +107,7 @@ impl StdinBufferLock {
                 drop(buffer);
                 if received {
                     wake_blocked_readers_try();
+                    wake_compositor();
                 }
                 return;
             };
@@ -122,6 +123,7 @@ impl StdinBufferLock {
         drop(buffer);
         if received {
             wake_blocked_readers_try();
+            wake_compositor();
         }
     }
 }
@@ -299,6 +301,7 @@ pub fn push_byte(byte: u8) {
 
         // Wake any blocked readers
         wake_blocked_readers();
+        wake_compositor();
     } else {
         log::warn!("stdin buffer full, dropping byte: 0x{:02x}", byte);
     }
@@ -318,23 +321,74 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
             wake_blocked_readers_try();
+            wake_compositor();
             return true;
         }
     }
     false
 }
 
-/// Publish a canonical EOF boundary without inserting a userspace byte.
-pub fn push_eof_from_irq() -> bool {
-    if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
-        if buffer.push_eof() {
-            INPUT_READERS.wake_up_deferred();
-            drop(buffer);
-            wake_blocked_readers_try();
-            return true;
+/// Move what `take` releases into the input queue of terminal `num` (0 is the console,
+/// whose queue is the one above) under one try of the queue's lock, then wake its
+/// readers. `take` is a line discipline's read: it fills at most the slice it is given,
+/// Ok(0) once it is empty, or Err(EOF_MARKER) for an end-of-file record. It is
+/// asked for at most the room the queue has, so what the queue cannot take stays
+/// with the caller. None while the queue's lock is busy; otherwise whether bytes moved.
+/// claim-lint:ok: #1680 Rust None is a source token, not an empirical quantifier.
+pub(crate) fn admit(num: usize, mut take: impl FnMut(&mut [u8]) -> Result<usize, i32>) -> Option<bool> {
+    fn fill(buffer: &mut StdinBuffer, take: &mut impl FnMut(&mut [u8]) -> Result<usize, i32>) -> bool {
+        let mut chunk = [0u8; 256];
+        let mut moved = false;
+        loop {
+            let room = buffer.room().min(chunk.len());
+            if room == 0 {
+                return moved;
+            }
+            match take(&mut chunk[..room]) {
+                Ok(0) => return moved,
+                Ok(n) => {
+                    for &byte in &chunk[..n] {
+                        let pushed = buffer.push_byte(byte);
+                        debug_assert!(pushed);
+                    }
+                }
+                Err(crate::tty::line_discipline::EOF_MARKER) => {
+                    let pushed = buffer.push_eof();
+                    debug_assert!(pushed);
+                }
+                Err(_) => return moved,
+            }
+            moved = true;
         }
     }
-    false
+    let Some(input) = vt_input(num) else {
+        let mut buffer = STDIN_BUFFER.try_lock()?;
+        let moved = fill(&mut buffer, &mut take);
+        if moved {
+            INPUT_READERS.wake_up_deferred();
+        }
+        drop(buffer);
+        if moved {
+            wake_blocked_readers_try();
+            wake_compositor();
+        }
+        return Some(moved);
+    };
+    let mut buffer = input.buffer.try_lock()?;
+    let moved = fill(&mut buffer, &mut take);
+    if moved {
+        input.readers.wake_up_deferred();
+    }
+    drop(buffer);
+    Some(moved)
+}
+
+/// The window manager reads this queue (its stdin is the console's) and waits in
+/// `compositor_wait`, which reports it ready while the queue holds data. Each admission
+/// to the queue wakes it, including a key a busy console TTY admits later from its pending queue.
+fn wake_compositor() {
+    #[cfg(target_arch = "aarch64")]
+    crate::syscall::graphics::wake_compositor_for_input();
 }
 
 /// Flush type-ahead already transferred from the console line discipline.
@@ -545,30 +599,6 @@ pub(crate) struct VtInput {
 impl VtInput {
     const fn new() -> Self {
         Self { buffer: Mutex::new(StdinBuffer::new()), readers: WaitQueueHead::new() }
-    }
-
-    /// Queue a byte from interrupt context; false while the queue is busy or full.
-    pub(crate) fn push_byte_from_irq(&self, byte: u8) -> bool {
-        if let Some(mut buffer) = self.buffer.try_lock() {
-            if buffer.push_byte(byte) {
-                self.readers.wake_up_deferred();
-                drop(buffer);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Queue a canonical end-of-file boundary.
-    pub(crate) fn push_eof_from_irq(&self) -> bool {
-        if let Some(mut buffer) = self.buffer.try_lock() {
-            if buffer.push_eof() {
-                self.readers.wake_up_deferred();
-                drop(buffer);
-                return true;
-            }
-        }
-        false
     }
 
     pub(crate) fn flush(&self) {

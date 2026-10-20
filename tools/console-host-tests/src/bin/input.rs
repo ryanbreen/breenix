@@ -42,6 +42,7 @@ mod syscall {
     pub mod graphics {
         // There is no compositor thread in this keyboard harness.
         pub fn wake_compositor_if_waiting() {}
+        pub fn wake_compositor_for_input() {}
     }
 }
 
@@ -75,17 +76,40 @@ fn main() {
     use input::{Device::UsbBootKeyboard as Usb, report_key as key};
     use input::event::*;
     let (a, b) = (Usb(1), Usb(2));
-    // The graphics ABI uses Ctrl as Super for the launcher double tap.
+    // Super is its own key: Ctrl neither sets the graphics ABI's Super bit nor taps it.
+    key(a, KEY_LEFTCTRL, PRESS);
+    assert_eq!(input::poll_modifier_state() & 10, 2);
+    key(a, KEY_LEFTCTRL, RELEASE);
+    assert!(!input::has_pending_super_tap());
     for _ in 0..2 {
-        key(a, KEY_LEFTCTRL, PRESS);
-        assert_eq!(input::poll_modifier_state() & 10, 10);
-        key(a, KEY_LEFTCTRL, REPEAT);
-        key(a, KEY_LEFTCTRL, RELEASE);
+        key(a, KEY_LEFTMETA, PRESS);
+        assert_eq!(input::poll_modifier_state() & 10, 8);
+        key(a, KEY_LEFTMETA, REPEAT);
+        key(a, KEY_LEFTMETA, RELEASE);
         assert_eq!(input::poll_modifier_state() & 10, 0);
     }
     assert!(input::has_pending_super_tap());
     assert_eq!(input::take_super_tap_count(), 2);
     assert!(!input::has_pending_super_tap());
+
+    // A graphics terminal gets Super in the key's bytes; Ctrl+Return and Ctrl+M are Enter.
+    GRAPHICS.store(true, Ordering::Relaxed);
+    key(a, KEY_LEFTMETA, PRESS);
+    key(a, KEY_ENTER, PRESS);
+    key(a, KEY_ENTER, REPEAT);
+    key(a, KEY_ENTER, RELEASE);
+    key(a, KEY_LEFTMETA, RELEASE);
+    received(b"\x1b[13;9u\x1b[13;9:2u");
+    assert_eq!(input::take_super_tap_count(), 1);
+    key(a, KEY_LEFTCTRL, PRESS);
+    key(a, KEY_ENTER, PRESS);
+    key(a, KEY_ENTER, RELEASE);
+    key(a, KEY_Z + 6, PRESS);
+    key(a, KEY_Z + 6, RELEASE);
+    key(a, KEY_LEFTCTRL, RELEASE);
+    received(b"\r\r");
+    assert!(!input::has_pending_super_tap());
+    GRAPHICS.store(false, Ordering::Relaxed);
 
     // A release (including detach's release_all) cannot clear another device's Shift.
     key(a, KEY_LEFTSHIFT, PRESS);
@@ -140,5 +164,5 @@ fn main() {
     assert_eq!(got, [(b'x', InputSource::UsbKeyboard as u8)]);
     for _ in 0..256 { assert!(pending.push(b'x', InputSource::UsbKeyboard)); }
     assert!(!pending.push(b'y', InputSource::UsbKeyboard));
-    println!("input: device modifiers, reservations, consumed repeats, admission count and retry passed");
+    println!("input: device modifiers, Super, reservations, consumed repeats, admission count and retry passed");
 }

@@ -356,19 +356,21 @@ impl TtyDevice {
         self.num == 0
     }
 
-    /// Queue a byte the line discipline released for this terminal's readers.
-    fn push_input(&self, byte: u8) -> bool {
-        match crate::ipc::stdin::vt_input(self.num as usize) {
-            Some(input) => input.push_byte_from_irq(byte),
-            None => crate::ipc::stdin::push_byte_from_irq(byte),
-        }
+    /// Move what the line discipline released to this terminal's readers (no echo: the
+    /// discipline already echoed it). What their queue cannot take now, while its lock is
+    /// busy or it is full, stays in the discipline; `drain_keyboard_input` retries it.
+    /// Returns whether anything moved.
+    fn transfer_input(&self, ldisc: &mut super::line_discipline::LineDiscipline) -> bool {
+        ldisc.has_data()
+            && crate::ipc::stdin::admit(self.num as usize, |buf| ldisc.read(buf)) == Some(true)
     }
 
-    /// Queue an end-of-file boundary for this terminal's readers.
-    fn push_input_eof(&self) -> bool {
-        match crate::ipc::stdin::vt_input(self.num as usize) {
-            Some(input) => input.push_eof_from_irq(),
-            None => crate::ipc::stdin::push_eof_from_irq(),
+    /// Retry `transfer_input` for input a busy or full queue left in the discipline.
+    fn retry_input_transfer(&self) {
+        let Some(mut ldisc) = self.ldisc.try_lock() else { return };
+        if self.transfer_input(&mut ldisc) {
+            drop(ldisc);
+            Self::wake_blocked_readers_nonblock();
         }
     }
 
@@ -430,24 +432,7 @@ impl TtyDevice {
         // Transfer data from line discipline to stdin buffer when available
         // This bridges the TTY layer (which handles line editing, echo, signals)
         // with the stdin buffer (which userspace reads via read() syscall)
-        if ldisc.has_data() {
-            let mut buf = [0u8; 256];
-            loop {
-                match ldisc.read(&mut buf) {
-                    Ok(0) => break, // No more data
-                    Ok(n) => {
-                        // Push each byte to stdin (no echo - TTY already handled that)
-                        for &byte in &buf[..n] {
-                            self.push_input(byte);
-                        }
-                    }
-                    Err(super::line_discipline::EOF_MARKER) => {
-                        self.push_input_eof();
-                        break;
-                    }
-                    Err(_) => break, // Other error, stop reading
-                }
-            }
+        if self.transfer_input(&mut ldisc) {
             drop(ldisc); // Release lock before waking
             Self::wake_blocked_readers();
         }
@@ -529,26 +514,7 @@ impl TtyDevice {
         // Transfer data from line discipline to stdin buffer when available
         // This bridges the TTY layer (which handles line editing, echo, signals)
         // with the stdin buffer (which userspace reads via read() syscall)
-        let has_data = ldisc.has_data();
-        if has_data {
-            let mut buf = [0u8; 256];
-            loop {
-                match ldisc.read(&mut buf) {
-                    Ok(0) => break, // No more data
-                    Ok(n) => {
-                        // Push each byte to stdin (no echo - TTY already handled that)
-                        for &byte in &buf[..n] {
-                            self.push_input(byte);
-                        }
-                    }
-                    Err(super::line_discipline::EOF_MARKER) => {
-                        self.push_input_eof();
-                        break;
-                    }
-                    Err(_) => break, // Other error, stop reading
-                }
-            }
-        }
+        let has_data = self.transfer_input(&mut ldisc);
         drop(ldisc);
         self.drain_echo();
 
@@ -1349,8 +1315,9 @@ impl TtyDevice {
     }
 }
 
-/// Retry deferred keyboard bytes without holding the console grid lock, on
-/// each terminal, including terminals left by a switch.
+/// Retry deferred keyboard bytes, and input a busy or full reader queue left in a
+/// line discipline, without holding the console grid lock, on each terminal,
+/// including terminals left by a switch.
 pub fn drain_keyboard_input() {
     for number in 1..=crate::console::vt::VT_COUNT {
         if let Some(tty) = vt(number) {
@@ -1358,6 +1325,7 @@ pub fn drain_keyboard_input() {
                 if let Some(mut keys) = PENDING_KEYS[number - 1].try_lock() {
                     keys.drain(|byte, source| tty.admit_key(byte, source));
                 }
+                tty.retry_input_transfer();
             });
         }
     }

@@ -154,9 +154,12 @@ const MINIMIZE_BTN_TEXT: Color = Color::rgb(255, 255, 255);
 // handle internally (F-key focus switching) or route to the focused client
 // window as WindowInputEvents.
 
+const ESCAPE_TIMEOUT_MS: u64 = 30;
+
 struct InputParser {
+    escape_started_ms: u64,
     state: InputState,
-    esc_buf: [u8; 8],
+    esc_buf: [u8; 16],
     esc_len: usize,
 }
 
@@ -164,28 +167,50 @@ struct InputParser {
 enum InputState { Normal, Escape, CsiOrSS3 }
 
 enum InputEvent {
-    /// A regular key press: ascii byte + modifiers (bit 1 = ctrl)
-    Key { ascii: u8, keycode: u16, modifiers: u16 },
+    /// A key press: ascii byte + the modifiers its own bytes carry (`modifier` bits).
+    /// `repeat` is known only for keys sent with a modifier parameter (`ESC [ c ; m u`,
+    /// console contract section 5.5): Some(true) for a repeat, Some(false) for a press.
+    Key { ascii: u8, keycode: u16, modifiers: u16, repeat: Option<bool> },
     /// F1..F5 for BWM-internal focus switching
     FunctionKey(u8),
 }
 
 impl InputParser {
-    fn new() -> Self { Self { state: InputState::Normal, esc_buf: [0; 8], esc_len: 0 } }
+    fn new() -> Self { Self { escape_started_ms: 0, state: InputState::Normal, esc_buf: [0; 16], esc_len: 0 } }
 
-    fn feed(&mut self, byte: u8) -> Option<InputEvent> {
+    /// Resolve a bare Escape before admitting a later key as an Alt chord.
+    fn expire_escape(&mut self, now_ms: u64) -> Option<InputEvent> {
+        if self.state == InputState::Escape
+            && now_ms.saturating_sub(self.escape_started_ms) >= ESCAPE_TIMEOUT_MS {
+            self.state = InputState::Normal;
+            Some(Self::byte_to_key_event(0x1b))
+        } else {
+            None
+        }
+    }
+
+    fn feed(&mut self, byte: u8, now_ms: u64) -> Option<InputEvent> {
         match self.state {
             InputState::Normal => {
-                if byte == 0x1b { self.state = InputState::Escape; self.esc_len = 0; None }
+                if byte == 0x1b { self.state = InputState::Escape; self.escape_started_ms = now_ms; self.esc_len = 0; None }
                 else { Some(Self::byte_to_key_event(byte)) }
             }
             InputState::Escape => {
                 if byte == b'[' || byte == b'O' {
                     self.state = InputState::CsiOrSS3; self.esc_buf[0] = byte; self.esc_len = 1; None
-                } else { self.state = InputState::Normal; Some(Self::byte_to_key_event(byte)) }
+                } else {
+                    // Alt sends ESC before the key's bytes.
+                    self.state = InputState::Normal;
+                    match Self::byte_to_key_event(byte) {
+                        InputEvent::Key { ascii, keycode, modifiers, repeat } => Some(InputEvent::Key {
+                            ascii, keycode, modifiers: modifiers | modifier::ALT as u16, repeat,
+                        }),
+                        other => Some(other),
+                    }
+                }
             }
             InputState::CsiOrSS3 => {
-                if self.esc_len < 7 { self.esc_buf[self.esc_len] = byte; self.esc_len += 1; }
+                if self.esc_len < self.esc_buf.len() { self.esc_buf[self.esc_len] = byte; self.esc_len += 1; }
                 if byte >= 0x40 && byte <= 0x7e { self.state = InputState::Normal; self.decode_escape() }
                 else { None }
             }
@@ -194,49 +219,78 @@ impl InputParser {
 
     /// Convert a raw stdin byte into a Key event with appropriate keycode/modifiers.
     fn byte_to_key_event(byte: u8) -> InputEvent {
-        match byte {
+        let (keycode, modifiers) = match byte {
             // Enter (before Ctrl range since 0x0D falls in 0x01..=0x1A)
-            0x0D => InputEvent::Key { ascii: 13, keycode: 0x28, modifiers: 0 },
+            0x0D => (0x28, 0),
             // Backspace (0x08 falls in Ctrl range; 0x7F does not)
-            0x08 | 0x7F => InputEvent::Key { ascii: 8, keycode: 0x2A, modifiers: 0 },
+            0x08 | 0x7F => (0x2A, 0),
             // Tab (0x09 falls in Ctrl range)
-            0x09 => InputEvent::Key { ascii: 9, keycode: 0x2B, modifiers: 0 },
+            0x09 => (0x2B, 0),
             // Ctrl+A through Ctrl+Z (0x01..0x1A), excluding Enter/Backspace/Tab matched above
-            0x01..=0x1A => InputEvent::Key {
-                ascii: byte,
-                keycode: byte as u16, // raw control code
-                modifiers: 0x02,      // ctrl bit
-            },
+            0x01..=0x1A => (byte as u16, modifier::CTRL as u16),
             // Printable ASCII + space
-            _ => InputEvent::Key { ascii: byte, keycode: byte as u16, modifiers: 0 },
+            _ => (byte as u16, 0),
+        };
+        let ascii = match byte { 0x7F => 8, _ => byte };
+        InputEvent::Key { ascii, keycode, modifiers, repeat: None }
+    }
+
+    /// The parameters of a CSI sequence: the first, and the second's modifier value and
+    /// event type (`m` or `m:e`). Absent values are 0.
+    fn params(&self) -> (u32, u32, u32) {
+        let mut values = [0u32; 3];
+        let mut index = 0;
+        for &b in &self.esc_buf[1..self.esc_len - 1] {
+            match b {
+                b'0'..=b'9' if index < 3 => values[index] = values[index] * 10 + (b - b'0') as u32,
+                b';' | b':' => index += 1,
+                _ => {}
+            }
         }
+        (values[0], values[1], values[2])
     }
 
     fn decode_escape(&self) -> Option<InputEvent> {
         if self.esc_len < 2 { return None; }
         let final_byte = self.esc_buf[self.esc_len - 1];
         if self.esc_buf[0] == b'[' {
+            let (first, m, event) = self.params();
+            // The modifier parameter is 1 plus Shift 1, Alt 2, Ctrl 4, Super 8.
+            let m = m.saturating_sub(1);
+            let modifiers = ((m & 1 != 0) as u8 * modifier::SHIFT
+                | (m & 2 != 0) as u8 * modifier::ALT
+                | (m & 4 != 0) as u8 * modifier::CTRL
+                | (m & 8 != 0) as u8 * modifier::SUPER) as u16;
+            let repeat = (self.esc_len > 3).then_some(event == 2);
+            let arrow = |keycode| Some(InputEvent::Key { ascii: 0, keycode, modifiers, repeat });
             match final_byte {
-                // Arrow keys -> Key events with USB HID keycodes
-                b'A' => return Some(InputEvent::Key { ascii: 0, keycode: 0x52, modifiers: 0 }), // Up
-                b'B' => return Some(InputEvent::Key { ascii: 0, keycode: 0x51, modifiers: 0 }), // Down
-                b'C' => return Some(InputEvent::Key { ascii: 0, keycode: 0x4F, modifiers: 0 }), // Right
-                b'D' => return Some(InputEvent::Key { ascii: 0, keycode: 0x50, modifiers: 0 }), // Left
-                b'~' if self.esc_len >= 3 => {
-                    let _num = self.esc_buf[1] - b'0';
-                    if self.esc_len == 3 { if _num == 1 { return Some(InputEvent::FunctionKey(1)); } }
-                    else if self.esc_len == 4 {
-                        let num2 = (self.esc_buf[1] - b'0') * 10 + (self.esc_buf[2] - b'0');
-                        match num2 {
-                            11 => return Some(InputEvent::FunctionKey(1)),
-                            12 => return Some(InputEvent::FunctionKey(2)),
-                            13 => return Some(InputEvent::FunctionKey(3)),
-                            14 => return Some(InputEvent::FunctionKey(4)),
-                            15 => return Some(InputEvent::FunctionKey(5)),
-                            _ => {}
-                        }
-                    }
+                // A key with a modifier parameter: its byte, and its modifiers.
+                b'u' if first <= 0x7F => {
+                    return match Self::byte_to_key_event(first as u8) {
+                        InputEvent::Key { ascii, keycode, modifiers: own, .. } => Some(InputEvent::Key {
+                            ascii, keycode, modifiers: own | modifiers, repeat,
+                        }),
+                        other => Some(other),
+                    };
                 }
+                // Arrow keys -> Key events with USB HID keycodes
+                b'A' => return arrow(0x52), // Up
+                b'B' => return arrow(0x51), // Down
+                b'C' => return arrow(0x4F), // Right
+                b'D' => return arrow(0x50), // Left
+                // F1..F4 with a modifier parameter (`ESC [ 1 ; m P`).
+                b'P' => return Some(InputEvent::FunctionKey(1)),
+                b'Q' => return Some(InputEvent::FunctionKey(2)),
+                b'R' => return Some(InputEvent::FunctionKey(3)),
+                b'S' => return Some(InputEvent::FunctionKey(4)),
+                b'~' => match first {
+                    1 | 11 => return Some(InputEvent::FunctionKey(1)),
+                    12 => return Some(InputEvent::FunctionKey(2)),
+                    13 => return Some(InputEvent::FunctionKey(3)),
+                    14 => return Some(InputEvent::FunctionKey(4)),
+                    15 => return Some(InputEvent::FunctionKey(5)),
+                    _ => {}
+                },
                 _ => {}
             }
         } else if self.esc_buf[0] == b'O' {
@@ -254,8 +308,9 @@ impl InputParser {
 
 // ─── Hotkey System ──────────────────────────────────────────────────────────
 // Configurable hotkey matching with multi-tap support. Hotkeys are loaded from
-// /etc/hotkeys.conf at startup. BWM polls modifier state from the kernel each
-// frame and detects key combos + multi-tap sequences (e.g. Super+Super).
+// /etc/hotkeys.conf at startup. A key combo is matched on the modifiers the key's
+// own bytes carry; multi-tap sequences (e.g. Super+Super) use the kernel's Super
+// tap latch and the modifier state BWM polls each frame.
 
 /// Modifier bitmask constants (matches kernel HID poll_modifier_state)
 mod modifier {
@@ -263,6 +318,16 @@ mod modifier {
     pub const CTRL: u8  = 2;
     pub const ALT: u8   = 4;
     pub const SUPER: u8 = 8;
+}
+
+/// What a key press is to the chord bindings.
+enum Chord {
+    /// It completes a chord: run the action.
+    Fire(HotkeyAction),
+    /// It is a chord's key that does not act again (a repeat); no client gets it.
+    Consumed,
+    /// It is not a chord: the focused client gets it.
+    None,
 }
 
 /// What action a hotkey triggers
@@ -452,28 +517,38 @@ impl HotkeyManager {
         Some(Hotkey { modifiers, key, taps, action })
     }
 
-    /// Match a stdin key using the graphics modifier snapshot. Bindings use ASCII
-    /// (Return is CR), not the client event's USB HID keycode (Return is 0x28).
-    /// The frame update owns cooldown advancement; draining keys must not shorten it.
-    fn key_pressed(&mut self, modifiers: u8, ascii: u8) -> Option<HotkeyAction> {
-        if modifiers != 0 {
+    /// Match a stdin key press against the chord bindings, using the modifiers its own
+    /// bytes carry. Bindings use ASCII (Return is CR), not the client event's USB HID
+    /// keycode (Return is 0x28). `held` is the polled modifier state, used only to mark a
+    /// modifier's hold as no clean tap. A matched chord is not delivered to a client:
+    /// each press fires, a repeat is consumed, and a chord whose bytes cannot tell a press
+    /// from a repeat (Alt's `ESC` prefix) fires once per cooldown.
+    fn key_pressed(&mut self, modifiers: u8, held: u8, ascii: u8, repeat: Option<bool>) -> Chord {
+        if modifiers | held != 0 {
             self.combo_used = true;
         }
         if modifiers & modifier::SUPER != 0 {
+            // The Super press of a chord is not a tap.
             self.super_combo_used = true;
+            self.tap_count = 0;
+            self.tap_release_ns = 0;
         }
-        if self.cooldown == 0 {
-            for binding in &self.bindings {
-                if binding.key != 0 && binding.taps == 1
-                    && binding.key == ascii.to_ascii_lowercase()
-                    && (modifiers & binding.modifiers) == binding.modifiers
-                {
-                    self.cooldown = 30;
-                    return Some(binding.action.clone());
-                }
+        let Some(binding) = self.bindings.iter().find(|binding| {
+            binding.key != 0 && binding.taps == 1
+                && binding.key == ascii.to_ascii_lowercase()
+                && (modifiers & binding.modifiers) == binding.modifiers
+        }) else {
+            return Chord::None;
+        };
+        match repeat {
+            Some(true) => Chord::Consumed,
+            Some(false) => Chord::Fire(binding.action.clone()),
+            None if self.cooldown == 0 => {
+                self.cooldown = 30;
+                Chord::Fire(binding.action.clone())
             }
+            None => Chord::Consumed,
         }
-        None
     }
 
     /// Called after draining this frame's keys, so a Super chord marks its tap
@@ -1715,6 +1790,7 @@ fn main() {
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
     let mut frame_failed = false;
+    let mut initial_client_checked = false;
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
@@ -1739,7 +1815,9 @@ fn main() {
             0
         } else {
             let (ready, new_reg_gen) =
-                graphics::compositor_wait(0, registry_gen).unwrap_or((0, registry_gen));
+                graphics::compositor_wait(
+                    if input_parser.state == InputState::Escape { ESCAPE_TIMEOUT_MS as u32 } else { 0 },
+                    registry_gen).unwrap_or((0, registry_gen));
             registry_gen = new_reg_gen;
             ready
         };
@@ -1752,7 +1830,8 @@ fn main() {
         let super_taps = take_super_tap_count();
         let current_mods = graphics::poll_modifier_state() as u8;
         hotkey_mgr.cooldown = hotkey_mgr.cooldown.saturating_sub(1);
-        let mut hotkey_action = None;
+        // The chords recognized this frame, in the order their keys arrived.
+        let mut hotkey_actions = Vec::new();
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
@@ -1778,48 +1857,57 @@ fn main() {
         let _ = io::poll(&mut poll_fds, 0);
 
         // ── 3. Process keyboard input ──
+        let now_ms = monotonic_ms().expect("bwm input requires the monotonic clock");
+        let mut input_events: Vec<InputEvent> = input_parser.expire_escape(now_ms).into_iter().collect();
         if poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0 {
             if let Ok(n) = io::read(Fd::from_raw(0), &mut read_buf) {
                 for i in 0..n {
-                    if let Some(event) = input_parser.feed(read_buf[i]) {
-                        match event {
-                            InputEvent::FunctionKey(k) if (k as usize) <= windows.len() => {
-                                let new_focus = (k - 1) as usize;
-                                if new_focus < windows.len() && new_focus != focused_win {
-                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                                    focused_win = new_focus;
-                                    send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                                    compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                                    full_redraw = true;
-                                }
-                            }
-                            InputEvent::Key { ascii, keycode, modifiers } => {
-                                if let Some(action) = hotkey_mgr.key_pressed(current_mods | modifiers as u8, ascii) {
-                                    hotkey_action = Some(action);
-                                    continue;
-                                }
-                                if !windows.is_empty() {
-                                    let win_event = WindowInputEvent {
-                                        event_type: input_event_type::KEY_PRESS,
-                                        keycode,
-                                        mouse_x: ascii as i16,
-                                        mouse_y: 0,
-                                        modifiers,
-                                        scroll_y: 0,
-                                    };
-                                    route_keyboard_to_focused(&windows, focused_win, &win_event);
-                                }
-                            }
-                            _ => {}
-                        }
+                    if let Some(event) = input_parser.feed(read_buf[i], now_ms) {
+                        input_events.push(event);
                     }
                 }
             }
         }
+        for event in input_events {
+            match event {
+                InputEvent::FunctionKey(k) if (k as usize) <= windows.len() => {
+                    let new_focus = (k - 1) as usize;
+                    if new_focus < windows.len() && new_focus != focused_win {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = new_focus;
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                InputEvent::Key { ascii, keycode, modifiers, repeat } => {
+                    match hotkey_mgr.key_pressed(modifiers as u8, current_mods, ascii, repeat) {
+                        Chord::Fire(action) => {
+                            hotkey_actions.push(action);
+                            continue;
+                        }
+                        Chord::Consumed => continue,
+                        Chord::None => {}
+                    }
+                    if !windows.is_empty() {
+                        let win_event = WindowInputEvent {
+                            event_type: input_event_type::KEY_PRESS,
+                            keycode,
+                            mouse_x: ascii as i16,
+                            mouse_y: 0,
+                            modifiers,
+                            scroll_y: 0,
+                        };
+                        route_keyboard_to_focused(&windows, focused_win, &win_event);
+                    }
+                }
+                _ => {}
+            }
+        }
 
-        let tap_action = hotkey_mgr.update(current_mods, super_taps);
-        if let Some(action) = hotkey_action.or(tap_action) {
-            match &action {
+        hotkey_actions.extend(hotkey_mgr.update(current_mods, super_taps));
+        for action in &hotkey_actions {
+            match action {
                 HotkeyAction::FocusNext => {
                     if !windows.is_empty() {
                         send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
@@ -1839,7 +1927,7 @@ fn main() {
                         full_redraw = true;
                     }
                 }
-                _ => execute_hotkey_action(&action, &mut windows, focused_win),
+                _ => execute_hotkey_action(action, &mut windows, focused_win),
             }
         }
 
@@ -2241,8 +2329,6 @@ fn main() {
             }
         }
 
-        // (hotkey cooldown is managed inside HotkeyManager::update)
-
         // ── 6. Composite on the GPU (only when something changed) ──
         if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
             let upload = if full_redraw {
@@ -2268,15 +2354,43 @@ fn main() {
             match frame {
                 Ok(()) => {
                     frame_failed = false;
-                    // Check each client's first visible frame, including windows opened
-                    // by a hotkey after the desktop's initial client was checked.
-                    if let Some(id) = gpu.shows_client(&layers) {
-                        if let Some(win) = windows.iter_mut().find(|win| win.window_id == id && !win.frame_checked) {
-                            win.frame_checked = true;
+                    // Each client window's first shown frame is read back and compared.
+                    // The first frame that shows a client is the desktop's initial client:
+                    // the whole frame is checked and only its pass prints the desktop
+                    // stage's marker. A later window is checked over the area it covers,
+                    // which bounds the read-back to that window. Any failure prints the
+                    // line docs/boot-path.json lists as fatal.
+                    let unchecked: Vec<(u32, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
+                        gpu.shown_clients(&layers, pointer)
+                            .into_iter()
+                            .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    if !initial_client_checked {
+                        if let Some(&(id, _)) = unchecked.first() {
+                            initial_client_checked = true;
+                            for win in windows.iter_mut().filter(|win| unchecked.iter().any(|(id, _)| *id == win.window_id)) {
+                                win.frame_checked = true;
+                            }
                             match gpu.check(composite_buf, &layers, pointer) {
                                 Ok(pixels) => print!(
                                     "[bwm] composited client frame: window {} on screen, {} pixels exact\n",
                                     id, pixels
+                                ),
+                                Err(e) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
+                            }
+                        }
+                    } else {
+                        for (id, area) in unchecked {
+                            if let Some(win) = windows.iter_mut().find(|win| win.window_id == id) {
+                                win.frame_checked = true;
+                            }
+                            match gpu.check_area(composite_buf, &layers, pointer, area) {
+                                Ok(pixels) => print!(
+                                    "[bwm] window {} shown: {} pixels exact in its {}x{} area\n",
+                                    id, pixels, area[2] - area[0], area[3] - area[1]
                                 ),
                                 Err(e) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
                             }

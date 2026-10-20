@@ -10,7 +10,8 @@
     "\\[TEST:[^\\]\\r\\n]*:FAIL(?=[:\\]])",
     "\\[(DATA|INSTRUCTION)_ABORT\\].*from_el0=0",
     "\\[splash\\] logo read back differs",
-    "\\[console\\] tty[1-6] shown: read back differs"
+    "\\[console\\] tty[1-6] shown: read back differs",
+    "\\[bwm\\] client frame check FAILED"
   ],
   "modes": {
     "tests": {
