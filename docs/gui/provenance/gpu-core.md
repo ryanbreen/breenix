@@ -1228,3 +1228,24 @@ that positive-time rule has no stronger measured negative-control claim here.
 | In the capture-panic test build, confirm scanout binding and flush, then fenced TRANSFER_FROM_HOST_3D twice under complementary poisons; retain the first observation in frames for post-mortem inspection | V section 5.7.6; O: `docs/gui/gpu.md` section 1.8 and the existing 3D transfer layout recorded above. The terminal requests currently reserve their fence identifiers during preparation; device acceptance after later normal requests remains unvalidated (review m5). Normal builds omit the observation buffers and the private target's guest backing. |
 
 | Panic preparation retries at most three times per device epoch, resetting the count on epoch change | O: bounded preparation policy for #2033; three is a Breenix retry budget, independent of device wire values or external driver implementations. |
+
+## Object creation follow-up to PR #2111
+
+| Value or design | Source |
+|---|---|
+| `WARM_QUIET_NS = 2_000_000` ns; defer a catalogue step for send/answer quiet, bounded by the existing `WARM_GRACE_NS = 20_000_000` ns; traffic after a step starts also spaces the next start by that grace | O: Breenix scheduling design for #2103 and the follow-up review of #2111. The 2 ms quiet interval is a Breenix policy choice, not a device requirement or an externally derived constant. The 20 ms grace is also Breenix's own scheduling choice: it supplies the initial process-local grace, the maximum quietness deferral, and now the minimum start-to-start gap when other traffic intervenes. Ruling 33 (#1725) requires catalogue warm-up but does not specify this value. |
+| Unanswered batched attaches to a quarantined, reset, dropped or removed context finish with EIO and abandon their answers, including attaches not yet sent | O: `docs/gui/gpu.md` section 1.4.1 requires observing quarantine within 250 ms; abandonment retains request/response DMA storage until completion or confirmed reset. These attach commands carry resource identifiers, not resource backing addresses, and take no per-request resource holds; the caller releases its resource holds when the batch returns, including at quarantine. |
+
+Scheduling cost: `tests/gpu_batch_wait_test.py` runs the production `warm_next`
+with 16 pipelines, modeled 3 ms device steps, competing answers during each step,
+and presentation answers at 16 ms intervals. From the first step's start to the last
+step's end it measures 303 ms (15 start-to-start gaps of 20 ms plus 3 ms), excluding
+the initial context grace. This is a deterministic scheduler measurement, not a
+hypervisor timing measurement. Contexts warm serially, so several contexts can
+accumulate this cost; draws still create an unwarmed pipeline on demand rather
+than waiting for the catalogue. The spacing deliberately gives competing work
+room between steps; the 20 ms maximum quietness deferral prevents continuous
+traffic from starving warm-up.
+
+Source declaration: this change derives from Breenix's own GPU core, its contract,
+and PR #2111's review findings. No external implementation source was used.
