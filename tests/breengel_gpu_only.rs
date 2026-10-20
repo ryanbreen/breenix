@@ -1,14 +1,14 @@
 //! gpu-raster owns §2.4 enforcement; gpu-apps/gpu-display migrate existing forbidden consumers.
-use std::{fs,path::{Path,PathBuf}};
-use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn};
+use std::{collections::HashSet,fs,path::{Path,PathBuf}};
+use syn::{visit::{self,Visit},Expr,ExprCall,ExprMethodCall,ItemFn,ImplItemFn,ItemImpl,UseTree};
 
 #[derive(Default)]
-struct Uploads { bgl:bool, permitted:bool, violations:Vec<String> }
+struct Uploads { bgl:bool, texture:bool, permitted:bool, aliases:HashSet<String>, violations:Vec<String> }
 impl Uploads {
     fn function(&mut self,name:&str,signature:&syn::Signature,body:&syn::Block){
         let old=self.permitted;
         let typed=|wanted:&str|signature.inputs.iter().any(|arg|matches!(arg,syn::FnArg::Typed(t) if matches!(&*t.ty,syn::Type::Path(p) if p.path.segments.last().is_some_and(|s|s.ident==wanted))));
-        self.permitted=self.bgl && ((name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")));
+        self.permitted=self.bgl && ((self.texture && name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")));
         visit::visit_block(self,body);self.permitted=old;
     }
     fn upload(&mut self,name:&str){
@@ -16,11 +16,15 @@ impl Uploads {
     }
 }
 impl<'ast> Visit<'ast> for Uploads {
+    fn visit_item_impl(&mut self,item:&'ast ItemImpl){
+        let old=self.texture;self.texture=matches!(&*item.self_ty,syn::Type::Path(p) if p.path.segments.last().is_some_and(|s|s.ident=="Texture"));
+        visit::visit_item_impl(self,item);self.texture=old;
+    }
     fn visit_item_fn(&mut self,f:&'ast ItemFn){self.function(&f.sig.ident.to_string(),&f.sig,&f.block);}
     fn visit_impl_item_fn(&mut self,f:&'ast ImplItemFn){self.function(&f.sig.ident.to_string(),&f.sig,&f.block);}
     fn visit_expr_call(&mut self,e:&'ast ExprCall){
         if let Expr::Path(p)=&*e.func {if let Some(last)=p.path.segments.last(){
-            let name=last.ident.to_string();self.upload(&name);
+            let name=last.ident.to_string();if self.aliases.contains(&name){self.upload("upload");}else{self.upload(&name);}
             if name.starts_with("syscall") && !self.bgl && e.args.iter().any(|a|match a {
                 Expr::Lit(l)=>matches!(&l.lit,syn::Lit::Int(n) if n.base10_parse::<u64>()==Ok(416)),
                 Expr::Path(p)=>p.path.segments.last().is_some_and(|s|s.ident=="SYS_GPU"),_=>false,
@@ -30,7 +34,13 @@ impl<'ast> Visit<'ast> for Uploads {
     fn visit_expr_method_call(&mut self,e:&'ast ExprMethodCall){self.upload(&e.method.to_string());visit::visit_expr_method_call(self,e);}
 }
 fn refuse(source:&str,bgl:bool)->Vec<String>{
-    let ast=syn::parse_file(source).expect("owned Rust source must parse");let mut v=Uploads{bgl,..Uploads::default()};v.visit_file(&ast);v.violations
+    fn aliases(tree:&UseTree,out:&mut HashSet<String>){match tree{
+        UseTree::Path(p)=>aliases(&p.tree,out),UseTree::Group(g)=>for t in &g.items{aliases(t,out)},
+        UseTree::Rename(r) if matches!(r.ident.to_string().as_str(),"upload"|"upload_raw")=>{out.insert(r.rename.to_string());},_=>{}
+    }}
+    let ast=syn::parse_file(source).expect("owned Rust source must parse");let mut v=Uploads{bgl,..Uploads::default()};
+    struct Imports<'a>(&'a mut HashSet<String>);impl<'ast> Visit<'ast> for Imports<'_>{fn visit_item_use(&mut self,u:&'ast syn::ItemUse){aliases(&u.tree,self.0);}}
+    Imports(&mut v.aliases).visit_file(&ast);v.visit_file(&ast);v.violations
 }
 fn files(path:&Path,out:&mut Vec<PathBuf>){
     let mut entries:Vec<_>=fs::read_dir(path).unwrap().map(|e|e.unwrap().path()).collect();entries.sort();
@@ -40,9 +50,9 @@ fn files(path:&Path,out:&mut Vec<PathBuf>){
 fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
     let planted=include_str!("fixtures/breengel-cpu-render/src/lib.rs");
     assert!(!refuse(planted,false).is_empty(),"gpu-raster: planted raw mutable-pixel uploader escaped");
-    assert!(!refuse("use bgl::upload as concealed; fn f(x: &mut [u8]) {bgl::upload(x);}",false).is_empty());
+    assert!(!refuse("use bgl::upload as concealed; fn f(x: &mut [u8]) {concealed(x);}",false).is_empty());
     assert!(!refuse("fn f() {raw::syscall3(416,0,0,0);}",false).is_empty());
-    assert!(refuse("fn from_decoded(image: libimg::Decoded) {gpu::upload(image);}",true).is_empty());
+    assert!(refuse("impl Texture {fn from_decoded(image: libimg::Decoded) {gpu::upload(image);}}",true).is_empty());
     assert!(!refuse("fn from_decoded(raw: &mut [u8]) {gpu::upload(raw);}",true).is_empty());
 }
 #[test]
