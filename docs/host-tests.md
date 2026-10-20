@@ -1,23 +1,28 @@
 # Host tests
 
-The Python launcher tests exercise real host executables. From a fresh checkout,
-prepare the launcher executables with:
+Host checks need the pinned Rust toolchain with rust-src and llvm-tools-preview,
+Swift, Python 3, NASM, clang/LLVM and e2fsprogs (`debugfs`, `mke2fs`, `e2fsck`).
+See [SDK host prerequisites](sdk/reference.md#host-prerequisites-and-sdk-build)
+for the compiler requirements. Export `CARGO_BUILD_JOBS=4`. From a fresh checkout,
+materialize the pinned Rust library before preparing the real launcher executables:
 
 ```sh
+export CARGO_BUILD_JOBS=4
+scripts/rust-fork.sh sync
 scripts/build-host-test-tools.sh
 ```
 
-This builds the run inspector CLI, xtask and both retired x86 QEMU launchers;
+This builds the run inspector CLI, xtask, both retired x86 QEMU launchers and
+the console SHA-512-crypt helper;
 it does not boot a guest. The policy tests invoke the retired launchers only to
 verify that they refuse execution. The command uses the pinned Rust toolchain,
 Swift and the repository's normal native build prerequisites.
 
-The console staging tests also require the SHA-512-crypt helper. Build it at
-background priority on macOS, then run Python discovery at normal CPU priority:
+The console staging tests locate the helper in `target/host-test-tools` after
+that preparation command. `CONSOLE_HASH_HELPER` can select an existing executable.
+Run Python discovery at normal CPU priority:
 
 ```sh
-taskpolicy -b rustc --edition=2021 -O scripts/metal/sha512-crypt.rs -o /tmp/sha512-crypt
-export CONSOLE_HASH_HELPER=/tmp/sha512-crypt
 python3 -m unittest discover -s tests -p '*_test.py'
 ```
 
@@ -27,3 +32,20 @@ its diagnostic. `BREENIX_RUNS_BIN` can select an already built run inspector CLI
 
 Do not wrap discovery in `taskpolicy -b`: the launcher priority checks require
 normal policy, and background policy can exhaust subprocess deadlines.
+
+The Rust host checks are the root integration tests, xtask, and the standalone
+`tools/*-host-tests` crates. Build their test executables with `cargo test
+--no-run` under `scripts/build-background.sh`, then run the executables at normal
+priority. The root command uses `--release --features testing,external_test_bins
+--tests`; do not also run `scripts/run-structure-tests.sh`, since Cargo includes
+those same suites. The console crate also has a behavioral input executable:
+`cargo run --manifest-path tools/console-host-tests/Cargo.toml --bin input`.
+
+Run the standalone `tests/*_host.py` programs separately: discovery's
+`*_test.py` pattern does not include them. The SDK Python checks use
+`python3 -m unittest discover -s sdk/tests -p '*_test.py'`. The run inspector's
+Swift tests use `swift test --package-path tools/breenix-runs`; its import hook
+check is `python3 tools/breenix-runs/scripts/test-import-hook.py`.
+On macOS, background compilation subprocesses, while keeping test executables
+and discovery at normal priority. The production-cleanliness host checks build
+their own kernel images; the root host run does not require a prior guest boot.
