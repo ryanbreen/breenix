@@ -156,7 +156,7 @@ impl WaitSet {
         // Registered before the publication too, so the queues have room
         // and the second registration only replaces a waiter a wake took.
         let registered = self.register();
-        crate::task::scheduler::with_scheduler(|s| {
+        crate::task::scheduler::with_current(|s| {
             s.block_current_for_io_with_timeout((wake != u64::MAX).then_some(wake));
         });
         let registered = self.register() && registered;
@@ -168,7 +168,7 @@ impl WaitSet {
                 interrupted = true;
                 break;
             }
-            let blocked = crate::task::scheduler::with_scheduler(|s| {
+            let blocked = crate::task::scheduler::with_current(|s| {
                 s.wake_expired_timers();
                 s.current_thread_mut()
                     .is_some_and(|t| t.state == crate::task::thread::ThreadState::BlockedOnIO)
@@ -182,7 +182,7 @@ impl WaitSet {
             crate::arch_halt_while_blocked();
             crate::per_cpu::preempt_disable();
         }
-        crate::task::scheduler::with_scheduler(|s| {
+        crate::task::scheduler::with_current(|s| {
             if let Some(t) = s.current_thread_mut() {
                 t.blocked_in_syscall = false;
                 t.wake_time_ns = None;
@@ -203,6 +203,14 @@ impl WaitSet {
 }
 
 fn snapshots(fds: &[PollFd]) -> Result<Vec<Option<FileDescriptor>>, u64> {
+    // x86_64: from the table the caller's row publishes to it, without
+    // PROCESS_MANAGER (#1650), unless a hold of that lock is changing it.
+    #[cfg(target_arch = "x86_64")]
+    if let Some(entries) = super::handlers::current_fd_table().and_then(|table| {
+        table.try_read_lockless(|inner| fds.iter().map(|f| inner.get(f.fd).cloned()).collect())
+    }) {
+        return Ok(entries);
+    }
     let tid = crate::task::scheduler::current_thread_id().ok_or(3u64)?;
     let guard = crate::process::manager();
     let manager = guard.as_ref().ok_or(3u64)?;
@@ -293,6 +301,12 @@ fn wait(fds: &mut [PollFd], timeout: Option<u64>, select: bool) -> Result<u64, u
 }
 
 fn descriptor_limit() -> Result<u64, u64> {
+    // x86_64: the limits the calling thread shares with its row, without
+    // PROCESS_MANAGER (#1650).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(limits) = crate::per_cpu::current_thread().and_then(|thread| thread.resource_limits.as_ref()) {
+        return Ok(limits.get(crate::process::limits::NOFILE).soft);
+    }
     let tid = crate::syscall::memory_common::get_current_thread_id().ok_or(3u64)?;
     let guard = crate::process::manager();
     let (_, process) = guard

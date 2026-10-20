@@ -1,0 +1,42 @@
+[package]
+name = "metal-efi-stub"
+version = "0.1.0"
+edition = "2021"
+description = "The x86-metal EFI applications: the delivery stub that serves its embedded boot disk to the pinned bootloader, and the boot manager on the disk's EFI system partition"
+publish = false
+
+# The UEFI declarations and the pieces both applications use (docs/metal/README.md, "Delivery" and "Boot manager
+# and persistent install").
+[lib]
+name = "metal_efi"
+path = "src/lib.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "metal-efi-stub"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "metal-boot-manager"
+path = "src/manager/main.rs"
+test = false
+bench = false
+
+[dependencies]
+# The kernel's screen console font (kernel/src/console/raster.rs), so the menu reads like the console.
+noto-sans-mono-bitmap = { version = "=0.3.2", default-features = false, features = ["size_20", "regular", "unicode-basic-latin"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+codegen-units = 1
+lto = true
+
+# Built on its own for x86_64-unknown-uefi (scripts/metal/metal-build), outside the kernel's workspace.
+[workspace]

@@ -53,8 +53,6 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # #834 extended this lock's coverage from docker/qemu/*.sh (its original
 # #826/R181 scope) to scripts/ as well; #865 closed the x86_64-leg gap this
 # comment used to disclose here (and in run.sh's own x86_64 leg).
-# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
-source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # #825: without --out, two concurrent invocations of this harness for the
 # same --arch hardcoded the identical /tmp/breenix_trace_test_$ARCH path, so
@@ -93,6 +91,13 @@ case "$ARCH" in
     aarch64 | x86_64) ;;
     *) echo "Unsupported --arch '$ARCH' (expected aarch64 or x86_64)" >&2; exit 2 ;;
 esac
+
+if [ "$ARCH" = x86_64 ]; then
+    source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
+fi
+
+# shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_trace_test_$ARCH"
@@ -228,6 +233,7 @@ if [ "$ARCH" = "aarch64" ]; then
         -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive "if=none,id=ext2,format=raw,file=$OUTPUT_DIR/ext2-writable.img" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial "file:$OUTPUT_DIR/serial.txt" \

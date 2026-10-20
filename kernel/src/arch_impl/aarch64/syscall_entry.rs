@@ -62,6 +62,27 @@ fn emit_el0_syscall_marker() {
     }
 }
 
+/// Tracks this thread across blocking syscalls without depending on CPU residency.
+struct SyscallScope(Option<&'static AtomicBool>);
+
+impl SyscallScope {
+    fn enter() -> Self {
+        let flag = crate::task::thread::current_thread_signals().map(|signals| &signals.in_syscall);
+        if let Some(flag) = flag {
+            flag.store(true, Ordering::Release);
+        }
+        Self(flag)
+    }
+}
+
+impl Drop for SyscallScope {
+    fn drop(&mut self) {
+        if let Some(flag) = self.0 {
+            flag.store(false, Ordering::Release);
+        }
+    }
+}
+
 /// Main syscall handler called from assembly.
 ///
 /// This is the ARM64 equivalent of `rust_syscall_handler` for x86_64.
@@ -87,6 +108,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         Aarch64PerCpu::preempt_enable();
         return;
     }
+
+    let _syscall_scope = SyscallScope::enter();
 
     // One-time marker for first syscall from EL0 (userspace confirmed)
     // This is the ARM64 equivalent of x86_64's RING3_CONFIRMED marker
@@ -273,6 +296,7 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
 
     // Track if signal termination happened (for parent notification after lock release)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+    let mut terminated_child_pid: Option<u64> = None;
     // A signal death ends the whole thread group (pid and exit status).
     let mut group_death: Option<(crate::process::ProcessId, i32)> = None;
 
@@ -349,6 +373,7 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
             {
                 // Process was terminated by signal - switch to idle
                 crate::task::scheduler::set_need_resched();
+                terminated_child_pid = Some(notification.child_pid.as_u64());
                 // Save notification to notify parent after releasing lock
                 signal_termination_info = Some(notification);
             }
@@ -369,6 +394,11 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
     // Notify parent if signal terminated a child - this unblocks waitpid()
     if let Some(notification) = signal_termination_info {
         crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+    }
+
+    // Clean up window buffers so compositor stops reading freed pages
+    if let Some(pid) = terminated_child_pid {
+        crate::syscall::graphics::cleanup_windows_for_pid(pid);
     }
 
     if let Some((pid, exit_code)) = group_death {
@@ -404,7 +434,10 @@ fn result_to_u64(result: crate::syscall::SyscallResult) -> u64 {
 ///
 /// `custody` is the exit syscall's own kill-custody section, held until the
 /// row has exited. `report_exit` prints the `[syscall] exit` line; a signal
-/// death (`exit_by_signal_aarch64`) has printed its own.
+/// death (`exit_by_signal_aarch64`) has printed its own. A thread's row, which
+/// ends no process, prints neither that line nor the ASID census: both are
+/// written to the UART synchronously, at about 2.5 ms per exit on ARM64 QEMU,
+/// which made a program's thread creation and join cost that much each (#2088).
 fn sys_exit_aarch64(
     exit_code: i32,
     custody: Option<crate::task::thread::KillCustody>,
@@ -413,24 +446,25 @@ fn sys_exit_aarch64(
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID).
         // Extract info under PM lock, but do NOT log while holding it.
-        let (pid_for_log, name_for_log, clear_child_tid) = {
+        let (pid_for_log, name_for_log, clear_child_tid, thread_row) = {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     process.exit_started = true;
                     let pid_val = _pid.as_u64();
-                    let name_val = process.name.clone();
+                    let thread_row = process.is_non_leader_thread();
+                    let name_val = (!thread_row).then(|| process.name.clone());
                     let clear_child_tid = process.clear_child_tid.map(|tid_addr| {
                         let address_space_id = process.address_space_lifetime.as_ref()
                             .map_or(pid_val, |lifetime| lifetime.id);
                         (address_space_id, tid_addr)
                     });
-                    (Some(pid_val), Some(name_val), clear_child_tid)
+                    (Some(pid_val), name_val, clear_child_tid, thread_row)
                 } else {
-                    (None, None, None)
+                    (None, None, None, false)
                 }
             } else {
-                (None, None, None)
+                (None, None, None, false)
             }
         }; // PM lock dropped here
 
@@ -441,11 +475,11 @@ fn sys_exit_aarch64(
         }
 
         // Log outside PM lock
-        if report_exit {
+        if report_exit && !thread_row {
             if let (Some(pid), Some(name)) = (pid_for_log, &name_for_log) {
-                crate::serial_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
+                crate::diag_println!("[syscall] exit({}) pid={} name={}", exit_code, pid, name);
             } else {
-                crate::serial_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
+                crate::diag_println!("[syscall] exit({}) thread={}", exit_code, thread_id);
             }
         }
         // This function never returns, so nothing on its stack is dropped
@@ -483,7 +517,9 @@ fn sys_exit_aarch64(
         // claim-lint:ok: 1 of 1 emission is this call; the 15 census lines a
         // production boot prints are in
         // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
-        crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+        if !thread_row {
+            crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+        }
 
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
@@ -683,12 +719,7 @@ fn dispatch_syscall_enum(
             arg3,
             arg4 as u32,
         )),
-        SyscallNumber::Yield => {
-            // Behind the other threads of its priority, then to the scheduler.
-            crate::task::scheduler::note_sched_yield();
-            crate::task::scheduler::yield_current();
-            0
-        }
+        SyscallNumber::Yield => result_to_u64(crate::syscall::handlers::sys_yield()),
         SyscallNumber::GetTime => sys_get_time(),
         SyscallNumber::ClockGetTime => sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec),
         SyscallNumber::ClockGetRes => result_to_u64(crate::syscall::clocks::sys_clock_getres(arg1 as u32, arg2)),
@@ -869,15 +900,11 @@ fn dispatch_syscall_enum(
         )),
 
         // Graphics syscalls
-        SyscallNumber::FbInfo => result_to_u64(crate::syscall::fb::sys_fbinfo(arg1)),
-        SyscallNumber::FbDraw => result_to_u64(crate::syscall::fb_draw::sys_fbdraw(arg1)),
-        SyscallNumber::FbMmap => result_to_u64(crate::syscall::fb::sys_fbmmap(arg1)),
+        SyscallNumber::FbInfo => result_to_u64(crate::syscall::graphics::sys_fbinfo(arg1)),
+        SyscallNumber::FbDraw => result_to_u64(crate::syscall::graphics::sys_fbdraw(arg1)),
+        SyscallNumber::FbMmap => result_to_u64(crate::syscall::graphics::sys_fbmmap(arg1)),
         SyscallNumber::GetMousePos => {
-            result_to_u64(crate::syscall::fb::sys_get_mouse_pos(arg1, arg2))
-        }
-        SyscallNumber::Window => result_to_u64(crate::syscall::window::sys_window(arg1, arg2, arg3)),
-        SyscallNumber::TestControl => {
-            result_to_u64(crate::test_control::sys_test_control(arg1, arg2, arg3))
+            result_to_u64(crate::syscall::graphics::sys_get_mouse_pos(arg1))
         }
 
         // Audio syscalls
@@ -1388,12 +1415,12 @@ fn sys_exec_aarch64(
 
     // The new image's credentials are decided before its stack is built, so
     // the auxiliary vector reports them; the commit refuses if they change.
-    let (current_pid, image_cred) = {
+    let (current_pid, image_cred, old_gpu_owner) = {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
-            if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+            if let Some((pid, row)) = manager.find_process_by_thread(current_thread_id) {
                 match manager.credentials_after_exec(pid, image_identity) {
-                    Some(cred) => (pid, cred),
+                    Some(cred) => (pid, cred, row.thread_group_id.unwrap_or(pid.as_u64())),
                     None => return (-3_i64) as u64, // -ESRCH
                 }
             } else {
@@ -1409,7 +1436,7 @@ fn sys_exec_aarch64(
         }
     };
 
-    log::info!(
+    log::debug!(
         "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
         current_pid.as_u64(),
         current_thread_id
@@ -1436,17 +1463,16 @@ fn sys_exec_aarch64(
         Ok(image) => Some(image),
         Err(error) => return (-(crate::syscall::exec::manager_errno(error) as i64)) as u64,
     };
-    if let Err(errno) = crate::syscall::exec::await_exiting_siblings(current_pid) {
-        return (-(errno as i64)) as u64;
-    }
-
-    let result = without_interrupts(|| {
+    // `attempt` gives back no result while another thread of the process still
+    // runs (`ProcessManager::exec_blocked_by_group`); the loop below waits for
+    // that thread again.
+    let mut attempt = |current_pid: crate::process::ProcessId| without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
         let previous_ttbr0;
         let exec_result = {
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_exec_aarch64: Process manager not available");
-                return (-12_i64) as u64; // -ENOMEM
+                return Some((-12_i64) as u64); // -ENOMEM
             };
 
             // Trace: calling exec_process_with_argv (process manager)
@@ -1463,7 +1489,7 @@ fn sys_exec_aarch64(
             manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes)
         };
 
-        let (new_entry_point, new_rsp, commit) = match exec_result {
+        let (new_entry_point, new_rsp, commit, superseded) = match exec_result {
             Ok(value) => {
                 // Trace: exec_process_with_argv succeeded
                 super::trace::trace_exec(b'S');
@@ -1471,14 +1497,17 @@ fn sys_exec_aarch64(
             }
             Err(e) => {
                 restore_ttbr0_after_failed_exec(previous_ttbr0);
+                if e == crate::process::manager::EXEC_GROUP_RUNNING {
+                    return None;
+                }
                 log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
                 // No receipt was produced, so there is nothing to commit; the guard drops on
                 // return from this closure.
-                return (-(crate::syscall::exec::manager_errno(e) as i64)) as u64;
+                return Some((-(crate::syscall::exec::manager_errno(e) as i64)) as u64);
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
             new_entry_point
         );
@@ -1495,7 +1524,7 @@ fn sys_exec_aarch64(
         // The old image's windows go with it (docs/gui/breengel.md section 17.2).
         crate::window::exec_done_current();
 
-        log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
+        log::debug!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
         // Installing through the shared discipline publishes `saved_process_cr3`,
         // which the `.Lrestore_saved_ttbr` arm of `syscall_entry.S` would
         // otherwise use to switch TTBR0 back to the pre-exec page table that
@@ -1506,6 +1535,10 @@ fn sys_exec_aarch64(
         crate::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(new_ttbr0);
         // Trace: TTBR0 page table switched
         super::trace::trace_exec(b'P');
+        // The roots exec superseded retire once no CPU can still walk them.
+        if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
+        }
 
         frame.elr = new_entry_point;
 
@@ -1557,7 +1590,7 @@ fn sys_exec_aarch64(
         // Trace: frame registers zeroed, SPSR set
         super::trace::trace_exec(b'F');
 
-        log::info!(
+        log::debug!(
             "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
             frame.elr,
             new_rsp
@@ -1565,8 +1598,23 @@ fn sys_exec_aarch64(
         // Trace: about to return 0 from exec syscall
         super::trace::trace_exec(b'R');
 
-        0
+        Some(0)
     });
+    let mut current_pid = current_pid;
+    let result = loop {
+        current_pid = match crate::syscall::exec::end_other_threads(current_pid) {
+            Ok(pid) => pid,
+            Err(errno) => return (-(errno as i64)) as u64,
+        };
+        if let Some(result) = attempt(current_pid) {
+            break result;
+        }
+    };
+
+    // The new image holds no GPU handles (docs/gui/gpu.md section 1.16); with no lock held.
+    if result == 0 {
+        crate::gpu::owner_ended(old_gpu_owner);
+    }
 
     // The exec lock-order counters are only live after an exec has actually run. This is the only
     // site on the aarch64 boot path where a gate can observe `commits >= 1`; it sits OUTSIDE the
@@ -1773,7 +1821,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    crate::serial_println!("[spawn] path='{}'", program_path);
+    crate::diag_println!("[spawn] path='{}'", program_path);
 
     // Parse argv from userspace
     let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
@@ -1890,7 +1938,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
                 false
             };
             if scheduled {
-                crate::serial_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());
+                crate::diag_println!("[spawn] Success: child PID {} scheduled", pid.as_u64());
             } else {
                 crate::serial_println!(
                     "[spawn] Warning: child PID {} created but not scheduled",

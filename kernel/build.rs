@@ -35,7 +35,34 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let kernel_dir = PathBuf::from(&manifest_dir);
     let target = env::var("TARGET").unwrap_or_default();
-    let use_linux_xhci = env::var("CARGO_FEATURE_XHCI_LINUX_HARNESS").is_ok();
+
+    // Supply the fallback fixture for noninteractive testing boots without an
+    // attached home disk. Interactive profiles use their writable home disk.
+    if env::var_os("CARGO_FEATURE_TESTING").is_some()
+        && env::var_os("CARGO_FEATURE_INTERACTIVE").is_none()
+    {
+        let fixture = PathBuf::from(&out_dir).join("readonly-fixture");
+        fs::create_dir_all(&fixture).expect("create read-only fixture directory");
+        fs::write(fixture.join(".breenix-readonly-fixture"), b"Read-only ext2 acceptance fixture\n")
+            .expect("write fixture marker");
+        fs::write(fixture.join("hello.txt"), b"Read-only ext2 fixture contents\n")
+            .expect("write fixture contents");
+        let mke2fs = if env::consts::OS == "macos" {
+            let prefix = Command::new("brew").args(["--prefix", "e2fsprogs"])
+                .output().expect("read-only fixture needs e2fsprogs");
+            assert!(prefix.status.success(), "read-only fixture needs e2fsprogs");
+            PathBuf::from(String::from_utf8(prefix.stdout).unwrap().trim()).join("sbin/mke2fs")
+        } else {
+            PathBuf::from("mke2fs")
+        };
+        let image = PathBuf::from(&out_dir).join("readonly-ext2.img");
+        fs::File::create(&image).expect("create fixture image").set_len(1024 * 1024)
+            .expect("size fixture image");
+        let status = Command::new(mke2fs)
+            .args(["-q", "-t", "ext2", "-F", "-b", "1024", "-I", "256", "-N", "32", "-m", "0", "-O", "none", "-d"])
+            .arg(fixture).arg(image).status().expect("build read-only ext2 fixture");
+        assert!(status.success(), "build read-only ext2 fixture");
+    }
 
     // The boot-path stage markers, so the kernel's output paths can keep the
     // lines a stage depends on whole (`stage_lines`).
@@ -149,41 +176,6 @@ fn main() {
         println!("cargo:rustc-link-arg=-Tkernel/src/arch_impl/aarch64/linker.ld");
         println!("cargo:rustc-link-arg=--fix-cortex-a53-843419");
         println!("cargo:rustc-link-arg=--orphan-handling=error");
-    }
-
-    // Build the Linux C-based xHCI harness when the feature is enabled.
-    if use_linux_xhci {
-        let src = kernel_dir.join("src/drivers/usb/linux_xhci/linux_xhci.c");
-        let obj = PathBuf::from(&out_dir).join("linux_xhci.o");
-
-        let mut cmd = Command::new("clang");
-        cmd.arg("-c")
-            .arg(&src)
-            .arg("-o")
-            .arg(&obj)
-            .arg("-ffreestanding")
-            .arg("-fno-builtin")
-            .arg("-fno-stack-protector")
-            .arg("-fno-omit-frame-pointer")
-            .arg("-fno-pic")
-            .arg("-fno-common")
-            .arg("-Werror");
-
-        if target.contains("aarch64") {
-            cmd.arg("--target=aarch64-unknown-none")
-                .arg("-mgeneral-regs-only");
-        } else if target.contains("x86_64") {
-            cmd.arg("--target=x86_64-unknown-none");
-        }
-
-        let status = cmd.status().expect("Failed to run clang for linux_xhci.c");
-        if !status.success() {
-            panic!("Failed to compile linux_xhci.c");
-        }
-
-        println!("cargo:rustc-link-arg={}", obj.display());
-        println!("cargo:rerun-if-changed=src/drivers/usb/linux_xhci/linux_xhci.c");
-        println!("cargo:rerun-if-changed=src/drivers/usb/linux_xhci/linux_xhci.h");
     }
 
     // Rerun if the assembly files change

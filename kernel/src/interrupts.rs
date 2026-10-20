@@ -14,7 +14,7 @@ use crate::arch_impl::PageTableOps;
 pub(crate) mod context_switch;
 pub mod timer;
 
-pub const PIC_1_OFFSET: u8 = 32;
+pub const PIC_1_OFFSET: u8 = crate::arch_impl::x86_64::constants::PIC_IRQ_OFFSET;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 pub static PICS: spin::Mutex<ChainedPics> =
@@ -33,30 +33,24 @@ pub enum InterruptIndex {
     // Skip COM2 (IRQ3)
     Serial = PIC_1_OFFSET + 4, // COM1 is IRQ4
     // IRQ 10 is used by E1000 network and some VirtIO devices (on PIC2)
-    Irq10 = PIC_2_OFFSET + 2, // IRQ 10 = 40 + 2 = 42
+    Irq10 = PIC_2_OFFSET + 2, // IRQ 10
     // IRQ 11 is used by some VirtIO block devices (on PIC2)
-    Irq11 = PIC_2_OFFSET + 3, // IRQ 11 = 40 + 3 = 43
+    Irq11 = PIC_2_OFFSET + 3, // IRQ 11
 }
 
 /// System call interrupt vector (INT 0x80)
 pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
-/// Reschedule IPI vector. Its gate is the timer entry, so a reschedule IPI
-/// returns through `check_need_resched_and_switch`, the interrupt-return path
-/// that performs context switches, exactly as a tick does. The tick handler it
-/// also runs charges this CPU's quantum by elapsed ticks and reads the tick
-/// count from the TSC, so an extra entry changes neither.
+/// Reschedule IPI vector. Its entry shares the timer's register frame and
+/// interrupt-return scheduling path, but identifies itself as an IPI so it
+/// does not increment the delivered timer-tick counter. Quantum and time
+/// accounting still read elapsed time, so an extra entry changes neither.
 pub const RESCHEDULE_VECTOR: u8 = 0xf0;
 
-/// Self-IPI vector for retrying an interrupt-return step deferred because the
-/// process manager was held (`scheduler::retry_after_interrupts_x86`). It is
-/// the timer's own vector, 0x20, the lowest that can be delivered: every
-/// device vector, the keyboard's 0x21 included, ranks above it and is taken
-/// first, and it is taken as soon as the last of them returns, before the
-/// next instruction of the code they return to. An extra timer entry changes
-/// no accounting (see `RESCHEDULE_VECTOR`), and a self-IPI that coincides
-/// with a tick is one entry that does both.
-pub const RETRY_VECTOR: u8 = InterruptIndex::Timer as u8;
+/// Retry self-IPI, below the hardware IRQ range at 0x30..0x3f. Device
+/// interrupts run before a retry, and retries use the reschedule entry so
+/// they cannot merge with or count as a delivered timer interrupt.
+pub const RETRY_VECTOR: u8 = 0x20;
 
 // Assembly entry points
 extern "C" {
@@ -143,37 +137,45 @@ pub fn init_idt() {
         // CRITICAL: Use high-half alias for timer entry so it remains accessible after CR3 switch
         extern "C" {
             fn timer_interrupt_entry();
+            fn reschedule_interrupt_entry();
         }
-        unsafe {
-            // Convert low-half address to high-half alias
-            let timer_entry_low = timer_interrupt_entry as u64;
-
-            // CRITICAL: Validate the address is in expected range before conversion
-            if timer_entry_low < 0x100000 || timer_entry_low > 0x40000000 {
-                log::error!(
-                    "INVALID timer_interrupt_entry address: {:#x}",
-                    timer_entry_low
-                );
+        // CRITICAL: Validate each address is in the expected range before
+        // converting it; one outside it keeps its low-half address.
+        let gate_address = |name: &str, low: u64| {
+            if low < 0x100000 || low > 0x40000000 {
+                log::error!("INVALID {} address: {:#x}", name, low);
                 // For now, use the low address directly - it should work since we preserve PML4[0]
-                log::warn!("Using low-half address for timer entry (temporary workaround)");
-                idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_entry_low));
-                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_low));
+                log::warn!("Using low-half address for {} (temporary workaround)", name);
+                low
             } else {
-                let timer_entry_high = crate::memory::layout::high_alias_from_low(timer_entry_low);
-                log::info!(
-                    "Timer entry: low={:#x} -> high={:#x}",
-                    timer_entry_low,
-                    timer_entry_high
-                );
-                idt[InterruptIndex::Timer.as_u8()]
-                    .set_handler_addr(VirtAddr::new(timer_entry_high));
-                idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(timer_entry_high));
+                let high = crate::memory::layout::high_alias_from_low(low);
+                log::info!("{}: low={:#x} -> high={:#x}", name, low, high);
+                high
             }
+        };
+        unsafe {
+            idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(gate_address(
+                "timer_interrupt_entry",
+                timer_interrupt_entry as u64,
+            )));
+            idt[RESCHEDULE_VECTOR].set_handler_addr(VirtAddr::new(gate_address(
+                "reschedule_interrupt_entry",
+                reschedule_interrupt_entry as u64,
+            )));
+            idt[RETRY_VECTOR].set_handler_addr(VirtAddr::new(gate_address(
+                "reschedule_interrupt_entry",
+                reschedule_interrupt_entry as u64,
+            )));
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         idt[InterruptIndex::Irq10.as_u8()].set_handler_fn(irq10_handler);
         idt[InterruptIndex::Irq11.as_u8()].set_handler_fn(irq11_handler);
+        // Message-signalled device interrupts, one gate per vector.
+        use crate::arch_impl::x86_64::msi;
+        for (index, entry) in msi::ENTRIES.iter().enumerate() {
+            idt[msi::FIRST_VECTOR + index as u8].set_handler_fn(*entry);
+        }
 
         // System call handler (INT 0x80)
         // Use assembly handler for proper syscall dispatching
@@ -236,6 +238,8 @@ pub fn init_idt() {
                 && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
                 && i != RESCHEDULE_VECTOR
+                && !(msi::FIRST_VECTOR..msi::FIRST_VECTOR + msi::VECTORS as u8).contains(&i)
+                && i != RETRY_VECTOR
             {
                 idt[i].set_handler_fn(generic_handler);
             }
@@ -469,41 +473,12 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(stack_frame: InterruptStack
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
-    // Convert F-key scancodes to VT100 escape sequences for userspace
-    if let Some(seq) = scancode_to_fkey_escape(scancode) {
-        for &b in seq {
-            let _ = crate::tty::driver::push_char_nonblock(b);
-        }
-    } else if let Some(event) = crate::keyboard::process_scancode(scancode) {
-        // Process scancode to get key event
-        if let Some(character) = event.character {
-            let c = character as u8;
-            // Route through TTY
-            let _ = crate::tty::driver::push_char_nonblock(c);
-        }
-    }
+    // The keyboard driver decodes the byte and reports the key to the input core.
+    crate::keyboard::on_scancode(scancode);
 
     crate::arch_impl::x86_64::irq::eoi(InterruptIndex::Keyboard.as_u8());
 
     crate::per_cpu::irq_exit();
-}
-
-/// Convert PS/2 F-key scancodes to VT100 escape sequences.
-/// Returns None for non-F-key scancodes so regular processing continues.
-fn scancode_to_fkey_escape(scancode: u8) -> Option<&'static [u8]> {
-    match scancode {
-        0x3B => Some(b"\x1bOP"),   // F1
-        0x3C => Some(b"\x1bOQ"),   // F2
-        0x3D => Some(b"\x1bOR"),   // F3
-        0x3E => Some(b"\x1bOS"),   // F4
-        0x3F => Some(b"\x1b[15~"), // F5
-        0x40 => Some(b"\x1b[17~"), // F6
-        0x41 => Some(b"\x1b[18~"), // F7
-        0x42 => Some(b"\x1b[19~"), // F8
-        0x43 => Some(b"\x1b[20~"), // F9
-        0x44 => Some(b"\x1b[21~"), // F10
-        _ => None,
-    }
 }
 
 extern "x86-interrupt" fn serial_interrupt_handler(stack_frame: InterruptStackFrame) {
@@ -1271,7 +1246,7 @@ fn handle_cow_direct(
 
         // Every CPU drops the old translation before the old frame can be
         // returned: a stale entry would keep writes landing in a freed frame.
-        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
+        crate::memory::tlb::flush_user_page(cr3, faulting_addr);
 
         if frame_decref(old_frame) && deallocate_leaf_frame(old_frame) == ReturnOutcome::Returned {
             crate::trace_count!(crate::tracing::providers::teardown::LEAF_FRAMES_RETURNED);
@@ -1378,13 +1353,16 @@ extern "x86-interrupt" fn page_fault_handler(
     // syscall's bad pointer, not a kernel bug: a copy-on-write write or a
     // user-stack growth is resolved as it would be for a user-mode access and
     // the copy retried; anything else resumes at the routine's fault exit,
-    // which returns EFAULT to the syscall.
+    // which returns EFAULT to the syscall. A copy that cannot wait for the
+    // resolution (`write_user_bytes_nofault`) takes the fault exit at once.
     if (stack_frame.code_segment.0 & 3) == 0 {
         let rip = stack_frame.instruction_pointer.as_u64();
         if let Some(fixup) = crate::syscall::userptr::uaccess_fixup(rip, cr2) {
             crate::per_cpu::preempt_disable();
             let addr = x86_64::VirtAddr::new(cr2);
-            let resolved = if is_potential_cow {
+            let resolved = if crate::syscall::userptr::uaccess_nofault() {
+                false
+            } else if is_potential_cow {
                 handle_cow_fault(addr, error_code, cr3, may_retry)
             } else {
                 (!error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
@@ -1701,7 +1679,7 @@ extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     // CRITICAL: Send EOI to PICs for any hardware interrupt
     // Without this, the PIC will hang and not deliver more interrupts.
     // We send EOI to both PICs (PIC2 cascades through PIC1) to be safe.
-    // This handles any interrupt vector in the range 32-47 (PIC hardware IRQs).
+    // This handles any interrupt vector in the range 48-63 (PIC hardware IRQs).
     crate::arch_impl::x86_64::irq::eoi(PIC_2_OFFSET + 7);
 
     // Exit hardware IRQ context
@@ -1854,31 +1832,11 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     );
     log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
 
-    // Enhanced logging for userspace GPFs (Ring 3 privilege violation tests)
+    // Memory at a Ring 3 RIP is not read here: a user can fault with a
+    // non-canonical RIP (#1852) or one a sibling thread has just unmapped,
+    // and reading either faults the kernel.
     if from_userspace {
         log::error!("  GPF from USERSPACE (Ring 3)");
-
-        // Try to identify which instruction caused the fault
-        {
-            let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
-            let byte = unsafe { core::ptr::read_volatile(rip) };
-            match byte {
-                0xfa => {
-                    log::info!("  ✓ CLI instruction detected (0xfa) - expected privilege violation")
-                }
-                0xf4 => {
-                    log::info!("  ✓ HLT instruction detected (0xf4) - expected privilege violation")
-                }
-                0x0f => {
-                    // Check for MOV CR3 (0x0f 0x22 0xd8)
-                    let byte2 = unsafe { core::ptr::read_volatile(rip.offset(1)) };
-                    if byte2 == 0x22 {
-                        log::info!("  ✓ MOV CR3 instruction detected (0x0f 0x22) - expected privilege violation");
-                    }
-                }
-                _ => log::debug!("  Instruction byte at fault: {:#02x}", byte),
-            }
-        }
     } else {
         log::error!(
             "RIP: {:#x}, CS: {:#x}",
@@ -2038,7 +1996,7 @@ pub fn get_idt_info() -> (u64, u16) {
 /// Returns (is_valid, handler_address, description)
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
-    // Read the IDT entry for vector 32 (timer interrupt)
+    // Read the IDT entry for vector 48 (timer interrupt)
     if let Some(idt) = IDT.get() {
         let _entry = &idt[InterruptIndex::Timer.as_u8()];
 

@@ -1,6 +1,6 @@
-//! Graphics utilities for the Breenix kernel.
-//!
-//! Provides framebuffer abstractions used by the kernel graphics stack.
+//! ARM64 graphics: the framebuffer (`arm64_fb`), the boot and diagnostics
+//! screens, the mouse cursor, and the primitives display owners draw with
+//! through the fb syscalls. The screen console is `crate::console`.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -18,8 +18,6 @@ pub enum CompositorBackend {
     None = 0,
     /// VirtIO GPU with VirGL 3D acceleration (Parallels, QEMU).
     VirGL = 1,
-    /// VMware SVGA3 with STDU display pipeline (VMware Fusion).
-    Svga3Stdu = 2,
 }
 
 static COMPOSITOR_BACKEND: AtomicU8 = AtomicU8::new(CompositorBackend::None as u8);
@@ -33,41 +31,20 @@ pub fn set_compositor_backend(backend: CompositorBackend) {
 pub fn compositor_backend() -> CompositorBackend {
     match COMPOSITOR_BACKEND.load(Ordering::Acquire) {
         1 => CompositorBackend::VirGL,
-        2 => CompositorBackend::Svga3Stdu,
         _ => CompositorBackend::None,
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 pub mod arm64_fb;
-#[cfg(target_arch = "aarch64")]
 pub mod boot_screen;
-#[cfg(target_arch = "x86_64")]
-pub mod demo;
-pub mod double_buffer;
-pub mod font;
-#[cfg(target_arch = "aarch64")]
-pub mod particles;
-pub mod primitives;
-// Render queue/task enabled for ARM64 always, x86_64 with interactive feature
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-pub mod log_capture;
-#[cfg(target_arch = "aarch64")]
-pub mod log_console;
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-pub mod render_queue;
-#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-pub mod render_task;
-pub mod split_screen;
-pub mod terminal;
-
-#[cfg(target_arch = "aarch64")]
 pub mod cursor;
+pub mod double_buffer;
+pub mod firmware_writes;
+pub mod font;
+pub mod primitives;
+pub mod render_task;
 
 pub use double_buffer::DoubleBufferedFrameBuffer;
-
-#[cfg(target_arch = "aarch64")]
-pub mod display;
 
 #[cfg(target_arch = "aarch64")]
 pub mod boot_ribbon;

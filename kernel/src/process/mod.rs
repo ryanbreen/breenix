@@ -117,9 +117,12 @@ impl Drop for TryProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self.guard);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::send_deferred_resched_ipis();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,
@@ -165,9 +168,12 @@ impl Drop for ProcessManagerGuard {
         unsafe {
             core::mem::ManuallyDrop::drop(&mut self._guard);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::task::scheduler::send_deferred_resched_ipis();
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,
@@ -202,19 +208,70 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 /// Global process manager
 static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
+/// The hold of PROCESS_MANAGER in progress, numbered from 1, or 0 while the
+/// lock is free. A file-descriptor table changed in a hold is closed to
+/// readers that do not take the lock until that hold ends (`FdTable`).
+static PM_HOLD: AtomicU64 = AtomicU64::new(0);
+static PM_HOLDS: AtomicU64 = AtomicU64::new(0);
+
+/// The PROCESS_MANAGER hold in progress (`PM_HOLD`).
+pub fn process_manager_hold() -> u64 {
+    PM_HOLD.load(Ordering::Acquire)
+}
+
 #[inline(always)]
 fn note_process_manager_lock_acquired() {
+    PM_HOLD.store(PM_HOLDS.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Release);
     let (cpu, tid) = current_process_manager_owner_identity();
     PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
     crate::tracing::providers::teardown::note_process_manager_acquire();
+    #[cfg(target_arch = "x86_64")]
+    if (cpu as usize) < crate::task::scheduler::MAX_CPUS
+        && crate::per_cpu::is_initialized()
+        && !crate::arch_interrupts_enabled()
+    {
+        PM_MASKED_HOLD[cpu as usize].store(masked_hold_context(), Ordering::Relaxed);
+    }
 }
 
 #[inline(always)]
 fn note_process_manager_lock_released(mutated: bool) {
     PROCESS_MANAGER_MUTATIONS.release(mutated);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(cpu) = process_manager_owner_snapshot().map(|(cpu, _)| cpu as usize) {
+        if cpu < crate::task::scheduler::MAX_CPUS {
+            PM_MASKED_HOLD[cpu].store(0, Ordering::Relaxed);
+        }
+    }
     PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+    PM_HOLD.store(0, Ordering::Release);
+}
+
+/// x86_64: per CPU, nonzero while it holds PROCESS_MANAGER taken with
+/// interrupts masked, so that until the release nothing but the holder runs
+/// there: 1 for a holder in thread context, 2 for one in interrupt context.
+/// A reschedule IPI the holder asks for is sent once the lock is released
+/// (`defers_resched_ipis`). Sent under the lock, a slow APIC write held every
+/// CPU waiting for it, for up to 30 ms when forced.
+#[cfg(target_arch = "x86_64")]
+static PM_MASKED_HOLD: [core::sync::atomic::AtomicU8; crate::task::scheduler::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; crate::task::scheduler::MAX_CPUS];
+
+#[cfg(target_arch = "x86_64")]
+fn masked_hold_context() -> u8 {
+    1 + crate::per_cpu::in_interrupt() as u8
+}
+
+/// x86_64: whether a reschedule IPI asked for now on CPU `cpu` comes from
+/// the context holding PROCESS_MANAGER there with interrupts masked, and so
+/// is sent after the release. An interrupt handler that runs on a holder
+/// which unmasked interrupts is a different context and sends at once.
+#[cfg(target_arch = "x86_64")]
+pub fn defers_resched_ipis(cpu: usize) -> bool {
+    let hold = PM_MASKED_HOLD[cpu].load(Ordering::Relaxed);
+    hold != 0 && hold == masked_hold_context()
 }
 
 /// Releases of holders that exposed mutable access. Read-only holders cannot
@@ -373,6 +430,7 @@ pub fn manager() -> ProcessManagerGuard {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         let guard = PROCESS_MANAGER.lock();
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
@@ -387,13 +445,32 @@ pub fn manager() -> ProcessManagerGuard {
         if preempt_braked {
             crate::per_cpu::preempt_disable();
         }
-        let guard = PROCESS_MANAGER.lock();
+        let guard = lock_process_manager();
         note_process_manager_lock_acquired();
         ProcessManagerGuard {
             _guard: core::mem::ManuallyDrop::new(guard),
             mutated: false,
             preempt_braked,
         }
+    }
+}
+
+/// x86_64: PROCESS_MANAGER, waited for. The waiting CPU dispatches nothing
+/// meanwhile, so past a few microseconds its peers take what is queued on it
+/// (`task::scheduler::LockSpin`): a holder whose vCPU has stopped then holds
+/// up the waiter alone, not every thread queued behind it (#1650).
+#[cfg(target_arch = "x86_64")]
+fn lock_process_manager() -> spin::MutexGuard<'static, Option<ProcessManager>> {
+    if let Some(guard) = PROCESS_MANAGER.try_lock() {
+        return guard;
+    }
+    let mut spin = crate::task::scheduler::LockSpin::new();
+    loop {
+        if let Some(guard) = PROCESS_MANAGER.try_lock() {
+            return guard;
+        }
+        spin.tick();
+        core::hint::spin_loop();
     }
 }
 
@@ -467,7 +544,7 @@ where
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut manager_lock = PROCESS_MANAGER.lock();
+        let mut manager_lock = lock_process_manager();
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
@@ -476,6 +553,7 @@ where
         });
         note_process_manager_lock_released(true);
         drop(manager_lock);
+        crate::task::scheduler::send_deferred_resched_ipis();
         result
     })
 }
@@ -487,10 +565,16 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     // SEM_UNDO adjustments are applied, and the working directory released,
     // before the commit below makes the row a zombie its parent can reap.
     crate::ipc::sysv::row_exit(pid);
+    #[cfg(target_arch = "aarch64")]
     crate::window::row_exit(pid);
     let released = with_process_manager(|pm| pm.get_process_mut(pid).map(|process| process.cwd.release()));
     drop(released);
+    // Captured before PM, as `handle_thread_exit` does: no scheduler state is
+    // consulted while PM is held.
+    let report_claimer = crate::task::scheduler::current_thread_id().unwrap_or(0);
     let mut fifo_opens = alloc::vec::Vec::new();
+    #[cfg(target_arch = "aarch64")]
+    let mut gpu_owner = None;
     let locked = with_process_manager(|pm| {
         // A FIFO open the row's thread was parked in when a kill terminated
         // it still holds its reader or writer reference; take it here and
@@ -507,6 +591,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
                 alloc::vec::Vec::new(),
                 None,
                 None,
+                false,
             );
         };
         let outcome = if process.is_terminated() {
@@ -518,10 +603,20 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         let children = process.children.clone();
         let terminal_exit = crate::tty::ctty::on_exit_locked(pm, pid);
         let (receipt, signal_wake) = pm.exit_process_locked(pid, exit_code);
+        #[cfg(target_arch = "aarch64")]
+        {
+            gpu_owner = crate::gpu::exited_locked(pm, pid);
+        }
         let reported_exit_code = pm
             .get_process(pid)
             .and_then(|process| process.exit_code)
             .unwrap_or(exit_code);
+        // The row is reapable once PM is released, and a reaped row is gone
+        // from `handle_thread_exit`'s lookup: claim the report in this same
+        // hold, so a parent that reaps first cannot leave it unredeemed.
+        let report_claimed = pm
+            .get_process_mut(pid)
+            .is_some_and(|process| process.exit_notifications.claim_report(report_claimer));
         // Groups this exit leaves orphaned with a stopped member, asked once
         // per row whichever exit path gets here first.
         let orphaned_groups = pm.groups_orphaned_by_exit(pid, &children);
@@ -533,14 +628,20 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
             orphaned_groups,
             signal_wake,
             terminal_exit,
+            report_claimed,
         )
     });
+
+    #[cfg(target_arch = "aarch64")]
+    if let Some(owner) = gpu_owner {
+        crate::gpu::owner_ended(owner);
+    }
 
     for open in &fifo_opens {
         crate::ipc::fifo::abandon_fifo_open(open);
     }
 
-    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit)) = locked else {
+    let Some((outcome, receipt, thread_id, reported_exit_code, orphaned_groups, signal_wake, terminal_exit, report_claimed)) = locked else {
         return ExitOutcome::Missing;
     };
     if let Some(exit) = terminal_exit {
@@ -551,10 +652,7 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     }
 
     if let Some(tid) = signal_wake {
-        crate::task::scheduler::with_scheduler(|s| {
-            s.unblock_for_signal(tid);
-            s.unblock_for_child_exit(tid);
-        });
+        crate::task::scheduler::wake_for_signal(tid, true);
     }
     if let Some(mut receipt) = receipt {
         if let Some(reclaim) = receipt.take_contents() {
@@ -568,9 +666,16 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
         crate::syscall::signal::signal_orphaned_group(pgid);
     }
 
-    // The unchanged btrt effect remains in handle_thread_exit. Calling the
-    // existing two-phase path here lets a remote commit race a natural thread
-    // exit for the row's report claim without ever invoking SERIAL under PM.
+    if report_claimed {
+        crate::task::process_task::redeem_exit_report(pid, reported_exit_code, report_claimer);
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+    force_exit_report_reap_race(pid);
+
+    // The two-phase path finishes the thread's exit. Its report claim finds
+    // the report already claimed, here or by a natural exit that committed
+    // first, and leaves it to that claimer.
     if let Some(thread_id) = thread_id {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(
             thread_id,
@@ -581,8 +686,58 @@ pub fn exit_process_and_retire(pid: ProcessId, exit_code: i32) -> ExitOutcome {
     outcome
 }
 
+/// Hold the first killed `sigkill_teardown_test` row's exit, after its parent
+/// was woken and before `handle_thread_exit`, until the parent has reaped it.
+/// A row killed by its own parent is skipped: holding that killer holds the
+/// reaper. This changes only when the killer runs; the parent reaps through the
+/// production wait path and the userspace test keeps its report requirement.
+#[cfg(all(target_arch = "aarch64", feature = "force_exit_report_reap_race"))]
+fn force_exit_report_reap_race(pid: ProcessId) {
+    use core::sync::atomic::AtomicBool;
+    static ARMED: AtomicBool = AtomicBool::new(true);
+    fn counter() -> u64 {
+        let value: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value, options(nomem, nostack));
+        }
+        value
+    }
+    let killer_thread = crate::task::scheduler::current_thread_id();
+    let victim = with_process_manager(|pm| {
+        let killer = killer_thread
+            .and_then(|thread| pm.find_process_by_thread(thread))
+            .map(|(killer, _)| killer);
+        pm.get_process(pid).is_some_and(|row| {
+            row.name.contains("sigkill_teardown_test") && row.parent != killer
+        })
+    })
+    .unwrap_or(false);
+    if !victim || !ARMED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let limit = crate::arch_impl::aarch64::timer::frequency_hz() / 20;
+    let start = counter();
+    while counter().wrapping_sub(start) < limit {
+        if with_process_manager(|pm| pm.get_process(pid).is_none()).unwrap_or(true) {
+            crate::serial_println!(
+                "FORCED_EXIT_REPORT_REAP_RACE: pid={} was reaped while its killer was held",
+                pid.as_u64()
+            );
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic!("parent did not reap the held victim within 50 ms");
+}
+
 /// Execute a function with the process manager while interrupts are disabled (ARM64)
 /// This prevents deadlock when timer interrupts try to access the process manager
+///
+/// A caller that runs with interrupts enabled waits for a busy lock with them enabled, and
+/// masks them only to take the lock and for its own hold, so this CPU does not wait out
+/// another CPU's hold with its interrupts masked (`gpu_irq_masked_max_us`, #2003). A caller
+/// that already masked interrupts may hold an interrupt-safe lock, so it keeps waiting
+/// masked.
 #[cfg(target_arch = "aarch64")]
 pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
@@ -590,8 +745,7 @@ where
 {
     // #821, for the same reason as `manager()`.
     note_blocking_process_manager_acquisition();
-    crate::arch_impl::aarch64::cpu::without_interrupts(|| {
-        let mut manager_lock = PROCESS_MANAGER.lock();
+    let locked = |mut manager_lock: spin::MutexGuard<'static, Option<ProcessManager>>, f: F| {
         note_process_manager_lock_acquired();
         let result = manager_lock.as_mut().map(|manager| {
             let result = f(manager);
@@ -601,7 +755,24 @@ where
         note_process_manager_lock_released(true);
         drop(manager_lock);
         result
-    })
+    };
+    if crate::arch_interrupts_enabled() {
+        let mut f = Some(f);
+        loop {
+            let done = crate::arch_impl::aarch64::cpu::without_interrupts(|| {
+                PROCESS_MANAGER
+                    .try_lock()
+                    .map(|manager_lock| locked(manager_lock, f.take().expect("process-manager section runs once")))
+            });
+            if let Some(result) = done {
+                return result;
+            }
+            while PROCESS_MANAGER.is_locked() {
+                core::hint::spin_loop();
+            }
+        }
+    }
+    crate::arch_impl::aarch64::cpu::without_interrupts(|| locked(PROCESS_MANAGER.lock(), f))
 }
 
 /// Try to get the process manager without blocking (for interrupt contexts).
@@ -624,7 +795,9 @@ pub fn try_manager() -> Option<TryProcessManagerGuard> {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         let Some(guard) = PROCESS_MANAGER.try_lock() else {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(saved_daif);
             unsafe {
                 core::arch::asm!(
                     "msr daif, {}",

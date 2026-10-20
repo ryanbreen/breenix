@@ -18,7 +18,7 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use spin::{Mutex, MutexGuard};
 
 use crate::task::completion::Completion;
@@ -197,7 +197,10 @@ static AHCI_CONTROLLER: Mutex<Option<AhciController>> = Mutex::new(None);
 /// 0 = driver not yet initialised.
 static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
 
-/// AHCI interrupt: ARM64 GIC SPI or x86 PIC line. 0 = polling mode.
+/// The controller's Ports Implemented mask, for the interrupt handler.
+static AHCI_PORTS_IMPLEMENTED: AtomicU32 = AtomicU32::new(0);
+
+/// AHCI interrupt: ARM64 GIC SPI, x86 PIC line or x86 MSI vector. 0 = polling mode.
 static AHCI_IRQ: AtomicU32 = AtomicU32::new(0);
 
 /// Return the AHCI interrupt number, or 0 when no interrupt is registered.
@@ -213,8 +216,8 @@ static AHCI_IRQ_EDGE: AtomicBool = AtomicBool::new(true);
 /// Per-port, per-slot completion primitives.
 /// Outer index = port number, inner index = slot number.
 /// The ISR calls complete() on the appropriate slot; issue_cmd_slot0 waits on slot 0.
-static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_AHCI_PORTS] =
-    [const { [const { Completion::new() }; AHCI_MAX_CONCURRENT] }; MAX_AHCI_PORTS];
+static AHCI_COMPLETIONS: [[Completion; AHCI_MAX_CONCURRENT]; MAX_PORTS] =
+    [const { [const { Completion::new() }; AHCI_MAX_CONCURRENT] }; MAX_PORTS];
 
 /// Count ISR invocations (for diagnostic/timeout reporting).
 static AHCI_ISR_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -235,25 +238,32 @@ static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Serialize no-interrupt command publication, status sampling and retirement.
+/// A poller must not carry sampled status across another poller's retirement
+/// and the waiter's reuse of the slot. IRQ masking keeps a holder runnable;
+/// pollers skip a busy port rather than spinning on another CPU.
+static PORT_POLL: [crate::irq_safe_mutex::IrqSafeMutex<()>; MAX_PORTS] =
+    [const { crate::irq_safe_mutex::IrqSafeMutex::new(()) }; MAX_PORTS];
+
 /// Per-port token for the command currently issued in slot 0. 0 = none.
-static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// Per-port bitmask of in-flight command slots, indexed by port number.
 /// Bit N = slot N is currently in flight (PORT_CI bit N was set by us).
 /// Written by setup_cmd_slot0 (sets bit), cleared by handle_interrupt.
 /// AtomicU32 for lock-free access from the ISR.
-static PORT_ACTIVE_MASK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static PORT_ACTIVE_MASK: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 
 /// Per-port ISR hit counter: incremented each time the ISR sees PORT_IS != 0 for a port.
-static AHCI_ISR_PORT_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_PORT_HIT: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// Per-port empty-status global acknowledgements, inspectable through GDB.
-static AHCI_ISR_STALE_ACK: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_STALE_ACK: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// Per-port completion hit counter: incremented each time the ISR calls complete() for a port.
-static AHCI_ISR_COMPLETE_HIT: [AlignedAtomicU32; MAX_AHCI_PORTS] =
-    [const { AlignedAtomicU32::new(0) }; MAX_AHCI_PORTS];
+static AHCI_ISR_COMPLETE_HIT: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 /// ICC_PMR_EL1 value captured at ISR entry (last invocation).
 static AHCI_ISR_LAST_PMR: AtomicU64 = AtomicU64::new(0);
 /// PORT_IS value seen by the ISR for port 1 (last invocation that saw port 1 active).
@@ -282,7 +292,7 @@ static AHCI_TIMEOUT_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
 ///
 /// Unlike `AHCI_CONTROLLER` (which guards the controller struct) this lock is
 /// granular to a single port, allowing future multi-port parallelism.
-static PORT_IO_LOCK: [Mutex<()>; MAX_AHCI_PORTS] = [const { Mutex::new(()) }; MAX_AHCI_PORTS];
+static PORT_IO_LOCK: [Mutex<()>; MAX_PORTS] = [const { Mutex::new(()) }; MAX_PORTS];
 
 #[inline]
 fn next_cmd_num() -> u32 {
@@ -307,14 +317,14 @@ fn next_cmd_num() -> u32 {
 /// sleeps, then re-acquires the lock for the finish step before clearing the
 /// flag. Contenders spin outside the mutex until the full setup/wait/finish
 /// sequence is retired.
-static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_AHCI_PORTS] =
-    [const { AtomicBool::new(false) }; MAX_AHCI_PORTS];
+static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_PORTS] =
+    [const { AtomicBool::new(false) }; MAX_PORTS];
 
 // A syscall holds the preemption brake. Spinning on an owner that sleeps for
 // I/O prevents that owner from ever running to retire its request once every
 // CPU is held by a spinning contender.
-static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_AHCI_PORTS] =
-    [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_AHCI_PORTS];
+static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_PORTS] =
+    [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_PORTS];
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
@@ -343,7 +353,7 @@ fn can_park_for_port_io() -> bool {
         crate::per_cpu_aarch64::in_interrupt(),
     );
     let tid = crate::task::scheduler::current_thread_id();
-    let idle = crate::task::scheduler::with_scheduler(|sched| Some(sched.idle_thread()) == tid);
+    let idle = crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid);
     tid.is_some() && idle == Some(false) && preempt_count == 1 && !in_interrupt
 }
 
@@ -419,6 +429,10 @@ const HBA_PI: usize = 0x0C;
 /// Version
 const HBA_VS: usize = 0x10;
 
+/// CAP.SSS: the HBA supports staggered spin-up (AHCI 1.3.1, 3.1.1).
+#[cfg(target_arch = "x86_64")]
+const CAP_SSS: u32 = 1 << 27;
+
 /// GHC bits
 const GHC_HR: u32 = 1 << 0; // HBA Reset
 const GHC_IE: u32 = 1 << 1; // Interrupt Enable
@@ -459,6 +473,10 @@ const PORT_CI: usize = 0x38;
 
 /// PORT_CMD bits
 const PORT_CMD_ST: u32 = 1 << 0; // Start
+#[cfg(target_arch = "x86_64")]
+const PORT_CMD_SUD: u32 = 1 << 1; // Spin-Up Device
+#[cfg(target_arch = "x86_64")]
+const PORT_CMD_POD: u32 = 1 << 2; // Power On Device (read-only 1 without cold presence detection)
 const PORT_CMD_FRE: u32 = 1 << 4; // FIS Receive Enable
 const PORT_CMD_FR: u32 = 1 << 14; // FIS Receive Running
 const PORT_CMD_CR: u32 = 1 << 15; // Command List Running
@@ -502,6 +520,11 @@ const PORT_IRQ_COMPLETE: u32 = PORT_IRQ_D2H_REG_FIS | PORT_IRQ_PIO_FIS | PORT_IR
 
 /// SATA Status (SSTS) - device detection
 const SSTS_DET_MASK: u32 = 0x0F;
+/// PxSCTL.DET: 1 performs interface initialization (COMRESET), 0 ends it (AHCI 1.3.1, 3.3.11).
+#[cfg(target_arch = "x86_64")]
+const SCTL_DET_MASK: u32 = 0x0F;
+#[cfg(target_arch = "x86_64")]
+const SCTL_DET_COMRESET: u32 = 0x01;
 const SSTS_DET_PRESENT: u32 = 0x03; // Device detected, Phy communication established
 
 /// Device signatures
@@ -648,17 +671,18 @@ struct PortDmaMem {
 /// slot for now; the array layout is ready for multi-slot NCQ later.
 const AHCI_MAX_CONCURRENT: usize = 4;
 
-/// Static DMA memory for up to 4 ports.
+/// DMA memory for up to 4 attached ports, indexed by `AhciPort::dma_index`
+/// rather than by port number: a controller may implement any of its 32 ports.
 /// These are page-aligned for DMA safety.
-const MAX_AHCI_PORTS: usize = 4;
-static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_AHCI_PORTS]> =
-    Mutex::new([const { None }; MAX_AHCI_PORTS]);
+const MAX_DMA_PORTS: usize = 4;
+static PORT_DMA: Mutex<[Option<&'static mut PortDmaMem>; MAX_DMA_PORTS]> =
+    Mutex::new([const { None }; MAX_DMA_PORTS]);
 
 // We use a static array for DMA memory so we know the physical addresses.
 #[repr(C, align(4096))]
 #[cfg(target_arch = "aarch64")]
 struct PortDmaStorage {
-    ports: [PortDmaMem; MAX_AHCI_PORTS],
+    ports: [PortDmaMem; MAX_DMA_PORTS],
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -789,6 +813,9 @@ struct CmdToken {
     cmd_num: u32,
     has_irq: bool,
     scheduler_running: bool,
+    /// No completion interrupt: this CPU's completion poller completes the
+    /// command, and the waiter parks as it would for the interrupt.
+    polled: bool,
 }
 
 #[inline]
@@ -849,8 +876,18 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         // lock, preventing a race with complete() from the ISR.
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
+        if token.polled {
+            kick_poller();
+        }
         let wait_result =
             AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible(cmd_num, TIMEOUT_NS);
+        // The pollers stop looking at a command its waiter gave up on.
+        if token.polled && !matches!(wait_result, Ok(true)) {
+            let poll_guard = PORT_POLL[port].lock();
+            PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
+            let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(cmd_num, 0, Ordering::AcqRel, Ordering::Acquire);
+            drop(poll_guard);
+        }
         match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
@@ -878,7 +915,8 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         }
         AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
         // ============================================================
-        // PORT_CI POLLING PATH (scheduler not running)
+        // PORT_CI POLLING PATH (scheduler not running, or no interrupt and
+        // no completion poller on this CPU yet)
         //
         // Completions are NOT armed (setup_cmd_slot0 skips arming when
         // !scheduler_running). The ISR still fires but sees cmd_num==0
@@ -925,6 +963,167 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
 }
 
 // =============================================================================
+// Completion pollers (no completion interrupt)
+// =============================================================================
+
+/// Each CPU's completion poller, once it runs; 0 before. On a controller whose
+/// completions raise no interrupt this kernel can take (VMware's ARM64 platform
+/// has no GICv2m), a command used to be busy-polled by the thread that issued
+/// it, inside its system call, so that thread did not sleep in the command's
+/// completion wait and the block EINTR oracle could not land a signal on a
+/// parked reader (#2139). The waiter now hands its command to its own CPU's
+/// poller and parks in that wait, as it would for the interrupt; the CPU runs
+/// the poller next, which reads the ports while a command is active and
+/// completes it as the interrupt handler does, then yields to the waiter.
+const POLLER_CPUS: usize = 8;
+static POLLER_TID: [AtomicU64; POLLER_CPUS] = [const { AtomicU64::new(0) }; POLLER_CPUS];
+/// A poller is blocked with no command armed (IDLE) or looking (RUNNING).
+/// Waiters move IDLE to RUNNING and wake it; only the poller moves it back.
+static POLLER_STATE: [AtomicU8; POLLER_CPUS] = [const { AtomicU8::new(POLLER_IDLE) }; POLLER_CPUS];
+#[cfg(target_arch = "aarch64")]
+static POLLER_SPAWNED: [AtomicBool; POLLER_CPUS] = [const { AtomicBool::new(false) }; POLLER_CPUS];
+const POLLER_IDLE: u8 = 0;
+const POLLER_RUNNING: u8 = 1;
+/// Spin hints between a poller's looks at the ports.
+#[cfg(target_arch = "aarch64")]
+const POLLER_PAUSE: u32 = 32;
+
+fn this_cpu() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        POLLER_CPUS
+    }
+}
+
+fn poller_on_this_cpu() -> bool {
+    POLLER_TID.get(this_cpu()).is_some_and(|tid| tid.load(Ordering::Acquire) != 0)
+}
+
+/// Hand an armed command to this CPU's poller. The caller runs with preemption
+/// disabled until it parks, so the poller is the CPU's next thread.
+fn kick_poller() {
+    let cpu = this_cpu();
+    let (Some(tid), Some(state)) = (POLLER_TID.get(cpu), POLLER_STATE.get(cpu)) else { return };
+    let tid = tid.load(Ordering::Acquire);
+    if tid != 0 && state.swap(POLLER_RUNNING, Ordering::AcqRel) == POLLER_IDLE {
+        crate::task::scheduler::wake_thread_any_context(tid);
+    }
+}
+
+/// Complete each port's active slot-0 command that has finished, as the interrupt
+/// handler does. Returns whether a command is still active.
+#[cfg(target_arch = "aarch64")]
+fn poll_ports() -> bool {
+    let abar = AHCI_ABAR.load(Ordering::Relaxed);
+    let implemented = AHCI_PORTS_IMPLEMENTED.load(Ordering::Relaxed);
+    let mut active_left = false;
+    let mut completed_any = false;
+    for port in 0..MAX_PORTS {
+        if implemented & (1 << port) == 0 {
+            continue;
+        }
+        let Some(poll_guard) = PORT_POLL[port].try_lock() else {
+            active_left = true;
+            continue;
+        };
+        let active = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+        if active & 1 == 0 {
+            continue;
+        }
+        let is = port_read(abar, port, PORT_IS);
+        let ci = port_read(abar, port, PORT_CI);
+        if detect_completed_slots(active, ci, is) & 1 == 0 {
+            active_left = true;
+            continue;
+        }
+        ack_port_interrupt(abar, port, is);
+        if PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel) & 1 != 0 {
+            let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+            if cmd_num != 0 {
+                AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                completed_any = true;
+            }
+        }
+        drop(poll_guard);
+    }
+    // The completion buffered the waiter's wake: a scheduling pass applies it,
+    // and the waiter runs ahead of this poller.
+    if completed_any {
+        crate::task::scheduler::yield_current();
+    }
+    active_left
+}
+
+/// Block the poller until a waiter hands it a command (RUNNING), as an I/O wait,
+/// the one blocked state a wake from interrupt context applies to.
+#[cfg(target_arch = "aarch64")]
+fn poller_wait(tid: u64, state: &AtomicU8) {
+    while state.load(Ordering::Acquire) != POLLER_RUNNING {
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io_with_timeout(None);
+            if state.load(Ordering::Acquire) == POLLER_RUNNING {
+                sched.unblock(tid);
+            }
+        });
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_while_blocked();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn completion_poller(cpu: usize) {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
+    let (Some(slot), Some(state)) = (POLLER_TID.get(cpu), POLLER_STATE.get(cpu)) else { return };
+    slot.store(tid, Ordering::Release);
+    loop {
+        poller_wait(tid, state);
+        // ALLOWLIST: P12-Site-9 completion poller; bounded by each waiter's 5 s timeout,
+        // which disarms its command. See docs/polling-allowlist.md.
+        while poll_ports() {
+            for _ in 0..POLLER_PAUSE {
+                core::hint::spin_loop();
+            }
+        }
+        state.store(POLLER_IDLE, Ordering::Release);
+        // A command armed after the last look found the state RUNNING and did not wake us.
+        let implemented = AHCI_PORTS_IMPLEMENTED.load(Ordering::Relaxed);
+        let armed = (0..MAX_PORTS).any(|port| {
+            implemented & (1 << port) != 0 && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0
+        });
+        if armed {
+            state.store(POLLER_RUNNING, Ordering::Release);
+        }
+    }
+}
+
+/// Start a completion poller on each online CPU without one, when the
+/// controller's completions raise no interrupt this kernel takes. CPU 0's waits
+/// until the boot sequence releases it, as its softirq daemon does.
+#[cfg(target_arch = "aarch64")]
+pub fn start_completion_pollers() {
+    if AHCI_ABAR.load(Ordering::Relaxed) == 0 || AHCI_IRQ.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+    for cpu in 0..online.min(POLLER_CPUS) {
+        if cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0 {
+            continue;
+        }
+        if POLLER_SPAWNED[cpu].swap(true, Ordering::AcqRel) {
+            continue;
+        }
+        let name = alloc::format!("kahci_poll/{cpu}");
+        if let Err(error) = crate::task::kthread::kthread_run_on_cpu(move || completion_poller(cpu), &name, cpu) {
+            crate::serial_println!("[ahci] no completion poller on CPU {}: {:?}", cpu, error);
+        }
+    }
+}
+
+// =============================================================================
 // Controller Implementation
 // =============================================================================
 
@@ -947,8 +1146,17 @@ impl AhciController {
             if crate::time::tsc::frequency_hz() == 0 {
                 return Err("AHCI: clock not calibrated");
             }
-            if !matches!(pci_dev.interrupt_line, 10 | 11) {
-                return Err("AHCI: unsupported PCI interrupt line");
+            // Completions arrive by MSI wherever the local APIC takes them, which
+            // needs no knowledge of the platform's INTx wiring. Otherwise the
+            // driver completes on the INTx line the config space names, which is
+            // the line it drives only where that wiring is known.
+            if !uses_msi(pci_dev) {
+                if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                    return Err("AHCI: no MSI, and PCI INTx routing unknown on this firmware");
+                }
+                if !matches!(pci_dev.interrupt_line, 10 | 11) {
+                    return Err("AHCI: unsupported PCI interrupt line");
+                }
             }
             let offset = (bar5.address & 0xfff) as usize;
             crate::memory::map_mmio(bar5.address & !0xfff, bar5.size as usize + offset)? as u64
@@ -996,9 +1204,27 @@ impl AhciController {
         setup_ahci_msi(pci_dev);
         #[cfg(target_arch = "x86_64")]
         {
-            AHCI_IRQ_EDGE.store(false, Ordering::Relaxed);
-            AHCI_IRQ.store(pci_dev.interrupt_line as u32, Ordering::Release);
-            pci_dev.enable_intx();
+            if uses_msi(pci_dev) {
+                // A failure leaves AHCI_IRQ at 0: commands then poll PORT_CI.
+                match crate::arch_impl::x86_64::msi::enable(pci_dev, handle_interrupt) {
+                    Ok(vector) => {
+                        AHCI_IRQ_EDGE.store(true, Ordering::Relaxed);
+                        AHCI_IRQ.store(u32::from(vector), Ordering::Release);
+                        log::info!(
+                            "[ahci] attached by MSI: {:02x}:{:02x}.{} vector {:#x}",
+                            pci_dev.bus,
+                            pci_dev.device,
+                            pci_dev.function,
+                            vector
+                        );
+                    }
+                    Err(e) => log::warn!("[ahci] MSI not enabled, completions are polled: {}", e),
+                }
+            } else {
+                AHCI_IRQ_EDGE.store(false, Ordering::Relaxed);
+                AHCI_IRQ.store(pci_dev.interrupt_line as u32, Ordering::Release);
+                pci_dev.enable_intx();
+            }
             let ghc = hba_read(abar_virt, HBA_GHC);
             hba_write(abar_virt, HBA_GHC, ghc | GHC_IE);
         }
@@ -1054,12 +1280,16 @@ impl AhciController {
         let num_cmd_slots = ((cap >> 8) & 0x1F) + 1;
         let num_ports = (cap & 0x1F) + 1;
         let ports_implemented = hba_read(abar_virt, HBA_PI);
+        AHCI_PORTS_IMPLEMENTED.store(ports_implemented, Ordering::Release);
         let version = hba_read(abar_virt, HBA_VS);
 
+        // VS holds the major version in bits 31:16 and the minor version's two
+        // digits in bits 15:8 and 7:0 (0x0001_0301 is 1.3.1).
         crate::serial_println!(
-            "[ahci] HBA version {}.{}, {} ports, {} cmd slots, PI={:#010x}",
+            "[ahci] HBA version {:x}.{:x}.{:x}, {} ports, {} cmd slots, PI={:#010x}",
             version >> 16,
-            version & 0xFFFF,
+            (version >> 8) & 0xFF,
+            version & 0xFF,
             num_ports,
             num_cmd_slots,
             ports_implemented,
@@ -1070,7 +1300,7 @@ impl AhciController {
         {
             let dma_storage_ptr = &raw mut DMA_STORAGE;
             let mut dma_lock = PORT_DMA.lock();
-            for i in 0..MAX_AHCI_PORTS {
+            for i in 0..MAX_DMA_PORTS {
                 dma_lock[i] = Some(unsafe { &mut (*dma_storage_ptr).ports[i] });
             }
             drop(dma_lock);
@@ -1082,6 +1312,9 @@ impl AhciController {
             ports_implemented,
             ports: core::array::from_fn(|_| None),
         };
+
+        #[cfg(target_arch = "x86_64")]
+        spin_up_ports(abar_virt, cap, ports_implemented);
 
         // Discover and initialize ports
         let mut dma_index = 0;
@@ -1097,15 +1330,8 @@ impl AhciController {
                 if port_read(abar_virt, port_num, PORT_CMD) & (PORT_CMD_CR | PORT_CMD_FR) != 0 {
                     return Err("AHCI: firmware port engine did not stop");
                 }
-                if port_num >= MAX_AHCI_PORTS {
-                    crate::serial_println!(
-                        "[ahci] Skipping unsupported physical port {}",
-                        port_num
-                    );
-                    continue;
-                }
             }
-            if dma_index >= MAX_AHCI_PORTS {
+            if dma_index >= MAX_DMA_PORTS {
                 crate::serial_println!(
                     "[ahci] Warning: more ports than DMA slots, skipping port {}",
                     port_num
@@ -1210,6 +1436,13 @@ impl AhciController {
 
         // Start command engine
         self.start_cmd(port_num);
+
+        // A freshly linked device reports its signature in its first D2H
+        // Register FIS, which clears PxTFD.STS.BSY (AHCI 1.3.1, 10.1.2).
+        #[cfg(target_arch = "x86_64")]
+        if self.wait_ready(port_num).is_err() {
+            crate::serial_println!("[ahci] Port {}: no signature from the device", port_num);
+        }
 
         // Determine device type from signature
         let sig = port_read(abar, port_num, PORT_SIG);
@@ -1340,7 +1573,7 @@ impl AhciController {
         }
 
         // --- Determine wait mode BEFORE arming completions ---
-        let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_AHCI_PORTS;
+        let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_PORTS;
 
         let scheduler_running = scheduler_sleep_ready(has_irq);
 
@@ -1356,7 +1589,12 @@ impl AhciController {
         // The polling path uses PORT_CI polling directly and does not
         // need ISR-driven completion.  This matches Linux's AHCI driver,
         // which masks device-level interrupts during polling mode.
-        let arm_completion = has_irq && scheduler_running;
+        // Without an interrupt, this CPU's completion poller completes the command
+        // once it runs, and the waiter parks as it would for the interrupt.
+        let polled = !has_irq && port < MAX_PORTS && poller_on_this_cpu() && scheduler_sleep_ready(true);
+        let arm_completion = (has_irq && scheduler_running) || polled;
+        let scheduler_running = scheduler_running || polled;
+        let poll_guard = polled.then(|| PORT_POLL[port].lock());
         if arm_completion {
             AHCI_COMPLETIONS[port][0].reset();
             PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
@@ -1384,11 +1622,13 @@ impl AhciController {
             core::arch::asm!("isb", options(nostack, preserves_flags));
         }
 
+        drop(poll_guard);
         Ok(CmdToken {
             port,
             cmd_num,
             has_irq,
             scheduler_running,
+            polled,
         })
     }
 
@@ -1501,7 +1741,7 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         "[ahci]   isr_count={} cmd#={} completion_done={} PMR={:#x} RPR={:#x}",
         isr_count,
         cmd_num,
-        if port < MAX_AHCI_PORTS {
+        if port < MAX_PORTS {
             AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed)
         } else {
             0
@@ -2038,17 +2278,21 @@ impl AhciController {
         Ok((token, byte_count))
     }
 
-    /// Set up a single-sector write DMA command and issue PORT_CI.
+    /// Set up a write DMA command of 1 to 128 whole sectors and issue PORT_CI.
     ///
     /// Returns a `CmdToken`; caller waits with `wait_cmd_slot0()` after
     /// releasing the `AHCI_CONTROLLER` lock.
-    fn setup_write_sector(
+    fn setup_write_sectors(
         &self,
         port: usize,
         dma_index: usize,
         lba: u64,
-        buffer: &[u8; SECTOR_SIZE],
+        buffer: &[u8],
     ) -> Result<CmdToken, &'static str> {
+        let count = buffer.len() / SECTOR_SIZE;
+        if count == 0 || count > 128 || buffer.len() % SECTOR_SIZE != 0 {
+            return Err("AHCI: invalid sector count");
+        }
         self.wait_ready(port)?;
 
         {
@@ -2059,7 +2303,7 @@ impl AhciController {
             let dma_buf_phys = virt_to_phys(dma.dma_bufs[0].as_ptr() as u64);
 
             // Copy data to DMA buffer slot 0.
-            dma.dma_bufs[0][..SECTOR_SIZE].copy_from_slice(buffer);
+            dma.dma_bufs[0][..buffer.len()].copy_from_slice(buffer);
 
             // Command header: CFL=5, PRDTL=1, Write bit set (bit 6)
             dma.cmd_list[0].dw0 = (1 << 16) | (1 << 6) | 5;
@@ -2079,13 +2323,13 @@ impl AhciController {
             dma.cmd_tables[0].cfis[8] = (lba >> 24) as u8;
             dma.cmd_tables[0].cfis[9] = (lba >> 32) as u8;
             dma.cmd_tables[0].cfis[10] = (lba >> 40) as u8;
-            dma.cmd_tables[0].cfis[12] = 1;
-            dma.cmd_tables[0].cfis[13] = 0;
+            dma.cmd_tables[0].cfis[12] = count as u8;
+            dma.cmd_tables[0].cfis[13] = (count >> 8) as u8;
 
             dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
             dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
             dma.cmd_tables[0].prdt[0]._reserved = 0;
-            dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+            dma.cmd_tables[0].prdt[0].dbc = (buffer.len() as u32 - 1) | (1 << 31);
 
             core::sync::atomic::fence(Ordering::SeqCst);
             let dma_ptr = &**dma as *const PortDmaMem as *const u8;
@@ -2567,7 +2811,11 @@ pub fn handle_interrupt() {
         return;
     }
 
-    for port in 0..MAX_AHCI_PORTS {
+    let implemented = AHCI_PORTS_IMPLEMENTED.load(Ordering::Relaxed);
+    for port in 0..MAX_PORTS {
+        if (implemented & (1 << port)) == 0 {
+            continue;
+        }
         // For MSI: only check ports with HBA_IS bits set.
         // For wired: check all ports (the HBA_IS may not be set).
         if !check_all && (hba_is & (1 << port)) == 0 {
@@ -2774,6 +3022,10 @@ pub struct AhciBlockDevice {
 }
 
 impl BlockDevice for AhciBlockDevice {
+    fn hardware_disk(&self) -> Option<crate::block::HardwareDisk> {
+        Some(crate::block::HardwareDisk::Ahci(self.port_num))
+    }
+
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         self.read_blocks(block_num, 1, buf)
     }
@@ -2874,43 +3126,64 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
-        if block_num >= self.sector_count {
+        self.write_blocks(block_num, 1, buf)
+    }
+
+    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        if block_count == 0 {
+            return Ok(());
+        }
+        // The write fence: on a physical boot only the chosen partitions' sectors take writes.
+        if !crate::block::hardware_write_allowed(crate::block::HardwareDisk::Ahci(self.port_num), start_block, block_count) {
+            return Err(BlockError::IoError);
+        }
+        if start_block >= self.sector_count
+            || start_block.saturating_add(block_count as u64) > self.sector_count
+        {
             return Err(BlockError::OutOfBounds);
         }
-        if buf.len() < SECTOR_SIZE {
+        let total_bytes = block_count.checked_mul(SECTOR_SIZE).ok_or(BlockError::IoError)?;
+        if buf.len() < total_bytes {
             return Err(BlockError::IoError);
         }
 
-        let mut sector_buf = [0u8; SECTOR_SIZE];
-        sector_buf.copy_from_slice(&buf[..SECTOR_SIZE]);
+        let mut current_block = start_block;
+        let mut offset = 0usize;
+        while offset < total_bytes {
+            let byte_count = (total_bytes - offset).min(128 * SECTOR_SIZE);
+            let chunk = &buf[offset..offset + byte_count];
 
-        // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
-        let port_guard = begin_port_io(self.port_num)?;
-        let setup_result: Result<CmdToken, BlockError> = {
-            let ctrl = AHCI_CONTROLLER.lock();
-            match ctrl.as_ref() {
-                Some(ctrl) => ctrl
-                    .setup_write_sector(self.port_num, self.dma_index, block_num, &sector_buf)
-                    .map_err(|_| BlockError::IoError),
-                None => Err(BlockError::DeviceNotReady),
-            }
-        }; // AHCI_CONTROLLER lock released
-        let token = match setup_result {
-            Ok(token) => token,
-            Err(err) => {
-                end_port_io(self.port_num, port_guard);
-                return Err(err);
-            }
-        };
-        drop(port_guard);
+            // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────
+            let port_guard = begin_port_io(self.port_num)?;
+            let setup_result: Result<CmdToken, BlockError> = {
+                let ctrl = AHCI_CONTROLLER.lock();
+                match ctrl.as_ref() {
+                    Some(ctrl) => ctrl
+                        .setup_write_sectors(self.port_num, self.dma_index, current_block, chunk)
+                        .map_err(|_| BlockError::IoError),
+                    None => Err(BlockError::DeviceNotReady),
+                }
+            }; // AHCI_CONTROLLER lock released
+            let token = match setup_result {
+                Ok(token) => token,
+                Err(err) => {
+                    end_port_io(self.port_num, port_guard);
+                    return Err(err);
+                }
+            };
+            drop(port_guard);
 
-        // ── PHASE 2: wait (NO locks held) ────────────────────────────────────
-        let wait_result = wait_cmd_slot0(token).map_err(|_| BlockError::IoError);
+            // ── PHASE 2: wait (NO locks held) ────────────────────────────────
+            let wait_result = wait_cmd_slot0(token).map_err(|_| BlockError::IoError);
 
-        // ── PHASE 3: re-lock + retire ownership ──────────────────────────────
-        let port_guard = PORT_IO_LOCK[self.port_num].lock();
-        end_port_io(self.port_num, port_guard);
-        wait_result
+            // ── PHASE 3: re-lock + retire ownership ──────────────────────────
+            let port_guard = PORT_IO_LOCK[self.port_num].lock();
+            end_port_io(self.port_num, port_guard);
+            wait_result?;
+            current_block += (byte_count / SECTOR_SIZE) as u64;
+            offset += byte_count;
+        }
+        Ok(())
     }
 
     fn block_size(&self) -> usize {
@@ -2922,6 +3195,7 @@ impl BlockDevice for AhciBlockDevice {
     }
 
     fn flush(&self) -> Result<(), BlockError> {
+        if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Ok(()); }
         // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
         let port_guard = begin_port_io(self.port_num)?;
         let setup_result: Result<CmdToken, BlockError> = {
@@ -2990,8 +3264,130 @@ pub fn init() -> Result<usize, &'static str> {
 
     *AHCI_CONTROLLER.lock() = Some(controller);
     AHCI_INITIALIZED.store(true, Ordering::Release);
+    crate::drivers::device_class::storage_initialized("ahci", sata_device_count());
+
+    #[cfg(target_arch = "x86_64")]
+    for index in 0..sata_count {
+        if let Some(disk) = get_block_device_by_index(index) {
+            log::info!(
+                "[ahci] drive identified: port {}, {} sectors of {} bytes",
+                disk.port_num,
+                disk.sector_count,
+                SECTOR_SIZE
+            );
+            report_first_sectors(&disk);
+        }
+    }
 
     Ok(sata_count)
+}
+
+/// After the HBA reset each implemented port renegotiates its link, and a
+/// controller with staggered spin-up (CAP.SSS) holds each device unspun until
+/// software sets PxCMD.SUD (AHCI 1.3.1, 10.10.1). Spin the ports up where
+/// that applies, wait up to a second for their links (PxSSTS.DET = 3), then
+/// give each port still without one a COMRESET (PxSCTL.DET = 1 for at least
+/// a millisecond, then 0; 10.4.2) and wait up to a second again. Ports with no
+/// device stay below 3, so they cost the full waits. Each implemented port's
+/// SStatus is reported.
+#[cfg(target_arch = "x86_64")]
+fn spin_up_ports(abar: u64, cap: u32, ports_implemented: u32) {
+    let ports = || (0..MAX_PORTS).filter(move |&port| ports_implemented & (1 << port) != 0);
+    let linked = || {
+        ports()
+            .filter(|&port| port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT)
+            .fold(0u32, |mask, port| mask | 1 << port)
+    };
+    // P12 allowlist: bounded link-establishment wait, one second of TSC time.
+    let wait_for_links = || {
+        let (start, freq) = read_cntpct_and_freq();
+        while linked() != ports_implemented && read_cntpct().wrapping_sub(start) < freq {
+            core::hint::spin_loop();
+        }
+    };
+    if cap & CAP_SSS != 0 {
+        for port in ports() {
+            let cmd = port_read(abar, port, PORT_CMD);
+            port_write(abar, port, PORT_CMD, cmd | PORT_CMD_SUD | PORT_CMD_POD);
+        }
+    }
+    wait_for_links();
+    let before_reset = linked();
+    if before_reset != ports_implemented {
+        let unlinked = || ports().filter(move |&port| before_reset & (1 << port) == 0);
+        for port in unlinked() {
+            let sctl = port_read(abar, port, PORT_SCTL) & !SCTL_DET_MASK;
+            port_write(abar, port, PORT_SCTL, sctl | SCTL_DET_COMRESET);
+        }
+        let (start, freq) = read_cntpct_and_freq();
+        // P12 allowlist: COMRESET hold, two milliseconds of TSC time.
+        while read_cntpct().wrapping_sub(start) < freq / 500 {
+            core::hint::spin_loop();
+        }
+        for port in unlinked() {
+            let sctl = port_read(abar, port, PORT_SCTL) & !SCTL_DET_MASK;
+            port_write(abar, port, PORT_SCTL, sctl);
+        }
+        wait_for_links();
+    }
+    for port in ports() {
+        crate::serial_println!(
+            "[ahci] port {} link: SStatus {:#x}{}",
+            port,
+            port_read(abar, port, PORT_SSTS),
+            if before_reset & (1 << port) != 0 { "" } else { " after COMRESET" }
+        );
+    }
+}
+
+/// Whether this x86 controller takes its completions by MSI: the local APIC
+/// is active, the FADT allows MSI, and the function has an MSI capability.
+#[cfg(target_arch = "x86_64")]
+fn uses_msi(pci_dev: &pci::Device) -> bool {
+    crate::arch_impl::x86_64::msi::available() && pci_dev.find_msi_capability().is_some()
+}
+
+/// The sectors the first-sectors read covers: the protective MBR, the GPT
+/// header and its 32 sectors of partition entries (UEFI 2.10, 5.3).
+#[cfg(target_arch = "x86_64")]
+const FIRST_SECTORS: usize = 34;
+
+/// Read a disk's first sectors once interrupts and the scheduler run, and say
+/// whether the read completed by MSI and what the sectors hold. Only the kind
+/// of content is reported, not its bytes.
+#[cfg(target_arch = "x86_64")]
+fn report_first_sectors(disk: &AhciBlockDevice) {
+    let mut sectors = alloc::vec![0u8; FIRST_SECTORS * SECTOR_SIZE];
+    let completed = AHCI_ISR_COMPLETE_HIT[disk.port_num].load(Ordering::Acquire);
+    let polled = AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Acquire);
+    if let Err(e) = disk.read_blocks(0, FIRST_SECTORS, &mut sectors) {
+        log::warn!("[ahci] first sectors of port {} unreadable: {}", disk.port_num, e);
+        return;
+    }
+    let by_msi = AHCI_IRQ_EDGE.load(Ordering::Acquire)
+        && AHCI_IRQ.load(Ordering::Acquire) != 0
+        && AHCI_ISR_COMPLETE_HIT[disk.port_num].load(Ordering::Acquire) != completed
+        && AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Acquire) == polled;
+    let table = if &sectors[SECTOR_SIZE..SECTOR_SIZE + 8] == b"EFI PART" {
+        "GPT"
+    } else if sectors[510..512] == [0x55, 0xaa] {
+        "MBR"
+    } else {
+        "none"
+    };
+    let record = if crate::block::install::Record::parse(&sectors[..SECTOR_SIZE]).is_some() {
+        "present"
+    } else {
+        "absent"
+    };
+    log::info!(
+        "[ahci] first sectors read by {}: port {}, LBA 0-{}; partition table {}; Breenix storage record {}",
+        if by_msi { "MSI" } else { "polling" },
+        disk.port_num,
+        FIRST_SECTORS - 1,
+        table,
+        record
+    );
 }
 
 /// Initialize the AHCI driver from a known platform MMIO base address.
@@ -3007,6 +3403,10 @@ pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
     }
 
     let controller = AhciController::init_from_mmio(abar_phys)?;
+    crate::drivers::device_class::found(
+        crate::drivers::device_class::Class::Storage,
+        format_args!("platform AHCI controller at {:#x}", abar_phys),
+    );
 
     let sata_count = controller
         .ports
@@ -3016,6 +3416,7 @@ pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
 
     *AHCI_CONTROLLER.lock() = Some(controller);
     AHCI_INITIALIZED.store(true, Ordering::Release);
+    crate::drivers::device_class::storage_initialized("ahci", sata_device_count());
 
     Ok(sata_count)
 }

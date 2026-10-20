@@ -10,11 +10,13 @@ mod directory_io;
 mod directory_extension;
 mod fifo_times;
 pub mod file;
+pub mod generation;
 pub mod inode;
 mod inode_index;
 pub mod live_inode;
 mod mount_device;
 mod namespace_alloc;
+mod path;
 mod reclaim;
 mod rename;
 mod sector_cache;
@@ -51,6 +53,7 @@ pub struct FsStats {
 /// Holds the superblock, block group descriptors, and a reference
 /// to the underlying block device for filesystem operations.
 pub struct Ext2Fs {
+    namespace: generation::Namespace,
     /// The filesystem superblock
     pub superblock: Ext2Superblock,
     /// Block group descriptors
@@ -70,8 +73,30 @@ pub struct Ext2Fs {
     /// The last inode the cache service reached with budget left; the next
     /// pass starts after it.
     eviction_cursor: u32,
-    shrink_reclaims: alloc::collections::BTreeMap<u32, reclaim::Reclaim>,
+    shrink_reclaims: alloc::collections::BTreeMap<u32, PendingShrink>,
 }
+
+struct PendingShrink {
+    progress: reclaim::Reclaim,
+    owner: alloc::sync::Weak<()>,
+    failed: bool,
+}
+
+/// A live truncate caller owns its suffix work across mount-guard releases.
+/// Dropping the ticket makes unfinished work available to the finalizer.
+pub struct ShrinkTicket {
+    inode: u32,
+    mount: live_inode::MountPin,
+    owner: alloc::sync::Arc<()>,
+    // Drop the owner before allowing a pending kill to abandon this stack.
+    _custody: crate::task::thread::KillCustody,
+}
+
+impl Drop for ShrinkTicket {
+    fn drop(&mut self) { writeback::request(); }
+}
+
+pub(crate) const EXT2_READ_ONLY: &str = "Read-only filesystem";
 
 /// Bitmap transitions suffix/orphan reclamation performs per write-guard hold.
 const RECLAIM_BUDGET: usize = 128;
@@ -93,6 +118,36 @@ impl Finalize {
             (Self::More, _) | (_, Self::More) => Self::More,
             _ => Self::Idle,
         }
+    }
+}
+
+static ROOT_NAMESPACE: spin::Once<generation::Namespace> = spin::Once::new();
+
+/// Root inode selected at mount time; unchanged throughout the boot.
+pub fn root_inode() -> u32 { root_namespace().root }
+
+pub fn root_namespace() -> generation::Namespace {
+    ROOT_NAMESPACE.get().copied().unwrap_or(generation::Namespace::RAW)
+}
+
+impl Ext2Fs {
+    pub fn namespace(&self) -> generation::Namespace { self.namespace }
+}
+
+impl generation::Tree for Ext2Fs {
+    fn directory(&self, parent: u32, name: &str) -> Result<u32, &'static str> {
+        let parent = self.read_inode(parent)?;
+        let ino = self.lookup_in_dir(&parent, name)?.ok_or("missing userland directory")?;
+        if !self.read_inode(ino)?.is_dir() { return Err("userland mount point is not a directory"); }
+        Ok(ino)
+    }
+
+    fn contents(&self, parent: u32, name: &str) -> Result<Vec<u8>, &'static str> {
+        let parent = self.read_inode(parent)?;
+        let ino = self.lookup_in_dir(&parent, name)?.ok_or("missing userland completion record")?;
+        let inode = self.read_inode(ino)?;
+        if !inode.is_file() || inode.size() > 128 { return Err("invalid userland completion record"); }
+        self.read_file_content(&inode)
     }
 }
 
@@ -137,6 +192,7 @@ impl Ext2Fs {
 
         let failed = alloc::sync::Arc::new(AtomicBool::new(false));
         Ok(Self {
+            namespace: generation::Namespace::RAW,
             superblock,
             block_groups,
             device: alloc::boxed::Box::new(mount_device::MountDevice::new(device, failed.clone(), cached)),
@@ -149,6 +205,12 @@ impl Ext2Fs {
             eviction_cursor: 0,
             shrink_reclaims: alloc::collections::BTreeMap::new(),
         })
+    }
+
+    pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
+
+    pub fn ensure_writable(&self) -> Result<(), &'static str> {
+        if self.is_read_only() { Err(EXT2_READ_ONLY) } else { Ok(()) }
     }
 
     /// Stop writing after a failure left the tree inconsistent: record the
@@ -207,6 +269,7 @@ impl Ext2Fs {
 
     /// Service mapped data and failed shrinks before the orphan commit window.
     fn finalize_writeback(&mut self) -> Finalize {
+        if self.is_read_only() { return Finalize::Idle; }
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
         let mut after = None;
@@ -249,9 +312,10 @@ impl Ext2Fs {
         outcome
     }
 
-    /// Orphan passes stage at most 128 blocks in tails of at most 64 blocks,
-    /// visit at most 32 inodes, and release at most 128 bitmap allocations.
+    /// Stage and release a bounded allocation batch, retaining quarantine
+    /// and the detachment barrier across guard releases.
     fn finalize_pending_orphans(&mut self) -> Finalize {
+        if self.is_read_only() { return Finalize::Idle; }
         let mut budget = RECLAIM_BUDGET;
         let objects = self.live_inodes.pending(self.finalization_cursor);
         let mut outcome = self.finalize_orphans(&objects, &mut budget);
@@ -336,7 +400,7 @@ impl Ext2Fs {
         outcome
     }
 
-    /// Retry failed shrinks without preventing work on other inodes.
+    /// Retry abandoned or failed shrinks without taking work from a live caller.
     fn finalize_shrinks(&mut self, budget: &mut usize) -> Finalize {
         let inodes: Vec<u32> = self.shrink_reclaims.keys().copied().collect();
         let mut outcome = Finalize::Idle;
@@ -344,11 +408,16 @@ impl Ext2Fs {
             if *budget == 0 {
                 return outcome.merge(Finalize::More);
             }
-            let mut progress = self.shrink_reclaims.remove(&ino).expect("queued shrink");
-            match progress.finish(self, ino, budget) {
+            if self.shrink_reclaims[&ino].owner.strong_count() != 0 {
+                outcome = outcome.merge(Finalize::More);
+                continue;
+            }
+            let mut pending = self.shrink_reclaims.remove(&ino).expect("queued shrink");
+            match pending.progress.finish(self, ino, budget) {
                 Ok(true) => {}
                 result => {
-                    self.shrink_reclaims.insert(ino, progress);
+                    pending.failed |= result.is_err();
+                    self.shrink_reclaims.insert(ino, pending);
                     if matches!(result, Ok(false)) {
                         return outcome.merge(Finalize::More);
                     }
@@ -510,131 +579,6 @@ impl Ext2Fs {
         })
     }
 
-    /// Look up a path component in a directory
-    ///
-    /// Returns the inode number of the matching entry, or None if not found.
-    pub fn lookup_in_dir(
-        &self,
-        dir_inode: &Ext2Inode,
-        name: &str,
-    ) -> Result<Option<u32>, &'static str> {
-        self.lookup_in_dir_bytes(dir_inode, name.as_bytes())
-    }
-    pub fn lookup_in_dir_bytes(&self, dir_inode: &Ext2Inode, name: &[u8]) -> Result<Option<u32>, &'static str> {
-        let dir_data = self.read_directory(dir_inode)?;
-        Ok(dir::find_inode_bytes(&dir_data, name))
-    }
-
-    /// Resolve a path to an inode number, following symlinks
-    ///
-    /// Walks the directory tree from root, looking up each path component.
-    /// Supports absolute paths starting with "/".
-    /// Symlinks are followed transparently (both intermediate and final components).
-    pub fn resolve_path(&self, path: &str) -> Result<u32, &'static str> {
-        self.resolve_path_impl(path, true, 0)
-    }
-
-    /// Resolve a path to an inode number without following the final symlink
-    ///
-    /// Used by readlink() and lstat() which need the symlink inode itself.
-    pub fn resolve_path_no_follow(&self, path: &str) -> Result<u32, &'static str> {
-        self.resolve_path_impl(path, false, 0)
-    }
-
-    /// Internal path resolution with symlink following and depth limiting
-    fn resolve_path_impl(
-        &self,
-        path: &str,
-        follow_final: bool,
-        depth: u32,
-    ) -> Result<u32, &'static str> {
-        const MAX_SYMLINK_DEPTH: u32 = 8;
-        if depth > MAX_SYMLINK_DEPTH {
-            return Err("Too many levels of symbolic links");
-        }
-
-        // Must start with "/"
-        if !path.starts_with('/') {
-            return Err("Path must be absolute");
-        }
-
-        // Start at root inode (always inode 2 in ext2)
-        let mut current_inode_num = EXT2_ROOT_INO;
-
-        // Collect components so we can detect the final one
-        let components: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-
-        for (i, component) in components.iter().enumerate() {
-            // Read the current directory inode
-            let current_inode = self.read_inode(current_inode_num)?;
-
-            // Make sure it's a directory
-            if !current_inode.is_dir() {
-                return Err("Not a directory in path");
-            }
-
-            // Look up the component in this directory
-            match self.lookup_in_dir(&current_inode, component)? {
-                Some(inode_num) => {
-                    current_inode_num = inode_num;
-
-                    // Check if this resolved to a symlink
-                    let resolved_inode = self.read_inode(inode_num)?;
-                    let is_final = i == components.len() - 1;
-
-                    if resolved_inode.is_symlink() && (follow_final || !is_final) {
-                        // Read symlink target
-                        let target = self.read_symlink(inode_num)?;
-
-                        // Build the remaining path (components after this one)
-                        let remaining = if is_final {
-                            alloc::string::String::new()
-                        } else {
-                            let mut r = alloc::string::String::from("/");
-                            for (j, c) in components[i + 1..].iter().enumerate() {
-                                if j > 0 {
-                                    r.push('/');
-                                }
-                                r.push_str(c);
-                            }
-                            r
-                        };
-
-                        if target.starts_with('/') {
-                            // Absolute symlink target
-                            let mut full_path = target;
-                            if !remaining.is_empty() {
-                                full_path.push_str(&remaining);
-                            }
-                            return self.resolve_path_impl(&full_path, follow_final, depth + 1);
-                        } else {
-                            // Relative symlink - resolve relative to parent directory
-                            let mut parent = alloc::string::String::from("/");
-                            for (j, c) in components[..i].iter().enumerate() {
-                                if j > 0 {
-                                    parent.push('/');
-                                }
-                                parent.push_str(c);
-                            }
-                            let mut full_path = parent;
-                            full_path.push('/');
-                            full_path.push_str(&target);
-                            if !remaining.is_empty() {
-                                full_path.push_str(&remaining);
-                            }
-                            return self.resolve_path_impl(&full_path, follow_final, depth + 1);
-                        }
-                    }
-                }
-                None => {
-                    return Err("Path component not found");
-                }
-            }
-        }
-
-        Ok(current_inode_num)
-    }
-
     /// Read file content from an inode
     fn read_file_content(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
         read_file(self.device.as_ref(), inode, &self.superblock)
@@ -735,6 +679,7 @@ impl Ext2Fs {
         offset: u64,
         bytes: &[u8],
     ) -> Result<usize, &'static str> {
+        self.ensure_writable()?;
         self.write_file_range_disk(ino, offset, bytes, true, true)
     }
 
@@ -765,6 +710,7 @@ impl Ext2Fs {
         data: &[u8],
         unprivileged: bool,
     ) -> Result<usize, &'static str> {
+        self.ensure_writable()?;
         // Private mappings: give bound holes cache frames and reserve poison
         // room before the disk changes; afterwards only apply what ext2
         // published, which allocates nothing.
@@ -919,6 +865,7 @@ impl Ext2Fs {
     /// * `inode_num` - The inode number to write
     /// * `inode` - The modified inode data
     pub fn write_inode(&mut self, inode_num: u32, inode: &Ext2Inode) -> Result<(), &'static str> {
+        self.ensure_writable()?;
         if let Some(object) = self.live_inodes.get(inode_num) {
             object.map.note_disk_write(self.durable_epoch());
             fifo_times::write_metadata(&object.ctime_pending, || {
@@ -954,16 +901,18 @@ impl Ext2Fs {
     pub fn create_file(
         &mut self,
         parent_inode_num: u32,
-        name: &str,
+        name: impl AsRef<[u8]>,
         mode: u16,
         uid: u32,
         gid: u32,
     ) -> Result<u32, &'static str> {
+        let name = name.as_ref();
+        self.ensure_writable()?;
         // Validate name
         if name.is_empty() || name.len() > 255 {
             return Err("Invalid filename length");
         }
-        if name.contains('/') || name == "." || name == ".." {
+        if name.contains(&b'/') || name == b"." || name == b".." {
             return Err("Invalid filename");
         }
 
@@ -977,7 +926,7 @@ impl Ext2Fs {
         let mut dir_data = self.read_directory(&parent_inode)?;
 
         // Check if the file already exists
-        if find_entry(&dir_data, name).is_some() {
+        if dir::find_inode_bytes(&dir_data, name).is_some() {
             return Err("File already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, name.len())?;
@@ -988,13 +937,13 @@ impl Ext2Fs {
             parent_inode_num,
             &parent_inode,
             &dir_data,
-            name.as_bytes(),
+            name,
             new_inode,
             None,
             |_, ino| Ok(ino),
         )?;
 
-        log::debug!("ext2: created file '{}' with inode {}", name, new_inode_num);
+        log::debug!("ext2: created file '{:?}' with inode {}", name, new_inode_num);
         Ok(new_inode_num)
     }
 
@@ -1031,17 +980,18 @@ impl Ext2Fs {
         }
     }
 
-    /// Resize a regular file, preserving its prefix and zero-filling extension.
-    pub fn resize_file(&mut self, inode_num: u32, length: u64) -> Result<(), &'static str> {
-        self.resize_file_as(inode_num, length, false)
-    }
-
-    pub fn resize_file_as(
+    /// Publish the new size and queue suffix reclamation. The caller must
+    /// complete the returned ShrinkTicket before reporting success.
+    pub fn begin_resize_file_as(
         &mut self,
         inode_num: u32,
         length: u64,
         unprivileged: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<ShrinkTicket>, &'static str> {
+        self.ensure_writable()?;
+        let custody = crate::task::thread::KillCustody::try_enter()
+            .expect("ext2 resize requires its write guard custody");
+        let owner = alloc::sync::Arc::new(());
         let mapped = self.live_inodes.get(inode_num);
         let before = mapped
             .as_ref()
@@ -1049,7 +999,17 @@ impl Ext2Fs {
         if let (Some(object), Some(before)) = (&mapped, before) {
             object.map.prepare_resize(before, length)?;
         }
-        let result = self.resize_file_disk(inode_num, length, unprivileged);
+        let result = self.resize_file_disk(inode_num, length, unprivileged).map(|progress| {
+            progress.map(|progress| {
+                let ticket = ShrinkTicket { inode: inode_num, mount: self.mount_pin, owner, _custody: custody };
+                self.shrink_reclaims.insert(inode_num, PendingShrink {
+                    progress,
+                    owner: alloc::sync::Arc::downgrade(&ticket.owner),
+                    failed: false,
+                });
+                ticket
+            })
+        });
         if let (Some(object), Some(before)) = (mapped, before) {
             // A shrink publishes its EOF before it can fail, so the published
             // size is followed on failure too.
@@ -1069,7 +1029,7 @@ impl Ext2Fs {
         inode_num: u32,
         length: u64,
         unprivileged: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<reclaim::Reclaim>, &'static str> {
         self.check_shrink(inode_num)?;
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_file() || length > self.max_file_size() {
@@ -1099,33 +1059,19 @@ impl Ext2Fs {
         self.write_inode(inode_num, &inode)?;
         self.live_inodes.publish_size(inode_num, length);
         if shrinking {
-            let mut progress = reclaim::Reclaim::shrink(
+            let progress = reclaim::Reclaim::shrink(
                 inode,
                 length.div_ceil(self.superblock.block_size() as u64),
             );
-            // Success is synchronous: stat and the allocator observe the completed
-            // shrink when this syscall returns. Only I/O failure queues custody.
-            let mut budget = usize::MAX;
-            match progress.finish(self, inode_num, &mut budget) {
-                Ok(true) => {}
-                _ => {
-                    self.shrink_reclaims.insert(inode_num, progress);
-                    writeback::request();
-                    return Err("Failed to reclaim resized suffix");
-                }
-            }
+            return Ok(Some(progress));
         }
-        Ok(())
-    }
-
-    /// Truncate a file to zero length, reclaiming data and indirect blocks.
-    pub fn truncate_file(&mut self, inode_num: u32) -> Result<(), &'static str> {
-        self.resize_file(inode_num, 0)
+        Ok(None)
     }
 
     /// Relatime: update after modification/change or once a day. Reload under
     /// the filesystem write lock rather than overwriting a reader's stale inode.
     pub fn update_atime(&mut self, inode_num: u32) -> Result<(), &'static str> {
+        if self.is_read_only() { return Ok(()); }
         let mut inode = self.read_inode(inode_num)?;
         let now = crate::time::current_unix_time() as u32;
         if inode.needs_atime_update() {
@@ -1175,8 +1121,10 @@ impl Ext2Fs {
     pub fn unlink_in_dir(
         &mut self,
         parent_inode_num: u32,
-        filename: &str,
+        filename: impl AsRef<[u8]>,
     ) -> Result<(), &'static str> {
+        let filename = filename.as_ref();
+        self.ensure_writable()?;
         let parent_inode = self.read_inode(parent_inode_num)?;
 
         if !parent_inode.is_dir() {
@@ -1187,7 +1135,7 @@ impl Ext2Fs {
         let dir_data = self.read_directory(&parent_inode)?;
 
         // Find the entry to verify it exists and get its inode
-        let target_inode_num = dir::find_inode(&dir_data, filename).ok_or("File not found")?;
+        let target_inode_num = dir::find_inode_bytes(&dir_data, filename).ok_or("File not found")?;
 
         // Check that we're not unlinking a directory (use rmdir for that)
         let target_inode = self.read_inode(target_inode_num)?;
@@ -1245,7 +1193,7 @@ impl Ext2Fs {
         }
         drop(handle);
 
-        log::debug!("ext2: unlinked {} (inode {})", filename, target_inode_num);
+        log::debug!("ext2: unlinked {:?} (inode {})", filename, target_inode_num);
         Ok(())
     }
 
@@ -1301,16 +1249,18 @@ impl Ext2Fs {
     pub fn create_directory_in(
         &mut self,
         parent_inode_num: u32,
-        dirname: &str,
+        dirname: impl AsRef<[u8]>,
         mode: u16,
         uid: u32,
         gid: u32,
     ) -> Result<u32, &'static str> {
+        let dirname = dirname.as_ref();
+        self.ensure_writable()?;
         // Validate name
         if dirname.is_empty() || dirname.len() > 255 {
             return Err("Invalid directory name length");
         }
-        if dirname.contains('/') || dirname == "." || dirname == ".." {
+        if dirname.contains(&b'/') || dirname == b"." || dirname == b".." {
             return Err("Invalid directory name");
         }
 
@@ -1328,7 +1278,7 @@ impl Ext2Fs {
         let mut parent_dir_data = self.read_directory(&parent_inode)?;
 
         // Check if the directory already exists
-        if find_entry(&parent_dir_data, dirname).is_some() {
+        if dir::find_inode_bytes(&parent_dir_data, dirname).is_some() {
             return Err("Directory already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut parent_dir_data, dirname.len())?;
@@ -1365,14 +1315,14 @@ impl Ext2Fs {
             parent_inode_num,
             &parent_inode,
             &parent_dir_data,
-            dirname.as_bytes(),
+            dirname,
             new_inode,
             Some(&entries),
             |_, ino| Ok(ino),
         )?;
 
         log::debug!(
-            "ext2: created directory '{}' with inode {}",
+            "ext2: created directory '{:?}' with inode {}",
             dirname,
             new_inode_num
         );
@@ -1432,8 +1382,10 @@ impl Ext2Fs {
     pub fn remove_directory_in(
         &mut self,
         parent_inode_num: u32,
-        dir_name: &str,
+        dir_name: impl AsRef<[u8]>,
     ) -> Result<(), &'static str> {
+        let dir_name = dir_name.as_ref();
+        self.ensure_writable()?;
         let parent_inode = self.read_inode(parent_inode_num)?;
         if !parent_inode.is_dir() {
             return Err("Parent is not a directory");
@@ -1441,7 +1393,8 @@ impl Ext2Fs {
         let target_inode_num = self
             .lookup_in_dir(&parent_inode, dir_name)?
             .ok_or("Directory not found")?;
-        if target_inode_num == EXT2_ROOT_INO {
+        if target_inode_num == EXT2_ROOT_INO || self.namespace.is_mount(target_inode_num)
+            || self.namespace.mount_entry(parent_inode_num, dir_name) {
             return Err("Cannot remove root directory");
         }
         let target_inode = self.read_inode(target_inode_num)?;
@@ -1530,7 +1483,7 @@ impl Ext2Fs {
         }
 
         log::debug!(
-            "ext2: removed directory '{}' (inode {})",
+            "ext2: removed directory '{:?}' (inode {})",
             dir_name,
             target_inode_num
         );
@@ -1579,8 +1532,10 @@ impl Ext2Fs {
         &mut self,
         source_inode_num: u32,
         new_parent_inode_num: u32,
-        new_filename: &str,
+        new_filename: impl AsRef<[u8]>,
     ) -> Result<(), &'static str> {
+        let new_filename = new_filename.as_ref();
+        self.ensure_writable()?;
         let source_inode = self.read_inode(source_inode_num)?;
         if source_inode.i_links_count == 0 {
             return Err("Source not found");
@@ -1593,9 +1548,9 @@ impl Ext2Fs {
         }
         if new_filename.is_empty()
             || new_filename.len() > 255
-            || new_filename.contains('/')
-            || new_filename == "."
-            || new_filename == ".."
+            || new_filename.contains(&b'/')
+            || new_filename == b"."
+            || new_filename == b".."
         {
             return Err("Invalid filename");
         }
@@ -1609,7 +1564,7 @@ impl Ext2Fs {
         // Read the parent directory data
         let mut dir_data = self.read_directory(&new_parent_inode)?;
 
-        if dir::find_inode(&dir_data, new_filename).is_some() {
+        if dir::find_inode_bytes(&dir_data, new_filename).is_some() {
             return Err("Destination already exists");
         }
         self.make_directory_room(new_parent_inode_num, &mut new_parent_inode, &mut dir_data, new_filename.len())?;
@@ -1656,7 +1611,7 @@ impl Ext2Fs {
             .map_err(|_| "Failed to write new directory entry")?;
 
         log::debug!(
-            "ext2: created hard link {} (inode {})",
+            "ext2: created hard link {:?} (inode {})",
             new_filename,
             source_inode_num
         );
@@ -1724,17 +1679,20 @@ impl Ext2Fs {
 
     pub fn create_symlink_in(
         &mut self,
-        target: &str,
+        target: impl AsRef<[u8]>,
         parent_inode_num: u32,
-        link_name: &str,
+        link_name: impl AsRef<[u8]>,
         uid: u32,
         gid: u32,
     ) -> Result<(), &'static str> {
+        let target = target.as_ref();
+        let link_name = link_name.as_ref();
+        self.ensure_writable()?;
         // Validate the link name
         if link_name.is_empty() || link_name.len() > 255 {
             return Err("Invalid filename length");
         }
-        if link_name.contains('/') || link_name == "." || link_name == ".." {
+        if link_name.contains(&b'/') || link_name == b"." || link_name == b".." {
             return Err("Invalid filename");
         }
 
@@ -1754,7 +1712,7 @@ impl Ext2Fs {
             return Err("Parent is not a directory");
         }
 
-        if self.lookup_in_dir(&parent_inode, link_name)?.is_some() {
+        if self.lookup_in_dir_bytes(&parent_inode, link_name)?.is_some() {
             return Err("File already exists");
         }
 
@@ -1768,7 +1726,7 @@ impl Ext2Fs {
         let mut new_inode = Ext2Inode::new_symlink(target);
         new_inode.set_owner(uid, gid);
         let target_block = |_: u32, block: &mut [u8]| {
-            block[..target.len()].copy_from_slice(target.as_bytes());
+            block[..target.len()].copy_from_slice(target);
         };
         let block: Option<&dyn Fn(u32, &mut [u8])> =
             if target.len() > 60 { Some(&target_block) } else { None };
@@ -1776,95 +1734,14 @@ impl Ext2Fs {
             parent_inode_num,
             &parent_inode,
             &dir_data,
-            link_name.as_bytes(),
+            link_name,
             new_inode,
             block,
             |_, _| Ok(()),
         )?;
 
-        log::debug!("ext2: created symlink '{}' -> '{}'", link_name, target);
+        log::debug!("ext2: created symlink '{:?}' -> '{:?}'", link_name, target);
         Ok(())
-    }
-
-    /// Read the target of a symbolic link
-    ///
-    /// # Arguments
-    /// * `inode_num` - The inode number of the symbolic link
-    ///
-    /// # Returns
-    /// * `Ok(String)` - The target path the symlink points to
-    /// * `Err(msg)` - Error if not a symlink or read error
-    pub fn read_symlink(&self, inode_num: u32) -> Result<alloc::string::String, &'static str> {
-        alloc::string::String::from_utf8(self.read_symlink_bytes(inode_num)?).map_err(|_| "Invalid UTF-8 in symlink target")
-    }
-    pub fn read_symlink_bytes(&self, inode_num: u32) -> Result<Vec<u8>, &'static str> {
-
-        // Read the inode
-        let inode = self.read_inode(inode_num)?;
-
-        // Verify it's a symlink
-        if !inode.is_symlink() {
-            return Err("Not a symbolic link");
-        }
-
-        // Get the target length from i_size
-        let target_len =
-            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_size)) } as usize;
-
-        if target_len == 0 {
-            return Err("Empty symlink target");
-        }
-
-        // Check if this is a fast symlink (target stored in i_block)
-        // Fast symlinks have i_blocks == 0 (no data blocks allocated)
-        let i_blocks = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_blocks)) };
-
-        if i_blocks == 0 && target_len <= 60 {
-            // Fast symlink: target is stored in the i_block array
-            let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
-
-            // Convert the i_block array to bytes
-            let block_bytes =
-                unsafe { core::slice::from_raw_parts(i_block.as_ptr() as *const u8, 60) };
-
-            // Extract the target string
-            let target_bytes = &block_bytes[..target_len];
-            {
-                let mut bytes = Vec::new();
-                bytes
-                    .try_reserve_exact(target_bytes.len())
-                    .map_err(|_| "No memory for symlink target")?;
-                bytes.extend_from_slice(target_bytes);
-                Ok(bytes)
-            }
-        } else {
-            // Regular symlink: target is stored in a data block
-            let i_block = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block)) };
-
-            let block_num = i_block[0];
-            if block_num == 0 {
-                return Err("Symlink has no data block");
-            }
-
-            // Read the data block
-            // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
-            let block_size = self.superblock.block_size();
-            let mut block_buf = [0u8; 4096]; // Max block size
-            read_ext2_block(
-                self.device.as_ref(),
-                block_num,
-                block_size,
-                &mut block_buf[..block_size],
-            )
-            .map_err(|_| "Failed to read symlink data block")?;
-
-            // Extract the target string
-            let target_bytes = &block_buf[..target_len];
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(target_bytes.len()).map_err(|_| "No memory for symlink target")?;
-            bytes.extend_from_slice(target_bytes);
-            Ok(bytes)
-        }
     }
 }
 
@@ -2351,7 +2228,7 @@ fn ext2_acquire<T>(
     spin_fallback()
 }
 
-const EXT2_ACQUIRE_KILLED: &str = "ext2 acquisition interrupted by SIGKILL";
+pub(crate) const EXT2_ACQUIRE_KILLED: &str = "ext2 acquisition interrupted by SIGKILL";
 
 /// How long a thread a kill has claimed parks between checks of its claim.
 const EXT2_KILL_CLAIM_RECHECK_NS: u64 = 1_000_000;
@@ -2538,6 +2415,55 @@ pub struct Ext2WriteGuard {
     _custody: crate::task::thread::KillCustody,
 }
 
+impl Ext2WriteGuard {
+    /// Finish this syscall's suffix, keeping errors with their producer.
+    /// Readers may run between batches; other mutators wait for the ticket.
+    pub fn finish_shrink(mut self, ticket: ShrinkTicket) -> Result<Self, &'static str> {
+        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        loop {
+            let fs = self.as_mut().ok_or("Missing ext2 mount")?;
+            ticket.mount.verify(fs)?;
+            let mut pending = fs.shrink_reclaims.remove(&ticket.inode).ok_or("Missing ext2 shrink")?;
+            assert!(pending.owner.ptr_eq(&alloc::sync::Arc::downgrade(&ticket.owner)));
+            let mut budget = RECLAIM_BUDGET;
+            let result = pending.progress.finish(fs, ticket.inode, &mut budget);
+            if matches!(result, Ok(true)) { return Ok(self); }
+            pending.failed |= result.is_err();
+            fs.shrink_reclaims.insert(ticket.inode, pending);
+            if result.is_err() { return Err("Failed to reclaim resized suffix"); }
+            if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
+            drop(self);
+            writeback::pause(1_000_000);
+            self = fs_write_raw(home)?;
+        }
+    }
+
+    /// Preserve writer serialization while allowing unrelated readers through.
+    /// A killed caller's healthy work finishes in the service before a new
+    /// mutator enters. Failed suffixes retain their per-inode retry policy.
+    fn wait_for_shrink_writer(mut self) -> Result<Self, &'static str> {
+        let _wait_custody = crate::task::thread::KillCustody::try_enter()
+            .expect("ext2 writer wait requires its write guard custody");
+        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        let pin = self.as_ref().map(|fs| fs.mount_pin);
+        loop {
+            if let Some(fs) = self.as_ref() {
+                if let Some(pin) = pin { pin.verify(fs)?; }
+                if !fs.shrink_reclaims.values().any(|pending| pending.owner.strong_count() != 0 || !pending.failed) {
+                    return Ok(self);
+                }
+            } else if pin.is_none() {
+                return Ok(self);
+            } else {
+                return Err("ext2 mount changed during shrink wait");
+            }
+            drop(self);
+            writeback::pause(1_000_000);
+            self = fs_write_raw(home)?;
+        }
+    }
+}
+
 impl core::ops::Deref for Ext2WriteGuard {
     type Target = Option<Ext2Fs>;
     fn deref(&self) -> &Option<Ext2Fs> {
@@ -2700,7 +2626,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     #[cfg(target_arch = "aarch64")]
     let fs = Ext2Fs::new(device, mount_id)?;
     #[cfg(target_arch = "x86_64")]
-    let fs = crate::block::devices()
+    let fs = crate::block::root_devices()
         .into_iter()
         .find_map(|device| {
             if device.block_size() != 512 {
@@ -2721,6 +2647,20 @@ pub fn init_root_fs() -> Result<(), &'static str> {
             }
         })
         .ok_or("No mountable 512-byte-sector ext2 block device")?;
+
+    #[cfg(target_arch = "x86_64")]
+    let fs = {
+        let mut fs = fs;
+        if crate::block::root_on_system_partition() {
+            if let Some(id) = crate::boot::intent::userland() {
+                fs.namespace = generation::select(&fs, id)?;
+            }
+        }
+        ROOT_NAMESPACE.call_once(|| fs.namespace);
+        fs
+    };
+
+    crate::drivers::device_class::storage_read();
 
     // Read packed struct fields safely before logging
     let blocks_count =
@@ -2783,7 +2723,7 @@ pub fn root_fs_write() -> Result<Ext2WriteGuard, &'static str> {
 }
 
 /// Acquire exclusive access without performing another inode's reclamation.
-fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+pub(super) fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     let (lock, waiters, name) = if home {
         (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
     } else {
@@ -2798,11 +2738,17 @@ fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     })
 }
 
+pub(crate) fn fs_sync_guard(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+    fs_write_raw(home)?.wait_for_shrink_writer()
+}
+
 fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     let guard = fs_write_raw(home)?;
+    if let Some(fs) = guard.as_ref() { fs.ensure_writable()?; }
+    let guard = guard.wait_for_shrink_writer()?;
     let pressure = guard.as_ref().is_some_and(|fs| {
         let stats = fs.statfs();
-        stats.free_blocks <= (stats.blocks / 16).max(RECLAIM_BUDGET as u64)
+        stats.free_blocks <= (stats.blocks / 16).max(128)
             || stats.free_inodes <= 32
     });
     if pressure {
@@ -2810,11 +2756,11 @@ fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
         // Last-observer reclamation must not turn rm followed by allocation
         // into ENOSPC solely because the background service has not run yet.
         if let Ok(guard) = accounting_fs_write(home) {
-            return Ok(guard);
+            return guard.wait_for_shrink_writer();
         }
         // Failed I/O keeps allocations quarantined; normal operations report
         // their own errors rather than exposing those allocations for reuse.
-        fs_write_raw(home)
+        fs_write_raw(home)?.wait_for_shrink_writer()
     } else {
         Ok(guard)
     }
@@ -2869,6 +2815,18 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
     }
 }
 
+/// Persist relatime without making a reader finish unrelated suffix work.
+/// This changes only the inode's timestamp under the same exclusive guard;
+/// reclaim reloads the inode before each detachment batch.
+pub(crate) fn update_read_atime(inode: u32, home: bool) -> Result<(), &'static str> {
+    {
+        let guard = if home { home_fs_read()? } else { root_fs_read()? };
+        if guard.as_ref().ok_or("Missing ext2 mount")?.is_read_only() { return Ok(()); }
+    }
+    let mut guard = fs_write_raw(home)?;
+    guard.as_mut().ok_or("Missing ext2 mount")?.update_atime(inode)
+}
+
 /// Check if the root filesystem is mounted
 ///
 /// Read from the published mount ID, not through `root_fs_read()`: it takes
@@ -2888,6 +2846,7 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// Initialize the home ext2 filesystem
 ///
 /// Mounts a second ext2 disk as the /home filesystem.
+/// Noninteractive testing kernels use an embedded fixture when no disk is attached.
 /// Device layout:
 ///   - x86_64: Device 3 (boot=0, test=1, root=2, home=3)
 ///   - ARM64: Device 1 (root=0, home=1)
@@ -2895,20 +2854,33 @@ static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 /// This is non-fatal — if no home disk is attached, /home falls through
 /// to the root ext2 filesystem (backward compatible).
 pub fn init_home_fs() -> Result<(), &'static str> {
+    // Prefer the attached home device so VM acceptance boots exercise the
+    // transport's read-only feature. Physical disks remain protected by the
+    // hardware write-refusal policy rather than selected by index here.
+    // On a physical boot the home is the partition the boot intent names, when it names one.
     #[cfg(target_arch = "x86_64")]
-    let device: alloc::boxed::Box<dyn BlockDevice> = crate::block::disk(3)
-        .or_else(|| crate::block::disk(1))
-        .ok_or("No home block device available (expected at disk index 3 or 1)")?;
-
-    // Try device index 3, then the ARM64 layout's device index 1.
-    #[cfg(target_arch = "aarch64")]
-    let device: alloc::boxed::Box<dyn BlockDevice> = {
-        use crate::block::virtio::VirtioBlockWrapper;
-        let dev = VirtioBlockWrapper::new(3)
-            .or_else(|| VirtioBlockWrapper::new(1))
-            .ok_or("No home block device available (expected at device index 3 or 1)")?;
-        alloc::boxed::Box::new(dev)
+    let device = if crate::block::hardware_read_only() {
+        crate::block::named_home()
+    } else {
+        crate::block::disk(3).or_else(|| crate::block::disk(1))
     };
+
+    #[cfg(target_arch = "aarch64")]
+    let device = {
+        use crate::block::virtio::VirtioBlockWrapper;
+        VirtioBlockWrapper::new(3)
+            .or_else(|| VirtioBlockWrapper::new(1))
+            .map(|dev| alloc::boxed::Box::new(dev) as alloc::boxed::Box<dyn BlockDevice>)
+    };
+
+    // Interactive includes testing, but must retain its writable home disk.
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
+    let device = device.or_else(|| {
+        log::info!("ext2: using embedded read-only home fixture");
+        Some(alloc::boxed::Box::new(crate::block::testing_fixture::ReadOnlyFixture)
+            as alloc::boxed::Box<dyn BlockDevice>)
+    });
+    let device = device.ok_or("No home block device available")?;
 
     // Register with VFS mount system
     let mount_id = crate::fs::vfs::mount("/home", "ext2");

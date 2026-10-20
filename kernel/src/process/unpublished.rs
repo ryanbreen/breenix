@@ -31,13 +31,8 @@
 //! TTBR0_EL1 or CR3, so no other CPU can be walking it.
 //! claim-lint:ok: docs/planning/green-program/process/588-UNPUBLISHED-CONSTRUCTION-2026-09-07.md
 //!
-//! What the release deliberately does not do is free the user stack frames.
-//! allocate_stack_with_privilege registers user stack frames as external leaf
-//! frames on both architectures (kernel/src/memory/stack.rs), so
-//! release_mapped_leaves classifies them LeafMapping::External, drops the
-//! mapping and returns no frame. The stack owner (GuardedStack) keeps whatever
-//! custody it had; issue 583 still describes that leak, and this guard neither
-//! repairs nor worsens it.
+//! The user stack is pages the table owns (process_memory::map_new_user_stack),
+//! so release_mapped_leaves returns its frames with the table's other leaves.
 use super::process::Process;
 use crate::memory::process_memory::UnpublishedPageTable;
 
@@ -66,9 +61,14 @@ impl UnpublishedProcess {
     }
 
     /// Disarm the release and take the process. Called only where the builder
-    /// goes on to insert the row.
+    /// goes on to insert the row: its identity and descriptor table, now
+    /// final, are published for signals and descriptor lookups made without
+    /// PROCESS_MANAGER (`Process::publish_identity`, `publish_fd_table`).
     pub(crate) fn commit(mut self) -> Process {
-        self.process.take().expect("unpublished process")
+        let process = self.process.take().expect("unpublished process");
+        process.publish_identity();
+        process.publish_fd_table();
+        process
     }
 }
 

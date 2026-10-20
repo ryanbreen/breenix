@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"particle_animation\", \"receipt_drop_test\", \"xhci_linux_harness\"))"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"receipt_drop_test\"))"] }
 
 [[bin]]
 name = "kernel"
@@ -25,8 +25,12 @@ test = false
 
 [features]
 force_cpu_accounting_delay = []  # Masked first-dispatch delay for times-reset regression
+force_reclaim_queue_contention = ["testing"] # A peer holds the pending queue while a killed victim publishes its receipt
+force_exit_report_reap_race = ["testing"] # Parent reaps a killed row before its exit report is claimed
 testing = []
 boot_tests = []  # Parallel boot test framework
+# ARM64 pointer measurement: replay a USB HID report through the xHCI pointer path (ioctl 0xB8130006)
+usb_pointer_replay = []
 force_eret_dispatch_596 = ["boot_tests"]  # #596 forced-repro knob
 ret_zero_pc_oracle = ["boot_tests"]
 ret_zero_pc_oracle_exec = ["boot_tests"]
@@ -105,6 +109,17 @@ fs_fault_inject = []
 fs_fault_disarm_short_read = ["fs_fault_inject"]
 fs_fault_disarm_eio = ["fs_fault_inject"]
 fs_fault_disarm_corrupt_inode = ["fs_fault_inject"]
+# x86-metal xHCI recovery exercise (#1931). Fault-test boots only: the
+# `drivers::xhci::fault` module, its controller field and its three call sites
+# are behind this feature, so a production kernel never reads the exercise's
+# request file. `scripts/check-xhci-fault-production-clean.sh` and
+# `tests/xhci_fault_production_clean.rs` prove a production metal image carries
+# none of it.
+xhci_fault_inject = []
+# x86-metal write fence exercise (docs/metal/README.md, "The write fence"). Fault-test
+# boots only: `block::fence_fault` and its one call site are behind this feature, so a
+# production kernel has no code that writes outside its partitions on purpose.
+block_fence_inject = []
 # #728 gate-observable repro oracle for ext2 lock discipline. Test profile
 # only: the module and both of its call sites are behind this feature, and it
 # requires boot_tests for kthread_run_on_cpu_for_test's aarch64 CPU pinning.
@@ -124,6 +139,8 @@ capture_selftest = ["boot_tests"]
 # (scripts/check-critical-path-violations.sh) forbids `panic!`, and rightly:
 # the emitter must not panic, only the thing that summons it may.
 capture_panic_oracle = ["boot_tests"]
+# Targeted post-handoff user-syscall and kernel-thread abort acceptance.
+gpu_fault_acceptance = []
 # Failure-capture PR-7: the deterministic `edge=LOCKUP` oracle. Test profile
 # only, and NOT implied by `boot_tests` -- no gate builds with it. It strands
 # the REAL scheduler guard on a CPU1-pinned kernel thread, with interrupts
@@ -157,7 +174,6 @@ capture_selftest_cut_in_record = ["capture_selftest_budget_mutation"]
 capture_selftest_cut_at_terminator = ["capture_selftest_budget_mutation"]
 btrt = []  # Boot Test Result Table (structured test results)
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
-xhci_linux_harness = []  # Build and use the Linux C-based xHCI harness
 kthread_stress_test = ["testing"]  # Run kthread stress test (100+ kthreads) and exit
 workqueue_test_only = ["testing"]  # Run only workqueue tests and exit
 dns_test_only = ["testing", "external_test_bins"]  # Run only DNS test and exit (fast network debugging)
@@ -193,8 +209,9 @@ spin = "0.9.8"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3.17", default-features = false, features = ["alloc"] }
 linked_list_allocator = "0.10"
+breenix-logo = { path = "../libs/breenix-logo" }
 breengel-abi = { path = "../libs/breengel-abi" }
-noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-latin-extended-a", "unicode-specials"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }
@@ -204,6 +221,7 @@ uart_16550 = "0.3.2"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 arm64-boot-contract = { path = "../libs/arm64-boot-contract" }
+gpu-abi = { path = "../libs/gpu-abi", features = ["alloc"] }
 aarch64-cpu = "9.4"
 tock-registers = "0.8"
 rlibc = "1.0"

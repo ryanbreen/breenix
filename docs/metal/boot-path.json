@@ -1,0 +1,810 @@
+{
+  "version": 1,
+  "catalog": "xtask/src/boot_stages.rs",
+  "gateArch": "x86_64",
+  "bootProfile": "production",
+  "scoring": "modes",
+  "fatal": [
+    "panicked at kernel/src/",
+    "!!! SOFT LOCKUP DETECTED !!!"
+  ],
+  "modes": {
+    "default": {
+      "title": "Boot",
+      "summary": "Boot the production kernel and init from the RAM disk."
+    },
+    "shell": {
+      "title": "Shell",
+      "summary": "Run an interactive shell over the remote serial console."
+    },
+    "probe": {
+      "title": "Probe",
+      "summary": "Run the production probe against real hardware and hosts."
+    },
+    "suite": {
+      "title": "Suite",
+      "summary": "Run a manifest suite as PID 1 from the RAM disk."
+    },
+    "console": {
+      "title": "Console",
+      "summary": "A login prompt on the console, typed at the keyboard."
+    },
+    "persistent-install": {
+      "title": "Persistent install",
+      "summary": "Install or upgrade the persistent install: the request, the new userland on the test root and its migration onto the system partition."
+    },
+    "persistent": {
+      "title": "Persistent boot",
+      "summary": "The boot manager boots the persistent install from the disk: the system partition as root, the home partition at /home."
+    }
+  },
+  "milestones": [
+    {
+      "id": "delivery",
+      "title": "Delivery",
+      "summary": "The console precedes power-on, the image arrives intact, and the bootloader reaches its handoff; kernel execution is measured separately.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "Console ready",
+            "host": "console-ready"
+          },
+          {
+            "name": "Power on",
+            "host": "power-on"
+          },
+          {
+            "name": "Firmware output",
+            "host": "firmware-text"
+          },
+          {
+            "name": "POST",
+            "host": "post"
+          },
+          {
+            "name": "Image fetched",
+            "host": "image-complete"
+          },
+          {
+            "name": "UEFI bootloader started",
+            "marker": "UEFI bootloader started"
+          },
+          {
+            "name": "Bootloader handoff",
+            "marker": "Jumping to kernel entry point at"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
+    },
+    {
+      "id": "first-light",
+      "title": "First light",
+      "summary": "The kernel executes, selects its console, records firmware APIC state before changes, initializes memory and PCI, and reaches idle.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          "Kernel entry point",
+          {
+            "name": "Console UART selected",
+            "marker": "[console] uart 0x3f8 source="
+          },
+          {
+            "name": "Firmware APIC handoff",
+            "marker": "[apic] handoff base="
+          },
+          "Serial port initialized",
+          "GDT and IDT initialized",
+          "Physical memory available",
+          "Frame allocator initialized",
+          "Kernel heap initialized",
+          "HAL timer calibrated",
+          "PCI bus enumerated",
+          {
+            "name": "Kernel idle",
+            "marker": "[metal] kernel idle"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ]
+    },
+    {
+      "id": "interrupts-time",
+      "title": "Interrupts and time",
+      "summary": "Interrupts are routed through the I/O APIC from the MADT, with its source overrides, on firmware that is not QEMU's; the local APIC timer ticks at its rate against the TSC on every CPU.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "ACPI table census",
+            "marker": "[acpi] tables:"
+          },
+          {
+            "name": "IOAPIC delivery",
+            "marker": "+ IOAPIC; 8259 masked"
+          },
+          "Timer initialized",
+          {
+            "name": "Timer tick agrees with TSC",
+            "marker": "[timer] tick rate agrees with the TSC"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ]
+    },
+    {
+      "id": "smp",
+      "title": "Every CPU online",
+      "summary": "Every processor the MADT reports enabled is started by INIT-SIPI in the firmware's APIC mode, comes online, and takes its own timer ticks.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          "All reported CPUs online",
+          {
+            "name": "Four CPUs online and reported",
+            "marker": "[smp] online=4 reported=4"
+          },
+          {
+            "name": "Timer ticks on each CPU",
+            "marker": "[smp] timer ticks on each online CPU"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ]
+    },
+    {
+      "id": "ramdisk-root",
+      "title": "RAM-disk root",
+      "summary": "A RAM-disk root that boots independently of hardware disks.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "RAM disk attached",
+            "marker": "[block] ramdisk "
+          },
+          {
+            "name": "Root mounted from RAM disk",
+            "marker": "[fs] root mounted from the RAM disk"
+          },
+          {
+            "name": "Hardware disks read-only",
+            "marker": "[block] hardware disks read-only"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install"
+      ]
+    },
+    {
+      "id": "first-userspace",
+      "title": "First userspace process",
+      "summary": "Init starts the framebuffer console and its virtual-terminal logins.",
+      "stages": {
+        "default": [
+          {
+            "name": "Init started",
+            "marker": "[init] Breenix init starting (PID 1)"
+          },
+          {
+            "name": "Boot script completed",
+            "marker": "[init] Boot script completed"
+          },
+          {
+            "name": "Console login prompt",
+            "marker": "Breenix login:"
+          }
+        ],
+        "persistent": [
+          {
+            "name": "Init started",
+            "marker": "[init] Breenix init starting (PID 1)"
+          },
+          {
+            "name": "Boot script completed",
+            "marker": "[init] Boot script completed"
+          },
+          {
+            "name": "Console login prompt",
+            "marker": "Breenix login:"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ]
+    },
+    {
+      "id": "shell",
+      "title": "Console shell",
+      "summary": "An interactive shell; the result must be a whole line, distinct from echoed input.",
+      "stages": {
+        "shell": [
+          {
+            "name": "Shell ready",
+            "marker": "[init] shell ready"
+          },
+          {
+            "name": "Shell prompt",
+            "marker": "bsh />"
+          },
+          {
+            "name": "Console computation answered",
+            "marker": "metal-console-ok 42",
+            "match": "line"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
+    },
+    {
+      "id": "nic",
+      "title": "NIC link and first frame",
+      "summary": "The clean-room BCM5720 driver attaches the port with link, resets it through the bootcode handshake, links at 1000 Mb/s full duplex, sends a frame the MAC counts, receives frames by MSI, and receives the DHCP acknowledgement completing the lease exchange.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "BCM5720 found",
+            "marker": "[bcm5720] found "
+          },
+          {
+            "name": "BCM5720 reset complete",
+            "marker": "[bcm5720] reset complete"
+          },
+          {
+            "name": "NIC link up",
+            "marker": "[bcm5720] link up 1000 Mb/s full duplex"
+          },
+          {
+            "name": "Frame sent",
+            "marker": "[bcm5720] frame sent: "
+          },
+          {
+            "name": "First frame received",
+            "marker": "[bcm5720] first frame received"
+          },
+          {
+            "name": "Reply to the frame sent",
+            "marker": "[bcm5720] reply received: "
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ]
+    },
+    {
+      "id": "dhcp-gateway",
+      "title": "DHCP, gateway and DNS",
+      "summary": "A DHCP lease, resolved gateway, echo reply and answer from the lease nameserver.",
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "DHCP lease acquired",
+            "marker": "[dhcp] lease acquired"
+          },
+          "ARP reply received and gateway MAC resolved",
+          "ICMP echo reply received from gateway",
+          {
+            "name": "DNS answer received",
+            "marker": "[dns] answer received"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ]
+    },
+    {
+      "id": "real-host",
+      "title": "Fetch from a real host",
+      "summary": "The production probe fetches a known boot-server file over TCP and verifies its SHA-256 checksum.",
+      "stages": {
+        "probe": [
+          {
+            "name": "Metal fetch passed",
+            "marker": "PROBE metal-fetch OK"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
+    },
+    {
+      "id": "suite-finished",
+      "title": "Suite finished",
+      "summary": "Any manifest suite ribbon; a networking first additionally requires the complete passing networking manifest verdict.",
+      "stages": {
+        "suite": [
+          {
+            "name": "Suite finished",
+            "marker": "SUITE breengel DONE|SUITE console DONE|SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE gpu DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE utilities DONE"
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
+    },
+    {
+      "id": "sata-ahci",
+      "title": "SATA disk read by MSI",
+      "summary": "The AHCI controller takes its completions by MSI through the local APIC instead of a wired INTx line whose routing is unknown on this firmware, IDENTIFY DEVICE gives the drive's size, and a read of the disk's first sectors completes by MSI; only the kind of partition table and whether a Breenix storage record is present are reported.",
+      "stages": {
+        "probe": [
+          {
+            "name": "AHCI attached by MSI",
+            "marker": "[ahci] attached by MSI: "
+          },
+          {
+            "name": "SATA drive identified",
+            "marker": "[ahci] drive identified: "
+          },
+          {
+            "name": "First sectors read by MSI",
+            "marker": "[ahci] first sectors read by MSI: "
+          }
+        ]
+      },
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ]
+    },
+    {
+      "id": "disk-io",
+      "title": "Disk written and read back",
+      "summary": "An install boot copies its RAM-disk root onto the disk from sector 0 with multi-sector writes under an explicit, revoked write grant, writes the root record last, and reads every sector back identical; the SHA-256 it reports is the one the boot loop recorded for what it asked to be written.",
+      "stages": {
+        "probe": [
+          {
+            "name": "Install requested",
+            "marker": "[storage] install requested by boot "
+          },
+          {
+            "name": "Disk written",
+            "marker": "[storage] wrote "
+          },
+          {
+            "name": "Disk read back identical",
+            "marker": "[storage] read back identical: "
+          }
+        ]
+      },
+      "bootShapes": [
+        "install"
+      ]
+    },
+    {
+      "id": "disk-filesystem",
+      "title": "Booted from an ext2 root on the disk",
+      "summary": "A boot delivered without a RAM disk finds the root record the install wrote, grants writes for that disk alone, mounts its ext2 filesystem as root and runs userspace from it: the probe's ext2 file and directory round trips pass on the disk.",
+      "stages": {
+        "probe": [
+          {
+            "name": "Root record found",
+            "marker": "[storage] root record: installed by boot "
+          },
+          {
+            "name": "Writes granted for the installed root",
+            "marker": "[block] hardware disk writes granted: the root the storage lane installed"
+          },
+          {
+            "name": "Root mounted from the disk",
+            "marker": "[fs] root mounted from the installed disk"
+          },
+          {
+            "name": "Ext2 file round trip on the disk",
+            "marker": "PROBE file OK"
+          },
+          {
+            "name": "Ext2 directory round trip on the disk",
+            "marker": "PROBE dir OK"
+          }
+        ],
+        "x86_64": [
+          {
+            "name": "Root record found",
+            "marker": "[storage] root record: installed by boot "
+          },
+          {
+            "name": "Writes granted for the installed root",
+            "marker": "[block] hardware disk writes granted: the root the storage lane installed"
+          },
+          {
+            "name": "Root mounted from the disk",
+            "marker": "[fs] root mounted from the installed disk"
+          }
+        ]
+      },
+      "bootShapes": [
+        "disk-root"
+      ],
+      "kernel": true
+    },
+    {
+      "id": "fb-console",
+      "title": "Framebuffer console",
+      "summary": "The firmware framebuffer lies in a display function's BAR, which every CPU's PAT and every kernel mapping make write-combining; one render thread draws the kernel log and the console TTY from a retained text grid, and at idle the screen read back matches the RAM shadow and the font's pixels for the text drawn.",
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ],
+      "bootModes": [
+        "default",
+        "shell",
+        "console",
+        "persistent"
+      ],
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "Framebuffer is the display BAR",
+            "marker": "[fbcon] framebuffer in display BAR: "
+          },
+          {
+            "name": "Write-combining mapping",
+            "marker": "[fbcon] aperture mapped write-combining"
+          },
+          {
+            "name": "Console on the screen",
+            "marker": "[fbcon] console tty and kernel log on the screen"
+          },
+          {
+            "name": "Screen read back",
+            "marker": "[fbcon] screen read back identical: "
+          }
+        ]
+      }
+    },
+    {
+      "id": "xhci",
+      "title": "USB controller by MSI",
+      "summary": "Clean-room x86 controller handoff, reset, repeated MSI completions across event-ring wraps, and root-port descriptor enumeration.",
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ],
+      "kernel": true,
+      "stages": {
+        "x86_64": [
+          {
+            "name": "Controller found",
+            "marker": "[xhci] found "
+          },
+          {
+            "name": "Firmware released the controller",
+            "marker": "[xhci] firmware handoff: "
+          },
+          {
+            "name": "Reset and running",
+            "marker": "[xhci] running: "
+          },
+          {
+            "name": "Command completed by MSI",
+            "marker": "[xhci] no-op completed by MSI: "
+          },
+          {
+            "name": "Port census",
+            "marker": "[xhci] port census: "
+          }
+        ]
+      }
+    },
+    {
+      "id": "usb-keyboard",
+      "title": "USB keyboard into the console",
+      "summary": "Clean-room HID boot keyboard; its typed stages are measured only by attended boots, from kernel USB input provenance (M8).",
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ],
+      "stages": {
+        "console": [
+          {
+            "name": "Boot keyboard attached",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "Boot keyboard detached and reclaimed",
+            "marker": "[usb] boot keyboard detached: "
+          },
+          {
+            "name": "Boot keyboard attached again",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "First key report",
+            "marker": "[hid] first key report",
+            "input": "keyboard"
+          },
+          {
+            "name": "Keys reached the console TTY",
+            "marker": "[console] first input byte input=keyboard",
+            "input": "keyboard",
+            "match": "line"
+          }
+        ],
+        "persistent": [
+          {
+            "name": "Boot keyboard attached",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "Boot keyboard detached and reclaimed",
+            "marker": "[usb] boot keyboard detached: "
+          },
+          {
+            "name": "Boot keyboard attached again",
+            "marker": "[usb] boot keyboard attached: "
+          },
+          {
+            "name": "First key report",
+            "marker": "[hid] first key report",
+            "input": "keyboard"
+          },
+          {
+            "name": "Keys reached the console TTY",
+            "marker": "[console] first input byte input=keyboard",
+            "input": "keyboard",
+            "match": "line"
+          }
+        ]
+      },
+      "waitingFor": "An attended USB keyboard challenge; no successful human-typed boot has been measured yet."
+    },
+    {
+      "id": "console-login",
+      "title": "Login at the machine's own console",
+      "summary": "Attended boots require the ordered USB-only refusal, login, computation, screen check and logout challenge (M8); SOL boots exercise the same path as development input.",
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root"
+      ],
+      "stages": {
+        "console": [
+          {
+            "name": "Getty on the console",
+            "marker": "[init] getty on the console"
+          },
+          {
+            "name": "Login prompt",
+            "marker": "login: "
+          },
+          {
+            "name": "Wrong password refused",
+            "marker": "Login incorrect"
+          },
+          {
+            "name": "Logged-in computation answered",
+            "marker": "metal-login-ok 42",
+            "match": "line",
+            "input": "keyboard"
+          },
+          {
+            "name": "The session is on the screen",
+            "marker": "fbcon check: shadow and screen identical"
+          },
+          {
+            "name": "The answer is on the screen",
+            "marker": "fbcon row: metal-login-ok 42"
+          },
+          {
+            "name": "Getty reacquired the console after logout",
+            "marker": "[getty] console acquired",
+            "match": "line"
+          }
+        ]
+      },
+      "waitingFor": "An attended USB keyboard challenge; no successful human-typed boot has been measured yet.",
+      "attendedStages": [
+        {
+          "name": "Getty on the console",
+          "marker": "[init] getty on the console",
+          "match": "line"
+        },
+        {
+          "name": "Login prompt",
+          "marker": "Breenix login: "
+        },
+        {
+          "name": "Wrong password refused",
+          "marker": "[console] login refused input=keyboard",
+          "match": "line"
+        },
+        {
+          "name": "Login reported the refusal",
+          "marker": "Login incorrect",
+          "match": "line"
+        },
+        {
+          "name": "USB keyboard login accepted",
+          "marker": "[console] login accepted input=keyboard",
+          "match": "line"
+        },
+        {
+          "name": "Logged-in computation answered",
+          "marker": "metal-login-ok 42",
+          "match": "line"
+        },
+        {
+          "name": "The session is on the screen",
+          "marker": "fbcon check: shadow and screen identical"
+        },
+        {
+          "name": "The answer is on the screen",
+          "marker": "fbcon row: metal-login-ok 42"
+        },
+        {
+          "name": "Logout ended the session",
+          "marker": "[init] console session ended; restarting getty",
+          "match": "line"
+        },
+        {
+          "name": "USB keyboard session ended",
+          "marker": "[console] session ended input=keyboard",
+          "match": "line"
+        },
+        {
+          "name": "Getty reacquired the console after logout",
+          "marker": "[getty] console acquired",
+          "match": "line"
+        },
+        {
+          "name": "Login prompt after logout",
+          "marker": "Breenix login: "
+        }
+      ]
+    },
+    {
+      "id": "persistent-install",
+      "title": "Persistent install from the boot manager",
+      "summary": "The boot manager draws its menu and reads it back, is told by the lab that no test boot is pending, and boots a kernel slot from the EFI system partition; the kernel mounts the system partition the slot's intent names as root and the home partition at /home, fences writes to those two partitions, and reaches the login prompt.",
+      "bootShapes": [
+        "persistent"
+      ],
+      "bootModes": [
+        "persistent"
+      ],
+      "stages": {
+        "persistent": [
+          {
+            "name": "Boot manager menu read back",
+            "marker": "breenix-manager: screen read back identical: "
+          },
+          {
+            "name": "The lab answered: no test boot pending",
+            "marker": "breenix-manager: row: No test boot is pending; session "
+          },
+          {
+            "name": "Kernel slot booted",
+            "marker": "breenix-manager: booting current |breenix-manager: booting previous "
+          },
+          {
+            "name": "Root is the system partition",
+            "marker": "[storage] root partition: system "
+          },
+          {
+            "name": "Root mounted from the system partition",
+            "marker": "[fs] root mounted from the system partition"
+          },
+          {
+            "name": "Home is the home partition",
+            "marker": "[storage] home partition: home "
+          },
+          {
+            "name": "Home mounted",
+            "marker": "ext2 home filesystem mounted at /home"
+          },
+          {
+            "name": "Writes fenced to the two partitions",
+            "marker": "[block] write fence: "
+          },
+          {
+            "name": "Console login prompt",
+            "marker": "Breenix login:"
+          }
+        ]
+      }
+    }
+  ],
+  "firsts": [
+    {
+      "id": "first-line",
+      "title": "First Breenix line on real hardware",
+      "stage": "Kernel entry point"
+    },
+    {
+      "id": "first-tick",
+      "title": "First timer tick on real hardware",
+      "stage": "Timer tick agrees with TSC"
+    },
+    {
+      "id": "every-cpu",
+      "title": "Every CPU online",
+      "stage": "Four CPUs online and reported"
+    },
+    {
+      "id": "first-shell",
+      "title": "First shell on real hardware",
+      "stage": "Console computation answered"
+    },
+    {
+      "id": "first-packet",
+      "title": "First packet",
+      "stage": "First frame received"
+    },
+    {
+      "id": "first-lease",
+      "title": "First DHCP lease",
+      "stage": "DHCP lease acquired"
+    },
+    {
+      "id": "first-disk-root",
+      "title": "First boot from a disk Breenix wrote",
+      "stage": "Root mounted from the disk"
+    },
+    {
+      "id": "networking-suite",
+      "title": "Networking suite passes on real hardware",
+      "stage": "Suite finished",
+      "suite": "networking"
+    },
+    {
+      "id": "first-local-login",
+      "title": "First login at the machine's own console",
+      "stage": "Logged-in computation answered"
+    }
+  ]
+}

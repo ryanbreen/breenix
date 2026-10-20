@@ -183,17 +183,31 @@ impl Process {
     }
 
     pub fn mapped_bytes(&self) -> u64 {
-        self.image_size
+        let bytes = self.image_size
             .saturating_add(self.heap_end.saturating_sub(self.heap_start))
             .saturating_add(self.user_stack_top.saturating_sub(self.user_stack_bottom))
-            .saturating_add(self.vmas.iter().map(|v| v.size()).sum::<u64>())
-            // Window remnants this process holds as an evidence holder, and window memory it
-            // owns but has unmapped (docs/gui/breengel.md sections 17.2 and 17.3), count
-            // against its address-space limit too.
-            .saturating_add(crate::window::charged_bytes(
-                self.thread_group_id.unwrap_or(self.id.as_u64()),
-                &self.vmas,
-            ))
+            .saturating_add(self.vmas.iter().map(|v| v.size()).sum::<u64>());
+        // Window remnants this process holds as an evidence holder, and window memory it
+        // owns but has unmapped (docs/gui/breengel.md sections 17.2 and 17.3), count
+        // against its address-space limit too.
+        #[cfg(target_arch = "aarch64")]
+        let bytes = bytes.saturating_add(crate::window::charged_bytes(
+            self.thread_group_id.unwrap_or(self.id.as_u64()),
+            &self.vmas,
+        ));
+        #[cfg(target_arch = "aarch64")]
+        let bytes = bytes.saturating_add(self.limits.gpu_bytes.load(Ordering::Acquire));
+        bytes
+    }
+
+    /// Reserve backing under the same process lock as mmap, brk and stack growth.
+    #[cfg(target_arch = "aarch64")]
+    pub fn reserve_gpu_bytes(&self, bytes: u64) -> bool {
+        if self.mapped_bytes().saturating_add(bytes) > self.limits.get(AS).soft {
+            return false;
+        }
+        self.limits.gpu_bytes.fetch_add(bytes, Ordering::AcqRel);
+        true
     }
 
     pub fn data_bytes(&self) -> u64 {
@@ -234,9 +248,16 @@ pub struct Limits {
     ticks: AtomicU64,
     next: AtomicU64,
     pending: AtomicU32,
+    #[cfg(target_arch = "aarch64")]
+    gpu_bytes: AtomicU64,
 }
 
 impl Limits {
+    #[cfg(target_arch = "aarch64")]
+    pub fn release_gpu_bytes(&self, bytes: u64) {
+        self.gpu_bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
+
     pub fn has_pending_cpu_signals(&self) -> bool {
         self.pending.load(Ordering::Acquire) != 0
     }
@@ -251,6 +272,8 @@ impl Limits {
             ticks: AtomicU64::new(0),
             next: AtomicU64::new(0),
             pending: AtomicU32::new(0),
+            #[cfg(target_arch = "aarch64")]
+            gpu_bytes: AtomicU64::new(0),
         })
     }
 

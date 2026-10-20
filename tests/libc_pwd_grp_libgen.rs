@@ -192,6 +192,10 @@ pub unsafe fn setgroups(n: usize, list: *const u32) -> i32 {
     0
 }
 
+// Only non-reentrant passwd callers share production storage. Hold this through
+// reading their returned pointers; the reentrant, group and pathname cases run freely.
+static PASSWD_STORAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const PASSWD: &[u8] = b"root:x:0:0:root:/root:/bin/sh\n\
 broken line without fields\n\
 toolong:x:99999999999:0::/:/bin/sh\n\
@@ -217,6 +221,7 @@ unsafe fn text(p: *const u8) -> String {
 
 #[test]
 fn getpwnam_and_getpwuid_find_entries_and_skip_malformed_lines() {
+    let _storage = PASSWD_STORAGE.lock().unwrap_or_else(|e| e.into_inner());
     databases();
     unsafe {
         let name = CString::new("wrb").unwrap();
@@ -263,6 +268,7 @@ fn getpwuid_r_reports_erange_for_a_small_buffer() {
 
 #[test]
 fn getpwent_walks_every_well_formed_entry() {
+    let _storage = PASSWD_STORAGE.lock().unwrap_or_else(|e| e.into_inner());
     databases();
     unsafe {
         pwd::endpwent();

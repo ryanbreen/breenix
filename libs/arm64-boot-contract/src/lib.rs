@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod boot_seed_file;
+pub mod phys_memory;
 pub mod uefi_time;
 
 /// High-half direct-map base used by the ARM64 loader and kernel.
@@ -8,9 +10,19 @@ pub const HHDM_BASE: u64 = 0xffff_0000_0000_0000;
 pub const LINKED_RAM_START: u64 = 0x4000_0000;
 /// The loader remaps this 512 MiB interval; the rest of L1[1] is device space.
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
-/// HardwareConfig version carrying the loader's RAM relocation offset and the
-/// firmware's enabled-CPU count.
-pub const HARDWARE_CONFIG_VERSION: u32 = 4;
+/// HardwareConfig v5 carries only final-map conventional memory as free RAM.
+/// Earlier versions included boot-services memory before loader allocations.
+/// v6 adds `boot_flags`. v7 adds the boot seed (`boot_seed_source`, `boot_seed`).
+pub const HARDWARE_CONFIG_VERSION: u32 = 7;
+
+/// Bytes of boot seed the loader hands the kernel's random pool.
+pub const BOOT_SEED_BYTES: usize = 64;
+/// `boot_seed_source`: the seed came from the firmware's EFI_RNG_PROTOCOL.
+pub const BOOT_SEED_EFI_RNG: u32 = 1;
+/// `boot_seed_source`: the seed came from the TPM's TPM2_GetRandom.
+pub const BOOT_SEED_TPM: u32 = 2;
+/// `boot_seed_source`: fresh host randomness, consumed on the boot disk before handoff.
+pub const BOOT_SEED_HOST_FILE: u32 = 3;
 
 /// Firmware ranges that must remain identity mapped for physical-mode runtime
 /// services after ExitBootServices. They are excluded from usable RAM.

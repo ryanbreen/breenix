@@ -4,18 +4,19 @@
 //! PCI enumeration and device-specific drivers.
 
 pub mod ahci;
+#[cfg(target_arch = "x86_64")]
+pub mod bcm5720;
+pub mod device_class;
 pub mod e1000;
 pub mod fw_cfg;
+pub mod hid_boot;
 #[cfg(target_arch = "x86_64")]
 pub mod nvme;
 pub mod pci;
+pub mod xhci;
 #[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
-#[cfg(target_arch = "aarch64")]
-pub mod usb;
 pub mod virtio; // Now available on both x86_64 and aarch64
-#[cfg(target_arch = "aarch64")]
-pub mod vmware;
 
 /// Initialize the driver subsystem
 ///
@@ -72,14 +73,38 @@ pub fn init() -> usize {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
 
-            // Enable E1000 IRQ now that driver is initialized
-            // E1000 uses IRQ 10 in QEMU's PCI configuration
-            crate::interrupts::enable_irq10();
+            // MSI where the function has it; otherwise IRQ 10, the line
+            // QEMU's PCI configuration gives the E1000.
+            match e1000::interrupt_by_msi() {
+                Ok(vector) => log::info!("E1000: interrupts by MSI vector {vector:#x}"),
+                Err(reason) => {
+                    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+                        log::info!("E1000: interrupts on IRQ 10 ({reason})");
+                        crate::interrupts::enable_irq10();
+                    } else {
+                        log::info!("E1000: INTx remains masked: routing unknown ({reason})");
+                    }
+                }
+            }
         }
         Err(e) => {
             log::warn!("E1000 network driver initialization failed: {}", e);
             init_other_network_device();
         }
+    }
+
+    // Broadcom BCM5720 ports with link at handoff (bare-metal x86).
+    let bcm5720_ports = bcm5720::init();
+    if bcm5720_ports > 0 {
+        log::info!("BCM5720 driver attached {bcm5720_ports} port(s)");
+    }
+
+    if e1000::is_initialized()
+        || bcm5720::is_initialized()
+        || virtio::net_legacy::is_initialized()
+        || rtl8139::is_initialized()
+    {
+        log::info!("[devices] network initialized: driver attached");
     }
 
     // Initialize VirtIO sound driver
@@ -114,6 +139,10 @@ fn init_other_network_device() {
             }
         },
     };
+    if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        log::info!("Network INTx remains masked: routing unknown");
+        return;
+    }
     match line {
         Some(10) => crate::interrupts::enable_irq10(),
         Some(11) => crate::interrupts::enable_irq11(),
@@ -129,13 +158,18 @@ pub fn run_post_init_self_tests() {
     // PIC initialization remaps/masks IRQs, so enable the VirtIO legacy INTx
     // lines after PIC setup and after the drivers exist. QEMU routes the boot
     // virtio-blk disk on IRQ11 and additional VirtIO devices on IRQ10/IRQ11.
-    crate::interrupts::enable_irq10();
-    crate::interrupts::enable_virtio_irq();
+
+    // Where PCI INTx routing is unknown, what drives those two lines is
+    // unknown too, so they stay masked.
+    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
+        crate::interrupts::enable_irq10();
+        crate::interrupts::enable_virtio_irq();
+    }
 
     // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
     // This runs after time/PIC setup and before root mounting.
     if let Err(e) = ahci::init() {
-        log::debug!("AHCI initialization: {}", e);
+        log::info!("AHCI initialization: {e}");
     }
 
     if let Err(e) = virtio::block::test_read() {
@@ -148,11 +182,18 @@ pub fn run_post_init_self_tests() {
         }
     }
 
+
     if virtio::sound::is_initialized() {
         if let Err(e) = virtio::sound::test_silence() {
             log::warn!("VirtIO sound test failed: {}", e);
         }
     }
+
+    // BCM5720 bring-up probes wait for link and take frames by MSI.
+    bcm5720::start_networking();
+
+    // The independent bare-metal USB worker uses MSI; ARM USB is unchanged.
+    xhci::init();
 }
 
 /// Initialize the driver subsystem (ARM64 version)
@@ -207,6 +248,12 @@ pub fn init() -> usize {
             }
         }
 
+        // The GPU core's device: QEMU's virtio-gpu-gl-pci, when the boot attaches one.
+        crate::gpu::init();
+
+        // An entropy device on PCI, when the boot attaches virtio-rng-pci rather than the MMIO one.
+        init_entropy_pci();
+
         // Initialize AHCI from PCI
         match ahci::init() {
             Ok(count) => {
@@ -258,27 +305,8 @@ pub fn init() -> usize {
             virtio_devices.len()
         );
 
-        match virtio::gpu_pci::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VirtIO GPU (PCI) initialized");
-                // Attempt to initialize VirGL 3D acceleration if the device supports it
-                match virtio::gpu_pci::virgl_init() {
-                    Ok(()) => {
-                        serial_println!("[drivers] VirGL 3D acceleration active");
-                        crate::graphics::set_compositor_backend(
-                            crate::graphics::CompositorBackend::VirGL,
-                        );
-                        serial_println!("[drivers] Compositor backend: VirGL");
-                        // Enable yielding during GPU command waits now that init is complete.
-                        // During runtime, GPU poll loops yield to the scheduler instead of
-                        // spinning, letting other tasks run during ~3.4ms GPU processing.
-                        virtio::gpu_pci::enable_gpu_yield();
-                    }
-                    Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
-                }
-            }
-            Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
-        }
+        // The GPU core (`kernel/src/gpu/`) drives Parallels' virtio-gpu device.
+        crate::gpu::init();
 
         // Initialize VirtIO network driver (PCI transport) — Parallels
         match virtio::net_pci::init() {
@@ -293,55 +321,10 @@ pub fn init() -> usize {
             }
         }
 
-        // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
-        match vmware::svga3::init() {
-            Ok(()) => {
-                serial_println!("[drivers] VMware SVGA3 GPU initialized");
-                // SVGA3 with VRAM traces provides GPU-level compositing:
-                // BWM writes pixels to VRAM, device monitors and updates display.
-                crate::graphics::set_compositor_backend(
-                    crate::graphics::CompositorBackend::Svga3Stdu,
-                );
-                serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
-            }
-            Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
-        }
+        init_entropy_pci();
 
-        // EHCI USB 2.0 controller — initialization is handled inside xhci::init()
-        // as a prerequisite for Parallels USB device routing (companion controller model).
-        // Intel 82801FB EHCI: vendor 0x8086, device 0x265c at PCI 00:02.0
-
-        // Initialize XHCI USB host controller (keyboard + mouse)
-        // Find by class code (0x0C/0x03/0x30 = USB XHCI), then fall back to known device IDs.
-        // Parallels NEC uPD720200: 0x1033:0x0194, VMware: 0x15ad:0x077a
-        if let Some(xhci_dev) = pci::find_by_class(pci::DeviceClass::SerialBus, 0x03, 0x30)
-            .or_else(|| pci::find_device(0x1033, 0x0194))
-            .or_else(|| pci::find_device(0x15ad, 0x077a))
-        {
-            serial_println!(
-                "[drivers] Found XHCI at {:02x}:{:02x}.{} [{:04x}:{:04x}]",
-                xhci_dev.bus,
-                xhci_dev.device,
-                xhci_dev.function,
-                xhci_dev.vendor_id,
-                xhci_dev.device_id
-            );
-            #[cfg(feature = "xhci_linux_harness")]
-            let xhci_result = usb::xhci_linux::init(&xhci_dev);
-            #[cfg(not(feature = "xhci_linux_harness"))]
-            let xhci_result = usb::xhci::init(&xhci_dev);
-
-            match xhci_result {
-                Ok(()) => {
-                    serial_println!("[drivers] XHCI USB controller initialized");
-                }
-                Err(e) => {
-                    serial_println!("[drivers] XHCI USB init failed: {}", e);
-                }
-            }
-        } else {
-            serial_println!("[drivers] No XHCI USB controller found");
-        }
+        // The GPU core admits VMware's SVGA3 device when the console attaches,
+        // after the early GOP splash. No legacy SVGA driver owns the device here.
 
         // Initialize AHCI storage driver.
         // First try PCI (standard AHCI), then platform MMIO (Parallels Desktop).
@@ -375,6 +358,14 @@ pub fn init() -> usize {
     }
 }
 
+/// The virtio-pci entropy device, unless an MMIO one is already set up.
+#[cfg(target_arch = "aarch64")]
+fn init_entropy_pci() {
+    if let Err(e) = virtio::rng::init_pci() {
+        crate::serial_println!("[drivers] VirtIO entropy (PCI): {}", e);
+    }
+}
+
 /// Initialize VirtIO MMIO devices (QEMU virt platform).
 #[cfg(target_arch = "aarch64")]
 fn init_virtio_mmio() -> usize {
@@ -390,6 +381,17 @@ fn init_virtio_mmio() -> usize {
             device.device_id(),
             device.version()
         );
+        let class = match device.device_id() {
+            virtio::mmio::device_id::BLOCK => Some(device_class::Class::Storage),
+            virtio::mmio::device_id::NETWORK => Some(device_class::Class::Network),
+            _ => None,
+        };
+        if let Some(class) = class {
+            device_class::found(
+                class,
+                format_args!("virtio-mmio {} (version {})", type_name, device.version()),
+            );
+        }
         device_count += 1;
     }
 
@@ -430,6 +432,11 @@ fn init_virtio_mmio() -> usize {
         Err(e) => {
             serial_println!("[drivers] VirtIO GPU driver init failed: {}", e);
         }
+    }
+
+    // The entropy device seeds the kernel's random pool (crate::random).
+    if let Err(e) = virtio::rng::init_mmio() {
+        serial_println!("[drivers] VirtIO entropy (MMIO): {}", e);
     }
 
     // Initialize VirtIO sound driver

@@ -7,7 +7,8 @@
 // This is a public API module - functions are intentionally available for external use
 #![allow(dead_code)]
 
-
+use core::cmp::{max, min};
+use super::firmware_writes::BufferMut;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
@@ -126,7 +127,7 @@ pub trait Canvas {
     fn get_pixel(&self, x: i32, y: i32) -> Option<Color>;
 
     /// Get buffer for direct access (optional optimization).
-    fn buffer_mut(&mut self) -> &mut [u8];
+    fn buffer_mut(&mut self) -> BufferMut<'_>;
 
     /// Get buffer for read access.
     fn buffer(&self) -> &[u8];
@@ -139,55 +140,283 @@ pub trait Canvas {
     }
 }
 
-fn clip_rect_to_bounds(r:Rect,width:usize,height:usize)->Option<Rect> {
-    let (x,y)=(i64::from(r.x).max(0),i64::from(r.y).max(0));
-    let right=(i64::from(r.x)+i64::from(r.width)).min(width as i64);
-    let bottom=(i64::from(r.y)+i64::from(r.height)).min(height as i64);
-    (right>x && bottom>y).then(||Rect{x:x as i32,y:y as i32,width:(right-x) as u32,height:(bottom-y) as u32})
-}
-/// Compatibility colour API for Canvas consumers; the shared raster owns the blend rule.
-pub fn blend_colors(fg:Color,bg:Color,intensity:u8)->Color {
-    let p=libgfx::alpha::blend(gfx(fg),gfx(bg),intensity);Color::rgb(p.r,p.g,p.b)
+fn to_i32_clamped(value: u32) -> i32 {
+    if value > i32::MAX as u32 {
+        i32::MAX
+    } else {
+        value as i32
+    }
 }
 
-/// Borrow a validated canvas view for the shared no_std raster, then propagate damage.
-fn raster(canvas:&mut impl Canvas,draw:impl FnOnce(&mut libgfx::framebuf::FrameBuf)) {
-    let (width,height,bpp,bgr,stride)=(canvas.width(),canvas.height(),canvas.bytes_per_pixel(),canvas.is_bgr(),canvas.stride());
-    let bytes=canvas.buffer_mut();
-    if stride.checked_mul(bpp).and_then(|n|n.checked_mul(height)).is_none_or(|n|n>bytes.len()) {return;}
-    let Ok(mut fb)=(unsafe{libgfx::framebuf::FrameBuf::from_raw(bytes.as_mut_ptr(),width,height,stride*bpp,bpp,bgr)})else{return;};
-    draw(&mut fb);
-    if let Some(r)=fb.take_dirty(){canvas.mark_dirty_region(r.x as usize,r.y as usize,r.w as usize,r.h as usize);}
+fn clip_rect_to_bounds(rect: Rect, width: usize, height: usize) -> Option<Rect> {
+    let canvas_w = width as i32;
+    let canvas_h = height as i32;
+    if canvas_w <= 0 || canvas_h <= 0 {
+        return None;
+    }
+
+    let rect_w = to_i32_clamped(rect.width);
+    let rect_h = to_i32_clamped(rect.height);
+    if rect_w <= 0 || rect_h <= 0 {
+        return None;
+    }
+
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = x0.saturating_add(rect_w);
+    let y1 = y0.saturating_add(rect_h);
+
+    let cx0 = max(0, min(canvas_w, x0));
+    let cy0 = max(0, min(canvas_h, y0));
+    let cx1 = max(0, min(canvas_w, x1));
+    let cy1 = max(0, min(canvas_h, y1));
+
+    if cx0 >= cx1 || cy0 >= cy1 {
+        return None;
+    }
+
+    Some(Rect {
+        x: cx0,
+        y: cy0,
+        width: (cx1 - cx0) as u32,
+        height: (cy1 - cy0) as u32,
+    })
 }
-fn gfx(c:Color)->libgfx::color::Color {libgfx::color::Color::rgb(c.r,c.g,c.b)}
-pub fn draw_hline(canvas:&mut impl Canvas,x1:i32,x2:i32,y:i32,color:Color) {
-    raster(canvas,|fb|libgfx::shapes::draw_line(fb,x1,y,x2,y,gfx(color)));
+
+/// Draw a horizontal line (optimized - single memset per row).
+pub fn draw_hline(canvas: &mut impl Canvas, x1: i32, x2: i32, y: i32, color: Color) {
+    let width = canvas.width() as i32;
+    let height = canvas.height() as i32;
+    let bpp = canvas.bytes_per_pixel();
+    if width <= 0 || height <= 0 || bpp == 0 {
+        return;
+    }
+    if y < 0 || y >= height {
+        return;
+    }
+
+    let mut start = min(x1, x2);
+    let mut end = max(x1, x2);
+    if end < 0 || start >= width {
+        return;
+    }
+    start = max(start, 0);
+    end = min(end, width - 1);
+    if start > end {
+        return;
+    }
+
+    let stride = canvas.stride();
+    let stride_bytes = stride * bpp; // stride is in pixels, convert to bytes
+    let is_bgr = canvas.is_bgr();
+    let pixel = color.to_pixel_bytes(bpp, is_bgr);
+    let mut buffer = canvas.buffer_mut();
+
+    let row_start = (y as usize).saturating_mul(stride_bytes);
+    if row_start >= buffer.len() {
+        return;
+    }
+    let row_end = min(row_start + stride_bytes, buffer.len());
+    let row_len = row_end - row_start;
+
+    let start_byte = (start as usize).saturating_mul(bpp);
+    if start_byte >= row_len {
+        return;
+    }
+    let end_byte = min((end as usize + 1).saturating_mul(bpp), row_len);
+
+    let end_byte = end_byte - (end_byte - start_byte) % bpp;
+    if pixel[..bpp].iter().all(|&byte| byte == pixel[0]) {
+        buffer.fill(row_start + start_byte..row_start + end_byte, pixel[0]);
+    } else {
+        for at in (start_byte..end_byte).step_by(bpp) {
+            buffer.copy_from_slice(row_start + at, &pixel[..bpp]);
+        }
+    }
 }
-pub fn draw_vline(canvas:&mut impl Canvas,x:i32,y1:i32,y2:i32,color:Color) {
-    raster(canvas,|fb|libgfx::shapes::draw_line(fb,x,y1,x,y2,gfx(color)));
+
+/// Draw a vertical line.
+pub fn draw_vline(canvas: &mut impl Canvas, x: i32, y1: i32, y2: i32, color: Color) {
+    let width = canvas.width() as i32;
+    let height = canvas.height() as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    if x < 0 || x >= width {
+        return;
+    }
+
+    let mut start = min(y1, y2);
+    let mut end = max(y1, y2);
+    if end < 0 || start >= height {
+        return;
+    }
+    start = max(start, 0);
+    end = min(end, height - 1);
+    if start > end {
+        return;
+    }
+
+    for y in start..=end {
+        canvas.set_pixel(x, y, color);
+    }
 }
-pub fn draw_line(canvas:&mut impl Canvas,x1:i32,y1:i32,x2:i32,y2:i32,color:Color) {
-    raster(canvas,|fb|libgfx::shapes::draw_line(fb,x1,y1,x2,y2,gfx(color)));
+
+/// Draw a line using Bresenham's algorithm.
+pub fn draw_line(canvas: &mut impl Canvas, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
+    let mut x0 = x1;
+    let mut y0 = y1;
+    let x1 = x2;
+    let y1 = y2;
+
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+
+    loop {
+        canvas.set_pixel(x0, y0, color);
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+    }
 }
-pub fn draw_rect(canvas:&mut impl Canvas,r:Rect,color:Color) {
-    raster(canvas,|fb|libgfx::shapes::draw_rect(fb,r.x,r.y,r.width.min(i32::MAX as u32) as i32,r.height.min(i32::MAX as u32) as i32,gfx(color)));
+
+/// Draw rectangle outline.
+pub fn draw_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
+    let rect_w = to_i32_clamped(rect.width);
+    let rect_h = to_i32_clamped(rect.height);
+    if rect_w <= 0 || rect_h <= 0 {
+        return;
+    }
+
+    let x2 = rect.x.saturating_add(rect_w - 1);
+    let y2 = rect.y.saturating_add(rect_h - 1);
+
+    draw_hline(canvas, rect.x, x2, rect.y, color);
+    draw_hline(canvas, rect.x, x2, y2, color);
+    draw_vline(canvas, rect.x, rect.y, y2, color);
+    draw_vline(canvas, x2, rect.y, y2, color);
 }
-pub fn fill_rect(canvas:&mut impl Canvas,r:Rect,color:Color) {
-    let Some(r)=clip_rect_to_bounds(r,canvas.width(),canvas.height())else{return;};
-    raster(canvas,|fb|libgfx::shapes::fill_rect(fb,r.x,r.y,r.width.min(i32::MAX as u32) as i32,r.height.min(i32::MAX as u32) as i32,gfx(color)));
+
+/// Draw filled rectangle (optimized - fill row by row).
+pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
+    let Some(clipped) = clip_rect_to_bounds(rect, canvas.width(), canvas.height()) else {
+        return;
+    };
+
+    let bpp = canvas.bytes_per_pixel();
+    if bpp == 0 {
+        return;
+    }
+    let stride = canvas.stride();
+    let stride_bytes = stride * bpp; // stride is in pixels, convert to bytes
+    let is_bgr = canvas.is_bgr();
+    let pixel = color.to_pixel_bytes(bpp, is_bgr);
+    let mut buffer = canvas.buffer_mut();
+
+    let start_y = clipped.y as usize;
+    let end_y = start_y.saturating_add(clipped.height as usize);
+    let start_x = clipped.x as usize;
+    let end_x = start_x.saturating_add(clipped.width as usize);
+
+    for y in start_y..end_y {
+        let row_start = y.saturating_mul(stride_bytes);
+        if row_start >= buffer.len() {
+            break;
+        }
+        let row_end = min(row_start + stride_bytes, buffer.len());
+        let row_len = row_end - row_start;
+
+        let start_byte = start_x.saturating_mul(bpp);
+        if start_byte >= row_len {
+            continue;
+        }
+        let end_byte = min(end_x.saturating_mul(bpp), row_len);
+
+        buffer.fill_pixels(row_start + start_byte..row_start + end_byte, &pixel[..bpp]);
+    }
+
+    // Mark the entire filled rectangle dirty once (not per-pixel)
+    canvas.mark_dirty_region(
+        clipped.x as usize,
+        clipped.y as usize,
+        clipped.width as usize,
+        clipped.height as usize,
+    );
 }
-pub fn draw_circle(canvas:&mut impl Canvas,cx:i32,cy:i32,radius:u32,color:Color) {
-    raster(canvas,|fb|libgfx::shapes::draw_circle(fb,cx,cy,radius.min(i32::MAX as u32) as i32,gfx(color)));
+
+/// Draw circle outline using midpoint circle algorithm.
+pub fn draw_circle(canvas: &mut impl Canvas, cx: i32, cy: i32, radius: u32, color: Color) {
+    let mut x = to_i32_clamped(radius);
+    if x <= 0 {
+        canvas.set_pixel(cx, cy, color);
+        return;
+    }
+    let mut y = 0;
+    let mut err = 1 - x;
+
+    while x >= y {
+        canvas.set_pixel(cx + x, cy + y, color);
+        canvas.set_pixel(cx - x, cy + y, color);
+        canvas.set_pixel(cx + x, cy - y, color);
+        canvas.set_pixel(cx - x, cy - y, color);
+        canvas.set_pixel(cx + y, cy + x, color);
+        canvas.set_pixel(cx - y, cy + x, color);
+        canvas.set_pixel(cx + y, cy - x, color);
+        canvas.set_pixel(cx - y, cy - x, color);
+
+        y += 1;
+        if err < 0 {
+            err += 2 * y + 1;
+        } else {
+            x -= 1;
+            err += 2 * (y - x) + 1;
+        }
+    }
 }
-pub fn fill_circle(canvas:&mut impl Canvas,cx:i32,cy:i32,radius:u32,color:Color) {
-    raster(canvas,|fb|libgfx::shapes::fill_circle(fb,cx,cy,radius.min(i32::MAX as u32) as i32,gfx(color)));
+
+/// Draw filled circle.
+pub fn fill_circle(canvas: &mut impl Canvas, cx: i32, cy: i32, radius: u32, color: Color) {
+    let mut x = to_i32_clamped(radius);
+    if x <= 0 {
+        canvas.set_pixel(cx, cy, color);
+        return;
+    }
+    let mut y = 0;
+    let mut err = 1 - x;
+
+    while x >= y {
+        draw_hline(canvas, cx - x, cx + x, cy + y, color);
+        draw_hline(canvas, cx - x, cx + x, cy - y, color);
+        draw_hline(canvas, cx - y, cx + y, cy + x, color);
+        draw_hline(canvas, cx - y, cx + y, cy - x, color);
+
+        y += 1;
+        if err < 0 {
+            err += 2 * y + 1;
+        } else {
+            x -= 1;
+            err += 2 * (y - x) + 1;
+        }
+    }
 }
 
 // ============================================================================
 // Text Rendering
 // ============================================================================
 
-use super::font::Font;
+use super::font::{Font, Glyph};
 
 /// Text rendering style configuration.
 #[derive(Debug, Clone, Copy)]
@@ -239,14 +468,163 @@ impl TextStyle {
     }
 }
 
-/// Draw the same Noto bitmap cell as the userspace raster, clipped with signed origins.
-pub fn draw_char(canvas:&mut impl Canvas,x:i32,y:i32,c:char,style:&TextStyle)->i32 {
-    let metrics=style.font.metrics();
-    raster(canvas,|fb|{
-        if let Some(bg)=style.background {libgfx::shapes::fill_rect(fb,x,y,metrics.char_advance() as i32,metrics.char_height as i32,gfx(bg));}
-        libgfx::bitmap_font::draw_char_at(fb,c,x as i64,y as i64,gfx(style.foreground));
-    });
+/// Blend two colors based on an intensity value (0-255).
+/// intensity=0 returns bg, intensity=255 returns fg.
+fn blend_colors(fg: Color, bg: Color, intensity: u8) -> Color {
+    if intensity == 0 {
+        return bg;
+    }
+    if intensity == 255 {
+        return fg;
+    }
+    let alpha = intensity as u16;
+    let inv_alpha = 255 - alpha;
+    Color::rgb(
+        ((fg.r as u16 * alpha + bg.r as u16 * inv_alpha) / 255) as u8,
+        ((fg.g as u16 * alpha + bg.g as u16 * inv_alpha) / 255) as u8,
+        ((fg.b as u16 * alpha + bg.b as u16 * inv_alpha) / 255) as u8,
+    )
+}
+
+/// Draw a single character at the specified position.
+///
+/// Returns the width in pixels that the cursor should advance.
+pub fn draw_char(canvas: &mut impl Canvas, x: i32, y: i32, c: char, style: &TextStyle) -> i32 {
+    let glyph = style.font.glyph_or_replacement(c);
+    let metrics = style.font.metrics();
+
+    // If background is set, fill the character cell first
+    if let Some(bg) = style.background {
+        fill_rect(
+            canvas,
+            Rect {
+                x,
+                y,
+                width: metrics.char_advance() as u32,
+                height: metrics.char_height as u32,
+            },
+            bg,
+        );
+    }
+
+    // Draw the glyph pixels
+    draw_glyph(canvas, x, y, &glyph, style);
+
     metrics.char_advance() as i32
+}
+
+/// Draw a glyph at the specified position with the given style.
+fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &TextStyle) {
+    // Fast path: glyph fully within canvas bounds — write directly to buffer
+    if x >= 0
+        && y >= 0
+        && (x as usize + glyph.width()) <= canvas.width()
+        && (y as usize + glyph.height()) <= canvas.height()
+    {
+        draw_glyph_direct(canvas, x as usize, y as usize, glyph, style);
+        canvas.mark_dirty_region(x as usize, y as usize, glyph.width(), glyph.height());
+        return;
+    }
+
+    // Slow path: per-pixel with bounds checking for edge cases
+    for (gx, gy, intensity) in glyph.pixels() {
+        if intensity == 0 {
+            continue;
+        }
+
+        let px = x + gx as i32;
+        let py = y + gy as i32;
+
+        let color = if let Some(bg) = style.background {
+            blend_colors(style.foreground, bg, intensity)
+        } else {
+            if let Some(existing) = canvas.get_pixel(px, py) {
+                blend_colors(style.foreground, existing, intensity)
+            } else {
+                continue;
+            }
+        };
+
+        canvas.set_pixel(px, py, color);
+    }
+
+    if x >= 0 && y >= 0 {
+        canvas.mark_dirty_region(x as usize, y as usize, glyph.width(), glyph.height());
+    }
+}
+
+/// Fast-path glyph rendering: writes directly to buffer_mut() without per-pixel
+/// bounds checks or function calls. The caller must ensure the glyph is fully
+/// within canvas bounds.
+fn draw_glyph_direct(
+    canvas: &mut impl Canvas,
+    x: usize,
+    y: usize,
+    glyph: &Glyph,
+    style: &TextStyle,
+) {
+    let bpp = canvas.bytes_per_pixel();
+    let stride = canvas.stride();
+    let is_bgr = canvas.is_bgr();
+    let stride_bytes = stride * bpp;
+    let glyph_w = glyph.width();
+
+    // Pre-compute foreground pixel bytes
+    let fg_bytes = style.foreground.to_pixel_bytes(bpp, is_bgr);
+
+    if let Some(bg) = style.background {
+        // With explicit background: pre-blend common intensity values
+        let bg_bytes = bg.to_pixel_bytes(bpp, is_bgr);
+        let mut buffer = canvas.buffer_mut();
+
+        for (gy, row) in glyph.raster().iter().enumerate() {
+            let row_offset = (y + gy) * stride_bytes + x * bpp;
+            if row_offset + glyph_w * bpp > buffer.len() {
+                break;
+            }
+
+            for (gx, &intensity) in row.iter().take(glyph_w).enumerate() {
+                let offset = row_offset + gx * bpp;
+                if intensity == 0 {
+                    buffer.copy_from_slice(offset, &bg_bytes[..bpp]);
+                } else if intensity == 255 {
+                    buffer.copy_from_slice(offset, &fg_bytes[..bpp]);
+                } else {
+                    let blended = blend_colors(style.foreground, bg, intensity);
+                    let px = blended.to_pixel_bytes(bpp, is_bgr);
+                    buffer.copy_from_slice(offset, &px[..bpp]);
+                }
+            }
+        }
+    } else {
+        // No explicit background: read existing pixels, blend, write back.
+        // We read the background region first, then blend and write.
+        let mut buffer = canvas.buffer_mut();
+
+        for (gy, row) in glyph.raster().iter().enumerate() {
+            let row_offset = (y + gy) * stride_bytes + x * bpp;
+            if row_offset + glyph_w * bpp > buffer.len() {
+                break;
+            }
+
+            for (gx, &intensity) in row.iter().take(glyph_w).enumerate() {
+                if intensity == 0 {
+                    continue;
+                }
+                let offset = row_offset + gx * bpp;
+                if intensity == 255 {
+                    buffer.copy_from_slice(offset, &fg_bytes[..bpp]);
+                } else {
+                    // Read existing pixel, blend
+                    let existing =
+                        Color::from_pixel_bytes(&buffer[offset..offset + bpp], bpp, is_bgr);
+                    let blended = blend_colors(style.foreground, existing, intensity);
+                    let px = blended.to_pixel_bytes(bpp, is_bgr);
+                    buffer.copy_from_slice(offset, &px[..bpp]);
+                }
+            }
+        }
+    }
 }
 
 /// Draw a text string at the specified position.
@@ -418,8 +796,8 @@ mod tests {
             ))
         }
 
-        fn buffer_mut(&mut self) -> &mut [u8] {
-            &mut self.buffer
+        fn buffer_mut(&mut self) -> BufferMut<'_> {
+            BufferMut::new(&mut self.buffer, false)
         }
 
         fn buffer(&self) -> &[u8] {

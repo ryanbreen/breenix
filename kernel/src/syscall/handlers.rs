@@ -209,16 +209,14 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
         // Mark current thread as terminated
-        crate::task::scheduler::with_scheduler(|scheduler| {
+        crate::task::scheduler::with_current(|scheduler| {
             if let Some(thread) = scheduler.current_thread_mut() {
                 thread.set_terminated();
             }
         });
 
         // Check if there are any other userspace threads to run
-        let has_other_userspace_threads =
-            crate::task::scheduler::with_scheduler(|sched| sched.has_userspace_threads())
-                .unwrap_or(false);
+        let has_other_userspace_threads = crate::task::scheduler::has_live_user_threads();
 
         if !has_other_userspace_threads {
             if !crate::task::userspace_completion::reporter_started() {
@@ -260,27 +258,18 @@ pub(crate) fn report_userspace_completion() {
         // No more userspace threads remaining
         report_line!(info, "No more userspace threads remaining");
 
-        // Wake the keyboard task to ensure it can process any pending input
-        #[cfg(target_arch = "x86_64")]
-        {
-            crate::keyboard::stream::wake_keyboard_task();
-            report_line!(
-                info,
-                "Woke keyboard task to ensure input processing continues"
-            );
-        }
-
         // Signal that userspace testing is complete with clear markers
         report_line!(info, "🎯 USERSPACE TEST COMPLETE - All processes finished");
         let (exited, nonzero) = crate::task::exit_tally::totals();
 
         report_line!(
             info,
-            "TEST_TALLY: exited={} nonzero={} failed=[{}] started={}",
+            "TEST_TALLY: exited={} nonzero={} failed=[{}] started={} withdrawn={}",
             exited,
             nonzero,
             crate::task::exit_tally::FailureList::new(failures, nonzero),
-            crate::task::exit_tally::started()
+            crate::task::exit_tally::started(),
+            crate::task::exit_tally::withdrawn()
         );
         report_line!(
             info,
@@ -499,99 +488,124 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
     }
 
     let mut fifo_to_touch = None;
-    let write_op = {
-        let manager_guard = crate::process::manager();
-        let process = match &*manager_guard {
-            Some(manager) => match manager.find_process_by_thread(thread_id) {
-                Some((_pid, p)) => p,
-                None => {
-                    // Fall back to stdio behavior for kernel threads
-                    return write_to_stdio(fd, &buffer);
+    // What the descriptor is for this write, read from its table entry; None
+    // when that needs the process row (a regular file's write limits).
+    let classify = |fd_entry: &crate::ipc::fd::FileDescriptor,
+                    process: Option<&crate::process::Process>,
+                    fifo_to_touch: &mut Option<_>|
+     -> Option<WriteOperation> {
+        Some(
+            match &fd_entry.kind {
+                FdKind::Ipc(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+                FdKind::Ipc(file) => {
+                    WriteOperation::Ipc {
+                        file: file.clone(),
+                        append: fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0,
+                    }
                 }
-            },
-            None => {
-                // Fall back to stdio behavior for kernel threads
-                return write_to_stdio(fd, &buffer);
-            }
-        };
-
-        // Look up the file descriptor
-        let fd_entry = match process.fd_table.get(fd as i32) {
-            Some(entry) => entry,
-            None => {
-                return SyscallResult::Err(9); // EBADF
-            }
-        };
-
-        match &fd_entry.kind {
-            FdKind::Ipc(file) => {
-                if !fd_entry.writable() {
-                    return SyscallResult::Err(super::errno::EBADF as u64);
-                }
-                WriteOperation::Ipc {
-                    file: file.clone(),
-                    append: fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0,
-                }
-            }
-            FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
-            FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
-            FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
-                pipe_buffer: pipe_buffer.clone(),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer, entry)
-            | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
-                fifo_to_touch = Some(entry.clone());
-                WriteOperation::Fifo {
+                FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
+                FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
+                FdKind::PipeWrite(pipe_buffer) => WriteOperation::Pipe {
                     pipe_buffer: pipe_buffer.clone(),
                     is_nonblocking: (fd_entry.status_flags()
                         & crate::ipc::fd::status_flags::O_NONBLOCK)
                         != 0,
+                },
+                FdKind::PipeRead(_) => WriteOperation::Ebadf,
+                FdKind::FifoWrite(_path, pipe_buffer, entry)
+                | FdKind::FifoReadWrite(_path, pipe_buffer, entry) => {
+                    *fifo_to_touch = Some(entry.clone());
+                    WriteOperation::Fifo {
+                        pipe_buffer: pipe_buffer.clone(),
+                        is_nonblocking: (fd_entry.status_flags()
+                            & crate::ipc::fd::status_flags::O_NONBLOCK)
+                            != 0,
+                    }
                 }
+                FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
+                FdKind::Socket(socket) => WriteOperation::Socket {
+                    socket: socket.clone(),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                },
+                // A description opened O_RDONLY is not writable (EBADF).
+                FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+                FdKind::RegularFile(file) => WriteOperation::RegularFile {
+                    file: file.clone(),
+                    append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
+                    unprivileged: !process?.cred.privileged(),
+                    size_limit: process?.limits.get(crate::process::limits::FSIZE).soft,
+                },
+                FdKind::Directory(_) => WriteOperation::Eisdir,
+                FdKind::Device(device_type) => WriteOperation::Device {
+                    device_type: device_type.clone(),
+                },
+                FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
+                FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
+                // A description opened O_RDONLY is not writable (EBADF).
+                FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.writable() => WriteOperation::Ebadf,
+                FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
+                    hold: crate::tty::pty::PtyHold::master(pair),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                },
+                FdKind::PtySlave(pair) => WriteOperation::PtySlave {
+                    hold: crate::tty::pty::PtyHold::slave(pair),
+                    is_nonblocking: (fd_entry.status_flags()
+                        & crate::ipc::fd::status_flags::O_NONBLOCK)
+                        != 0,
+                },
+                FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
+                FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
+                FdKind::Epoll(_) => WriteOperation::Ebadf,
             }
-            FdKind::FifoRead(_, _, _) => WriteOperation::Ebadf,
-            FdKind::Socket(socket) => WriteOperation::Socket {
-                socket: socket.clone(),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            // A description opened O_RDONLY is not writable (EBADF).
-            FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
-            FdKind::RegularFile(file) => WriteOperation::RegularFile {
-                file: file.clone(),
-                append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
-                unprivileged: !process.cred.privileged(),
-                size_limit: process.limits.get(crate::process::limits::FSIZE).soft,
-            },
-            FdKind::Directory(_) => WriteOperation::Eisdir,
-            FdKind::Device(device_type) => WriteOperation::Device {
-                device_type: device_type.clone(),
-            },
-            FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
-            // A description opened O_RDONLY is not writable (EBADF).
-            FdKind::PtyMaster(_) | FdKind::PtySlave(_) if !fd_entry.writable() => WriteOperation::Ebadf,
-            FdKind::PtyMaster(pair) => WriteOperation::PtyMaster {
-                hold: crate::tty::pty::PtyHold::master(pair),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            FdKind::PtySlave(pair) => WriteOperation::PtySlave {
-                hold: crate::tty::pty::PtyHold::slave(pair),
-                is_nonblocking: (fd_entry.status_flags()
-                    & crate::ipc::fd::status_flags::O_NONBLOCK)
-                    != 0,
-            },
-            FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
-            FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::Epoll(_) => WriteOperation::Ebadf,
+        )
+    };
+    // x86_64: the descriptor from the thread's own reference to its table,
+    // without PROCESS_MANAGER (#1650), unless the write needs the row.
+    #[cfg(target_arch = "x86_64")]
+    let quick = current_fd_table().and_then(|table| {
+        table.try_read_lockless(|inner| match inner.get(fd as i32) {
+            Some(fd_entry) => classify(fd_entry, None, &mut fifo_to_touch),
+            None => Some(WriteOperation::Ebadf),
+        })
+    });
+    #[cfg(not(target_arch = "x86_64"))]
+    let quick: Option<Option<WriteOperation>> = None;
+    let write_op = match quick.flatten() {
+        Some(write_op) => write_op,
+        None => {
+            let manager_guard = crate::process::manager();
+            let process = match &*manager_guard {
+                Some(manager) => match manager.find_process_by_thread(thread_id) {
+                    Some((_pid, p)) => p,
+                    None => {
+                        // Fall back to stdio behavior for kernel threads
+                        return write_to_stdio(fd, &buffer);
+                    }
+                },
+                None => {
+                    // Fall back to stdio behavior for kernel threads
+                    return write_to_stdio(fd, &buffer);
+                }
+            };
+
+            // Look up the file descriptor
+            let fd_entry = match process.fd_table.get(fd as i32) {
+                Some(entry) => entry,
+                None => {
+                    return SyscallResult::Err(9); // EBADF
+                }
+            };
+
+            match classify(fd_entry, Some(process), &mut fifo_to_touch) {
+                Some(write_op) => write_op,
+                None => WriteOperation::Ebadf,
+            }
+            // manager_guard dropped here, releasing the lock before I/O
         }
-        // manager_guard dropped here, releasing the lock before I/O
     };
 
     // Now perform the actual I/O operation without holding the manager lock
@@ -634,6 +648,19 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     // Write to console/tty
                     write_to_stdio(fd, &buffer)
                 }
+                // A virtual terminal: tty1 has serial and the screen, the
+                // others the screen. /dev/tty0 is the foreground one now.
+                DeviceType::Tty0 | DeviceType::Vt(_) => {
+                    match device_type.terminal().and_then(crate::tty::driver::vt) {
+                        Some(tty) => {
+                            tty.write_bytes(&buffer);
+                            SyscallResult::Ok(buffer.len() as u64)
+                        }
+                        None => SyscallResult::Err(6), // ENXIO
+                    }
+                }
+                // The screens are read-only.
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) => SyscallResult::Err(22),
             }
         }
         WriteOperation::RegularFile {
@@ -657,7 +684,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
 
             let (write_offset, bytes_written) = if is_home {
-                let mut fs_guard = match crate::fs::ext2::home_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+                let mut fs_guard = match crate::fs::ext2::home_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
                 let fs = match fs_guard.as_mut() {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
@@ -696,7 +723,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 };
                 (wo, bw)
             } else {
-                let mut fs_guard = match crate::fs::ext2::root_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+                let mut fs_guard = match crate::fs::ext2::root_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
                 let fs = match fs_guard.as_mut() {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
@@ -779,9 +806,233 @@ fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
     SyscallResult::Ok(bytes_written as u64)
 }
 
+/// Testing-only pipe-wake handshake (pipe_test): 0 queries state, 1 arms
+/// this reader, and 2 releases it after the writer requests a reschedule.
+/// States: 0 idle, 1 armed, 2 committed to waiting, 3 held, 4 released,
+/// 5 watchdog expired. Preemption remains disabled while held.
+#[cfg(feature = "testing")]
+pub(super) const PIPE_WAKE_HOLD: u64 = 0xB813_0005;
+#[cfg(feature = "testing")]
+static PIPE_WAKE_HOLD_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "testing")]
+static PIPE_WAKE_STATE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "testing")]
+pub(super) fn arm_pipe_wake_hold(command: u64) -> SyscallResult {
+    match command {
+        0 => SyscallResult::Ok(PIPE_WAKE_STATE.load(Ordering::Acquire)),
+        1 => {
+            let Some(tid) = crate::task::scheduler::current_thread_id() else {
+                return SyscallResult::Err(3); // ESRCH
+            };
+            PIPE_WAKE_STATE.store(1, Ordering::Relaxed);
+            PIPE_WAKE_HOLD_TID.store(tid, Ordering::Release);
+            SyscallResult::Ok(0)
+        }
+        2 => match PIPE_WAKE_STATE.compare_exchange(3, 4, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => SyscallResult::Ok(0),
+            Err(_) => SyscallResult::Err(16), // EBUSY: reader was not held
+        },
+        _ => SyscallResult::Err(22), // EINVAL
+    }
+}
+
+#[cfg(feature = "testing")]
+fn hold_pipe_wake(thread_id: u64) {
+    if PIPE_WAKE_HOLD_TID.load(Ordering::Acquire) != thread_id {
+        return;
+    }
+    PIPE_WAKE_STATE.store(3, Ordering::Release);
+    let now = || {
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        secs * 1_000_000_000 + nanos
+    };
+    let end = now() + 30_000_000_000;
+    while PIPE_WAKE_STATE.load(Ordering::Acquire) == 3 {
+        if now() >= end {
+            // A timeout is observable and cannot count as a released hold.
+            let _ = PIPE_WAKE_STATE.compare_exchange(3, 5, Ordering::AcqRel, Ordering::Acquire);
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    PIPE_WAKE_HOLD_TID.store(0, Ordering::Release);
+}
+
 /// sys_read - Read from a file descriptor
 ///
 /// Supports stdin (with blocking), stdout/stderr (error), and pipe read ends.
+/// A pipe's read end, read without PROCESS_MANAGER held: what is buffered,
+/// or a wait for data, end of file or a signal (`sys_read`).
+fn read_pipe(
+    pipe_buffer_clone: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
+    is_nonblocking: bool,
+    buf_ptr: u64,
+    count: u64,
+) -> SyscallResult {
+    let mut user_buf = alloc::vec::Vec::new();
+    if user_buf.try_reserve_exact(count as usize).is_err() {
+        return SyscallResult::Err(12);
+    }
+    user_buf.resize(count as usize, 0);
+
+    // Try to read - if empty and blocking, we'll enter blocking path
+    loop {
+        let read_result = {
+            let mut pipe = pipe_buffer_clone.lock();
+            pipe.read(&mut user_buf)
+        };
+
+        match read_result {
+            Ok(n) => {
+                if n > 0 {
+                    if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                        return SyscallResult::Err(14); // EFAULT
+                    }
+                }
+                log::debug!("sys_read: Read {} bytes from pipe", n);
+                return SyscallResult::Ok(n as u64);
+            }
+            Err(11) => {
+                // EAGAIN - buffer empty but writers exist
+                if is_nonblocking {
+                    log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
+                    return SyscallResult::Err(11); // EAGAIN
+                }
+
+                // === BLOCKING PATH ===
+                let thread_id = match crate::task::scheduler::current_thread_id() {
+                    Some(tid) => tid,
+                    None => return SyscallResult::Err(3), // ESRCH
+                };
+
+                log::debug!(
+                    "sys_read: Pipe empty, thread {} entering blocking path",
+                    thread_id
+                );
+
+                // Register as waiter BEFORE setting blocked state (race condition fix)
+                {
+                    let mut pipe = pipe_buffer_clone.lock();
+                    pipe.add_read_waiter(thread_id);
+                }
+
+                // Block the thread
+                crate::task::scheduler::with_current(|sched| {
+                    sched.block_current_in_syscall();
+                });
+
+                // Check if data arrived during setup (race condition fix)
+                let data_ready = {
+                    let pipe = pipe_buffer_clone.lock();
+                    pipe.has_data_or_eof()
+                };
+
+                if data_ready {
+                    // Data arrived during setup - unblock and retry immediately
+                    crate::task::scheduler::with_current(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    continue; // Retry read
+                }
+
+                #[cfg(feature = "testing")]
+                if PIPE_WAKE_HOLD_TID.load(Ordering::Acquire) == thread_id {
+                    // Published after the setup race check, so a writer that
+                    // sees 2 makes this reader pass through hold_pipe_wake.
+                    PIPE_WAKE_STATE.store(2, Ordering::Release);
+                }
+
+                // Preemption stays disabled until the signal check below has run (#1230):
+                // see `blocking_io::wait_prepared`.
+
+                // HLT loop - wait for data or EOF
+                loop {
+                    // Check for pending signals that should interrupt this syscall
+                    if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
+                        // Signal pending - clean up and return EINTR
+                        {
+                            let mut pipe = pipe_buffer_clone.lock();
+                            pipe.remove_read_waiter(thread_id);
+                        }
+                        crate::task::scheduler::with_current(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        log::debug!(
+                            "sys_read: Pipe thread {} interrupted by signal (EINTR)",
+                            thread_id
+                        );
+                        return SyscallResult::Err(e as u64);
+                    }
+
+                    crate::per_cpu::preempt_enable();
+                    crate::task::scheduler::yield_current();
+                    crate::arch_halt_while_blocked();
+                    crate::per_cpu::preempt_disable();
+
+                    let still_blocked = crate::task::scheduler::with_current(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+
+                    if !still_blocked {
+                        log::debug!(
+                            "sys_read: Pipe thread {} woken from blocking",
+                            thread_id
+                        );
+                        break;
+                    }
+                }
+                #[cfg(feature = "testing")]
+                hold_pipe_wake(thread_id);
+
+                // Clear blocked state
+                crate::task::scheduler::with_current(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+                // A reschedule requested since the wake stays pending for the
+                // syscall return (#1753).
+                reset_quantum();
+
+                // Continue loop to retry read
+                continue;
+            }
+            Err(e) => {
+                log::debug!("sys_read: Pipe read error: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+        }
+    }
+}
+
+/// x86_64: what `sys_read` found without PROCESS_MANAGER.
+#[cfg(target_arch = "x86_64")]
+enum QuickRead {
+    Pipe(alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, bool),
+    Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
+}
+
+/// x86_64: the calling thread's descriptor table, from the reference its row
+/// publishes (`Process::publish_fd_table`), without PROCESS_MANAGER (#1650).
+#[cfg(target_arch = "x86_64")]
+pub(super) fn current_fd_table() -> Option<crate::ipc::FdTable> {
+    let thread = crate::per_cpu::current_thread()?;
+    let reference = thread.signals.fd_table.try_lock()?.clone()?;
+    reference.upgrade()
+}
+
 pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     use crate::ipc::FdKind;
 
@@ -813,6 +1064,35 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             return SyscallResult::Ok(0);
         }
     };
+    // x86_64: a pipe or IPC object's descriptor from the thread's own
+    // reference to its table, without PROCESS_MANAGER (#1650).
+    #[cfg(target_arch = "x86_64")]
+    if let Some(found) = current_fd_table().and_then(|table| {
+        table.try_read_lockless(|inner| {
+            inner.get(fd as i32).map(|fd_entry| match &fd_entry.kind {
+                FdKind::PipeRead(pipe_buffer) => Some(QuickRead::Pipe(
+                    pipe_buffer.clone(),
+                    fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0,
+                )),
+                FdKind::Ipc(file) if fd_entry.readable() => Some(QuickRead::Ipc(file.clone())),
+                _ => None,
+            })
+        })
+    }) {
+        match found {
+            None => return SyscallResult::Err(9), // EBADF
+            Some(Some(QuickRead::Pipe(pipe_buffer, is_nonblocking))) => {
+                return read_pipe(pipe_buffer, is_nonblocking, buf_ptr, count);
+            }
+            Some(Some(QuickRead::Ipc(file))) => {
+                return match file.read(buf_ptr, count as usize) {
+                    Ok(n) => SyscallResult::Ok(n),
+                    Err(e) => SyscallResult::Err(e),
+                };
+            }
+            Some(None) => {}
+        }
+    }
     let manager_guard = crate::process::manager();
     // #821 keeps `reader_pid`: the stdin arm below is the console's
     // thread-context consumer, and the pid the input IRQ entry must not block
@@ -912,7 +1192,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // 3. Without this flag, no context is saved when switching away,
                         //    and stale userspace context is restored when switching back,
                         //    causing RIP corruption (kernel address in userspace CS)
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             sched.block_current_in_syscall();
                         });
 
@@ -928,7 +1208,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
                                 // Signal pending - unblock and return EINTR
                                 crate::ipc::stdin::unregister_blocked_reader(thread_id);
-                                crate::task::scheduler::with_scheduler(|sched| {
+                                crate::task::scheduler::with_current(|sched| {
                                     if let Some(thread) = sched.current_thread_mut() {
                                         thread.blocked_in_syscall = false;
                                         thread.set_ready();
@@ -947,7 +1227,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             crate::per_cpu::preempt_disable();
 
                             // Check if we were unblocked (thread state changed from Blocked)
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                            let still_blocked = crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.state == crate::task::thread::ThreadState::Blocked
                                 } else {
@@ -966,7 +1246,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Clear blocked_in_syscall now that we're resuming normal syscall execution
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                                 log::trace!(
@@ -1004,141 +1284,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // process that needs to write to the pipe).
             drop(manager_guard);
 
-            let mut user_buf = alloc::vec::Vec::new();
-            if user_buf.try_reserve_exact(count as usize).is_err() {
-                return SyscallResult::Err(12);
-            }
-            user_buf.resize(count as usize, 0);
-
-            // Try to read - if empty and blocking, we'll enter blocking path
-            loop {
-                let read_result = {
-                    let mut pipe = pipe_buffer_clone.lock();
-                    pipe.read(&mut user_buf)
-                };
-
-                match read_result {
-                    Ok(n) => {
-                        if n > 0 {
-                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                                return SyscallResult::Err(14); // EFAULT
-                            }
-                        }
-                        log::debug!("sys_read: Read {} bytes from pipe", n);
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Err(11) => {
-                        // EAGAIN - buffer empty but writers exist
-                        if is_nonblocking {
-                            log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
-                            return SyscallResult::Err(11); // EAGAIN
-                        }
-
-                        // === BLOCKING PATH ===
-                        let thread_id = match crate::task::scheduler::current_thread_id() {
-                            Some(tid) => tid,
-                            None => return SyscallResult::Err(3), // ESRCH
-                        };
-
-                        log::debug!(
-                            "sys_read: Pipe empty, thread {} entering blocking path",
-                            thread_id
-                        );
-
-                        // Register as waiter BEFORE setting blocked state (race condition fix)
-                        {
-                            let mut pipe = pipe_buffer_clone.lock();
-                            pipe.add_read_waiter(thread_id);
-                        }
-
-                        // Block the thread
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current_in_syscall();
-                        });
-
-                        // Check if data arrived during setup (race condition fix)
-                        let data_ready = {
-                            let pipe = pipe_buffer_clone.lock();
-                            pipe.has_data_or_eof()
-                        };
-
-                        if data_ready {
-                            // Data arrived during setup - unblock and retry immediately
-                            crate::task::scheduler::with_scheduler(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.blocked_in_syscall = false;
-                                    thread.set_ready();
-                                }
-                            });
-                            continue; // Retry read
-                        }
-
-                        // Preemption stays disabled until the signal check below has run (#1230):
-                        // see `blocking_io::wait_prepared`.
-
-                        // HLT loop - wait for data or EOF
-                        loop {
-                            // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Signal pending - clean up and return EINTR
-                                {
-                                    let mut pipe = pipe_buffer_clone.lock();
-                                    pipe.remove_read_waiter(thread_id);
-                                }
-                                crate::task::scheduler::with_scheduler(|sched| {
-                                    if let Some(thread) = sched.current_thread_mut() {
-                                        thread.blocked_in_syscall = false;
-                                        thread.set_ready();
-                                    }
-                                });
-                                log::debug!(
-                                    "sys_read: Pipe thread {} interrupted by signal (EINTR)",
-                                    thread_id
-                                );
-                                return SyscallResult::Err(e as u64);
-                            }
-
-                            crate::per_cpu::preempt_enable();
-                            crate::task::scheduler::yield_current();
-                            crate::arch_halt_while_blocked();
-                            crate::per_cpu::preempt_disable();
-
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.state == crate::task::thread::ThreadState::Blocked
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-
-                            if !still_blocked {
-                                log::debug!(
-                                    "sys_read: Pipe thread {} woken from blocking",
-                                    thread_id
-                                );
-                                break;
-                            }
-                        }
-
-                        // Clear blocked state
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                            }
-                        });
-                        reset_quantum();
-                        crate::task::scheduler::check_and_clear_need_resched();
-
-                        // Continue loop to retry read
-                        continue;
-                    }
-                    Err(e) => {
-                        log::debug!("sys_read: Pipe read error: {}", e);
-                        return SyscallResult::Err(e as u64);
-                    }
-                }
-            }
+            read_pipe(pipe_buffer_clone, is_nonblocking, buf_ptr, count)
         }
         FdKind::PipeWrite(_) => {
             // Can't read from write end of pipe
@@ -1212,7 +1358,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Block the thread
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             sched.block_current_in_syscall();
                         });
 
@@ -1224,7 +1370,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         if data_ready {
                             // Data arrived during setup - unblock and retry immediately
-                            crate::task::scheduler::with_scheduler(|sched| {
+                            crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.blocked_in_syscall = false;
                                     thread.set_ready();
@@ -1245,7 +1391,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     let mut pipe = pipe_buffer_clone.lock();
                                     pipe.remove_read_waiter(thread_id);
                                 }
-                                crate::task::scheduler::with_scheduler(|sched| {
+                                crate::task::scheduler::with_current(|sched| {
                                     if let Some(thread) = sched.current_thread_mut() {
                                         thread.blocked_in_syscall = false;
                                         thread.set_ready();
@@ -1263,7 +1409,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             crate::arch_halt_while_blocked();
                             crate::per_cpu::preempt_disable();
 
-                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                            let still_blocked = crate::task::scheduler::with_current(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
                                     thread.state == crate::task::thread::ThreadState::Blocked
                                 } else {
@@ -1282,13 +1428,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         }
 
                         // Clear blocked state
-                        crate::task::scheduler::with_scheduler(|sched| {
+                        crate::task::scheduler::with_current(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;
                             }
                         });
+                        // A reschedule requested since the wake stays pending
+                        // for the syscall return (#1753).
                         reset_quantum();
-                        crate::task::scheduler::check_and_clear_need_resched();
 
                         // Continue loop to retry read
                         continue;
@@ -1352,7 +1499,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 };
                 match fs.read_file_range_coherent(inode_num, &inode, position, count as usize) {
-                    Ok(data) => (data, inode.needs_atime_update()),
+                    Ok(data) => (data, !fs.is_read_only() && inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
                         return SyscallResult::Err(super::errno::EIO as u64);
@@ -1378,7 +1525,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 };
                 match fs.read_file_range_coherent(inode_num, &inode, position, count as usize) {
-                    Ok(data) => (data, inode.needs_atime_update()),
+                    Ok(data) => (data, !fs.is_read_only() && inode.needs_atime_update()),
                     Err(e) => {
                         log::error!("sys_read: Failed to read file data: {}", e);
                         return SyscallResult::Err(super::errno::EIO as u64);
@@ -1435,6 +1582,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let result = match device_type {
                 crate::fs::devfs::DeviceType::Console | crate::fs::devfs::DeviceType::Tty => {
                     super::blocking_io::read_console(&mut user_buf, is_nonblocking).map_err(|e| -e)
+                }
+                // A virtual terminal reads its own input queue; /dev/tty0 the
+                // foreground terminal's at the time of the read.
+                crate::fs::devfs::DeviceType::Tty0 | crate::fs::devfs::DeviceType::Vt(_) => {
+                    super::blocking_io::read_terminal(device_type, &mut user_buf, is_nonblocking).map_err(|e| -e)
                 }
                 _ => crate::fs::devfs::device_read(device_type, &mut user_buf),
             };
@@ -1533,18 +1685,21 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 pub fn sys_yield() -> SyscallResult {
     // log::trace!("sys_yield called");
 
-    // x86_64: with another CPU online and no thread queued on any CPU there
-    // is nothing to yield to, and the scheduling pass would pick this thread
-    // again (#1172). That pass runs under PROCESS_MANAGER and the scheduler
-    // lock, which every CPU's timer expiry and dispatch need: a process
-    // polling with sched_yield kept them held much of the time, and a timed
-    // wake waited out any stall of the polling CPU there (#1401). With one
+    // With another CPU online and no thread queued on any CPU, there is no
+    // thread to yield to, and the scheduling pass would pick this thread
+    // again (#1172). That pass runs under the scheduler lock (x86_64: and
+    // PROCESS_MANAGER), which timer expiry and dispatch on each CPU need: a
+    // process polling with sched_yield kept it held much of the time, and a
+    // timed wake waited out any stall of the polling CPU there (#1401). On
+    // aarch64 the suite runner's wait for each case yields this way, and its
+    // passes were most of the scheduler lock's hold time (#2038). With one
     // CPU online the pass is kept: it switches this thread to idle, the only
     // place idle's housekeeping runs there.
     #[cfg(target_arch = "x86_64")]
-    if crate::arch_impl::x86_64::smp::cpus_online() > 1
-        && !crate::task::scheduler::thread_queued_anywhere()
-    {
+    let other_cpu_online = crate::arch_impl::x86_64::smp::cpus_online() > 1;
+    #[cfg(target_arch = "aarch64")]
+    let other_cpu_online = crate::arch_impl::aarch64::smp::cpus_online() > 1;
+    if other_cpu_online && !crate::task::scheduler::thread_queued_anywhere() {
         return SyscallResult::Ok(0);
     }
 
@@ -1692,6 +1847,11 @@ fn sys_fork_with_parent_context(
             log::error!("sys_fork: Failed to create child page table: {}", e);
             return SyscallResult::Err(ENOMEM as u64);
         }
+    };
+
+    // The child's thread-index slot, held until it is published.
+    let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
     };
 
     // Window 2: take what the fork needs from the parent under the PM lock
@@ -2008,7 +2168,7 @@ pub fn sys_execv_with_frame(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_execv: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
             current_thread_id
@@ -2036,28 +2196,25 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
-        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
-            return SyscallResult::Err(errno);
-        }
-
+        // `attempt` gives back no result while another thread of the process
+        // still runs (`ProcessManager::exec_blocked_by_group`); the loop below
+        // waits for that thread again.
         // CRITICAL SECTION: manager call, scheduler commit, CR3 install and frame patch —
         // masked together, same shape as the production arm below (#721 K3/K10).
-        crate::arch_without_interrupts(|| {
+        let mut attempt = |current_pid: crate::process::ProcessId| crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_execv: Process manager not available");
-                return SyscallResult::Err(12); // ENOMEM
+                return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) =
+            let (new_entry_point, new_rsp, commit, superseded) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
-                    Err("exec blocked while CLONE_VM sibling shares old address space") => {
-                        return SyscallResult::Err(11); // EAGAIN
-                    }
+                    Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
                     Err(e) => {
                         log::error!("sys_execv: Failed to exec process: {}", e);
-                        return SyscallResult::Err(super::exec::manager_errno(e));
+                        return Some(SyscallResult::Err(super::exec::manager_errno(e)));
                     }
                 };
 
@@ -2071,7 +2228,7 @@ pub fn sys_execv_with_frame(
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
-            log::info!(
+            log::debug!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
                 new_entry_point,
                 new_rsp
@@ -2112,6 +2269,10 @@ pub fn sys_execv_with_frame(
 
             // The new image starts from the initial x87/SSE state, not the old one's.
             crate::arch_impl::x86_64::fpu::reset_current();
+            // The roots exec superseded retire once no CPU can still walk them.
+            if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+                crate::task::process_task::enqueue_process_reclaim(reclaim);
+            }
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
@@ -2119,8 +2280,18 @@ pub fn sys_execv_with_frame(
                 frame.rsp
             );
 
-            SyscallResult::Ok(0)
-        })
+            Some(SyscallResult::Ok(0))
+        });
+        let mut current_pid = current_pid;
+        loop {
+            current_pid = match super::exec::end_other_threads(current_pid) {
+                Ok(pid) => pid,
+                Err(errno) => return SyscallResult::Err(errno),
+            };
+            if let Some(result) = attempt(current_pid) {
+                break result;
+            }
+        }
     }
 
     #[cfg(not(feature = "testing"))]
@@ -2144,16 +2315,9 @@ pub fn sys_execv_with_frame(
 
         // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
         // before exec runs, mirroring sys_spawn's identical ordering (#713 precheck C8).
-        // This mirrors, but does not fix, two separately-filed pools exec_process_with_argv
-        // touches on every call: it allocates a fresh GuardedStack for its manually-mapped
-        // user stack (manager.rs, "Create a dummy stack object since we manually mapped the
-        // stack") from #720's never-reclaiming NEXT_USER_STACK_ADDR bump allocator, and the
-        // previous GuardedStack it replaces is dropped into #583's no-op Drop (the frames
-        // are never returned). reclaim_deferred_process_resources()/reclaim_terminated_threads()
-        // reclaim kernel stacks and dead-process resources — neither touches either pool.
-        // Before this PR, production x86 exec consumed nothing (ENOSYS); it is now a new
-        // per-call consumer of #720's finite VA budget and #583's frame leak. The PM lock is
-        // not held across either reclaim call.
+        // exec maps its user stack as pages the new page table owns (#583), so it takes no
+        // stack address range and leaves no stack frames behind. The PM lock is not held
+        // across either reclaim call.
         crate::task::process_task::reclaim_deferred_process_resources();
         crate::task::scheduler::reclaim_terminated_threads();
 
@@ -2181,7 +2345,7 @@ pub fn sys_execv_with_frame(
             }
         };
 
-        log::info!(
+        log::debug!(
             "sys_execv: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
             current_thread_id
@@ -2208,28 +2372,25 @@ pub fn sys_execv_with_frame(
             Ok(image) => Some(image),
             Err(error) => return SyscallResult::Err(super::exec::manager_errno(error)),
         };
-        if let Err(errno) = super::exec::await_exiting_siblings(current_pid) {
-            return SyscallResult::Err(errno);
-        }
-
+        // `attempt` gives back no result while another thread of the process
+        // still runs (`ProcessManager::exec_blocked_by_group`); the loop below
+        // waits for that thread again.
         // Mask only publication, scheduler commit, CR3 install and frame patch.
         // The replacement image and arguments were built above without PM held.
-        crate::arch_without_interrupts(|| {
+        let mut attempt = |current_pid: crate::process::ProcessId| crate::arch_without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
                 log::error!("sys_execv: Process manager not available");
-                return SyscallResult::Err(12); // ENOMEM
+                return Some(SyscallResult::Err(12)); // ENOMEM
             };
 
-            let (new_entry_point, new_rsp, commit) =
+            let (new_entry_point, new_rsp, commit, superseded) =
                 match manager.exec_process_with_argv(current_pid, &mut prepared, &mut closes) {
                     Ok(value) => value,
-                    Err("exec blocked while CLONE_VM sibling shares old address space") => {
-                        return SyscallResult::Err(11); // EAGAIN
-                    }
+                    Err(e) if e == crate::process::manager::EXEC_GROUP_RUNNING => return None,
                     Err(e) => {
                         log::error!("sys_execv: Failed to exec process: {}", e);
-                        return SyscallResult::Err(super::exec::manager_errno(e));
+                        return Some(SyscallResult::Err(super::exec::manager_errno(e)));
                     }
                 };
 
@@ -2245,7 +2406,7 @@ pub fn sys_execv_with_frame(
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
-            log::info!(
+            log::debug!(
                 "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
                 new_entry_point,
                 new_rsp
@@ -2287,6 +2448,10 @@ pub fn sys_execv_with_frame(
 
             // The new image starts from the initial x87/SSE state, not the old one's.
             crate::arch_impl::x86_64::fpu::reset_current();
+            // The roots exec superseded retire once no CPU can still walk them.
+            if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
+                crate::task::process_task::enqueue_process_reclaim(reclaim);
+            }
 
             log::info!(
                 "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
@@ -2294,8 +2459,18 @@ pub fn sys_execv_with_frame(
                 frame.rsp
             );
 
-            SyscallResult::Ok(0)
-        })
+            Some(SyscallResult::Ok(0))
+        });
+        let mut current_pid = current_pid;
+        loop {
+            current_pid = match super::exec::end_other_threads(current_pid) {
+                Ok(pid) => pid,
+                Err(errno) => return SyscallResult::Err(errno),
+            };
+            if let Some(result) = attempt(current_pid) {
+                break result;
+            }
+        }
     }
 }
 
@@ -2432,6 +2607,11 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         .trim_end_matches(".elf");
     let process_name = alloc::string::String::from(short_name);
     let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+
+    // The child's thread-index slot, held until it is published.
+    let Some(_thread_slot) = crate::task::scheduler::reserve_thread_slot() else {
+        return SyscallResult::Err(super::errno::EAGAIN as u64);
+    };
 
     // Window 2: create the child under the PM lock. No arch_without_interrupts
     // / without_interrupts wrapper here — matches creation.rs's documented
@@ -3340,17 +3520,44 @@ pub struct CowStatsResult {
 /// After this syscall, the calling process is responsible for rendering
 /// to the framebuffer.
 pub fn sys_take_over_display() -> SyscallResult {
+    // The display goes with the caller's terminal, its controlling terminal
+    // when that is a virtual terminal, else tty1; EBUSY while that terminal
+    // is not in the foreground (`docs/console/contract.md` section 4.2).
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    let owner = {
+        let guard = crate::process::manager();
+        guard.as_ref().and_then(|manager| {
+            let (pid, row) = manager.find_process_by_thread(tid)?;
+            let group = manager.thread_group_of(pid).unwrap_or(pid.as_u64());
+            let vt = match row.ctty {
+                Some(crate::tty::ctty::TtyId::Vt(n)) => usize::from(n),
+                _ => 1,
+            };
+            Some((group, vt))
+        })
+    };
+    let Some((group, vt)) = owner else {
+        return SyscallResult::Err(3);
+    };
+    // The boot splash gives way before the new owner's first frame (bounded).
     #[cfg(target_arch = "aarch64")]
-    if crate::graphics::display::active() {
-        let caller = match crate::window::Caller::current() {
-            Ok(caller) => caller, Err(e) => return SyscallResult::Err(e as u64),
-        };
-        if !caller.is_root() { return SyscallResult::Err(1); }
-        {
-            crate::graphics::display::init();
-            if let Err(e)=crate::graphics::display::take(caller.tgid) {return SyscallResult::Err(e as u64);}
-        }
+    crate::console::await_splash();
+    #[cfg(target_arch = "aarch64")]
+    if crate::gpu::display_active() {
+        return crate::gpu::take_display(vt);
     }
+    if let Err(errno) = crate::console::vt::take_display(group, vt) {
+        return SyscallResult::Err(errno as u64);
+    }
+    // Quiesce the console before publishing authority to the new owner's
+    // other threads, which can issue framebuffer syscalls concurrently.
+    crate::console::take_display();
+    // Quiesce the boot screen before publishing authority to either the
+    // owner's other threads or the cursor presenter.
+    #[cfg(target_arch = "aarch64")]
+    let _ = crate::graphics::boot_screen::stop_drawing();
     {
         // Mark the calling process as the display owner. Ownership moves: a
         // previous owner's whole-screen mapping can no longer draw.
@@ -3360,26 +3567,15 @@ pub fn sys_take_over_display() -> SyscallResult {
             if let Some(ref mut mgr) = *mgr_guard {
                 if let Some((pid, process)) = mgr.find_process_by_thread_mut(tid) {
                     process.has_display_ownership = true;
-                    crate::syscall::fb::DISPLAY_OWNER_PID
+                    let group = process.thread_group_id.unwrap_or(pid.as_u64());
+                    crate::syscall::graphics::DISPLAY_OWNER_GROUP
+                        .store(group, core::sync::atomic::Ordering::Release);
+                    crate::syscall::graphics::DISPLAY_OWNER_PID
                         .store(pid.as_u64(), core::sync::atomic::Ordering::Release);
                 }
             }
         }
 
-        // The kernel stops drawing its boot screen but leaves it up until the new
-        // owner draws, so an owner that fails first does not blank the screen.
-        #[cfg(target_arch = "aarch64")]
-        let _ = crate::graphics::boot_screen::stop_drawing();
-
-        // Tell the render thread to stop flushing the framebuffer.
-        // BWM will handle all GPU operations via its own fb_flush() syscall.
-        #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-        crate::graphics::render_task::set_display_taken();
-
-        // The production x86_64 kernel has no render thread: its log sink stops
-        // drawing log records on the framebuffer instead.
-        #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-        crate::logger::take_display();
     }
     SyscallResult::Ok(0)
 }
@@ -3387,13 +3583,43 @@ pub fn sys_take_over_display() -> SyscallResult {
 /// Give back the display to the kernel.
 /// Called by init when BWM crashes so the kernel can resume rendering.
 pub fn sys_give_back_display() -> SyscallResult {
+    // The core restores the previous owner's frame, or the kernel's screen and console.
     #[cfg(target_arch = "aarch64")]
-    if crate::graphics::display::active() {
-        return match crate::window::Caller::current().and_then(|c|crate::graphics::display::back(c.tgid)) {
-            Ok(())=>SyscallResult::Ok(0),Err(e)=>SyscallResult::Err(e as u64)
-        };
+    if crate::gpu::display_active() {
+        return crate::gpu::give_display();
     }
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    {
+        let mut guard = crate::process::manager();
+        let Some((pid, process)) = guard.as_mut().and_then(|manager| manager.find_process_by_thread_mut(tid)) else {
+            return SyscallResult::Err(3);
+        };
+        let owner = &crate::syscall::graphics::DISPLAY_OWNER_PID;
+        if owner.load(core::sync::atomic::Ordering::Acquire) != pid.as_u64() && process.cred.euid != 0 {
+            return SyscallResult::Err(1);
+        }
+        process.has_display_ownership = false;
+        owner.store(u64::MAX, core::sync::atomic::Ordering::Release);
+    }
+    crate::console::give_back_display();
     SyscallResult::Ok(0)
+}
+
+/// Process group `group`'s last row exited: its virtual terminals return to
+/// `VT_AUTO` and `KD_TEXT`, and a display it held is given back.
+pub(crate) fn console_owner_exited(group: u64) {
+    if crate::console::vt::process_exited(group) {
+        // The core's ownership stack publishes the next owner and restores the screen
+        // (`gpu::owner_ended`).
+        #[cfg(target_arch = "aarch64")]
+        if crate::gpu::display_active() {
+            return;
+        }
+        crate::syscall::graphics::DISPLAY_OWNER_PID.store(u64::MAX, core::sync::atomic::Ordering::Release);
+        crate::console::give_back_display();
+    }
 }
 
 /// sys_cow_stats - Get Copy-on-Write statistics (for testing)
@@ -3711,6 +3937,7 @@ fn change_credentials(
         for peer in peers.into_iter().chain(core::iter::once(pid)) {
             if let Some(row) = manager.get_process_mut(peer) {
                 row.cred = credentials.clone();
+                row.publish_identity();
             }
         }
         SyscallResult::Ok(0)
@@ -3913,7 +4140,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                 unsafe {
                     core::ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr as *mut u8, actual);
                 }
-                update_atime = inode.needs_atime_update();
+                update_atime = !fs.is_read_only() && inode.needs_atime_update();
                 SyscallResult::Ok(actual as u64)
             }
             Err(_) => SyscallResult::Err(super::errno::EIO as u64),
@@ -4029,13 +4256,13 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
 
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     if is_home {
-        let mut fs_guard = match ext2::home_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+        let mut fs_guard = match ext2::home_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         match fs_guard.as_mut() {
             Some(fs) => write_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),
         }
     } else {
-        let mut fs_guard = match ext2::root_fs_write() { Ok(guard) => guard, Err(_) => return SyscallResult::Err(crate::syscall::errno::EINTR as u64) };
+        let mut fs_guard = match ext2::root_fs_write() { Ok(guard) => guard, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         match fs_guard.as_mut() {
             Some(fs) => write_fn(fs),
             None => SyscallResult::Err(super::errno::EIO as u64),

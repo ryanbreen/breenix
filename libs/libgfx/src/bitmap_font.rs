@@ -3,9 +3,9 @@
 //! Provides the same professional Noto Sans Mono font used in the kernel,
 //! with alpha-blended glyph rendering for smooth text output.
 
-use noto_sans_mono_bitmap::{
-    get_raster, get_raster_width, FontWeight, RasterHeight,
-};
+use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight};
+/// The raster sizes this crate carries: 16 px and 32 px.
+pub use noto_sans_mono_bitmap::RasterHeight;
 
 use crate::color::Color;
 use crate::framebuf::{Box64, FrameBuf};
@@ -31,10 +31,15 @@ impl FontMetrics {
 
 /// Get the font metrics for the 16px regular Noto Sans Mono font.
 pub fn metrics() -> FontMetrics {
+    metrics_at(RasterHeight::Size16)
+}
+
+/// The font metrics at raster size `height`; line spacing is an eighth of the size.
+pub fn metrics_at(height: RasterHeight) -> FontMetrics {
     FontMetrics {
-        char_width: get_raster_width(FontWeight::Regular, RasterHeight::Size16),
-        char_height: 16,
-        line_spacing: 2,
+        char_width: get_raster_width(FontWeight::Regular, height),
+        char_height: height.val(),
+        line_spacing: height.val() / 8,
     }
 }
 
@@ -42,16 +47,16 @@ pub fn metrics() -> FontMetrics {
 /// section 8.2): each pixel is the coverage blend of `fg` over the pixel already there. A
 /// character the crate lacks draws the raster of '?'. Marks the raster's rectangle.
 pub fn draw_char(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color) {
-    if x0 > i64::MAX as usize / 2 || y0 > i64::MAX as usize / 2 {return;}
-    draw_char_at(fb,ch,x0 as i64,y0 as i64,fg);
+    draw_char_at(fb, ch, x0, y0, fg, RasterHeight::Size16);
 }
 
-/// Signed origins for kernel console cells clipped at the left and top edges.
-pub fn draw_char_at(fb:&mut FrameBuf,ch:char,x0:i64,y0:i64,fg:Color) {
-    if !(-1_000_000_000..=1_000_000_000).contains(&x0) || !(-1_000_000_000..=1_000_000_000).contains(&y0) {return;}
-    let rc = match get_raster(ch, FontWeight::Regular, RasterHeight::Size16) {
+/// Draw a single character from the raster of size `height`, as `draw_char` does at 16 px.
+pub fn draw_char_at(fb: &mut FrameBuf, ch: char, x0: usize, y0: usize, fg: Color, height: RasterHeight) {
+    if x0 > i64::MAX as usize / 2 || y0 > i64::MAX as usize / 2 {return;}
+    let (x0, y0) = (x0 as i64, y0 as i64);
+    let rc = match get_raster(ch, FontWeight::Regular, height) {
         Some(rc) => rc,
-        None => match get_raster('?', FontWeight::Regular, RasterHeight::Size16) {Some(rc)=>rc,None=>return},
+        None => match get_raster('?', FontWeight::Regular, height) {Some(rc)=>rc,None=>return},
     };
     let raster = rc.raster();
     let cell = Box64 { x0, y0, x1: x0 + rc.width() as i64, y1: y0 + raster.len() as i64 };

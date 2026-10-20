@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
 BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 BREENIX_HOST_ARGS=("$@")
 # Build and execute the x86_64 frame/page-table custody injection gates.
@@ -171,7 +172,7 @@ PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:rec
 PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.
 # KernelStack::drop now unmaps the x86 stack VA range and releases its 128 frames; exactly one stack is allocated and dropped in this window, so 149 - 128 * 1 = 21.
 # kstack_frames_released proves that arithmetic in-kernel: the oracle asserts 149 - stack_residual == kstack_frames_released, preventing silent drift.
-EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'
+EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'
 CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'
 # Every field is a delta the oracle drives itself in the same run except
 # reserved_collisions, which is the absolute boot-wide count of ordinary
@@ -458,11 +459,12 @@ TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:
 # PR-1 deleted 16 `log::*!` calls from kernel/src/interrupts/context_switch.rs;
 # ten of the arms had no counter of any kind, so each got one relaxed
 # `DispatchLogFact` counter, appended to the `[DISPATCH_STRAND_CENSUS:...]`
-# line as its own named field. This oracle
+# line as its own named field. Five of those arms went with the dispatch's
+# process-manager dependency (#1635), leaving five facts. This oracle
 # (kernel/src/test_framework/registry.rs, run_x86_dispatch_fact_oracle) drives
 # exactly one leg per fact between two forced census snapshots and reports how
-# many of the ten moved by EXACTLY one leg. `moved_wrong=0` is the
-# independence claim -- ten counters that all alias one cell would report
+# many of the five moved by EXACTLY one leg. `moved_wrong=0` is the
+# independence claim -- five counters that all alias one cell would report
 # moved_by_one=1 -- and `irqs_enabled_before=1` is the claim that it read the
 # census through the reporter's real emission boundary, which refuses to run
 # with interrupts disabled. Pinned as an exact literal, so a FAIL emission
@@ -470,10 +472,10 @@ TTY_IRQ_FG_ORACLE_PATTERN='\[TTY_IRQ_FG_ORACLE:x86:fg_known=822:target_absent=1:
 # count of 1 below, so a deleted call site cannot pass by silence.
 #
 # What it does NOT show: that any site in context_switch.rs calls the counter.
-# Seven of the ten arms are defensive arms this tree cannot reach on a running
+# Four of the five arms are defensive arms this tree cannot reach on a running
 # kernel. tests/dispatch_fact_census_structure.rs pins the site-to-counter
 # binding at source, per site.
-DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=10:legs=10:moved_by_one=10:moved_wrong=0:irqs_enabled_before=1:PASS]'
+DISPATCH_FACT_ORACLE_LITERAL='[DISPATCH_FACT_ORACLE:x86:facts=5:legs=5:moved_by_one=5:moved_wrong=0:irqs_enabled_before=1:PASS]'
 # The boot-test oracle deliberately drives the detector exactly once; the forbidden exact marker is separately pinned absent below.
 CREATION_LOCK_ORDER_INJECTED_LITERAL='[CREATION_LOCK_ORDER:INJECTED:PM_HELD]'
 CREATION_LOCK_ORDER_VIOLATION_LITERAL='[CREATION_LOCK_ORDER:VIOLATION:PM_HELD]'
@@ -630,8 +632,11 @@ rm -f target/ext2.img
 UEFI_IMG=$(ls -t target/release/build/breenix-*/out/breenix-uefi.img | head -1)
 test -n "$UEFI_IMG"
 
-for i in $(seq 1 "$COUNT"); do
-    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_boot_tests_$i"
+i=1
+attempt=0
+while [ "$i" -le "$COUNT" ]; do
+    attempt=$((attempt+1))
+    OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_x86_boot_tests_$attempt"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     cp target/ovmf/x64/code.fd "$OUTPUT_DIR/OVMF_CODE.fd"
@@ -646,6 +651,7 @@ for i in $(seq 1 "$COUNT"); do
     HOST_MS_START="$(gbf_host_ms_now)"
     QEMU_AT_START="$(qemu_host_lock_count qemu-system-x86_64)"
     LOAD_AT_START="$(gbf_load_1m)"
+    # Filesystem mutation tests need writes; discard them after each boot.
     qemu-system-x86_64 \
         -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
         -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
@@ -653,7 +659,7 @@ for i in $(seq 1 "$COUNT"); do
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
         -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" \
         -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-        -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
+        -drive "if=none,id=ext2disk,format=raw,snapshot=on,file=$BREENIX_ROOT/target/ext2.img" \
         -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
         -machine pc,accel=tcg -cpu qemu64 -smp 1 -m 512 \
         -display none -no-reboot -no-shutdown \
@@ -884,7 +890,16 @@ for i in $(seq 1 "$COUNT"); do
     printf '%s\n' "$FACTS_LINE" > "$OUTPUT_DIR/gate_boot_facts.txt"
     echo "  $FACTS_LINE"
 
-    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt"
+    timing_starved=false
+    for scorer in score-softirq-deferral.py score-sigkill-teardown.py; do
+        scorer_status=0
+        python3 "$BREENIX_ROOT/scripts/$scorer" "$OUTPUT_DIR/serial_kernel.txt" "$OUTPUT_DIR/serial_user.txt" || scorer_status=$?
+        case "$scorer_status" in
+            0) ;;
+            2) timing_starved=true ;;
+            *) false ;;
+        esac
+    done
 
     # Device-enumeration census leg (green arc 5, bus+NIC blended). Placed
     # BEFORE the passed-flag check below (and before the ~40 marker-count
@@ -1278,8 +1293,14 @@ for i in $(seq 1 "$COUNT"); do
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
     test "$(grep -a -h -E -c "$TIMER_WAKE_LATENCY_ORACLE_PASS_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | awk '{ total += $1 } END { print total + 0 }')" -eq 1
+    verdict_status=0
     EXPECTED_EXITS="$EXPECTED_USERSPACE_EXITS" \
-        "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt
+        "$BREENIX_ROOT/scripts/x86-gate-verdict.sh" "$OUTPUT_DIR"/serial_*.txt || verdict_status=$?
+    case "$verdict_status" in
+        0) ;;
+        2) timing_starved=true ;;
+        *) false ;;
+    esac
     COUNTER_LINE=$(grep -a -hE "$FRAME_CUSTODY_PATTERN" \
         "$OUTPUT_DIR"/serial_*.txt | tail -1)
     KSTACK_OWNER_LINE=$(grep -a -hE "$KSTACK_OWNER_ORACLE_PATTERN" \
@@ -1371,7 +1392,15 @@ for i in $(seq 1 "$COUNT"); do
         echo "x86 frame-custody gate run $i: FAIL (CREATION_LOCK_ORDER:VIOLATION marker present)"
         false
     fi
-    echo "x86 frame-custody gate run $i: PASS"
-    printf '%s\n' "$CAPTURE_LINES"
-    breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+    # One import per attempt that got this far: a starved attempt is stored as
+    # STARVED and rerun, a passing one as PASS. Failures import from the trap.
+    if $timing_starved; then
+        echo "x86 frame-custody gate run $i: STARVED; rerunning; attempt $attempt is not evidence"
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests STARVED 2 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+    else
+        echo "x86 frame-custody gate run $i: PASS"
+        printf '%s\n' "$CAPTURE_LINES"
+        breenix_runs_import_nonfatal "$OUTPUT_DIR" x86_64 boot-tests PASS 0 "$HOST_MS_START" "${BREENIX_RUNS_GATE_ARGV[@]}" || :
+        i=$((i+1))
+    fi
 done

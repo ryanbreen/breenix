@@ -27,6 +27,8 @@
 //! ```
 
 pub mod counters;
+#[cfg(target_arch = "aarch64")]
+pub mod gpu;
 pub mod irq;
 pub mod net_rx;
 pub mod output;
@@ -65,6 +67,8 @@ pub fn init() {
     irq::init();
     net_rx::init();
     output::init();
+    #[cfg(target_arch = "aarch64")]
+    gpu::init();
     process::init();
     teardown::init();
     virtgpu::init();

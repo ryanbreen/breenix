@@ -2,6 +2,11 @@
 #![cfg(test)]
 #![feature(allocator_api)]
 extern crate alloc;
+#[path = "../../../kernel/src/boot/intent.rs"]
+pub mod intent;
+pub mod boot {
+    pub use crate::intent;
+}
 pub mod irq_safe_mutex {
     pub type IrqSafeMutex<T> = spin::Mutex<T>;
 }
@@ -252,6 +257,8 @@ pub mod task {
         }
     }
     pub mod scheduler {
+        // Host IPC cases run synchronously; there is no guest thread to wake.
+        pub fn unblock_thread(_tid: u64) {}
         pub struct Scheduler;
         impl Scheduler {
             pub fn unblock(&mut self, _tid: u64) {}

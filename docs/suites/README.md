@@ -1,5 +1,11 @@
 # Effort suites
 
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](../x86-execution-policy.md);
+legacy QEMU scripts require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+`breenix-runs run x86` is retired for execution; that variable permits only `--dry-run` planning.
+
 An effort suite is a userspace program, `/sbin/suite-<id>`, that the production kernel runs
 as PID 1 to show how far one POSIX area works: it runs a list of cases, prints one serial
 line per case and draws a scored panel on screen. Vigil reads the manifests here and the
@@ -36,12 +42,13 @@ Boot tooling records host load at start and verdict without waiting for it to fa
 on either host, as "Shared host slots" in `docs/boot-path.md` describes. The
 `timingSensitive` flag classifies the workload; it does not request a default wait.
 
-## Watching one case
+## Watching a category or one case
 
 Use `scripts/boot-interactive.sh --mode suite --suite ID --case CATEGORY/CASE`
 on ARM64 QEMU, or `./run.sh --parallels|--vmware --suite ID --case CATEGORY/CASE`.
-The selection lives in the shared suite runner, so the 16 suites take it the same way.
-It runs only the named case, with the same isolation, limits, measurements and display
+Use `--case CATEGORY` to run that category, including its complete manifest case list.
+The selection lives in the shared suite runner, so each suite takes it the same way.
+It runs only the selected cases, with the same isolation, limits, measurements and display
 as a full run; any setup belongs to that case. The panel shows only that case and
 identifies the run as one case. The three launchers hold its final panel for
 `BREENIX_SUITE_HOLD` seconds (default 5) after a two-second render delay.
@@ -78,6 +85,9 @@ SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>
 A paced BreenGL START appends ` pace_ms=<positive unsigned 32-bit milliseconds>`
 after any `only=` selection. It identifies a watch profile; CASE measurements and
 DONE acceptance stay the same. Other suites do not accept or apply this field.
+
+A full run booted as PID 1 also prints its memory record around the cases ("Memory record",
+below).
 
 Each record is one write that starts with a newline, so it always begins its own line even
 when other output on the same serial port (the x86-64 scheduler's COM1 breadcrumbs) left a
@@ -157,6 +167,63 @@ a case ends, any process it left behind has been reparented to the suite, which 
 PID 1; the suite kills them all with `kill(-1, SIGKILL)` and reaps them before the next case,
 so no case sees another's processes. A case whose processes outlive SIGKILL is a FAIL.
 
+### Memory record
+
+A suite has to give back the memory it used: a suite that leaves memory allocated once its
+processes are gone fails like one with a failing case. A full run booted as PID 1 (a boot of
+one suite, or each suite of a sequence) prints its memory record
+(`libbreenix::suite::memory_record`):
+
+```text
+SUITE <id> MEMORY before free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
+SUITE <id> MEMORY after free=<pages> heap_free_kb=<kB> <owner>=<pages> ... receipts=<n> settle_ms=<ms>
+SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> allowance=<pages>
+```
+
+- `MEMORY before` comes after START and before the first case. After DONE, the runner kills
+  and reaps any process left (each case's were swept after it), then prints `MEMORY after`
+  and the `reclaimed` verdict, before `SUITE_SEQUENCE READY`.
+- What the runner keeps for its final panel exists before `MEMORY before`, so both samples
+  count it: a framebuffer suite's mapping of the display, and the GPU suite's view, a GPU
+  context and its 2560x1600 scanout target (4013 pages).
+- `free` is `/proc/meminfo`'s MemFree in 4 KiB pages and `heap_free_kb` its KernelHeapFree.
+  The owners are the `owner` rows of `/proc/breenix/frames`: allocated frames by what holds
+  them, from the source of the code that allocated them. `user_stacks` are the stack pages
+  exec and process creation map, `user_pages` the other pages mapped into processes (program,
+  heap, anonymous and shared memory, copy-on-write copies), `page_tables` process and kernel
+  page tables, `page_cache` the file pages the per-inode cache holds (`memory::file_map`),
+  `kernel_stacks` kernel and per-CPU stacks, `buffers` device, DMA and display buffers, and
+  `other` the rest, the kernel heap's growth among it.
+- Reclamation is deferred: an exited process's tables and the image an exec replaced go back
+  through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
+  sample waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
+  `settle_ms` how long it waited.
+- The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
+  The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
+  set from the measurement below; only the operator loosens it.
+- `scripts/suite-verdict.py`, and through it `suite-sequence.py score`, the launchers and the
+  metal driver's scoring, fails a full run whose memory record is missing, out of place, or
+  contradicts its own figures, or says `reclaimed=FAIL`. The launchers wait for the record
+  before they stop the VM. A record that cannot be read is a `SUITE <id> ERROR memory ...`
+  line and `reclaimed=FAIL`. A one-case run (`--case`) is not full-suite evidence and has no
+  memory record.
+
+The allowance comes from leak-free boots: two of the fifteen suites, and one of the memory
+suite alone (2026-10-19):
+
+| Boot | Suites short of `free_before` | Why |
+|---|---|---|
+| ARM64 QEMU, 4 CPUs, 512 MiB, fifteen suites | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
+| R240 (a diagnostic build of this branch), fifteen suites | 12 of 15 by 5 to 7 pages | As above |
+| | terminals and networking by 37 pages | Each starts a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
+| | console 42 pages over | Kernel stacks freed during it came back |
+| ARM64 QEMU, memory suite alone | 38 pages | The runner's own pages: booted alone it draws its live panel, and its heap grows with it |
+
+ARM64's kernel stacks are not taken from the frame ledger, so its workers do not show. The
+allowance, 48 pages, is the largest deficit, 38 pages, with headroom; a process image left
+behind is 300 pages or more.
+
 ## Writing a suite
 
 A suite is a static table and a `main` that runs it, using `libbreenix::suite`:
@@ -199,8 +266,17 @@ Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BI
 - ARM64 QEMU: `scripts/boot-interactive.sh --mode suite --suite <id>` (fw_cfg
   `opt/breenix/mode=suite`, `opt/breenix/suite=<id>`).
 - Parallels and VMware: `./run.sh --parallels|--vmware --suite <id>`.
-- x86-64 gate: `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh`, or
-  `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. The gate scores
+- x86-metal: `metal-run boot --mode suite --suite <id>` on the boot host, which stages the suite's fixtures
+  onto the delivered RAM-disk root and scores the boot with this manifest
+  ([the metal boot loop](../metal/README.md), "RAM-disk userspace").
+<!-- claim-lint:ok: `all` is the flag's name, resolved by scripts/suite-sequence.py. -->
+- The first three also take a list, `--suite <id>,<id>,...`, or `--suite all`, and run the
+  suites one after another in one boot ("Several suites in one boot", below).
+<!-- claim-lint:ok: scripts/suite-verdict.py checks the manifest case order and DONE counts; docker/qemu/run-x86-gate.sh saves QMP screens. -->
+- Legacy x86-64 QEMU gate (outside the S23 landing path):
+  `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh` requires an operator override.
+  `breenix-runs` retains only historical `run x86 --dry-run` planning and stored evidence recovery.
+  The legacy gate scores
   the boot with `scripts/suite-verdict.py`: one START with the manifest's case count, a CASE
   line for every manifest case in order, a DONE that agrees with them and has `failed=0`,
   `skipped=0` and `passed=total` equal to the manifest's case count, and
@@ -215,6 +291,140 @@ fw_cfg mode first (`opt/breenix/mode=suite` with `opt/breenix/suite=<id>`; on x8
 then that file, else the default `/sbin/init`. A suite binary that is missing or not a
 loadable ELF for the kernel's architecture runs `/sbin/init` instead, and so does one that
 then fails to start.
+
+## Several suites in one boot
+
+A boot can run a list of suites in turn, so a machine whose boots each cost minutes of
+firmware, delivery and build time runs the list for one boot's overhead:
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite directories,processes,time
+./run.sh --parallels --suite all
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite directories,memory,files-io
+```
+
+<!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and
+tests/suite_sequence_test.py exercises it. -->
+`scripts/suite-sequence.py resolve` turns the argument into the list, checked before the
+boot: known, distinct suite ids, each with a manifest. `all` is every suite of
+`docs/efforts/path.json` the target runs (on x86-metal every main-path effort's), in path order,
+leaving out those with no manifest yet and, on a target without a 3D GPU (x86-metal; ARM64
+QEMU without `--gpu-gl`), those whose manifest says `"needs3dGpu": true`. Two suites cannot
+share a boot anywhere but at one end, and their manifests say so with `"sequence"`:
+`console` (`"first"`) needs the kernel's own console on screen, and nothing gives the
+console back once a suite has taken the display; `files-io` (`"last"`) has host disk checks,
+read from the disk after the boot, so nothing may write after it.
+`tests/suite_manifests.rs` requires `"sequence": "last"` of any manifest with `diskChecks`.
+A list that puts either elsewhere is refused with that reason, and `all` orders them so.
+One-case runs (`--case`) take a single suite.
+
+The launcher writes the list to `/etc/breenix/suite-sequence` on the boot's disk
+(`scripts/write-boot-target.sh IMAGE FIRST PID1_ELF LIST`) and boots the first suite as PID 1.
+Each suite prints exactly the lines it prints in a boot of its own, from its START to its
+DONE, so `scripts/suite-verdict.py`, the launchers' watchers and Vigil read each suite as
+they read a single-suite boot. The runner (`libbreenix::suite::sequence`) adds these records:
+
+```text
+SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
+SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
+SUITE_SEQUENCE RESET <id> FAIL <why>
+SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
+SUITE_SEQUENCE READY <id>
+SUITE_SEQUENCE STALLED <id> cases=<reported>/<total>
+SUITE_SEQUENCE FAIL exec <id>
+SUITE_SEQUENCE DONE suites=<n>
+```
+
+Host launchers collect a requested sequence through `SUITE_SEQUENCE DONE`, a dead
+guest, or a progress/serial stall. A failed case, failed suite, watchdog `STALLED`,
+or failed reset does not end collection. Scoring follows the end of that boot.
+If a boot dies partway through, the launcher boots again with only the suites
+without their own complete `DONE` or `STALLED` record, preserving their order.
+A failed `DONE` still retires that suite. A retry that retires no suite stops and
+names the suite it could not get past and the remaining list. Operator cancellation
+also stops collection. A suite whose binary could not start remains unreached,
+even if the runner subsequently prints sequence DONE.
+
+Each attempt keeps its serial and gets one Vigil boot record with the ordered suite list.
+A suite that never starts gets no figure. Ctrl+C, quitting QEMU, closing its window, or
+a launcher killed by a signal cancels the run without resuming. Ctrl+C waits for the
+launcher to stop and clean up its VM.
+claim-lint:ok: S35; host cancellation replays in tests/suite_resume_test.py and tests/suite_watcher_test.py.
+
+Mac launchers reuse the
+built artifacts on retries and place retry serials in separate `-resume-N`
+directories beside the initial serial. QEMU keeps a boot's writable image beside
+its serial. Metal's detached collector
+pins the commit and submits each retry through `metal-run` and its ordinary lease
+and build path; its sequence log follows the initial boot's log.
+
+Each suite starts from the state its own boot gives it:
+
+- **Processes and descriptors.** Once a suite's DONE is out (and its panel drawn), the runner
+  kills each process but PID 1 and reaps it, closes each descriptor but 0, 1 and 2, sets
+  each signal back to its default action, unblocks them and disarms its timer, then
+  execs the next suite: PID 1 again, with a fresh address space and the environment the
+  kernel gave the first. Processes that outlive SIGKILL are reported as a RESET FAIL of the
+  next suite.
+- **Files and IPC names.** Before its START the first suite records the root filesystem in
+  `/etc/breenix/suite-baseline`: each path's type, permission bits, owner and size, with a
+  content hash for symlinks and for files of at most 64 KiB and the modification time for
+  larger files; `/proc` and `/dev` are left out, but for the POSIX shared memory and message
+  queue names in `/dev/shm` and `/dev/mqueue`. Before each later suite's START the runner
+  removes whatever earlier suites created and prints RESET. A recorded path that is missing
+  or differs (a fixture an earlier suite changed) cannot be put back, since no copy was
+  kept: RESET names it, and that suite is scored NOT-ISOLATED, its own verdict alongside.
+  Fixtures the launcher stages (the SDK suite's host results) are on the disk before the
+  baseline, so they stay.
+- **Network.** An earlier suite's TCP connections outlive its processes: TIME_WAIT keeps a
+  connection, and its port, for 60 seconds. After the file reset the runner waits until
+  `/proc/net/tcp` (the first four columns of Linux's format: slot, local and remote address,
+  state) lists no listener or connection, up to 70 seconds, and RESET reports how many were
+  left (`tcp`) and how long it waited (`tcpwait`). A connection still listed makes the suite
+  NOT-ISOLATED.
+- **What carries over.** PID numbers, the page cache and kernel memory persist across suites,
+  as in any boot that runs programs one after another. BEGIN and RESET report the free memory
+  and kernel heap `/proc/meminfo` shows as each suite starts (`MemFree`, `KernelHeapFree`),
+  and the FRAMES lines after each come from `/proc/breenix/frames`: the frames in use, those
+  lost to the allocator, the allocated frames per allocating source line (with how many a
+  process page table maps or are external leaves), what became of exited processes' page
+  tables, and the reclaim receipts still queued. Once the runner has reaped a suite its frames
+  are back: in one ARM64 QEMU boot of the fifteen suites at 512 MiB, MemFree was 357176 kB as
+  the first started and between 356332 and 356992 kB as each later one did, and the frames in
+  use at each start were PID 1's own image (one root and its tables, stack, TLS, program and
+  heap pages).
+
+A suite whose runner stops starting or finishing cases for 90 seconds (below the launchers'
+120-second stall watchdog, above the 25-second case allowance plus its kill and sweep) is
+ended by the runner's own watchdog, SIGALRM from ITIMER_REAL in PID 1: it prints STALLED
+with the cases reported so far and hands off to the next suite from the signal handler,
+using system calls only. Case processes start with SIGALRM back at its default action, and a
+SIGALRM that arrives before the watchdog's time (a case may signal PID 1) is not the
+watchdog. If the kernel itself stops, no code in the boot can move to the next suite: the
+launcher's stall watchdog ends the boot. Unreached suites are NOT-RUN in that boot's
+record and are requested again in the next boot.
+
+Each suite has a DONE deadline (`--gate-timeout` on ARM64 QEMU, Parallels
+and VMware; 420 s on x86-metal), reset at suite boundaries, never by case progress.
+The independent 120 s inactivity watchdog can stop a boot earlier. Metal's saved
+attempt ceiling is fixed at power-on and includes the requested suites' deadlines.
+The sequence is finished at `SUITE_SEQUENCE DONE`; the last suite keeps its final panel. `scripts/suite-sequence.py score LIST SERIAL [--disk IMAGE]` then scores each
+suite from its own part of the serial (from where it begins to where the next begins, so a
+later kernel panic fails only the suite it happened in) and prints one line per suite:
+
+| Status | Meaning |
+|---|---|
+| PASS / FAIL | `scripts/suite-verdict.py`'s verdict for the suite; the last suite's disk checks too |
+| STALLED | The runner's watchdog, or the end of the boot, stopped it; the cases it reported are kept |
+| NOT-RUN | It did not print START: an earlier suite stopped the boot, or its binary could not start |
+| NOT-ISOLATED | Its RESET named files it could not restore or a TCP connection still open; its own verdict follows |
+
+The boot passes when each suite passes. The ARM64 QEMU, Parallels and VMware launchers print
+the table's lines after the boot, even one stopped part way; x86-metal writes them to the
+boot record's `suite-verdict.txt` and names the suites in `run.json` (`suites`; `suite` only
+for a boot of one). `scripts/vigil-record.sh` passes a Mac boot's ordered list to Vigil,
+which records the boot and its per-suite results over that boot's serial. The retired x86 QEMU
+gate runs one suite per boot.
 
 ## The panel
 
@@ -1093,6 +1303,34 @@ no case passes because a layer is missing. Five cases have the 20-second allowan
 scripts/boot-interactive.sh --mode suite --suite breengel
 ./run.sh --parallels --suite breengel
 ./run.sh --vmware --suite breengel
-# From tools/breenix-runs:
-swift run breenix-runs run x86 --mode suite --boots 1 --suite breengel --gate-timeout 900 --sha <pushed-sha>
+```
+
+## GPU rendering
+
+`gpu` measures the GPU rendering effort in `docs/efforts/path.json` against its contract,
+`docs/gui/gpu.md`: one category per milestone, in build order, `device` (12), `submit` (22),
+`readback` (19), `textures` (19), `profile` (22), `pipelines` (26), `isolation` (25),
+`present` (16) and `performance` (9), 170 cases. Its targets are ARM64 QEMU, Parallels and
+VMware; x86-64 joins when a dedicated Breenix hardware box replaces the current x86 gate host
+(`docs/gui/gpu.md` section 1.6.4), so there is no x86-64 boot of it.
+
+The suite is written ahead of the layers it measures. Each case names the layer it needs and
+the build step that supplies it, asks syscall 416's VERSION op, and until that layer exists
+fails with what the kernel answered, for example `missing READBACK and record v2 (G2):
+syscall 416 VERSION returned ENOSYS`. Once VERSION answers, a case whose check is not written
+yet fails saying so. No case skips. `device/version` is already its real check. Each lane
+writes its category's checks from the contract, in their own commits, before the code they
+measure. Cases judge device readbacks against in-suite formulas and literal tables, or
+`libgfx-ref` output for the coverage-span cases (contract section 1.10), never against BGL
+or the kernel. CPU reference output is only an oracle; the GPU draws the scene.
+
+ARM64 QEMU boots of this suite use the GL QEMU (`--gpu-gl`; `docs/gui/qemu-gl.md`), whose
+host renderer attestation is judged after the VM stops: a boot whose guest never creates a
+VirGL context has no attestation, and the launcher fails it on that account even when the
+suite's own verdict is complete.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
+./run.sh --parallels --suite gpu --gate-timeout 900
+./run.sh --vmware --suite gpu --gate-timeout 900
 ```

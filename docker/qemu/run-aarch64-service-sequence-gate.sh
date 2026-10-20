@@ -1166,6 +1166,7 @@ run_profile() {
             -device virtio-tablet-device \
             -device virtio-blk-device,drive=ext2 \
             -drive "$drive_opts" \
+            -device virtio-rng-device \
             -device virtio-net-device,netdev=net0 \
             -netdev user,id=net0 \
             -serial file:"$serial_file" &

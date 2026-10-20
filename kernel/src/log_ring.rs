@@ -1,9 +1,11 @@
 //! The x86 kernel log ring: which lines it takes, whole, and which it drops.
 //!
-//! A kernel log line is appended to a fixed ring and written to COM2 later,
-//! one FIFO's worth at a time (`serial`), so a caller that cannot wait on the
+//! A kernel log line is appended to a fixed ring and written to the log UART
+//! later, one FIFO's worth at a time, or one line at a time into the console's
+//! queue when the log shares it (`serial`), so a caller that cannot wait on the
 //! UART still logs. When the ring is full an ordinary line is dropped whole
-//! and the bytes lost are reported, on a line of their own, once there is room.
+//! and the exact lines and wire bytes lost are reported at that position.
+//! Draining alone publishes the report, including a final loss with no later log call.
 //!
 //! A line that carries a boot-path stage marker (`stage_lines`) is never
 //! dropped. Ordinary lines may fill the ring only up to its last
@@ -25,8 +27,17 @@ pub struct LogRing<const N: usize> {
     len: usize,
     /// Bytes of dropped lines not yet reported.
     dropped: u64,
+    dropped_lines: u64,
+    // Loss reports have their own storage: neither reports nor pending loss
+    // consume the stage reserve. `before_loss` locates the first refused
+    // record among the retained bytes, so later stages cannot overtake it.
+    before_loss: usize,
+    loss_partial: bool,
+    report: Report,
+    report_at: usize,
     /// Bytes ever appended.
     pushed: u64,
+    report_pushed: u64,
 }
 
 impl<const N: usize> LogRing<N> {
@@ -39,13 +50,25 @@ impl<const N: usize> LogRing<N> {
             head: 0,
             len: 0,
             dropped: 0,
+            dropped_lines: 0,
+            before_loss: 0,
+            loss_partial: false,
+            report: Report { bytes: [0; 128], len: 0 },
+            report_at: 0,
             pushed: 0,
+            report_pushed: 0,
         }
     }
 
     /// Bytes waiting to be written out.
     pub fn len(&self) -> usize {
-        self.len
+        self.len + self.report.len - self.report_at
+            + if self.dropped != 0 { self.drop_report().len } else { 0 }
+    }
+
+    /// Free byte-ring capacity, excluding the separately stored report.
+    pub fn available(&self) -> usize {
+        N - self.len
     }
 
     /// Bytes ever appended, counting the ones already written out.
@@ -53,13 +76,64 @@ impl<const N: usize> LogRing<N> {
         self.pushed
     }
 
-    pub fn pop(&mut self, out: &mut [u8]) -> usize {
-        let n = out.len().min(self.len);
-        for slot in &mut out[..n] {
-            *slot = self.bytes[self.head];
-            self.head = (self.head + 1) % N;
+    /// Retained producer bytes accepted, excluding synthesized reports.
+    pub fn accepted(&self) -> u64 {
+        self.pushed() - self.report_pushed
+    }
+
+    /// Retained producer bytes drained, excluding synthesized reports.
+    pub fn sent(&self) -> u64 {
+        self.accepted() - self.len as u64
+    }
+
+    /// Snapshot the serial synchronization boundary, including loss reports.
+    /// Pending or active reports must drain before taking the boundary.
+    pub fn sync_target(&mut self) -> Option<u64> {
+        self.report_dropped();
+        (self.dropped == 0 && self.report.len == 0).then_some(self.pushed)
+    }
+
+    /// Bytes waiting up to and including the first line end, or the whole
+    /// waiting length when no line end is waiting.
+    pub fn line_len(&self) -> usize {
+        if self.report_at < self.report.len {
+            let bytes = &self.report.bytes[self.report_at..self.report.len];
+            return bytes.iter().position(|&byte| byte == b'\n')
+                .map_or(bytes.len(), |index| index + 1);
         }
-        self.len -= n;
+        let limit = if self.dropped != 0 { self.before_loss } else { self.len };
+        for index in 0..limit {
+            if self.bytes[(self.head + index) % N] == b'\n' {
+                return index + 1;
+            }
+        }
+        limit
+    }
+
+    pub fn pop(&mut self, out: &mut [u8]) -> usize {
+        let mut n = 0;
+        while n < out.len() {
+            self.report_dropped();
+            if self.report_at < self.report.len {
+                out[n] = self.report.bytes[self.report_at];
+                self.report_at += 1;
+                if self.report_at == self.report.len {
+                    self.report_at = 0;
+                    self.report.len = 0;
+                }
+            } else if self.len != 0 {
+                out[n] = self.bytes[self.head];
+                self.head = (self.head + 1) % N;
+                self.len -= 1;
+                if self.dropped != 0 {
+                    self.before_loss -= 1;
+                }
+            } else {
+                break;
+            }
+            n += 1;
+        }
+        self.report_dropped();
         n
     }
 
@@ -73,9 +147,12 @@ impl<const N: usize> LogRing<N> {
         let mut writer = RingWriter {
             ring: self,
             overflow: 0,
+            lines: 0,
+            last: None,
         };
         let _ = writer.write_fmt(args);
         let overflow = writer.overflow;
+        let lines = writer.lines + usize::from(writer.last.is_some_and(|last| last != b'\n'));
         if overflow == 0 && self.len <= N - Self::RESERVE {
             return Ok(self.pushed);
         }
@@ -99,28 +176,39 @@ impl<const N: usize> LogRing<N> {
             return Err(record);
         }
         // An ordinary line, or a stage line longer than the whole ring.
+        if self.dropped == 0 {
+            self.before_loss = self.len;
+            self.loss_partial = self.len != 0
+                && self.bytes[(self.head + self.len - 1) % N] != b'\n';
+        }
         self.dropped += record as u64;
+        self.dropped_lines += lines as u64;
+        self.report_dropped();
         Ok(self.pushed)
     }
 
-    /// Report dropped bytes on a line of their own once it fits outside the
-    /// reserve. Until then the count keeps growing.
+    fn drop_report(&self) -> Report {
+        let mut report = Report { bytes: [0; 128], len: 0 };
+        if self.loss_partial {
+            let _ = report.write_str("\n");
+        }
+        // Maximum length is bounded by two u64 decimal counts.
+        let _ = write!(report, "[log: {} bytes dropped; {} lines; source=serial-ring]\n",
+                       self.dropped, self.dropped_lines);
+        report
+    }
+
+    /// Emit the pending interval at its original position, independently of
+    /// byte-ring capacity. Drain alone publishes even the final loss.
     fn report_dropped(&mut self) {
-        if self.dropped == 0 {
+        if self.dropped == 0 || self.before_loss != 0 || self.report.len != 0 {
             return;
         }
-        let mut report = Report {
-            bytes: [0; 48],
-            len: 0,
-        };
-        let _ = write!(report, "[log: {} bytes dropped]\n", self.dropped);
-        if self.len + report.len > N - Self::RESERVE {
-            return;
-        }
-        for &byte in &report.bytes[..report.len] {
-            self.push(byte);
-        }
+        self.report = self.drop_report();
+        self.pushed += self.report.len as u64;
+        self.report_pushed += self.report.len as u64;
         self.dropped = 0;
+        self.dropped_lines = 0;
     }
 
     fn push(&mut self, byte: u8) -> bool {
@@ -144,11 +232,15 @@ impl<const N: usize> Default for LogRing<N> {
 struct RingWriter<'a, const N: usize> {
     ring: &'a mut LogRing<N>,
     overflow: usize,
+    lines: usize,
+    last: Option<u8>,
 }
 
 impl<const N: usize> fmt::Write for RingWriter<'_, N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
+            self.lines += usize::from(byte == b'\n');
+            self.last = Some(byte);
             // uart_16550::send translates backspace and DEL to BS SPACE BS.
             let wire: &[u8] = if byte == 0x08 || byte == 0x7f {
                 &[0x08, b' ', 0x08]
@@ -167,7 +259,7 @@ impl<const N: usize> fmt::Write for RingWriter<'_, N> {
 
 /// A drop report, formatted before it is known to fit.
 struct Report {
-    bytes: [u8; 48],
+    bytes: [u8; 128],
     len: usize,
 }
 

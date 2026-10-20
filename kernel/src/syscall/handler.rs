@@ -491,10 +491,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         // It only exists in the enum for ARM64 compatibility
         Some(SyscallNumber::GetTime) => SyscallResult::Err(super::ErrorCode::NoSys as u64),
         // Graphics syscalls
-        Some(SyscallNumber::FbInfo) => super::fb::sys_fbinfo(args.0),
-        Some(SyscallNumber::FbDraw) => super::fb_draw::sys_fbdraw(args.0),
-        Some(SyscallNumber::FbMmap) => super::fb::sys_fbmmap(args.0),
-        Some(SyscallNumber::GetMousePos) => super::fb::sys_get_mouse_pos(args.0),
+        Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
+        Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),
+        Some(SyscallNumber::FbMmap) => super::graphics::sys_fbmmap(args.0),
+        Some(SyscallNumber::GetMousePos) => super::graphics::sys_get_mouse_pos(args.0),
         // Audio syscalls
         Some(SyscallNumber::AudioInit) => super::audio::sys_audio_init(),
         Some(SyscallNumber::AudioWrite) => super::audio::sys_audio_write(args.0, args.1),
@@ -677,6 +677,11 @@ fn deliver_signals_on_syscall_return(frame: &mut SyscallFrame) -> bool {
 
     // Thread 0 is the idle thread - it doesn't have a process with signals
     if current_thread_id == 0 {
+        return false;
+    }
+
+    // A due timer signal for a user handler needs no process manager.
+    if crate::signal::delivery::deliver_timer_signal_on_syscall_return(current_thread_id, frame) {
         return false;
     }
 

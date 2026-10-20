@@ -1,0 +1,5 @@
+Guard: kernel FP/SIMD instruction check
+  ELF:       target/aarch64-breenix-kernel/release/kernel-aarch64
+  objdump:   <toolchain>/lib/rustlib/aarch64-apple-darwin/bin/llvm-objdump
+  allowlist: <workspace>/scripts/kernel-neon-allowlist.txt
+PASS: 0 FP/SIMD load/store instructions in kernel .text (allowlisted & suppressed: 32).

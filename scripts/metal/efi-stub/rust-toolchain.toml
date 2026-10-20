@@ -1,0 +1,4 @@
+# The repository's pinned nightly: the stub is built from the deployed tools, outside a checkout, with build-std.
+[toolchain]
+channel = "nightly-2025-06-24"
+components = ["rust-src"]

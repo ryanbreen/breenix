@@ -1,0 +1,2045 @@
+#!/usr/bin/env python3
+"""One x86-metal boot, end to end (docs/metal/README.md, "One boot").
+
+  metal-boot launch [run options]   start the driver as its own transient unit; prints {"id", "status"} once the
+                                    unit holds or waits for the lease (exit 75 if the queue wait expires, or quarantined)
+  metal-boot run --id ID [options]  the driver itself (what the unit runs)
+  metal-boot stop ID                ask a running boot to stop (exit 130 before power-on, 143 after)
+  metal-boot inputs-ready ID        the image build for ID has delivered its inputs
+  metal-boot inputs-failed ID WHY   the image build for ID failed
+  metal-boot status                 the lease, the machine reading and the newest records, as JSON
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+Run options: --payload image|hang|none, --mode default|shell|probe|suite|console|tests, --commit SHA, --target main|branch:NAME,
+--task NAME, --no-wait, --inject forceoff-fail|xhci-reset-device|xhci-short-read, --ramdisk, --disk install|root. A Breenix boot (payload image) waits
+for its inputs (the kernel build's UEFI image, the ext2 root, the delivery stub and the commit's definition files) in
+its stage folder, and serves boot.efi: the stub with its delivery disk appended. Main-path modes default to
+physical disk root, installing a fresh root with the requested target before the kernel starts. A tests boot runs the
+testing kernel with the build's test-binary disk as its RAM disk and ends at the userspace test report. `--disk install` is an explicit recovery install from a RAM disk; xHCI fault boots
+retain a RAM-disk root (README, "The disks").
+"""
+import argparse
+import contextlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_lib as m  # noqa: E402
+import metal_image  # noqa: E402
+import metal_census  # noqa: E402
+import metal_root  # noqa: E402
+import metal_score  # noqa: E402
+import metal_attended  # noqa: E402
+import metal_disk  # noqa: E402
+import metal_persist  # noqa: E402
+from metal_score import boot_shape  # noqa: E402
+# Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
+if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+import hostkeys  # noqa: E402
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+MODES = ('default', 'shell', 'probe', 'suite', 'console', 'tests', 'persistent-install', 'persistent')
+DISK_ACTIONS = ('install', 'root')
+READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
+ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
+INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent')
+CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500,
+                   'persistent-install': 2400, 'persistent': 900}
+# The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
+# upgrade"); it reports progress every 64 MiB.
+INSTALL_STUB_SECONDS = 1500
+PERSIST_DONE = 'metal-stub: persistent install request complete'
+INSTALL_DONE = '[persistent] install complete: '
+INSTALL_FAILED = '[persistent] install failed: '
+FENCE_FAULT = 'fence-out-of-partition'
+SESSION_CEILING_SECONDS = 4 * 3600
+
+
+def session(args):
+    """A boot held for the operator with no deadline: a console session, or a persistent boot without commands."""
+    return bool(getattr(args, 'session', False)) or (persistent(args) and not check(args))
+
+
+def persistent(args):
+    return getattr(args, 'payload', None) == 'persistent'
+
+
+def check(args):
+    """A persistent boot that ends by itself: one that runs commands, or the install's verification."""
+    return bool(getattr(args, 'run', None)) or bool(getattr(args, 'verify', False))
+
+
+def attended(args):
+    return bool(getattr(args, 'attended', False))
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def input_kind(args):
+    """Who types: the operator on the USB keyboard (attended), SOL, the operator at a persistent session (whose
+    keyboard stages count when typed), or nobody."""
+    if persistent(args):
+        return 'sol' if getattr(args, 'run', None) else 'operator'
+    return 'keyboard' if attended(args) else getattr(args, 'input', None)
+
+
+def xhci_fault(args):
+    value = getattr(args, 'inject', None)
+    return {'xhci-reset-device': 'reset-device', 'xhci-short-read': 'short-read'}.get(value)
+
+
+def validate_xhci_fault(args):
+    if xhci_fault(args) and (args.payload != 'image' or args.mode != 'console'
+                            or getattr(args, 'input', None) != 'sol'
+                            or session(args) or attended(args) or getattr(args, 'disk', None)):
+        raise ValueError('xHCI faults need a RAM-disk console boot with --input sol')
+
+
+def suites(args):
+    """The suites a suite boot runs, in order: one, or several in turn (docs/suites/README.md)."""
+    return (getattr(args, 'suite', None) or '').split(',') if args.mode == 'suite' else []
+
+
+def ceiling_seconds(args):
+    if attended(args):
+        # Delivery/start-up budget plus the entire operator wait from handoff.
+        return CEILING_SECONDS['console'] + args.wait * 60
+    if args.mode == 'suite':
+        # Each further suite of a multi-suite boot brings its own DONE deadline.
+        return CEILING_SECONDS['suite'] + MODE_DEADLINE_SECONDS['suite'] * (len(suites(args)) - 1)
+    if persistent(args) and session(args):
+        # A persistent session keeps the machine with no deadline until it is stopped or powered off.
+        return None
+    return SESSION_CEILING_SECONDS if session(args) else CEILING_SECONDS[args.mode]
+
+
+MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300, 'tests': 600,
+                         'persistent-install': 1200, 'persistent': 600}
+# The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
+# through the logger, after a level and module prefix.
+TESTS_DONE = 'USERSPACE TEST REPORT DONE'
+INPUT_DEADLINE_SECONDS = 2 * 3600
+CONSOLE_BANNER = b'[SOL Session operational'
+CONSOLE_WAIT_SECONDS = 20
+DOWNLOAD_IDLE_SECONDS = 15
+DOWNLOAD_SECONDS = 60
+BOOTLOADER_SECONDS = 60
+SILENCE_SECONDS = 120
+NMI_CAPTURE_SECONDS = 5
+FATAL_GRACE_SECONDS = 5
+NOT_FOUND_CAPTURE_SECONDS = 30
+SUITE_VERDICT_SECONDS = 20
+POST_POLL_SECONDS = 10
+RUNNING_POLL_SECONDS = 30
+BOOTLOADER_LINE = 'UEFI bootloader started'
+HANDOFF_LINE = 'Jumping to kernel entry point at'
+HANG_LINE = 'metal-hang: interrupts masked, halting'
+STUB_LINE = 'metal-stub: started'
+STUB_FAILED_LINE = 'metal-stub: FAILED'
+# The boot manager's lines (docs/metal/README.md, "The boot manager").
+MANAGER_STARTED = 'breenix-manager: started: '
+MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
+MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
+MANAGER_PANIC = 'breenix-manager: panic: '
+NO_BOOTABLE = 'no bootable device'
+RUNNING_STATES = ('OSBootStarted', 'OSRunning')
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def tools_commit():
+    path = m.TOOLS / 'COMMIT'
+    return path.read_text().strip() if path.exists() else None
+
+
+def unit_name(boot_id):
+    return 'metal-boot-' + boot_id
+
+
+def boot_id_now():
+    return time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+
+
+class Finish(Exception):
+    def __init__(self, status, reason, hung=False):
+        super().__init__(reason)
+        self.status, self.reason, self.hung = status, reason, hung
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+class Driver:
+    def __init__(self, args):
+        self.args = args
+        self.id = args.id
+        self.dir = m.boot_dir(self.id)
+        self.stage = m.stage_dir(self.id)
+        self.site = m.load_site()
+        self.redact = m.Redactor(self.site)
+        self.unit = unit_name(self.id)
+        self.tmux = ['tmux', '-L', 'metal-' + self.id]
+        self.t0 = None
+        self.claimed = False
+        self.lost = False
+        self.phase_name = 'starting'
+        self.raw_offset = 0
+        self.cleaner = m.SerialCleaner()
+        self.line = ''
+        self.txt_bytes = 0
+        # Where the partial line being received began in serial.txt, so a prompt is answered once.
+        self.line_start = 0
+        # A persistent boot: the manager's start, the --run login and commands, and the install's request.
+        self.manager_started = None
+        self.run_step = 0
+        self.sent_at = -1
+        self.run_done = False
+        self.persist = None
+        self.last_serial = None
+        self.first_text = False
+        self.kernel_started = None
+        # The latest suite progress record; failed cases and resets are progress too.
+        self.suite_started = None
+        self.input_clock_alive = None
+        self.last_stage = None
+        self.complete_at = None
+        self.first_byte_at = None
+        self.last_progress = None
+        self.request_at = None
+        self.not_found_at = None
+        self.broken_at = None
+        self.http_offset = 0
+        self.bmc_events = []
+        self.bmc_lock = threading.Lock()
+        self.power_seen_on = False
+        self.post_code = None
+        self.post_seen = False
+        self.gap = False
+        self.fatal_at = None
+        self.fatal_patterns = []
+        self.final_marker = None
+        self.test_report_lines = []
+        self.final_seen = False
+        self.completion_reported = False
+        self.probe_failed = False
+        self.required_stages = []
+        self.shell_ready = False
+        self.shell_sent = False
+        self.attended_challenge = None
+        # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
+        self.hostkey_watcher = None
+        self.console_step = 0
+        self.console_done = False
+        self.delivery = {}
+        self.console_intent = None
+        self.payload_facts = None
+        self.last_phase_progress = 0.0
+        self.seen = set()
+        self.progress_key = None
+        self.progress_changed = False
+        self.lease_ceiling = None
+        self.post_budget = m.DEFAULT_POST_BUDGET
+        self.stopping = threading.Event()
+        self.census = metal_census.Census() if args.payload == 'linux' else None
+
+    # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+    # Record helpers: event text is always a fixed template or redacted.
+    def event(self, kind, *, observed_at=None, **fields):
+        m.event(self.dir, kind, observed_at=observed_at, **{k: (self.redact(v) if isinstance(v, str) else v) for k, v in fields.items()})
+
+    def phase(self, text):
+        m.phase(self.dir, self.redact(text))
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def since_power(self):
+        return 0 if self.t0 is None else m.now() - self.t0
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    # Setup of the record and the lease.
+    def create_record(self):
+        self.dir.mkdir(parents=True, exist_ok=False)
+        target = {'main': {}}
+        if self.args.target.startswith('branch:'):
+            target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
+        fault = xhci_fault(self.args) or self.args.inject == FENCE_FAULT
+        kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
+                else 'console-session' if session(self.args)
+                else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
+        run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
+               'catchup': bool(getattr(self.args, 'catchup', False)),
+               'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
+               'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
+               # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
+               'suite': suites(self.args)[0] if len(suites(self.args)) == 1 else None, 'suites': suites(self.args) or None,
+               'sourceBoot': getattr(self.args, 'source_boot', None),
+               'disk': 'persistent' if persistent(self.args) else getattr(self.args, 'disk', None),
+               'toolsCommit': tools_commit(),
+               'entry': getattr(self.args, 'entry', None) if persistent(self.args) else None,
+               'slotAction': getattr(self.args, 'slot_action', None) if persistent(self.args) else None,
+               'adopted': bool(getattr(self.args, 'adopt', False)),
+               'run': getattr(self.args, 'run', None) or None,
+               'input': input_kind(self.args),
+               'attended': attended(self.args),
+               'waitMinutes': self.args.wait if attended(self.args) else None,
+               'session': session(self.args),
+               'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
+               'evidenceEligible': not fault and (persistent(self.args) or (not session(self.args) and (self.args.mode != 'console' or attended(self.args))))}
+        m.write_json(self.dir / 'run.json', run)
+        m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
+        m.write_text(self.dir / 'dirty', '0\n')
+        (self.dir / 'console.log').touch()
+        (self.dir / 'events.jsonl').touch()
+        self.event('created', payload=self.args.payload, mode=self.args.mode, inject=self.args.inject or 'none',
+                   nmi=bool(getattr(self.args, 'nmi', False)))
+
+    def holder(self):
+        """The lease holder record; a persistent boot's names the entry and slot action the manager is told."""
+        holder = {'id': self.id, 'unit': self.unit, 'mode': self.args.mode, 'payload': self.args.payload,
+                  'kind': 'persistent' if persistent(self.args) else 'console-session' if session(self.args) else 'boot'}
+        if persistent(self.args):
+            holder.update(entry=getattr(self.args, 'entry', None) or 'current',
+                          slotAction=getattr(self.args, 'slot_action', None))
+        return holder
+
+    def claim_status(self, status, text='', **fields):
+        m.write_json(self.dir / 'claim.json', dict(status=status, text=text, t=m.now(), **fields))
+
+    def claim(self):
+        holder = self.holder()
+        def waiting(state):
+            text = f"Waiting for holder={state['holder']} queue position={state['position']}"
+            self.claim_status('waiting', text, **state)
+            self.phase(text)
+
+        wait = getattr(self.args, 'wait', None)
+        queue_minutes = 240 if attended(self.args) or wait is None else wait
+        try:
+            m.claim_lease(holder, wait=True, checkpoint=self.checkpoint,
+                          wait_seconds=queue_minutes * 60, on_wait=waiting)
+        except m.Busy:
+            self.claim_status('busy')
+            raise Finish(m.EXIT_BUSY, 'the bounded machine queue wait expired')
+        except m.Quarantined:
+            self.claim_status('quarantined')
+            raise Finish(m.EXIT_BUSY, 'the machine may still be on: power-off failed and the lease is quarantined')
+        except m.NotReady:
+            self.claim_status('not-ready')
+            raise Finish(m.EXIT_BUSY, 'the machine service is not ready')
+        self.claimed = True
+        self.claim_status('claimed')
+        self.event('lease-claimed')
+        threading.Thread(target=self.heartbeat, daemon=True).start()
+
+    def heartbeat(self):
+        while not self.stopping.wait(m.HEARTBEAT_SECONDS):
+            if not m.update_lease(self.id, phase=self.phase_name):
+                self.lost = True
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def checkpoint(self):
+        if self.lost:
+            raise Finish(m.EXIT_INCOMPLETE, 'the lease was taken from this boot')
+        if (self.dir / 'stop-request').exists():
+            if self.t0 is None:
+                raise Finish(m.EXIT_CANCELLED, 'cancelled before power-on')
+            raise Finish(m.EXIT_STOPPED, 'stopped by the operator')
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    # Inputs and the image.
+    def prepare_payload(self):
+        self.stage.mkdir(parents=True, exist_ok=True)
+        if self.args.payload == 'none':
+            self.event('nothing-staged')
+            return
+        if persistent(self.args):
+            self.prepare_persistent()
+            return
+        if self.args.payload.startswith('hang'):
+            # metal-hang.efi bare, or as \EFI\BOOT\BOOTX64.EFI in a small RAM-disk image or ISO: the delivery
+            # ladder's probes of which image forms the firmware accepts.
+            efi = self.stage / 'metal-hang.efi'
+            efi.write_bytes(metal_image.hang_efi())
+            path, form = efi, 'efi'
+            if self.args.payload == 'hang-img':
+                path, form = self.stage / 'metal-hang.img', 'img'
+                metal_image.assemble(path, {'efi/boot/bootx64.efi': efi})
+            elif self.args.payload == 'hang-iso':
+                path, form = self.stage / 'metal-hang.iso', 'iso'
+                metal_image.iso(path, {'efi/boot/bootx64.efi': efi}, self.stage)
+            self.payload_facts = {'path': path, 'size': path.stat().st_size, 'sha256': metal_image.sha256(path),
+                                  'contentType': self.args.content_type or metal_image.CONTENT_TYPES[form],
+                                  'name': path.name}
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            self.event('payload-ready', name=path.name, size=self.payload_facts['size'],
+                       sha256=self.payload_facts['sha256'])
+            return
+        self.phase_name = 'building'
+        self.phase('Building the image')
+        inputs = self.stage / 'inputs'
+        deadline = m.now() + INPUT_DEADLINE_SECONDS
+        while not (inputs / 'ready').exists():
+            self.checkpoint()
+            if (inputs / 'failed').exists():
+                why = (inputs / 'failed').read_text().strip()[:300]
+                self.event('build-failed', why=why)
+                raise Finish(m.EXIT_CANCELLED, 'the image build failed')
+            if m.now() > deadline:
+                raise Finish(m.EXIT_CANCELLED, 'the image build did not deliver its inputs in time')
+            time.sleep(2)
+        if self.args.payload == 'manager':
+            # The boot manager in probe mode, served bare: it asks the lab, reports and halts (README, "Probe mode").
+            build = m.read_json(inputs / 'build.json', {})
+            manager = inputs / 'manager.efi'
+            if (build.get('commit') != self.args.commit or build.get('profile') != 'boot-manager'
+                    or build.get('manager', {}).get('sha256') != metal_image.sha256(manager)):
+                raise Finish(m.EXIT_CANCELLED, 'the boot manager differs from its build record')
+            self.delivery['build'] = build
+            self.payload_facts = dict(path=manager, size=manager.stat().st_size, sha256=metal_image.sha256(manager),
+                                      contentType=metal_image.CONTENT_TYPES['efi'], name='metal-boot-manager.efi')
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            self.event('payload-ready', name='metal-boot-manager.efi', size=self.payload_facts['size'],
+                       sha256=self.payload_facts['sha256'])
+            return
+        if self.args.payload == 'disk-readback':
+            build = m.read_json(inputs / 'build.json', {})
+            stub = inputs / 'stub.efi'
+            if (build.get('commit') != self.args.commit or build.get('profile') != 'disk-readback'
+                    or build.get('stub', {}).get('sha256') != metal_image.sha256(stub)):
+                raise Finish(m.EXIT_CANCELLED, 'the readback firmware differs from its build record')
+            self.delivery['build'] = build
+            facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
+                                                       self.args.commit, self.id, self.site, stub)
+            self.payload_facts = dict(path=image, size=facts['size'], sha256=facts['sha256'],
+                                      contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            return
+        if self.args.payload == 'linux':
+            manifest = m.read_json(inputs / 'build.json', {})
+            image = inputs / 'metal-linux.efi'
+            expected = manifest.get('files', {}).get('efi', {})
+            if (image.stat().st_size != expected.get('size') or
+                    metal_image.sha256(image) != expected.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'Linux payload checksum mismatch')
+            config = inputs / 'config'
+            config_facts = manifest.get('files', {}).get('config', {})
+            if (config.stat().st_size != config_facts.get('size') or
+                    metal_image.sha256(config) != config_facts.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'Linux configuration checksum mismatch')
+            try:
+                metal_census.validate_config(config.read_text())
+            except ValueError:
+                raise Finish(m.EXIT_CANCELLED, 'Linux configuration violates instrument constraints')
+            shutil.copyfile(inputs / 'build.json', self.dir / 'linux-build.json')
+            shutil.copyfile(inputs / 'config', self.dir / 'linux-config')
+            self.payload_facts = {'path': image, 'size': expected['size'], 'sha256': expected['sha256'],
+                                  'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'metal-linux.efi'}
+            self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
+            self.event('linux-payload-ready', sha256=expected['sha256'], size=expected['size'])
+            return
+        build = m.read_json(inputs / 'build.json', {})
+        # Only an xHCI fault boot takes a fault-test kernel and only a tests boot the testing kernel; neither takes another.
+        features = (['xhci_fault_inject'] if xhci_fault(self.args) else ['block_fence_inject'] if self.args.inject == FENCE_FAULT
+                    else ['testing'] if self.args.mode == 'tests' else [])
+        profile = {'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
+                   'testing': 'testing'}.get(''.join(features), 'production')
+        if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
+            raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
+        tests = inputs / 'test-binaries.img'
+        if self.args.mode == 'tests' and (not tests.is_file() or build.get('testBinaries', {}).get('sha256') != metal_image.sha256(tests)):
+            raise Finish(m.EXIT_CANCELLED, 'the test-binary disk differs from its build record')
+        if build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
+            raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
+        self.delivery['build'] = build
+        self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
+        if (inputs / 'definition').is_dir():
+            shutil.copytree(inputs / 'definition', self.dir / 'definition')
+        for suite in suites(self.args):
+            manifest = self.dir / 'definition/docs/suites' / (suite + '.json')
+            if not manifest.is_file() or m.read_json(manifest).get('id') != suite:
+                raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
+        if len(suites(self.args)) > 1 and not (self.dir / 'definition/scripts/suite-sequence.py').is_file():
+            raise Finish(m.EXIT_CANCELLED, 'the commit cannot score a multi-suite boot')
+        if self.args.mode == 'persistent-install':
+            files, extracted = self.prepare_install(inputs, build)
+            self.assemble(inputs, files, extracted, root_ramdisk=False)
+            return
+        the_layout = metal_persist.layout()
+        disk = getattr(self.args, 'disk', None)
+        if disk != 'root':
+            self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
+                getattr(self.args, 'suite', None), self.site,
+                install=self.id if disk == 'install' else None, hasher=inputs / 'sha512-crypt',
+                install_partition=the_layout['partitions']['test']['guid'] if the_layout and disk == 'install' else None,
+                idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
+                replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
+                xhci_fault=xhci_fault(self.args))
+            if disk == 'install':
+                write = self.delivery['root']['diskWrite']
+                m.write_json(self.dir / 'disk-write.json', write)
+                self.event('disk-write-requested', bytes=write['bytes'], sha256=write['sha256AfterRecord'])
+        self.phase('Assembling the image')
+        extracted = self.stage / 'esp'
+        files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
+        if disk == 'root':
+            facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
+                mode=self.args.mode, suite=getattr(self.args, 'suite', None),
+                idle_minutes=self.args.idle_minutes if session(self.args) else None,
+                replug=self.args.mode == 'console' and not session(self.args))
+            self.delivery['diskRoot'] = facts
+            files.update(suite_files)
+            if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):
+                shutil.copyfile(inputs / 'stub.efi', self.dir / 'readback-stub.efi')
+        root_ramdisk = self.args.ramdisk and disk != 'root'
+        if root_ramdisk:
+            files['ramdisk'] = inputs / 'ext2.img'
+        if disk == 'root':
+            target = self.args.mode
+            if target == 'suite':
+                # The intent replaces the root's boot target, so it carries the same host-key declaration.
+                target += ' ' + suites(self.args)[0] + ' hostkeys ' + metal_root.HOSTKEYS
+            elif target == 'console':
+                self.console_intent = 'session' if session(self.args) else 'measure'
+                self.delivery['consoleIntent'] = self.console_intent
+                target += (' idle=' + str(self.args.idle_minutes)) if session(self.args) else ' replug'
+            intent = self.stage / 'boot-intent'
+            # On the persistent layout the intent names the test root, the only partition a test boot is given.
+            test_root = the_layout['partitions']['test']['guid'] if the_layout else None
+            if test_root:
+                intent.write_bytes(metal_persist.intent(target, root=test_root))
+            else:
+                intent.write_bytes(('BREENIX-BOOT 1\n' + target + '\n').encode('ascii'))
+            files['ramdisk'] = intent
+            if self.args.mode == 'tests':
+                # The testing kernel takes its test binaries from the RAM disk and never reads a boot target; on the
+                # persistent layout they follow an intent naming its root.
+                files['ramdisk'] = (metal_persist.tests_ramdisk(self.stage / 'tests-ramdisk', 'default', test_root, tests)
+                                    if test_root else tests)
+                self.delivery['testBinaries'] = build['testBinaries']
+        if self.args.inject == 'disk-before-mount':
+            # The stub installs and verifies the root before loading this file.
+            # An invalid EFI image fails delivery without executing a kernel.
+            files['efi/boot/bootx64.efi'].write_bytes(b'injected invalid EFI image\n')
+        self.assemble(inputs, files, extracted, root_ramdisk)
+
+    def assemble(self, inputs, files, extracted, root_ramdisk):
+        """The boot disk of `files` appended to the stub as boot.efi, its facts recorded, and the definition loaded."""
+        disk = self.stage / 'boot-disk.img'
+        facts = metal_image.assemble(disk, files)
+        shutil.rmtree(extracted, ignore_errors=True)
+        # The firmware boots only a bare EFI application over HTTP: the stub carries the disk (README, "Delivery").
+        image = self.stage / 'boot.efi'
+        wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
+        disk.unlink()
+        for name in ('uefi.img', 'ext2.img', 'stub.efi', 'test-binaries.img', 'manager.efi'):
+            (inputs / name).unlink(missing_ok=True)
+        shutil.rmtree(self.stage / 'persist', ignore_errors=True)
+        self.payload_facts = {'path': image, 'size': wrapped['size'], 'sha256': wrapped['sha256'],
+                              'contentType': metal_image.CONTENT_TYPES['efi'], 'name': 'boot.efi'}
+        self.delivery['image'] = {'name': 'boot.efi', 'size': wrapped['size'], 'sha256': wrapped['sha256'],
+                                  'contentType': self.payload_facts['contentType'], 'stub': wrapped['stub'],
+                                  'disk': {'size': facts['size'], 'sha256': facts['sha256'],
+                                           'components': facts['components']}}
+        self.event('image-assembled', size=wrapped['size'], sha256=wrapped['sha256'], disk=facts['size'],
+                   ramdisk=root_ramdisk, consoleIntent=self.console_intent)
+        self.load_definition()
+
+    def slot_commit(self):
+        """The commit a persistent boot runs: the slot the manager will boot once its slot action is done."""
+        slots = metal_persist.read_disk().get('slots', {})
+        action = getattr(self.args, 'slot_action', None)
+        entry = getattr(self.args, 'entry', None) or 'current'
+        slot = ('next' if action == 'commit' and slots.get('next') else 'previous' if action == 'rollback' or entry == 'previous'
+                else 'current')
+        return (slots.get(slot) or {}).get('commit')
+
+    def prepare_persistent(self):
+        """A persistent boot stages nothing: the manager boots a kernel slot from the disk. Its record carries the
+        slot's commit and that commit's definition, kept in the store at the install (README, "Persistent
+        sessions")."""
+        if not metal_persist.layout():
+            raise Finish(m.EXIT_CANCELLED, 'the disk has no persistent install')
+        commit = self.slot_commit()
+        if not commit:
+            raise Finish(m.EXIT_CANCELLED, 'no kernel slot is recorded for this persistent boot')
+        self.args.commit = commit
+        m.write_text(self.dir / 'commit', commit + '\n')
+        kept = m.STATE / 'persistent' / commit / 'definition'
+        if kept.is_dir() and not (self.dir / 'definition').exists():
+            shutil.copytree(kept, self.dir / 'definition')
+        self.event('persistent-boot', commit=commit, entry=getattr(self.args, 'entry', None) or 'current',
+                   slotAction=getattr(self.args, 'slot_action', None), definition=kept.is_dir())
+        m.unstage()
+        self.load_definition()
+
+    def prepare_install(self, inputs, build):
+        """The install boot (README, "Install and upgrade"): the request, the new kernel slot, the new userland on the
+        test root, and the migration's intent. Returns the boot disk's files."""
+        the_layout = metal_persist.layout()
+        action = 'upgrade' if the_layout else 'install'
+        expect = None
+        if not the_layout:
+            previous = metal_persist.test_root()
+            if not previous:
+                raise Finish(m.EXIT_CANCELLED, "the one-time install needs the owned disk's whole-disk root record")
+            the_layout = metal_persist.new_layout()
+            expect = metal_disk.record(previous)
+        manager = inputs / 'manager.efi'
+        if not manager.is_file() or build.get('manager', {}).get('sha256') != metal_image.sha256(manager):
+            raise Finish(m.EXIT_CANCELLED, 'the boot manager differs from its build record')
+        self.phase('Assembling the ' + action)
+        extracted = self.stage / 'esp'
+        esp_files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
+        scratch = self.stage / 'persist'
+        scratch.mkdir(parents=True, exist_ok=True)
+        slot = scratch / 'next.img'
+        metal_persist.slot_image(slot, esp_files, the_layout, scratch, self.id)
+        note = scratch / 'next.txt'
+        note.write_text(metal_persist.slot_note(self.args.commit, self.id))
+        manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
+        # The new userland, staged as a default boot's root (console account included), for the stub to write onto
+        # the test root once the request is done.
+        facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
+                                              mode='default', the_layout=the_layout)
+        self.delivery['diskRoot'] = facts
+        files = dict(esp_files)
+        files.update(suite_files)
+        parts = the_layout['partitions']
+        intent = self.stage / 'boot-intent'
+        intent.write_bytes(metal_persist.intent('persistent-install', root=parts['test']['guid'],
+                                                home=parts['system']['guid'], userland=self.id))
+        files['ramdisk'] = intent
+        if action == 'install':
+            config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,
+                                                            self.site, scratch)
+        else:
+            config, request = metal_persist.upgrade_request(scratch, the_layout, manager_files, slot, note, self.site)
+        files['persist.cfg'] = config
+        files['persist.dat'] = request.data
+        self.persist = {'action': action, 'layout': the_layout,
+                        'slot': dict(metal_persist.file_facts(slot), commit=self.args.commit, installedBy=self.id),
+                        'request': {'extents': request.extents, 'bytes': request.written,
+                                    'payload': request.data.stat().st_size}}
+        m.write_json(self.dir / 'persist.json', self.persist)
+        metal_persist.store_definition(self.dir / 'definition', self.args.commit)
+        self.event('persist-requested', action=action, extents=request.extents, bytes=request.written,
+                   payload=request.data.stat().st_size)
+        return files, extracted
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def load_definition(self):
+        """Fatal patterns and the mode's final marker come from this boot's own definition copy."""
+        definition = self.dir / 'definition'
+        metal = m.read_json(definition / 'docs/metal/boot-path.json')
+        main = m.read_json(definition / 'docs/boot-path.json', {})
+        source = metal or main
+        self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
+        if metal and attended(self.args):
+            self.attended_challenge = metal_attended.Challenge(metal_attended.stages(metal))
+            metal = metal_score.attended_definition(metal)
+        if metal and not session(self.args):
+            catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
+            shape = boot_shape('persistent' if persistent(self.args) else getattr(self.args, 'disk', None))
+            kind = input_kind(self.args)
+            self.final_marker = final_marker(metal, self.args.mode, catalog, shape, kind)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape, kind)
+        if xhci_fault(self.args):
+            marker = '[xhci-fault] ' + xhci_fault(self.args) + ' PASS:'
+            self.final_marker = (marker, 'contains')
+            self.required_stages = [[(marker, 'contains')]]
+            self.console_done = True
+        if self.args.mode == 'tests':
+            # The report's end triggers validation of its loader and exit accounting before completion.
+            # Milestones are scored against main's path after capture stops.
+            self.fatal_patterns = [re.compile(p) for p in main.get('fatal', [])]
+            self.final_marker = (TESTS_DONE, 'contains')
+            self.required_stages = []
+        if self.args.mode == 'probe':
+            self.final_marker = ('PROBE DONE ', 'contains')
+        if self.args.mode == 'persistent-install':
+            # The migration's last line ends the install boot (README, "Install and upgrade").
+            self.final_marker = (INSTALL_DONE, 'contains')
+        if self.args.inject == FENCE_FAULT:
+            marker = '[fence-fault] PASS: '
+            self.final_marker = (marker, 'contains')
+            self.required_stages = [[(marker, 'contains')]]
+        if self.args.mode == 'suite':
+            # One suite finishes at its READY, after its DONE and memory record (docs/suites/README.md,
+            # "Memory record"); several suites when the last has handed off.
+            self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
+                                 else ('SUITE_SEQUENCE DONE ', 'contains'))
+        self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
+                   finalMarker=self.final_marker is not None)
+
+    # Read-only checks before power-on.
+    def preflight(self):
+        self.phase_name = 'preflight'
+        self.phase('Checking the machine')
+        try:
+            rows, baseline = m.machine_checks(self.site)
+        except m.BmcError as error:
+            self.event('preflight-error', error=str(error))
+            raise Finish(m.EXIT_DELIVERY, 'pre-flight could not read the machine')
+        failed = m.failed_checks(rows)
+        self.event('preflight', checks=len(rows), failed=[name for name, _, _ in failed])
+        self.delivery['baseline'] = baseline
+        self.event('baseline', **baseline)
+        self.post_code = baseline.get('postCode')
+        self.progress_key = progress_key(baseline.get('bootProgress'))
+        if baseline.get('power') != 'Off':
+            self.event('stray-power-on', power=baseline.get('power'))
+            if not m.force_off_and_wait():
+                m.quarantine_lease(self.id, 'pre-flight power-off failed')
+                raise Finish(m.EXIT_DELIVERY, 'the machine was on and would not power off')
+            failed = [row for row in failed if row[0] != 'boot.BootSourceOverrideEnabled']
+        if failed:
+            raise Finish(m.EXIT_DELIVERY, 'pre-flight: ' + ', '.join(name for name, _, _ in failed))
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def do_stage(self):
+        if self.payload_facts:
+            facts = self.payload_facts
+            redirect = None
+            if self.args.serve_as:
+                redirect = m.load_site()['BOOT_URL'].split('://', 1)[1].split('/', 1)[1].rsplit('/', 1)[0]
+                redirect = '/' + redirect + '/' + self.args.serve_as
+            m.stage(self.id, facts['path'], facts['sha256'], facts['size'], facts['contentType'], redirect)
+            self.event('staged', name=facts['name'], size=facts['size'], sha256=facts['sha256'],
+                       redirectedTo=self.args.serve_as or None)
+        else:
+            m.unstage()
+        log = m.STATE / 'http.jsonl'
+        self.http_offset = log.stat().st_size if log.exists() else 0
+
+    # The console.
+    def start_console(self):
+        self.phase_name = 'console'
+        raw = self.dir / 'serial.raw'
+        raw.touch()
+        (self.dir / 'serial.txt').touch()
+        (self.dir / 'serial.ts').touch()
+        for attempt in (1, 2):
+            with contextlib.suppress(m.BmcError):
+                m.sol_deactivate()
+            start = raw.stat().st_size
+            self.spawn_console(fresh=attempt == 1)
+            deadline = m.now() + CONSOLE_WAIT_SECONDS
+            while m.now() < deadline:
+                self.checkpoint()
+                with raw.open('rb') as handle:
+                    handle.seek(start)
+                    if CONSOLE_BANNER in handle.read():
+                        self.pump_serial()
+                        self.event('console-ready', rawOffset=raw.stat().st_size, txtOffset=self.txt_bytes)
+                        self.phase('Console ready')
+                        return
+                time.sleep(0.25)
+            self.event('console-retry', attempt=attempt)
+        raise Finish(m.EXIT_DELIVERY, 'no console: the serial-over-LAN session did not start')
+
+    def spawn_console(self, fresh):
+        """Archive SOL stdout before the terminal line discipline or tmux processes it.
+
+        Keep stdin on the pane for interactive SOL input; stdout and stderr go
+        through a blocking pipe to tee, whose other output keeps the pane live.
+        """
+        hold = (f"sh -c 'stty -echo; read go; {m.TOOLS / 'metal-sol'} activate 2>&1 "
+                f"| tee -a {self.dir / 'serial.raw'}'")
+        environment = dict(os.environ, TERM='xterm-256color')
+        if fresh:
+            subprocess.run(self.tmux + ['kill-server'], capture_output=True)
+            subprocess.run(self.tmux + ['new-session', '-d', '-s', 'sol', '-x', '200', '-y', '50', hold],
+                           check=True, env=environment)
+            subprocess.run(self.tmux + ['set-option', '-t', 'sol', 'remain-on-exit', 'on'], capture_output=True)
+        else:
+            subprocess.run(self.tmux + ['respawn-pane', '-k', '-t', 'sol', hold], check=True, env=environment)
+        time.sleep(0.5)
+        subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'go', 'Enter'], check=True)
+
+    def console_dead(self):
+        result = subprocess.run(self.tmux + ['display-message', '-p', '-t', 'sol', '#{pane_dead}'],
+                                capture_output=True, text=True)
+        return result.returncode != 0 or result.stdout.strip() == '1'
+
+    def heal_console(self):
+        """A dropped session is reconnected within two seconds; the gap makes the boot capture-incomplete."""
+        started = m.now()
+        self.gap = True
+        self.event('console-gap-start')
+        raw = self.dir / 'serial.raw'
+        with contextlib.suppress(m.BmcError):
+            m.sol_deactivate()
+        offset = raw.stat().st_size
+        self.spawn_console(fresh=subprocess.run(self.tmux + ['has-session', '-t', 'sol'],
+                                                capture_output=True).returncode != 0)
+        deadline = m.now() + CONSOLE_WAIT_SECONDS
+        while m.now() < deadline:
+            with raw.open('rb') as handle:
+                handle.seek(offset)
+                if CONSOLE_BANNER in handle.read():
+                    self.event('console-gap-end', seconds=round(m.now() - started, 1))
+                    return
+            time.sleep(0.25)
+        self.event('console-gap-end', seconds=round(m.now() - started, 1), reconnected=False)
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def pump_serial(self):
+        raw = self.dir / 'serial.raw'
+        if not raw.exists():
+            return
+        size = raw.stat().st_size
+        if size <= self.raw_offset:
+            return
+        with raw.open('rb') as handle:
+            handle.seek(self.raw_offset)
+            data = handle.read(size - self.raw_offset)
+        self.raw_offset = size
+        arrived = m.now()
+        text = self.cleaner.feed(data)
+        if not text:
+            return
+        if self.t0 is not None:
+            self.last_serial = arrived
+        decision = None
+        with (self.dir / 'serial.txt').open('a') as out, (self.dir / 'serial.ts').open('a') as stamps:
+            for char_line in text.splitlines(keepends=True):
+                if not self.line:
+                    stamps.write(f'{arrived:.3f}\t{self.txt_bytes}\n')
+                    self.line_start = self.txt_bytes
+                out.write(char_line)
+                self.txt_bytes += len(char_line.encode())
+                self.line += char_line
+                if self.line.endswith('\n'):
+                    line, self.line = self.line.rstrip('\n'), ''
+                    try:
+                        self.on_line(line, observed_at=arrived)
+                    except Finish as finish:
+                        if decision is None or finish.status != m.EXIT_DONE:
+                            decision = finish
+        # getty leaves its prompt unterminated while waiting for login input.
+        if self.args.mode in ("default", "persistent") and self.line.strip("\r") == "Breenix login: ":
+            try:
+                self.on_line(self.line, observed_at=arrived)
+            except Finish as finish:
+                if decision is None or finish.status != m.EXIT_DONE:
+                    decision = finish
+        try:
+            self.challenge_shell(self.line)
+            self.challenge_console(self.line)
+            self.challenge_persistent(self.line)
+        except Finish as finish:
+            if decision is None or finish.status != m.EXIT_DONE:
+                decision = finish
+        if self.fatal_at is not None and decision is not None and decision.status == m.EXIT_DONE:
+            return  # The fatal grace interval captures its backtrace before failing.
+        if decision is not None:
+            raise decision
+
+    def score_suite(self, disk=None):
+        """Run the commit's scorer after power-off, without site files or management access."""
+        definition = self.dir / 'definition'
+        with tempfile.TemporaryDirectory(prefix='metal-verdict-') as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            several = len(suites(self.args)) > 1
+            names = ['scripts/suite-verdict.py', 'docs/boot-path.json'] + ['docs/suites/' + s + '.json' for s in suites(self.args)]
+            for name in names + (['scripts/suite-sequence.py'] if several else []):
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(definition / name, target)
+                target.chmod(0o644)
+            shutil.copyfile(self.dir / 'serial.txt', root / 'serial.txt')
+            (root / 'serial.txt').chmod(0o644)
+            if disk is not None:
+                shutil.copyfile(disk, root / 'disk.img')
+                (root / 'disk.img').chmod(0o644)
+            sandbox = Path('/run/metal-verdict-input')
+            command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+                       '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
+                       '--property=BindReadOnlyPaths=' + str(root) + ':' + str(sandbox),
+                       '--property=RestrictAddressFamilies=AF_UNIX',
+                       '--property=ProtectSystem=strict', '--property=ProtectHome=yes',
+                       '--property=NoNewPrivileges=yes', '--property=RestrictSUIDSGID=yes',
+                       '--property=CapabilityBoundingSet=', '--property=WorkingDirectory=/',
+                       '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
+                       '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
+                       '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
+                       sys.executable, '-I']
+            if several:
+                command += [str(sandbox / 'scripts/suite-sequence.py'), 'score', self.args.suite, str(sandbox / 'serial.txt')]
+            else:
+                command += [str(sandbox / 'scripts/suite-verdict.py'),
+                            str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
+            if disk is not None:
+                command += ['--disk', str(sandbox / 'disk.img')]
+            try:
+                verdict = subprocess.run(command, capture_output=True, text=True,
+                                         timeout=SUITE_VERDICT_SECONDS + 5,
+                                         env={'PATH': os.defpath, 'LANG': 'C.UTF-8'}, cwd='/')
+            except subprocess.TimeoutExpired:
+                self.event('suite-verdict-timeout')
+                m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: suite verdict timed out\n')
+                return False
+            m.write_text(self.dir / 'suite-verdict.txt', self.redact(verdict.stdout + verdict.stderr))
+            self.event('suite-verdict', status=verdict.returncode)
+            return verdict.returncode == 0
+
+    def finalize_disk_suite(self):
+        readback = m.read_json(self.dir / 'readback.json')
+        source = m.boot_dir(readback['source'])
+        upload = m.read_json(self.dir / 'disk-upload.json', {})
+        image = self.dir / 'disk.img'
+        if (not upload.get('complete') or image.stat().st_size != readback['bytes']
+                or upload['sha256'] != metal_image.sha256(image)
+                or upload['rootRecord'] != readback['rootRecord']
+                or self.t0 <= readback['suitePoweredOffAt']):
+            raise ValueError('cold raw disk evidence differs from the completed suite boot')
+        run = m.read_json(source / 'run.json')
+        args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
+                                  inject=None)
+        scorer = Driver(args)
+        passed = scorer.score_suite(disk=image)
+        milestone = m.read_json(source / 'milestone-verdict.json', {})
+        passed = passed and bool(milestone) and not metal_score.falls_short(milestone)
+        m.write_json(source / 'suite-readback.json', dict(id=self.id, bytes=image.stat().st_size,
+                                                         sha256=upload['sha256'], passed=passed))
+        scorer.event('cold-disk-verdict', readback=self.id, passed=passed)
+        with m.locked('finished'):
+            m.write_text(source / 'exit-status', str(m.EXIT_DONE if passed else m.EXIT_SHORT) + '\n')
+            finished = m.STATE / 'finished.jsonl'
+            entries = [json.loads(line) for line in finished.read_text().splitlines()]
+            m.append_jsonl(finished, dict(id=source.name, seq=max((e['seq'] for e in entries), default=0) + 1))
+        return passed
+
+    def continue_disk_readback(self):
+        """Cold readback is the next boot under this lease, before another disk user can run."""
+        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        while m.boot_dir(boot_id).exists():
+            time.sleep(1)
+            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
+            payload='disk-readback', disk=None, source_boot=self.id, session=False, attended=False, input=None)))
+        child = Driver(args)
+        # The same live transient unit owns both boots; the reaper follows the active record's id.
+        child.unit = self.unit
+        inputs = child.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        shutil.copyfile(self.dir / 'readback-stub.efi', inputs / 'stub.efi')
+        stub = self.delivery['build']['stub']
+        if metal_image.sha256(inputs / 'stub.efi') != stub['sha256']:
+            raise ValueError('the retained readback firmware differs from the suite build')
+        m.write_json(inputs / 'build.json', dict(commit=self.args.commit, profile='disk-readback', stub=stub))
+        (inputs / 'ready').touch()
+        self.event('cold-readback-next', readback=boot_id)
+        child.run(inherited=self.id)
+        return int((self.dir / 'exit-status').read_text().strip())
+
+
+    def challenge_shell(self, text):
+        if (self.args.mode == 'shell' and self.shell_ready and not self.shell_sent
+                and self.fatal_at is None and 'bsh />' in text):
+            subprocess.run(self.tmux + ['send-keys', '-t', 'sol', '-l', '--',
+                                       'print("metal-console-ok", 6*7)'], check=True)
+            subprocess.run(self.tmux + ['send-keys', '-t', 'sol', 'Enter'], check=True)
+            self.shell_sent = True
+            self.event('shell-challenge-sent')
+
+    def console_send(self, text, paced=False):
+        """One line to the SOL console; paced sends it a few bytes at a time, since a burst can lose a byte while
+        the shell echoes (#2105)."""
+        if attended(self.args):
+            raise RuntimeError('attended boots must never send console input')
+        # stdin transport keeps a password out of process argv, events and logs.
+        data = (text + '\r').encode()
+        step = 4 if paced else len(data)
+        for at in range(0, len(data), step):
+            subprocess.run(self.tmux + ['load-buffer', '-'], input=data[at:at + step], check=True, capture_output=True)
+            subprocess.run(self.tmux + ['paste-buffer', '-d', '-t', 'sol'], check=True, capture_output=True)
+            if paced:
+                time.sleep(0.04)
+
+    def challenge_console(self, text, complete=False):
+        if xhci_fault(self.args):
+            return
+        if self.args.mode != 'console' or session(self.args) or self.fatal_at is not None:
+            return
+        if attended(self.args):
+            if not complete and not text.startswith('Breenix login: '):
+                return
+            self.console_done = self.attended_challenge.feed(text)
+            if self.attended_challenge.invalid and not self.completion_reported:
+                self.completion_reported = True
+                raise Finish(m.EXIT_SHORT, 'input other than the USB keyboard reached the console; the challenge cannot pass')
+            if (self.console_done and self.final_seen and not any(self.required_stages)
+                    and not self.completion_reported):
+                self.completion_reported = True
+                self.event('attended-challenge-complete')
+                raise Finish(m.EXIT_DONE, 'USB keyboard challenge completed')
+            return
+        step = self.console_step
+        if step in (0, 3) and 'login: ' in text:
+            self.console_step += 1
+            self.console_send(self.site['CONSOLE_USER'], paced=True)
+        elif step in (1, 4) and 'Password: ' in text:
+            self.console_step += 1
+            self.console_send('deliberately-wrong-password' if step == 1 else self.site['CONSOLE_PASSWORD'], paced=True)
+        elif step == 2 and 'Login incorrect' in text:
+            self.console_step = 3
+            self.event('console-wrong-password-refused')
+        elif step == 5 and re.search(r'bsh [^\n]*>', text):
+            self.console_step = 6
+            self.console_send('print("metal-login-ok", 6*7)', paced=True)
+        elif step == 6 and text.strip() == 'metal-login-ok 42':
+            self.console_step = 7
+            self.event('console-computation-answered')
+            self.console_send('cat /proc/fbcon/check', paced=True)
+        elif step == 7 and complete and text.startswith('fbcon check: '):
+            self.console_step = 8
+        elif step == 8 and re.match(r'bsh [^\n]*>', text):
+            # The prompt after cat: its rows are complete, so typing cannot interleave with them.
+            self.console_step = 9
+            self.console_send('exit', paced=True)
+        elif step == 9 and '[init] console session ended; restarting getty' in text:
+            self.console_step = 10
+        elif step == 10 and '[getty] console acquired' in text:
+            self.console_step = 11
+        elif step == 11 and 'login: ' in text:
+            self.console_step = 12
+            self.console_done = True
+            self.event('console-logout-returned-to-getty')
+            # Prompts do not end in a newline. Re-evaluate completion against the
+            # measured reacquisition marker after this new prompt has arrived.
+            if (self.final_seen and not any(self.required_stages) and self.fatal_at is None
+                    and self.disk_evidence_seen()):
+                self.completion_reported = True
+                raise Finish(m.EXIT_DONE, 'SOL login refused, accepted, computed and logged out; keyboard proof waiting')
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def on_line(self, line, *, observed_at=None):
+        if self.args.mode == 'tests':
+            self.test_report_lines.append(line + "\n")
+        observed_at = m.now() if observed_at is None else observed_at
+        seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
+        if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
+            return
+        if not self.first_text:
+            self.first_text = True
+            self.event('firmware-text', observed_at=observed_at, seconds=seconds)
+            self.phase('Firmware output')
+        if STUB_LINE in line and 'stub' not in self.seen and self.kernel_started is None:
+            self.seen.add('stub')
+            self.event('stub-started', observed_at=observed_at, seconds=seconds)
+            self.phase('Delivery stub: attaching the boot disk')
+        if STUB_FAILED_LINE in line and self.kernel_started is None:
+            self.event('stub-failed', observed_at=observed_at, seconds=seconds)
+            raise Finish(m.EXIT_DELIVERY, 'the delivery stub could not start the bootloader')
+
+        self.on_manager_line(line, observed_at, seconds)
+        if self.census:
+            if line == 'metal-linux-start' and self.kernel_started is None:
+                self.kernel_started = observed_at
+                self.last_stage = 'Linux census started'
+                self.event('linux-started', observed_at=observed_at, seconds=seconds)
+            try:
+                done = self.census.feed(line)
+            except ValueError:
+                raise Finish(m.EXIT_SHORT, 'platform facts failed validation')
+            if done:
+                self.event('linux-census-validated', observed_at=observed_at, files=len(self.census.files))
+                raise Finish(m.EXIT_DONE, 'platform facts validated')
+        if self.args.payload == 'disk-readback':
+            if STUB_LINE in line and self.kernel_started is None:
+                self.kernel_started = observed_at
+            if re.fullmatch(r'metal-stub: disk readback complete: \d+ bytes', line):
+                upload = m.read_json(self.dir / 'disk-upload.json', {})
+                if not upload.get('complete'):
+                    raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
+                raise Finish(m.EXIT_DONE, 'cold disk readback received')
+        self.on_persist_line(line, observed_at)
+        if BOOTLOADER_LINE in line and self.kernel_started is not None:
+            if session(self.args) and persistent(self.args):
+                # The operator restarted the persistent install; the session goes on with the new boot.
+                self.event('persistent-restart', observed_at=observed_at, seconds=seconds)
+                self.kernel_started = None
+                self.seen.discard('bootloader')
+            else:
+                raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
+        if BOOTLOADER_LINE in line and 'bootloader' not in self.seen:
+            self.seen.add('bootloader')
+            self.event('bootloader', observed_at=observed_at, seconds=seconds)
+            self.phase('Bootloader')
+            self.last_stage = 'UEFI bootloader started'
+        if HANDOFF_LINE in line and self.kernel_started is None:
+            self.kernel_started = observed_at
+            self.event('handoff', observed_at=observed_at, seconds=seconds)
+            self.phase('Handoff: the kernel is starting')
+            self.last_stage = 'Bootloader handoff'
+        if self.args.payload.startswith('hang') and HANG_LINE in line and self.kernel_started is None:
+            self.kernel_started = observed_at
+            self.event('payload-started', observed_at=observed_at, seconds=seconds)
+            self.phase('Test payload running: interrupts masked, halted')
+            self.last_stage = 'metal-hang started'
+        suite_record = self.args.mode == 'suite' and line.startswith(('SUITE ', 'SUITE_SEQUENCE '))
+        dead_suite = self.args.mode == 'suite' and re.search(r'KERNEL PANIC[:!]|memory allocation of \d+ bytes failed|allocation error:', line)
+        if (self.kernel_started and self.fatal_at is None
+                and (not suite_record or re.search(r'KERNEL PANIC[:!]', line))
+                and (dead_suite or any(p.search(line) for p in self.fatal_patterns))):
+            self.fatal_at = observed_at
+            self.event('fatal', observed_at=observed_at, seconds=seconds)
+        if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
+            self.suite_started = observed_at
+        if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
+            self.probe_failed = True
+        if '[init] shell ready' in line:
+            self.shell_ready = True
+        if session(self.args) and self.kernel_started and self.fatal_at is None:
+            # The login prompt and echoed input need not end with a newline.
+            if line.endswith('[console] input clock alive'):
+                self.input_clock_alive = observed_at
+            idle = getattr(self.args, 'idle_minutes', 30)
+            if line == f'[console] input idle {idle} min':
+                raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
+        if attended(self.args) and self.kernel_started and line.startswith('[console] input idle '):
+            # The idle clock has stopped its pulse; nobody is typing.
+            raise Finish(m.EXIT_SHORT, 'console input idle; challenge not reached')
+        self.on_disk_line(line, observed_at)
+        self.on_intent_line(line, observed_at)
+        self.on_hostkey_line(line)
+        self.challenge_shell(line)
+        self.challenge_console(line, complete=True)
+        # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
+        self.challenge_persistent(line)
+        for stages in self.required_stages:
+            if stages and marker_matches(stages[0], line, input_kind(self.args)):
+                stages.pop(0)
+        suite_done = (re.fullmatch(r'SUITE_SEQUENCE DONE suites=\d+', line) if len(suites(self.args)) > 1
+                      else re.fullmatch(r'SUITE_SEQUENCE READY ' + re.escape(self.args.suite or ''), line)
+                      ) if self.args.mode == 'suite' else True
+        if (suite_done and self.final_marker and marker_matches(self.final_marker, line, input_kind(self.args))
+                and (self.args.mode != 'shell' or self.shell_sent)):
+            self.final_seen = True
+        self.maybe_complete(observed_at, seconds)
+
+    def maybe_complete(self, observed_at, seconds):
+        """Ends the boot once its final marker, its measured stages and its disk evidence have arrived."""
+        if (self.final_marker and self.final_seen and not any(self.required_stages)
+                and self.disk_evidence_seen()
+                and not session(self.args)
+                and (not getattr(self.args, 'run', None) or self.run_done)
+                and (self.args.mode != 'console' or self.console_done)
+                and self.fatal_at is None and not self.completion_reported):
+            self.completion_reported = True
+            self.event('final-marker', observed_at=observed_at, seconds=seconds)
+            if self.args.mode == 'tests':
+                passed, reason = metal_score.tests_verdict(self.dir, ''.join(self.test_report_lines))
+                self.event('test-report', passed=passed, reason=reason)
+                if not passed:
+                    raise Finish(m.EXIT_SHORT, reason)
+            if self.probe_failed:
+                raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
+            raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
+
+    def on_persist_line(self, line, observed_at):
+        """The install boot's request and migration (README, "Install and upgrade")."""
+        if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
+            self.seen.add('persist-written')
+            slot = self.persist['slot']
+            record = metal_persist.read_disk()
+            slots = dict(record.get('slots') or {}, next=slot)
+            if self.persist['action'] == 'install':
+                # From here the disk has the layout, whatever the kernel does next.
+                metal_persist.update_disk(layout=self.persist['layout'], slots=slots,
+                                          install={'boot': self.id, 'commit': self.args.commit, 'at': observed_at})
+            else:
+                metal_persist.update_disk(slots=slots)
+            self.event('persist-written', observed_at=observed_at, action=self.persist['action'], commit=slot['commit'])
+            self.phase('Persistent install: the request is written')
+        if self.args.mode == 'persistent-install' and self.kernel_started and INSTALL_FAILED in line:
+            self.event('persistent-install-failed', observed_at=observed_at)
+            raise Finish(m.EXIT_SHORT, 'the migration onto the system partition failed')
+        if self.args.mode == 'persistent-install' and INSTALL_DONE in line:
+            self.event('persistent-install-complete', observed_at=observed_at)
+
+    def on_slot_line(self, line, observed_at):
+        """The manager's slot commit or rollback, read from the EFI system partition after it renamed the slots."""
+        found = re.search(r'breenix-manager: slot (commit|rollback): current ([0-9a-f]{40}), previous ([0-9a-f]{40}|empty)', line)
+        if not found:
+            return
+        record = metal_persist.read_disk()
+        slots = dict(record.get('slots') or {})
+        if found.group(1) == 'commit' and slots.get('next', {}).get('commit') == found.group(2):
+            slots['previous'], slots['current'] = slots.get('current'), slots.pop('next')
+        elif found.group(1) == 'rollback' and (slots.get('current') or {}).get('commit') != found.group(2):
+            slots['current'], slots['previous'] = slots.get('previous'), slots.get('current')
+        if (slots.get('current') or {}).get('commit') != found.group(2):
+            self.event('slot-record-differs', observed_at=observed_at, current=found.group(2))
+            raise Finish(m.EXIT_SHORT, "the manager's slots differ from the recorded ones")
+        previous = (slots.get('previous') or {}).get('commit', 'empty')
+        if previous != found.group(3):
+            raise Finish(m.EXIT_SHORT, "the manager's previous slot differs from its record")
+        metal_persist.update_disk(slots={k: v for k, v in slots.items() if v})
+        # Consume a successful action before the next manager query can request another swap.
+        with m.locked('lease'):
+            lease = m.read_lease()
+            if lease and lease.get('id') == self.id and lease.get('slotAction') == found.group(1):
+                lease['slotAction'] = None
+                m.write_json(m.STATE / m.LEASE, lease)
+        self.event('slots', observed_at=observed_at, action=found.group(1), current=found.group(2), previous=found.group(3))
+
+    def on_slot_boot(self, line, observed_at):
+        found = re.fullmatch(r'breenix-manager: booting (current|previous) ([0-9a-f]{40})', line)
+        if not persistent(self.args) or not found:
+            return
+        entry, commit = found.groups()
+        slot = metal_persist.read_disk().get('slots', {}).get(entry, {})
+        kept = m.STATE / 'persistent' / commit / 'definition'
+        if slot.get('commit') != commit or not kept.is_dir():
+            raise Finish(m.EXIT_SHORT, "the booted slot has no matching commit and definition")
+        if self.args.commit != commit:
+            # This line precedes the bootloader and kernel; use the selected kernel's contracts from here on.
+            shutil.rmtree(self.dir / 'definition')
+            shutil.copytree(kept, self.dir / 'definition')
+            self.args.commit = commit
+            m.write_text(self.dir / 'commit', commit + '\n')
+            self.load_definition()
+        run = m.read_json(self.dir / 'run.json', {})
+        run.update(entry=entry, bootedCommit=commit)
+        m.write_json(self.dir / 'run.json', run)
+        self.seen.add('manager-slot')
+        self.event('slot-boot', observed_at=observed_at, entry=entry, commit=commit)
+
+    def challenge_persistent(self, text):
+        """A persistent boot with --run: log in over SOL with the console account, type each command at a fresh
+        prompt, log out, and end at the next login prompt."""
+        # The session ends with a power-off: flush the writes the commands made (/bin/sync) before logging out.
+        commands = (getattr(self.args, 'run', None) or []) + ['sync']
+        if not persistent(self.args) or len(commands) == 1 or self.kernel_started is None or self.fatal_at is not None:
+            return
+        fresh = self.line_start > self.sent_at
+        # bsh redraws its prompt and the line typed so far on each key; only a prompt with nothing after it is a
+        # fresh one, once the command before it has finished.
+        prompt = re.fullmatch(r'bsh [^>\n]*>\s*', text) is not None
+        # Steps: 0 the login prompt, 1 the password prompt, then one shell prompt per command, then logout.
+        last = 2 + len(commands)
+        if self.run_step == 0 and fresh and text.rstrip().endswith('login:'):
+            self.run_step, self.sent_at = 1, self.line_start
+            self.console_send(self.site['CONSOLE_USER'], paced=True)
+        elif self.run_step == 1 and fresh and 'Password: ' in text:
+            self.run_step, self.sent_at = 2, self.line_start
+            self.console_send(self.site['CONSOLE_PASSWORD'], paced=True)
+        elif 2 <= self.run_step <= last and 'Login incorrect' in text:
+            raise Finish(m.EXIT_SHORT, 'the persistent install refused the console account')
+        elif 2 <= self.run_step < last and fresh and prompt:
+            self.sent_at = self.line_start
+            self.event('persistent-command', index=self.run_step - 1, of=len(commands))
+            self.console_send(commands[self.run_step - 2], paced=True)
+            self.run_step += 1
+        elif self.run_step == last and fresh and prompt:
+            self.sent_at = self.line_start
+            self.run_step = last + 1
+            self.console_send('exit', paced=True)
+        elif self.run_step == last + 1 and fresh and text.rstrip().endswith('login:'):
+            self.run_step = last + 2
+            self.run_done = True
+            self.event('persistent-commands-done', commands=len(commands))
+            self.maybe_complete(m.now(), round(m.now() - self.t0, 1))
+
+    def on_manager_line(self, line, observed_at, seconds):
+        """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
+        self.on_slot_line(line, observed_at)
+        self.on_slot_boot(line, observed_at)
+        if MANAGER_STARTED in line:
+            self.manager_started = self.manager_started or observed_at
+            self.event('manager-started', observed_at=observed_at, seconds=seconds)
+            self.phase('Boot manager started')
+            if self.args.payload == 'manager' and self.kernel_started is None:
+                self.kernel_started = observed_at
+                self.last_stage = 'boot manager started'
+        if (found := MANAGER_ANSWER.search(line)):
+            self.event('manager-answer', observed_at=observed_at, answer=found.group(1)[:120])
+            self.phase('Boot manager: the lab answered ' + found.group(1)[:80])
+        if MANAGER_PANIC in line:
+            raise Finish(m.EXIT_SHORT, 'the boot manager panicked')
+        if self.args.payload == 'manager' and MANAGER_PROBE_DONE in line:
+            raise Finish(m.EXIT_DONE, 'the boot manager probe completed')
+
+    def disk_evidence_seen(self):
+        """The disk's record, and on a disk-root console boot the kernel's account of this boot's intent."""
+        needed = {None: set(), 'install': {'disk-write'}, 'root': {'disk-root'}}[getattr(self.args, 'disk', None)]
+        if persistent(self.args):
+            needed.add('manager-slot')
+        if self.console_intent:
+            needed.add('console-intent')
+        return needed <= self.seen
+
+    def on_hostkey_line(self, line):
+        """A suite case's HOSTKEY record: type its chords on the serial console as HID boot reports, which the
+        kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
+        once; what was sent goes to the boot's events, never to the guest's serial."""
+        if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
+            return
+        if self.hostkey_watcher is None:
+            self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.console_send), metal_root.HOSTKEYS,
+                                                    log=lambda message: self.event('hostkeys', message=message))
+        self.hostkey_watcher.line(line)
+
+    def on_intent_line(self, line, observed_at):
+        """A disk-root console boot's replug choice must come from its staged intent, not the installed target."""
+        if not self.console_intent or 'console-intent' in self.seen or not (found := INTENT_LINE.search(line)):
+            return
+        self.seen.add('console-intent')
+        replug = found.group(1) == 'requested'
+        honored = found.group(2) == 'intent' and replug == (self.console_intent == 'measure')
+        self.event('console-intent', observed_at=observed_at, staged=self.console_intent, replug=replug,
+                   source=found.group(2), honored=honored)
+        if not honored and not session(self.args):
+            raise Finish(m.EXIT_SHORT, "the kernel did not apply this boot's console intent")
+
+    # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+    def on_disk_line(self, line, observed_at):
+        """Check the kernel's account of the disk against what this boot asked for (README, "The disks")."""
+        disk = getattr(self.args, 'disk', None)
+        if disk == 'install' and 'disk-write' not in self.seen and (found := READ_BACK_LINE.search(line)):
+            self.seen.add('disk-write')
+            write = self.delivery['root']['diskWrite']
+            matched = int(found.group(1)) == write['bytes'] and found.group(2) == write['sha256AfterRecord']
+            self.event('disk-write-verified', observed_at=observed_at, match=matched, bytes=int(found.group(1)))
+            if not matched:
+                raise Finish(m.EXIT_SHORT, 'the installed bytes or digest differ from the staged image')
+            # The disk now holds this boot's root: a later disk-root boot expects this install.
+            metal_persist.record_test_root(dict(write, commit=self.args.commit, verifiedAt=observed_at, mode=self.args.mode,
+                                                consoleIdentity=self.delivery['root'].get('consoleIdentity')))
+        if disk == 'root' and 'disk-fixture' not in self.seen and (found := re.search(r'metal-stub: suite fixture verified: (\d+) bytes', line)):
+            installed = self.delivery['diskRoot']
+            if int(found.group(1)) != installed['bytes']:
+                raise Finish(m.EXIT_SHORT, 'the firmware fixture size differs from the staged image')
+            self.seen.add('disk-fixture')
+            # Firmware has flushed and read back the entire image and written
+            # the record last. Persist before a kernel panic can prevent mount.
+            metal_persist.record_test_root(dict(installed, lastBoot=self.id))
+            self.event('disk-fixture-verified', observed_at=observed_at, bytes=installed['bytes'])
+        if disk == 'root' and 'disk-root' not in self.seen and (found := ROOT_RECORD_LINE.search(line)):
+            self.seen.add('disk-root')
+            installed = self.delivery['diskRoot']
+            matched = (found.group(1) == installed.get('installedBy') and int(found.group(2)) == installed.get('bytes')
+                       and found.group(3) == installed.get('sha256AfterRecord'))
+            self.event('disk-root-record', observed_at=observed_at, matchesLastInstall=matched,
+                       installedBy=found.group(1))
+            if not matched:
+                raise Finish(m.EXIT_SHORT, 'the disk root record differs from the recorded install')
+            metal_persist.record_test_root(dict(installed, lastBoot=self.id))
+
+    # The HTTP server's log.
+    def pump_http(self):
+        log = m.STATE / 'http.jsonl'
+        if not log.exists():
+            return
+        with log.open() as handle:
+            handle.seek(self.http_offset)
+            lines = handle.readlines()
+            self.http_offset = handle.tell()
+        for line in lines:
+            with contextlib.suppress(ValueError):
+                self.on_http(json.loads(line))
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def on_http(self, entry):
+        if self.t0 is None or entry.get('t', 0) < self.t0:
+            return
+        observed_at = entry['t']
+        elapsed = round(observed_at - self.t0, 1)
+        kind = entry.get('event')
+        if kind == 'manager-query':
+            # The boot manager's question; not the firmware's image request, so it leaves the POST measurement alone.
+            self.event('manager-query', observed_at=observed_at, seconds=elapsed, answer=entry.get('answer'))
+            return
+        if kind not in ('redirect', 'head', 'start', 'progress', 'range-done', 'complete', 'short', 'broken', '404',
+                        'range-invalid'):
+            return
+        if kind == '404' and not entry.get('route'):
+            return
+        if self.request_at is None:
+            self.request_at = entry['t']
+            seconds = self.request_at - self.t0
+            self.delivery['postSeconds'] = round(seconds, 1)
+            m.record_post_time(self.id, seconds)
+            self.event('image-request', observed_at=observed_at, seconds=round(seconds, 1))
+            self.phase(f'Image requested · {seconds:.0f} s after power-on')
+        if kind == '404':
+            if self.complete_at is None and self.not_found_at is None:
+                self.not_found_at = entry['t']
+                self.event('image-not-found', observed_at=observed_at, seconds=elapsed)
+                self.phase('No image staged: the request was refused')
+            elif self.complete_at is not None:
+                self.event('image-refused-again', observed_at=observed_at, seconds=elapsed)
+                if self.kernel_started is not None:
+                    raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
+            return
+        if entry.get('id') != self.id:
+            return
+        if kind == 'redirect':
+            self.event('image-redirect', observed_at=observed_at, method=entry.get('method'))
+        elif kind == 'start':
+            self.first_byte_at = self.first_byte_at or entry['t']
+            self.last_progress = entry['t']
+            self.broken_at = None
+            self.event('image-start', observed_at=observed_at, total=entry.get('total'))
+        elif kind in ('progress', 'range-done'):
+            self.last_progress = entry['t']
+            if m.now() - self.last_phase_progress >= 5:
+                self.last_phase_progress = m.now()
+                self.phase(f"Fetching boot image · {entry['bytes'] >> 20} of {entry['total'] >> 20} MB")
+        elif kind == 'range-invalid':
+            self.event('image-range-invalid', observed_at=observed_at, range=entry.get('range'))
+        elif kind == 'broken':
+            self.broken_at = entry['t']
+            self.event('image-broken', observed_at=observed_at, bytes=entry.get('bytes'))
+        elif kind in ('complete', 'short'):
+            if kind == 'short' or not entry.get('matches'):
+                self.event('image-mismatch', observed_at=observed_at, bytes=entry.get('bytes'))
+                raise Finish(m.EXIT_DELIVERY, 'the image arrived incomplete or with the wrong checksum')
+            self.complete_at = entry['t']
+            seconds = entry['t'] - (self.first_byte_at or entry['t'])
+            self.delivery['transferSeconds'] = round(seconds, 2)
+            self.event('image-complete', observed_at=observed_at, seconds=elapsed, transfer=round(seconds, 2),
+                       sha256=entry.get('sha256'))
+            self.phase(f'Image fetched in {seconds:.1f} s')
+
+    # Paced reads of boot progress and the POST code.
+    def poller(self):
+        while not self.stopping.is_set():
+            interval = RUNNING_POLL_SECONDS if self.kernel_started or self.complete_at else POST_POLL_SECONDS
+            try:
+                system = m.rf_get(m.SYSTEM + '?$select=PowerState,BootProgress')
+                manager = m.rf_get(m.MANAGER_ATTRIBUTES + '?$select=Attributes/SysInfo.1.POSTCode')
+                reading = {'t': m.now(), 'power': system.get('PowerState'), 'progress': system.get('BootProgress'),
+                           'postCode': (manager.get('Attributes') or {}).get('SysInfo.1.POSTCode')}
+            except m.BmcError as error:
+                reading = {'t': m.now(), 'error': str(error)}
+            with self.bmc_lock:
+                self.bmc_events.append(reading)
+            self.stopping.wait(interval)
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def pump_bmc(self):
+        with self.bmc_lock:
+            readings, self.bmc_events = self.bmc_events, []
+        for reading in readings:
+            observed_at = reading['t']
+            elapsed = round(observed_at - self.t0, 1)
+            if 'error' in reading:
+                self.event('bmc-read-error', observed_at=observed_at, error=reading['error'])
+                continue
+            if reading.get('power') == 'On':
+                self.power_seen_on = True
+            if reading.get('power') == 'Off' and (self.power_seen_on or self.kernel_started is not None):
+                self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
+                raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
+                             'the machine powered off during the boot')
+            code = reading.get('postCode')
+            progress = reading.get('progress') or {}
+            if code is not None and code != self.post_code:
+                previous, self.post_code = self.post_code, code
+                if not self.post_seen:
+                    self.post_seen = True
+                    self.event('post', observed_at=observed_at, code=code, previous=previous, seconds=elapsed)
+                else:
+                    self.event('post-code', observed_at=observed_at, code=code, seconds=elapsed)
+                if self.kernel_started is None and self.request_at is None:
+                    self.phase(f'POST code 0x{int(code):02x} · {self.since_power():.0f} s')
+            key = progress_key(progress)
+            if key != self.progress_key:
+                # Only a state new since power-on counts: the baseline may be left from an earlier power cycle.
+                self.progress_key = key
+                self.progress_changed = True
+                self.event('boot-progress', observed_at=observed_at, state=key[0], oem=key[1], seconds=elapsed)
+                # Once a boot option runs, the firmware reports OSBootStarted or OSRunning; any other state after
+                # that is POST again, so the machine reset.
+                if self.kernel_started is not None and key[0] not in RUNNING_STATES:
+                    if session(self.args) and persistent(self.args):
+                        self.event('persistent-restart', observed_at=observed_at, state=key[0])
+                        self.kernel_started = None
+                    else:
+                        raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
+                if NO_BOOTABLE in key[1].lower() and self.kernel_started is None:
+                    raise Finish(m.EXIT_DELIVERY, 'the firmware found no bootable device')
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    # Deadlines.
+    def persistent_deadlines(self):
+        """A persistent boot: POST until the manager starts, then silence bounds until the kernel; a session has no
+        deadline after that, a check boot its mode deadline."""
+        if self.lease_ceiling and m.now() >= self.lease_ceiling:
+            raise Finish(m.EXIT_HUNG, 'the attempt ceiling passed', hung=True)
+        if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
+            raise Finish(m.EXIT_SHORT, 'a fatal line')
+        adopted = getattr(self.args, 'adopt', False)
+        if self.manager_started is None and self.kernel_started is None and not adopted:
+            if self.since_power() > self.post_budget:
+                raise Finish(m.EXIT_HUNG, f'POST over budget: the boot manager did not start (code {self.post_code})')
+            return
+        if session(self.args):
+            return
+        quiet = m.now() - max(self.last_serial or 0, self.kernel_started or self.manager_started or 0)
+        if quiet > SILENCE_SECONDS:
+            raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage or "the boot manager"}', hung=True)
+        if self.kernel_started and m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['persistent']:
+            raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages or commands missing')
+
+    def check_deadlines(self):
+        if persistent(self.args):
+            return self.persistent_deadlines()
+        elapsed = self.since_power()
+        if self.lease_ceiling and m.now() >= self.lease_ceiling:
+            raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_HUNG,
+                         'console session ceiling passed' if session(self.args) else 'the attempt ceiling passed',
+                         hung=not session(self.args))
+        if self.fatal_at and m.now() - self.fatal_at >= FATAL_GRACE_SECONDS:
+            raise Finish(m.EXIT_SHORT, 'a fatal line')
+        if attended(self.args) and self.kernel_started is not None and self.fatal_at is None:
+            if m.now() >= self.kernel_started + self.args.wait * 60:
+                raise Finish(m.EXIT_SHORT, 'attended wait expired; challenge not reached')
+        if self.request_at is None:
+            if elapsed > self.post_budget:
+                raise Finish(m.EXIT_HUNG, f'POST over budget at code {self.post_code}')
+            return
+        if self.not_found_at is not None and self.complete_at is None:
+            if m.now() - self.not_found_at >= NOT_FOUND_CAPTURE_SECONDS:
+                raise Finish(m.EXIT_DELIVERY, 'no image was staged: the request got 404')
+            return
+        if self.complete_at is None:
+            if self.first_byte_at is None:
+                if m.now() - self.request_at > DOWNLOAD_SECONDS:
+                    raise Finish(m.EXIT_DELIVERY, 'the image was requested but never fetched')
+                return
+            if m.now() - (self.last_progress or self.first_byte_at) > DOWNLOAD_IDLE_SECONDS:
+                raise Finish(m.EXIT_DELIVERY, 'the transfer stalled')
+            if m.now() - self.first_byte_at > DOWNLOAD_SECONDS:
+                raise Finish(m.EXIT_DELIVERY, 'the transfer was too slow')
+            return
+        if self.kernel_started is None:
+            # An install's stub writes the layout and the test root first, reporting its progress.
+            limit = INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' else BOOTLOADER_SECONDS
+            if 'bootloader' not in self.seen and m.now() - self.complete_at > limit:
+                raise Finish(m.EXIT_DELIVERY, 'no bootloader after the image arrived')
+            quiet = m.now() - (self.last_serial or self.complete_at)
+            if 'bootloader' in self.seen and quiet > SILENCE_SECONDS:
+                raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after the bootloader started', hung=True)
+            return
+        if session(self.args):
+            quiet = m.now() - (self.input_clock_alive or self.kernel_started)
+            if quiet > SILENCE_SECONDS:
+                raise Finish(m.EXIT_HUNG, f'console input clock silent for {SILENCE_SECONDS} s', hung=True)
+            return
+        quiet = m.now() - max(self.last_serial or 0, self.kernel_started)
+        if quiet > SILENCE_SECONDS:
+            raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage}', hung=True)
+        if attended(self.args):
+            # The operator types the challenge; the stages nobody types keep the mode deadline.
+            untyped = any(stages and len(stages[0]) == 2 for stages in self.required_stages)
+            prompt = self.attended_challenge is None or self.attended_challenge.reached >= 2
+            if m.now() - self.kernel_started > MODE_DEADLINE_SECONDS['console'] and (untyped or not prompt):
+                raise Finish(m.EXIT_SHORT, 'the mode deadline passed with the login prompt or an untyped stage missing')
+            return
+        # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
+        if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
+            raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
+
+    # Power.
+    def power_on(self):
+        self.checkpoint()
+        self.phase_name = 'powering-on'
+        if metal_persist.layout():
+            # The boot manager is first in the firmware's boot order and asks the lab (README, "Test boots on the
+            # persistent layout"); a persistent boot never fetches anything.
+            self.event('override-skipped', why='the boot manager starts the test loop or the persistent install')
+        else:
+            try:
+                m.rf('PATCH', m.SYSTEM, {'Boot': {'BootSourceOverrideEnabled': 'Once',
+                                                  'BootSourceOverrideTarget': 'UefiHttp',
+                                                  'BootSourceOverrideMode': 'UEFI'}})
+                boot = m.rf_get(m.SYSTEM + '?$select=Boot').get('Boot', {})
+            except m.BmcError as error:
+                self.event('override-error', error=str(error))
+                raise Finish(m.EXIT_DELIVERY, 'the one-time boot override could not be set')
+            if boot.get('BootSourceOverrideEnabled') != 'Once' or boot.get('BootSourceOverrideTarget') != 'UefiHttp':
+                raise Finish(m.EXIT_DELIVERY, 'the one-time boot override did not read back')
+            self.event('override-set', target='UefiHttp')
+        self.checkpoint()
+        self.t0 = m.now()
+        ceiling = ceiling_seconds(self.args)
+        self.lease_ceiling = None if ceiling is None else self.t0 + ceiling
+        m.update_lease(self.id, state='powered', powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
+        try:
+            reply = m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'On'}, priority=0)
+            self.t0 = reply['startedAt']
+            self.lease_ceiling = None if ceiling is None else self.t0 + ceiling
+            m.update_lease(self.id, powerOnAt=self.t0, ceilingAt=self.lease_ceiling)
+        except m.BmcError as error:
+            m.quarantine_lease(self.id, 'power-on outcome uncertain')
+            self.event('power-on-error', error=str(error))
+            raise Finish(m.EXIT_DELIVERY, 'power-on was refused')
+        self.post_budget = m.post_budget()
+        self.event('power-on', observed_at=self.t0, postBudget=self.post_budget, ceiling=ceiling)
+        self.phase('Power on')
+        self.phase_name = 'post'
+
+    def watch(self):
+        threading.Thread(target=self.poller, daemon=True).start()
+        last_console_check = 0.0
+        while True:
+            self.checkpoint()
+            self.pump_serial()
+            self.pump_http()
+            self.pump_bmc()
+            if m.now() - last_console_check >= 1:
+                last_console_check = m.now()
+                if self.console_dead():
+                    self.heal_console()
+            if self.kernel_started:
+                self.phase_name = 'kernel'
+            elif self.complete_at:
+                self.phase_name = 'bootloader'
+            elif self.first_byte_at:
+                self.phase_name = 'download'
+            self.check_deadlines()
+            time.sleep(0.25)
+
+    def power_off(self, hung):
+        """NMI first when a started kernel or payload hung (or `--nmi` asks for it), then ForceOff; quarantine if it
+        does not go Off."""
+        if (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
+            try:
+                m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'Nmi'}, priority=0)
+                self.event('nmi')
+                self.phase('NMI sent; capturing for 5 s')
+            except m.BmcError as error:
+                self.event('nmi-error', error=str(error))
+            end = m.now() + NMI_CAPTURE_SECONDS
+            while m.now() < end:
+                with contextlib.suppress(Finish):
+                    self.pump_serial()
+                time.sleep(0.25)
+            self.event('nmi-capture-done', bytesAfter=self.raw_offset)
+        if self.args.inject == 'forceoff-fail':
+            self.event('power-off-failed', injected=True)
+            self.phase('Power-off failed (injected): the machine may still be on')
+            m.quarantine_lease(self.id, 'driver power-off failed (injected)')
+            return False
+        started = m.now()
+        off = m.force_off_and_wait()
+        self.event('power-off', off=off, seconds=round(m.now() - started, 1))
+        if off:
+            self.phase('Powered off')
+        else:
+            self.phase('Power-off failed: the machine may still be on')
+            m.quarantine_lease(self.id, 'driver power-off failed')
+        return off
+
+    def cleanup(self, status, ended_by='driver', keep_lease=False):
+        self.stopping.set()
+        with contextlib.suppress(Finish):
+            self.pump_serial()
+        if self.claimed:
+            upload = m.read_json(m.STATE / 'disk-upload.json', {})
+            if upload.get('id') == self.id:
+                (m.STATE / 'disk-upload.json').unlink(missing_ok=True)
+            m.clear_override()
+            m.unstage(self.id)
+            subprocess.run(self.tmux + ['kill-server'], capture_output=True)
+            with contextlib.suppress(m.BmcError):
+                m.sol_deactivate()
+        if self.delivery:
+            m.write_json(self.dir / 'delivery.json', self.delivery)
+        m.close_record(self.dir, status, ended_by)
+        shutil.rmtree(self.stage, ignore_errors=True)
+        if self.claimed and not keep_lease:
+            m.release_lease(self.id)
+
+    # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+    def run(self, inherited=None):
+        self.create_record()
+        self.lease_ceiling = None
+        status = m.EXIT_SHORT
+        pending_readback = False
+        try:
+            if getattr(self.args, 'adopt', False):
+                self.adopt()
+            elif inherited is None:
+                self.claim()
+            else:
+                holder = self.holder()
+                if not m.handoff_lease(inherited, holder):
+                    raise Finish(m.EXIT_INCOMPLETE, 'the lease could not transfer to the next boot')
+                self.claimed = True
+                self.claim_status('claimed')
+                self.event('lease-inherited', source=inherited)
+                threading.Thread(target=self.heartbeat, daemon=True).start()
+            self.prepare_payload()
+            if getattr(self.args, 'adopt', False):
+                # The operator powered the machine on; the console is captured from here.
+                self.start_console()
+                self.t0 = m.now()
+                self.power_seen_on = True
+                m.update_lease(self.id, powerOnAt=self.t0)
+                self.phase_name = 'kernel'
+            else:
+                self.preflight()
+                self.do_stage()
+                self.start_console()
+                self.power_on()
+            self.watch()
+        except Finish as finish:
+            status = finish.status
+            self.event('decided', status=status, reason=finish.reason)
+            self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
+            if self.t0 is not None:
+                off = self.power_off(finish.hung)
+                if not off:
+                    status = m.EXIT_INCOMPLETE
+                # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
+                # the cases it reported.
+                several = len(suites(self.args)) > 1 and self.kernel_started is not None
+                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
+                        and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
+                    with contextlib.suppress(Finish):
+                        self.pump_serial()
+                    if self.gap:
+                        status = m.EXIT_INCOMPLETE
+                    else:
+                        try:
+                            manifest = m.read_json(self.dir / 'definition/docs/suites' / (suites(self.args)[-1] + '.json'), {})
+                            if manifest.get('diskChecks'):
+                                m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: awaiting cold raw disk readback after power-off\n')
+                                self.event('suite-awaiting-disk-readback')
+                                pending_readback = True
+                                status = m.EXIT_SHORT
+                            elif not self.score_suite() and status == m.EXIT_DONE:
+                                status = m.EXIT_SHORT
+                        except Exception as error:
+                            self.event('suite-verdict-error', error=error.__class__.__name__)
+                            status = m.EXIT_SHORT
+                if self.args.payload == 'disk-readback' and status == m.EXIT_DONE and off and not self.gap:
+                    try:
+                        if not self.finalize_disk_suite():
+                            status = m.EXIT_SHORT
+                    except Exception as error:
+                        self.event('disk-suite-verdict-error', error=error.__class__.__name__)
+                        status = m.EXIT_SHORT
+                if self.census and status == m.EXIT_DONE:
+                    if off and not self.gap:
+                        try:
+                            self.census.write(self.dir / 'platform-facts')
+                        except (ValueError, OSError):
+                            self.event('linux-evidence-write-failed')
+                            status = m.EXIT_INCOMPLETE
+                    else:
+                        status = m.EXIT_INCOMPLETE
+            if self.gap and status != m.EXIT_BUSY:
+                status = m.EXIT_INCOMPLETE
+                self.event('capture-incomplete', why='console gap')
+        except Exception as error:
+            self.event('driver-error', error=f'{error.__class__.__name__}: {error}'[:300])
+            if self.t0 is not None:
+                self.power_off(False)
+            status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
+        # Persistent sessions are scored like default boots; console sessions and fault tests never are.
+        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject != FENCE_FAULT
+        if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
+            try:
+                verdict = metal_score.score(self.dir)
+                m.write_json(self.dir / 'milestone-verdict.json', verdict)
+                if pending_readback and metal_score.falls_short(verdict):
+                    pending_readback = False
+                if status == m.EXIT_DONE and metal_score.falls_short(verdict):
+                    status = m.EXIT_SHORT
+            except (OSError, ValueError, KeyError) as error:
+                self.event('milestone-verdict-error', error=error.__class__.__name__)
+                pending_readback = False
+                if status == m.EXIT_DONE:
+                    status = m.EXIT_SHORT
+        if pending_readback and not self.gap:
+            self.cleanup(status, keep_lease=True)
+            try:
+                return self.continue_disk_readback()
+            except Exception as error:
+                self.event('cold-readback-error', error=error.__class__.__name__)
+                m.release_lease(self.id)
+                return m.EXIT_SHORT
+        if self.args.mode == 'persistent-install' and status == m.EXIT_DONE and not self.gap:
+            self.cleanup(status, keep_lease=True)
+            try:
+                return self.continue_verification()
+            except Exception as error:
+                self.event('persistent-verification-error', error=error.__class__.__name__)
+                m.release_lease(self.id)
+                return m.EXIT_SHORT
+        self.cleanup(status)
+        return status
+
+    def adopt(self):
+        """Takes up the lease the image server wrote for an operator's power-on (README, "Persistent sessions")."""
+        lease = m.read_lease() or {}
+        if lease.get('id') != self.id or lease.get('unit') != self.unit:
+            raise Finish(m.EXIT_CANCELLED, 'the adopted lease is not this boot\'s')
+        self.claimed = True
+        self.claim_status('claimed')
+        self.event('lease-adopted')
+        threading.Thread(target=self.heartbeat, daemon=True).start()
+
+    def continue_verification(self):
+        """The install's second boot, under the same lease: the manager commits the new slot and boots it, and the
+        boot ends at the login prompt with the persistent stages (README, "Install and upgrade")."""
+        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        while m.boot_dir(boot_id).exists():
+            time.sleep(1)
+            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        args = argparse.Namespace(**(vars(self.args) | dict(
+            id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False, attended=False,
+            input=None, inject=None, entry='current', slot_action='commit', verify=True, run=None, adopt=False,
+            commit='')))
+        child = Driver(args)
+        child.unit = self.unit
+        self.event('persistent-verification-next', verification=boot_id)
+        return child.run(inherited=self.id)
+
+
+def progress_key(progress):
+    progress = progress or {}
+    return (progress.get('LastState'), progress.get('OemLastState') or '', progress.get('LastStateTime'))
+
+
+def marker_matches(spec, line, input_kind=None):
+    """Pipe-separated literal alternatives; line matching requires the entire serial line."""
+    if isinstance(spec, tuple) and len(spec) == 3:
+        marker, match, required_input = spec
+        if required_input != input_kind:
+            return False
+    else:
+        marker, match = spec if isinstance(spec, tuple) else (spec, 'contains')
+    alternatives = marker.split('|')
+    if match == 'line':
+        return line in alternatives
+    if match != 'contains':
+        raise ValueError('unsupported marker match: ' + match)
+    return any(value in line for value in alternatives)
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def measured_stages(metal, mode, catalog, shape='ramdisk', input_kind=None):
+    """Track each measured milestone in its own print order, including delayed kernel producers. Milestones in
+    the definition select which boot shapes and modes can measure them. A stage tagged with an input (the USB keyboard)
+    is required only of a boot whose input is that one; the scorer still counts it, unreached, for any other."""
+    markers = {stage['name']: stage for stage in catalog.get('stages', [])}
+    groups = []
+    for milestone in metal.get('milestones', []):
+        if milestone.get('stub') or not metal_score.measures(milestone, shape, mode):
+            continue
+        lists = milestone.get('stages', {})
+        listed = lists.get(mode, lists.get(metal['gateArch'], []) if milestone.get('kernel') else [])
+        group = []
+        for stage in listed:
+            spec = markers.get(stage, {}) if isinstance(stage, str) else stage
+            if 'host' in spec:
+                continue  # These are checked by preflight, delivery and console setup.
+            if spec.get('input') and spec['input'] != input_kind:
+                continue
+            if not spec.get('marker'):
+                raise ValueError('unresolved measured serial stage')
+            group.append((spec['marker'], spec.get('match', 'contains')) +
+                         ((spec['input'],) if spec.get('input') else ()))
+        if group:
+            groups.append(group)
+    return groups
+
+
+def final_marker(metal, mode, catalog, shape='ramdisk', input_kind=None):
+    """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
+    proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
+    milestone excluded by `bootShapes` or `bootModes` cannot be measured by this boot."""
+    markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
+    milestones = [milestone for milestone in reversed(metal.get('milestones', []))
+                  if not milestone.get('stub') and metal_score.measures(milestone, shape, mode)]
+    scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
+    scoped = [listed for listed in scoped if listed]
+    if not scoped:
+        scoped = [milestone.get('stages', {}).get(metal.get('gateArch', 'x86_64'))
+                  for milestone in milestones if milestone.get('kernel')]
+    for listed in scoped:
+        if not listed:
+            continue
+        for stage in reversed(listed):
+            if isinstance(stage, dict) and ('host' in stage or stage.get('input', input_kind) != input_kind):
+                continue
+            stage = stage if isinstance(stage, dict) else markers.get(stage, {})
+            if stage.get('marker'):
+                return (stage['marker'], stage.get('match', 'contains')) + ((stage['input'],) if stage.get('input') else ())
+            return None
+    return None
+
+
+def launch(args, extra):
+    boot_id = args.id or boot_id_now()
+    unit = unit_name(boot_id)
+    command = ['systemd-run', '--unit', unit, '--collect', '--property', 'MemoryMax=256M',
+               '--setenv', 'BREENIX_METAL_SITE=' + str(m.SITE_PATH), sys.executable, str(Path(__file__).resolve()),
+               'run', '--id', boot_id] + extra
+    subprocess.run(command, check=True, capture_output=True)
+    claim = m.boot_dir(boot_id) / 'claim.json'
+    deadline = m.now() + 30
+    status = 'starting'
+    state = None
+    while m.now() < deadline:
+        state = m.read_json(claim)
+        if state:
+            status = state['status']
+            break
+        if not m.unit_active(unit) and (m.boot_dir(boot_id) / 'ended').exists():
+            status = 'ended'
+            break
+        time.sleep(0.25)
+    print(json.dumps(dict(state or {}, id=boot_id, unit=unit, status=status)))
+    return {'claimed': 0, 'waiting': 0, 'busy': 75, 'quarantined': 75, 'not-ready': 75}.get(status, 1)
+
+
+# claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
+def status():
+    finished = []
+    path = m.STATE / 'finished.jsonl'
+    if path.exists():
+        for line in path.read_text().splitlines()[-10:]:
+            entry = json.loads(line)
+            directory = m.boot_dir(entry['id'])
+            entry['exit'] = (directory / 'exit-status').read_text().strip() if (directory / 'exit-status').exists() else None
+            finished.append(entry)
+    print(json.dumps({'lease': m.read_lease(), 'queue': m.read_queue(), 'machine': m.read_json(m.STATE / 'machine.json'),
+                      'finished': finished}, indent=1))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='command', required=True)
+    for name in ('launch', 'run'):
+        p = sub.add_parser(name)
+        p.add_argument('--id')
+        p.add_argument('--payload', choices=PAYLOADS, default='image')
+        p.add_argument('--mode', choices=MODES, default='default')
+        p.add_argument('--input', choices=('sol',))
+        p.add_argument('--attended', action='store_true', help='score the operator challenge without sending input')
+        p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240); with --attended, challenge wait (default 30)')
+        p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
+        p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
+        p.add_argument('--suite')
+        p.add_argument('--source-boot')
+        p.add_argument('--commit', default='')
+        p.add_argument('--target', default='main')
+        p.add_argument('--catchup', action='store_true')
+        p.add_argument('--task', default='')
+        p.add_argument('--no-wait', action='store_true')
+        p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
+                                            FENCE_FAULT))
+        p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
+        p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
+        p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
+        p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
+        p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
+        p.add_argument('--nmi', action='store_true',
+                       help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
+        p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
+        p.add_argument('--disk', choices=DISK_ACTIONS,
+                       help='physical disk root (default), or an explicit recovery install')
+        p.add_argument('--content-type', choices=('application/octet-stream',),
+                       help='a test payload served with this type instead of its form\'s own')
+        p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),
+                       help='answer the fixed URI with a redirect to this name beside it, and serve the file there')
+    p = sub.add_parser('stop')
+    p.add_argument('id')
+    p = sub.add_parser('inputs-ready')
+    p.add_argument('id')
+    p = sub.add_parser('inputs-failed')
+    p.add_argument('id')
+    p.add_argument('why')
+    sub.add_parser('status')
+    args, _ = parser.parse_known_args()
+    if args.command in ('launch', 'run'):
+        if args.payload == 'disk-readback' and not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.source_boot or ''):
+            parser.error('disk-readback needs --source-boot ID')
+        try:
+            validate_xhci_fault(args)
+        except ValueError as error:
+            parser.error(str(error))
+        if args.mode == 'suite':
+            if not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', args.suite or '') or len(set(suites(args))) != len(suites(args)):
+                parser.error('suite mode needs --suite ID, or distinct ids joined by commas')
+        elif args.suite:
+            parser.error('--suite needs suite mode')
+        if (args.payload == 'persistent') != (args.mode == 'persistent'):
+            parser.error('a persistent boot needs the persistent payload and mode together')
+        if args.payload not in ('image', 'persistent') and args.mode != 'default':
+            parser.error('boot modes need an image payload')
+        if (args.entry or args.slot_action or args.run or args.verify or args.adopt) and args.payload != 'persistent':
+            parser.error('--entry, --slot-action, --run, --verify and --adopt need a persistent boot')
+        if args.inject == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk not in (None, 'root')):
+            parser.error('the fence fault needs a default disk-root image boot')
+        if args.disk == 'install' and args.mode not in ('probe', 'console'):
+            parser.error('--disk install needs probe or console mode')
+        if args.mode == 'tests' and (args.inject or args.disk == 'install'):
+            parser.error('tests mode needs a disk-root boot without --inject')
+        if args.session and (args.mode != 'console' or args.input or args.disk == 'install'):
+            parser.error('--session needs console mode, operator input and no disk install')
+        if not 1 <= args.idle_minutes <= 240 or (args.idle_minutes != 30 and not args.session):
+            parser.error('--idle-minutes needs a console session and 1 through 240 minutes')
+        if args.attended and (args.session or args.mode != 'console' or args.input or args.payload != 'image' or args.disk == 'install'):
+            parser.error('--attended needs a console boot, without --session or --input')
+        if args.wait is None:
+            args.wait = 30 if args.attended else 240
+        if not 0 < args.wait <= 240:
+            parser.error('--wait needs more than 0 through 240 minutes')
+        if args.mode == 'console' and not args.session and not args.attended and args.input != 'sol':
+            parser.error('console typing waits for the injector; development boots require --input sol')
+        if args.input and args.mode != 'console':
+            parser.error('--input needs console mode')
+    if args.command in ('launch', 'run') and args.payload == 'image' and not args.disk and not xhci_fault(args):
+        args.disk = 'root'
+    if args.command in ('launch', 'run') and args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
+        parser.error('disk-before-mount needs a disk-root image boot')
+    if args.command == 'launch':
+        extra = sys.argv[2:]
+        if '--wait' not in extra:
+            extra += ['--wait', str(args.wait)]
+        if args.disk and '--disk' not in extra:
+            extra += ['--disk', args.disk]
+        if args.id:
+            index = extra.index('--id')
+            del extra[index:index + 2]
+        return launch(args, extra)
+    if args.command == 'run':
+        if not args.id or not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.id):
+            parser.error('run needs --id in the form YYYYMMDDTHHMMSSZ-metal')
+        return Driver(args).run()
+    if args.command == 'stop':
+        directory = m.boot_dir(args.id)
+        if not directory.is_dir() or (directory / 'ended').exists():
+            print('no such running boot', file=sys.stderr)
+            return 1
+        (directory / 'stop-request').touch()
+        return 0
+    if args.command in ('inputs-ready', 'inputs-failed'):
+        inputs = m.stage_dir(args.id) / 'inputs'
+        inputs.mkdir(parents=True, exist_ok=True)
+        if args.command == 'inputs-ready':
+            (inputs / 'ready').touch()
+        else:
+            (inputs / 'failed').write_text(args.why[:300] + '\n')
+        return 0
+    return status()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

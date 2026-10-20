@@ -3119,4 +3119,18 @@ static SUITE: Suite = suite("networking", "Networking & sockets", &[
     ]),
 ]);
 
-fn main() { SUITE.run() }
+fn main() {
+    // DHCP-managed boots negotiate carrier and acquire their initial lease
+    // asynchronously. Meet the suite's network prerequisite before measuring
+    // cases; a missing lease still reaches the unchanged failing operations.
+    for _ in 0..200 {
+        let Ok(configuration) = std::fs::read_to_string("/proc/net/pnp") else { break; };
+        if !configuration.lines().any(|line| line == "#PROTO: DHCP")
+            || std::fs::read_to_string("/proc/net/pnp").is_ok_and(|text| text.lines().any(|line| line.starts_with("bootserver ")))
+        {
+            break;
+        }
+        sleep_ms(100);
+    }
+    SUITE.run()
+}

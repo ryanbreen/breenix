@@ -53,6 +53,9 @@ pub const DNS_BUF_SIZE: usize = 512;
 /// Maximum number of answers to parse
 pub const MAX_ANSWERS: usize = 8;
 
+/// Independent budget for automatic resolution, including configuration discovery.
+pub const RESOLUTION_DEADLINE_MS: u64 = 20_000;
+
 /// QEMU SLIRP's built-in DNS server
 pub const SLIRP_DNS: [u8; 4] = [10, 0, 2, 3];
 
@@ -79,6 +82,8 @@ pub enum DnsError {
     RecvError,
     /// Response timeout (no response received)
     Timeout,
+    /// The complete automatic resolution exhausted its own phase budget.
+    ResolutionDeadline,
     /// Failed to parse response
     ParseError,
     /// DNS server returned an error (RCODE in response)
@@ -261,7 +266,8 @@ impl DnsHeader {
 // Encoding Functions
 // ============================================================================
 
-/// Obtain the transaction ID from the kernel random source; never fall back to a predictable ID.
+/// Draw transaction IDs from the pool without waiting for credited entropy at boot.
+/// IDs may be predictable before the pool is ready.
 fn generate_txid() -> Result<u16, DnsError> {
     let mut bytes = [0; 2];
     let mut used = 0;
@@ -271,7 +277,7 @@ fn generate_txid() -> Result<u16, DnsError> {
                 nr::GETRANDOM,
                 bytes[used..].as_mut_ptr() as u64,
                 (bytes.len() - used) as u64,
-                0,
+                crate::syscall::GRND_INSECURE as u64,
             )
         } as i64;
         if n <= 0 || n as usize > bytes.len() - used {
@@ -665,6 +671,26 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
 }
 
 pub fn resolve_all(hostname: &str, dns_server: [u8; 4]) -> Result<DnsLookup, DnsError> {
+    resolve_all_until(hostname, dns_server, u64::MAX)
+}
+
+fn monotonic_ms() -> Result<u64, DnsError> {
+    now_monotonic()
+        .map(|t| (t.tv_sec.max(0) as u64).saturating_mul(1000)
+            .saturating_add(t.tv_nsec.max(0) as u64 / 1_000_000))
+        .map_err(|_| DnsError::RecvError)
+}
+
+fn check_resolution_deadline(deadline: u64) -> Result<(), DnsError> {
+    if monotonic_ms()? >= deadline {
+        Err(DnsError::ResolutionDeadline)
+    } else {
+        Ok(())
+    }
+}
+
+fn resolve_all_until(hostname: &str, dns_server: [u8; 4], resolution_deadline: u64)
+    -> Result<DnsLookup, DnsError> {
     if hostname.is_empty() {
         return Err(DnsError::InvalidHostname);
     }
@@ -684,15 +710,12 @@ pub fn resolve_all(hostname: &str, dns_server: [u8; 4]) -> Result<DnsLookup, Dns
         let server = SockAddrIn::new(dns_server, DNS_PORT);
         let mut buf = [0; DNS_BUF_SIZE];
         for _ in 0..3 {
+            check_resolution_deadline(resolution_deadline)?;
             sendto(fd, &query[..query_len], &server).map_err(|_| DnsError::SendError)?;
-            let millis = || {
-                now_monotonic()
-                    .map(|t| t.tv_sec as u64 * 1000 + t.tv_nsec as u64 / 1_000_000)
-                    .map_err(|_| DnsError::RecvError)
-            };
-            let deadline = millis()? + 500;
+            let deadline = monotonic_ms()?.saturating_add(500).min(resolution_deadline);
             loop {
-                let remaining = deadline.saturating_sub(millis()?);
+                check_resolution_deadline(resolution_deadline)?;
+                let remaining = deadline.saturating_sub(monotonic_ms()?);
                 if remaining == 0 {
                     break;
                 }
@@ -731,12 +754,33 @@ pub fn resolve_all(hostname: &str, dns_server: [u8; 4]) -> Result<DnsLookup, Dns
 /// `/proc/net/pnp` (Linux ipconfig's format, one `nameserver a.b.c.d` per line).
 /// `None` when no lease configured the interface.
 pub fn dhcp_nameserver() -> Option<[u8; 4]> {
-    let fd = crate::fs::open("/proc/net/pnp", crate::fs::O_RDONLY).ok()?;
+    dhcp_configuration().ok()?.1.into_iter().flatten().next()
+}
+
+/// DHCP management remains authoritative while discovery or renewal is pending.
+/// Static virtual-network fallbacks are only for interfaces without DHCP policy.
+fn dhcp_configuration() -> Result<(bool, [Option<[u8; 4]>; 3]), DnsError> {
+    let fd = match crate::fs::open("/proc/net/pnp", crate::fs::O_RDONLY) {
+        Ok(fd) => fd,
+        Err(crate::error::Error::Os(crate::errno::Errno::ENOENT)) => return Ok((false, [None; 3])),
+        Err(_) => return Err(DnsError::RecvError),
+    };
     let mut buf = [0u8; 256];
     let read = crate::fs::read(fd, &mut buf);
     close_fd(fd);
-    let text = core::str::from_utf8(&buf[..read.ok()?]).ok()?;
-    text.lines().find_map(|line| parse_ipv4(line.strip_prefix("nameserver ")?.trim()))
+    let size = read.map_err(|_| DnsError::RecvError)?;
+    let text = core::str::from_utf8(&buf[..size]).map_err(|_| DnsError::ParseError)?;
+    Ok(parse_dhcp_configuration(text))
+}
+
+fn parse_dhcp_configuration(text: &str) -> (bool, [Option<[u8; 4]>; 3]) {
+    let mut servers = [None; 3];
+    let required = text.lines().any(|line| line == "#PROTO: DHCP");
+    for (slot, server) in servers.iter_mut().zip(text.lines().filter_map(|line|
+        parse_ipv4(line.strip_prefix("nameserver ")?.trim()))) {
+        *slot = Some(server);
+    }
+    (required, servers)
 }
 
 fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
@@ -748,23 +792,35 @@ fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
     octets.next().is_none().then_some(address)
 }
 
+fn resolver_candidates(dhcp_required: bool, lease_servers: [Option<[u8; 4]>; 3])
+    -> [Option<([u8; 4], &'static str)>; 6] {
+    [
+        lease_servers[0].map(|server| (server, "the DHCP nameserver")),
+        lease_servers[1].map(|server| (server, "the DHCP nameserver")),
+        lease_servers[2].map(|server| (server, "the DHCP nameserver")),
+        (!dhcp_required).then_some((GOOGLE_DNS, "8.8.8.8")),
+        (!dhcp_required).then_some((PARALLELS_DNS, "10.211.55.1")),
+        (!dhcp_required).then_some((SLIRP_DNS, "10.0.2.3")),
+    ]
+}
+
 /// Resolve a hostname by trying multiple DNS servers automatically.
 ///
-/// Tries the nameserver a DHCP lease named first (VMware, whose adapter is
-/// bridged to the host's network), then Google (8.8.8.8), reachable through
-/// every target's gateway, then the hypervisor-provided DNS servers.
+/// DHCP-managed interfaces use only their lease's nameservers. Other interfaces
+/// try the established static DNS servers for their virtual network.
 pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
-    let servers: [Option<([u8; 4], &str)>; 4] = [
-        dhcp_nameserver().map(|server| (server, "the DHCP nameserver")),
-        Some((GOOGLE_DNS, "8.8.8.8")),
-        Some((PARALLELS_DNS, "10.211.55.1")),
-        Some((SLIRP_DNS, "10.0.2.3")),
-    ];
+    let resolution_deadline = monotonic_ms()?.saturating_add(RESOLUTION_DEADLINE_MS);
     #[cfg(feature = "std")]
     let total_start = now_monotonic().unwrap_or(Timespec {
         tv_sec: 0,
         tv_nsec: 0,
     });
+    let configuration = dhcp_configuration();
+    #[cfg(feature = "std")]
+    eprintln!("[dns] configuration read ({}ms)", elapsed_ms(&total_start));
+    check_resolution_deadline(resolution_deadline)?;
+    let (required, lease_servers) = configuration?;
+    let servers = resolver_candidates(required, lease_servers);
 
     let mut last_err = DnsError::Timeout;
     for (server, _name) in servers.iter().flatten() {
@@ -774,7 +830,11 @@ pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
             tv_nsec: 0,
         });
 
-        match resolve(hostname, *server) {
+        check_resolution_deadline(resolution_deadline)?;
+        let result = resolve_all_until(hostname, *server, resolution_deadline)
+            .map(|reply| reply.answers[0]);
+        check_resolution_deadline(resolution_deadline)?;
+        match result {
             Ok(r) if r.addr[0] != 0 && r.addr[0] != 127 => {
                 #[cfg(feature = "std")]
                 {
@@ -806,6 +866,9 @@ pub fn resolve_auto(hostname: &str) -> Result<DnsResult, DnsError> {
                     e,
                     elapsed_ms(&attempt_start)
                 );
+                if e == DnsError::ResolutionDeadline {
+                    return Err(e);
+                }
                 last_err = e;
                 continue;
             }
@@ -866,6 +929,18 @@ mod tests {
         }
         (packet, n)
     }
+    #[test]
+    fn dhcp_policy_keeps_discovery_and_lease_dns_off_virtual_fallbacks() {
+        let (required, addresses) = parse_dhcp_configuration("#PROTO: DHCP\n");
+        assert!(resolver_candidates(required, addresses).iter().all(Option::is_none));
+        let (required, addresses) = parse_dhcp_configuration(
+            "#PROTO: DHCP\nnameserver 192.0.2.53\nnameserver 192.0.2.54\n");
+        let chosen = resolver_candidates(required, addresses).map(|entry| entry.map(|(address, _)| address));
+        assert_eq!(chosen, [Some([192, 0, 2, 53]), Some([192, 0, 2, 54]), None, None, None, None]);
+        let (required, addresses) = parse_dhcp_configuration("#MANUAL\n");
+        assert_eq!(resolver_candidates(required, addresses).into_iter().flatten().count(), 3);
+    }
+
     #[test]
     fn rejects_wrong_source_and_unrelated_answer_owner() {
         let server = [192, 0, 2, 53];

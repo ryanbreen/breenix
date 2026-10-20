@@ -8,6 +8,9 @@ description = "Userspace programs and utilities for Breenix"
 # It links against libbreenix-libc (libc.a) for system calls
 
 [dependencies]
+# The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
+bgl = { path = "../../libs/bgl" }
 libbreenix = { path = "../../libs/libbreenix", features = ["std", "suite"] }
 breengel = { path = "../../libs/breengel" }
 libcollab = { path = "../../libs/libcollab" }
@@ -17,8 +20,6 @@ libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
 breenish-js = { path = "../../libs/breenish-js" }
 libicon = { path = "../../libs/libicon" }
-# The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
-noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
 
 [[bin]]
 name = "hello_std_real"
@@ -428,6 +429,16 @@ path = "src/init.rs"
 name = "probe"
 path = "src/probe.rs"
 
+# The persistent install's migration (docs/metal/README.md, "Install and upgrade"): installed as /sbin/persistent-install.
+[[bin]]
+name = "persistent-install"
+path = "src/persistent_install.rs"
+
+# POSIX sync, for the persistent install's sessions: installed as /bin/sync.
+[[bin]]
+name = "sync"
+path = "src/sync.rs"
+
 # Effort suites (docs/suites/<id>.json): installed as /sbin/suite-<id>.
 [[bin]]
 name = "suite-smoke"
@@ -649,6 +660,10 @@ path = "src/bssh.rs"
 name = "biconkit"
 path = "src/biconkit.rs"
 
+[[bin]]
+name = "usb_pointer_check"
+path = "src/usb_pointer_check.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"
@@ -765,5 +780,37 @@ name = "raw-window_test"
 path = "src/raw_window_test.rs"
 
 [[bin]]
+name = "suite-gpu"
+path = "src/suite_gpu.rs"
+
+[[bin]]
+name = "suite-console"
+path = "src/suite_console.rs"
+
+[[bin]]
 name = "fifo_fs_test"
 path = "src/fifo_fs_test.rs"
+
+[[bin]]
+name = "gpu-exec-probe"
+path = "src/gpu_exec_probe.rs"
+
+[[bin]]
+name = "getty"
+path = "src/getty.rs"
+
+[[bin]]
+name = "chvt"
+path = "src/chvt.rs"
+
+[[bin]]
+name = "login"
+path = "src/login.rs"
+
+[[bin]]
+name = "console-login-shell"
+path = "src/console_login_shell.rs"
+
+[[bin]]
+name = "gpu_fault_acceptance"
+path = "src/gpu_fault_acceptance.rs"

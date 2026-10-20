@@ -154,7 +154,7 @@ impl UdpSock {
                 registry.prune();
                 let actual_port = if port == 0 {
                     // Randomized start and odd stride visit every ephemeral port once.
-                    let random = ephemeral_random();
+                    let random = crate::random::next_u64();
                     let start = random as u16 & 16383;
                     let stride = ((random >> 16) as u16 & 16383) | 1;
                     let mut found = None;
@@ -283,27 +283,6 @@ pub static SOCKET_REGISTRY: Mutex<SocketRegistry> = Mutex::new(SocketRegistry {
     ports: Vec::new(),
     used: [0; 1024],
 });
-/// Counter-seeded PRNG, matching the entropy available to getrandom today.
-/// This prevents sequential allocation; it is not cryptographic entropy.
-fn ephemeral_random() -> u64 {
-    static SEQUENCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-    #[cfg(target_arch = "x86_64")]
-    let clock = unsafe { core::arch::x86_64::_rdtsc() };
-    #[cfg(target_arch = "aarch64")]
-    let clock: u64 = {
-        let value;
-        unsafe {
-            core::arch::asm!("mrs {}, cntvct_el0", out(reg) value);
-        }
-        value
-    };
-    let mut x =
-        clock ^ SEQUENCE.fetch_add(0x9e3779b97f4a7c15, core::sync::atomic::Ordering::Relaxed);
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    x.wrapping_mul(0x2545f4914f6cdd1d)
-}
 /// Registry insertions and remove operations may allocate/deallocate; memory/heap.rs
 /// masks its allocator lock. The outer IRQ mask covers the entire map hold.
 fn with_registry<R>(f: impl FnOnce(&mut SocketRegistry) -> R) -> R {
@@ -317,18 +296,32 @@ pub fn udp_ports_lookup_refused() -> u64 {
     UDP_PORTS_LOOKUP_REFUSED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-fn receivers(dst: [u8; 4], port: u16) -> Result<Vec<Weak<Socket>>, i32> {
+/// What `deliver` did with one datagram.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Queued on the matching socket, or dropped by a full receive queue or
+    /// memory pressure, which draws no ICMP error.
+    Taken,
+    /// No socket is bound to the destination: the sender is owed ICMP port
+    /// unreachable.
+    NoReceiver,
+    /// The registry was held on another CPU, so no socket was looked at. The
+    /// datagram is untouched: a caller that keeps it can offer it again.
+    RegistryBusy,
+}
+
+fn receivers(dst: [u8; 4], port: u16) -> Result<Vec<Weak<Socket>>, Delivery> {
     crate::arch_without_interrupts(|| {
         let registry = match SOCKET_REGISTRY.try_lock() {
             Some(registry) => registry,
             None => {
                 UDP_PORTS_LOOKUP_REFUSED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                return Err(ENOBUFS);
+                return Err(Delivery::RegistryBusy);
             }
         };
         let mut out = Vec::new();
         let range = registry.range(port);
-        out.try_reserve(range.len()).map_err(|_| ENOBUFS)?;
+        out.try_reserve(range.len()).map_err(|_| Delivery::Taken)?;
         for binding in &registry.ports[range] {
             if binding.addr == ANY || binding.addr == dst {
                 out.push(binding.owner.clone());
@@ -341,10 +334,11 @@ fn receivers(dst: [u8; 4], port: u16) -> Result<Vec<Weak<Socket>>, i32> {
 /// Unicast selects the most specific (peer, local address) binding, and the
 /// most recently bound among equal reuse bindings, matching Linux. Broadcast
 /// fans out. A full receive queue drops this input, not a previously queued one.
-pub fn deliver(dst: [u8; 4], port: u16, src: [u8; 4], src_port: u16, data: &[u8]) -> bool {
-    let Ok(sockets) = receivers(dst, port) else {
-        return true;
-    }; // No ICMP under resource pressure.
+pub fn deliver(dst: [u8; 4], port: u16, src: [u8; 4], src_port: u16, data: &[u8]) -> Delivery {
+    let sockets = match receivers(dst, port) {
+        Ok(sockets) => sockets,
+        Err(outcome) => return outcome,
+    };
     let config = crate::net::config();
     let broadcast = crate::net::is_broadcast_addr_in(&config, dst);
     let mut selected: Option<(Arc<Socket>, u8)> = None;
@@ -378,12 +372,23 @@ pub fn deliver(dst: [u8; 4], port: u16, src: [u8; 4], src_port: u16, data: &[u8]
             udp.enqueue(&sk, dst, src, src_port, data);
         }
     }
-    found
+    if found {
+        Delivery::Taken
+    } else {
+        Delivery::NoReceiver
+    }
 }
 
-pub fn udp_icmp_error(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, errno: i32) {
-    let Ok(sockets) = receivers(src, src_port) else {
-        return;
+pub fn udp_icmp_error(
+    src: [u8; 4],
+    src_port: u16,
+    dst: [u8; 4],
+    dst_port: u16,
+    errno: i32,
+) -> Delivery {
+    let sockets = match receivers(src, src_port) {
+        Ok(sockets) => sockets,
+        Err(outcome) => return outcome,
     };
     let mut selected: Option<(Arc<Socket>, bool)> = None;
     for weak in sockets.into_iter().rev() {
@@ -410,6 +415,7 @@ pub fn udp_icmp_error(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, 
         sk.common.set_error(errno);
         sk.common.notify();
     }
+    Delivery::Taken
 }
 
 impl ProtoOps for UdpSock {

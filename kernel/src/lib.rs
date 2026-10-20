@@ -11,6 +11,8 @@ extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
 pub mod serial;
+#[cfg(target_arch = "x86_64")]
+mod serial_tx_queue;
 #[cfg(target_arch = "aarch64")]
 pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
@@ -54,29 +56,39 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
-// Suite-mode test controls (system call 415) and the window interface (system call 414)
-pub mod test_control;
+// Kernel random-number pool behind getrandom
+pub mod random;
 // Kernel output accounting per thread (docs/gui/breengel.md section 22)
 pub mod output_accounting;
+// The BreenGL window interface (system call 414), on ARM64 until x86-64 joins the GPU era
+#[cfg(target_arch = "aarch64")]
 pub mod window;
 // Socket module - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod net;
 pub mod socket;
+// Suite-mode test controls (syscall 415) and the GPU core (syscall 416): ARM64 only
+// until x86-64 joins the GPU era (docs/gui/gpu.md section 1.6.4).
+#[cfg(target_arch = "aarch64")]
+pub mod gpu;
+#[cfg(target_arch = "aarch64")]
+pub mod test_control;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
 pub mod time;
 // Block and filesystem modules - enabled for both architectures
 // ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
+pub mod console;
+pub mod input;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]
 pub mod platform_config;
-// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+// Graphics module: the ARM64 framebuffer, boot screen and display owners' drawing
+#[cfg(target_arch = "aarch64")]
 pub mod graphics;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
@@ -90,6 +102,8 @@ pub mod capture;
 // of it: that directory forbids `panic!` and this module's job is to raise one.
 #[cfg(feature = "capture_panic_oracle")]
 pub mod capture_oracle;
+#[cfg(all(target_arch = "aarch64", feature = "gpu_fault_acceptance"))]
+pub mod gpu_fault_acceptance;
 // The BXCAP `edge=LOCKUP` oracle. AArch64 only: the soft-lockup detector it
 // drives, and the CPU-pinned spawn it needs, exist on that arch alone.
 #[cfg(all(target_arch = "aarch64", feature = "capture_lockup_oracle"))]
@@ -191,10 +205,6 @@ pub mod macros;
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub mod clock_gettime_test;
-
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-#[allow(dead_code)]
-pub mod terminal_emulator;
 
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 #[allow(dead_code)]
@@ -602,13 +612,10 @@ pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
     unsafe { arch_disable_interrupts() };
-    let current_blocked = |scheduler: &mut task::scheduler::Scheduler| {
-        scheduler
+    let wait_state = task::scheduler::with_current(|scheduler| {
+        let blocked = scheduler
             .current_thread_mut()
-            .is_some_and(|thread| thread.state.is_blocked())
-    };
-    let wait_state = task::scheduler::with_scheduler(|scheduler| {
-        let blocked = current_blocked(scheduler);
+            .is_some_and(|thread| thread.state.is_blocked());
         #[cfg(target_arch = "x86_64")]
         let release = blocked
             && (scheduler.has_queued_work_here()
@@ -641,18 +648,23 @@ pub fn arch_halt_while_blocked() {
     {
         if wait_state.1 && per_cpu::preempt_count() == 0 {
             task::scheduler::set_need_resched();
-            // SAFETY: the reschedule vector's gate is the timer entry, which
-            // saves and restores every register; a software interrupt enters
-            // it from here as the tick would from the halt. The thread
-            // resumes after it, with interrupts as they were, masked: once it
-            // is dispatched again after its wake, or at once if the switch
-            // was declined because the process manager is busy on another
-            // CPU. Only a waiter still blocked halts here, as before, and the
+            // SAFETY: the reschedule vector's gate is the reschedule entry,
+            // which saves the 15 general-purpose registers and restores them;
+            // a software interrupt enters it from here as the tick would from
+            // the halt. The thread resumes after it, with interrupts as they
+            // were, masked: once it is dispatched again after its wake, or at
+            // once if the switch was declined because the process manager is
+            // busy on another CPU. Only a waiter still blocked halts here, as before, and the
             // tick that ends that halt switches it out.
             unsafe {
                 core::arch::asm!("int {vector}", vector = const interrupts::RESCHEDULE_VECTOR);
             }
-            if !task::scheduler::with_scheduler(current_blocked).unwrap_or(false) {
+            let blocked = task::scheduler::with_current(|scheduler| {
+                scheduler
+                    .current_thread_mut()
+                    .is_some_and(|thread| thread.state.is_blocked())
+            });
+            if !blocked.unwrap_or(false) {
                 // SAFETY: as at the top, the caller halts with interrupts enabled.
                 unsafe { arch_enable_interrupts() };
                 return;
@@ -664,6 +676,7 @@ pub fn arch_halt_while_blocked() {
     // SAFETY: a non-preemptible caller keeps its CPU. A pending IRQ wakes
     // the masked WFI and is taken by the following unmask.
     unsafe {
+        crate::arch_impl::aarch64::irq_mask_account::closing();
         core::arch::asm!("wfi", "msr daifclr, #3", options(nomem, nostack));
     }
 }

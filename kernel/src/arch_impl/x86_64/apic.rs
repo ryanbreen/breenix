@@ -15,8 +15,90 @@ static PHYS: AtomicU64 = AtomicU64::new(0);
 /// Initial count for the periodic scheduler tick, calibrated once on the BSP.
 static TIMER_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// The NMI wiring of each processor's local interrupt pins, from the MADT's
+/// Local APIC NMI structures (`set_local_nmis`): processor APIC ids and, for
+/// each, `LOCAL_NMI_VALID | lint << 16 | MPS INTI flags`, or 0 where the MADT
+/// names no pin.
+const MAX_NMI_ROUTES: usize = super::acpi::MAX_ENUMERATED_CPUS;
+const LOCAL_NMI_VALID: u32 = 1 << 31;
+static NMI_ROUTE_IDS: [AtomicU32; MAX_NMI_ROUTES] = [const { AtomicU32::new(0) }; MAX_NMI_ROUTES];
+static NMI_ROUTES: [AtomicU32; MAX_NMI_ROUTES] = [const { AtomicU32::new(0) }; MAX_NMI_ROUTES];
+static NMI_ROUTE_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// The route for a processor the census did not record: an every-processor
+/// structure's, or 0.
+static NMI_ROUTE_OTHERS: AtomicU32 = AtomicU32::new(0);
+
+fn encode_local_nmi(entry: Option<super::acpi::LocalNmi>) -> u32 {
+    entry.map_or(0, |entry| {
+        LOCAL_NMI_VALID | (u32::from(entry.lint) << 16) | u32::from(entry.flags)
+    })
+}
+
+/// Record which local interrupt pin the platform wires to NMI on each
+/// processor the MADT lists, so each CPU's `init_local` programs it. Called
+/// once on the BSP before `init`.
+pub fn set_local_nmis(madt: &super::acpi::MadtCensus) {
+    let count = madt.recorded.min(MAX_NMI_ROUTES);
+    for index in 0..count {
+        let apic_id = madt.apic_ids[index];
+        NMI_ROUTE_IDS[index].store(apic_id, Ordering::Relaxed);
+        NMI_ROUTES[index].store(encode_local_nmi(madt.local_nmi_for(apic_id)), Ordering::Relaxed);
+    }
+    let others = madt.local_nmis[..madt.local_nmi_count]
+        .iter()
+        .copied()
+        .find(|entry| entry.uid == super::acpi::ALL_PROCESSORS);
+    NMI_ROUTE_OTHERS.store(encode_local_nmi(others), Ordering::Relaxed);
+    NMI_ROUTE_COUNT.store(count, Ordering::Release);
+}
+
+/// The local interrupt pin wired to NMI on the processor with `apic_id`, as
+/// (LVT register, LVT value): NMI delivery, edge triggered (the SDM requires
+/// edge for NMI), active low only when the flags say so.
+fn local_nmi_lvt(apic_id: u32) -> Option<(u32, u32)> {
+    let count = NMI_ROUTE_COUNT.load(Ordering::Acquire);
+    let route = (0..count)
+        .find(|&index| NMI_ROUTE_IDS[index].load(Ordering::Relaxed) == apic_id)
+        .map(|index| NMI_ROUTES[index].load(Ordering::Relaxed))
+        .unwrap_or_else(|| NMI_ROUTE_OTHERS.load(Ordering::Relaxed));
+    if route & LOCAL_NMI_VALID == 0 {
+        return None;
+    }
+    let register = if (route >> 16) & 1 == 0 { 0x350 } else { 0x360 };
+    let active_low = route & 3 == 3;
+    Some((register, (4 << 8) | if active_low { 1 << 13 } else { 0 }))
+}
+
 pub fn active() -> bool {
     MODE.load(Ordering::Acquire) != 0
+}
+
+/// The local APIC as firmware handed it over: IA32_APIC_BASE, read before
+/// this kernel writes any APIC register. Its base field and its mode: the
+/// global enable bit (11) clear is `disabled`; set, with the x2APIC enable
+/// bit (10) `x2apic`, else `xapic`.
+pub struct Handoff {
+    pub msr: u64,
+}
+
+impl Handoff {
+    pub fn read() -> Self {
+        // SAFETY: IA32_APIC_BASE is an architectural MSR on x86-64 (Intel SDM
+        // vol. 3, "Local APIC"), and a read of it has no side effect.
+        Self { msr: unsafe { Msr::new(0x1b).read() } }
+    }
+
+    pub fn base(&self) -> u64 {
+        self.msr & 0x000f_ffff_ffff_f000
+    }
+
+    pub fn mode(&self) -> &'static str {
+        match (self.msr & (1 << 11) != 0, self.msr & (1 << 10) != 0) {
+            (false, _) => "disabled",
+            (true, true) => "x2apic",
+            (true, false) => "xapic",
+        }
+    }
 }
 
 #[inline]
@@ -107,6 +189,11 @@ pub fn init_local() {
     if max_lvt >= 6 {
         write(0x2f0, MASKED);
     }
+    // The pin the platform wires to NMI (the BMC's NMI button and its
+    // Redfish/IPMI NMI on servers) stays live; the other LINT stays masked.
+    if let Some((register, value)) = local_nmi_lvt(id()) {
+        write(register, value);
+    }
     write(0x80, 0); // TPR: accept all interrupt priorities.
     write(0xf0, (1 << 8) | u32::from(SPURIOUS_VECTOR));
 }
@@ -185,6 +272,44 @@ pub fn start_local_timer() {
         (1 << 17) | u32::from(crate::interrupts::InterruptIndex::Timer.as_u8()),
     );
     write(0x380, count);
+}
+
+/// The executing CPU's running scheduler tick, measured against the TSC: how
+/// fast its LAPIC timer counts down over about 2 ms, divided by the initial
+/// count it reloads. In millihertz; no value before the timer runs, or when four
+/// tries were each stretched past a tick period (a stalled virtual CPU).
+/// Each count read is bracketed by TSC reads and placed at their midpoint.
+pub fn measured_tick_millihz() -> Option<u64> {
+    let count = u64::from(TIMER_COUNT.load(Ordering::Acquire));
+    let tsc_hz = super::timer::frequency_hz();
+    if count == 0 || tsc_hz == 0 || read(0x380) == 0 {
+        return None;
+    }
+    let sample = || {
+        let before = super::timer::rdtsc_serialized();
+        let value = u64::from(read(0x390));
+        let after = super::timer::rdtsc_serialized();
+        (value, before + (after - before) / 2)
+    };
+    for _ in 0..4 {
+        let (start, start_at) = sample();
+        let deadline = start_at + tsc_hz / 500;
+        while super::timer::rdtsc() < deadline {
+            core::hint::spin_loop();
+        }
+        let (end, end_at) = sample();
+        let elapsed = end_at - start_at;
+        // Under a tick period (5 ms at 200 Hz) the count reloads once at most.
+        if elapsed >= tsc_hz * 4 / 1000 {
+            continue;
+        }
+        let counted = if end <= start { start - end } else { start + count - end };
+        return Some(
+            (u128::from(tsc_hz) * u128::from(counted) * 1000 / (u128::from(elapsed) * u128::from(count)))
+                as u64,
+        );
+    }
+    None
 }
 
 /// Physical-destination IPI kinds for AP startup and subsequent SMP consumers.

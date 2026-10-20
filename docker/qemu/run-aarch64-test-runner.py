@@ -37,7 +37,7 @@ def run_test(test_name, timeout=45):
     shutil.copy2(ext2_disk, ext2_writable)
 
     # scripts/qemu-ui-launch.sh prints the launcher that runs QEMU's vCPU threads in macOS's
-    # user-interactive priority band (`env` off a Mac or with BREENIX_QEMU_UI=0).
+    # user-interactive priority band (the helper path off a Mac or with BREENIX_QEMU_UI=0).
     launcher = subprocess.run([os.path.join(breenix_root, "scripts", "qemu-ui-launch.sh")],
                               capture_output=True, text=True, check=True).stdout.strip()
     cmd = [
@@ -54,6 +54,7 @@ def run_test(test_name, timeout=45):
         "-device", "virtio-keyboard-device",
         "-device", "virtio-blk-device,drive=ext2",
         "-drive", f"if=none,id=ext2,format=raw,file={ext2_writable}",
+        "-device", "virtio-rng-device",
         "-device", "virtio-net-device,netdev=net0",
         "-netdev", "user,id=net0",
         "-serial", "stdio"

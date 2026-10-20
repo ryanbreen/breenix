@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Builds one x86-metal boot's inputs in the metal build container (docs/metal/README.md, "Build").
+
+  metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR [--features xhci_fault_inject|block_fence_inject|testing]
+              [--suite ID[,ID...]]
+  metal-build ... --stub-only --tools-profile disk-readback|boot-manager
+
+# claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
+In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
+(gate-artifacts.py --metal, exact artifacts over leased incremental targets in the container's cache), then the production kernel and its UEFI
+image (a fault-test kernel with --features xhci_fault_inject or block_fence_inject; the testing kernel with --features testing, as run.sh --tests
+builds it, which also delivers the test-binary disk the userspace build made), and the delivery stub (metal-efi-stub, from the deployed tools' efi-stub folder given as --stub, so any
+commit's kernel is delivered the same way), all under one lease of the container's metal-build slots. A suite boot
+names its suite, or the suites it runs in turn; when they include the Developer SDK suite the same lease also runs the commit's scripts/sdk-suite.py, which builds
+the SDK and its test apps and stages their records onto a copy of the ext2 root, as the other launchers do before
+an SDK suite boot (docs/suites/README.md), and that copy is the root delivered. The slot and
+artifact helpers are the deployed tools' copies beside this file, not the commit's, so every commit builds the same
+way. The container runs on the host's shared CPUs, outside the x86 gate VM, so no x86 lease covers it. Writes
+<root>/breenix-metal-<id>-out/ with uefi.img, ext2.img, stub.efi, definition/ and build.json (and test-binaries.img for the
+testing kernel), and removes the clone. Every build also writes manager.efi, the boot manager the same crate builds
+(docs/metal/README.md, "Boot manager and persistent install"). `--stub-only` builds only the deployed EFI applications,
+for a cold readback or a boot manager probe, under a metal-build slot without a kernel or userspace build.
+Exit 0 on success; 3 when the guard refuses the commit.
+"""
+import argparse
+import glob
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+STUB_TARGET = 'x86_64-unknown-uefi'
+STUB_RELEASE = Path(STUB_TARGET) / 'release'
+# The kernel profile each --features value builds.
+PROFILES = {'': 'production', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test', 'testing': 'testing'}
+# Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
+TOOLS = Path(__file__).resolve().parent
+TOOLS = TOOLS if (TOOLS / 'host-slots.py').exists() else TOOLS.parent
+HELPER = TOOLS / 'host-slots.py'
+ARTIFACTS = TOOLS / 'gate-artifacts.py'
+# The testing kernel reads its test binaries from a BXTEST disk (kernel/src/userspace_test.rs).
+TEST_BINARIES = 'target/test_binaries.img'
+DEFINITION = ('docs/metal/boot-path.json', 'docs/boot-path.json', 'xtask/src/boot_stages.rs',
+              'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
+              'kernel/src/boot/test_list.rs', 'scripts/test-report-verdict.py', 'scripts/x86-gate-exits.py',
+              'scripts/x86-gate-allowlist.txt', 'scripts/score-sigkill-teardown.py')
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def git(*args, **options):
+    return subprocess.run(['git', *args], check=True, capture_output=True, text=True, **options).stdout.strip()
+
+
+def paths(args):
+    key = args.id.lower()
+    root = Path(args.root)
+    return root / f'breenix-metal-{key}', root / f'breenix-metal-{key}-out', root / f'breenix-metal-{key}-tmp'
+
+
+def outer(args):
+    clone, out, tmp = paths(args)
+    started = time.time()
+    for directory in (clone, out, tmp):
+        shutil.rmtree(directory, ignore_errors=True)
+    git('-C', args.repo, 'fetch', '--no-tags', '--no-write-fetch-head', '--no-auto-gc', 'origin', args.sha)
+    git('clone', '--shared', '--quiet', args.repo, str(clone))
+    git('-C', str(clone), 'checkout', '--quiet', '--detach', args.sha)
+    # The guard reads origin's branches, so the clone's origin is the canonical checkout's remote.
+    git('-C', str(clone), 'remote', 'set-url', 'origin', git('-C', args.repo, 'remote', 'get-url', 'origin'))
+    # The pinned Rust library, as the x86 gate's tree helper materialises it: a snapshot of the pin inside the
+    # tree, linked relatively so the library's libc patch resolves to this checkout.
+    link = clone / 'rust-fork'
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    if (clone / 'rust-fork.toml').exists():
+        subprocess.run([str(clone / 'scripts/rust-fork.sh'), 'snapshot', args.rust_fork, str(clone / 'gate-rust-fork')],
+                       check=True, capture_output=True)
+        link.symlink_to('gate-rust-fork')
+    else:
+        link.symlink_to(args.rust_fork)
+    out.mkdir(parents=True)
+    tmp.mkdir(parents=True)
+    policy_sha = git('-C', args.repo, 'ls-remote', 'origin', 'refs/heads/main').split()[0]
+    if not re.fullmatch(r'[0-9a-f]{40}', policy_sha):
+        raise ValueError('cannot resolve the landing policy')
+    git('-C', args.repo, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', policy_sha)
+    guard = tmp / 'effort-target-guard.py'
+    guard.write_text(git('-C', args.repo, 'show', policy_sha + ':scripts/effort-target-guard.py') + '\n')
+    targets = re.search(r"^TARGETS = \((.*)\)", guard.read_text(), re.M)
+    target = 'x86-metal' if targets and "'x86-metal'" in targets.group(1) else 'x86'
+    check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', args.sha,
+                            '--target', target, *(['--catchup'] if args.catchup else [])], capture_output=True, text=True)
+    print(f'[metal-build] guard target={target} exit={check.returncode}', flush=True)
+    if check.returncode != 0:
+        print(check.stdout + check.stderr, flush=True)
+        shutil.rmtree(clone, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return 3
+    spec = importlib.util.spec_from_file_location('host_slots', HELPER)
+    slots = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(slots)
+    environment = dict(os.environ, CARGO_BUILD_JOBS=str(slots.METAL_BUILD_JOBS), BREENIX_GATE_CACHE_DIR=args.cache,
+                       TMPDIR=str(tmp), BREENIX_GATE_TMP=str(tmp), HOST_SLOTS_HELPER=str(HELPER),
+                       BREENIX_SLOT_WORKTREE=str(clone), BREENIX_SLOT_COMMIT=args.sha,
+                       BREENIX_TARGET_POLICY_CHECKED=f'{target}:{args.sha}',
+                       PATH=str(Path.home() / '.cargo/bin') + os.pathsep + os.environ.get('PATH', ''))
+    inner = [sys.executable, str(Path(__file__).resolve()), '--inner', '--id', args.id, '--sha', args.sha,
+             '--repo', args.repo, '--rust-fork', args.rust_fork, '--cache', args.cache, '--root', args.root,
+             '--stub', args.stub, '--guard-target', target, '--features', args.features, '--suite', args.suite]
+    status = subprocess.call([sys.executable, str(HELPER), 'supervise', '--'] + inner,
+                             cwd=clone, env=environment)
+    print(f'[metal-build] build exit={status} seconds={time.time() - started:.0f}', flush=True)
+    shutil.rmtree(clone, ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return status
+
+
+def clean_build(status, log, what, logs, out):
+    """A build counts only when it exits 0 with no warning or error line."""
+    notices = [line for line in log.read_text(errors='replace').splitlines() if re.match(r'^(warning|error)', line)]
+    if status == 0 and not notices:
+        return True
+    keep_logs(logs, out)
+    print(f'[metal-build] {what} build failed: exit {status}, {len(notices)} warning/error lines', flush=True)
+    return False
+
+
+def keep_logs(logs, out):
+    """A failed build keeps its logs in the output folder and prints the end of each one."""
+    shutil.copytree(logs, out / 'logs', dirs_exist_ok=True)
+    for log in sorted((out / 'logs').glob('*.log')):
+        print(f'[metal-build] --- {log.name} (last 40 lines)', flush=True)
+        print('\n'.join(log.read_text(errors='replace').splitlines()[-40:]), flush=True)
+
+
+def inner(args):
+    clone, out, tmp = paths(args)
+    logs = tmp / 'logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    home = subprocess.run([sys.executable, str(HELPER), 'cargo-home', str(Path.home() / '.cargo'),
+                           str(clone / 'target')], check=True, capture_output=True, text=True).stdout.strip()
+    os.environ['CARGO_HOME'] = home
+    timings = {}
+    # The SDK suite's root is a staged copy; every other boot's is the built root as it is.
+    root = tmp / 'ext2-sdk.img' if 'sdk' in args.suite.split(',') else clone / 'testdata/ext2.img'
+    try:
+        started = time.time()
+        subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
+        timings['slot_wait'] = round(time.time() - started)
+        try:
+            started = time.time()
+            if subprocess.call([sys.executable, str(ARTIFACTS), '--metal', str(clone), str(logs)], cwd=clone) != 0:
+                keep_logs(logs, out)
+                return 1
+            timings['userspace'] = round(time.time() - started)
+            helper = clone / 'scripts/metal/sha512-crypt.rs'
+            if helper.is_file():
+                log = logs / 'console-hash-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call(['rustc', '--edition=2021', '-O', str(helper),
+                                              '-o', str(out / 'sha512-crypt')], cwd=clone,
+                                             stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'console hash helper', logs, out):
+                    return 1
+
+            started = time.time()
+            log = logs / 'kernel-build.log'
+            features = ['--features', args.features] if args.features else []
+            with log.open('w') as output:
+                status = subprocess.call(['cargo', 'build', '--release', '--bin', 'qemu-uefi'] + features, cwd=clone,
+                                         stdout=output, stderr=subprocess.STDOUT)
+            timings['kernel'] = round(time.time() - started)
+            if not clean_build(status, log, 'kernel', logs, out):
+                return 1
+            started = time.time()
+            log = logs / 'stub-build.log'
+            with log.open('w') as output:
+                # The stub's own rust-toolchain.toml pins the toolchain, so the build runs from its folder.
+                status = subprocess.call(['cargo', 'build', '--release', '--locked', '--target', STUB_TARGET,
+                                          '-Zbuild-std=core,compiler_builtins',
+                                          '-Zbuild-std-features=compiler-builtins-mem',
+                                          '--target-dir', str(tmp / 'stub-target')],
+                                         cwd=args.stub, stdout=output, stderr=subprocess.STDOUT)
+            timings['stub'] = round(time.time() - started)
+            if not clean_build(status, log, 'stub', logs, out):
+                return 1
+            if 'sdk' in args.suite.split(','):
+                started = time.time()
+                shutil.copyfile(clone / 'testdata/ext2.img', root)
+                log = logs / 'sdk-suite.log'
+                # The harness fails a build output that holds the checkout's path or the builder's home, so its work
+                # folder is under /tmp: this boot's temporary folder starts with the clone's path and is in the home.
+                work = Path(tempfile.mkdtemp(prefix='breenix-metal-sdk-', dir='/tmp'))
+                try:
+                    with log.open('w') as output:
+                        status = subprocess.call([sys.executable, str(clone / 'scripts/sdk-suite.py'), '--arch',
+                                                  'x86_64', '--image', str(root)], cwd=clone,
+                                                 env=dict(os.environ, TMPDIR=str(work)),
+                                                 stdout=output, stderr=subprocess.STDOUT)
+                finally:
+                    shutil.rmtree(work, ignore_errors=True)
+                timings['sdk_suite'] = round(time.time() - started)
+                if status != 0:
+                    keep_logs(logs, out)
+                    print(f'[metal-build] the SDK suite could not stage the root: exit {status}', flush=True)
+                    return 1
+        finally:
+            subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-efi-stub.efi', out / 'stub.efi')
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-boot-manager.efi', out / 'manager.efi')
+        images = sorted(glob.glob(str(clone / 'target/release/build/breenix-*/out/breenix-uefi.img')),
+                        key=os.path.getmtime)
+        if not images:
+            print('[metal-build] no UEFI image was produced', flush=True)
+            return 1
+        shutil.copyfile(images[-1], out / 'uefi.img')
+        shutil.copyfile(root, out / 'ext2.img')
+        if args.features == 'testing':
+            shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
+        copied = []
+        definition_files = list(DEFINITION) + ['scripts/suite-verdict.py', 'scripts/suite-sequence.py']
+        definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
+        for name in definition_files:
+            source = clone / name
+            if source.is_file():
+                target = out / 'definition' / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                copied.append(name)
+        build = {'commit': args.sha, 'guardTarget': args.guard_target,
+                 'profile': PROFILES[args.features],
+                 'features': [args.features] if args.features else [], 'suite': args.suite or None,
+                 'timings': timings, 'definition': copied,
+                 'cpus': sorted(getattr(os, 'sched_getaffinity', lambda pid: ())(0)),
+                 'cargoJobs': int(os.environ['CARGO_BUILD_JOBS']),
+                 'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
+                 'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
+                 'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')},
+                 'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
+        if (out / 'test-binaries.img').is_file():
+            build['testBinaries'] = {'size': (out / 'test-binaries.img').stat().st_size,
+                                     'sha256': sha256(out / 'test-binaries.img')}
+        if (out / 'sha512-crypt').is_file():
+            build['consoleHashHelper'] = {'size': (out / 'sha512-crypt').stat().st_size,
+                                          'sha256': sha256(out / 'sha512-crypt')}
+        (out / 'build.json').write_text(json.dumps(build, indent=1) + '\n')
+        print('[metal-build] inputs ready ' + json.dumps(timings), flush=True)
+        return 0
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def stub_only(args):
+    """Build the deployed EFI applications under a metal-build slot, without a kernel or userspace build: the cold
+    readback's stub, or the boot manager for a probe boot."""
+    out, tmp = paths(args)[1:]
+    if not args.inner:
+        environment = dict(os.environ, CARGO_BUILD_JOBS='4', BREENIX_SLOT_WORKTREE=args.stub,
+                           BREENIX_SLOT_COMMIT=args.sha,
+                           PATH=str(Path.home() / '.cargo/bin') + os.pathsep + os.environ.get('PATH', ''))
+        try:
+            return subprocess.call([sys.executable, str(HELPER), 'supervise', '--', sys.executable,
+                                    str(Path(__file__).resolve()), '--inner', *sys.argv[1:]], env=environment)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+    logs = tmp / 'logs'
+    logs.mkdir(parents=True, exist_ok=True)
+    home = subprocess.run([sys.executable, str(HELPER), 'cargo-home', str(Path.home() / '.cargo'),
+                           str(tmp / 'stub-target')], check=True, capture_output=True, text=True).stdout.strip()
+    os.environ['CARGO_HOME'] = home
+    subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
+    try:
+        log = logs / 'stub-build.log'
+        with log.open('w') as output:
+            status = subprocess.call(['cargo', 'build', '--release', '--locked', '--target', STUB_TARGET,
+                                      '-Zbuild-std=core,compiler_builtins',
+                                      '-Zbuild-std-features=compiler-builtins-mem',
+                                      '--target-dir', str(tmp / 'stub-target')], cwd=args.stub,
+                                     stdout=output, stderr=subprocess.STDOUT)
+        if not clean_build(status, log, 'EFI applications', logs, out):
+            return 1
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-efi-stub.efi', out / 'stub.efi')
+        shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-boot-manager.efi', out / 'manager.efi')
+        m = {'commit': args.sha, 'profile': args.tools_profile,
+             'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
+             'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')}}
+        (out / 'build.json').write_text(json.dumps(m, indent=2) + '\n')
+        shutil.copytree(logs, out / 'logs', dirs_exist_ok=True)
+        return 0
+    finally:
+        subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--catchup', action='store_true', help='request catch-up under the policy from origin/main')
+    parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--stub-only', action='store_true', help='build only the deployed EFI applications')
+    parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'), default='disk-readback',
+                        help='what a --stub-only build is for, recorded as its profile')
+    parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
+    parser.add_argument('--features', choices=tuple(PROFILES), default='',
+                        help='build a fault-test or testing kernel; never set for a production boot')
+    parser.add_argument('--suite', default='',
+                        help="a suite boot's suite id, or ids joined by commas; sdk stages the SDK suite's host results")
+    for name in ('--id', '--sha', '--repo', '--rust-fork', '--cache', '--root', '--stub'):
+        parser.add_argument(name, required=True)
+    args = parser.parse_args()
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.id) or not re.fullmatch(r'[0-9a-f]{40}', args.sha):
+        parser.error('--id must be a metal boot id and --sha a full commit id')
+    if args.suite and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', args.suite):
+        parser.error('--suite must be a suite id or ids joined by commas')
+    if args.stub_only:
+        return stub_only(args)
+    return inner(args) if args.inner else outer(args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -146,7 +146,7 @@ pub(crate) fn note_shadow_publish(value: u64) {
 /// docs/planning/green-program/aarch64-testing/serials/asid-ratchet/04-prod-boot1-serial.txt
 /// and its 2 siblings
 pub fn emit_asid_census() {
-    crate::serial_println!(
+    crate::diag_println!(
         "[TTBR0_ASID_CENSUS:untagged={}:tagged={}:kernel={}:cleared={}]",
         ASID_PUBLISH_UNTAGGED.load(Ordering::Relaxed),
         ASID_PUBLISH_TAGGED.load(Ordering::Relaxed),

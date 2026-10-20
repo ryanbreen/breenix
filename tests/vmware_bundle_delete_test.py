@@ -1,6 +1,8 @@
 """Exercise run.sh's deletion of a stopped VMware VM bundle."""
 
 import re
+import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -71,6 +73,41 @@ class VmwareBundleDeleteTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertFalse(bundle.exists())
             self.assertEqual((root / 'calls').read_text().strip(), 'list')
+
+    def test_unknown_contents_without_vmx_are_kept(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.make_bundle(root, with_vmx=False)
+            unknown = bundle / 'important.txt'
+            unknown.write_text('keep')
+            result = self.run_delete(root, bundle)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(unknown.read_text(), 'keep')
+            self.assertFalse((bundle / 'boot.vmdk').exists())
+
+    def test_stale_owned_slot_bundle_is_deleted_before_recreation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = self.make_bundle(root)
+            (bundle / '.breenix-run-process').write_text(json.dumps({
+                'pid': os.getpid(), 'started': 'previous process with a reused pid'}))
+            functions = dict(re.findall(r'(?ms)^(\w+)\(\) \{\n(.*?)^\}', (ROOT / 'run.sh').read_text()))
+            block = (ROOT / 'run.sh').read_text().split('    VM_BUNDLE_OWNED=false', 1)[1].split('    # Copy VMDKs', 1)[0]
+            vmrun = root / 'vmrun'
+            vmrun.write_text(FAKE_VMRUN)
+            vmrun.chmod(0o755)
+            script = ('set -e\nbounded_vm_command() { "$@"; }\n'
+                      'cleanup_vmware_bundle() { :; }\n'
+                      f'BREENIX_ROOT="{ROOT}"\nVM_MACHINES="{root}"\n'
+                      + ''.join(f'{name}() {{\n{functions[name]}}}\n' for name in ('vm_run_owner', 'sweep_vmware_bundles')) +
+                      f'vmware_bundle_stopped() {{\n{functions["vmware_bundle_stopped"]}}}\n'
+                      f'delete_vmware_bundle() {{\n{functions["delete_vmware_bundle"]}}}\n'
+                      f'VMRUN="{vmrun}"\nVM_BUNDLE="{bundle}"\nVM_NAME="{bundle.stem}"\nVM_BUNDLE_OWNED=false\n{block}')
+            result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True,
+                                    env={'PATH': '/usr/bin:/bin', 'CALLS': str(root / 'calls')}, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(sorted(p.name for p in bundle.iterdir()), ['.breenix-run-owner', '.breenix-run-process'])
+            self.assertIn('deleteVM', (root / 'calls').read_text())
 
     def test_failed_delete_vm_is_reported_and_bundle_kept(self):
         with tempfile.TemporaryDirectory() as temporary:

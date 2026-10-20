@@ -27,6 +27,9 @@ class BootInteractiveQmpTest(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         shutil.copyfile(ROOT / "scripts/boot-interactive.sh", scripts / "boot-interactive.sh")
+        shutil.copyfile(ROOT / "scripts/suite-sequence.py", scripts / "suite-sequence.py")
+        shutil.copytree(ROOT / "docs", self.root / "docs")
+        self.executable(scripts / "write-boot-target.sh", '#!/bin/sh\nexit 0\n')
         (scripts / "host-slots.sh").write_text("\n".join(
             f"{name}() {{ :; }}" for name in (
                 "host_slots_start", "host_slot_acquire", "host_slot_serial",
@@ -39,12 +42,16 @@ class BootInteractiveQmpTest(unittest.TestCase):
         self.executable(scripts / "vigil-record.sh",
                         '#!/bin/sh\n[ "$1" = start ] || exit 0\necho start >> "$CALLS"\n'
                         '[ -n "$STUB_VIGIL_ID" ] || exit 0\n'
-                        f'[ -z "$STUB_BOOT_HOME" ] || mkdir -p "$STUB_BOOT_HOME/{BOOTS}/$STUB_VIGIL_ID"\n'
+                        f'for id in $(echo "$STUB_VIGIL_ID" | tr , " "); do [ -z "$STUB_BOOT_HOME" ] || mkdir -p "$STUB_BOOT_HOME/{BOOTS}/$id"; done\n'
                         'printf "%s" "$STUB_VIGIL_ID"\n')
         self.executable(scripts / "qemu-1x-app.sh", '#!/bin/sh\necho qemu-system-aarch64\n')
         (scripts / "qemu-arm64.py").write_text('print("default")\n')
         (scripts / "watch-qemu.py").write_text(
             'import json, os, pathlib, sys\n'
+            'pathlib.Path(os.environ["CAPTURE"] + ".watch").write_text(json.dumps(sys.argv))\n'
+            'serial = pathlib.Path(sys.argv[sys.argv.index("--serial") + 1])\n'
+            'suites = sys.argv[sys.argv.index("--suite") + 1]\n'
+            'serial.write_text("".join("SUITE " + s + " DONE passed=1 failed=0 skipped=0 total=1\\n" for s in suites.split(",") if s))\n'
             'pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(sys.argv[sys.argv.index("--") + 1:]))\n')
         kernel = self.root / "target/aarch64-breenix-kernel/release/kernel-aarch64"
         kernel.parent.mkdir(parents=True)
@@ -61,7 +68,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
         path.chmod(0o755)
 
     def launch(self, *args, boot_id=BOOT_ID, vigil_home="default", boot_home="default",
-               mode=("--mode", "probe")):
+               mode=("--mode", "probe"), expected_code=0):
         """Boots with HOME and Vigil's home in different folders; vigil_home=None leaves VIGIL_TEST_HOME unset."""
         vigil_home = self.vigil_home if vigil_home == "default" else vigil_home
         boot_home = vigil_home if boot_home == "default" else boot_home
@@ -75,8 +82,28 @@ class BootInteractiveQmpTest(unittest.TestCase):
             ["bash", str(self.root / "scripts/boot-interactive.sh"), "--no-build",
              *mode, "--serial-log", str(self.root / "serial.txt"), *args],
             cwd=self.root, env=env, capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
+        if expected_code:
+            return [], result.stderr
         return json.loads((self.root / "args.json").read_text()), result.stdout
+
+    def test_terminal_kernel_rejects_completion_modes(self):
+        kernel = self.root / "target/aarch64-breenix-kernel/release/kernel-aarch64"
+        for profile in ("capture_oracle", "gpu_fault_acceptance"):
+            kernel.write_text(profile)
+            for mode in (("--mode", "suite", "--suite", "smoke"),
+                         ("--mode", "tests"), ("--mode", "probe"),
+                         ("--mode", "shell"), ("--mode", "desktop")):
+                with self.subTest(profile=profile, mode=mode):
+                    _, error = self.launch(mode=mode, expected_code=2)
+                    self.assertIn("terminal profile needs --mode program", error)
+
+    def test_firmware_panic_program_does_not_require_gpu_pixels(self):
+        kernel = self.root / "target/aarch64-breenix-kernel/release/kernel-aarch64"
+        kernel.write_text("capture_oracle")
+        self.launch(mode=("--mode", "program", "--program", "/sbin/probe"))
+        watcher = json.loads((self.root / "args.json.watch").read_text())
+        self.assertEqual(watcher[watcher.index("--mode") + 1], "default")
 
     @staticmethod
     def with_qmp(argv, socket):
@@ -97,6 +124,11 @@ class BootInteractiveQmpTest(unittest.TestCase):
                 self.assertEqual(argv, self.with_qmp(bare, socket))
                 self.assertTrue(Path(socket).parent.is_dir())
                 self.assertEqual(self.notices(output), [])
+
+    def test_multi_suite_boot_uses_its_registered_folder(self):
+        argv, output = self.launch(boot_id="boot-a", mode=("--mode", "suite", "--suite", "smoke,crypto"))
+        self.assertIn(f"unix:{self.vigil_home}/{BOOTS}/boot-a/qmp.sock,server=on,wait=off", argv)
+        self.assertEqual(self.notices(output), [])
 
     def test_a_missing_boot_folder_leaves_qmp_off_and_says_so_once(self):
         bare, _ = self.launch(boot_id="")

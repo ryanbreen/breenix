@@ -179,6 +179,7 @@ timeout 180 python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
     -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 \
     -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
+    -device virtio-rng-device \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -serial file:"$OUTPUT_DIR/serial.txt" &
@@ -299,7 +300,7 @@ if $PHASE1_OK && [ -z "$FAIL_REASON" ]; then
         FAIL_REASON="Phase 1: creation lock-order detector injection marker count is not exactly one"
     elif ! grep -Eq "$KSTACK_OWNER_ORACLE_PATTERN" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing or malformed aarch64 kernel-stack ownership oracle marker"
-    elif ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+    elif ! grep -Fq '[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=0:user_stack_residual=0]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing creating-dispatch refusal oracle marker"
     elif ! grep -Fq '[TEST:process:init_designation_oracle:PASS]' "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
         FAIL_REASON="Phase 1: missing init designation oracle PASS marker"

@@ -43,8 +43,8 @@ pub mod futex;
 #[cfg(feature = "boot_tests")]
 pub mod futex_oracle;
 pub mod futex_timeout_record;
-pub mod fb;
-pub mod fb_draw;
+pub mod graphics;
+#[cfg(target_arch = "aarch64")]
 pub mod window;
 pub mod handlers;
 pub mod resource;
@@ -202,9 +202,6 @@ pub enum SyscallNumber {
     FbDraw,
     FbMmap,
     GetMousePos,
-    // The BreenGL window interface and its suite-mode test controls (Breenix-specific)
-    Window,
-    TestControl,
     // Audio syscalls (Breenix-specific)
     AudioInit,
     AudioWrite,
@@ -408,8 +405,6 @@ impl SyscallNumber {
             411 => Some(Self::FbDraw),
             412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
-            414 => Some(Self::Window),
-            415 => Some(Self::TestControl),
             // Audio syscalls (Breenix-specific)
             420 => Some(Self::AudioInit),
             421 => Some(Self::AudioWrite),
@@ -571,8 +566,6 @@ impl SyscallNumber {
             411 => Some(Self::FbDraw),
             412 => Some(Self::FbMmap),
             413 => Some(Self::GetMousePos),
-            414 => Some(Self::Window),
-            415 => Some(Self::TestControl),
             // Audio syscalls (Breenix-specific)
             420 => Some(Self::AudioInit),
             421 => Some(Self::AudioWrite),
@@ -641,29 +634,45 @@ fn signal_wait_thread() -> Option<u64> {
 /// 1. Clean up any waiter registrations
 /// 2. Return -EINTR to userspace
 /// 3. The signal will be delivered when the syscall returns
+///
+/// It reads the copies of the row's signal state the thread carries
+/// (`ThreadSignals::mirror`), not the row, so a wait that a deadline or a
+/// signal ends does not first wait for PROCESS_MANAGER: a CPU that stopped
+/// while holding that lock used to hold every such wait past its deadline.
 pub fn check_signals_for_eintr() -> Option<i32> {
-    let thread_id = signal_wait_thread()?;
+    let signals = signal_wait_signals()?;
+    signals.mirror.interrupting(&signals).then_some(errno::EINTR)
+}
 
-    let manager_guard = crate::process::manager();
-    let mut interrupted = false;
-    if let Some(ref manager) = *manager_guard {
-        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-            if crate::signal::delivery::has_interrupting_signals(process) {
-                interrupted = true;
-            }
-        }
-    }
-    drop(manager_guard);
-    if interrupted {
-        return Some(errno::EINTR);
-    }
-    None
+/// The current thread's signal state, when its return-work hint says a
+/// signal or a stop may be waiting for it (`signal_wait_thread`).
+fn signal_wait_signals() -> Option<alloc::sync::Arc<crate::signal::ThreadSignals>> {
+    crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let thread = crate::per_cpu::current_thread();
+        #[cfg(target_arch = "aarch64")]
+        let thread = crate::per_cpu_aarch64::current_thread();
+        let thread = thread?;
+        thread.needs_user_return_check().then(|| thread.signals.clone())
+    })
 }
 
 /// Handle job-control stops without completing an interruptible wait. Only
 /// caught or fatal signals end the wait; SIGCONT resumes its existing deadline
 /// and temporary mask. Called with syscall preemption disabled and no PM guard.
 pub fn check_signals_for_wait() -> Option<i32> {
+    // With no stop to take, the thread's copies of its row's signal state
+    // decide it without PROCESS_MANAGER, unless the signal is one the row
+    // must consume or its disposition is being rewritten.
+    let signals = signal_wait_signals()?;
+    if !signals.mirror.stop_possible() {
+        let sig = signals.mirror.next_deliverable(&signals)?;
+        if signals.mirror.action(sig).is_some_and(|action| action.is_handler())
+            || crate::signal::delivery::fatal_exit_code(sig).is_some()
+        {
+            return Some(errno::EINTR);
+        }
+    }
     let tid = signal_wait_thread()?;
     loop {
         let mut guard = crate::process::manager();
@@ -690,6 +699,15 @@ pub fn check_signals_for_wait() -> Option<i32> {
 /// Some(ERESTARTSYS) otherwise, which the syscall return path turns into a
 /// re-execution of the syscall once any handler has run.
 pub fn check_signals_for_restartable_wait() -> Option<i32> {
+    // A deliverable signal decides it from the thread's copies of its row's
+    // signal state, without PROCESS_MANAGER; a possible stop, or a
+    // disposition being rewritten, reads the row.
+    let signals = signal_wait_signals()?;
+    if signals.mirror.interrupting(&signals) {
+        if let Some(restarts) = signals.mirror.restarts(&signals) {
+            return Some(if restarts { errno::ERESTARTSYS } else { errno::EINTR });
+        }
+    }
     let thread_id = signal_wait_thread()?;
 
     let manager_guard = crate::process::manager();
@@ -890,6 +908,10 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
     }
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_fault_acceptance"))]
+    if number == crate::gpu_fault_acceptance::SYSCALL {
+        return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
+    }
     Some(match number {
         MLOCK_SYSCALL_NUMBER => memory_advice::sys_mlock(a[0], a[1]),
         MUNLOCK_SYSCALL_NUMBER => memory_advice::sys_munlock(a[0], a[1]),
@@ -917,6 +939,12 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         ACCEPT4_SYSCALL_NUMBER => socket::sys_accept4(a[0], a[1], a[2], a[3]),
         CHROOT_SYSCALL_NUMBER => chroot::sys_chroot(a[0]),
         SYSINFO_SYSCALL_NUMBER => sysinfo::sys_sysinfo(a[0]),
+        #[cfg(target_arch = "aarch64")]
+        breengel_abi::SYS_WINDOW => window::sys_window(a[0], a[1], a[2]),
+        #[cfg(target_arch = "aarch64")]
+        gpu_abi::SYS_TEST_CONTROL => crate::test_control::sys_test_control(a[0], a[1], a[2]),
+        #[cfg(target_arch = "aarch64")]
+        gpu_abi::SYS_GPU => crate::gpu::sys_gpu(a[0], a[1], a[2]),
         _ => return None,
     })
 }

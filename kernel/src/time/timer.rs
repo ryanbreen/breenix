@@ -62,15 +62,6 @@ static TICK_TSC_BASE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static TSC_CYCLES_PER_TICK: AtomicU64 = AtomicU64::new(0);
 
-/// Counter for cursor blink timing (toggles every ~100 ticks = 500ms at 200Hz)
-/// Only used when interactive feature is enabled.
-#[cfg(feature = "interactive")]
-static CURSOR_BLINK_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Cursor blink interval in ticks (100 ticks * 5ms = 500ms at 200Hz)
-#[cfg(feature = "interactive")]
-const CURSOR_BLINK_INTERVAL: u64 = 100;
-
 /// Start the LAPIC timer, or the PIT fallback, at `PIT_HZ`.
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
@@ -132,18 +123,6 @@ pub fn timer_interrupt() {
     }
     #[cfg(not(target_arch = "x86_64"))]
     TICKS.fetch_add(1, Ordering::Relaxed);
-
-    // Cursor blink handling for interactive mode
-    // This is kept minimal - just an atomic increment and comparison
-    #[cfg(feature = "interactive")]
-    {
-        let count = CURSOR_BLINK_COUNTER.fetch_add(1, Ordering::Relaxed);
-        if count >= CURSOR_BLINK_INTERVAL {
-            CURSOR_BLINK_COUNTER.store(0, Ordering::Relaxed);
-            // Toggle cursor - uses try_lock so won't block
-            crate::logger::toggle_cursor_blink();
-        }
-    }
 }
 
 /// Raise the tick to `tick` if it is behind, and return the tick afterwards.
@@ -156,6 +135,13 @@ pub fn timer_interrupt() {
 #[inline]
 pub fn advance_ticks_to(tick: u64) -> u64 {
     TICKS.fetch_max(tick, Ordering::Relaxed).max(tick)
+}
+
+/// TSC cycles in one scheduler tick period.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn tsc_cycles_per_tick() -> u64 {
+    TSC_CYCLES_PER_TICK.load(Ordering::Relaxed)
 }
 
 /// Raw tick counter.

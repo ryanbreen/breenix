@@ -712,10 +712,11 @@ fn http_elapsed_ms(start: &Timespec) -> u64 {
     now_ms.saturating_sub(start_ms)
 }
 
-/// Try multiple DNS servers, starting with Google (reachable from all platforms).
+/// Numeric IPv4 URL hosts identify the peer directly; names use resolver policy.
 fn resolve_multi(hostname: &str) -> Result<DnsResult, HttpError> {
-    // Google DNS first — always reachable via NAT/bridge from any hypervisor.
-    // Fall back to hypervisor-specific servers only if Google fails.
+    if let Ok(address) = hostname.parse::<core::net::Ipv4Addr>() {
+        return Ok(DnsResult { addr: address.octets(), ttl: 0 });
+    }
     resolve_auto(hostname).map_err(HttpError::DnsError)
 }
 
@@ -776,6 +777,10 @@ pub fn http_request(
         eprint!("[http] TCP connect FAILED ({}ms)\n", http_elapsed_ms(&connect_start));
         close_fd(fd);
         return Err(HttpError::ConnectError);
+    }
+    if crate::socket::start_recv_deadline().is_err() {
+        close_fd(fd);
+        return Err(HttpError::RecvError);
     }
     #[cfg(feature = "std")]
     eprint!("[http] TCP connected ({}ms)\n", http_elapsed_ms(&connect_start));
@@ -982,5 +987,20 @@ pub fn http_ping(url: &str) -> bool {
     match http_get_status(url) {
         Ok(code) => (200..300).contains(&code),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_url_host_uses_literal_address() {
+        let url = parse_url("http://192.0.2.10:8080/fixture").unwrap();
+        let peer = resolve_multi(url.host).unwrap();
+        assert_eq!(peer.addr, [192, 0, 2, 10]);
+        assert_eq!(peer.ttl, 0);
+        assert_eq!(url.port, 8080);
+        assert_eq!(url.path, "/fixture");
     }
 }

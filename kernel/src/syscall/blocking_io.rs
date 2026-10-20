@@ -43,7 +43,7 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         if let Some(error) = crate::syscall::check_signals_for_restartable_wait() {
             break Some(error);
         }
-        let waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let waiting = crate::task::scheduler::with_current(|sched| {
             sched
                 .current_thread_mut()
                 .map(|thread| thread.state == ThreadState::BlockedOnIO)
@@ -132,5 +132,29 @@ pub(crate) fn read_console(buf: &mut [u8], is_nonblocking: bool) -> Result<usize
             return Err(errno::EAGAIN);
         }
         wait_prepared(&crate::ipc::stdin::INPUT_READERS, outcome)?;
+    }
+}
+
+/// Reads of a virtual terminal (`/dev/ttyN`, `/dev/tty0` at the time of the
+/// read): its own input queue, as `read_console`; tty1's is the console's.
+pub(crate) fn read_terminal(
+    device: crate::fs::devfs::DeviceType,
+    buf: &mut [u8],
+    is_nonblocking: bool,
+) -> Result<usize, i32> {
+    let input = match device.terminal() {
+        Some(1) => return read_console(buf, is_nonblocking),
+        Some(number) => crate::ipc::stdin::vt_input(number - 1).ok_or(errno::ENXIO)?,
+        None => return Err(errno::ENXIO),
+    };
+    loop {
+        let outcome = match input.read_or_prepare(buf, is_nonblocking) {
+            Ok(n) => return Ok(n),
+            Err(outcome) => outcome,
+        };
+        if is_nonblocking {
+            return Err(errno::EAGAIN);
+        }
+        wait_prepared(&input.readers, outcome)?;
     }
 }

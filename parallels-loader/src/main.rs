@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 mod acpi_discovery;
+mod entropy;
 mod gop_discovery;
 pub mod hw_config;
 mod kernel_entry;
@@ -267,6 +268,23 @@ fn main() -> Status {
         }
     }
 
+    // Seed the kernel's random pool from the firmware while boot services last.
+    {
+        use core::fmt::Write;
+        let source = entropy::collect(config);
+        let mut u = LoaderSerial(config.uart_base_phys, config.uart_type);
+        let _ = writeln!(
+            u,
+            "[entropy] boot seed: {}",
+            match source {
+                arm64_boot_contract::BOOT_SEED_EFI_RNG => "efi-rng",
+                arm64_boot_contract::BOOT_SEED_TPM => "tpm",
+                arm64_boot_contract::BOOT_SEED_HOST_FILE => "host-file",
+                _ => "none",
+            }
+        );
+    }
+
     // --- Platform-specific page table configuration ---
     //
     // On VMware (ram_base_offset > 0), the PCI ECAM at IPA 0x40000000 overlaps
@@ -348,6 +366,17 @@ fn main() -> Status {
     let st = uefi::table::system_table_raw().expect("no system table");
     config.rtc_get_time = unsafe { (*st.as_ref().runtime_services).get_time as usize as u64 };
     let final_map = unsafe { uefi::boot::exit_boot_services(MemoryType::LOADER_DATA) };
+    // UEFI 2.10 section 7.2 (Tables 7.5/7.6): EfiConventionalMemory is
+    // unallocated. Keep boot-services and loader memory unavailable even after
+    // EBS, since firmware USB DMA survives until the kernel resets the device.
+    // Use the final map so later loader allocations are excluded too.
+    let free = arm64_boot_contract::phys_memory::final_uefi_conventional_ranges(
+        final_map.entries().map(|d| (d.ty.0, d.att.bits(), d.phys_start, d.page_count)),
+    );
+    config.ram_region_count = free.as_slice().len() as u32;
+    for (slot, range) in config.ram_regions.iter_mut().zip(free.as_slice()) {
+        *slot = hw_config::RamRegion { base: range.start, size: range.len() };
+    }
     for desc in final_map.entries().filter(|d| d.att.contains(uefi::mem::memory_map::MemoryAttribute::RUNTIME)) {
         let i = config.runtime_region_count as usize;
         if i == config.runtime_regions.len() {

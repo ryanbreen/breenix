@@ -1,18 +1,24 @@
-//! Suite-mode test controls: system call 415 (`docs/gui/breengel.md` section 21).
+//! Suite-mode test controls: system call 415 (`docs/gui/gpu.md` section 1.8, which takes
+//! the latch and ops from BreenGL's contract, section 21).
 //!
 //! The controls exist in the production kernel and are reachable only in a suite boot: the
-//! kernel latches them on when the first program it runs as PID 1 is a suite binary
-//! (`/sbin/suite-*`), at the designation of that PID 1, before any user code runs. Nothing
-//! changes the latch afterwards. In every other boot each op is ENOSYS; in a suite boot only
-//! root may use them.
+//! kernel latches them on when the first program it designates as PID 1 is a suite binary
+//! (`/sbin/suite-*`), before any user code runs, and nothing changes the latch afterwards.
+//! In every other boot each op is ENOSYS; in a suite boot only root may use them (EPERM).
+//! The latch and the caller are checked before an argument is decoded.
 //!
-//! Each fault point is a branch in the real code path that asks `take` whether its point is
-//! armed. `take` reads the latch first, so outside a suite boot a fault point costs one
-//! relaxed load and can never fire. Every arming is one-shot.
+//! The points defined here are the GPU effort's, 19 to 31, and BreenGL's, 1 to 18
+//! (`breengel_abi::tc_point`); the GPU core builds BreenGL's 2 `irq-hold` and 3
+//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`). Each is a branch in the real
+//! code path that asks `take` (or `take_if`) whether its point is armed; both read the
+//! latch first, so outside a suite boot a point costs one load and cannot fire while
+//! disabled. A point is one-shot: it affects the next occurrence of its event, counts one firing and
+//! disarms itself. Fallible submission preparation reserves points 22 and 28, counting
+//! them only when queued and restoring their arm when preparation fails.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use breengel_abi::{tc_op, tc_point, Plain, TcArm, TcFired};
+use gpu_abi::{test_control as tc_op, test_point, Plain, TcArm, TcFired};
 
 use crate::syscall::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use crate::syscall::SyscallResult;
@@ -25,9 +31,8 @@ static DECIDED: AtomicBool = AtomicBool::new(false);
 /// The path prefix of a suite binary.
 const SUITE_PREFIX: &[u8] = b"/sbin/suite-";
 
-/// Decide the latch from the program the kernel designated as PID 1. Called from
-/// `ProcessManager::designate_init`, which succeeds once per boot; only the first call
-/// decides.
+/// Decide the latch from the program the ARM64 init launcher has designated as PID 1,
+/// before publishing its thread. The first call decides the latch for the boot.
 pub fn latch_init_program(exe_path: &[u8]) {
     if DECIDED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -43,63 +48,40 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
 
-const POINTS: usize = tc_point::LAST as usize + 1;
+const POINTS: usize = test_point::LAST as usize + 1;
 
-struct Point {
-    armed: AtomicBool,
-    target: AtomicU64,
-    param: AtomicU64,
-    fired: AtomicU64,
+/// Whether `point` is one this kernel defines: BreenGL's 1 to 18, and the GPU effort's
+/// 19 to 31.
+fn defined(point: u32) -> bool {
+    breengel_abi::tc_point::defined(point)
+        || (test_point::FIRST..=test_point::LAST).contains(&point)
 }
 
-impl Point {
-    const fn new() -> Point {
-        Point {
-            armed: AtomicBool::new(false),
-            target: AtomicU64::new(0),
-            param: AtomicU64::new(0),
-            fired: AtomicU64::new(0),
-        }
-    }
-}
+mod point;
+use point::Point;
+pub use point::Reservation;
 
 static POINT_TABLE: [Point; POINTS] = [const { Point::new() }; POINTS];
 
-/// Fire `point` if it is armed for `target` (or armed with target 0, which matches every
-/// target): disarm it, count the firing and return its parameter. `None` outside a suite
-/// boot and whenever the point is not armed.
-#[inline]
-pub fn take(point: u32, target: u64) -> Option<u64> {
-    if !enabled() {
-        return None;
-    }
-    let p = POINT_TABLE.get(point as usize)?;
-    if !p.armed.load(Ordering::Acquire) {
-        return None;
-    }
-    let want = p.target.load(Ordering::Acquire);
-    if want != 0 && want != target {
-        return None;
-    }
-    if p
-        .armed
-        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return None;
-    }
-    p.fired.fetch_add(1, Ordering::AcqRel);
-    Some(p.param.load(Ordering::Acquire))
+/// Reserve a one-shot while fallible preparation runs. Dropping it leaves it armed;
+/// `fire` commits the firing at the point's effect: validator refusal for point 24,
+/// queued device work for points 22 and 28. These reserve across fallible preparation;
+/// device points reserve in that order and outside the core lock.
+pub fn reserve(point: u32, target: u64) -> Option<Reservation<'static>> {
+    if !enabled() { return None; }
+    POINT_TABLE.get(point as usize)?.reserve(target, |_| true)
 }
 
-/// Whether `point` is armed now, without firing it. For a point another point resumes
-/// (`release-stall` ends an `acquire-stall` pause).
+/// Fire a matching one-shot immediately at its event.
 #[inline]
-pub fn armed(point: u32) -> bool {
-    enabled()
-        && POINT_TABLE
-            .get(point as usize)
-            .is_some_and(|p| p.armed.load(Ordering::Acquire))
+pub fn take(point: u32, target: u64) -> Option<u64> {
+    take_if(point, target, |_| true)
+}
+
+#[inline]
+pub fn take_if(point: u32, target: u64, wanted: impl Fn(u64) -> bool) -> Option<u64> {
+    if !enabled() { return None; }
+    Some(POINT_TABLE.get(point as usize)?.reserve(target, wanted)?.fire())
 }
 
 /// `emit-diagnostic` (section 22): write the fixed 32-byte payload once through writer `path`
@@ -178,21 +160,19 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Ok(a) => a,
                 Err(e) => return err(e),
             };
-            if a.reserved != 0 || !tc_point::defined(a.point) {
+            if a.reserved != 0 || !defined(a.point) {
                 return err(EINVAL);
             }
             let p = &POINT_TABLE[a.point as usize];
-            p.armed.store(false, Ordering::Release);
-            p.target.store(a.target, Ordering::Release);
-            p.param.store(a.param, Ordering::Release);
-            p.armed.store(true, Ordering::Release);
+            p.arm(a.target, a.param);
             SyscallResult::Ok(0)
         }
         tc_op::DISARM_ALL => {
             for p in POINT_TABLE.iter() {
-                p.armed.store(false, Ordering::Release);
+                p.disarm();
             }
-            // A case's measurements start clean: the IRQ-masked gauge restarts at 0.
+            // A case's measurements start clean: the IRQ-masked gauges restart at 0.
+            crate::tracing::providers::gpu::reset_irq_masked();
             crate::tracing::providers::window::reset_irq_masked();
             SyscallResult::Ok(0)
         }
@@ -201,16 +181,16 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Ok(f) => f,
                 Err(e) => return err(e),
             };
-            if f.reserved != 0 || !tc_point::defined(f.point) {
+            if f.reserved != 0 || !defined(f.point) {
                 return err(EINVAL);
             }
-            f.count = POINT_TABLE[f.point as usize].fired.load(Ordering::Acquire);
+            f.count = POINT_TABLE[f.point as usize].fired();
             match crate::syscall::userptr::copy_to_user(arg as *mut TcFired, &f) {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(_) => err(EFAULT),
             }
         }
-        // SET_LATCH (4) and everything above: the latch has no setter.
+        // There is no op that sets or clears the latch: 4 and everything above.
         _ => err(EINVAL),
     }
 }

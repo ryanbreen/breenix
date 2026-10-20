@@ -252,6 +252,7 @@ pub fn arm_timer(ticks: u64) {
         // Enable timer (bit 0 = ENABLE, bit 1 = IMASK - we want interrupts)
         core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
     }
+    super::irq_mask_account::armed(ticks);
     sync_parallels_vtimer_after_arm();
 }
 

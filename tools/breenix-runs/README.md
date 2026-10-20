@@ -1,6 +1,12 @@
 # Breenix Runs
 
-SwiftPM command-line tooling for preserving Breenix gate evidence and printing a host-facts trace for ARM (local QEMU) and x86 (beast build environment) gate runs.
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
+The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
+and landing requirements below are superseded by [the execution policy](../../docs/x86-execution-policy.md);
+`breenix-runs run x86` cannot execute QEMU, including with `BREENIX_ALLOW_X86_QEMU=1`;
+the variable permits only historical `--dry-run` planning.
+
+SwiftPM tooling for ARM64 local QEMU runs and for inspecting stored ARM64 and x86 evidence.
 
 ## Build
 
@@ -39,8 +45,7 @@ Examples:
 ```bash
 swift run breenix-runs run arm strict --boots 20 --tag before-scheduler-change
 swift run breenix-runs run arm --boots 1 --no-store
-swift run breenix-runs run x86 --boots 1
-swift run breenix-runs run x86 --dry-run
+BREENIX_ALLOW_X86_QEMU=1 swift run breenix-runs run x86 --dry-run
 swift run breenix-runs list
 swift run breenix-runs list --arch aarch64 --verdict fail
 swift run breenix-runs show latest
@@ -56,11 +61,15 @@ make app
 
 `run arm` drives the existing gate script and sets `BREENIX_GATE_TMP` to a private absolute directory under the run directory. It does not recreate the QEMU command line in Swift and it does not compute a pass/fail verdict; the manifest records the gate script argv and exit code.
 
-`run x86` runs the gate in a detached remote session owned by the launcher. It leases a persistent checkout for the requesting worktree and tests the exact pushed `--sha` (default: local HEAD), with evidence private to the run. `--host beast` uses the SSH tunnel; `--host beast-lan` selects the LAN SSH alias to the same execution environment, with identical checkout, slots, build and gate settings.
+`run x86 --dry-run` prints the retired remote gate's preparation, launch, follow,
+harvest and cleanup commands without executing them. It requires
+`BREENIX_ALLOW_X86_QEMU=1`; the override does not enable execution. `--boots`,
+`--mode`, `--suite` and `--hardware` select inputs to this historical plan.
+`--catchup` is forwarded to the effort target policy check.
 
-The remote owner records its process identity and final exit status and writes build/boot output to a retained file. The detached owner makes an exclusive launch claim before starting the gate, and retains its small completion record after evidence cleanup. A lost launch acknowledgement or delayed duplicate bootstrap cannot start another gate. The Mac follows output from its last received byte and resumes the separate serial stream after a disconnect, discarding replayed bytes. Transport recovery has a shared limit of 12 retries, with delays increasing from one to ten seconds, SSH keepalives and bounded launch/follow requests. Each retry is printed and saved in `reconnects.jsonl` beside the serials. After the remote owner finishes, the launcher harvests authoritative evidence and uses the gate's verdict. Exhausted retries leave the remote gate and evidence intact and report failure locally; only an explicit local signal requests remote cancellation.
-
-Push the branch before running: the execution host fetches from GitHub. `--dry-run` prints preparation, detached launch, follow, harvest and cleanup commands without executing them. `--boots` and `--mode` select the gate script's existing arguments; `--mode suite --suite smoke --boots 1` runs a single smoke suite boot.
+`recover x86 <run-id>` stops and harvests a previously stored remote run, retains
+its original verdict, and removes its remote evidence directory after saving
+local evidence. Use the x86-metal boot loop for new x86 execution.
 
 Host facts record QEMU peer counts separately for `qemu-system-aarch64` and `qemu-system-x86_64`, plus load average, host identity, QEMU version, thermal pressure when available, and git state. This is the Inspector's own host-side sample (`HostFactsTrace`), distinct from the guest-annotated `[GATE_BOOT_FACTS]` records `--traces` reports below.
 
@@ -83,8 +92,8 @@ serial messages; PR-7 adds a third "Traces" tab rendering the same host-facts,
 own "not present" empty state. PR-8 adds a Compare tab after choosing a second
 stored run. Launching runs remains in the CLI.
 
-For x86 runs, `--hardware` selects a name from `docs/x86-profiles.json` and records
-`BREENIX_QEMU_PROFILE` in the manifest environment. `list --profile gate` filters
+<!-- claim-lint:ok: docker/qemu/run-x86-gate.sh enforces virtio storage and the profile CPU count; docs/x86-profiles.json defines the four-CPU profiles. -->
+For historical x86 dry-run plans, `--hardware` selects a name from `docs/x86-profiles.json` in the generated command. `list --profile gate` filters
 the run kind. `--gate-timeout` sets the scoring deadline. Full mode collects the
 kernel's `USERSPACE TEST REPORT DONE` before scoring a missed deadline (#1068).
 `BREENIX_FULL_BACKSTOP` overrides its collection limit (default: the larger of

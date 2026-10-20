@@ -51,16 +51,16 @@ pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
 
 pub(crate) fn resolve_at(
     fd: i32,
-    path: &str,
+    path: &[u8],
     follow: bool,
     cred: &Credentials,
-) -> Result<namei::Resolved, u64> {
-    let start = super::at_path::directory_start(fd, path.starts_with('/'), directory)?;
+) -> Result<namei::Resolved<alloc::vec::Vec<u8>>, u64> {
+    let start = super::at_path::directory_start(fd, path.starts_with(b"/"), directory)?;
     namei::resolve_from(path, follow, start, cred)
 }
 
-pub(crate) fn resolve_create_at(fd: i32, path: &str, cred: &Credentials) -> Result<namei::Resolved, u64> {
-    let start = super::at_path::directory_start(fd, path.starts_with('/'), directory)?;
+pub(crate) fn resolve_create_at(fd: i32, path: &[u8], cred: &Credentials) -> Result<namei::Resolved<alloc::vec::Vec<u8>>, u64> {
+    let start = super::at_path::directory_start(fd, path.starts_with(b"/"), directory)?;
     namei::resolve_create_from(path, start, cred)
 }
 
@@ -127,7 +127,7 @@ fn fifo(
 ) -> SyscallResult {
     let Some(handle) = entry.lock().handle.clone() else { return SyscallResult::Err(EIO as u64); };
     let mut guard = match ext2::write_mount(handle.object.mount) {
-        Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64),
+        Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
     };
     let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
     let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
@@ -136,7 +136,7 @@ fn fifo(
 }
 
 fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -> SyscallResult {
-    let path = match super::userptr::copy_cstr_from_user(pathname) {
+    let path = match super::userptr::copy_path_bytes_from_user(pathname) {
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -177,7 +177,7 @@ fn by_cwd(change: Change) -> SyscallResult {
             Ok(ino) => ino,
             Err(_) => return SyscallResult::Err(EIO as u64),
         },
-        None => ext2::EXT2_ROOT_INO,
+        None => ext2::root_inode(),
     };
     update(fs, ino, change, &cred)
 }
@@ -186,7 +186,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
     let cred = Credentials::current(false);
     let entry = match descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
     if let Some(handle) = &entry.native_inode {
-        let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(_) => return SyscallResult::Err(EIO as u64) };
+        let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
         let ino = match handle.verify(fs) { Ok(ino) => ino, Err(_) => return SyscallResult::Err(EIO as u64) };
         return update(fs, ino, change, &cred);
@@ -204,7 +204,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             let handle = file.lock().handle.clone();
             let mut guard = match ext2::write_mount(handle.object.mount) {
                 Ok(g) => g,
-                Err(_) => return SyscallResult::Err(EIO as u64),
+                Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
             };
             let Some(fs) = guard.as_mut() else {
                 return SyscallResult::Err(EIO as u64);
@@ -219,7 +219,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             let handle = dir.lock().handle.clone();
             let mut guard = match ext2::write_mount(handle.object.mount) {
                 Ok(g) => g,
-                Err(_) => return SyscallResult::Err(EIO as u64),
+                Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
             };
             let Some(fs) = guard.as_mut() else {
                 return SyscallResult::Err(EIO as u64);

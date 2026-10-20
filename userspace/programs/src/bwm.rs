@@ -1,20 +1,24 @@
 //! Breenix Window Manager (bwm) — Pure Compositor + Input Router
 //!
 //! Discovers Breengel client windows registered via the kernel window buffer API,
-//! composites them onto the screen with GPU acceleration (VirGL), and routes
+//! composites them onto the screen through the GPU core (`compositor`), and routes
 //! keyboard/mouse input to the focused window via kernel ring buffers.
 //!
 //! BWM does NOT spawn child processes or emulate terminals. Those responsibilities
 //! belong to init (process spawning) and bterm (terminal emulation).
 
+#[path = "bwm/compositor.rs"]
+mod compositor;
+#[path = "bwm/placement.rs"]
+mod placement;
+
 use std::process;
+
+use compositor::{Compositor, Layer, Pointer};
 
 #[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
-#[path="bwm/display.rs"]
-mod display;
-use display::{WindowInputEvent,input_event_type};
-use display as graphics;
+use libbreenix::graphics::{self, WindowInputEvent, input_event_type};
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
@@ -30,20 +34,69 @@ use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
+// Chrome sizes are logical units: `px` multiplies them by the UI scale. Client windows
+// keep their pixel sizes.
 
-/// Title bar height in pixels
+/// Title bar height
 const TITLE_BAR_HEIGHT: usize = 32;
 
 /// Window border/shadow width
 const BORDER_WIDTH: usize = 2;
 
-/// Noto Sans Mono 16px cell dimensions for title bar text.
-const CELL_W: usize = 7;
-const CELL_H: usize = 18;
+/// How far a window's drop shadow is offset right and down
+const SHADOW_OFFSET: usize = 3;
 
-/// TrueType font pixel size for UI text.
+/// TrueType font size for UI text, in logical units.
 const TTF_FONT_SIZE: f32 = 14.0;
 
+/// The console's size rule (`docs/console/contract.md`): the largest font whose text grid
+/// on the display is at least this many columns by rows.
+const MIN_TEXT_COLS: usize = 128;
+const MIN_TEXT_ROWS: usize = 36;
+
+/// bwm's UI scale and the bitmap font it draws chrome text with.
+struct Ui {
+    scale: usize,
+    font: bitmap_font::RasterHeight,
+    /// Text cell: the glyph advance, and the glyph height with its line spacing.
+    cell_w: usize,
+    cell_h: usize,
+}
+
+impl Ui {
+    /// Choose the scale for a `width` x `height` display as the console chooses its font:
+    /// the largest of bwm's text sizes, 16 px at scale 1 and 32 px at scale 2 (each its
+    /// own raster), whose grid is at least 128 columns by 36 rows; otherwise scale 1.
+    fn for_display(width: usize, height: usize) -> Ui {
+        let sizes = [(2, bitmap_font::RasterHeight::Size32), (1, bitmap_font::RasterHeight::Size16)];
+        let uis = sizes.map(|(scale, font)| {
+            let m = bitmap_font::metrics_at(font);
+            Ui { scale, font, cell_w: m.char_width, cell_h: m.line_height() }
+        });
+        let [two, one] = uis;
+        if width / two.cell_w >= MIN_TEXT_COLS && height / two.cell_h >= MIN_TEXT_ROWS {
+            two
+        } else {
+            one
+        }
+    }
+}
+
+static UI: std::sync::OnceLock<Ui> = std::sync::OnceLock::new();
+
+fn ui() -> &'static Ui {
+    UI.get().expect("bwm's UI scale is chosen at start")
+}
+
+/// `n` logical units in pixels.
+fn px(n: usize) -> usize {
+    n * ui().scale
+}
+
+/// `n` logical units in pixels, signed.
+fn pxi(n: i32) -> i32 {
+    n * ui().scale as i32
+}
 
 /// Top taskbar height
 const TASKBAR_HEIGHT: usize = 28;
@@ -60,6 +113,14 @@ const CHROME_BTN_PAD: usize = 4;
 /// Space reserved in title bar for chrome buttons
 const CHROME_RESERVED: usize = 52;
 
+/// Resize grab zone width in pixels (edges and corners)
+const RESIZE_GRAB: usize = 8;
+
+/// Minimum total window width (including decorations)
+const MIN_WIN_WIDTH: usize = 120;
+
+/// Minimum total window height (including decorations)
+const MIN_WIN_HEIGHT: usize = 80 + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2;
 
 /// Maximum remembered window positions/sizes
 const MAX_DEFAULTS: usize = 16;
@@ -243,6 +304,8 @@ struct HotkeyManager {
     tap_count: u8,
     /// Whether any non-modifier key was pressed during current modifier hold
     combo_used: bool,
+    /// Super chords must not inherit ordinary typing with Shift.
+    super_combo_used: bool,
     /// Cooldown frames remaining (prevents rapid re-trigger)
     cooldown: u32,
 }
@@ -256,6 +319,7 @@ impl HotkeyManager {
             tap_release_ns: 0,
             tap_count: 0,
             combo_used: false,
+            super_combo_used: false,
             cooldown: 0,
         }
     }
@@ -388,50 +452,43 @@ impl HotkeyManager {
         Some(Hotkey { modifiers, key, taps, action })
     }
 
-    /// Called every frame with the current modifier bitmask and whether a
-    /// non-modifier key was pressed this frame. Returns an action if a
-    /// hotkey matched.
+    /// Match a stdin key using the graphics modifier snapshot. Bindings use ASCII
+    /// (Return is CR), not the client event's USB HID keycode (Return is 0x28).
+    /// The frame update owns cooldown advancement; draining keys must not shorten it.
+    fn key_pressed(&mut self, modifiers: u8, ascii: u8) -> Option<HotkeyAction> {
+        if modifiers != 0 {
+            self.combo_used = true;
+        }
+        if modifiers & modifier::SUPER != 0 {
+            self.super_combo_used = true;
+        }
+        if self.cooldown == 0 {
+            for binding in &self.bindings {
+                if binding.key != 0 && binding.taps == 1
+                    && binding.key == ascii.to_ascii_lowercase()
+                    && (modifiers & binding.modifiers) == binding.modifiers
+                {
+                    self.cooldown = 30;
+                    return Some(binding.action.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Called after draining this frame's keys, so a Super chord marks its tap
+    /// dirty before modifier-only bindings are considered.
     ///
     /// `super_taps` is the count of Super press-edges latched in the kernel HID
-    /// path since the previous frame (`key_state`, read-and-clear). Because the latch
+    /// path since the previous frame (op=31, read-and-clear). Because the latch
     /// captures every 0→1 SUPER transition the instant the HID report arrives,
     /// it recovers taps whose entire ~30ms high window fell between two bursty
     /// compositor-wait polls — which the level-based edge detection would miss.
     /// SUPER tap counting is driven exclusively by this latch so each physical
     /// press is counted exactly once (no double-count vs. release detection).
-    fn update(
-        &mut self,
-        current_mods: u8,
-        key_pressed: Option<u8>,
-        super_taps: u32,
-    ) -> Option<HotkeyAction> {
-        if self.cooldown > 0 {
-            self.cooldown -= 1;
-        }
-
-        // Track if any non-modifier key was pressed while modifiers are held.
-        // A combo (modifier + key) must NOT trigger the no-key double-tap launcher.
-        if key_pressed.is_some() && current_mods != 0 {
-            self.combo_used = true;
-        }
-
+    fn update(&mut self, current_mods: u8, super_taps: u32) -> Option<HotkeyAction> {
         let prev = self.prev_modifiers;
         self.prev_modifiers = current_mods;
-
-        // Check modifier+key bindings first (single-tap, key != 0)
-        if let Some(ascii) = key_pressed {
-            if self.cooldown == 0 {
-                for binding in &self.bindings {
-                    if binding.key != 0 && binding.taps == 1
-                        && binding.key == ascii.to_ascii_lowercase()
-                        && (current_mods & binding.modifiers) == binding.modifiers
-                    {
-                        self.cooldown = 30;
-                        return Some(binding.action.clone());
-                    }
-                }
-            }
-        }
 
         // ── Super multi-tap detection driven by the kernel press-edge latch ──
         // Each latched press-edge is one physical tap. If the press arrived while
@@ -439,7 +496,7 @@ impl HotkeyManager {
         // tap is treated as dirty and resets the sequence rather than counting.
         if super_taps > 0 {
             for _ in 0..super_taps {
-                if self.combo_used {
+                if self.super_combo_used {
                     // Combo in progress: this Super press is part of a combo, not
                     // a clean tap. Reset the tap sequence; do not fire the launcher.
                     self.tap_count = 0;
@@ -484,10 +541,9 @@ impl HotkeyManager {
 
         // Reset combo tracking when Super is fully released so the next clean
         // tap sequence isn't suppressed by a stale combo flag.
-        let super_was = (prev & modifier::SUPER) != 0;
         let super_now = (current_mods & modifier::SUPER) != 0;
-        if !super_now && super_was {
-            self.combo_used = false;
+        if !super_now {
+            self.super_combo_used = false;
         }
 
         // ── Multi-tap detection for ALT / CTRL / SHIFT via level edges ──
@@ -548,6 +604,52 @@ fn trim(s: &[u8]) -> &[u8] {
     &s[start..end]
 }
 
+/// Read-and-clear the kernel's latched count of Super press-edges (FBDRAW op=31).
+///
+/// The kernel HID path increments a lock-free atomic on every 0→1 SUPER
+/// transition the instant the report arrives, so a tap whose high window fell
+/// entirely between two compositor-wait polls is still counted. This drains
+/// that latch so missed taps reach the double-tap detector.
+#[cfg(target_arch = "aarch64")]
+fn take_super_tap_count() -> u32 {
+    use libbreenix::graphics::FbDrawCmd;
+    use libbreenix::syscall::nr;
+    let cmd = FbDrawCmd {
+        op: 31,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    let ret =
+        unsafe { libbreenix::raw::syscall1(nr::FBDRAW, &cmd as *const FbDrawCmd as u64) as i64 };
+    if ret < 0 {
+        0
+    } else {
+        ret as u32
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn take_super_tap_count() -> u32 {
+    0
+}
+
+// ─── Resize Edge ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq)]
+enum ResizeEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 // ─── Window Defaults (Position/Size Memory) ─────────────────────────────────
 
 struct WindowDefaults {
@@ -555,6 +657,8 @@ struct WindowDefaults {
     title_len: usize,
     x: i32,
     y: i32,
+    width: usize,
+    height: usize,
     valid: bool,
 }
 
@@ -582,19 +686,18 @@ fn save_window_defaults(win: &Window, defaults: &mut [WindowDefaults; MAX_DEFAUL
         defaults[i].title_len = win.title_len;
         defaults[i].x = win.x;
         defaults[i].y = win.y;
+        defaults[i].width = win.width;
+        defaults[i].height = win.height;
         defaults[i].valid = true;
     }
 }
 
-/// Where a window with this title was last: a window keeps its client's size, which only the
-/// client changes (a compositor resize request needs the configure protocol of the
-/// window-manager effort), so only the position is remembered.
 fn find_window_defaults(
     title: &[u8], title_len: usize, defaults: &[WindowDefaults; MAX_DEFAULTS],
-) -> Option<(i32, i32)> {
+) -> Option<(i32, i32, usize, usize)> {
     for d in defaults.iter() {
         if d.valid && d.title_len == title_len && d.title[..d.title_len] == title[..title_len] {
-            return Some((d.x, d.y));
+            return Some((d.x, d.y, d.width, d.height));
         }
     }
     None
@@ -609,9 +712,11 @@ struct Window {
     height: usize,
     title: [u8; 32],
     title_len: usize,
-    window_id: u64,
+    window_id: u32,
     owner_pid: u32,
     minimized: bool,
+    /// The first composed frame showing this client has been checked.
+    frame_checked: bool,
     /// Stable ordering for appbar (assigned at discovery time, never changes)
     creation_order: u32,
     /// Chromeless windows have no title bar, border, or chrome buttons.
@@ -621,16 +726,16 @@ struct Window {
 
 impl Window {
     fn content_x(&self) -> i32 {
-        if self.chromeless { self.x } else { self.x + BORDER_WIDTH as i32 }
+        if self.chromeless { self.x } else { self.x + px(BORDER_WIDTH) as i32 }
     }
     fn content_y(&self) -> i32 {
-        if self.chromeless { self.y } else { self.y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32 }
+        if self.chromeless { self.y } else { self.y + px(TITLE_BAR_HEIGHT) as i32 + px(BORDER_WIDTH) as i32 }
     }
     fn content_width(&self) -> usize {
-        if self.chromeless { self.width } else { self.width.saturating_sub(BORDER_WIDTH * 2) }
+        if self.chromeless { self.width } else { self.width.saturating_sub(px(BORDER_WIDTH) * 2) }
     }
     fn content_height(&self) -> usize {
-        if self.chromeless { self.height } else { self.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH * 2) }
+        if self.chromeless { self.height } else { self.height.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) }
     }
 
     fn total_height(&self) -> usize { self.height }
@@ -638,7 +743,7 @@ impl Window {
     fn hit_title(&self, mx: i32, my: i32) -> bool {
         if self.chromeless { return false; }
         mx >= self.x && mx < self.x + self.width as i32
-            && my >= self.y && my < self.y + TITLE_BAR_HEIGHT as i32
+            && my >= self.y && my < self.y + px(TITLE_BAR_HEIGHT) as i32
     }
 
     fn hit_any(&self, mx: i32, my: i32) -> bool {
@@ -655,22 +760,23 @@ impl Window {
         if self.chromeless {
             (self.x, self.y, self.x + self.width as i32, self.y + self.height as i32)
         } else {
-            // +3 accounts for the drop shadow drawn at (x+3, y+3) in draw_window_frame
-            (self.x, self.y, self.x + self.width as i32 + 3, self.y + self.total_height() as i32 + 3)
+            // The drop shadow is drawn SHADOW_OFFSET right of and below the frame (draw_window_frame)
+            let shadow = px(SHADOW_OFFSET) as i32;
+            (self.x, self.y, self.x + self.width as i32 + shadow, self.y + self.total_height() as i32 + shadow)
         }
     }
 
     fn close_btn_rect(&self) -> (i32, i32, usize, usize) {
-        let bx = self.x + self.width as i32 - BORDER_WIDTH as i32
-            - CHROME_BTN_PAD as i32 - CHROME_BTN_SIZE as i32;
-        let by = self.y + BORDER_WIDTH as i32
-            + ((TITLE_BAR_HEIGHT - BORDER_WIDTH - CHROME_BTN_SIZE) / 2) as i32;
-        (bx, by, CHROME_BTN_SIZE, CHROME_BTN_SIZE)
+        let bx = self.x + self.width as i32 - px(BORDER_WIDTH) as i32
+            - px(CHROME_BTN_PAD) as i32 - px(CHROME_BTN_SIZE) as i32;
+        let by = self.y + px(BORDER_WIDTH) as i32
+            + ((px(TITLE_BAR_HEIGHT) - px(BORDER_WIDTH) - px(CHROME_BTN_SIZE)) / 2) as i32;
+        (bx, by, px(CHROME_BTN_SIZE), px(CHROME_BTN_SIZE))
     }
 
     fn minimize_btn_rect(&self) -> (i32, i32, usize, usize) {
         let (cx, cy, _, _) = self.close_btn_rect();
-        (cx - CHROME_BTN_PAD as i32 - CHROME_BTN_SIZE as i32, cy, CHROME_BTN_SIZE, CHROME_BTN_SIZE)
+        (cx - px(CHROME_BTN_PAD) as i32 - px(CHROME_BTN_SIZE) as i32, cy, px(CHROME_BTN_SIZE), px(CHROME_BTN_SIZE))
     }
 
     fn hit_close_button(&self, mx: i32, my: i32) -> bool {
@@ -683,6 +789,37 @@ impl Window {
         mx >= bx && mx < bx + bw as i32 && my >= by && my < by + bh as i32
     }
 
+    fn hit_resize_edge(&self, mx: i32, my: i32) -> Option<ResizeEdge> {
+        if self.minimized || self.chromeless { return None; }
+
+        let x0 = self.x;
+        let y0 = self.y;
+        let x1 = self.x + self.width as i32;
+        let y1 = self.y + self.total_height() as i32;
+        let g = px(RESIZE_GRAB) as i32;
+
+        // Must be within or near the window bounds
+        if mx < x0 - g || mx >= x1 + g || my < y0 - g || my >= y1 + g {
+            return None;
+        }
+
+        let on_left = mx < x0 + g;
+        let on_right = mx >= x1 - g;
+        let on_top = my < y0 + g;
+        let on_bottom = my >= y1 - g;
+
+        match (on_left, on_right, on_top, on_bottom) {
+            (true, _, true, _) => Some(ResizeEdge::TopLeft),
+            (_, true, true, _) => Some(ResizeEdge::TopRight),
+            (true, _, _, true) => Some(ResizeEdge::BottomLeft),
+            (_, true, _, true) => Some(ResizeEdge::BottomRight),
+            (true, _, _, _) => Some(ResizeEdge::Left),
+            (_, true, _, _) => Some(ResizeEdge::Right),
+            (_, _, true, _) => Some(ResizeEdge::Top),
+            (_, _, _, true) => Some(ResizeEdge::Bottom),
+            _ => None,
+        }
+    }
 }
 
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
@@ -697,12 +834,13 @@ fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
         let s = unsafe { core::str::from_utf8_unchecked(text) };
-        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE, color);
+        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE * ui().scale as f32, color);
     } else {
+        let (cell_w, font) = (ui().cell_w as i32, ui().font);
         for (i, &ch) in text.iter().enumerate() {
-            let px = x + (i as i32) * CELL_W as i32;
-            if px < 0 || px + CELL_W as i32 > fb.width as i32 { continue; }
-            bitmap_font::draw_char(fb, ch as char, px as usize, y as usize, color);
+            let cx = x + i as i32 * cell_w;
+            if cx < 0 || cx + cell_w > fb.width as i32 { continue; }
+            bitmap_font::draw_char_at(fb, ch as char, cx as usize, y as usize, color, font);
         }
     }
 }
@@ -713,34 +851,35 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
     let border_color = if focused { WIN_BORDER_FOCUSED } else { WIN_BORDER_COLOR };
     let title_bg = if focused { TITLE_FOCUSED_BG } else { TITLE_UNFOCUSED_BG };
     let title_fg = if focused { TITLE_FOCUSED_TEXT } else { TITLE_TEXT };
-    let bw = BORDER_WIDTH;
+    let bw = px(BORDER_WIDTH);
 
     let shadow = Color::rgb(8, 10, 18);
-    fill_rect(fb, win.x + 3, win.y + 3, win.width, win.total_height(), shadow);
+    let offset = px(SHADOW_OFFSET) as i32;
+    fill_rect(fb, win.x + offset, win.y + offset, win.width, win.total_height(), shadow);
     fill_rect(fb, win.x, win.y, win.width, win.total_height(), border_color);
     let content_bg = Color::rgb(12, 14, 20);
     fill_rect(fb, win.content_x(), win.content_y(),
               win.content_width(), win.content_height(), content_bg);
     fill_rect(fb, win.x + bw as i32, win.y + bw as i32,
-              win.width - bw * 2, TITLE_BAR_HEIGHT - bw, title_bg);
+              win.width - bw * 2, px(TITLE_BAR_HEIGHT) - bw, title_bg);
 
-    let max_title_w = win.width.saturating_sub(bw * 2 + 8 + CHROME_RESERVED);
-    let max_chars = max_title_w / CELL_W;
+    let max_title_w = win.width.saturating_sub(bw * 2 + px(8) + px(CHROME_RESERVED));
+    let max_chars = max_title_w / ui().cell_w;
     let text_len = win.title_len.min(max_chars);
-    let text_y = win.y + bw as i32 + ((TITLE_BAR_HEIGHT - bw - CELL_H) / 2) as i32;
-    draw_text_at(fb, &win.title[..text_len], win.x + 8, text_y, title_fg,
+    let text_y = win.y + bw as i32 + ((px(TITLE_BAR_HEIGHT) - bw - ui().cell_h) / 2) as i32;
+    draw_text_at(fb, &win.title[..text_len], win.x + pxi(8), text_y, title_fg,
                  ui_font.as_mut());
 
     let (cbx, cby, cbw, cbh) = win.close_btn_rect();
     fill_rect(fb, cbx, cby, cbw, cbh, CLOSE_BTN_BG);
-    let cx = cbx + (cbw as i32 - CELL_W as i32) / 2;
-    let cy = cby + (cbh as i32 - CELL_H as i32) / 2;
+    let cx = cbx + (cbw as i32 - ui().cell_w as i32) / 2;
+    let cy = cby + (cbh as i32 - ui().cell_h as i32) / 2;
     draw_text_at(fb, b"x", cx, cy, CLOSE_BTN_TEXT, ui_font.as_mut());
 
     let (mbx, mby, mbw, mbh) = win.minimize_btn_rect();
     fill_rect(fb, mbx, mby, mbw, mbh, MINIMIZE_BTN_BG);
-    let mx = mbx + (mbw as i32 - CELL_W as i32) / 2;
-    let my = mby + (mbh as i32 - CELL_H as i32) / 2;
+    let mx = mbx + (mbw as i32 - ui().cell_w as i32) / 2;
+    let my = mby + (mbh as i32 - ui().cell_h as i32) / 2;
     draw_text_at(fb, b"-", mx, my, MINIMIZE_BTN_TEXT, ui_font.as_mut());
 }
 
@@ -749,13 +888,14 @@ fn draw_window_frame(fb: &mut FrameBuf, win: &Window, focused: bool,
 fn paint_background(fb: &mut FrameBuf) {
     let w = fb.width;
     let h = fb.height;
+    let step = px(64);
     for y in 0..h {
         for x in 0..w {
             let t = (y * 255 / h) as u8;
             let r = 12u8.saturating_add(t / 12);
             let g = 16u8.saturating_add(t / 20);
             let b = 38u8.saturating_add(t / 6);
-            let grid = (x % 64 == 0 || y % 64 == 0) as u8;
+            let grid = (x % step == 0 || y % step == 0) as u8;
             let r2 = r.saturating_add(grid * 6);
             let g2 = g.saturating_add(grid * 8);
             let b2 = b.saturating_add(grid * 12);
@@ -850,18 +990,18 @@ fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
 
 fn draw_taskbar(fb: &mut FrameBuf, clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     let w = fb.width;
-    fill_rect(fb, 0, 0, w, TASKBAR_HEIGHT, TASKBAR_BG);
-    let label_y = ((TASKBAR_HEIGHT - CELL_H) / 2 + 1) as i32;
-    draw_text_at(fb, b"Breenix", 8, label_y, TASKBAR_TEXT, ui_font.as_mut());
+    fill_rect(fb, 0, 0, w, px(TASKBAR_HEIGHT), TASKBAR_BG);
+    let label_y = ((px(TASKBAR_HEIGHT) - ui().cell_h) / 2 + px(1)) as i32;
+    draw_text_at(fb, b"Breenix", pxi(8), label_y, TASKBAR_TEXT, ui_font.as_mut());
     if !clock_text.is_empty() {
-        let clock_x = w as i32 - (clock_text.len() as i32 * CELL_W as i32) - 8;
+        let clock_x = w as i32 - (clock_text.len() as i32 * ui().cell_w as i32) - pxi(8);
         draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, ui_font.as_mut());
     }
 }
 
 fn appbar_button_width(title_len: usize) -> usize {
-    let text_w = title_len * CELL_W + 16;
-    text_w.max(60).min(180)
+    let text_w = title_len * ui().cell_w + px(16);
+    text_w.max(px(60)).min(px(180))
 }
 
 /// Build indices sorted by creation_order (stable appbar layout).
@@ -884,15 +1024,15 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
                ui_font: &mut Option<CachedFont>) {
     let screen_h = fb.height;
     let screen_w = fb.width;
-    let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
+    let bar_y = (screen_h - px(APPBAR_HEIGHT)) as i32;
 
-    fill_rect(fb, 0, bar_y, screen_w, APPBAR_HEIGHT, APPBAR_BG);
-    fill_rect(fb, 0, bar_y, screen_w, 1, APPBAR_BORDER);
+    fill_rect(fb, 0, bar_y, screen_w, px(APPBAR_HEIGHT), APPBAR_BG);
+    fill_rect(fb, 0, bar_y, screen_w, px(1), APPBAR_BORDER);
 
     let (sorted, n) = sorted_by_creation(windows);
-    let mut btn_x: i32 = 4;
-    let btn_h: usize = APPBAR_HEIGHT - 8;
-    let btn_y = bar_y + 4;
+    let mut btn_x: i32 = pxi(4);
+    let btn_h: usize = px(APPBAR_HEIGHT) - px(8);
+    let btn_y = bar_y + pxi(4);
 
     for k in 0..n {
         let i = sorted[k];
@@ -910,25 +1050,25 @@ fn draw_appbar(fb: &mut FrameBuf, windows: &[Window], focused_win: usize,
 
         fill_rect(fb, btn_x, btn_y, btn_w, btn_h, bg);
 
-        let max_chars = (btn_w.saturating_sub(12)) / CELL_W;
+        let max_chars = (btn_w.saturating_sub(px(12))) / ui().cell_w;
         let text_len = win.title_len.min(max_chars);
-        let text_y = btn_y + ((btn_h - CELL_H) / 2 + 1) as i32;
-        draw_text_at(fb, &win.title[..text_len], btn_x + 6, text_y, APPBAR_BTN_TEXT,
+        let text_y = btn_y + ((btn_h - ui().cell_h) / 2 + px(1)) as i32;
+        draw_text_at(fb, &win.title[..text_len], btn_x + pxi(6), text_y, APPBAR_BTN_TEXT,
                      ui_font.as_mut());
 
-        btn_x += btn_w as i32 + 2;
-        if btn_x >= screen_w as i32 - 4 { break; }
+        btn_x += btn_w as i32 + pxi(2);
+        if btn_x >= screen_w as i32 - pxi(4) { break; }
     }
 }
 
 fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usize, mx: i32, my: i32) -> Option<usize> {
-    let bar_y = (screen_h - APPBAR_HEIGHT) as i32;
+    let bar_y = (screen_h - px(APPBAR_HEIGHT)) as i32;
     if my < bar_y || my >= screen_h as i32 { return None; }
 
     let (sorted, n) = sorted_by_creation(windows);
-    let mut btn_x: i32 = 4;
-    let btn_h = (APPBAR_HEIGHT - 8) as i32;
-    let btn_y = bar_y + 4;
+    let mut btn_x: i32 = pxi(4);
+    let btn_h = (px(APPBAR_HEIGHT) - px(8)) as i32;
+    let btn_y = bar_y + pxi(4);
 
     for k in 0..n {
         let i = sorted[k];
@@ -939,8 +1079,8 @@ fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usize, mx: i32
         {
             return Some(i); // Returns the actual Vec index, not the sorted position
         }
-        btn_x += btn_w + 2;
-        if btn_x >= screen_w as i32 - 4 { break; }
+        btn_x += btn_w + pxi(2);
+        if btn_x >= screen_w as i32 - pxi(4) { break; }
     }
     None
 }
@@ -1029,7 +1169,7 @@ fn discover_windows(
 ) -> bool {
     let mut win_infos = [graphics::WindowInfo {
         buffer_id: 0, owner_pid: 0, width: 0, height: 0,
-        title_len: 0, title: [0; 64],
+        x: 0, y: 0, title_len: 0, title: [0; 64],
     }; 16];
     let count = match graphics::list_windows(&mut win_infos) {
         Ok(c) => c as usize,
@@ -1049,19 +1189,6 @@ fn discover_windows(
     });
     let removed = before > windows.len();
 
-    // A frame is always its client's size: only the client resizes its buffers, so a frame
-    // follows a client that did.
-    let mut resized = false;
-    for w in windows.iter_mut() {
-        let Some(info) = win_infos[..count].iter().find(|info| info.buffer_id == w.window_id) else { continue };
-        let (fw, fh) = frame_size(info, w.chromeless);
-        if (fw, fh) != (w.width, w.height) {
-            w.width = fw;
-            w.height = fh;
-            resized = true;
-        }
-    }
-
     let mut added = false;
     for i in 0..count {
         let info = &win_infos[i];
@@ -1069,11 +1196,6 @@ fn discover_windows(
         if windows.iter().any(|w| w.window_id == info.buffer_id) { continue; }
 
         let n = windows.len();
-        let usable_h = screen_h.saturating_sub(TASKBAR_HEIGHT + APPBAR_HEIGHT);
-        let cascade_x = 30 + (n as i32 * 50) % ((screen_w as i32 - 500).max(100));
-        let cascade_y = TASKBAR_HEIGHT as i32 + 10
-            + (n as i32 * 50) % ((usable_h as i32 - 500).max(100));
-
         let mut title = [0u8; 32];
         let title_len = (info.title_len as usize).min(32);
         title[..title_len].copy_from_slice(&info.title[..title_len]);
@@ -1081,28 +1203,40 @@ fn discover_windows(
         // Chromeless windows (title prefix \x01) have no frame/chrome
         let chromeless = title_len > 0 && title[0] == 1;
 
-        let (total_w, total_h) = frame_size(info, chromeless);
+        let total_w = if chromeless {
+            info.width as usize
+        } else {
+            info.width as usize + px(BORDER_WIDTH) * 2
+        };
+        let total_h = if chromeless {
+            info.height as usize
+        } else {
+            info.height as usize + px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2
+        };
 
-        // Use the saved position if there is one, otherwise cascade (or origin for fullscreen
-        // chromeless); the frame is the client's size.
-        let (win_x, win_y) = match find_window_defaults(
+        // Use saved defaults if available, otherwise cascade (or origin for fullscreen chromeless)
+        let (win_x, win_y, win_w, win_h) = match find_window_defaults(
             &title[..title_len], title_len, win_defaults,
         ) {
-            Some(at) => at,
+            Some((dx, dy, dw, dh)) => (dx, dy, dw, dh),
             None => {
                 if chromeless && total_w >= screen_w && total_h >= screen_h {
-                    (0i32, 0i32)
+                    (0i32, 0i32, total_w, total_h)
                 } else if chromeless {
                     // Center small chromeless windows on screen
                     let cx = (screen_w as i32 - total_w as i32) / 2;
                     let cy = screen_h as i32 / 5; // Spotlight-style: 1/5 from top
-                    (cx.max(0), cy.max(0))
+                    (cx.max(0), cy.max(0), total_w, total_h)
                 } else {
-                    (cascade_x, cascade_y)
+                    let (x, y) = placement::cascade_position(
+                        [0, px(TASKBAR_HEIGHT), screen_w,
+                         screen_h.saturating_sub(px(TASKBAR_HEIGHT) + px(APPBAR_HEIGHT))],
+                        [total_w, total_h], ui().scale, n,
+                    );
+                    (x, y, total_w, total_h)
                 }
             }
         };
-        let (win_w, win_h) = (total_w, total_h);
 
         print!("[bwm] Discovered window '{}' (id={}, {}x{}{}) at ({},{})\n",
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
@@ -1113,10 +1247,27 @@ fn discover_windows(
         let (content_x, content_y) = if chromeless {
             (win_x, win_y)
         } else {
-            (win_x + BORDER_WIDTH as i32, win_y + TITLE_BAR_HEIGHT as i32 + BORDER_WIDTH as i32)
+            (win_x + px(BORDER_WIDTH) as i32, win_y + px(TITLE_BAR_HEIGHT) as i32 + px(BORDER_WIDTH) as i32)
         };
         let z_order = windows.len() as u32;
-        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order,true);
+        let _ = graphics::set_window_position(info.buffer_id, content_x, content_y, z_order);
+
+        // If saved defaults give different content dimensions, notify client
+        if !chromeless {
+            let default_cw = win_w.saturating_sub(px(BORDER_WIDTH) * 2);
+            let default_ch = win_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
+            if default_cw != info.width as usize || default_ch != info.height as usize {
+                let resize_event = WindowInputEvent {
+                    event_type: input_event_type::WINDOW_RESIZED,
+                    keycode: default_cw as u16,
+                    mouse_x: default_ch as i16,
+                    mouse_y: 0,
+                    modifiers: 0,
+                    scroll_y: 0,
+                };
+                let _ = graphics::write_window_input(info.buffer_id, &resize_event);
+            }
+        }
 
         let order = *next_order;
         *next_order += 1;
@@ -1125,23 +1276,14 @@ fn discover_windows(
             title, title_len, window_id: info.buffer_id,
             owner_pid: info.owner_pid,
             minimized: false,
+            frame_checked: false,
             creation_order: order,
             chromeless,
         });
         added = true;
     }
 
-    removed || added || resized
-}
-
-/// The frame of a window whose client is `info`'s size: the content plus the border and title
-/// bar, or the content alone for a chromeless window.
-fn frame_size(info: &graphics::WindowInfo, chromeless: bool) -> (usize, usize) {
-    if chromeless {
-        (info.width as usize, info.height as usize)
-    } else {
-        (info.width as usize + BORDER_WIDTH * 2, info.height as usize + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2)
-    }
+    removed || added
 }
 
 /// Update kernel z-order for all windows. Called after any z-order change
@@ -1150,7 +1292,7 @@ fn frame_size(info: &graphics::WindowInfo, chromeless: bool) -> (usize, usize) {
 fn update_kernel_z_order(windows: &[Window]) {
     for (i, win) in windows.iter().enumerate() {
         if win.window_id != 0 {
-            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32,!win.minimized);
+            let _ = graphics::set_window_position(win.window_id, win.content_x(), win.content_y(), i as u32);
         }
     }
 }
@@ -1233,7 +1375,7 @@ fn compose_partial_redraw(
             let end = row * screen_w + dx1;
             sbuf[start..end].copy_from_slice(&bg[start..end]);
         }
-        if dy0 < TASKBAR_HEIGHT {
+        if dy0 < px(TASKBAR_HEIGHT) {
             draw_taskbar(sfb, clock, ui_font);
         }
         for i in 0..windows.len() {
@@ -1245,7 +1387,7 @@ fn compose_partial_redraw(
                 draw_window_frame(sfb, &windows[i], i == focused, ui_font);
             }
         }
-        if dy1 > screen_h - APPBAR_HEIGHT {
+        if dy1 > screen_h - px(APPBAR_HEIGHT) {
             draw_appbar(sfb, windows, focused, ui_font);
         }
         for row in dy0..dy1 {
@@ -1259,7 +1401,7 @@ fn compose_partial_redraw(
             let end = row * screen_w + dx1;
             vram[start..end].copy_from_slice(&bg[start..end]);
         }
-        if dy0 < TASKBAR_HEIGHT {
+        if dy0 < px(TASKBAR_HEIGHT) {
             draw_taskbar(fb, clock, ui_font);
         }
         for i in 0..windows.len() {
@@ -1271,7 +1413,7 @@ fn compose_partial_redraw(
                 draw_window_frame(fb, &windows[i], i == focused, ui_font);
             }
         }
-        if dy1 > screen_h - APPBAR_HEIGHT {
+        if dy1 > screen_h - px(APPBAR_HEIGHT) {
             draw_appbar(fb, windows, focused, ui_font);
         }
     }
@@ -1281,6 +1423,31 @@ fn compose_partial_redraw(
 
 
 
+
+/// The visible client windows as the compositor stacks them, bottom to top: each one's
+/// frame and drop shadow (as `draw_window_frame` paints them) beneath its content.
+fn frame_layers(windows: &[Window]) -> Vec<Layer> {
+    windows
+        .iter()
+        .filter(|w| !w.minimized)
+        .map(|w| {
+            let (mut frame, mut frame_len) = ([[0i32; 4]; 3], 0);
+            if !w.chromeless {
+                let (x0, y0) = (w.x, w.y);
+                let (x1, y1) = (w.x + w.width as i32, w.y + w.total_height() as i32);
+                let d = px(SHADOW_OFFSET) as i32;
+                frame = [[x0, y0, x1, y1], [x1, y0 + d, x1 + d, y1 + d], [x0 + d, y1, x1, y1 + d]];
+                frame_len = 3;
+            }
+            Layer {
+                window_id: w.window_id,
+                frame,
+                frame_len,
+                content: [w.content_x(), w.content_y(), w.content_width() as i32, w.content_height() as i32],
+            }
+        })
+        .collect()
+}
 
 // ─── Hotkey Action Execution ─────────────────────────────────────────────────
 
@@ -1325,6 +1492,52 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
     }
 }
 
+/// Show that the desktop covers the whole scanout at the chosen scale. bwm draws the
+/// desktop alone (no windows yet, and no pointer over the sampled pixels), then reads the
+/// scanout itself back where the scale puts the edges of the taskbar and the app bar: the
+/// top-left and bottom-right pixels of each bar, and the background pixel just past each.
+/// The read-back's record must name a scanout of the composed size, the one MODES reports
+/// bound, and the GPU core's current mode must have that size.
+fn check_desktop_fills(gpu: &mut Compositor, desktop: &[u32], fb: &FrameBuf, mode_index: u32) -> Result<String, String> {
+    gpu.compose(&[], None)?;
+    let (w, h) = (fb.width as u32, fb.height as u32);
+    let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
+    // (x, y, what the desktop buffer must hold there)
+    let taskbar = |c: Color| c == TASKBAR_BG;
+    let border = |c: Color| c == APPBAR_BORDER;
+    let appbar = |c: Color| c == APPBAR_BG;
+    let background = |c: Color| c != TASKBAR_BG && c != APPBAR_BORDER && c != APPBAR_BG;
+    let points: [(u32, u32, &dyn Fn(Color) -> bool, &str); 6] = [
+        (0, 0, &taskbar, "taskbar"),
+        (w - 1, tb - 1, &taskbar, "taskbar"),
+        (w - 1, tb, &background, "background"),
+        (w - 1, h - ab - 1, &background, "background"),
+        (0, h - ab, &border, "app bar border"),
+        (w - 1, h - 1, &appbar, "app bar"),
+    ];
+    let mut samples = Vec::new();
+    for (x, y, is, what) in points {
+        if !is(fb.get_pixel(x as usize, y as usize)) {
+            return Err(format!("bwm's desktop has no {} pixel at ({}, {})", what, x, y));
+        }
+        samples.push((x, y, desktop[(y * w + x) as usize]));
+    }
+    let shown = gpu.check_fills(&samples)?;
+    let bound = compositor::scanout_resource()?;
+    if bound != shown.resource {
+        return Err(format!("MODES reports resource {} bound, the read-back showed {}", bound, shown.resource));
+    }
+    let (_, mode) = compositor::display()?;
+    if (mode.width, mode.height) != (shown.width, shown.height) {
+        return Err(format!("the GPU core's mode is {}x{}, the scanout {}x{}", mode.width, mode.height, shown.width, shown.height));
+    }
+    Ok(format!(
+        "resource {} {}x{} bound (GPU core mode {}, {}x{}), composed {}x{}, UI scale {}; taskbar rows 0..{} at (0,0) and ({},{}), background at ({},{}); app bar rows {}..{} at (0,{}) and ({},{}), background at ({},{}); {} pixels exact",
+        shown.resource, shown.width, shown.height, mode_index, mode.width, mode.height, w, h, ui().scale,
+        tb, w - 1, tb - 1, w - 1, tb, h - ab, h, h - ab, w - 1, h - 1, w - 1, h - ab - 1, samples.len()
+    ))
+}
+
 fn monotonic_ms() -> Option<u64> {
     libbreenix::time::now_monotonic()
         .ok()
@@ -1354,25 +1567,58 @@ fn main() {
         result.unwrap()
     };
 
-    let screen_w = info.width as usize;
-    let screen_h = info.height as usize;
+    // The desktop is the GPU core's display, whole: its current mode's size.
+    let (mode_index, mode) = match compositor::display() {
+        Ok(d) => d,
+        Err(e) => {
+            print!("[bwm] ERROR: GPU compositing required: {}\n", e);
+            process::exit(1);
+        }
+    };
+    let screen_w = mode.width as usize;
+    let screen_h = mode.height as usize;
     let bpp = info.bytes_per_pixel as usize;
+    let _ = UI.set(Ui::for_display(screen_w, screen_h));
+    print!(
+        "[bwm] UI scale {}: font {} px ({}x{} cells, text grid {}x{}), taskbar {} px, app bar {} px; the GPU core's mode {} ({}x{}) publishes scale {}\n",
+        ui().scale, ui().font.val(), ui().cell_w, ui().cell_h, screen_w / ui().cell_w, screen_h / ui().cell_h,
+        px(TASKBAR_HEIGHT), px(APPBAR_HEIGHT), mode_index, mode.width, mode.height, mode.scale
+    );
 
-    graphics::init(screen_w as u32,screen_h as u32).unwrap_or_else(|e|{eprintln!("[bwm] v2 compositor: {e}");process::exit(1)});
-    let composite_buf=vec![0u32;screen_w*screen_h].leak();
-    #[cfg(not(target_arch = "aarch64"))]
-    let direct_mapped=false;
+    // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
+    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
+        Ok(c) if bpp == 4 => c,
+        Ok(_) => {
+            print!("[bwm] ERROR: GPU compositing required: the screen has {} bytes per pixel, not 4\n", bpp);
+            process::exit(1);
+        }
+        Err(e) => {
+            print!("[bwm] ERROR: GPU compositing required: {}\n", e);
+            process::exit(1);
+        }
+    };
+    print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
-    let mut fb = unsafe {
+    // The desktop buffer: background, taskbar, window frames and app bar, drawn on the
+    // CPU and uploaded to the compositor's desktop texture. BWM runs for the lifetime of
+    // the OS, so the buffer is leaked into a &'static mut slice.
+    let composite_buf: &'static mut [u32] = vec![0u32; screen_w * screen_h].leak();
+
+    let mut fb = match unsafe {
         FrameBuf::from_raw(
             composite_buf.as_mut_ptr() as *mut u8,
             screen_w, screen_h, screen_w * bpp, bpp, info.is_bgr(),
-        ).expect("the framebuffer is a valid surface")
+        )
+    } {
+        Ok(fb) => fb,
+        Err(e) => {
+            print!("[bwm] ERROR: desktop buffer refused: {:?}\n", e);
+            process::exit(1);
+        }
     };
 
-    // VirGL direct-mapped texture writes are not visible until the explicit
-    // compositor submit, so a second full-screen shadow buffer only burns heap
-    // during early boot. Keep the hook for non-direct fallback paths.
+    // Redraws reach the screen through the compositor's upload of the desktop buffer
+    // after they finish, so no shadow buffer is needed.
     let mut shadow_fb: Option<(&'static mut [u32], FrameBuf)> = None;
 
     // Avoid filesystem reads before the first ARM64 compositor submit. On
@@ -1399,7 +1645,7 @@ fn main() {
 
     // Paint decorative background. ARM64 keeps no full-screen cache during
     // early boot; repainting avoids a multi-megabyte allocation before bwm's
-    // first visible VirGL submit.
+    // first visible frame.
     paint_background(&mut fb);
     #[cfg(target_arch = "aarch64")]
     let bg_cache: &[u32] = &[];
@@ -1421,13 +1667,16 @@ fn main() {
     let (mut mouse_x, mut mouse_y) = graphics::mouse_pos()
         .map(|(x, y)| (x as i32, y as i32))
         .unwrap_or((0, 0));
+    let mut active_cursor_shape = graphics::cursor_shape::ARROW;
     let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None;
+    // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
+    let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
     let mut full_redraw = true;
     let mut content_dirty = false;
     let mut windows_dirty = false;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
-        title: [0; 32], title_len: 0, x: 0, y: 0, valid: false,
+        title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
     });
 
     // Clock state
@@ -1448,20 +1697,24 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Publish the v2 chrome window before entering the input loop.
-    #[cfg(target_arch = "aarch64")]
-    {
-        let _ = graphics::compose_scene(composite_buf, screen_w as u32, screen_h as u32, true);
+    // Initial composite: the desktop alone (background, taskbar and app bar), before any
+    // client window is discovered. It is read back from the scanout and compared with the
+    // desktop buffer (`compositor`).
+    redraw_all_windows(&mut fb, &windows, focused_win, &clock_text, &mut ui_font);
+    let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
+    let first = gpu
+        .upload_desktop(composite_buf, [0, 0, screen_w as u32, screen_h as u32])
+        .and_then(|()| gpu.compose(&[], Some(first_pointer)))
+        .and_then(|()| gpu.check(composite_buf, &[], Some(first_pointer)));
+    match first {
+        Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
+        Err(e) => print!("[bwm] first frame check FAILED: {}\n", e),
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        if direct_mapped {
-            // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
-            let _ = graphics::compose_region(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
-        } else {
-            let _ = graphics::compose_scene(&composite_buf, screen_w as u32, screen_h as u32, true);
-        }
+    match check_desktop_fills(&mut gpu, composite_buf, &fb, mode_index) {
+        Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
+        Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
+    let mut frame_failed = false;
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
@@ -1492,36 +1745,14 @@ fn main() {
         };
 
         // ── 0b. Poll modifier state and check hotkeys ──
-        // Drain the kernel's latched Super press-edge count every frame — including
-        // frames where compositor_wait was skipped — so a tap that completed between
-        // polls is fed into double-tap detection.
-        let keys = graphics::key_state().unwrap_or_default();
-        let super_taps = keys.super_taps;
-        let current_mods = keys.modifiers as u8;
-        if let Some(action) = hotkey_mgr.update(current_mods, None, super_taps) {
-            match &action {
-                HotkeyAction::FocusNext => {
-                    if !windows.is_empty() {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                        focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                        full_redraw = true;
-                    }
-                }
-                HotkeyAction::FocusPrev => {
-                    if !windows.is_empty() {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                        focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
-                        focused_win = next_visible_window(&windows, focused_win);
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                        full_redraw = true;
-                    }
-                }
-                _ => execute_hotkey_action(&action, &mut windows, focused_win),
-            }
-        }
+        // Drain the kernel's latched Super press-edge count (op=31) every frame
+        // — including frames where compositor_wait was skipped — so a tap that
+        // completed between polls is fed into double-tap detection and the
+        // keyboard-ready latch can't busy-loop compositor_wait.
+        let super_taps = take_super_tap_count();
+        let current_mods = graphics::poll_modifier_state() as u8;
+        hotkey_mgr.cooldown = hotkey_mgr.cooldown.saturating_sub(1);
+        let mut hotkey_action = None;
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
@@ -1563,6 +1794,10 @@ fn main() {
                                 }
                             }
                             InputEvent::Key { ascii, keycode, modifiers } => {
+                                if let Some(action) = hotkey_mgr.key_pressed(current_mods | modifiers as u8, ascii) {
+                                    hotkey_action = Some(action);
+                                    continue;
+                                }
                                 if !windows.is_empty() {
                                     let win_event = WindowInputEvent {
                                         event_type: input_event_type::KEY_PRESS,
@@ -1582,12 +1817,39 @@ fn main() {
             }
         }
 
+        let tap_action = hotkey_mgr.update(current_mods, super_taps);
+        if let Some(action) = hotkey_action.or(tap_action) {
+            match &action {
+                HotkeyAction::FocusNext => {
+                    if !windows.is_empty() {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                HotkeyAction::FocusPrev => {
+                    if !windows.is_empty() {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
+                        focused_win = next_visible_window(&windows, focused_win);
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                _ => execute_hotkey_action(&action, &mut windows, focused_win),
+            }
+        }
+
         // Dirty rect tracking — initialized before mouse processing so drag
         // can expand the dirty region. Used by section 5 (client blit) and 6 (composite).
         let mut dirty_x0 = i32::MAX;
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
         let mut dirty_y1 = 0i32;
+        let mut cursor_dirty = false;
 
         // ── 4. Process mouse input (only when mouse changed) ──
         let mut mouse_moved_this_frame = false;
@@ -1605,7 +1867,7 @@ fn main() {
                     if let Some((win_idx, off_x, off_y)) = dragging {
                         let new_x = mouse_x - off_x;
                         // Clamp drag to stay below taskbar
-                        let new_y = (mouse_y - off_y).max(TASKBAR_HEIGHT as i32);
+                        let new_y = (mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
                         if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
                             // Capture old bounds before moving
                             let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
@@ -1615,7 +1877,7 @@ fn main() {
                             if windows[win_idx].window_id != 0 {
                                 let cx = windows[win_idx].content_x();
                                 let cy = windows[win_idx].content_y();
-                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32,!windows[win_idx].minimized);
+                                let _ = graphics::set_window_position(windows[win_idx].window_id, cx, cy, win_idx as u32);
                             }
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
@@ -1631,6 +1893,88 @@ fn main() {
                             dirty_y1 = dirty_y1.max(dr_y1 as i32);
                             content_dirty = true;
                         }
+                    } else if let Some((win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)) = resizing {
+                        let dx = mouse_x - anchor_x;
+                        let dy = mouse_y - anchor_y;
+
+                        let (mut new_x, mut new_y, mut new_w, mut new_h) =
+                            (orig_x, orig_y, orig_w as i32, orig_h as i32);
+
+                        match edge {
+                            ResizeEdge::Right => { new_w += dx; }
+                            ResizeEdge::Bottom => { new_h += dy; }
+                            ResizeEdge::Left => { new_x += dx; new_w -= dx; }
+                            ResizeEdge::Top => { new_y += dy; new_h -= dy; }
+                            ResizeEdge::TopLeft => { new_x += dx; new_w -= dx; new_y += dy; new_h -= dy; }
+                            ResizeEdge::TopRight => { new_w += dx; new_y += dy; new_h -= dy; }
+                            ResizeEdge::BottomLeft => { new_x += dx; new_w -= dx; new_h += dy; }
+                            ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
+                        }
+
+                        // Enforce minimums
+                        if (new_w as usize) < px(MIN_WIN_WIDTH) {
+                            if edge == ResizeEdge::Left || edge == ResizeEdge::TopLeft || edge == ResizeEdge::BottomLeft {
+                                new_x = orig_x + orig_w as i32 - px(MIN_WIN_WIDTH) as i32;
+                            }
+                            new_w = px(MIN_WIN_WIDTH) as i32;
+                        }
+                        if (new_h as usize) < px(MIN_WIN_HEIGHT) {
+                            if edge == ResizeEdge::Top || edge == ResizeEdge::TopLeft || edge == ResizeEdge::TopRight {
+                                new_y = orig_y + orig_h as i32 - px(MIN_WIN_HEIGHT) as i32;
+                            }
+                            new_h = px(MIN_WIN_HEIGHT) as i32;
+                        }
+
+                        // Clamp top to taskbar
+                        new_y = new_y.max(px(TASKBAR_HEIGHT) as i32);
+
+                        let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
+
+                        // Update frame dimensions live (content stays at old size until release)
+                        windows[win_idx].x = new_x;
+                        windows[win_idx].y = new_y;
+                        windows[win_idx].width = new_w as usize;
+                        windows[win_idx].height = new_h as usize;
+
+                        // Update kernel window position
+                        if windows[win_idx].window_id != 0 {
+                            let cx = windows[win_idx].content_x();
+                            let cy = windows[win_idx].content_y();
+                            let _ = graphics::set_window_position(
+                                windows[win_idx].window_id, cx, cy, win_idx as u32,
+                            );
+                        }
+
+                        // Send live resize event to client
+                        let new_cw = windows[win_idx].content_width();
+                        let new_ch = windows[win_idx].content_height();
+                        if windows[win_idx].window_id != 0 {
+                            let resize_event = WindowInputEvent {
+                                event_type: input_event_type::WINDOW_RESIZED,
+                                keycode: new_cw as u16,
+                                mouse_x: new_ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                scroll_y: 0,
+                            };
+                            let _ = graphics::write_window_input(
+                                windows[win_idx].window_id, &resize_event,
+                            );
+                        }
+
+                        // Dirty region = union of old and new bounds
+                        let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
+                        let dr_x0 = ox0.min(nx0).max(0) as usize;
+                        let dr_y0 = oy0.min(ny0).max(0) as usize;
+                        let dr_x1 = ox1.max(nx1) as usize;
+                        let dr_y1 = oy1.max(ny1) as usize;
+                        compose_partial_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache,
+                            &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
+                        dirty_x0 = dirty_x0.min(dr_x0 as i32);
+                        dirty_y0 = dirty_y0.min(dr_y0 as i32);
+                        dirty_x1 = dirty_x1.max(dr_x1 as i32);
+                        dirty_y1 = dirty_y1.max(dr_y1 as i32);
+                        content_dirty = true;
                     } else if !windows.is_empty() && focused_win < windows.len()
                         && !windows[focused_win].minimized
                         && windows[focused_win].hit_content(mouse_x, mouse_y)
@@ -1639,13 +1983,63 @@ fn main() {
                         let local_y = (mouse_y - windows[focused_win].content_y()) as i16;
                         route_mouse_move_to_focused(&windows, focused_win, local_x, local_y);
                     }
+
+                    // Update cursor shape based on resize edge hover
+                    if dragging.is_none() && resizing.is_none() {
+                        let mut hover_shape = graphics::cursor_shape::ARROW;
+                        for i in (0..windows.len()).rev() {
+                            if windows[i].minimized { continue; }
+                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                                hover_shape = match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
+                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
+                                };
+                                break;
+                            }
+                            if windows[i].hit_any(mouse_x, mouse_y) {
+                                break; // Inside window but not on edge
+                            }
+                        }
+                        cursor_dirty |= active_cursor_shape != hover_shape;
+                        active_cursor_shape = hover_shape;
+                    }
                 }
 
                 // Release: end drag or route release event.
                 // Per-endpoint button tracking in the kernel prevents dual USB HID
                 // endpoints from racing (one endpoint can't cancel the other's press).
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
-                    if dragging.is_some() {
+                    if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
+                        // Reset cursor shape back to arrow
+                        cursor_dirty |= active_cursor_shape != graphics::cursor_shape::ARROW;
+                        active_cursor_shape = graphics::cursor_shape::ARROW;
+                        // Resize ended — notify client of new content dimensions
+                        let new_cw = windows[win_idx].content_width();
+                        let new_ch = windows[win_idx].content_height();
+                        let old_cw = orig_w.saturating_sub(px(BORDER_WIDTH) * 2);
+                        let old_ch = orig_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
+                        print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
+                            windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
+                            windows[win_idx].width, windows[win_idx].height);
+                        if (new_cw != old_cw || new_ch != old_ch)
+                            && windows[win_idx].window_id != 0
+                        {
+                            let resize_event = WindowInputEvent {
+                                event_type: input_event_type::WINDOW_RESIZED,
+                                keycode: new_cw as u16,
+                                mouse_x: new_ch as i16,
+                                mouse_y: 0,
+                                modifiers: 0,
+                                scroll_y: 0,
+                            };
+                            let _ = graphics::write_window_input(
+                                windows[win_idx].window_id, &resize_event,
+                            );
+                        }
+                        save_window_defaults(&windows[win_idx], &mut win_defaults);
+                    } else if dragging.is_some() {
                         let drag_idx = dragging.unwrap().0;
                         dragging = None;
                         save_window_defaults(&windows[drag_idx], &mut win_defaults);
@@ -1677,11 +2071,11 @@ fn main() {
 
                 if new_click {
                     // Check taskbar area — ignore clicks
-                    if mouse_y < TASKBAR_HEIGHT as i32 {
+                    if mouse_y < px(TASKBAR_HEIGHT) as i32 {
                         // Taskbar click — no action
                     }
                     // Check appbar area
-                    else if mouse_y >= (screen_h - APPBAR_HEIGHT) as i32 {
+                    else if mouse_y >= (screen_h - px(APPBAR_HEIGHT)) as i32 {
                         if let Some(idx) = appbar_hit_test(&windows, screen_w, screen_h, mouse_x, mouse_y) {
                             if idx == focused_win && !windows[idx].minimized {
                                 // Click focused window button → minimize
@@ -1715,8 +2109,15 @@ fn main() {
                     else if !windows.is_empty() {
                         let mut clicked_idx: Option<usize> = None;
                         let mut clicked_title = false;
+                        let mut clicked_resize: Option<ResizeEdge> = None;
                         for i in (0..windows.len()).rev() {
                             if windows[i].minimized { continue; }
+                            // Check resize edges first (they extend slightly outside)
+                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                                clicked_idx = Some(i);
+                                clicked_resize = Some(edge);
+                                break;
+                            }
                             let ht = windows[i].hit_title(mouse_x, mouse_y);
                             let ha = windows[i].hit_any(mouse_x, mouse_y);
                             if ht || ha {
@@ -1743,7 +2144,23 @@ fn main() {
                                 focused_win = top;
                             }
 
-                            if clicked_title {
+                            if let Some(edge) = clicked_resize {
+                                // Start resize — set cursor shape for the edge
+                                let shape = match edge {
+                                    ResizeEdge::Top | ResizeEdge::Bottom => graphics::cursor_shape::RESIZE_NS,
+                                    ResizeEdge::Left | ResizeEdge::Right => graphics::cursor_shape::RESIZE_EW,
+                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
+                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
+                                };
+                                cursor_dirty |= active_cursor_shape != shape;
+                                active_cursor_shape = shape;
+                                resizing = Some((
+                                    top, edge,
+                                    mouse_x, mouse_y,
+                                    windows[top].x, windows[top].y,
+                                    windows[top].width, windows[top].height,
+                                ));
+                            } else if clicked_title {
                                 // Check chrome buttons before starting drag
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
                                     let close_event = WindowInputEvent {
@@ -1784,11 +2201,10 @@ fn main() {
         }
 
         // ── 5. Window content handled by GPU ──
-        // Per-window textures are uploaded by the kernel directly from MAP_SHARED
-        // pages and composited via VirGL SUBMIT_3D with z-order interleaved
-        // frame strips. No CPU blit needed. Mark windows_dirty so the composite
-        // syscall triggers per-window GPU upload + render WITHOUT re-uploading
-        // the full COMPOSITE_TEX (which contains only frames/decorations).
+        // Client frames are uploaded to per-window textures and drawn above their
+        // frames in stacking order (section 6). No CPU blit needed. Mark windows_dirty
+        // so a client frame is composed without re-uploading the desktop buffer
+        // (which contains only the background and decorations).
         if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
             windows_dirty = true;
         }
@@ -1819,7 +2235,7 @@ fn main() {
                     dirty_x0 = 0;
                     dirty_y0 = 0;
                     dirty_x1 = dirty_x1.max(screen_w as i32);
-                    dirty_y1 = dirty_y1.max(TASKBAR_HEIGHT as i32);
+                    dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
                     content_dirty = true;
                 }
             }
@@ -1827,76 +2243,60 @@ fn main() {
 
         // (hotkey cooldown is managed inside HotkeyManager::update)
 
-        // ── 6. Composite to GPU (only when something changed) ──
-        #[cfg(target_arch = "aarch64")]
-        {
-            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame {
-                let (cbuf, cw, ch): (&[u32], u32, u32) = (composite_buf, screen_w as u32, screen_h as u32);
-                if full_redraw {
-                    let _ = graphics::compose_region(
-                        cbuf,
-                        cw,
-                        ch,
-                        1,
-                        0,
-                        0,
-                        screen_w as u32,
-                        screen_h as u32,
-                    );
-                } else if content_dirty {
-                    let sw = screen_w as i32;
-                    let sh = screen_h as i32;
-                    let dx = dirty_x0.max(0) as u32;
-                    let dy = dirty_y0.max(0) as u32;
-                    let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
-                    let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-                    let _ = graphics::compose_region(cbuf, cw, ch, 2, dx, dy, dw, dh);
-                } else if windows_dirty || mouse_moved_this_frame {
-                    let _ = graphics::compose_region(cbuf, cw, ch, 0, 0, 0, 0, 0);
-                }
-                full_redraw = false;
-                content_dirty = false;
-                windows_dirty = false;
-            }
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-        let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
-            (&[], 0, 0)
-        } else {
-            (&composite_buf, screen_w as u32, screen_h as u32)
-        };
-        if full_redraw {
-            let _ = graphics::compose_region(
-                cbuf, cw, ch,
-                1, 0, 0, screen_w as u32, screen_h as u32,
-            );
+        // ── 6. Composite on the GPU (only when something changed) ──
+        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
+            let upload = if full_redraw {
+                Some([0, 0, screen_w as u32, screen_h as u32])
+            } else if content_dirty {
+                let dx = dirty_x0.max(0);
+                let dy = dirty_y0.max(0);
+                let dw = (dirty_x1.min(screen_w as i32) - dx).max(0) as u32;
+                let dh = (dirty_y1.min(screen_h as i32) - dy).max(0) as u32;
+                Some([dx as u32, dy as u32, dw, dh])
+            } else {
+                None
+            };
+            let layers = frame_layers(&windows);
+            let pointer = Some(Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape });
+            let frame = upload
+                .map_or(Ok(()), |rect| gpu.upload_desktop(composite_buf, rect))
+                .and_then(|()| gpu.refresh_windows())
+                .and_then(|_| gpu.compose(&layers, pointer));
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
-        } else if content_dirty {
-            let sw = screen_w as i32;
-            let sh = screen_h as i32;
-            let dx = dirty_x0.max(0) as u32;
-            let dy = dirty_y0.max(0) as u32;
-            let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
-            let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-            let _ = graphics::compose_region(
-                cbuf, cw, ch,
-                2, dx, dy, dw, dh,
-            );
-            content_dirty = false;
-            windows_dirty = false;
-        } else if windows_dirty || mouse_moved_this_frame {
-            // Window content and/or mouse-only update: no COMPOSITE_TEX change,
-            // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
-            // dirty_mode=0 tells kernel bg_dirty=false → skip COMPOSITE_TEX upload.
-            let _ = graphics::compose_region(
-                cbuf, cw, ch,
-                0, 0, 0, 0, 0,
-            );
-            windows_dirty = false;
-        }
+            match frame {
+                Ok(()) => {
+                    frame_failed = false;
+                    // Check each client's first visible frame, including windows opened
+                    // by a hotkey after the desktop's initial client was checked.
+                    if let Some(id) = gpu.shows_client(&layers) {
+                        if let Some(win) = windows.iter_mut().find(|win| win.window_id == id && !win.frame_checked) {
+                            win.frame_checked = true;
+                            match gpu.check(composite_buf, &layers, pointer) {
+                                Ok(pixels) => print!(
+                                    "[bwm] composited client frame: window {} on screen, {} pixels exact\n",
+                                    id, pixels
+                                ),
+                                Err(e) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Start again with a fresh context and resources; the next frame
+                    // uploads everything.
+                    if !frame_failed {
+                        print!("[bwm] GPU frame failed: {}\n", e);
+                    }
+                    frame_failed = true;
+                    if let Err(e) = gpu.reopen() {
+                        print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
+                        process::exit(1);
+                    }
+                    full_redraw = true;
+                }
+            }
         }
         // No sleep — compositor_wait handles blocking
     }

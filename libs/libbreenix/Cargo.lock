@@ -7,10 +7,15 @@ name = "breengel-abi"
 version = "0.1.0"
 
 [[package]]
+name = "gpu-abi"
+version = "0.1.0"
+
+[[package]]
 name = "libbreenix"
 version = "0.1.0"
 dependencies = [
  "breengel-abi",
+ "gpu-abi",
  "libgfx",
  "libpixcheck",
 ]

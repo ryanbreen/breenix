@@ -1,6 +1,6 @@
 """Exercise the shared policy and real launchers without building or booting guests.
 
-Build breenix-runs first; override its location with BREENIX_RUNS_BIN if needed.
+Prerequisites: run scripts/build-host-test-tools.sh; BREENIX_RUNS_BIN overrides the CLI.
 """
 import base64
 import binascii
@@ -36,6 +36,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.configure(self.repo)
         (self.repo / 'docs/efforts').mkdir(parents=True)
         shutil.copy(ROOT / 'docs/efforts/path.json', self.repo / 'docs/efforts/path.json')
+        shutil.copy(ROOT / 'docs/efforts/metal.json', self.repo / 'docs/efforts/metal.json')
         self.main = self.commit('main')
         self.git('switch', '-qc', 'breengel/suite')
         self.effort = self.commit('effort')
@@ -56,7 +57,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         shutil.copy(ROOT / 'docs/boot-path.json', self.repo / 'docs/boot-path.json')
         self.binary = Path(os.environ.get('BREENIX_RUNS_BIN',
             ROOT / 'tools/breenix-runs/.build/debug/breenix-runs'))
-        self.env = dict(os.environ, BREENIX_RUNS_STORE=str(self.base / 'store'))
+        self.env = dict(os.environ, BREENIX_ALLOW_X86_QEMU="1", BREENIX_RUNS_STORE=str(self.base / 'store'))
         for key in ('BREENIX_CATCHUP', 'BREENIX_SLOT_SESSION', 'BREENIX_TARGET_POLICY_CHECKED',
                     'BREENIX_HOST_ENTRY'):
             self.env.pop(key, None)
@@ -122,6 +123,125 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('BREENIX_CATCHUP must be', result.stderr)
 
+    def metal_lane(self, name='metal-bring-up/first-light', base='main'):
+        self.git('switch', '-qc', name, base)
+        sha = self.commit(name)
+        self.git('push', '-q', 'origin', name)
+        return sha
+
+    def merge(self, branch):
+        # The ours strategy preserves the current tree while adding the other ancestry.
+        self.git('merge', '-q', '--no-ff', '-s', 'ours', branch, '-m', 'merge test history')
+        return self.git('rev-parse', 'HEAD')
+
+    def test_guard_table_for_both_streams(self):
+        metal = self.metal_lane()
+        for target in guard.TARGETS:
+            for catchup in (False, True):
+                for sha in (self.main, self.fix, self.scratch, self.effort, metal):
+                    with self.subTest(target=target, catchup=catchup, sha=sha):
+                        expected = (sha != self.effort or target == 'arm64-qemu' or
+                                    (catchup and target != 'x86-metal'))
+                        if target == 'x86-metal' and sha in (self.fix, self.scratch):
+                            expected = False  # Positive ancestry rule also applies to unlabelled work.
+                        result = self.policy(sha, target, *(['--catchup'] if catchup else []))
+                        self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
+                        if expected:
+                            self.assertEqual(result.stdout.strip(), sha)
+
+    def test_metal_catchup_refuses_effort_from_fresh_clone(self):
+        fresh = self.base / 'fresh'
+        subprocess.run(['git', 'clone', '-q', '--single-branch', '-b', 'main',
+                        str(self.origin), str(fresh)], check=True)
+        (fresh / 'docs/efforts').mkdir(parents=True)
+        for name in ('path.json', 'metal.json'):
+            shutil.copy(ROOT / 'docs/efforts' / name, fresh / 'docs/efforts' / name)
+        result = self.invoke('python3', str(GUARD), '--repo', str(fresh),
+                             '--commit', self.effort, '--target', 'x86-metal', '--catchup')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("main-path effort work cannot run on metal", result.stderr)
+
+    def test_metal_requires_published_first_parent_history(self):
+        self.git('switch', '-qc', 'metal-stream/definition', 'main')
+        local = self.commit('definition')
+        for extra in ([], ['--catchup']):
+            result = self.policy(local, 'x86-metal', *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('not first-parent reachable', result.stderr)
+        self.git('push', '-q', 'origin', 'metal-stream/definition')
+        self.assertEqual(self.policy(local, 'x86-metal').returncode, 0)
+        self.git('switch', '-qc', 'scratch/renamed-metal')
+        self.git('branch', '-D', 'metal-stream/definition')
+        self.assertEqual(self.policy(local, 'x86-metal').returncode, 0)
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/scratch/renamed-metal')
+        self.git('push', '-q', 'origin', '--delete', 'metal-stream/definition')
+        self.assertIn('not first-parent reachable', self.policy(local, 'x86-metal').stderr)
+
+    def test_deleted_or_renamed_second_parent_is_refused(self):
+        for rename in (False, True):
+            with self.subTest(rename=rename):
+                name = 'metal-bring-up/merge-' + str(rename)
+                self.metal_lane(name)
+                merged = self.merge('scratch/probe')
+                self.git('push', '-q', 'origin', name)
+                if rename:
+                    self.git('branch', '-m', 'scratch/probe', 'fix/renamed')
+                    self.git('push', '-q', 'origin', 'fix/renamed')
+                else:
+                    self.git('branch', '-D', 'scratch/probe')
+                self.git('push', '-q', 'origin', '--delete', 'scratch/probe')
+                for extra in ([], ['--catchup']):
+                    result = self.policy(merged, 'x86-metal', *extra)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('not first-parent reachable', result.stderr)
+                if not rename:
+                    self.git('branch', 'scratch/probe', self.scratch)
+                    self.git('push', '-q', 'origin', 'scratch/probe')
+
+    def test_metal_and_main_second_parents_are_accepted(self):
+        other = self.metal_lane('metal-userspace/ramdisk')
+        name = 'metal-network/integration'
+        self.metal_lane(name)
+        merged = self.merge(other)
+        self.git('push', '-q', 'origin', name)
+        self.assertEqual(self.policy(merged, 'x86-metal').returncode, 0)
+        self.git('switch', '-q', 'main')
+        main = self.commit('new main')
+        self.git('push', '-q', 'origin', 'main')
+        self.git('switch', '-q', name)
+        merged = self.merge(main)
+        self.git('push', '-q', 'origin', name)
+        self.assertEqual(self.policy(merged, 'x86-metal').returncode, 0)
+
+    def test_main_path_lane_cannot_hide_on_metal_first_parent(self):
+        name = 'metal-bring-up/contaminated'
+        self.metal_lane(name, 'breengel/window')
+        for extra in ([], ['--catchup']):
+            result = self.policy('HEAD', 'x86-metal', *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('main-path effort work cannot run on metal', result.stderr)
+
+    def test_deleted_main_effort_second_parent_still_refuses_metal(self):
+        name = 'metal-bring-up/deleted-parent'
+        self.metal_lane(name)
+        merged = self.merge('breengel/window')
+        self.git('push', '-q', 'origin', name)
+        self.git('branch', '-D', 'breengel/suite', 'breengel/window')
+        self.git('push', '-q', 'origin', '--delete', 'breengel/suite', 'breengel/window')
+        for extra in ([], ['--catchup']):
+            result = self.policy(merged, 'x86-metal', *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('not first-parent reachable', result.stderr)
+
+    def test_local_main_path_lane_and_unavailable_origin_refuse_metal(self):
+        self.git('switch', '-qc', 'breengel/local-metal', 'main')
+        local = self.commit('local main effort')
+        self.git('push', '-q', 'origin', 'HEAD:refs/heads/metal-bring-up/shared')
+        self.assertIn('effort lane breengel/local-metal', self.policy(local, 'x86-metal').stderr)
+        self.git('remote', 'set-url', 'origin', str(self.base / 'unavailable'))
+        for extra in ([], ['--catchup']):
+            self.assertIn('cannot read origin', self.policy(self.main, 'x86-metal', *extra).stderr)
+
     def test_requested_sha_need_not_be_a_lane_tip(self):
         self.git('branch', '-D', 'breengel/suite')
         self.git('push', '-q', 'origin', '--delete', 'breengel/suite')
@@ -144,6 +264,30 @@ class EffortTargetGuardTest(unittest.TestCase):
         for sha in (self.effort, self.descendant):
             self.assertEqual(self.policy(sha).returncode, 0)
 
+    def test_gate_tree_reads_the_projects_origin_not_the_canonical_cache(self):
+        # The gate VM's canonical clone keeps a stale local main and an old lane branch;
+        # its gate trees are shared clones of it, and their boots run this guard.
+        canonical = self.base / 'canonical'
+        subprocess.run(['git', 'clone', '-q', str(self.origin), str(canonical)], check=True)
+        subprocess.run(['git', '-C', str(canonical), 'branch', '-q', 'breengel/suite', 'origin/breengel/suite'],
+                       check=True)
+        self.git('switch', '-q', 'main')
+        merged = self.merge('breengel/suite')
+        self.git('push', '-q', 'origin', 'main')
+        spec = importlib.util.spec_from_file_location('trees', ROOT / 'scripts/gate-tree.py')
+        trees = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(trees)
+        tree = self.base / 'cache/trees' / ('a' * 64)
+        for sha in (merged, self.descendant):
+            trees.checkout(str(canonical), tree, sha, 'a' * 64)
+            shutil.copytree(self.repo / 'docs/efforts', tree / 'docs/efforts', dirs_exist_ok=True)
+            result = self.invoke('python3', str(GUARD), '--repo', str(tree), '--target', 'x86')
+            if sha == merged:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), merged)
+            else:
+                self.assert_refused(result, 'origin/breengel/window')
+
     def test_unpushed_local_lane_commit_is_refused(self):
         self.git('switch', '-qc', 'breengel/local', 'main')
         local = self.commit('unpushed lane work')
@@ -152,7 +296,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.assert_refused(result, 'breengel/local')
 
     def test_lane_commit_pushed_under_another_name_is_refused(self):
-        self.assertTrue(self.binary.is_file(), 'Build breenix-runs before running these host tests')
+        self.assertTrue(self.binary.is_file(), 'Missing breenix-runs; run scripts/build-host-test-tools.sh from the repository root')
         self.git('switch', '-qc', 'breengel/local', 'main')
         local = self.commit('lane work pushed elsewhere')
         self.git('push', '-q', 'origin', 'HEAD:refs/heads/wrb/tmp')
@@ -253,7 +397,11 @@ class EffortTargetGuardTest(unittest.TestCase):
     def test_vm_run_metadata_persists_catchup(self):
         source = (ROOT / 'run.sh').read_text()
         for platform in ('parallels', 'vmware'):
-            self.assertRegex(source, r'\n    install_vm_boot_traps\n    record_launch_metadata\n(?:    #[^\n]*\n)*'
+            self.assertRegex(source, r'\n    install_vm_boot_traps\n'
+                                     r'(?:    export BREENIX_VIGIL_DISPLAY=true\n'
+                                     r'    \[ -z "\$\{BREENIX_' + platform.upper() +
+                                     r'_NOGUI:-\}" \] \|\| export BREENIX_VIGIL_DISPLAY=false\n)?'
+                                     r'    record_launch_metadata\n(?:    #[^\n]*\n)*'
                                      r'    [^\n]*VIGIL_ID=\$\("\$BREENIX_ROOT/scripts/vigil-record\.sh" start '
                                      + platform + ' ')
         body = re.search(r'(?ms)^record_launch_metadata\(\) \{\n(.*?)^\}', source).group(1)
@@ -268,7 +416,7 @@ class EffortTargetGuardTest(unittest.TestCase):
                                  {'target': target, 'catchup': catchup == '1', 'commit': self.scratch})
 
     def test_real_launcher_dry_invocations(self):
-        self.assertTrue(self.binary.is_file(), 'Build breenix-runs before running these host tests')
+        self.assertTrue(self.binary.is_file(), 'Missing breenix-runs; run scripts/build-host-test-tools.sh from the repository root')
         launchers = {
             'breenix-runs x86': ('x86', None),
             'run.sh --x86': ('x86', ['--x86']),

@@ -4,6 +4,11 @@ name = "breenix"
 version = "0.1.0"
 edition = "2021"
 
+# The x86 kernel is a target artifact in build-dependencies. Cargo otherwise
+# gives it the unoptimized build-dependency profile even for --release.
+[profile.release.package.kernel]
+opt-level = 3
+
 [features]
 force_cpu_accounting_delay = ["kernel/force_cpu_accounting_delay"]
 testing = ["kernel/testing"]
@@ -26,6 +31,9 @@ fs_fault_inject = ["kernel/fs_fault_inject"]  # ext2/VFS fault-injection leg, se
 fs_fault_disarm_short_read = ["fs_fault_inject", "kernel/fs_fault_disarm_short_read"]
 fs_fault_disarm_eio = ["fs_fault_inject", "kernel/fs_fault_disarm_eio"]
 fs_fault_disarm_corrupt_inode = ["fs_fault_inject", "kernel/fs_fault_disarm_corrupt_inode"]
+xhci_fault_inject = ["kernel/xhci_fault_inject"]  # x86-metal xHCI recovery exercise, see kernel/Cargo.toml
+block_fence_inject = ["kernel/block_fence_inject"]  # x86-metal write fence exercise, see kernel/Cargo.toml
+usb_pointer_replay = ["kernel/usb_pointer_replay"]  # ARM64 USB pointer replay control, see kernel/Cargo.toml
 ext2_lock_race = ["boot_tests", "kernel/ext2_lock_race"]  # #728 lock-discipline repro oracle, see kernel/Cargo.toml
 capture_selftest = ["boot_tests", "kernel/capture_selftest"]  # failure-capture PR-3, see kernel/Cargo.toml
 capture_panic_oracle = ["boot_tests", "kernel/capture_panic_oracle"]  # failure-capture PR-4, see kernel/Cargo.toml
@@ -59,13 +67,14 @@ name = "qemu-bios"
 test = false
 
 [workspace]
-exclude = ["libs/libgfx", "libs/libfont"]
+exclude = ["libs/libgfx", "libs/libfont", "libs/breenix-logo"]
 members = [
     "kernel",
     "parallels-loader",
     "xtask",
     "libs/arm64-boot-contract",
-    "libs/breengel-abi"
+    "libs/breengel-abi",
+    "libs/gpu-abi"
 ]
 
 [dependencies]
@@ -83,8 +92,17 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-latin-extended-a", "unicode-specials"] }
 spin = "0.9"
 libc = "0.2"
 serde_json = "1.0"
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = "1"
+quote = "1"
+
+# The x86-64 kernel is the `kernel` build-dependency artifact above, so a
+# release build compiles it, and every crate it uses, under `build-override`,
+# whose opt-level defaults to 0. The ARM64 kernel (`cargo build --release -p
+# kernel`) is optimized; this optimizes the x86-64 kernel the same way.
+[profile.release.build-override]
+opt-level = 3

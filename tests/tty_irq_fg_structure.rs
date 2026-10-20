@@ -19,7 +19,7 @@
 //!
 //! * the interrupt-side roots inside `kernel/src/tty/driver.rs` are read out
 //!   of that file as the functions whose names end in `_nonblock` -- its own
-//!   naming convention for the interrupt-context twins -- so a seventh one
+//!   naming convention for the interrupt-context twins -- so a new one
 //!   added later is swept in without an edit here;
 //! * the acquisition sites are read out of `driver.rs` as the `.lock()` and
 //!   `.try_lock()` calls on the `foreground_pgrp` field itself, so a sixth one
@@ -388,13 +388,15 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
         .copied()
         .filter(|name| name.ends_with("_nonblock"))
         .collect();
-    if roots.len() < 6 {
-        return Err(format!(
-            "driver.rs declares {} interrupt-context entries (names ending in _nonblock); this \
-             rule was written against 6 and a census that shrank below 6 is a rule that stopped \
-             looking",
-            roots.len()
-        ));
+    const REQUIRED: [&str; 8] = [
+        "input_char_nonblock", "input_char_from_nonblock", "input_char_source_nonblock",
+        "output_char_nonblock", "send_signal_to_foreground_nonblock",
+        "queue_foreground_signal_nonblock", "wake_blocked_readers_nonblock", "push_char_nonblock",
+    ];
+    for name in REQUIRED {
+        if !roots.contains(&name) {
+            return Err(format!("driver.rs no longer declares {name}, a required interrupt-context entry"));
+        }
     }
     if !roots.contains(&"input_char_nonblock") {
         return Err(
@@ -409,6 +411,20 @@ fn interrupt_reachable(driver: &str) -> Result<Vec<String>, String> {
              signal path #822 is about"
                 .to_string(),
         );
+    }
+
+    let send = function_body(driver, "send_signal_to_foreground_nonblock")
+        .ok_or("missing foreground signal entry")?;
+    let enqueue = function_body(driver, "queue_foreground_signal_nonblock")
+        .ok_or("missing foreground atomic queue")?;
+    if !normalized_code(send).replace(' ', "").contains("queue_foreground_signal_nonblock(pgrp,sig)")
+        || !normalized_code(enqueue).replace(' ', "").contains("FG_SIGNAL_QUEUE.iter()")
+        || !normalized_code(enqueue).replace(' ', "").contains("compare_exchange(0,entry,")
+        || normalized_code(enqueue).replace(' ', "").contains(".lock()")
+        || normalized_code(enqueue).replace(' ', "").contains(".try_lock()")
+        || !normalized_code(driver).replace(' ', "").contains("FG_SIGNAL_QUEUE:[AtomicU64;FG_SIGNAL_SLOTS]")
+    {
+        return Err("foreground IRQ delivery must enqueue through the atomic group queue without a lock".into());
     }
 
     let mut queue: Vec<&str> = roots.clone();
@@ -919,7 +935,7 @@ fn deliberately_broken_copies_redden_the_rules() {
     // Leg F -- a setter that writes the field without the publisher.
     let unpublished_setter = replace_once(
         &driver,
-        "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        self.store_foreground_pgrp(Some(pgrp));\n    }",
+        "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        self.store_foreground_pgrp(Some(pgrp), None);\n    }",
         "    pub fn set_foreground_pgrp(&self, pgrp: u64) {\n        note_foreground_pgrp_acquisition(true);\n        *self.foreground_pgrp.lock() = Some(pgrp);\n    }",
     );
     assert_ne!(unpublished_setter, driver, "leg F's mutation must apply");
@@ -933,8 +949,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     // Leg G -- the interrupt-side signal path stops reading the snapshot.
     let reader_dropped = replace_once(
         &driver,
-        "        if let Some(pgrp) = self.foreground_pgrp_snapshot() {\n            let pid = ProcessId::new(pgrp);",
-        "        if let Some(pgrp) = None::<u64> {\n            let pid = ProcessId::new(pgrp);",
+        "        let Some(pgrp) = self.foreground_pgrp_snapshot() else {\n",
+        "        let Some(pgrp) = None::<u64> else {\n",
     );
     assert_ne!(reader_dropped, driver, "leg G's mutation must apply");
     let error = validate_irq_readers_use_the_snapshot(&reader_dropped)
@@ -975,8 +991,8 @@ fn deliberately_broken_copies_redden_the_rules() {
     );
 
     // Leg J -- the entry both architectures' input interrupts reach is renamed
-    // out from under the rule, while the census's own COUNT is left at 6. Leg L
-    // measures the count; this leg measures the named entry.
+    // out from under the rule, while the census's own COUNT is left above its
+    // floor. Leg L measures the count; this leg measures the named entry.
     let census_gone = replace_once(
         &driver,
         "    pub fn input_char_nonblock(&self, c: u8) -> bool {",
@@ -1009,9 +1025,7 @@ fn deliberately_broken_copies_redden_the_rules() {
         "leg K reddened for the wrong reason: {error}"
     );
 
-    // Leg L -- the census's own count shrinks, by a root renamed out of the
-    // `_nonblock` convention. One unit of slack here is one interrupt entry
-    // that stopped being swept.
+    // Leg L -- losing any named IRQ root must fail the validator itself.
     let census_shrank = replace_once(
         &driver,
         "    fn wake_blocked_readers_nonblock() {",
@@ -1019,25 +1033,24 @@ fn deliberately_broken_copies_redden_the_rules() {
     );
     assert_ne!(census_shrank, driver, "leg L's mutation must apply");
     let error = validate_irq_entry_takes_no_foreground_pgrp_lock(&census_shrank)
-        .expect_err("leg L: rule 1 has to redden when its census shrinks");
-    assert!(
-        error.contains("shrank below 6"),
-        "leg L reddened for the wrong reason: {error}"
-    );
+        .expect_err("leg L: renaming a required IRQ root must fail validation");
+    assert!(error.contains("no longer declares wake_blocked_readers_nonblock"), "{error}");
 
     // Leg M -- the `serial_println!` restored on the interrupt-side signal
     // path. This is the call the round's review found still live at that hop,
-    // and rule 7's own subject.
+    // and rule 7's own subject. The hop is now the queueing step that hands
+    // the group to the foreground signal thread (the per-process sender it
+    // replaced is gone), so the mutation follows it there.
     let printed = inject_into_function(
         &driver,
-        "send_signal_to_process_nonblock",
-        "\n        crate::serial_println!(\"TTY: sig {}\", sig);\n",
+        "queue_foreground_signal_nonblock",
+        "\n    crate::serial_println!(\"TTY: sig {}\", sig);\n",
     );
     assert_ne!(printed, driver, "leg M's mutation must apply");
     let error = validate_irq_entry_takes_no_locking_output(&printed)
         .expect_err("leg M: rule 7 has to redden on a restored serial_println!");
     assert!(
-        error.contains("send_signal_to_process_nonblock") && error.contains("serial_println!"),
+        error.contains("queue_foreground_signal_nonblock") && error.contains("serial_println!"),
         "leg M reddened for the wrong reason: {error}"
     );
 
@@ -1129,7 +1142,11 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     );
 
     // Leg B. The oracle reported failure.
-    let failed_verdict = mutate_oracle_line(&green, ":PASS:peer_hold]", ":FAIL:peer_hold]");
+    let failed_verdict = mutate_oracle_line(
+        &green,
+        ":PASS:peer_hold]",
+        ":FAIL:failed=buffered,intr_flushed:peer_hold]",
+    );
     assert_ne!(failed_verdict, green, "leg B's mutation must apply");
     let (passed, output) = score_with_gate(
         STRICT_GATE,
@@ -1138,8 +1155,9 @@ fn the_strict_gate_scores_the_822_oracle_rather_than_merely_naming_it() {
     );
     assert!(!passed, "{STRICT_GATE} passed a serial whose #822 oracle failed: {output}");
     assert!(
-        output.contains("TTY input IRQ foreground-pgrp oracle"),
-        "{STRICT_GATE} failed the serial, but for some other reason: {output}"
+        output.contains("TTY input IRQ foreground-pgrp oracle reported failure")
+            && output.contains(":FAIL:failed=buffered,intr_flushed:peer_hold]"),
+        "{STRICT_GATE} must report the oracle failure and its named conjuncts: {output}"
     );
 
     // Leg C. The oracle's line is absent from the serial.

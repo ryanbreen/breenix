@@ -87,6 +87,14 @@ fn gpu_lock_can_sleep() -> bool {
     if crate::task::scheduler::current_thread_id().is_none() {
         return false;
     }
+    // An idle thread spins instead: a switch away from it at an exception
+    // return does not save its context, so it must not leave the CPU. On
+    // ARM64 the boot thread is CPU 0's idle thread until init runs, and the
+    // sleep's `schedule_current_wait` releases the boot preempt pin that keeps
+    // the exception return from switching it away (#1785).
+    if crate::task::scheduler::is_current_idle_thread() != Some(false) {
+        return false;
+    }
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -114,6 +122,47 @@ fn relax_gpu_lock_wait() {
 /// buffers and virtqueue state.
 static GPU_PCI_LOCK: GpuPciLock = GpuPciLock::new();
 static VIRTGPU_CMD_SEQ: AtomicU32 = AtomicU32::new(0);
+static COMPOSITOR_PRESENT_NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static COMPOSITOR_PRESENT_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+
+struct CompositorPresentToken {
+    id: u64,
+    active: bool,
+}
+
+impl CompositorPresentToken {
+    fn begin() -> Result<Self, &'static str> {
+        let previous = COMPOSITOR_PRESENT_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+        if previous != 0 {
+            COMPOSITOR_PRESENT_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+            virtgpu::trace_compositor_present_inflight_gt1();
+            return Err("compositor present already in flight");
+        }
+
+        let id = COMPOSITOR_PRESENT_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        virtgpu::trace_compositor_present_submitted();
+        Ok(Self { id, active: true })
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn complete(mut self) {
+        virtgpu::trace_compositor_present_completed();
+        self.active = false;
+        COMPOSITOR_PRESENT_IN_FLIGHT.store(0, Ordering::Release);
+    }
+}
+
+impl Drop for CompositorPresentToken {
+    fn drop(&mut self) {
+        if self.active {
+            COMPOSITOR_PRESENT_IN_FLIGHT.store(0, Ordering::Release);
+        }
+    }
+}
+
 // =============================================================================
 // VirtIO GPU Protocol (same as gpu_mmio.rs)
 // =============================================================================
@@ -602,10 +651,10 @@ impl Drop for PciOwnedDmaBuffer {
 const DEFAULT_FB_WIDTH: u32 = 1728;
 const DEFAULT_FB_HEIGHT: u32 = 1080;
 // Minimum resolution floor — with --high-resolution off, each guest pixel = 1 Mac point.
-// 1280x800 is the display every target runs in a GUI suite boot (BreenGL §18); Parallels
-// reports 1024x768 for both GET_DISPLAY_INFO and GOP, so the floor sets the mode.
+// 1280x960 gives a reasonably large VM window on Retina displays and keeps the
+// per-frame DMA upload to ~4.9MB for good compositor FPS.
 const MIN_FB_WIDTH: u32 = 1280;
-const MIN_FB_HEIGHT: u32 = 800;
+const MIN_FB_HEIGHT: u32 = 960;
 const FB_MAX_WIDTH: u32 = 2560;
 const FB_MAX_HEIGHT: u32 = 1600;
 const FB_SIZE: usize = (FB_MAX_WIDTH * FB_MAX_HEIGHT * 4) as usize;
@@ -790,8 +839,8 @@ static mut TEST_TEX_BUF: TestTextureBuffer = TestTextureBuffer {
     pixels: [0; TEST_TEX_BYTES],
 };
 
-/// Pointer to heap-allocated compositor texture backing (page-aligned, DMA-safe): the
-/// compositor's composed screen, which `compositor_present` uploads and shows.
+/// Pointer to heap-allocated compositor texture backing (page-aligned, DMA-safe).
+/// Used by `virgl_composite_frame()` to upload pixel buffers as GPU textures.
 static mut COMPOSITE_TEX_PTR: *mut u8 = core::ptr::null_mut();
 /// Size of the compositor texture backing in bytes.
 static mut COMPOSITE_TEX_LEN: usize = 0;
@@ -815,6 +864,15 @@ static DIMMER_TEX_READY: AtomicBool = AtomicBool::new(false);
 /// Current cursor shape index (0=arrow, 1=NS, 2=EW, 3=NWSE, 4=NESW).
 static CURSOR_SHAPE: AtomicU32 = AtomicU32::new(0);
 
+/// Per-shape hotspot offsets (pixels from top-left of shape bitmap).
+const CURSOR_HOTSPOT: [(i32, i32); 5] = [
+    (0, 0), // Arrow: top-left
+    (7, 7), // NS resize: center
+    (7, 7), // EW resize: center
+    (7, 7), // NWSE resize: center
+    (7, 7), // NESW resize: center
+];
+
 // =============================================================================
 // Per-Window GPU Textures
 // =============================================================================
@@ -824,13 +882,55 @@ const RESOURCE_WIN_TEX_BASE: u32 = 10;
 /// Maximum number of per-window texture slots.
 const MAX_WIN_TEX_SLOTS: usize = 8;
 
-/// Per-slot backing buffer pointer and length.
-static mut WIN_TEX_BACKING: [(*mut u8, usize); MAX_WIN_TEX_SLOTS] =
-    [(core::ptr::null_mut(), 0); MAX_WIN_TEX_SLOTS];
+/// Per-slot physical page addresses and backing length.
+static mut WIN_TEX_BACKING: [(alloc::vec::Vec<u64>, usize); MAX_WIN_TEX_SLOTS] =
+    [const { (alloc::vec::Vec::new(), 0) }; MAX_WIN_TEX_SLOTS];
 /// Width/height of each slot's texture.
 static mut WIN_TEX_DIMS: [(u32, u32); MAX_WIN_TEX_SLOTS] = [(0, 0); MAX_WIN_TEX_SLOTS];
 /// Whether each slot has been initialized.
 static mut WIN_TEX_INITIALIZED: [bool; MAX_WIN_TEX_SLOTS] = [false; MAX_WIN_TEX_SLOTS];
+
+/// Allocate zeroed texture pages outside the kernel heap. Individual frames
+/// reuse the allocator's free list; DMA attachment accepts scattered pages.
+fn alloc_window_texture_backing(size: usize) -> Result<alloc::vec::Vec<u64>, &'static str> {
+    use crate::memory::frame_allocator;
+    let pages = size.div_ceil(4096);
+    let mut frames = alloc::vec::Vec::new();
+    frames
+        .try_reserve_exact(pages)
+        .map_err(|_| "no heap for a window texture's frame list")?;
+    for _ in 0..pages {
+        let Some(frame) = frame_allocator::allocate_frame() else {
+            free_window_texture_backing(&frames);
+            return Err("no frames for a window texture backing");
+        };
+        let phys = frame.start_address().as_u64();
+        // SAFETY: this frame was just claimed and is direct-mapped.
+        unsafe { core::ptr::write_bytes(phys_to_kern_virt(phys) as *mut u8, 0, 4096) };
+        frames.push(phys);
+    }
+    Ok(frames)
+}
+
+/// Return backing pages, including a partial allocation on failure.
+fn free_window_texture_backing(pages: &[u64]) {
+    use crate::memory::arch_stub::{PhysAddr, PhysFrame};
+    for &phys in pages {
+        crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+            PhysAddr::new(phys),
+        ));
+    }
+}
+
+fn clean_window_texture_backing(pages: &[u64], len: usize) {
+    for (page, &phys) in pages.iter().enumerate() {
+        let remaining = len.saturating_sub(page * 4096);
+        if remaining == 0 {
+            break;
+        }
+        dma_cache_clean(phys_to_kern_virt(phys) as *const u8, remaining.min(4096));
+    }
+}
 
 /// Create a per-window VirGL texture for GPU compositing.
 ///
@@ -853,7 +953,11 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
         if width <= old_w && height <= old_h {
             return Ok(res_id);
         }
-        // Window grew beyond existing texture — destroy and recreate at new size
+    }
+    // Recreate a grown texture or a slot whose previous window was destroyed.
+    // clear_window_texture_slot defers this work out of process cleanup.
+    if unsafe { !WIN_TEX_BACKING[slot].0.is_empty() } {
+        let (old_w, old_h) = unsafe { WIN_TEX_DIMS[slot] };
         crate::serial_println!(
             "[virgl-win-tex] Resize: slot={} {}x{} -> {}x{}",
             slot,
@@ -862,29 +966,19 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
             width,
             height
         );
-        with_device_state(|state| virgl_detach_backing_cmd(state, res_id)).ok();
-        with_device_state(|state| virgl_resource_unref_cmd(state, res_id)).ok();
-        let (old_ptr, old_size) = unsafe { WIN_TEX_BACKING[slot] };
-        if !old_ptr.is_null() && old_size > 0 {
-            let old_layout = alloc::alloc::Layout::from_size_align(old_size, 4096).unwrap();
-            unsafe {
-                alloc::alloc::dealloc(old_ptr, old_layout);
-            }
-        }
+        with_device_state(|state| virgl_detach_backing_cmd(state, res_id))?;
+        with_device_state(|state| virgl_resource_unref_cmd(state, res_id))?;
+        let (old_pages, _) = unsafe { &WIN_TEX_BACKING[slot] };
+        free_window_texture_backing(old_pages);
         unsafe {
             WIN_TEX_INITIALIZED[slot] = false;
-            WIN_TEX_BACKING[slot] = (core::ptr::null_mut(), 0);
+            WIN_TEX_BACKING[slot] = (alloc::vec::Vec::new(), 0);
             WIN_TEX_DIMS[slot] = (0, 0);
         }
     }
 
     let tex_size = (width as usize) * (height as usize) * 4;
-    let layout = alloc::alloc::Layout::from_size_align(tex_size, 4096)
-        .map_err(|_| "invalid window texture layout")?;
-    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-    if ptr.is_null() {
-        return Err("failed to allocate window texture backing");
-    }
+    let pages = alloc_window_texture_backing(tex_size)?;
 
     // RESOURCE_CREATE_3D — same bind flags as COMPOSITE_TEX
     with_device_state(|state| {
@@ -902,17 +996,17 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
     })?;
 
     // ATTACH_BACKING (paged scatter-gather)
-    with_device_state(|state| virgl_attach_backing_paged(state, res_id, ptr, tex_size))?;
+    with_device_state(|state| virgl_attach_backing_from_pages(state, res_id, &pages, tex_size))?;
 
     // CTX_ATTACH_RESOURCE
     with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
 
     // Prime with TRANSFER_TO_HOST_3D
-    dma_cache_clean(ptr, tex_size);
+    clean_window_texture_backing(&pages, tex_size);
     with_device_state(|state| transfer_to_host_3d(state, res_id, 0, 0, width, height, width * 4))?;
 
     unsafe {
-        WIN_TEX_BACKING[slot] = (ptr, tex_size);
+        WIN_TEX_BACKING[slot] = (pages, tex_size);
         WIN_TEX_DIMS[slot] = (width, height);
         WIN_TEX_INITIALIZED[slot] = true;
     }
@@ -932,11 +1026,8 @@ pub fn create_window_texture(slot: usize, width: u32, height: u32) -> Result<u32
 /// This prevents stale texture data from bleeding into new windows
 /// that reuse the same slot index.
 ///
-/// NOTE: Does NOT zero the backing buffer here. This function is called from
-/// remove_for_pid() which runs in the process cleanup path (including from
-/// context_switch.rs). Zeroing a large buffer (e.g. 750×550×4 = 1.6MB) in
-/// that path corrupts other threads' contexts due to timing/memory issues.
-/// The backing buffer is zeroed lazily in create_window_texture's reuse path.
+/// Called from process cleanup (including context_switch.rs). Defer backing
+/// release and replacement to create_window_texture to keep that path short.
 pub fn clear_window_texture_slot(slot: usize) {
     if slot >= MAX_WIN_TEX_SLOTS {
         return;
@@ -945,6 +1036,80 @@ pub fn clear_window_texture_slot(slot: usize) {
         WIN_TEX_INITIALIZED[slot] = false;
         WIN_TEX_DIMS[slot] = (0, 0);
     }
+}
+
+/// Upload dirty window pixels to GPU texture via TRANSFER_TO_HOST_3D.
+/// Copies MAP_SHARED pages to scattered texture backing, then uploads.
+fn upload_window_texture(
+    slot: usize,
+    width: u32,
+    height: u32,
+    page_phys_addrs: &[u64],
+    total_size: usize,
+) -> Result<(), &'static str> {
+    if slot >= MAX_WIN_TEX_SLOTS {
+        return Err("slot out of range");
+    }
+    let (backing_pages, backing_len) = unsafe { &WIN_TEX_BACKING[slot] };
+    let backing_len = *backing_len;
+    if backing_pages.is_empty() {
+        return Err("backing not allocated");
+    }
+
+    let win_bytes = (width as usize) * (height as usize) * 4;
+    let copy_len = win_bytes.min(total_size).min(backing_len);
+    let (tex_width, tex_height) = unsafe { WIN_TEX_DIMS[slot] };
+    let dst_stride = (tex_width as usize) * 4;
+    let src_stride = (width as usize) * 4;
+    let row_bytes = src_stride.min(dst_stride);
+    let rows = (height as usize)
+        .min(tex_height as usize)
+        .min(copy_len / src_stride.max(1));
+
+    // Copy scattered MAP_SHARED pages into the texture backing using the backing
+    // resource's real row pitch. The pool resources are preallocated at
+    // MIN_FB_WIDTH x MIN_FB_HEIGHT; packing a smaller window contiguously but
+    // advertising a narrower stride makes Parallels reject some transfers.
+    for row in 0..rows {
+        let mut copied_in_row = 0usize;
+        let src_row_start = row * src_stride;
+        while copied_in_row < row_bytes {
+            let src_off = src_row_start + copied_in_row;
+            let page_idx = src_off / 4096;
+            if page_idx >= page_phys_addrs.len() {
+                break;
+            }
+            let page_off = src_off % 4096;
+            let dst_off = row * dst_stride + copied_in_row;
+            let dst_page_off = dst_off % 4096;
+            let dst = phys_to_kern_virt(backing_pages[dst_off / 4096]) as *mut u8;
+            let chunk = (4096 - page_off)
+                .min(4096 - dst_page_off)
+                .min(row_bytes - copied_in_row);
+            let virt = phys_to_kern_virt(page_phys_addrs[page_idx]);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (virt as *const u8).add(page_off),
+                    dst.add(dst_page_off),
+                    chunk,
+                );
+            }
+            copied_in_row += chunk;
+        }
+    }
+
+    let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
+    let clean_len = rows
+        .saturating_sub(1)
+        .saturating_mul(dst_stride)
+        .saturating_add(row_bytes)
+        .min(backing_len);
+    if clean_len > 0 {
+        clean_window_texture_backing(backing_pages, clean_len);
+    }
+    with_device_state(|state| {
+        transfer_to_host_3d(state, res_id, 0, 0, width, height, tex_width * 4)
+    })
 }
 
 /// Allocate and initialize the compositor texture resource for GPU compositing.
@@ -1032,10 +1197,49 @@ fn init_composite_texture(width: u32, height: u32) -> Result<(), &'static str> {
         RESOURCE_COMPOSITE_TEX_ID
     );
 
-    // The version 1 per-window textures are created on demand by
-    // `create_window_texture`, not pre-allocated: eight full-screen slots took 32 MB of
-    // the 64 MiB kernel heap, which the version 2 compositor (BreenGL §18) needs for its
-    // screen and its bounded owner snapshots, and bwm composes through version 2.
+    // Pre-allocate per-window texture pool at init time.
+    // TRANSFER_TO_HOST_3D only works for resources created before first SUBMIT_3D.
+    for slot in 0..MAX_WIN_TEX_SLOTS {
+        let max_w: u32 = MIN_FB_WIDTH;
+        let max_h: u32 = MIN_FB_HEIGHT;
+        let tex_size = (max_w as usize) * (max_h as usize) * 4;
+        let res_id = RESOURCE_WIN_TEX_BASE + slot as u32;
+
+        let pages = alloc_window_texture_backing(tex_size)?;
+
+        with_device_state(|state| {
+            virgl_resource_create_3d_cmd(
+                state,
+                res_id,
+                pipe::TEXTURE_2D,
+                vfmt::B8G8R8A8_UNORM,
+                pipe::BIND_SAMPLER_VIEW | pipe::BIND_SCANOUT,
+                max_w,
+                max_h,
+                1,
+                1,
+            )
+        })?;
+        with_device_state(|state| virgl_attach_backing_from_pages(state, res_id, &pages, tex_size))?;
+        with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, res_id))?;
+        clean_window_texture_backing(&pages, tex_size);
+        with_device_state(|state| {
+            transfer_to_host_3d(state, res_id, 0, 0, max_w, max_h, max_w * 4)
+        })?;
+
+        unsafe {
+            WIN_TEX_BACKING[slot] = (pages, tex_size);
+            WIN_TEX_DIMS[slot] = (max_w, max_h);
+            WIN_TEX_INITIALIZED[slot] = true;
+        }
+        crate::serial_println!(
+            "[virgl-pool] Pre-allocated slot={} res_id={} {}x{}",
+            slot,
+            res_id,
+            max_w,
+            max_h
+        );
+    }
 
     // Initialize cursor GPU texture (12x18 arrow bitmap, uploaded once)
     init_cursor_texture()?;
@@ -1314,6 +1518,8 @@ fn init_dimmer_texture() -> Result<(), &'static str> {
 const VIRTIO_GPU_FLAG_FENCE: u32 = 1;
 const GPU_MSIX_CONFIG_VECTOR: u16 = 0;
 const GPU_MSIX_QUEUE_VECTOR: u16 = 1;
+/// The vector value that routes a virtqueue or config change to no MSI-X vector.
+const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 
 #[derive(Clone, Copy)]
 struct GpuMsiConfig {
@@ -1349,9 +1555,12 @@ struct GpuPciDeviceState {
 static mut GPU_PCI_STATE: Option<GpuPciDeviceState> = None;
 static GPU_PCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector.
+/// GIC INTID (SPI number) allocated for the GPU virtqueue MSI-X vector, or
+/// the device's INTx line on QEMU.
 static GPU_IRQ: AtomicU32 = AtomicU32::new(0);
 static GPU_CONFIG_IRQ: AtomicU32 = AtomicU32::new(0);
+/// With INTx, the ISR status byte the handler reads to lower the line; 0 with MSI-X.
+static GPU_INTX_ISR: AtomicU64 = AtomicU64::new(0);
 
 const GPU_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;
 
@@ -1402,6 +1611,14 @@ fn virt_to_phys(addr: u64) -> u64 {
     }
 }
 
+/// Inverse of virt_to_phys: convert a physical address to a kernel-accessible
+/// virtual address. Uses physical_memory_offset (HHDM base) when available.
+#[inline(always)]
+fn phys_to_kern_virt(phys: u64) -> u64 {
+    let offset = crate::memory::physical_memory_offset().as_u64();
+    offset + phys
+}
+
 /// Clean (flush) a range of memory from CPU caches to physical RAM.
 ///
 /// On ARM64, CPU writes to WB-cacheable BSS memory stay in L1/L2 cache.
@@ -1435,8 +1652,11 @@ fn dma_cache_clean(_ptr: *const u8, _len: usize) {
 /// After the host writes to guest memory via DMA (e.g., TRANSFER_FROM_HOST),
 /// the CPU cache may hold stale data. DC CIVAC cleans and invalidates each
 /// cache line so subsequent CPU reads see the DMA-written values.
+/// Currently unused but kept for future TRANSFER_FROM_HOST operations.
+#[allow(dead_code)]
 #[cfg(target_arch = "aarch64")]
 #[inline]
+#[allow(dead_code)]
 fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     const CACHE_LINE: usize = 64;
     let start = ptr as usize & !(CACHE_LINE - 1);
@@ -1451,6 +1671,7 @@ fn dma_cache_invalidate(ptr: *const u8, len: usize) {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn dma_cache_invalidate(_ptr: *const u8, _len: usize) {
@@ -1475,6 +1696,19 @@ pub fn disable_virgl() {
 // =============================================================================
 // MSI Interrupt Support
 // =============================================================================
+
+/// The GIC INTID of the device's INTx line on QEMU's virt machine, whose
+/// device tree maps slot `s` pin `p` (1-4) to SPI `3 + (s + p - 1) % 4`; 0
+/// when the device has no INTx pin.
+#[cfg(target_arch = "aarch64")]
+fn qemu_virt_intx(pci_dev: &crate::drivers::pci::Device) -> u32 {
+    let pin = pci_dev.interrupt_pin as u32;
+    if pin == 0 || pin > 4 {
+        return 0;
+    }
+    pci_dev.enable_intx();
+    32 + 3 + (pci_dev.device as u32 + pin - 1) % 4
+}
 
 /// Set up PCI MSI-X for the VirtIO GPU through GICv2m.
 ///
@@ -1612,12 +1846,19 @@ fn trace_gpu_msix_programming(
     }
 }
 
-/// Handle GPU virtqueue MSI-X interrupt — called from exception.rs IRQ dispatch.
+/// Handle a GPU virtqueue interrupt (MSI-X, or INTx on QEMU) — called from exception.rs IRQ dispatch.
 #[cfg(target_arch = "aarch64")]
 pub fn handle_interrupt() {
     let irq = GPU_IRQ.load(Ordering::Relaxed);
     if irq == 0 {
         return;
+    }
+
+    // An INTx line stays raised until the ISR status byte is read.
+    let isr = GPU_INTX_ISR.load(Ordering::Acquire);
+    if isr != 0 {
+        // SAFETY: the device's ISR byte, mapped for the kernel's lifetime.
+        unsafe { core::ptr::read_volatile(isr as *const u8) };
     }
 
     // MSI-X delivery is edge-like. Do not mask or clear the SPI here: a new
@@ -1730,17 +1971,27 @@ pub fn init() -> Result<(), &'static str> {
     // enables MSI-X first, then sets up queues with MSI-X vectors. The VirtIO
     // spec requires MSI-X to be enabled at the PCI level before writing
     // queue_msix_vector in the common config.
+    // QEMU's virt machine with GICv3 has no GICv2m: there the device signals
+    // completions on its INTx line instead.
     #[cfg(target_arch = "aarch64")]
-    let msi_config = setup_gpu_msi(virtio.pci_device());
+    let intx = if crate::platform_config::is_qemu() { qemu_virt_intx(virtio.pci_device()) } else { 0 };
+    #[cfg(not(target_arch = "aarch64"))]
+    let intx = 0;
+    #[cfg(target_arch = "aarch64")]
+    let msi_config = if intx == 0 { setup_gpu_msi(virtio.pci_device()) } else { GpuMsiConfig::NONE };
     #[cfg(not(target_arch = "aarch64"))]
     let msi_config = GpuMsiConfig::NONE;
 
-    if !msi_config.is_enabled() {
-        return Err("VirtIO GPU requires MSI-X interrupt completion");
+    if intx == 0 && !msi_config.is_enabled() {
+        return Err("VirtIO GPU requires MSI-X (INTx on QEMU) interrupt completion");
     }
 
-    let queue_vector = GPU_MSIX_QUEUE_VECTOR;
-    let config_vector = GPU_MSIX_CONFIG_VECTOR;
+    // Without MSI-X the device raises INTx for vectors left at NO_VECTOR.
+    let (queue_vector, config_vector) = if intx != 0 {
+        (VIRTIO_MSI_NO_VECTOR, VIRTIO_MSI_NO_VECTOR)
+    } else {
+        (GPU_MSIX_QUEUE_VECTOR, GPU_MSIX_CONFIG_VECTOR)
+    };
 
     // Write config_msix_vector (Linux does this in vp_find_vqs_msix)
     let readback = virtio.set_config_msix_vector(config_vector);
@@ -1895,7 +2146,20 @@ pub fn init() -> Result<(), &'static str> {
     // Queue completion interrupts are enabled now so init commands use the same
     // interrupt-driven completion path as runtime commands.
     #[cfg(target_arch = "aarch64")]
-    {
+    if intx != 0 {
+        use crate::arch_impl::aarch64::gic;
+
+        let isr = unsafe { (*(&raw const GPU_PCI_STATE)).as_ref().and_then(|state| state.device.isr_address()) };
+        GPU_INTX_ISR.store(isr.ok_or("VirtIO GPU PCI: no ISR capability for INTx")?, Ordering::Release);
+        GPU_IRQ.store(intx, Ordering::Release);
+        GPU_COMPLETED_USED_IDX.store(0, Ordering::Release);
+        GPU_COMPLETION.reset();
+
+        gic::configure_spi_level_triggered(intx);
+        gic::clear_spi_pending(intx);
+        gic::enable_spi(intx);
+        crate::serial_println!("[virtio-gpu-pci] INTx active: spi={}", intx);
+    } else {
         use crate::arch_impl::aarch64::gic;
 
         GPU_CONFIG_IRQ.store(msi_config.config_spi, Ordering::Release);
@@ -1964,12 +2228,12 @@ pub fn init() -> Result<(), &'static str> {
     // On Retina Macs with --high-resolution off, Parallels maps 1 guest pixel to
     // 1 Mac screen point. GET_DISPLAY_INFO may report only 1024x768 in this mode,
     // but SET_SCANOUT at a larger resolution works fine (Linux does arbitrary mode
-    // changes via drmModeSetCrtc → SET_SCANOUT). We enforce a 1280x800 minimum
+    // changes via drmModeSetCrtc → SET_SCANOUT). We enforce a 1280x960 minimum
     // so the VM window is reasonably large on modern displays.
     let gop_w = crate::platform_config::fb_width();
     let gop_h = crate::platform_config::fb_height();
     let (disp_w, disp_h) = display_dims.unwrap_or((0, 0));
-    // Pick the widest valid resolution, with 1280x800 as floor
+    // Pick the widest valid resolution, with 1280x960 as floor
     // NOTE: DEFAULT_FB dimensions excluded for now — compositor texture stride
     // depends on matching the BWM buffer width. Needs coordinated fix.
     let candidates: [(u32, u32); 3] = [
@@ -2162,8 +2426,36 @@ fn virtgpu_note_resource2_submit(cmd_type: u32, resource_id: u32) {
     }
 }
 
+/// The resource the device last accepted for scanout 0 (SET_SCANOUT answered
+/// OK), or 0.
+static SCANOUT_RESOURCE: AtomicU32 = AtomicU32::new(0);
+
+#[inline(always)]
+fn note_scanout(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    if cmd_type == cmd::SET_SCANOUT && resp_type == cmd::RESP_OK_NODATA {
+        SCANOUT_RESOURCE.store(resource_id, Ordering::Release);
+    }
+}
+
+/// The resource the device last accepted for scanout 0, and its guest backing:
+/// what the display shows, for a read-back of the kernel's screen.
+pub fn scanout_binding() -> Option<(u32, *const u8, usize)> {
+    let resource = SCANOUT_RESOURCE.load(Ordering::Acquire);
+    // SAFETY: the backings are set once, at init, before any SET_SCANOUT names
+    // their resource.
+    let (pixels, len) = unsafe {
+        match resource {
+            RESOURCE_3D_ID => (PCI_3D_FB_PTR, PCI_3D_FB_LEN),
+            RESOURCE_ID => (PCI_FB_PTR, PCI_FB_LEN),
+            _ => return None,
+        }
+    };
+    (!pixels.is_null()).then_some((resource, pixels as *const u8, len))
+}
+
 #[inline(always)]
 fn virtgpu_note_resource2_response(cmd_type: u32, resource_id: u32, resp_type: u32) {
+    note_scanout(cmd_type, resource_id, resp_type);
     if cmd_type == cmd::RESOURCE_FLUSH && resource_id == RESOURCE_3D_ID {
         if resp_type == cmd::RESP_OK_NODATA {
             virtgpu::VIRTGPU_R2_FLUSH_OK.increment();
@@ -3600,7 +3892,6 @@ fn attach_backing_simple(
 /// Unlike `virgl_attach_backing_paged` which computes sequential physical addresses
 /// from a contiguous kernel allocation, this takes a list of arbitrary physical page
 /// addresses — used for MAP_SHARED window buffers where pages may not be contiguous.
-#[allow(dead_code)]
 fn virgl_attach_backing_from_pages(
     state: &mut GpuPciDeviceState,
     resource_id: u32,
@@ -4069,6 +4360,12 @@ pub fn flush_rect(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'stati
     })
 }
 
+/// Present backing pixels and wait for fenced transfer, scanout and flush
+/// responses. The console uses this before releasing its presentation token.
+pub fn flush_rect_sync(x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+    present_3d(x, y, width, height)
+}
+
 /// Send only a RESOURCE_FLUSH command without TRANSFER_TO_HOST_2D.
 ///
 /// Used in GOP hybrid mode where pixels are already in BAR0 (the display
@@ -4233,10 +4530,16 @@ fn present_polled(
     h: u32,
     deadline: u64,
 ) -> bool {
+    let first_fence = state.next_fence_id;
+    state.next_fence_id += 3;
     let hdr = |type_: u32, ctx_id: u32| VirtioGpuCtrlHdr {
         type_,
-        flags: 0,
-        fence_id: 0,
+        flags: VIRTIO_GPU_FLAG_FENCE,
+        fence_id: first_fence + match type_ {
+            cmd::SET_SCANOUT => 1,
+            cmd::RESOURCE_FLUSH => 2,
+            _ => 0,
+        },
         ctx_id,
         padding: 0,
     };
@@ -4306,6 +4609,12 @@ const NO_POLLED_TIMEOUT: u32 = u32::MAX;
 fn ctrlq_in_flight() -> u16 {
     let avail_idx = unsafe { read_volatile(&raw const PCI_CTRL_QUEUE.avail.idx) };
     avail_idx.wrapping_sub(virtgpu_trace_used_idx())
+}
+
+/// Whether a published presentation can still touch its backing. Used after
+/// stopping the console producer, before transferring display ownership.
+pub fn presentation_pending() -> bool {
+    ctrlq_in_flight() != 0
 }
 
 /// Whether a polled command that timed out is still owned by the device. The
@@ -4384,11 +4693,20 @@ fn submit_polled<T>(
         }
         core::hint::spin_loop();
     }
-    unsafe {
+    let resp_type = unsafe {
         core::arch::asm!("dc civac, {}", in(reg) resp as usize, options(nostack));
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        core::ptr::read_volatile(resp as *const u32) == cmd::RESP_OK_NODATA
+        core::ptr::read_volatile(resp as *const u32)
+    };
+    let (cmd_type, resource_id) = virtgpu_decode_command(page);
+    let request = unsafe { &*(page as *const VirtioGpuCtrlHdr) };
+    let response = unsafe { core::ptr::read_volatile(resp as *const VirtioGpuCtrlHdr) };
+    let fenced = request.flags & VIRTIO_GPU_FLAG_FENCE == 0
+        || (response.flags & VIRTIO_GPU_FLAG_FENCE != 0 && response.fence_id == request.fence_id);
+    if fenced {
+        note_scanout(cmd_type, resource_id, resp_type);
     }
+    resp_type == cmd::RESP_OK_NODATA && fenced
 }
 
 // =============================================================================
@@ -4770,6 +5088,1049 @@ pub fn virgl_render_rects(
     Ok(())
 }
 
+/// Composite a CPU-rendered pixel buffer as a full-screen GPU texture.
+///
+/// Takes a BGRA pixel buffer (u32 per pixel), uploads it to the compositor
+/// texture via TRANSFER_TO_HOST_3D, then renders it as a full-screen textured
+/// quad via VirGL DRAW_VBO. This is the foundation for GPU-composited window
+/// management — BWM renders each window to a pixel buffer, then composites
+/// them all through the GPU.
+///
+/// # Arguments
+/// * `pixels` - BGRA pixel data (width × height u32 values)
+/// * `width` - Width of the pixel buffer in pixels
+/// * `height` - Height of the pixel buffer in pixels
+pub fn virgl_composite_frame(pixels: &[u32], width: u32, height: u32) -> Result<(), &'static str> {
+    static COMPOSITE_FRAME_COUNT: core::sync::atomic::AtomicU32 =
+        core::sync::atomic::AtomicU32::new(0);
+    let frame = COMPOSITE_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let verbose = frame < 3 || frame % 500 == 0;
+
+    if !is_virgl_enabled() {
+        return Err("VirGL not enabled");
+    }
+
+    let (display_w, display_h) = dimensions().ok_or("GPU not initialized")?;
+
+    // Clamp source dimensions to display
+    let copy_w = width.min(display_w);
+    let copy_h = height.min(display_h);
+    let expected_pixels = (copy_w * copy_h) as usize;
+    if pixels.len() < expected_pixels {
+        return Err("Pixel buffer too small");
+    }
+
+    if verbose {
+        let mut first_nonzero = 0u32;
+        let mut nonzero_count = 0u32;
+        for i in 0..expected_pixels.min(1000) {
+            if pixels[i] != 0 {
+                if first_nonzero == 0 {
+                    first_nonzero = pixels[i];
+                }
+                nonzero_count += 1;
+            }
+        }
+        crate::serial_println!(
+            "[virgl-composite] Frame #{}: {}x{} → {}x{} display (first1k: {} nonzero, first={:#010x})",
+            frame, copy_w, copy_h, display_w, display_h, nonzero_count, first_nonzero
+        );
+    }
+
+    // Direct blit: copy pixel data into the 3D framebuffer backing, then upload.
+    // No VirGL SUBMIT_3D needed — just TRANSFER_TO_HOST_3D + SET_SCANOUT + RESOURCE_FLUSH.
+    let fb_ptr = unsafe { PCI_3D_FB_PTR };
+    if fb_ptr.is_null() {
+        return Err("3D framebuffer not initialized");
+    }
+    let fb_len = unsafe { PCI_3D_FB_LEN };
+    let dst_stride = display_w as usize * 4;
+    let src_stride = width as usize * 4;
+
+    unsafe {
+        if copy_w == display_w {
+            let copy_bytes = (copy_w as usize * copy_h as usize * 4).min(fb_len);
+            core::ptr::copy_nonoverlapping(pixels.as_ptr() as *const u8, fb_ptr, copy_bytes);
+        } else {
+            for y in 0..copy_h as usize {
+                let src_off = y * src_stride;
+                let dst_off = y * dst_stride;
+                let row_bytes = (copy_w as usize) * 4;
+                if dst_off + row_bytes <= fb_len {
+                    core::ptr::copy_nonoverlapping(
+                        (pixels.as_ptr() as *const u8).add(src_off),
+                        fb_ptr.add(dst_off),
+                        row_bytes,
+                    );
+                }
+            }
+        }
+    }
+
+    // Cache clean the 3D FB backing before DMA upload
+    let upload_bytes = (copy_w as usize * copy_h as usize * 4).min(fb_len);
+    dma_cache_clean(fb_ptr, upload_bytes);
+
+    // Upload to host via TRANSFER_TO_HOST_3D on the 3D resource
+    with_device_state(|state| {
+        // Need to send the transfer command manually since transfer_to_host_3d
+        // skips cache clean for RESOURCE_3D_ID (we already did it above)
+        let command = VirtioGpuTransferHost3d {
+            hdr: VirtioGpuCtrlHdr {
+                type_: cmd::TRANSFER_TO_HOST_3D,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: VIRGL_CTX_ID,
+                padding: 0,
+            },
+            box_x: 0,
+            box_y: 0,
+            box_z: 0,
+            box_w: copy_w,
+            box_h: copy_h,
+            box_d: 1,
+            offset: 0,
+            resource_id: RESOURCE_3D_ID,
+            level: 0,
+            stride: display_w * 4,
+            layer_stride: 0,
+        };
+        send_owned_command_expect_ok(state, &command).map(|_| ())
+    })?;
+
+    // SET_SCANOUT + RESOURCE_FLUSH
+    with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_FRAME,
+        )
+    })?;
+
+    Ok(())
+}
+
+/// GPU-composited frame via textured quad rendering.
+///
+/// Uploads pixel data as a VirGL texture, then renders a full-screen textured quad.
+/// This is the end-goal approach for real GPU compositing (window decorations,
+/// alpha blending, transforms). Currently not working on Parallels — texture
+/// sampling produces black output despite successful SUBMIT_3D. Kept for future
+/// debugging and enablement.
+pub fn virgl_composite_frame_textured(
+    pixels: &[u32],
+    width: u32,
+    height: u32,
+) -> Result<(), &'static str> {
+    use super::virgl::{format as vfmt, pipe, swizzle, CommandBuffer};
+
+    static TEX_FRAME_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let frame = TEX_FRAME_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    if !is_virgl_enabled() {
+        return Err("VirGL not enabled");
+    }
+    if !COMPOSITE_TEX_READY.load(Ordering::Acquire) {
+        return Err("Compositor texture not initialized");
+    }
+
+    let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
+    let tex_h = COMPOSITE_TEX_H.load(Ordering::Relaxed);
+    let (display_w, display_h) = dimensions().ok_or("GPU not initialized")?;
+    let copy_w = width.min(tex_w);
+    let copy_h = height.min(tex_h);
+    let expected_pixels = (copy_w * copy_h) as usize;
+    if pixels.len() < expected_pixels {
+        return Err("Pixel buffer too small");
+    }
+
+    // Copy pixel data into the compositor texture backing
+    unsafe {
+        let dst = COMPOSITE_TEX_PTR;
+        let copy_bytes = (copy_w as usize) * (copy_h as usize) * 4;
+        core::ptr::copy_nonoverlapping(
+            pixels.as_ptr() as *const u8,
+            dst,
+            copy_bytes.min(COMPOSITE_TEX_LEN),
+        );
+    }
+
+    // Upload texture via TRANSFER_TO_HOST_3D
+    let tex_bytes = (tex_w as usize) * (tex_h as usize) * 4;
+    dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, tex_bytes);
+    with_device_state(|state| {
+        transfer_to_host_3d(
+            state,
+            RESOURCE_COMPOSITE_TEX_ID,
+            0,
+            0,
+            copy_w,
+            copy_h,
+            tex_w * 4,
+        )
+    })?;
+
+    // Build VirGL batch: full pipeline + textured quad
+    // Object handles are unique per batch to avoid hash collisions in virglrenderer:
+    //   10=surface, 11=blend, 12=DSA, 13=rasterizer, 14=VS, 15=FS,
+    //   16=VE, 17=sampler_view, 18=sampler_state
+    let mut cmdbuf = CommandBuffer::new();
+    cmdbuf.create_sub_ctx(1);
+    cmdbuf.set_sub_ctx(1);
+    cmdbuf.set_tweaks(1, 1);
+    cmdbuf.set_tweaks(2, display_w);
+
+    cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+    cmdbuf.set_framebuffer_state(0, &[10]);
+    cmdbuf.create_blend_simple(11);
+    cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
+    cmdbuf.create_dsa_default(12);
+    cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
+    cmdbuf.create_rasterizer_default(13);
+    cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
+
+    // Texture shaders (num_tokens=300 required by Parallels)
+    let tex_vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
+    cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, tex_vs);
+    cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
+    let tex_fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
+    cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, tex_fs);
+    cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
+
+    cmdbuf.create_vertex_elements(
+        16,
+        &[
+            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
+            (16, 0, 0, vfmt::R32G32B32A32_FLOAT),
+        ],
+    );
+    cmdbuf.bind_object(16, super::virgl::OBJ_VERTEX_ELEMENTS);
+
+    // Sampler view: format DWORD must include texture target in bits [24:31]
+    cmdbuf.create_sampler_view(
+        17,
+        RESOURCE_COMPOSITE_TEX_ID,
+        vfmt::B8G8R8X8_UNORM,
+        pipe::TEXTURE_2D,
+        0,
+        0,
+        0,
+        0,
+        swizzle::IDENTITY,
+    );
+    cmdbuf.create_sampler_state(
+        18,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_FILTER_NEAREST,
+        pipe::TEX_MIPFILTER_NONE,
+        pipe::TEX_FILTER_NEAREST,
+    );
+    cmdbuf.set_min_samples(1);
+    cmdbuf.set_viewport(display_w as f32, display_h as f32);
+    cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
+    cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[18]);
+    cmdbuf.clear_color(0.0, 0.0, 0.0, 1.0);
+
+    let u_max = copy_w as f32 / tex_w as f32;
+    let v_max = copy_h as f32 / tex_h as f32;
+    let quad_verts: [u32; 32] = [
+        (-1.0f32).to_bits(),
+        (1.0f32).to_bits(),
+        0f32.to_bits(),
+        1.0f32.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+        (-1.0f32).to_bits(),
+        (-1.0f32).to_bits(),
+        0f32.to_bits(),
+        1.0f32.to_bits(),
+        0f32.to_bits(),
+        v_max.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+        1.0f32.to_bits(),
+        (-1.0f32).to_bits(),
+        0f32.to_bits(),
+        1.0f32.to_bits(),
+        u_max.to_bits(),
+        v_max.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+        1.0f32.to_bits(),
+        (1.0f32).to_bits(),
+        0f32.to_bits(),
+        1.0f32.to_bits(),
+        u_max.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+        0f32.to_bits(),
+    ];
+    cmdbuf.resource_inline_write(RESOURCE_VB_ID, 0, 128, &quad_verts);
+    cmdbuf.set_vertex_buffers(&[(32, 0, RESOURCE_VB_ID)]);
+    cmdbuf.draw_vbo(0, 4, pipe::PRIM_TRIANGLE_FAN, 3);
+
+    if frame < 3 {
+        crate::serial_println!(
+            "[virgl-composite-tex] Frame #{}: {} DWORDs",
+            frame,
+            cmdbuf.as_slice().len()
+        );
+    }
+    let _fence_id = virgl_submit(cmdbuf.as_slice())?;
+
+    with_device_state(|state| {
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_FRAME_TEXTURED,
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Render the composited frame: fullscreen background from COMPOSITE_TEX,
+/// then per-window content quads from individual GPU textures.
+///
+/// COMPOSITE_TEX contains background, window frames/decorations.
+/// Per-window textures contain the actual window content (pixels from clients).
+/// The cursor is rendered as a GPU quad from a dedicated cursor texture (last draw).
+/// When a window has no GPU texture, its content was already blitted into
+/// COMPOSITE_TEX by BWM, so the background quad covers it.
+fn virgl_composite_single_quad(
+    windows: &[crate::syscall::graphics::WindowCompositeInfo],
+) -> Result<(), &'static str> {
+    use super::virgl::{format as vfmt, pipe, swizzle, CommandBuffer};
+
+    // BWM frame decoration constants (must match bwm.rs)
+    const TITLE_BAR_HEIGHT: i32 = 32;
+    const BORDER_WIDTH: i32 = 2;
+
+    // ── Build canary — detect stale binary deployment ──
+    static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
+    let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    if frame == 0 {
+        crate::serial_println!("[BUILD-CANARY] gpu_pci.rs version=10 dimmer-fix");
+    }
+
+    let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
+    let tex_h = COMPOSITE_TEX_H.load(Ordering::Relaxed);
+    let (display_w, display_h) = dimensions().ok_or("GPU not initialized")?;
+    let dw = display_w as f32;
+    let dh = display_h as f32;
+
+    // Heap-allocate CommandBuffer (12KB) to avoid overflowing the 16KB kernel stack.
+    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
+    cmdbuf.create_sub_ctx(1);
+    cmdbuf.set_sub_ctx(1);
+    cmdbuf.set_tweaks(1, 1);
+    cmdbuf.set_tweaks(2, display_w);
+
+    cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
+    cmdbuf.set_framebuffer_state(0, &[10]);
+    cmdbuf.create_blend_simple(11);
+    cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
+    cmdbuf.create_blend_alpha(19); // alpha blend for chromeless windows + cursor
+    cmdbuf.create_dsa_default(12);
+    cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
+    cmdbuf.create_rasterizer_default(13);
+    cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
+
+    let tex_vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
+    cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, tex_vs);
+    cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
+    let tex_fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
+    cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, tex_fs);
+    cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
+
+    cmdbuf.create_vertex_elements(
+        16,
+        &[
+            (0, 0, 0, vfmt::R32G32B32A32_FLOAT),
+            (16, 0, 0, vfmt::R32G32B32A32_FLOAT),
+        ],
+    );
+    cmdbuf.bind_object(16, super::virgl::OBJ_VERTEX_ELEMENTS);
+
+    cmdbuf.create_sampler_state(
+        18,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_WRAP_CLAMP_TO_EDGE,
+        pipe::TEX_FILTER_NEAREST,
+        pipe::TEX_MIPFILTER_NONE,
+        pipe::TEX_FILTER_NEAREST,
+    );
+    cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[18]);
+    cmdbuf.set_min_samples(1);
+    cmdbuf.set_viewport(display_w as f32, display_h as f32);
+
+    // ── Create sampler views for all textures upfront ──
+    // Handle 17: COMPOSITE_TEX (background + frames + decorations)
+    cmdbuf.create_sampler_view(
+        17,
+        RESOURCE_COMPOSITE_TEX_ID,
+        vfmt::B8G8R8X8_UNORM,
+        pipe::TEXTURE_2D,
+        0,
+        0,
+        0,
+        0,
+        swizzle::IDENTITY,
+    );
+    // Handles 40+i: per-window textures (B8G8R8X8 — no alpha)
+    for (i, win) in windows.iter().enumerate() {
+        if !win.virgl_initialized || win.virgl_resource_id == 0 {
+            continue;
+        }
+        let sv_handle = 40 + i as u32;
+        cmdbuf.create_sampler_view(
+            sv_handle,
+            win.virgl_resource_id,
+            vfmt::B8G8R8X8_UNORM,
+            pipe::TEXTURE_2D,
+            0,
+            0,
+            0,
+            0,
+            swizzle::IDENTITY,
+        );
+    }
+
+    let u_max = (tex_w.min(display_w) as f32) / (tex_w as f32);
+    let v_max = (tex_h.min(display_h) as f32) / (tex_h as f32);
+
+    // Helper: build a textured quad's 4 vertices (TRIANGLE_FAN) from pixel coords + UV
+    let make_quad =
+        |px0: f32, py0: f32, px1: f32, py1: f32, u0: f32, v0: f32, u1: f32, v1: f32| -> [u32; 32] {
+            let nx0 = px0 / dw * 2.0 - 1.0;
+            let ny0 = 1.0 - py0 / dh * 2.0;
+            let nx1 = px1 / dw * 2.0 - 1.0;
+            let ny1 = 1.0 - py1 / dh * 2.0;
+            [
+                nx0.to_bits(),
+                ny0.to_bits(),
+                0f32.to_bits(),
+                1.0f32.to_bits(),
+                u0.to_bits(),
+                v0.to_bits(),
+                0f32.to_bits(),
+                0f32.to_bits(),
+                nx0.to_bits(),
+                ny1.to_bits(),
+                0f32.to_bits(),
+                1.0f32.to_bits(),
+                u0.to_bits(),
+                v1.to_bits(),
+                0f32.to_bits(),
+                0f32.to_bits(),
+                nx1.to_bits(),
+                ny1.to_bits(),
+                0f32.to_bits(),
+                1.0f32.to_bits(),
+                u1.to_bits(),
+                v1.to_bits(),
+                0f32.to_bits(),
+                0f32.to_bits(),
+                nx1.to_bits(),
+                ny0.to_bits(),
+                0f32.to_bits(),
+                1.0f32.to_bits(),
+                u1.to_bits(),
+                v0.to_bits(),
+                0f32.to_bits(),
+                0f32.to_bits(),
+            ]
+        };
+
+    // Helper: emit a textured quad draw (inline write + draw_vbo)
+    let mut vb_offset: u32 = 0;
+    let mut draw_idx: u32 = 0;
+    let emit_quad =
+        |cmdbuf: &mut CommandBuffer, verts: &[u32; 32], vb_off: &mut u32, di: &mut u32| {
+            cmdbuf.resource_inline_write(RESOURCE_VB_ID, *vb_off, 128, verts);
+            cmdbuf.set_vertex_buffers(&[(32, 0, RESOURCE_VB_ID)]);
+            cmdbuf.draw_vbo(*di, 4, pipe::PRIM_TRIANGLE_FAN, *di + 3);
+            *vb_off += 128;
+            *di += 4;
+        };
+
+    // ── Draw 0: Fullscreen background quad from COMPOSITE_TEX ──
+    // Contains background, window frames/decorations, taskbar, appbar.
+    cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
+    let bg_verts = make_quad(0.0, 0.0, dw, dh, 0.0, 0.0, u_max, v_max);
+    emit_quad(&mut *cmdbuf, &bg_verts, &mut vb_offset, &mut draw_idx);
+
+    // ── Per-window interleaved draws (back to front for correct z-order) ──
+    // Draw order: non-chromeless windows → dimmer overlay → chromeless windows.
+    // The dimmer dims the desktop (background + regular windows) under overlays.
+    let tw = tex_w as f32;
+    let th = tex_h as f32;
+    let has_chromeless = windows.iter().any(|w| w.chromeless && w.virgl_initialized);
+
+    // Pass 1: Non-chromeless windows (content + frame strips)
+    for (i, win) in windows.iter().enumerate() {
+        if !win.virgl_initialized || win.virgl_resource_id == 0 {
+            continue;
+        }
+        if win.chromeless {
+            continue;
+        } // drawn in pass 2
+
+        let cx = win.x as f32;
+        let cy = win.y as f32;
+        let cw = win.width as f32;
+        let ch = win.height as f32;
+
+        let fx0 = cx - BORDER_WIDTH as f32;
+        let fy0 = cy - TITLE_BAR_HEIGHT as f32 - BORDER_WIDTH as f32;
+        let fx1 = cx + cw + BORDER_WIDTH as f32;
+        let fy1 = cy + ch + BORDER_WIDTH as f32;
+
+        // Content quad from per-window texture
+        let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
+        let (tex_alloc_w, tex_alloc_h) = if slot < MAX_WIN_TEX_SLOTS {
+            unsafe { WIN_TEX_DIMS[slot] }
+        } else {
+            (win.width, win.height)
+        };
+        let wu = win.width as f32 / tex_alloc_w as f32;
+        let wv = win.height as f32 / tex_alloc_h as f32;
+
+        let sv_handle = 40 + i as u32;
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[sv_handle]);
+        let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
+        emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
+
+        // Frame strips from COMPOSITE_TEX
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
+
+        // Title bar: full width of frame, from frame top to content top
+        if fy0 < cy {
+            let tu0 = fx0.max(0.0) / tw;
+            let tv0 = fy0.max(0.0) / th;
+            let tu1 = fx1.min(dw) / tw;
+            let tv1 = cy.min(dh) / th;
+            let title_verts = make_quad(
+                fx0.max(0.0),
+                fy0.max(0.0),
+                fx1.min(dw),
+                cy.min(dh),
+                tu0,
+                tv0,
+                tu1,
+                tv1,
+            );
+            emit_quad(&mut *cmdbuf, &title_verts, &mut vb_offset, &mut draw_idx);
+        }
+        // Left border: from content top to frame bottom
+        if fx0 < cx {
+            let lu0 = fx0.max(0.0) / tw;
+            let lv0 = cy.max(0.0) / th;
+            let lu1 = cx / tw;
+            let lv1 = fy1.min(dh) / th;
+            let left_verts = make_quad(
+                fx0.max(0.0),
+                cy.max(0.0),
+                cx,
+                fy1.min(dh),
+                lu0,
+                lv0,
+                lu1,
+                lv1,
+            );
+            emit_quad(&mut *cmdbuf, &left_verts, &mut vb_offset, &mut draw_idx);
+        }
+        // Right border: from content top to frame bottom
+        if fx1 > cx + cw {
+            let ru0 = (cx + cw) / tw;
+            let rv0 = cy.max(0.0) / th;
+            let ru1 = fx1.min(dw) / tw;
+            let rv1 = fy1.min(dh) / th;
+            let right_verts = make_quad(
+                cx + cw,
+                cy.max(0.0),
+                fx1.min(dw),
+                fy1.min(dh),
+                ru0,
+                rv0,
+                ru1,
+                rv1,
+            );
+            emit_quad(&mut *cmdbuf, &right_verts, &mut vb_offset, &mut draw_idx);
+        }
+        // Bottom border: between left and right borders
+        if fy1 > cy + ch {
+            let bu0 = cx / tw;
+            let bv0 = (cy + ch) / th;
+            let bu1 = (cx + cw) / tw;
+            let bv1 = fy1.min(dh) / th;
+            let bot_verts = make_quad(cx, cy + ch, cx + cw, fy1.min(dh), bu0, bv0, bu1, bv1);
+            emit_quad(&mut *cmdbuf, &bot_verts, &mut vb_offset, &mut draw_idx);
+        }
+
+        if frame < 3 {
+            crate::serial_println!(
+                "[GPU-WIN] frame={} win[{}] res={} content=({},{})-({}x{}) frame=({:.0},{:.0})-({:.0},{:.0})",
+                frame, i, win.virgl_resource_id, win.x, win.y, win.width, win.height,
+                fx0, fy0, fx1, fy1
+            );
+        }
+    }
+
+    // ── Dimmer overlay: fullscreen translucent black quad ──
+    // Drawn AFTER all non-chromeless windows to dim the entire desktop,
+    // but BEFORE chromeless windows (launcher overlay) which draw on top.
+    if has_chromeless && DIMMER_TEX_READY.load(Ordering::Acquire) {
+        cmdbuf.bind_object(19, super::virgl::OBJ_BLEND); // alpha blend
+        cmdbuf.create_sampler_view(
+            21,
+            RESOURCE_DIMMER_TEX_ID,
+            vfmt::B8G8R8A8_UNORM,
+            pipe::TEXTURE_2D,
+            0,
+            0,
+            0,
+            0,
+            swizzle::IDENTITY,
+        );
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[21]);
+        let dimmer_verts = make_quad(0.0, 0.0, dw, dh, 0.0, 0.0, 1.0, 1.0);
+        emit_quad(&mut *cmdbuf, &dimmer_verts, &mut vb_offset, &mut draw_idx);
+        cmdbuf.bind_object(11, super::virgl::OBJ_BLEND); // restore opaque
+        if frame < 3 {
+            crate::serial_println!("[GPU-DIMMER] frame={} dimmer quad drawn", frame);
+        }
+    }
+
+    // Pass 2: Chromeless windows (drawn opaque on top of dimmer)
+    for (i, win) in windows.iter().enumerate() {
+        if !win.virgl_initialized || win.virgl_resource_id == 0 {
+            continue;
+        }
+        if !win.chromeless {
+            continue;
+        } // already drawn in pass 1
+
+        let cx = win.x as f32;
+        let cy = win.y as f32;
+        let cw = win.width as f32;
+        let ch = win.height as f32;
+
+        let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
+        let (tex_alloc_w, tex_alloc_h) = if slot < MAX_WIN_TEX_SLOTS {
+            unsafe { WIN_TEX_DIMS[slot] }
+        } else {
+            (win.width, win.height)
+        };
+        let wu = win.width as f32 / tex_alloc_w as f32;
+        let wv = win.height as f32 / tex_alloc_h as f32;
+
+        let sv_handle = 40 + i as u32;
+        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[sv_handle]);
+        let content_verts = make_quad(cx, cy, cx + cw, cy + ch, 0.0, 0.0, wu, wv);
+        emit_quad(&mut *cmdbuf, &content_verts, &mut vb_offset, &mut draw_idx);
+
+        if frame < 3 {
+            crate::serial_println!(
+                "[GPU-WIN] frame={} win[{}] res={} content=({},{})-({}x{}) CHROMELESS (pass 2)",
+                frame,
+                i,
+                win.virgl_resource_id,
+                win.x,
+                win.y,
+                win.width,
+                win.height
+            );
+        }
+    }
+
+    // ── Draw cursor as GPU quad (rendered LAST, on top of everything) ──
+    // The cursor lives in a dedicated GPU texture atlas (RESOURCE_CURSOR_TEX_ID,
+    // 16x80, 5 shapes stacked vertically). UV coordinates select the active shape.
+    if CURSOR_TEX_READY.load(Ordering::Acquire) {
+        let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+            crate::drivers::virtio::input_mmio::mouse_position()
+        } else {
+            crate::input::pointer::mouse_position()
+        };
+
+        let shape = CURSOR_SHAPE
+            .load(Ordering::Acquire)
+            .min(NUM_CURSOR_SHAPES - 1);
+        let (hx, hy) = CURSOR_HOTSPOT[shape as usize];
+        let mx = mouse_x as f32 - hx as f32;
+        let my = mouse_y as f32 - hy as f32;
+        let sw = CURSOR_SHAPE_W as f32;
+        let sh = CURSOR_SHAPE_H as f32;
+
+        if (mx + sw) > 0.0 && mx < dw && (my + sh) > 0.0 && my < dh {
+            cmdbuf.bind_object(19, super::virgl::OBJ_BLEND); // alpha blend (created in setup)
+
+            cmdbuf.create_sampler_view(
+                20,
+                RESOURCE_CURSOR_TEX_ID,
+                vfmt::B8G8R8A8_UNORM,
+                pipe::TEXTURE_2D,
+                0,
+                0,
+                0,
+                0,
+                swizzle::IDENTITY,
+            );
+            cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[20]);
+
+            // UV coordinates: select the current shape from the atlas
+            let v0 = (shape as f32 * sh) / CURSOR_TEX_H as f32;
+            let v1 = ((shape as f32 + 1.0) * sh) / CURSOR_TEX_H as f32;
+            let cursor_verts = make_quad(
+                mx.max(0.0),
+                my.max(0.0),
+                (mx + sw).min(dw),
+                (my + sh).min(dh),
+                0.0,
+                v0,
+                1.0,
+                v1,
+            );
+            emit_quad(&mut *cmdbuf, &cursor_verts, &mut vb_offset, &mut draw_idx);
+        }
+    }
+
+    if frame < 3 {
+        crate::serial_println!(
+            "[composite-submit] frame={} windows={} dwords={} vb_offset={} draw_idx={}",
+            frame,
+            windows.len(),
+            cmdbuf.as_slice().len(),
+            vb_offset,
+            draw_idx
+        );
+    }
+
+    let present = CompositorPresentToken::begin()?;
+    if present.id() == 0 {
+        return Err("invalid compositor present token");
+    }
+
+    let flush_result = with_device_state(|state| {
+        virgl_submit_sync_locked(state, cmdbuf.as_slice())?;
+        set_scanout_resource(state, RESOURCE_3D_ID)?;
+        resource_flush_3d(
+            state,
+            RESOURCE_3D_ID,
+            virtgpu::FLUSH_CALLER_VIRGL_COMPOSITE_SINGLE_QUAD,
+        )
+    });
+    if flush_result.is_ok() {
+        present.complete();
+    }
+    flush_result
+}
+
+/// Multi-window GPU compositor.
+///
+/// Uploads dirty textures (background + per-window), then renders all windows
+/// as textured quads in a single SUBMIT_3D batch.
+///
+/// Phase A: Upload dirty textures (outside SUBMIT_3D)
+///   - If bg_dirty: copy bg_pixels to COMPOSITE_TEX backing, cache clean, TRANSFER_TO_HOST_3D
+///   - For each dirty window: cache clean MAP_SHARED pages, TRANSFER_TO_HOST_3D
+///
+/// Phase B: Single SUBMIT_3D batch
+///   - Pipeline setup: create_sub_ctx, surface, blend, DSA, rasterizer, shaders, VE, sampler, viewport
+///   - Background quad: sampler view on COMPOSITE_TEX → full-screen quad
+///   - Per-window: sampler view on window tex → positioned quad + decoration rects
+///
+/// Phase C: SET_SCANOUT + RESOURCE_FLUSH
+pub fn virgl_composite_windows(
+    bg_pixels: Option<&[u32]>,
+    bg_width: u32,
+    bg_height: u32,
+    bg_dirty: bool,
+    dirty_rect: Option<(u32, u32, u32, u32)>, // (x, y, w, h) for partial upload
+    windows: &[crate::syscall::graphics::WindowCompositeInfo],
+) -> Result<(), &'static str> {
+    static COMPOSITE_WIN_FRAME: core::sync::atomic::AtomicU32 =
+        core::sync::atomic::AtomicU32::new(0);
+    let frame = COMPOSITE_WIN_FRAME.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // Performance tracing: read CNTVCT_EL0 at each phase boundary
+    #[cfg(target_arch = "aarch64")]
+    let t_start = {
+        let v: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack));
+        }
+        v
+    };
+
+    if !is_virgl_enabled() {
+        return Err("VirGL not enabled");
+    }
+    if !COMPOSITE_TEX_READY.load(Ordering::Acquire) {
+        return Err("Compositor texture not initialized");
+    }
+
+    if frame < 5 {
+        crate::serial_println!(
+            "[composite-win] frame={} bg_dirty={} windows={} bg={}x{}",
+            frame,
+            bg_dirty,
+            windows.len(),
+            bg_width,
+            bg_height
+        );
+    }
+
+    let tex_w = COMPOSITE_TEX_W.load(Ordering::Relaxed);
+    let tex_h = COMPOSITE_TEX_H.load(Ordering::Relaxed);
+
+    // =========================================================================
+    // Phase A: Compose into COMPOSITE_TEX, then upload changed regions
+    // =========================================================================
+
+    let any_window_dirty = windows
+        .iter()
+        .any(|w| w.dirty && !w.page_phys_addrs.is_empty());
+    let tex_stride = (tex_w as usize) * 4;
+
+    // Step 1: Copy background into compositor texture.
+    // bg_dirty=true with dirty_rect=None: full copy (original behavior).
+    // bg_dirty=true with dirty_rect=Some(x,y,w,h): partial sub-rect copy.
+    // BWM composites ALL windows (terminals + clients) into its buffer at correct
+    // z-order. The kernel just copies and uploads — no kernel-side window blit needed.
+    if bg_dirty {
+        if let Some(pixels) = bg_pixels {
+            let src_w = bg_width.min(tex_w) as usize;
+            let src_h = bg_height.min(tex_h) as usize;
+            if pixels.len() >= src_w * src_h {
+                match dirty_rect {
+                    Some((dx, dy, dw, dh)) => {
+                        // Partial: copy only the dirty sub-rectangle row by row
+                        let rx = (dx as usize).min(src_w);
+                        let ry = (dy as usize).min(src_h);
+                        let rw = (dw as usize).min(src_w - rx);
+                        let rh = (dh as usize).min(src_h - ry);
+                        let row_bytes = rw * 4;
+                        for row in ry..(ry + rh) {
+                            let off = row * src_w + rx;
+                            let dst_off = row * (tex_w as usize) + rx;
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    (pixels.as_ptr() as *const u8).add(off * 4),
+                                    COMPOSITE_TEX_PTR.add(dst_off * 4),
+                                    row_bytes,
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        // Full copy
+                        let copy_bytes = src_w * src_h * 4;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                pixels.as_ptr() as *const u8,
+                                COMPOSITE_TEX_PTR,
+                                copy_bytes.min(COMPOSITE_TEX_LEN),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Chromeless windows like the launcher use normal per-window GPU textures
+    // and render as GPU quads without frame-strip compositing.
+
+    // ── Step 3: Cursor position tracking ────────────────────────────────────
+    // Read mouse position and detect movement for early-out optimization.
+    // The cursor is rendered as a GPU quad in virgl_composite_single_quad(),
+    // NOT stamped into COMPOSITE_TEX (which caused ghost trails with per-window textures).
+    use core::sync::atomic::AtomicI32;
+    static CURSOR_PREV_X: AtomicI32 = AtomicI32::new(-1);
+    static CURSOR_PREV_Y: AtomicI32 = AtomicI32::new(-1);
+
+    let (mouse_x, mouse_y) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        crate::drivers::virtio::input_mmio::mouse_position()
+    } else {
+        crate::input::pointer::mouse_position()
+    };
+    let cur_x = mouse_x as i32;
+    let cur_y = mouse_y as i32;
+    let prev_cx = CURSOR_PREV_X.load(Ordering::Relaxed);
+    let prev_cy = CURSOR_PREV_Y.load(Ordering::Relaxed);
+    let cursor_moved = cur_x != prev_cx || cur_y != prev_cy;
+    if cursor_moved {
+        CURSOR_PREV_X.store(cur_x, Ordering::Relaxed);
+        CURSOR_PREV_Y.store(cur_y, Ordering::Relaxed);
+    }
+
+    // Early out: if nothing changed (no content, no cursor movement), skip VirGL pipeline
+    if !bg_dirty && !any_window_dirty && !cursor_moved {
+        return Ok(());
+    }
+
+    // Step 4: Upload — full texture, partial rect, or cursor-only sub-regions
+    let tex_bytes_total = (tex_w as usize) * (tex_h as usize) * 4;
+
+    // Helper: cache-clean and upload a rectangular sub-region
+    let upload_rect = |x: u32, y: u32, w: u32, h: u32| -> Result<(), &'static str> {
+        let uw = w.min(tex_w.saturating_sub(x));
+        let uh = h.min(tex_h.saturating_sub(y));
+        if uw == 0 || uh == 0 {
+            return Ok(());
+        }
+        let row_start = (y as usize) * tex_stride + (x as usize) * 4;
+        let last_row = (y + uh).saturating_sub(1) as usize;
+        let row_end = last_row * tex_stride + ((x + uw) as usize) * 4;
+        let clean_len = row_end
+            .saturating_sub(row_start)
+            .min(tex_bytes_total.saturating_sub(row_start));
+        if clean_len > 0 {
+            dma_cache_clean(unsafe { COMPOSITE_TEX_PTR.add(row_start) }, clean_len);
+        }
+        with_device_state(|state| {
+            transfer_to_host_3d(state, RESOURCE_COMPOSITE_TEX_ID, x, y, uw, uh, tex_w * 4)
+        })
+    };
+
+    if bg_dirty && dirty_rect.is_some() {
+        // Partial background upload — only the dirty sub-region
+        let (dx, dy, dw, dh) = dirty_rect.unwrap();
+        let ux = dx.min(tex_w);
+        let uy = dy.min(tex_h);
+        let uw = dw.min(tex_w - ux);
+        let uh = dh.min(tex_h - uy);
+        if uw > 0 && uh > 0 {
+            upload_rect(ux, uy, uw, uh)?;
+            crate::tracing::providers::counters::GPU_PARTIAL_UPLOADS.increment();
+            crate::tracing::providers::counters::GPU_BYTES_UPLOADED
+                .add((uw as u64) * (uh as u64) * 4);
+        }
+    } else if bg_dirty {
+        // Full background upload
+        dma_cache_clean(unsafe { COMPOSITE_TEX_PTR }, tex_bytes_total);
+        with_device_state(|state| {
+            transfer_to_host_3d(
+                state,
+                RESOURCE_COMPOSITE_TEX_ID,
+                0,
+                0,
+                tex_w,
+                tex_h,
+                tex_w * 4,
+            )
+        })?;
+        crate::tracing::providers::counters::GPU_FULL_UPLOADS.increment();
+        crate::tracing::providers::counters::GPU_BYTES_UPLOADED.add(tex_bytes_total as u64);
+    }
+    // Note: cursor-only moves (no bg_dirty, no window_dirty) still trigger SUBMIT_3D
+    // below to redraw the GPU cursor quad at the new position. No COMPOSITE_TEX upload needed.
+
+    // Perf: timestamp after COMPOSITE_TEX upload, before per-window uploads
+    #[cfg(target_arch = "aarch64")]
+    let t_after_bg = {
+        let v: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack));
+        }
+        v
+    };
+
+    // =========================================================================
+    // Phase A2: Upload per-window GPU textures
+    // Per-window textures pre-allocated at init, TRANSFER_TO_HOST_3D proven working.
+    // Uploads dirty window content from MAP_SHARED pages to GPU textures.
+    // =========================================================================
+    for win in windows.iter() {
+        if !win.virgl_initialized || !win.dirty {
+            continue;
+        }
+        if win.page_phys_addrs.is_empty() {
+            continue;
+        }
+        let slot = (win.virgl_resource_id as usize).saturating_sub(RESOURCE_WIN_TEX_BASE as usize);
+        if slot >= MAX_WIN_TEX_SLOTS {
+            continue;
+        }
+        let _ = upload_window_texture(slot, win.width, win.height, &win.page_phys_addrs, win.size);
+    }
+
+    // =========================================================================
+    // Phase B+C: GPU compositing + display
+    // =========================================================================
+    // Background + decorations from COMPOSITE_TEX, per-window content from
+    // individual GPU textures, all in one SUBMIT_3D batch.
+
+    // Perf: timestamp before display phase (after all uploads)
+    #[cfg(target_arch = "aarch64")]
+    let t_display = {
+        let v: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack));
+        }
+        v
+    };
+
+    virgl_composite_single_quad(windows)?;
+
+    // Perf: end of frame
+    #[cfg(target_arch = "aarch64")]
+    let t_end = {
+        let v: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack));
+        }
+        v
+    };
+
+    if frame < 5 {
+        crate::serial_println!("[composite-win] frame={} complete", frame);
+    }
+
+    // Performance summary every 500 WORK frames (frames that actually composited)
+    // Uses a separate counter from the main frame counter since many calls hit early return.
+    #[cfg(target_arch = "aarch64")]
+    {
+        use core::sync::atomic::AtomicU64;
+        static WORK_FRAME: AtomicU32 = AtomicU32::new(0);
+        static PERF_BG_UPLOAD_TICKS: AtomicU64 = AtomicU64::new(0);
+        static PERF_WIN_UPLOAD_TICKS: AtomicU64 = AtomicU64::new(0);
+        static PERF_SUBMIT_TICKS: AtomicU64 = AtomicU64::new(0);
+        static PERF_TOTAL_TICKS: AtomicU64 = AtomicU64::new(0);
+
+        let wf = WORK_FRAME.fetch_add(1, Ordering::Relaxed);
+
+        let bg_upload = t_after_bg.saturating_sub(t_start);
+        let win_upload = t_display.saturating_sub(t_after_bg);
+        let submit = t_end.saturating_sub(t_display);
+        let total = t_end.saturating_sub(t_start);
+
+        PERF_BG_UPLOAD_TICKS.fetch_add(bg_upload, Ordering::Relaxed);
+        PERF_WIN_UPLOAD_TICKS.fetch_add(win_upload, Ordering::Relaxed);
+        PERF_SUBMIT_TICKS.fetch_add(submit, Ordering::Relaxed);
+        PERF_TOTAL_TICKS.fetch_add(total, Ordering::Relaxed);
+
+        if wf > 0 && wf % 500 == 0 {
+            PERF_BG_UPLOAD_TICKS.store(0, Ordering::Relaxed);
+            PERF_WIN_UPLOAD_TICKS.store(0, Ordering::Relaxed);
+            PERF_SUBMIT_TICKS.store(0, Ordering::Relaxed);
+            GPU_SLEEP_TICKS_PHASES.store(0, Ordering::Relaxed);
+            PERF_TOTAL_TICKS.store(0, Ordering::Relaxed);
+        }
+    }
+
+    Ok(())
+}
+
 /// Submit a VirGL command buffer for the active 3D context.
 ///
 /// `cmds` is a slice of u32 DWORDs from a VirGL CommandBuffer.
@@ -4821,7 +6182,7 @@ fn copy_3d_framebuffer_to_bar0(width: u32, height: u32) {
         }
         let copy_len = fb_bytes.min(bar0.len()).min(fb_len);
         unsafe {
-            core::ptr::copy_nonoverlapping(fb_ptr, bar0.as_mut_ptr(), copy_len);
+            { bar0 }.copy_from_slice(0, core::slice::from_raw_parts(fb_ptr, copy_len));
         }
     }
 }
@@ -5034,7 +6395,7 @@ pub fn virgl_init() -> Result<(), &'static str> {
     with_device_state(|state| virgl_ctx_attach_resource_cmd(state, VIRGL_CTX_ID, RESOURCE_VB_ID))?;
     crate::serial_println!("[virgl] Step 7: VB resource created (no backing, INLINE_WRITE only)");
 
-    // Step 8: Initialize compositor texture for GPU compositing (compositor_present)
+    // Step 8: Initialize compositor texture for GPU compositing (virgl_composite_frame)
     init_composite_texture(width, height)?;
     crate::serial_println!("[virgl] Step 8: Compositor texture initialized");
 
@@ -5409,305 +6770,4 @@ fn virgl_test_textured_quad() -> Result<(), &'static str> {
     crate::serial_println!("[virgl-tex] Test complete — check display for green+checkerboard");
 
     Ok(())
-}
-
-// =============================================================================
-// BreenGL compositor: the VirGL row of contract §20.2
-// =============================================================================
-//
-// The kernel compositor composes in software and presents through VirGL: each damaged
-// rectangle is uploaded into the compositor texture by a fenced TRANSFER_TO_HOST_3D, one
-// fenced SUBMIT_3D draws those rectangles from the texture onto the scanout resource
-// (nearest sampling, integer-aligned quads, no blending), and RESOURCE_FLUSH shows them.
-// The draw never touches the scanout resource's guest backing, so a fenced
-// TRANSFER_FROM_HOST_3D of that resource into the backing observes the device's copy.
-
-/// The resource the compositor last bound to scanout 0.
-static COMPOSITOR_BOUND: AtomicU32 = AtomicU32::new(RESOURCE_3D_ID);
-
-/// Poison written over the scanout backing before a readback: B8G8R8X8 reads back with X
-/// 0xFF, so a pixel whose X byte is still 0 was not written by the device.
-const READBACK_POISON: u32 = 0x00A5_5A3C;
-
-/// Whether the compositor path can run: VirGL owns the scanout and the compositor texture
-/// matches the display.
-pub fn compositor_ready() -> bool {
-    scanout_is_3d()
-        && COMPOSITE_TEX_READY.load(Ordering::Acquire)
-        && dimensions()
-            == Some((
-                COMPOSITE_TEX_W.load(Ordering::Acquire),
-                COMPOSITE_TEX_H.load(Ordering::Acquire),
-            ))
-}
-
-/// The scanout resource the compositor composes into.
-pub fn compositor_resource() -> u64 {
-    RESOURCE_3D_ID as u64
-}
-
-/// The compositor texture's guest backing: rows of `width * 4` bytes.
-pub fn compositor_texture() -> Option<&'static mut [u8]> {
-    if !COMPOSITE_TEX_READY.load(Ordering::Acquire) {
-        return None;
-    }
-    unsafe {
-        let ptr = COMPOSITE_TEX_PTR;
-        (!ptr.is_null()).then(|| core::slice::from_raw_parts_mut(ptr, COMPOSITE_TEX_LEN))
-    }
-}
-
-/// The most recent fence id handed out, for the observer's high-water mark.
-pub fn last_fence() -> u64 {
-    unsafe { (*(&raw const GPU_PCI_STATE)).as_ref().map_or(0, |s| s.next_fence_id.saturating_sub(1)) }
-}
-
-fn fenced_hdr(type_: u32, fence_id: u64, ctx_id: u32) -> VirtioGpuCtrlHdr {
-    VirtioGpuCtrlHdr {
-        type_,
-        flags: VIRTIO_GPU_FLAG_FENCE,
-        fence_id,
-        ctx_id,
-        padding: 0,
-    }
-}
-
-/// The answer to a fenced command, which must echo its fence.
-fn answered(kind: u32, fence_id: u64, resp: VirtioGpuCtrlHdr) -> Result<breengel_abi::Completion, &'static str> {
-    if resp.flags & VIRTIO_GPU_FLAG_FENCE == 0 || resp.fence_id != fence_id {
-        return Err("fenced command answered without its fence");
-    }
-    Ok(breengel_abi::Completion {
-        fence: fence_id,
-        kind,
-        status: resp.type_,
-    })
-}
-
-fn take_fence(state: &mut GpuPciDeviceState) -> u64 {
-    let f = state.next_fence_id;
-    state.next_fence_id += 1;
-    f
-}
-
-/// Upload `rects` of the compositor texture, then draw them, and `extra`, onto the scanout
-/// resource with one fenced SUBMIT_3D, and flush. `skip` leaves out the first upload, `wrong`
-/// binds the scanout to the 2D resource instead, and `stale` gives the first upload that
-/// fence instead of a new one (the planted faults of §20.3). Returns the resource bound to
-/// the scanout and the answered completions: one TRANSFER_TO_HOST_3D per uploaded rectangle,
-/// then the SUBMIT_3D.
-pub fn compositor_present(
-    rects: &[breengel_abi::Rect],
-    extra: Option<breengel_abi::Rect>,
-    skip: bool,
-    wrong: bool,
-    stale: Option<u64>,
-) -> Result<(u64, alloc::vec::Vec<breengel_abi::Completion>), &'static str> {
-    use super::virgl::{format as vfmt, pipe, swizzle, CommandBuffer};
-    let tex = compositor_texture().ok_or("compositor texture not ready")?;
-    let tex_w = COMPOSITE_TEX_W.load(Ordering::Acquire);
-    let tex_h = COMPOSITE_TEX_H.load(Ordering::Acquire);
-    let stride = tex_w as usize * 4;
-    let mut done = alloc::vec::Vec::new();
-    let mut cmdbuf = alloc::boxed::Box::new(CommandBuffer::new());
-    with_device_state(|state| {
-        for (i, r) in rects.iter().chain(extra.iter()).enumerate() {
-            if (skip && i == 0) || r.w <= 0 || r.h <= 0 {
-                continue;
-            }
-            let (x, y, w, h) = (r.x as u32, r.y as u32, r.w as u32, r.h as u32);
-            if x + w > tex_w || y + h > tex_h {
-                return Err("damage outside the compositor texture");
-            }
-            let start = y as usize * stride + x as usize * 4;
-            let end = (y + h - 1) as usize * stride + (x + w) as usize * 4;
-            dma_cache_clean(tex[start..end].as_ptr(), end - start);
-            let recorded = i < rects.len();
-            let fence_id = match stale {
-                Some(f) if i == 0 => f,
-                _ => take_fence(state),
-            };
-            let command = VirtioGpuTransferHost3d {
-                hdr: fenced_hdr(cmd::TRANSFER_TO_HOST_3D, fence_id, VIRGL_CTX_ID),
-                box_x: x,
-                box_y: y,
-                box_z: 0,
-                box_w: w,
-                box_h: h,
-                box_d: 1,
-                offset: start as u64,
-                resource_id: RESOURCE_COMPOSITE_TEX_ID,
-                level: 0,
-                stride: stride as u32,
-                layer_stride: 0,
-            };
-            let resp = send_owned_command_expect_ok(state, &command)?;
-            let c = answered(cmd::TRANSFER_TO_HOST_3D, fence_id, resp)?;
-            if recorded {
-                done.push(c);
-            }
-        }
-
-        let (dw, dh) = (state.width as f32, state.height as f32);
-        cmdbuf.create_sub_ctx(1);
-        cmdbuf.set_sub_ctx(1);
-        cmdbuf.set_tweaks(1, 1);
-        cmdbuf.set_tweaks(2, state.width);
-        cmdbuf.create_surface(10, RESOURCE_3D_ID, vfmt::B8G8R8X8_UNORM, 0, 0);
-        cmdbuf.set_framebuffer_state(0, &[10]);
-        cmdbuf.create_blend_simple(11);
-        cmdbuf.bind_object(11, super::virgl::OBJ_BLEND);
-        cmdbuf.create_dsa_default(12);
-        cmdbuf.bind_object(12, super::virgl::OBJ_DSA);
-        cmdbuf.create_rasterizer_default(13);
-        cmdbuf.bind_object(13, super::virgl::OBJ_RASTERIZER);
-        let vs = b"VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\n  0: MOV OUT[0], IN[0]\n  1: MOV OUT[1], IN[1]\n  2: END\n";
-        cmdbuf.create_shader(14, pipe::SHADER_VERTEX, 300, vs);
-        cmdbuf.bind_shader(14, pipe::SHADER_VERTEX);
-        let fs = b"FRAG\nPROPERTY FS_COLOR0_WRITES_ALL_CBUFS 1\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\n  0: TEX OUT[0], IN[0], SAMP[0], 2D\n  1: END\n";
-        cmdbuf.create_shader(15, pipe::SHADER_FRAGMENT, 300, fs);
-        cmdbuf.bind_shader(15, pipe::SHADER_FRAGMENT);
-        cmdbuf.create_vertex_elements(
-            16,
-            &[(0, 0, 0, vfmt::R32G32B32A32_FLOAT), (16, 0, 0, vfmt::R32G32B32A32_FLOAT)],
-        );
-        cmdbuf.bind_object(16, super::virgl::OBJ_VERTEX_ELEMENTS);
-        cmdbuf.create_sampler_state(
-            18,
-            pipe::TEX_WRAP_CLAMP_TO_EDGE,
-            pipe::TEX_WRAP_CLAMP_TO_EDGE,
-            pipe::TEX_WRAP_CLAMP_TO_EDGE,
-            pipe::TEX_FILTER_NEAREST,
-            pipe::TEX_MIPFILTER_NONE,
-            pipe::TEX_FILTER_NEAREST,
-        );
-        cmdbuf.bind_sampler_states(pipe::SHADER_FRAGMENT, 0, &[18]);
-        cmdbuf.set_min_samples(1);
-        cmdbuf.set_viewport(dw, dh);
-        cmdbuf.create_sampler_view(
-            17,
-            RESOURCE_COMPOSITE_TEX_ID,
-            vfmt::B8G8R8X8_UNORM,
-            pipe::TEXTURE_2D,
-            0,
-            0,
-            0,
-            0,
-            swizzle::IDENTITY,
-        );
-        cmdbuf.set_sampler_views(pipe::SHADER_FRAGMENT, 0, &[17]);
-        let (tw, th) = (tex_w as f32, tex_h as f32);
-        let mut vb_offset = 0u32;
-        let mut first = 0u32;
-        for r in rects.iter().chain(extra.iter()).filter(|r| r.w > 0 && r.h > 0) {
-            let (x0, y0) = (r.x as f32, r.y as f32);
-            let (x1, y1) = ((r.x + r.w) as f32, (r.y + r.h) as f32);
-            let (nx0, nx1) = (x0 / dw * 2.0 - 1.0, x1 / dw * 2.0 - 1.0);
-            let (ny0, ny1) = (1.0 - y0 / dh * 2.0, 1.0 - y1 / dh * 2.0);
-            let (u0, u1, v0, v1) = (x0 / tw, x1 / tw, y0 / th, y1 / th);
-            let mut verts = [0u32; 32];
-            for (i, (nx, ny, u, v)) in [(nx0, ny0, u0, v0), (nx0, ny1, u0, v1), (nx1, ny1, u1, v1), (nx1, ny0, u1, v0)]
-                .into_iter()
-                .enumerate()
-            {
-                verts[i * 8..i * 8 + 8].copy_from_slice(&[
-                    nx.to_bits(),
-                    ny.to_bits(),
-                    0f32.to_bits(),
-                    1f32.to_bits(),
-                    u.to_bits(),
-                    v.to_bits(),
-                    0f32.to_bits(),
-                    0f32.to_bits(),
-                ]);
-            }
-            cmdbuf.resource_inline_write(RESOURCE_VB_ID, vb_offset, 128, &verts);
-            cmdbuf.set_vertex_buffers(&[(32, 0, RESOURCE_VB_ID)]);
-            cmdbuf.draw_vbo(first, 4, pipe::PRIM_TRIANGLE_FAN, first + 3);
-            vb_offset += 128;
-            first += 4;
-        }
-        let payload = cmdbuf.as_slice();
-        let fence_id = take_fence(state);
-        let header = VirtioGpuCmdSubmit {
-            hdr: fenced_hdr(cmd::SUBMIT_3D, fence_id, VIRGL_CTX_ID),
-            size: (payload.len() * 4) as u32,
-            _padding: 0,
-        };
-        let (_, resp) = send_owned_3desc_command(state, &header, payload)?;
-        if resp.type_ != cmd::RESP_OK_NODATA {
-            return Err("compositor SUBMIT_3D failed");
-        }
-        done.push(answered(cmd::SUBMIT_3D, fence_id, resp)?);
-
-        let bound = if wrong { RESOURCE_ID } else { RESOURCE_3D_ID };
-        if COMPOSITOR_BOUND.load(Ordering::Acquire) != bound {
-            set_scanout_resource(state, bound)?;
-            COMPOSITOR_BOUND.store(bound, Ordering::Release);
-        }
-        let flush = VirtioGpuResourceFlush {
-            hdr: VirtioGpuCtrlHdr {
-                type_: cmd::RESOURCE_FLUSH,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            r_x: 0,
-            r_y: 0,
-            r_width: state.width,
-            r_height: state.height,
-            resource_id: bound,
-            padding: 0,
-        };
-        send_owned_command_expect_ok(state, &flush)?;
-        Ok((bound as u64, done))
-    })
-}
-
-/// Read the whole scanout resource back from the device into its guest backing with a fenced
-/// TRANSFER_FROM_HOST_3D and copy it into `out` (rows of `width * 4` bytes). The backing is
-/// poisoned first, and a pixel the device did not write fails the readback.
-pub fn compositor_readback(out: &mut [u8]) -> Result<breengel_abi::Completion, &'static str> {
-    let fb = unsafe {
-        let ptr = PCI_3D_FB_PTR;
-        if ptr.is_null() {
-            return Err("3D framebuffer not initialized");
-        }
-        core::slice::from_raw_parts_mut(ptr, PCI_3D_FB_LEN)
-    };
-    with_device_state(|state| {
-        let (w, h) = (state.width, state.height);
-        let len = w as usize * h as usize * 4;
-        if out.len() < len || fb.len() < len {
-            return Err("readback destination too small");
-        }
-        for px in fb[..len].chunks_exact_mut(4) {
-            px.copy_from_slice(&READBACK_POISON.to_le_bytes());
-        }
-        dma_cache_clean(fb.as_ptr(), len);
-        let fence_id = take_fence(state);
-        let command = VirtioGpuTransferHost3d {
-            hdr: fenced_hdr(cmd::TRANSFER_FROM_HOST_3D, fence_id, VIRGL_CTX_ID),
-            box_x: 0,
-            box_y: 0,
-            box_z: 0,
-            box_w: w,
-            box_h: h,
-            box_d: 1,
-            offset: 0,
-            resource_id: RESOURCE_3D_ID,
-            level: 0,
-            stride: w * 4,
-            layer_stride: 0,
-        };
-        let resp = send_owned_command_expect_ok(state, &command)?;
-        let done = answered(cmd::TRANSFER_FROM_HOST_3D, fence_id, resp)?;
-        dma_cache_invalidate(fb.as_ptr(), len);
-        if fb[..len].chunks_exact(4).any(|px| px[3] != 0xFF) {
-            return Err("readback left pixels the device did not write");
-        }
-        out[..len].copy_from_slice(&fb[..len]);
-        Ok(done)
-    })
 }

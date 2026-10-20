@@ -162,7 +162,12 @@ impl CpuContext {
             rsi: 0,
             rdi: 0,
             rbp: 0,
-            rsp: stack_pointer.as_u64(),
+            // IRETQ enters kernel Rust without CALL pushing a return address.
+            // Reserve its slot so the SysV callee starts with RSP % 16 == 8.
+            rsp: match privilege {
+                ThreadPrivilege::Kernel => (stack_pointer.as_u64() & !0xF).saturating_sub(8),
+                ThreadPrivilege::User => stack_pointer.as_u64(),
+            },
             r8: 0,
             r9: 0,
             r10: 0,
@@ -609,9 +614,11 @@ impl SchedPolicy {
     pub const RR: u8 = 2;
     pub const BATCH: u8 = 3;
     pub const IDLE: u8 = 5;
-    /// The kernel thread that ends processes killed by a fatal signal: it
-    /// ranks above every real-time thread, so runnable SCHED_FIFO threads on
-    /// every CPU cannot keep a group's deaths from being carried out.
+    /// The kernel threads that end processes killed by a fatal signal and
+    /// drain deferred reclamation: they rank above the real-time priorities
+    /// (rank 101 against at most 100), so runnable SCHED_FIFO threads on each
+    /// CPU cannot keep a group's deaths from being carried out or dead address
+    /// spaces from being freed.
     pub const KERNEL: u8 = 0x80;
     /// A thread's policy until it is changed: SCHED_OTHER.
     pub const DEFAULT: Self = Self {
@@ -628,7 +635,7 @@ impl SchedPolicy {
     };
     /// A SCHED_RR quantum, in timer ticks (`sched_rr_get_interval`).
     pub const RR_QUANTUM_TICKS: u64 = 10;
-    /// The policy of the kernel's fatal-exit thread (`KERNEL`).
+    /// The policy of the kernel's fatal-exit and reclaim threads (`KERNEL`).
     pub const KERNEL_EXIT: Self = Self {
         policy: Self::KERNEL,
         ..Self::DEFAULT
@@ -757,6 +764,12 @@ pub struct Thread {
     /// This prevents the scheduler from restoring stale userspace context.
     pub blocked_in_syscall: bool,
 
+    /// Set while the thread sleeps in a device completion wait that signals
+    /// cannot end (`Completion::wait_timeout_uninterruptible`), so procfs
+    /// reports it in Linux's uninterruptible state `D`. Meaningful only while
+    /// the state is `BlockedOnIO`; the wait clears it when it resumes.
+    pub uninterruptible_io: bool,
+
     /// Was this thread's context saved by schedule_from_kernel() (inline schedule)?
     /// When true, the thread should be resumed via ret-based dispatch (restore
     /// callee-saved regs + SP, then ret to x30) instead of ERET. This avoids
@@ -825,6 +838,8 @@ pub struct Thread {
     /// Last known good TTBR0/CR3 value for this thread's userspace address space.
     /// On ARM64 this lets the scheduler resume blocked-in-syscall threads without
     /// taking PROCESS_MANAGER in the hot dispatch path when the lock is contended.
+    /// On x86_64 it is the root a user thread is dispatched on, filled at its
+    /// first dispatch and replaced by exec (`interrupts::context_switch`).
     pub cached_ttbr0: u64,
 
     /// How many times this thread has parked on one of the kernel's halt
@@ -862,6 +877,11 @@ pub struct Thread {
     /// compare-and-swap on this one word, so a thread is never killed inside a
     /// section and never enters one once claimed. See `KillCustody`.
     pub kill_custody: AtomicU64,
+    /// x86_64: the key group of this thread's private futexes, plus one: its
+    /// address space's lifetime id, or its pid. 0 until a futex call has read
+    /// it from the process row; exec clears it. A private futex call that
+    /// finds it set keys the word without PROCESS_MANAGER (#1650).
+    pub futex_group: AtomicU64,
 
     /// Optional CPU target: `Some(pin)` pins the thread; the empty state permits
     /// migration.
@@ -925,6 +945,13 @@ pub struct CpuPin {
     /// affinity sched_setaffinity set is inherited, as on Linux; a per-CPU
     /// worker's or a hold pen's is not.
     pub inherited: bool,
+    /// Whether the pin was set while its thread stood on another CPU -- running
+    /// there, or named there by a handoff record or a held wake -- so that
+    /// the thread's next placement is the pin's own move to `cpu`, not a
+    /// migration of a thread already at home. 3 of 3 constructors below leave
+    /// it false; `set_user_affinity` sets it, and the migration guard clears
+    /// it once it places the thread on `cpu`.
+    pub relocating: bool,
 }
 
 /// `CpuPin` values minted since boot, by any of its constructors.
@@ -950,7 +977,11 @@ pub static CPU_PINS_STAMPED: AtomicU64 = AtomicU64::new(0);
 impl CpuPin {
     /// The pin a child of a thread holding `pin` starts with.
     pub fn for_child(pin: Option<CpuPin>) -> Option<CpuPin> {
-        pin.filter(|pin| pin.inherited)
+        // A child starts on its pin's CPU, so it has no move to make.
+        pin.filter(|pin| pin.inherited).map(|mut pin| {
+            pin.relocating = false;
+            pin
+        })
     }
 
     /// A pin whose work lives in `cpu`'s per-CPU state.
@@ -961,6 +992,7 @@ impl CpuPin {
             per_cpu_worker: true,
             allowed: 1 << cpu,
             inherited: false,
+            relocating: false,
         }
     }
 
@@ -976,6 +1008,7 @@ impl CpuPin {
             per_cpu_worker: true,
             allowed,
             inherited: true,
+            relocating: false,
         }
     }
 
@@ -993,6 +1026,7 @@ impl CpuPin {
             per_cpu_worker: false,
             allowed: 1 << cpu,
             inherited: false,
+            relocating: false,
         }
     }
 }
@@ -1154,15 +1188,15 @@ impl Thread {
         self.kill_custody.load(Ordering::Acquire) & KILL_PENDING != 0
     }
 
-    /// Close every section the thread's syscall had open, for a syscall whose
-    /// kernel stack is discarded instead of unwound: x86-64 returns a pause or
-    /// sigsuspend that a signal ends to user mode straight from the context
-    /// switch, so the syscall's `KillCustody` guards are never dropped. Left
-    /// open, they would refuse every later kill claim and make every later
-    /// syscall look nested.
-    #[cfg(target_arch = "x86_64")]
-    pub(crate) fn abandon_syscall_custody(&self) {
-        self.kill_custody.fetch_and(!CUSTODY_COUNT, Ordering::AcqRel);
+    /// Cache `root` as the page-table root this user thread is dispatched on:
+    /// x86_64's dispatch sets it at its first lookup, and exec's commit sets
+    /// it on both architectures.
+    pub(crate) fn set_dispatch_root(&mut self, root: u64) {
+        self.cached_ttbr0 = root;
+        #[cfg(target_arch = "x86_64")]
+        if self.state != ThreadState::Terminated {
+            crate::task::scheduler::publish_cached_root(self, root);
+        }
     }
 }
 
@@ -1314,6 +1348,7 @@ impl Clone for Thread {
             privilege: self.privilege,
             has_started: self.has_started,
             blocked_in_syscall: self.blocked_in_syscall,
+            uninterruptible_io: self.uninterruptible_io,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1338,6 +1373,8 @@ impl Clone for Thread {
             // as a backwards jump.
             wait_loop_iters: AtomicU64::new(self.wait_loop_iters.load(Ordering::Relaxed)),
             kill_custody: AtomicU64::new(self.kill_custody.load(Ordering::Acquire)),
+            // Looked up again by the copy's first futex call.
+            futex_group: AtomicU64::new(0),
             cpu_affinity: self.cpu_affinity,
         }
     }
@@ -1441,6 +1478,7 @@ impl Thread {
             privilege: ThreadPrivilege::Kernel,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1460,6 +1498,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -1517,6 +1556,7 @@ impl Thread {
             privilege: ThreadPrivilege::Kernel,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1536,6 +1576,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         })
     }
@@ -1580,6 +1621,7 @@ impl Thread {
             privilege,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1599,6 +1641,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1642,6 +1685,7 @@ impl Thread {
             privilege,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1661,6 +1705,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1717,6 +1762,7 @@ impl Thread {
             privilege: ThreadPrivilege::User,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1736,6 +1782,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1787,6 +1834,7 @@ impl Thread {
             privilege: ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1806,6 +1854,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1841,6 +1890,10 @@ impl Thread {
     pub fn set_terminated(&mut self) {
         self.stop_timer_cpu();
         self.realtime_sleep = false;
+        #[cfg(target_arch = "x86_64")]
+        if self.state != ThreadState::Terminated {
+            crate::task::scheduler::note_thread_terminated(self);
+        }
         self.state = ThreadState::Terminated;
     }
 
@@ -1883,6 +1936,7 @@ impl Thread {
             privilege,
             has_started: false,        // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1902,6 +1956,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }
@@ -1941,6 +1996,7 @@ impl Thread {
             privilege,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1960,6 +2016,7 @@ impl Thread {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         }
     }

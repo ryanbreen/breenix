@@ -1362,8 +1362,8 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     claim_ended(readers);
     drop(gone);
     drop(freed);
-    #[cfg(target_arch = "aarch64")]
-    if at_exit && crate::graphics::display::active() {crate::graphics::display::gone(tgid);}
+    // TODO(gpu-display): the retired software compositor restored the display here when its
+    // owner exited; the GPU compositor's display ownership takes this over.
 }
 
 /// Bytes thread group `tgid` may still map under its `RLIMIT_AS`, 0 when it is gone.

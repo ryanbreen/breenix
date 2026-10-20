@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Shared pre-build policy for effort commits; ARM64 QEMU is always allowed.
 
-A commit carries effort work when any commit in its history that origin/main lacks is also
-in the history of an effort lane (`<effort id>/...`): a branch on origin, read live with
-`git ls-remote`, or a local branch. Such a commit runs on x86-64, Parallels and VMware only
-for the catch-up (--catchup or BREENIX_CATCHUP=1). When origin cannot be read the guard
-refuses, because it cannot tell. On success it prints the full commit SHA.
+Main-path effort history runs on x86-64, Parallels and VMware only for the catch-up
+(--catchup or BREENIX_CATCHUP=1). Metal effort history may also run there for landing
+checks. On x86-metal, main-path effort history is refused even during catch-up, and
+commits outside origin/main must be first-parent reachable from metal-* lanes on
+origin. Origin is read live; unavailable origin means unknown policy and refusal.
 
 A launcher that has already checked a commit exports BREENIX_TARGET_POLICY_CHECKED=<target>:<sha>;
 nested launchers of the same target and commit (host-slot re-exec, the beast gate) skip the check.
@@ -20,7 +20,8 @@ import sys
 
 TIMEOUT_SECONDS = 15
 TERM_GRACE_SECONDS = 3
-TARGETS = ('x86', 'parallels', 'vmware', 'arm64-qemu')
+TARGETS = ('x86', 'parallels', 'vmware', 'arm64-qemu', 'x86-metal')
+MAIN_TARGETS = ('arm64-qemu', 'parallels', 'vmware', 'x86')
 
 
 class OriginUnavailable(Exception):
@@ -121,17 +122,30 @@ def check(root, commit, target, catchup):
             sha = resolve(root, commit)
             if sha is None:
                 raise ValueError('Cannot resolve commit ' + commit + ' locally or on origin')
-        with (root / 'docs/efforts/path.json').open() as source:
-            ids = {effort['id'] for effort in json.load(source)['efforts']}
-        lanes = {name: tip for name, tip in heads.items()
-                 if name.split('/')[1] in ids and name.count('/') >= 2}
+        homes = {}
+        for file in ('path.json', 'metal.json'):
+            with (root / 'docs/efforts' / file).open() as source:
+                for effort in json.load(source)['efforts']:
+                    if effort['id'] in homes:
+                        raise ValueError('Duplicate effort id ' + effort['id'])
+                    homes[effort['id']] = (file, effort.get('targets', MAIN_TARGETS))
+
+        def lane_home(name):
+            prefix, slash, rest = name.partition('/')
+            return homes.get(prefix) if slash and rest else None
+
+        lanes = {name: (tip, lane_home(name.removeprefix('origin/')))
+                 for name, tip in heads.items() if lane_home(name.removeprefix('origin/'))}
         for line in git(root, 'for-each-ref', '--format=%(refname:strip=2) %(objectname)',
                         'refs/heads/').splitlines():
             name, tip = line.split(' ')
-            if '/' in name and name.split('/', 1)[0] in ids:
-                lanes[name] = tip
+            if lane_home(name):
+                lanes[name] = (tip, lane_home(name))
+        # Includes the definition lane (metal-stream/...), which is not an effort id.
+        metal_tips = {tip for name, tip in heads.items()
+                      if name.removeprefix('origin/').startswith('metal-') and name.count('/') >= 2}
         main = heads['origin/main']
-        wanted = sorted({main, *lanes.values()})
+        wanted = sorted({main, *(tip for tip, home in lanes.values()), *metal_tips})
         missing = sorted(set(wanted) - present(root, wanted))
         if missing:
             fetch_objects(root, missing)
@@ -139,22 +153,39 @@ def check(root, commit, target, catchup):
         raise ValueError('Refusing ' + target + ': cannot read origin (' + str(error) + '), so whether '
                          'this commit carries effort work is unknown. Retry once origin is reachable.')
     own = git(root, 'rev-list', sha, '--not', main).splitlines()
-    if not own or not lanes:
+    if not own:
         return sha
-    by_tip = {}
-    for name, tip in lanes.items():
-        by_tip.setdefault(tip, []).append(name)
-    reached = {}
-    for line in git(root, 'log', '--format=%H %S', *sorted(by_tip), '--not', main).splitlines():
-        found, source = line.split()
-        reached[found] = source
-    hits = [found for found in own if found in reached]
-    if hits and not catchup:
-        lane = sorted(by_tip[reached[hits[0]]])[0]
-        raise ValueError('Refusing ' + target + ' for ' + sha[:12] + ': it carries commit '
-                         + hits[0][:12] + ' of effort lane ' + lane + ', and effort work runs on '
-                         'ARM64 QEMU until its catch-up; use --catchup (breenix-runs) or '
-                         'BREENIX_CATCHUP=1 for the catch-up.')
+    prohibited = {}
+    for name, (tip, (file, targets)) in lanes.items():
+        if target == 'x86-metal':
+            refuse = file == 'path.json' and target not in targets
+        else:
+            refuse = file == 'path.json' and not catchup
+        if refuse:
+            prohibited.setdefault(tip, []).append(name)
+    if prohibited:
+        reached = {}
+        for line in git(root, 'log', '--format=%H %S', *sorted(prohibited), '--not', main).splitlines():
+            found, source = line.split()
+            reached[found] = source
+        hits = [found for found in own if found in reached]
+        if hits:
+            lane = sorted(prohibited[reached[hits[0]]])[0]
+            reason = ('main-path effort work cannot run on metal, including during catch-up.'
+                      if target == 'x86-metal' else
+                      'effort work runs on ARM64 QEMU until its catch-up; use --catchup '
+                      '(breenix-runs) or BREENIX_CATCHUP=1 for the catch-up.')
+            raise ValueError('Refusing ' + target + ' for ' + sha[:12] + ': it carries commit '
+                             + hits[0][:12] + ' of effort lane ' + lane + ', and ' + reason)
+    if target == 'x86-metal':
+        first_parent = (set(git(root, 'rev-list', '--first-parent', *sorted(metal_tips),
+                                '--not', main).splitlines()) if metal_tips else set())
+        missing = [found for found in own if found not in first_parent]
+        if missing:
+            raise ValueError('Refusing x86-metal for ' + sha[:12] + ': commit ' + missing[0][:12]
+                             + ' is not first-parent reachable from a metal-* lane on origin; '
+                             'push the metal lane and keep its ref until its work reaches main. '
+                             'Catch-up does not override metal ancestry.')
     return sha
 
 

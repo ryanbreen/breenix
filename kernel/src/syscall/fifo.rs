@@ -18,13 +18,14 @@ pub(crate) fn sys_mknodat(dirfd: i32, pathname: u64, mode: u32, dev: u64) -> Sys
     if let Err(e) = super::fifo_policy::node_type(mode) {
         return SyscallResult::Err(e);
     }
-    let raw = match super::userptr::copy_cstr_from_user(pathname) {
+    let raw = match super::userptr::copy_path_bytes_from_user(pathname) {
         Ok(path) => path,
         Err(e) => return SyscallResult::Err(e),
     };
     mknodat_path(dirfd, &raw, mode, dev)
 }
-pub(crate) fn mknodat_path(dirfd: i32, raw: &str, mode: u32, dev: u64) -> SyscallResult {
+pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u64) -> SyscallResult {
+    let raw = raw.as_ref();
     let kind = match super::fifo_policy::node_type(mode) {
         Ok(kind) => kind,
         Err(e) => return SyscallResult::Err(e),
@@ -62,7 +63,7 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: &str, mode: u32, dev: u64) -> Syscal
         Ok(gid) => gid,
         Err(e) => return SyscallResult::Err(e),
     };
-    match fs.lookup_in_dir(&inode, resolved.final_name()) {
+    match fs.lookup_in_dir_bytes(&inode, resolved.final_name()) {
         Ok(Some(_)) => return SyscallResult::Err(EEXIST as u64),
         Ok(None) => {}
         Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),

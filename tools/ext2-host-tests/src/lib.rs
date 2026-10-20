@@ -2,6 +2,11 @@
 //! Run with `cargo test --manifest-path tools/ext2-host-tests/Cargo.toml`.
 #![cfg(test)]
 extern crate alloc;
+#[path = "../../../kernel/src/boot/intent.rs"]
+pub mod intent;
+pub mod boot {
+    pub use crate::intent;
+}
 pub mod block;
 pub mod ext2;
 pub mod fs {

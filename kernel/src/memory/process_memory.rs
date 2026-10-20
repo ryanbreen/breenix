@@ -10,7 +10,7 @@ use crate::memory::arch_stub::{
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_allocator::return_lease;
 use crate::memory::frame_allocator::{
-    acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease,
+    acquire_leaf_mapping, allocate_frame_leased, deallocate_leaf_frame, FrameLease, FrameOwner,
     LeafMappingClass, ReturnOutcome,
 };
 use crate::memory::layout::USER_STACK_REGION_END;
@@ -18,11 +18,15 @@ use crate::memory::layout::USER_STACK_REGION_END;
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
-        mapper::TranslateResult, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable,
-        PageTableFlags, PhysFrame, Size4KiB, Translate,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
 };
+
+#[path = "leaf_audit.rs"]
+mod leaf_audit;
+use leaf_audit::LeafAudit;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -367,31 +371,40 @@ fn leaf_slot<T: LeafZeroed>(slot: &mut Option<Box<T>>) -> Result<&mut T, &'stati
     Ok(&mut **slot.insert(node))
 }
 
-/// Teardown of the record tree, one freed allocation per call.
+/// Resumable custody-tree audit. Each slot and terminal chunk is charged
+/// once; dropping a finished node needs no recursive scan or allocation.
 trait LeafDrain {
-    /// Free one allocation below this one. False if there is none left.
-    fn drain_one(&mut self) -> bool;
+    fn drain_bounded(&mut self, budget: &mut u32) -> bool;
 }
 
 impl LeafDrain for LeafChunk {
-    fn drain_one(&mut self) -> bool {
-        false
+    fn drain_bounded(&mut self, budget: &mut u32) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
+        true
     }
 }
 
 impl<T: LeafDrain> LeafDrain for LeafNode<T> {
-    fn drain_one(&mut self) -> bool {
-        while self.next < LEAF_FANOUT {
+    fn drain_bounded(&mut self, budget: &mut u32) -> bool {
+        while self.next < LEAF_FANOUT && *budget > 0 {
             if let Some(child) = self.slots[self.next].as_deref_mut() {
-                if !child.drain_one() {
-                    self.slots[self.next] = None;
-                    self.next += 1;
+                if !child.drain_bounded(budget) {
+                    return false;
                 }
-                return true;
+                self.slots[self.next] = None;
+                // The child may consume the last unit. The empty parent slot
+                // remains at `next` until a later pass can charge its audit.
+                if *budget == 0 {
+                    return false;
+                }
             }
             self.next += 1;
+            *budget -= 1;
         }
-        false
+        self.next == LEAF_FANOUT
     }
 }
 
@@ -410,7 +423,7 @@ type LeafRoot = LeafNode<LeafGigs>;
 struct OwnedLeafFrames {
     root: Option<Box<LeafRoot>>,
     released: bool,
-    release_cursor: u64,
+    audit: LeafAudit,
 }
 
 impl OwnedLeafFrames {
@@ -418,7 +431,10 @@ impl OwnedLeafFrames {
         Self {
             root: None,
             released: false,
-            release_cursor: 0,
+            #[cfg(target_arch = "x86_64")]
+            audit: LeafAudit::new(256),
+            #[cfg(target_arch = "aarch64")]
+            audit: LeafAudit::new(512),
         }
     }
 
@@ -492,19 +508,15 @@ impl OwnedLeafFrames {
         self.root = None;
     }
 
-    /// Free the tree an allocation at a time, each charged to `budget`. True
-    /// once it is all freed.
+    /// Audit and free the record tree under the descriptor audit budget.
     fn clear_bounded(&mut self, budget: &mut u32) -> bool {
-        while *budget > 0 {
-            let Some(root) = self.root.as_deref_mut() else {
-                return true;
-            };
-            if !root.drain_one() {
-                self.root = None;
+        if let Some(root) = self.root.as_deref_mut() {
+            if !root.drain_bounded(budget) {
+                return false;
             }
-            *budget -= 1;
+            self.root = None;
         }
-        self.root.is_none()
+        true
     }
 }
 
@@ -553,6 +565,13 @@ pub(crate) enum RetireProgress {
 }
 
 pub(crate) const RETIRE_FRAME_BUDGET: u32 = 64;
+
+/// Descriptor and custody-slot work has its own bound: absent entries must not
+/// consume the budget reserved for releasing leaves and returning table frames.
+/// A bounded call audits at most this many entries per remaining frame unit,
+/// capped at the boot/exec budget. The production caller supplies sixteen frame
+/// units, so its descriptor work is capped independently of receipt size.
+const AUDIT_ENTRIES_PER_FRAME: u32 = 1024;
 
 /// Owns an address space until exec publishes it in a Process row.
 /// Failure drops release leaves first, then tables and the root. This needs no
@@ -619,6 +638,10 @@ pub(crate) enum AbandonReason {
     NoProofPipeline,
     #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
     NoArchPipeline,
+    /// The disposition gate's fixture. An exit whose leaves `terminate`
+    /// released retires its tables through a receipt
+    /// (`process_task::defer_remaining_tables`) instead.
+    #[cfg(feature = "boot_tests")]
     AlreadyTerminated,
 }
 
@@ -1799,14 +1822,15 @@ impl ProcessPageTable {
         }
 
         // The translations are dropped once for the whole table, as Linux
-        // flushes once at the end of a fork's copy: on x86_64 every other
-        // online CPU answers a flush by NMI, and on ARM64 a broadcast
-        // invalidation per page cost the first fork of a 48 MB process about
-        // 100 ms. Until then another CPU may still write through a stale
-        // writable entry, which is a write racing the fork, as on Linux; the
-        // forking thread itself writes no user memory before this returns.
+        // flushes once at the end of a fork's copy: on x86_64 every other CPU
+        // that may cache this address space answers a flush by NMI, and on
+        // ARM64 a broadcast invalidation per page cost the first fork of a
+        // 48 MB process about 100 ms. Until then another CPU may still write
+        // through a stale writable entry, which is a write racing the fork, as
+        // on Linux; the forking thread itself writes no user memory before
+        // this returns.
         if lowered {
-            crate::memory::tlb::flush_all();
+            crate::memory::tlb::flush_user_all(self.level_4_frame.start_address().as_u64());
         }
         result
     }
@@ -2092,7 +2116,10 @@ impl ProcessPageTable {
     fn break_descriptor(&mut self, page: Page<Size4KiB>) -> RevokeFailed {
         crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
         if self.mapper.unmap(page).is_ok() {
-            crate::memory::tlb::flush_page(page.start_address());
+            crate::memory::tlb::flush_user_page(
+                self.level_4_frame.start_address().as_u64(),
+                page.start_address(),
+            );
         }
         RevokeFailed
     }
@@ -2190,59 +2217,66 @@ impl ProcessPageTable {
     /// Walk mapped leaves resumably, including descriptors with no custody
     /// record. Such descriptors are counted as refusals: freeing their frames
     /// without allocator authority would risk returning somebody else's frame.
-    /// Tables remain owned until this scan completes. Empty subtrees are skipped
-    /// together, and both leaf release and descriptor scanning are bounded.
+    /// Tables remain owned until this scan completes. Descriptor and custody
+    /// slots consume an independent audit budget; user-leaf releases consume
+    /// the caller's frame budget, which is also used by table retirement.
     pub(crate) fn release_mapped_leaves_bounded(&mut self, budget: &mut u32) -> RetireProgress {
         self.assert_unclaimed();
         if self.leaves.released {
             return RetireProgress::Complete;
         }
-        #[cfg(target_arch = "x86_64")]
-        const END: u64 = 1 << 47;
-        #[cfg(target_arch = "aarch64")]
-        const END: u64 = 1 << 48;
+        let frame_budget = budget;
+        let mut audit_budget = (*frame_budget).min(RETIRE_FRAME_BUDGET)
+            * AUDIT_ENTRIES_PER_FRAME;
+        let budget = &mut audit_budget;
         let offset = crate::memory::physical_memory_offset();
-        let mut scans = 0;
-        while *budget > 0 && self.leaves.release_cursor < END {
-            let address = self.leaves.release_cursor;
-            let mut table_phys = self.level_4_frame.start_address().as_u64();
-            for shift in [39, 30, 21, 12] {
-                let table_virt = offset + table_phys;
-                let table = unsafe { &*(table_virt.as_ptr() as *const PageTable) };
-                let entry = &table[((address >> shift) & 511) as usize];
-                let flags = entry.flags();
-                scans += 1;
-                if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
-                    self.leaves.release_cursor = ((address >> shift) + 1) << shift;
-                    break;
-                }
-                if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
-                    self.leaves.release_cursor = ((address >> shift) + 1) << shift;
-                    if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                        *budget -= 1;
-                        match self.leaves.search(address) {
-                            Some(record) if shift == 12 => Self::release_leaf_record(
-                                record, PhysFrame::containing_address(entry.addr()),
-                            ),
-                            // No huge-leaf custody exists: never treat one 4 KiB
-                            // record as authority to return an entire huge page.
-                            _ => {
-                                crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
-                            },
-                        }
-                    }
-                    break;
-                }
-                table_phys = entry.addr().as_u64();
+        let root = self.level_4_frame.start_address().as_u64();
+        while *budget > 0 && *frame_budget > 0 {
+            let Some((table_phys, index, address, shift)) = self.leaves.audit.next_entry(root) else {
+                break;
+            };
+            *budget -= 1;
+            let table_virt = offset + table_phys;
+            // SAFETY: the root and each descended table remain owned until
+            // the whole audit completes, including across budgeted passes.
+            let table = unsafe { &*(table_virt.as_ptr() as *const PageTable) };
+            let entry = &table[index];
+            let flags = entry.flags();
+            if entry.is_unused() || !flags.contains(PageTableFlags::PRESENT) {
+                continue;
             }
-            // Charge a bounded scan even if an address space contains no user
-            // leaves. Otherwise a sparse or corrupted root could monopolize idle.
-            if scans >= 512 {
-                *budget = budget.saturating_sub(1);
-                scans = 0;
+            // An inherited supervisor-only root masks user access throughout
+            // its shared kernel hierarchy. It has no process leaf custody to
+            // release. Keep auditing an inherited root with USER_ACCESSIBLE:
+            // any user leaf there still needs a counted custody refusal.
+            #[cfg(target_arch = "x86_64")]
+            if shift == 39
+                && !self.owned_root_slots.contains(index)
+                && !flags.contains(PageTableFlags::USER_ACCESSIBLE)
+            {
+                continue;
+            }
+            if shift == 12 || flags.contains(PageTableFlags::HUGE_PAGE) {
+                if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    *frame_budget -= 1;
+                    match self.leaves.search(address) {
+                        Some(record) if shift == 12 => Self::release_leaf_record(
+                            record, PhysFrame::containing_address(entry.addr()),
+                        ),
+                        // Only a matching 4 KiB custody record authorizes
+                        // release; huge descriptors are counted as refusals.
+                        _ => {
+                            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);
+                        },
+                    }
+                }
+            } else {
+                self.leaves.audit.descend(entry.addr().as_u64(), address);
             }
         }
-        if self.leaves.release_cursor == END && self.leaves.clear_bounded(budget) {
+        // Finish ascending even when the last entry used the last unit;
+        // no descriptor is read here and retirement retains its own budget.
+        if self.leaves.audit.finished() && self.leaves.clear_bounded(budget) {
             self.leaves.released = true;
             RetireProgress::Complete
         } else {
@@ -2417,7 +2451,10 @@ impl ProcessPageTable {
                 );
             }
             #[cfg(target_arch = "x86_64")]
-            crate::memory::tlb::flush_page(faulting_addr);
+            crate::memory::tlb::flush_user_page(
+                self.level_4_frame.start_address().as_u64(),
+                faulting_addr,
+            );
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             crate::tracing::providers::process::trace_cow_copy(pid as u16, (far >> 12) as u16);
             return true;
@@ -2830,6 +2867,7 @@ impl ProcessPageTable {
             AbandonReason::NoArchPipeline => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_ABANDONED_NO_ARCH);
             }
+            #[cfg(feature = "boot_tests")]
             AbandonReason::AlreadyTerminated => {
                 crate::trace_count!(
                     crate::tracing::providers::teardown::PT_ROOT_ABANDONED_TERMINATED
@@ -2926,9 +2964,9 @@ impl Drop for ProcessPageTable {
             }
             Disposition::Retired => {}
             Disposition::Abandoned(reason) => match reason {
-                AbandonReason::NoProofPipeline
-                | AbandonReason::NoArchPipeline
-                | AbandonReason::AlreadyTerminated => {}
+                AbandonReason::NoProofPipeline | AbandonReason::NoArchPipeline => {}
+                #[cfg(feature = "boot_tests")]
+                AbandonReason::AlreadyTerminated => {}
             },
         }
     }
@@ -3746,245 +3784,46 @@ pub unsafe fn switch_to_kernel_page_table() {
 /// Caller must ensure this is called from a safe context
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn switch_to_kernel_page_table() {
-    // Use the master kernel PML4 which has all kernel mappings including stacks.
-    // The bootloader's KERNEL_PAGE_TABLE_FRAME (0x101000) doesn't have the
-    // kernel stack region at 0xffffc90000000000 mapped, which would cause
-    // a page fault when switching.
-    if let Some(kernel_frame) = crate::memory::kernel_page_table::master_kernel_pml4() {
-        let (current_frame, flags) = Cr3::read();
-        if current_frame != kernel_frame {
-            log::trace!(
-                "Switching to master kernel PML4: {:?} -> {:?}",
-                current_frame,
-                kernel_frame
-            );
-            crate::memory::tlb::note_root_load(kernel_frame.start_address().as_u64());
-            Cr3::write(kernel_frame, flags);
-            // Ensure TLB consistency after page table switch
-            super::tlb::flush_after_page_table_switch();
-        }
-    } else {
-        log::error!("Master kernel PML4 not initialized!");
-    }
+    // The master kernel PML4 has every kernel mapping, stacks included; the
+    // bootloader's KERNEL_PAGE_TABLE_FRAME (0x101000) does not map the kernel
+    // stack region at 0xffffc90000000000. Announced once loaded, so a root
+    // release need not wait for this CPU (`tlb::load_kernel_root`).
+    crate::memory::tlb::load_kernel_root(crate::per_cpu::cpu_id());
 }
 
-// NOTE: This function is no longer needed with global kernel page tables
-// All kernel stacks are automatically visible to all processes through the shared kernel PDPT
-
-/// Map user stack pages from kernel page table to process page table
-/// This is critical for userspace execution - the stack must be accessible
-pub fn map_user_stack_to_process(
-    process_page_table: &mut ProcessPageTable,
-    stack_bottom: VirtAddr,
-    stack_top: VirtAddr,
+/// Map a zeroed user stack over `[bottom, top)` of `page_table`. Each page is a
+/// fresh frame the table owns: `map_page` takes its leaf reference, and the
+/// table's leaf release returns it as it does the table's other user pages. A
+/// frame the table refuses goes straight back.
+pub(crate) fn map_new_user_stack(
+    page_table: &mut ProcessPageTable,
+    bottom: VirtAddr,
+    top: VirtAddr,
 ) -> Result<(), &'static str> {
-    log::debug!(
-        "map_user_stack_to_process: mapping stack range {:#x} - {:#x}",
-        stack_bottom.as_u64(),
-        stack_top.as_u64()
-    );
-
-    // Validate stack address range to prevent capacity overflow in Page::range_inclusive()
-    if stack_bottom.as_u64() >= stack_top.as_u64() {
-        log::error!(
-            "Invalid stack address range: stack_bottom ({:#x}) >= stack_top ({:#x})",
-            stack_bottom.as_u64(),
-            stack_top.as_u64()
-        );
+    if bottom.as_u64() >= top.as_u64() {
         return Err("Invalid stack address range: stack_bottom >= stack_top");
     }
-
-    // Calculate page range to copy
-    let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-    let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
-
-    let mut mapped_pages = 0;
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Get access to the kernel page table
-        let kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
-
-        // Copy each page mapping from kernel to process page table
-        for page in Page::range_inclusive(start_page, end_page) {
-            // Look up the mapping in the kernel page table
-            match kernel_mapper.translate(page.start_address()) {
-                TranslateResult::Mapped {
-                    frame,
-                    offset,
-                    flags: _,
-                } => {
-                    let phys_addr = frame.start_address() + offset;
-                    let frame = PhysFrame::containing_address(phys_addr);
-
-                    // Map the same physical frame in the process page table
-                    // Use user-accessible permissions for user stack
-                    let flags = PageTableFlags::PRESENT
-                        | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE;
-
-                    // Check if already mapped
-                    if let Some(existing_frame) =
-                        process_page_table.translate_page(page.start_address())
-                    {
-                        let existing_frame = PhysFrame::containing_address(existing_frame);
-                        if existing_frame == frame {
-                            log::trace!(
-                                "User stack page {:#x} already mapped correctly to frame {:#x}",
-                                page.start_address().as_u64(),
-                                frame.start_address().as_u64()
-                            );
-                            mapped_pages += 1;
-                        } else {
-                            log::error!("User stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
-                                page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
-                            return Err("User stack page already mapped to different frame");
-                        }
-                    } else {
-                        // Page not mapped, map it now
-                        match process_page_table.map_page(page, frame, flags) {
-                            Ok(()) => {
-                                mapped_pages += 1;
-                                log::trace!(
-                                    "Mapped user stack page {:#x} -> frame {:#x}",
-                                    page.start_address().as_u64(),
-                                    frame.start_address().as_u64()
-                                );
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to map user stack page {:#x}: {}",
-                                    page.start_address().as_u64(),
-                                    e
-                                );
-                                return Err("Failed to map user stack page");
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    log::error!(
-                        "User stack page {:#x} not mapped in kernel page table!",
-                        page.start_address().as_u64()
-                    );
-                    return Err("User stack page not found in kernel page table");
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        // ARM64: user addresses live in TTBR0 and must be mapped directly into
-        // the process page table, not copied from the kernel (TTBR1) mappings.
-        let flags =
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            if let Some(existing_frame) = process_page_table.translate_page(page.start_address()) {
-                let existing_frame = PhysFrame::<Size4KiB>::containing_address(existing_frame);
-                log::trace!(
-                    "User stack page {:#x} already mapped to frame {:#x}",
-                    page.start_address().as_u64(),
-                    existing_frame.start_address().as_u64()
-                );
-                mapped_pages += 1;
-                continue;
-            }
-
-            let frame = match allocate_frame() {
-                Some(frame) => frame,
-                None => {
-                    return Err("Out of memory for user stack");
-                }
-            };
-            match process_page_table.map_page(page, frame, flags) {
-                Ok(()) => {
-                    mapped_pages += 1;
-                    log::trace!(
-                        "Mapped user stack page {:#x} -> frame {:#x}",
-                        page.start_address().as_u64(),
-                        frame.start_address().as_u64()
-                    );
-                }
-                Err(e) => {
-                    log::error!(
-                        "Failed to map user stack page {:#x}: {}",
-                        page.start_address().as_u64(),
-                        e
-                    );
-                    return Err("Failed to map user stack page");
-                }
-            }
-        }
-    }
-
-    log::debug!(
-        "✓ Successfully mapped {} user stack pages to process page table",
-        mapped_pages
-    );
-    Ok(())
-}
-
-/// Map user stack to process page table using known physical addresses (ARM64).
-///
-/// This variant takes the physical address of the stack bottom and maps
-/// the physical frames to userspace virtual addresses. This is needed on ARM64
-/// where the kernel allocates stack frames via HHDM but they need to be
-/// accessible at userspace addresses in TTBR0.
-///
-/// # Arguments
-/// * `process_page_table` - The process's page table to map into
-/// * `user_stack_bottom` - Userspace virtual address for stack bottom
-/// * `user_stack_top` - Userspace virtual address for stack top (SP points here)
-/// * `frames` - Physical frames backing the stack, in ascending virtual-page
-///   order (page `i` maps to `frames[i]`). The frames need not be physically
-///   contiguous; each one is the exact frame the stack allocator reserved and
-///   registered as an external leaf, so the leaf-custody gate accepts them.
-#[cfg(target_arch = "aarch64")]
-pub fn map_user_stack_to_process_with_phys(
-    process_page_table: &mut ProcessPageTable,
-    user_stack_bottom: VirtAddr,
-    user_stack_top: VirtAddr,
-    frames: &[PhysFrame],
-) -> Result<(), &'static str> {
-    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
-
-    let stack_size = user_stack_top.as_u64() - user_stack_bottom.as_u64();
-    let num_pages = stack_size / 4096;
-
-    if (frames.len() as u64) < num_pages {
-        return Err("user stack frame list shorter than stack page count");
-    }
-
+    let offset = crate::memory::physical_memory_offset();
     let flags =
         PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
-
-    for i in 0..num_pages {
-        let page_offset = i * 4096;
-        let user_vaddr = VirtAddr::new(user_stack_bottom.as_u64() + page_offset);
-        let page = Page::<Size4KiB>::containing_address(user_vaddr);
-        let frame = frames[i as usize];
-
-        match process_page_table.map_page(page, frame, flags) {
-            Ok(()) => {
-                log::trace!(
-                    "Mapped user stack page {:#x} -> frame {:#x}",
-                    user_vaddr.as_u64(),
-                    frame.start_address().as_u64()
-                );
-            }
-            Err(e) => {
-                log::error!(
-                    "Failed to map page {:#x} -> {:#x}: {}",
-                    user_vaddr.as_u64(),
-                    frame.start_address().as_u64(),
-                    e
-                );
-                return Err("Failed to map user stack page");
-            }
+    let first = Page::<Size4KiB>::containing_address(bottom);
+    let last = Page::<Size4KiB>::containing_address(top - 1u64);
+    for page in Page::range_inclusive(first, last) {
+        let frame = crate::memory::frame_allocator::allocate_frame_for(FrameOwner::UserStacks)
+            .ok_or("Failed to allocate a user stack frame")?;
+        // SAFETY: the frame was just allocated and is mapped by no page table
+        // yet, and the physical memory map covers allocator RAM.
+        unsafe {
+            core::ptr::write_bytes(
+                (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>(),
+                0,
+                4096,
+            );
+        }
+        if let Err(error) = page_table.map_page(page, frame, flags) {
+            let _ = deallocate_leaf_frame(frame);
+            return Err(error);
         }
     }
-
     Ok(())
 }

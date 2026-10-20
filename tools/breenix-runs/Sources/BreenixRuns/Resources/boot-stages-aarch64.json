@@ -45,6 +45,30 @@
       "checkHint": "Check drivers::init() - VirtIO MMIO probe at 0x0a000000+"
     },
     {
+      "name": "Storage device found",
+      "marker": "[devices] storage found: ",
+      "failureMeaning": "No storage device was found on any bus",
+      "checkHint": "drivers::pci::report_class() for PCI class 0x01, the VirtIO MMIO enumeration in drivers::init(), or ahci::init_platform()"
+    },
+    {
+      "name": "Storage device initialized",
+      "marker": "[devices] storage initialized: ",
+      "failureMeaning": "A storage device was found but no storage driver attached a disk",
+      "checkHint": "the storage drivers' init (virtio block, ahci, nvme) and their device_class::storage_initialized() calls"
+    },
+    {
+      "name": "Storage device read",
+      "marker": "[devices] storage read: ",
+      "failureMeaning": "No attached disk completed a block read",
+      "checkHint": "fs::ext2::init_root_fs() - the root superblock read and mount must succeed"
+    },
+    {
+      "name": "Network device found",
+      "marker": "[devices] network found: ",
+      "failureMeaning": "No network device was found on any bus",
+      "checkHint": "drivers::pci::report_class() for PCI class 0x02, or the VirtIO MMIO enumeration in drivers::init()"
+    },
+    {
       "name": "ext2 root filesystem mounted",
       "marker": "[boot] ext2 root filesystem mounted",
       "failureMeaning": "ext2 filesystem mount failed - disk I/O or superblock read issue",
@@ -73,6 +97,30 @@
       "marker": "[boot] TTY subsystem initialized",
       "failureMeaning": "TTY console/PTY infrastructure initialization failed",
       "checkHint": "Check tty::init()"
+    },
+    {
+      "name": "Logo drawn",
+      "marker": "[splash] logo drawn: ",
+      "failureMeaning": "The boot splash was not drawn: no display the console can draw on, or its first write or flush failed",
+      "checkHint": "Check console::attach() and console::splash_boot_pass() in kernel/src/console/mod.rs; the display is the virtio-gpu 2D resource on QEMU and the GOP framebuffer on Parallels and VMware"
+    },
+    {
+      "name": "Boot progress shown",
+      "marker": "[splash] progress shown: ",
+      "failureMeaning": "The splash's first frame, with the progress bar and milestone dots, was not shown",
+      "checkHint": "Check console::splash::Painter::paint() and announce() in kernel/src/console/splash.rs"
+    },
+    {
+      "name": "Logo read back",
+      "marker": "[splash] logo read back: ",
+      "failureMeaning": "The render thread's first read-back of the splash did not match the shadow and the logo oracle, or never ran",
+      "checkHint": "Check SplashRun::read_back() in kernel/src/console/mod.rs and Painter::check() in kernel/src/console/splash.rs; a mismatch prints `[splash] logo read back differs`"
+    },
+    {
+      "name": "Progress read back as it advanced",
+      "marker": "[splash] progress read back: ",
+      "failureMeaning": "No second read-back matched at a later stage count, bar width and cursor phase than the first: the splash's live progress is not proven",
+      "checkHint": "Check that the ARM64 boot path's stages after the first read-back reach console::splash::stage(), and SplashRun::read_back() and progress_pending() in kernel/src/console/mod.rs"
     },
     {
       "name": "Per-CPU data initialized",

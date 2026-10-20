@@ -20,7 +20,7 @@ pub(super) enum Entry {
     KernelOutput(u64),
 }
 
-/// A decimal id with no sign, no leading zero and no overflow.
+/// A decimal id: unsigned, without a leading 0, and within u64.
 fn number(text: &str) -> Option<u64> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) || (text.len() > 1 && text.starts_with('0')) {
         return None;

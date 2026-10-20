@@ -1,8 +1,31 @@
 //! Boot-time interrupt-controller selection and lock-free EOI dispatch.
+//!
+//! The MADT decides the controller on each firmware: when it describes an
+//! I/O APIC and a local APIC (and no structure this kernel cannot honour), the
+//! ISA interrupts are routed through the I/O APIC with the MADT's source
+//! overrides, the local APICs take over the timer, and the 8259s are masked.
+//! Otherwise the 8259 PIC and the PIT deliver, on the boot CPU only.
+//!
+//! Which I/O APIC input a PCI function's INTx line drives is a separate
+//! question the MADT does not answer (that is ACPI `_PRT`, which this kernel
+//! does not interpret). `pci_intx_routing_known` answers it only for the QEMU
+//! chipsets whose wiring is fixed; elsewhere a PCI device interrupts by MSI.
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use super::{acpi, apic, ioapic};
 use x86_64::instructions::port::Port;
 
-/// Unknown PCI routing or unusable firmware retains legacy PIC delivery.
+static PCI_INTX_ROUTING_KNOWN: AtomicBool = AtomicBool::new(false);
+
+/// Whether a PCI function's config-space Interrupt Line names the ISA IRQ, and
+/// with the I/O APIC active the GSI, its INTx actually drives. True only on
+/// QEMU's PC/PIIX and Q35/ICH9 machines (`known_isa_intx_mapping`); a driver
+/// that needs an interrupt on other firmware uses MSI.
+pub fn pci_intx_routing_known() -> bool {
+    PCI_INTX_ROUTING_KNOWN.load(Ordering::Acquire)
+}
+
+/// Choose the interrupt controller from the MADT and route the ISA interrupts.
 pub fn init(rsdp: Option<u64>, physical_offset: u64) {
     let madt = match acpi::read_madt(rsdp, physical_offset) {
         Ok(madt) => Some(madt),
@@ -23,20 +46,43 @@ pub fn init(rsdp: Option<u64>, physical_offset: u64) {
     }
     if let Some(madt) = madt.filter(|m| {
         m.interrupt_topology_supported
-            && m.qemu_firmware
             && m.io_apic_count != 0
-            && known_isa_intx_mapping()
             && (m.local_apic_address != 0 || m.local_apic_override.is_some())
     }) {
+        // The Interrupt Line is a GSI only with the routing the QEMU
+        // chipsets fix; QEMU's firmware is checked too, as before.
+        PCI_INTX_ROUTING_KNOWN.store(
+            madt.qemu_firmware && known_isa_intx_mapping(),
+            Ordering::Release,
+        );
+        apic::set_local_nmis(&madt);
         let mode = apic::init(
             madt.local_apic_override
                 .unwrap_or(u64::from(madt.local_apic_address)),
         );
         ioapic::init(&madt, apic::id());
+        if let Err(reason) = super::msi::set_destination(apic::id()) {
+            // MSI stays without a destination, so `msi::enable` refuses.
+            log::error!("[irq] MSI disabled for the boot processor (APIC id {}): {}", apic::id(), reason);
+        }
         ioapic::set_enabled(1, true);
         ioapic::set_enabled(4, true);
         log::info!("Interrupt delivery: {} + IOAPIC; 8259 masked", mode);
+        log::info!(
+            "[irq] I/O APICs={} source overrides={} local NMI entries={} PCI INTx routing {}",
+            madt.io_apic_count,
+            madt.override_count,
+            madt.local_nmi_count,
+            if pci_intx_routing_known() {
+                "known (QEMU chipset)"
+            } else {
+                "unknown: PCI devices interrupt by MSI"
+            }
+        );
     } else {
+        // With the PIC, an Interrupt Line names the 8259 input directly on the
+        // QEMU chipsets, whose firmware programs PIRQ routing to that line.
+        PCI_INTX_ROUTING_KNOWN.store(known_isa_intx_mapping(), Ordering::Release);
         set_enabled(0, true);
         set_enabled(1, true);
         set_enabled(4, true);
@@ -95,8 +141,8 @@ pub fn eoi(vector: u8) {
         unsafe {
             if let Some(mut pics) = crate::interrupts::PICS.try_lock() {
                 pics.notify_end_of_interrupt(vector);
-            } else if (32..48).contains(&vector) {
-                if vector >= 40 {
+            } else if (super::constants::PIC_IRQ_OFFSET..super::constants::PIC_IRQ_OFFSET + 16).contains(&vector) {
+                if vector >= super::constants::PIC_IRQ_OFFSET + 8 {
                     Port::<u8>::new(0xa0).write(0x20);
                 }
                 Port::<u8>::new(0x20).write(0x20);

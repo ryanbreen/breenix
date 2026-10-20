@@ -28,17 +28,62 @@ pub struct StageTiming {
 pub fn get_boot_stages(arch: &qemu_config::Arch) -> Vec<BootStage> {
     match arch {
         qemu_config::Arch::X86_64 => {
-            let mut stages = x86_64_kernel_stages();
+            let mut stages = with_device_classes(x86_64_kernel_stages(), "PCI bus enumerated");
             stages.extend(shared_userspace_stages());
             stages.extend(x86_64_extra_stages());
             stages
         }
         qemu_config::Arch::Arm64 => {
-            let mut stages = arm64_kernel_stages();
+            let mut stages = with_device_classes(arm64_kernel_stages(), "Device drivers initialized");
             stages.extend(shared_userspace_stages());
             stages
         }
     }
+}
+
+/// `stages` with the device-class stages placed after the stage named `after`,
+/// where that arch's driver initialization reports in boot order.
+fn with_device_classes(mut stages: Vec<BootStage>, after: &str) -> Vec<BootStage> {
+    let at = stages
+        .iter()
+        .position(|stage| stage.name == after)
+        .expect("device-class anchor stage is in the catalog")
+        + 1;
+    stages.splice(at..at, device_class_stages());
+    stages
+}
+
+/// Device-class stages, the same in the aarch64 and x86_64 catalogs: the kernel's `[devices]` lines
+/// (kernel/src/drivers/device_class.rs), printed for whatever driver the
+/// hardware has, so the devices milestone measures what the kernel did rather
+/// than which device it did it with.
+fn device_class_stages() -> Vec<BootStage> {
+    vec![
+        BootStage {
+            name: "Storage device found",
+            marker: "[devices] storage found: ",
+            failure_meaning: "No storage device was found on any bus",
+            check_hint: "drivers::pci::report_class() for PCI class 0x01, the VirtIO MMIO enumeration in drivers::init(), or ahci::init_platform()",
+        },
+        BootStage {
+            name: "Storage device initialized",
+            marker: "[devices] storage initialized: ",
+            failure_meaning: "A storage device was found but no storage driver attached a disk",
+            check_hint: "the storage drivers' init (virtio block, ahci, nvme) and their device_class::storage_initialized() calls",
+        },
+        BootStage {
+            name: "Storage device read",
+            marker: "[devices] storage read: ",
+            failure_meaning: "No attached disk completed a block read",
+            check_hint: "fs::ext2::init_root_fs() - the root superblock read and mount must succeed",
+        },
+        BootStage {
+            name: "Network device found",
+            marker: "[devices] network found: ",
+            failure_meaning: "No network device was found on any bus",
+            check_hint: "drivers::pci::report_class() for PCI class 0x02, or the VirtIO MMIO enumeration in drivers::init()",
+        },
+    ]
 }
 
 /// Get DNS-specific boot stages for focused testing with dns_test_only feature
@@ -247,6 +292,12 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             check_hint: "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling",
         },
         BootStage {
+            name: "Network driver initialized",
+            marker: "[devices] network initialized: ",
+            failure_meaning: "A NIC enumerated but no network driver attached",
+            check_hint: "drivers::init() - e1000, bcm5720, VirtIO legacy or rtl8139 must be initialized",
+        },
+        BootStage {
             name: "E1000 driver initialized",
             marker: "E1000 driver initialized",
             failure_meaning: "E1000 device initialization failed - MMIO mapping, MAC setup, or link configuration issue",
@@ -323,6 +374,30 @@ fn x86_64_kernel_stages() -> Vec<BootStage> {
             marker: "Timer initialized",
             failure_meaning: "Scheduler timer not configured",
             check_hint: "time::init() - timer frequency setup",
+        },
+        BootStage {
+            name: "Logo drawn",
+            marker: "[splash] logo drawn: ",
+            failure_meaning: "The boot splash was not drawn: no display the console can draw on, or its first write or flush failed",
+            check_hint: "Check console::attach() and console::splash_boot_pass() in kernel/src/console/mod.rs; x86-64 draws the splash into the firmware framebuffer at console::init_early() and into the shadow from console::attach()",
+        },
+        BootStage {
+            name: "Boot progress shown",
+            marker: "[splash] progress shown: ",
+            failure_meaning: "The splash's first frame, with the progress bar and milestone dots, was not shown",
+            check_hint: "Check console::splash::Painter::paint() and announce() in kernel/src/console/splash.rs",
+        },
+        BootStage {
+            name: "Logo read back",
+            marker: "[splash] logo read back: ",
+            failure_meaning: "The render thread's first read-back of the splash did not match the shadow and the logo oracle, or never ran",
+            check_hint: "Check SplashRun::read_back() in kernel/src/console/mod.rs and Painter::check() in kernel/src/console/splash.rs; a mismatch prints `[splash] logo read back differs`",
+        },
+        BootStage {
+            name: "Progress read back as it advanced",
+            marker: "[splash] progress read back: ",
+            failure_meaning: "No second read-back matched at a later stage count, bar width and cursor phase than the first: the splash's live progress is not proven",
+            check_hint: "Check that the x86-64 boot path's stages after the first read-back reach console::splash::stage(), and SplashRun::read_back() and progress_pending() in kernel/src/console/mod.rs",
         },
         BootStage {
             name: "HAL timer calibrated",
@@ -571,6 +646,30 @@ fn arm64_kernel_stages() -> Vec<BootStage> {
             marker: "[boot] TTY subsystem initialized",
             failure_meaning: "TTY console/PTY infrastructure initialization failed",
             check_hint: "Check tty::init()",
+        },
+        BootStage {
+            name: "Logo drawn",
+            marker: "[splash] logo drawn: ",
+            failure_meaning: "The boot splash was not drawn: no display the console can draw on, or its first write or flush failed",
+            check_hint: "Check console::attach() and console::splash_boot_pass() in kernel/src/console/mod.rs; the display is the virtio-gpu 2D resource on QEMU and the GOP framebuffer on Parallels and VMware",
+        },
+        BootStage {
+            name: "Boot progress shown",
+            marker: "[splash] progress shown: ",
+            failure_meaning: "The splash's first frame, with the progress bar and milestone dots, was not shown",
+            check_hint: "Check console::splash::Painter::paint() and announce() in kernel/src/console/splash.rs",
+        },
+        BootStage {
+            name: "Logo read back",
+            marker: "[splash] logo read back: ",
+            failure_meaning: "The render thread's first read-back of the splash did not match the shadow and the logo oracle, or never ran",
+            check_hint: "Check SplashRun::read_back() in kernel/src/console/mod.rs and Painter::check() in kernel/src/console/splash.rs; a mismatch prints `[splash] logo read back differs`",
+        },
+        BootStage {
+            name: "Progress read back as it advanced",
+            marker: "[splash] progress read back: ",
+            failure_meaning: "No second read-back matched at a later stage count, bar width and cursor phase than the first: the splash's live progress is not proven",
+            check_hint: "Check that the ARM64 boot path's stages after the first read-back reach console::splash::stage(), and SplashRun::read_back() and progress_pending() in kernel/src/console/mod.rs",
         },
         BootStage {
             name: "Per-CPU data initialized",

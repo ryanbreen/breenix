@@ -4,13 +4,13 @@
 //! - **VirtIO GPU**: Used on QEMU with virtio-gpu-device (original backend)
 //! - **UEFI GOP**: Linear framebuffer in physical memory (used on Parallels)
 //!
-//! This module also provides a SHELL_FRAMEBUFFER interface compatible with
-//! the x86_64 version in logger.rs, allowing split_screen.rs
-//! to work on both architectures.
+//! This module also provides SHELL_FRAMEBUFFER, which the boot and diagnostics
+//! screens and display owners' fb syscalls draw into.
 
 #![cfg(target_arch = "aarch64")]
 
 use super::primitives::{Canvas, Color};
+use super::firmware_writes::BufferMut;
 use crate::drivers::virtio::gpu_mmio;
 use conquer_once::spin::OnceCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -148,7 +148,6 @@ pub fn flush_dirty_rect(x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static s
         unsafe {
             core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         }
-        super::display::canvas_presented(x, y, w, h);
         Ok(())
     } else if crate::drivers::virtio::gpu_pci::is_initialized() {
         crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
@@ -190,9 +189,13 @@ pub fn is_gop_active() -> bool {
     GOP_ACTIVE.load(Ordering::Relaxed)
 }
 
-/// Get the GOP framebuffer as a mutable byte slice.
-/// Returns None if GOP is not initialized.
-pub fn gop_framebuffer() -> Option<&'static mut [u8]> {
+/// GOP mutation access; each nonempty store or copy is counted when it occurs.
+pub fn gop_framebuffer() -> Option<BufferMut<'static>> {
+    Some(BufferMut::new(gop_framebuffer_mut()?, true))
+}
+
+/// The GOP framebuffer as a mutable byte slice; the caller counts its own stores.
+fn gop_framebuffer_mut() -> Option<&'static mut [u8]> {
     let ptr = GOP_FB_PTR.load(Ordering::Relaxed);
     let len = GOP_FB_LEN.load(Ordering::Relaxed);
     if ptr == 0 || len == 0 {
@@ -239,6 +242,7 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
 
     GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
     GOP_FB_LEN.store(size, Ordering::Relaxed);
+    super::firmware_writes::register(virt_ptr as usize, size as usize);
     GOP_ACTIVE.store(true, Ordering::Relaxed);
 
     crate::serial_println!(
@@ -263,10 +267,7 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
     };
 
     // Initialize SHELL_FRAMEBUFFER
-    let shell_fb = ShellFrameBuffer {
-        fb,
-        double_buffer: None,
-    };
+    let shell_fb = ShellFrameBuffer::from_fb(fb);
 
     // Cache immutable dimensions for lock-free access by sys_fbinfo
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
@@ -335,6 +336,7 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
     // Update GOP globals with the new (larger) dimensions
     GOP_FB_PTR.store(virt_ptr, Ordering::Relaxed);
     GOP_FB_LEN.store(needed as u64, Ordering::Relaxed);
+    super::firmware_writes::register(virt_ptr as usize, needed);
     GOP_ACTIVE.store(true, Ordering::Relaxed);
 
     // Create framebuffer with GPU PCI dimensions but GOP backend
@@ -347,10 +349,7 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
         is_bgr_flag: true, // B8G8R8A8_UNORM
     };
 
-    let shell_fb = ShellFrameBuffer {
-        fb,
-        double_buffer: None,
-    };
+    let shell_fb = ShellFrameBuffer::from_fb(fb);
 
     let _ = FB_INFO_CACHE.try_init_once(|| FbInfoCache {
         width,
@@ -397,6 +396,12 @@ impl Arm64FrameBuffer {
         let (width, height) =
             crate::drivers::virtio::gpu_pci::dimensions().or_else(|| gpu_mmio::dimensions())?;
 
+        let bytes = if crate::drivers::virtio::gpu_pci::is_initialized() {
+            crate::drivers::virtio::gpu_pci::framebuffer()?
+        } else {
+            gpu_mmio::framebuffer()?
+        };
+        super::firmware_writes::register(bytes.as_ptr() as usize, bytes.len());
         Some(Self {
             width: width as usize,
             height: height as usize,
@@ -414,7 +419,6 @@ impl Arm64FrameBuffer {
             unsafe {
                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
             }
-            super::display::canvas_presented(0, 0, self.width as u32, self.height as u32);
             Ok(())
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::flush()
@@ -429,7 +433,6 @@ impl Arm64FrameBuffer {
             unsafe {
                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
             }
-            super::display::canvas_presented(x, y, w, h);
             Ok(())
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::flush_rect(x, y, w, h)
@@ -470,28 +473,12 @@ impl Canvas for Arm64FrameBuffer {
             return;
         }
 
-        let buffer = if self.is_gop {
-            match gop_framebuffer() {
-                Some(b) => b,
-                None => return,
-            }
-        } else if crate::drivers::virtio::gpu_pci::is_initialized() {
-            match crate::drivers::virtio::gpu_pci::framebuffer() {
-                Some(b) => b,
-                None => return,
-            }
-        } else {
-            match gpu_mmio::framebuffer() {
-                Some(b) => b,
-                None => return,
-            }
-        };
-
         let pixel_bytes = color.to_pixel_bytes(self.bytes_per_pixel, self.is_bgr_flag);
-        let offset = (y * self.stride + x) * self.bytes_per_pixel;
-        if offset + self.bytes_per_pixel <= buffer.len() {
-            buffer[offset..offset + self.bytes_per_pixel]
-                .copy_from_slice(&pixel_bytes[..self.bytes_per_pixel]);
+        let bpp = self.bytes_per_pixel;
+        let offset = (y * self.stride + x) * bpp;
+        let mut buffer = self.buffer_mut();
+        if offset + bpp <= buffer.len() {
+            buffer.copy_from_slice(offset, &pixel_bytes[..bpp]);
         }
     }
 
@@ -524,14 +511,16 @@ impl Canvas for Arm64FrameBuffer {
         ))
     }
 
-    fn buffer_mut(&mut self) -> &mut [u8] {
-        if self.is_gop {
-            gop_framebuffer().unwrap_or(&mut [])
+    /// The display memory with accounting at each actual mutation.
+    fn buffer_mut(&mut self) -> BufferMut<'_> {
+        let bytes = if self.is_gop {
+            gop_framebuffer_mut().unwrap_or(&mut [])
         } else if crate::drivers::virtio::gpu_pci::is_initialized() {
             crate::drivers::virtio::gpu_pci::framebuffer().unwrap_or(&mut [])
         } else {
             gpu_mmio::framebuffer().unwrap_or(&mut [])
-        }
+        };
+        BufferMut::new(bytes, true)
     }
 
     fn buffer(&self) -> &[u8] {
@@ -686,22 +675,67 @@ pub fn clear_screen(color: Color) -> Result<(), &'static str> {
 
 /// Shell framebuffer wrapper for ARM64
 ///
-/// This provides an interface compatible with x86_64's ShellFrameBuffer in logger.rs,
-/// allowing the split_screen module to work on both architectures.
+/// The canvas the boot and diagnostics screens and display owners' fb syscalls
+/// draw on.
 pub struct ShellFrameBuffer {
     /// The underlying framebuffer
     fb: Arm64FrameBuffer,
     /// Double buffer: shadow buffer in cached RAM, flushed to hardware (GOP BAR0)
     double_buffer: Option<super::double_buffer::DoubleBufferedFrameBuffer>,
+    firmware_base: usize,
+    firmware_len: usize,
 }
 
 impl ShellFrameBuffer {
+    fn from_fb(fb: Arm64FrameBuffer) -> Self {
+        let bytes = fb.buffer();
+        let (firmware_base, firmware_len) = (bytes.as_ptr() as usize, bytes.len());
+        Self { fb, double_buffer: None, firmware_base, firmware_len }
+    }
+
+    /// Hash the display memory retained at framebuffer initialization, excluding a shadow.
+    pub(crate) fn firmware_hash(&self) -> u64 {
+        let mut hash = 14695981039346656037u64;
+        let mut eat = |byte: u8| hash = (hash ^ byte as u64).wrapping_mul(1099511628211);
+        let (base, len) = (self.firmware_base, self.firmware_len);
+        // The bytes are hashed in address order whatever the load width. The memory is
+        // uncached (Normal non-cacheable or device), where each load costs about the same
+        // whatever its width, so the aligned middle is read sixteen bytes per load.
+        // SAFETY (each load below): legacy display backing is retained for the boot's
+        // lifetime and the framebuffer lock excludes kernel canvas writers; the loads stay
+        // inside [base, base + len) and are not elided, so they observe memory.
+        let byte = |offset: usize| unsafe { core::ptr::read_volatile((base as *const u8).add(offset)) };
+        let mut offset = 0;
+        while offset < len && (base + offset) % 16 != 0 {
+            eat(byte(offset));
+            offset += 1;
+        }
+        while offset + 16 <= len {
+            let (lo, hi): (u64, u64);
+            unsafe {
+                core::arch::asm!(
+                    "ldp {lo}, {hi}, [{p}]",
+                    p = in(reg) base + offset,
+                    lo = out(reg) lo,
+                    hi = out(reg) hi,
+                    options(nostack, readonly, preserves_flags),
+                );
+            }
+            for b in lo.to_le_bytes().into_iter().chain(hi.to_le_bytes()) {
+                eat(b);
+            }
+            offset += 16;
+        }
+        while offset < len {
+            eat(byte(offset));
+            offset += 1;
+        }
+        hash
+    }
+
     /// Create a new shell framebuffer
     pub fn new() -> Option<Self> {
-        Some(Self {
-            fb: Arm64FrameBuffer::new()?,
-            double_buffer: None,
-        })
+        Some(Self::from_fb(Arm64FrameBuffer::new()?))
     }
 
     /// Get framebuffer width
@@ -868,9 +902,9 @@ impl Canvas for ShellFrameBuffer {
         }
     }
 
-    fn buffer_mut(&mut self) -> &mut [u8] {
+    fn buffer_mut(&mut self) -> BufferMut<'_> {
         if let Some(ref mut db) = self.double_buffer {
-            db.buffer_mut()
+            BufferMut::new(db.buffer_mut(), false)
         } else {
             self.fb.buffer_mut()
         }

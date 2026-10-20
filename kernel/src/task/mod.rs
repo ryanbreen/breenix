@@ -38,6 +38,11 @@ pub mod scheduler;
 // the aarch64 dispatch path in every profile, and compile to empty inline
 // no-ops without `percpu_stack_custody_oracle`.
 pub mod percpu_stack_oracle;
+/// Ruling S26's busy-machine reclamation leg. Boot-tests only: it pins a
+/// CPU-bound thread to each online CPU its caller does not hold and lets only
+/// the reclaim daemon drain.
+#[cfg(feature = "boot_tests")]
+pub mod reclaim_busy_oracle;
 #[cfg(feature = "boot_tests")]
 pub mod ret_zero_pc_oracle;
 #[cfg(feature = "boot_tests")]

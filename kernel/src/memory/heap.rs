@@ -1,7 +1,9 @@
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 use core::alloc::{GlobalAlloc, Layout};
-use linked_list_allocator::LockedHeap;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use linked_list_allocator::{Heap, LockedHeap};
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
@@ -14,17 +16,25 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 // The heap MUST be in TTBR1 because TTBR0 gets switched to process page tables.
 //
 // Memory layout (physical):
-//   Frame allocator: 0x4400_0000 - 0x5000_0000  (192 MB)
+//   Frame allocator: firmware RAM outside the fixed kernel reservations
 //   .dma (NC) block: 0x5000_0000 - 0x501F_FFFF  (2 MB, Non-Cacheable for xHCI DMA)
-//   Heap:            0x5020_0000 - 0x541F_FFFF  (64 MB, Write-Back Cacheable)
-//   Kernel stacks:   0x5420_0000 - 0x561F_FFFF  (32 MB)
+//   Heap:            0x5020_0000 - 0x581F_FFFF  (128 MB on native VMs, 64 MB on QEMU)
+//   Kernel stacks:   0x5820_0000 - 0x5A1F_FFFF  (32 MB)
 //
 // The heap MUST start AFTER the 2 MB NC DMA block to avoid overlapping
 // with xHCI DMA buffers placed in the .dma linker section.
 pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5020_0000;
 
-/// Heap size: 64 MiB — GPU backing needs ~33MB at 2560x1600 (2 x 16.4MB textures).
+/// x86 retains its existing heap reservation.
+#[cfg(target_arch = "x86_64")]
 pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
+/// ARM64 legacy VirGL startup holds about 52 MiB at 1280x960 before the
+/// console and other kernel allocations (#1914). Reserve space for both.
+#[cfg(target_arch = "aarch64")]
+pub const HEAP_SIZE: u64 = 128 * 1024 * 1024;
+/// QEMU's GPU core uses frames for backing; retain its frame-pool capacity.
+#[cfg(target_arch = "aarch64")]
+pub const QEMU_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
 /// IRQ-safe wrapper around the kernel's free-list allocator.
 ///
@@ -41,6 +51,13 @@ pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
 /// Keep the masked region limited to one inner heap operation.  In particular,
 /// never acquire another lock, allocate, or format output while the inner heap
 /// mutex is held.
+///
+/// On aarch64 a caller that runs with interrupts enabled waits for a busy heap
+/// with them enabled, and masks them only to take the mutex and for its own
+/// operation, so this CPU does not wait out another CPU's heap operation with
+/// its interrupts masked (`gpu_irq_masked_max_us`, #2003).  A caller that
+/// already masked interrupts may hold an interrupt-safe lock, so it keeps
+/// waiting masked.
 struct IrqSafeLockedHeap {
     inner: LockedHeap,
 }
@@ -53,25 +70,51 @@ impl IrqSafeLockedHeap {
     }
 
     #[inline(always)]
-    fn with_inner<R>(&self, operation: impl FnOnce(&LockedHeap) -> R) -> R {
-        crate::arch_without_interrupts(|| operation(&self.inner))
+    fn with_inner<R>(&self, operation: impl FnOnce(&mut Heap) -> R) -> R {
+        #[cfg(target_arch = "aarch64")]
+        if crate::arch_interrupts_enabled() {
+            let mut operation = Some(operation);
+            loop {
+                let done = crate::arch_without_interrupts(|| {
+                    self.inner
+                        .try_lock()
+                        .map(|mut heap| (operation.take().expect("heap operation runs once"))(&mut heap))
+                });
+                if let Some(result) = done {
+                    return result;
+                }
+                while self.inner.is_locked() {
+                    core::hint::spin_loop();
+                }
+            }
+        }
+        crate::arch_without_interrupts(|| operation(&mut self.inner.lock()))
     }
 
     unsafe fn init(&self, heap_bottom: *mut u8, heap_size: usize) {
-        self.with_inner(|inner| unsafe {
-            inner.lock().init(heap_bottom, heap_size);
+        self.with_inner(|heap| unsafe {
+            heap.init(heap_bottom, heap_size);
         });
     }
 }
 
+/// The most heap bytes in use at once since boot, counted as the allocator
+/// counts them (each allocation's size after alignment).
+static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
 unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.with_inner(|inner| unsafe { GlobalAlloc::alloc(inner, layout) })
+        self.with_inner(|heap| {
+            let ptr = heap.allocate_first_fit(layout)
+                .map_or(core::ptr::null_mut(), |allocation| allocation.as_ptr());
+            HIGH_WATER.fetch_max(heap.used(), Ordering::Relaxed);
+            ptr
+        })
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.with_inner(|inner| unsafe {
-            GlobalAlloc::dealloc(inner, ptr, layout);
+        self.with_inner(|heap| unsafe {
+            heap.deallocate(NonNull::new_unchecked(ptr), layout);
         });
     }
 
@@ -111,8 +154,16 @@ static ALLOCATOR: IrqSafeLockedHeap = IrqSafeLockedHeap::empty();
 
 /// Initialize the heap allocator
 pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let heap_size = HEAP_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    let heap_size = if crate::platform_config::is_qemu() {
+        QEMU_HEAP_SIZE
+    } else {
+        HEAP_SIZE
+    };
     let heap_start = VirtAddr::new(HEAP_START);
-    let heap_end = heap_start + HEAP_SIZE;
+    let heap_end = heap_start + heap_size;
 
     // On x86_64, we need to map heap pages. On ARM64, boot.S sets up a direct map
     // so HEAP_START is already backed by physical memory.
@@ -161,13 +212,13 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 
     // Initialize the allocator
     unsafe {
-        ALLOCATOR.init(HEAP_START as *mut u8, HEAP_SIZE as usize);
+        ALLOCATOR.init(HEAP_START as *mut u8, heap_size as usize);
     }
 
     log::info!(
         "Heap initialized at {:#x} with size {} KiB",
         HEAP_START,
-        HEAP_SIZE / 1024
+        heap_size / 1024
     );
 
     Ok(())
@@ -176,7 +227,12 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 /// Bytes free in the kernel heap. Physical frames are not heap and are
 /// counted by the frame allocator instead.
 pub fn free_bytes() -> usize {
-    ALLOCATOR.with_inner(|inner| inner.lock().free())
+    ALLOCATOR.with_inner(|heap| heap.free())
+}
+
+/// The most bytes the kernel heap has had in use at once since boot.
+pub fn high_water_bytes() -> usize {
+    HIGH_WATER.load(Ordering::Relaxed)
 }
 
 /// Handle allocation errors

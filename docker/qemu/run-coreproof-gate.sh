@@ -280,6 +280,7 @@ boot_once() {
         -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$ext2" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$CURRENT_SERIAL" &

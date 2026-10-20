@@ -450,6 +450,7 @@ fn handle_unhandled_el1_exception(frame: &Aarch64ExceptionFrame, ec: u32, esr: u
     unsafe {
         core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
     }
+    super::irq_mask_account::opened();
 
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     let first_fault = cpu_id < EL1_UNHANDLED_FAULT_LATCHED.len()
@@ -486,6 +487,7 @@ pub(crate) fn set_idle_stack_for_eret() {
 
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let idle_stack = super::constants::percpu_kernel_stack_top(cpu_id);
+    crate::gpu::panic::abandon_accesses();
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
         Aarch64PerCpu::set_kernel_stack_top(idle_stack);
@@ -826,6 +828,26 @@ mod exception_class {
     pub const BRK_AARCH64: u32 = 0b111100; // BRK instruction
 }
 
+/// Only a user-address fault during a user thread's syscall can abandon that
+/// task. IRQ/softirq faults and kernel-address faults belong to the kernel.
+fn route_el1_abort(esr: u64, far: u64, elr: u64) {
+    let recoverable = !crate::per_cpu_aarch64::in_interrupt()
+        && far < crate::memory::layout::USER_STACK_REGION_END
+        && current_thread_lock_free().is_some_and(|thread| {
+            thread.privilege == crate::task::thread::ThreadPrivilege::User
+                && thread.signals.in_syscall.load(Ordering::Acquire)
+        });
+    if recoverable {
+        crate::graphics::boot_screen::show_recoverable_fault(esr, far, elr);
+    } else {
+        crate::graphics::boot_screen::show_fault(esr, far, elr);
+        // Park rather than abandoning the active IRQ frame or signaling its task.
+        if crate::per_cpu_aarch64::in_interrupt() {
+            crate::gpu::panic::park();
+        }
+    }
+}
+
 /// Handle synchronous exceptions (syscalls, page faults, etc.)
 ///
 /// Called from assembly with:
@@ -834,6 +856,9 @@ mod exception_class {
 /// - x2 = FAR_EL1 (Fault Address Register)
 #[no_mangle]
 pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
+    // The CPU takes the exception masked; the return restores the frame's
+    // DAIF.
+    let _masked = super::irq_mask_account::ExceptionStretch::begin(frame);
     // Per-CPU sync exception counter — increment FIRST, before any branching.
     let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
     if cpu_id < 8 {
@@ -1264,20 +1289,18 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate — defer full process cleanup to
-            // the next safe scheduling point, then redirect to idle.
-            {
-                let mut line = crate::serial_line::Line::new();
-
-                line.text("[DATA_ABORT] kernel-mode fault, deferring process cleanup\n");
-            }
-            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             dump_fatal_postmortem_once("DATA_ABORT");
             drop(fatal_uart_guard);
             if !from_el0 {
-                crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+                route_el1_abort(esr, far, frame_ref.elr);
             }
 
+            // Recover task faults and pre-handoff faults at a safe scheduling point.
+            {
+                let mut line = crate::serial_line::Line::new();
+                line.text("[DATA_ABORT] deferring process cleanup\n");
+            }
+            defer_current_user_thread_sigsegv_exit("[DATA_ABORT]", frame as u64, from_el0);
             // EL1 may have faulted while holding SCHEDULER, so termination is
             // non-blocking there. Preserve the established EL0 path exactly.
             if from_el0 {
@@ -1418,7 +1441,6 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
 
                     dump_fatal_postmortem_once("INSTRUCTION_ABORT");
-                    crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
                 }
 
                 // Register dump for EL0 instruction abort at low address —
@@ -1616,6 +1638,10 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
             drop(fatal_uart_guard);
+
+            if !from_el0 {
+                route_el1_abort(esr, far, frame_ref.elr);
+            }
 
             if from_el0 {
                 crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_FAULT);
@@ -2028,6 +2054,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             unsafe {
                 core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
             }
+            super::irq_mask_account::opened();
             let frame_ref = unsafe { &mut *frame };
             let fatal_uart_guard = acquire_fatal_postmortem_uart();
             // Use lock-free raw UART — serial_println! acquires a spinlock that may be
@@ -2220,7 +2247,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             }
             dump_fatal_postmortem_once("UNHANDLED_EC");
             drop(fatal_uart_guard);
-            crate::graphics::boot_screen::show_fault(esr, far, frame_ref.elr);
+            crate::graphics::boot_screen::show_recoverable_fault(esr, far, frame_ref.elr);
             // Redirect to idle instead of hanging — allows system to recover.
             // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
@@ -2277,7 +2304,7 @@ fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
     let result = match syscall_num {
         syscall_nums::EXIT => {
             let exit_code = arg1 as i32;
-            crate::serial_println!("[syscall] exit({})", exit_code);
+            crate::diag_println!("[syscall] exit({})", exit_code);
             crate::serial_println!();
             crate::serial_println!("========================================");
             crate::serial_println!("  Userspace Test Complete!");
@@ -2520,9 +2547,9 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
                 }
             }
             // XHCI USB interrupt dispatch
-            if let Some(xhci_irq) = crate::drivers::usb::xhci::get_irq() {
+            if let Some(xhci_irq) = crate::drivers::xhci::get_irq() {
                 if irq_id == xhci_irq {
-                    crate::drivers::usb::xhci::handle_interrupt();
+                    crate::drivers::xhci::handle_interrupt();
                 }
             }
             // VirtIO GPU PCI interrupt dispatch (MSI completion)
@@ -2534,6 +2561,17 @@ fn dispatch_irq_action(irq_id: u32, frame: *const Aarch64ExceptionFrame) {
             if let Some(gpu_irq) = crate::drivers::virtio::gpu_pci::get_irq() {
                 if irq_id == gpu_irq {
                     crate::drivers::virtio::gpu_pci::handle_interrupt();
+                }
+            }
+            // GPU core interrupt dispatch (INTx on QEMU, MSI-X on Parallels)
+            if let Some(gpu_core_irq) = crate::gpu::irq() {
+                if irq_id == gpu_core_irq {
+                    crate::gpu::handle_interrupt();
+                }
+            }
+            if let Some(gpu_core_config_irq) = crate::gpu::config_irq() {
+                if irq_id == gpu_core_config_irq {
+                    crate::gpu::handle_config_interrupt();
                 }
             }
             // VirtIO network PCI interrupt dispatch (GICv2m MSI)
@@ -2585,6 +2623,7 @@ impl Drop for KernelTime {
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
+    super::irq_mask_account::taken_irq();
     crate::tracing::providers::counters::count_irq();
     let have_percpu = crate::per_cpu_aarch64::is_initialized();
 
@@ -2614,6 +2653,9 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             && interrupted_context_had_irqs_unmasked(frame)
             && !gic::is_spi_level_triggered(irq_id);
         if reopen_nested_irq_window {
+            // This interrupt stays active until `deactivate_irq`, so when it is
+            // the timer's it holds the next tick off with interrupts enabled.
+            super::irq_mask_account::closing_nested();
             unsafe {
                 core::arch::asm!("msr daifclr, #3", "isb", options(nomem, nostack));
             }
@@ -2625,6 +2667,7 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
             unsafe {
                 core::arch::asm!("msr daifset, #3", "isb", options(nomem, nostack));
             }
+            super::irq_mask_account::opened();
         }
 
         // Mask IRQs before deactivation: a level source may already be
@@ -2690,15 +2733,9 @@ fn check_need_resched_on_irq_exit() {
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
-    // Read all available bytes from the UART FIFO
-    while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Push to stdin buffer for kernel shell or userspace read() syscall
-        // This wakes any blocked readers waiting for input
-        crate::ipc::stdin::push_byte_from_irq(byte);
-    }
-
-    // Clear the interrupt
-    serial_aarch64::clear_rx_interrupt();
+    // Do not consume a UART byte until stdin owns space for it. Contention
+    // defers RX until the ring holder releases it; the IRQ does not wait.
+    crate::ipc::stdin::receive_serial_from_irq(serial_aarch64::get_received_byte);
 }
 
 /// Get exception class name for debugging

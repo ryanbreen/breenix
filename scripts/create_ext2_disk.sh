@@ -204,7 +204,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
             # Copy remaining binaries from /binaries directory
             #          test binaries (*_test, test_*) -> /usr/local/test/bin
-            #          system binaries (telnetd, init, probe, blogd, suite-*) -> /sbin
+            #          system binaries (telnetd, init, probe, persistent-install, blogd, suite-*) -> /sbin
             #          everything else -> /bin
             echo "Installing other binaries..."
             bin_count=0
@@ -220,7 +220,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
                         cp "$elf_file" /mnt/ext2/usr/local/test/bin/${bin_name}
                         chmod 755 /mnt/ext2/usr/local/test/bin/${bin_name}
                         test_count=$((test_count + 1))
-                    elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "blogd" ] || echo "$bin_name" | grep -qE "^suite-"; then
+                    elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "persistent-install" ] || [ "$bin_name" = "blogd" ] || echo "$bin_name" | grep -qE "^suite-"; then
                         cp "$elf_file" /mnt/ext2/sbin/${bin_name}
                         chmod 755 /mnt/ext2/sbin/${bin_name}
                         sbin_count=$((sbin_count + 1))
@@ -404,6 +404,7 @@ HOTKEYS
             echo "  Created /etc/hotkeys.conf"
 
             # Create /etc/init.js - bsh boot script executed by init
+            if [ "$BREENIX_ARCH" = aarch64 ]; then
             cat > /mnt/ext2/etc/init.js << 'INITJS'
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
@@ -427,6 +428,9 @@ spawn("/bin/bcheck");
 // get scheduled.
 spawn("/sbin/blogd");
 INITJS
+            else
+                echo "spawn(\"/sbin/telnetd\");" > /mnt/ext2/etc/init.js
+            fi
             echo "  Created /etc/init.js"
 
             # Show what was created
@@ -496,7 +500,7 @@ else
 
     # Copy remaining binaries from userspace directory
     #          test binaries (*_test, test_*) -> /usr/local/test/bin
-    #          system binaries (telnetd, init, probe, blogd, suite-*) -> /sbin
+    #          system binaries (telnetd, init, probe, persistent-install, blogd, suite-*) -> /sbin
     #          everything else -> /bin
     echo "Installing other binaries..."
     bin_count=0
@@ -512,7 +516,7 @@ else
                 cp "$elf_file" "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/usr/local/test/bin/${bin_name}"
                 test_count=$((test_count + 1))
-            elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "blogd" ] || echo "$bin_name" | grep -qE '^suite-'; then
+            elif [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ] || [ "$bin_name" = "probe" ] || [ "$bin_name" = "persistent-install" ] || [ "$bin_name" = "blogd" ] || echo "$bin_name" | grep -qE '^suite-'; then
                 cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
                 sbin_count=$((sbin_count + 1))
@@ -696,6 +700,7 @@ HOTKEYS
     echo "  Created /etc/hotkeys.conf"
 
     # Create /etc/init.js - bsh boot script executed by init
+    if [ "$ARCH" = aarch64 ]; then
     cat > "$MOUNT_DIR/etc/init.js" << 'INITJS'
 // Breenix boot script - executed by bsh on startup
 // spawn() starts a process in the background and returns its PID.
@@ -719,6 +724,9 @@ spawn("/bin/bcheck");
 // get scheduled.
 spawn("/sbin/blogd");
 INITJS
+    else
+        echo 'spawn("/sbin/telnetd");' > "$MOUNT_DIR/etc/init.js"
+    fi
     echo "  Created /etc/init.js"
 
     # Show what was created

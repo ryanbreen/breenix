@@ -1,4 +1,5 @@
 #!/bin/bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
 BREENIX_HOST_ENTRY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 BREENIX_HOST_ARGS=("$@")
 # The x86_64 processor-enumeration gate (#814 PR-1, #629).
@@ -184,7 +185,7 @@ for smp in "${SMP_LEGS[@]}"; do
         -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
         -drive "if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img" \
         -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off \
-        -drive "if=none,id=ext2disk,format=raw,readonly=on,file=$BREENIX_ROOT/target/ext2.img" \
+        -drive "if=none,id=ext2disk,format=raw,snapshot=on,file=$BREENIX_ROOT/target/ext2.img" \
         -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off \
         -machine pc -accel tcg,thread=multi -cpu qemu64 -smp "$smp" -m 512 \
         -display none -no-reboot -no-shutdown \

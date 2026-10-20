@@ -2,9 +2,10 @@
 //!
 //! ## What This Test Validates
 //!
-//! This test runs BEFORE interrupts are enabled and validates:
+//! This test runs before preemption is enabled and validates:
 //!
-//! ✓ TSC calibration succeeded (frequency in reasonable range 1-5 GHz)
+//! ✓ TSC calibration agrees within 0.1% with an independent reference
+//! ✓ TSC frequency is plausible (1 to 5 GHz)
 //! ✓ TSC is actually being used (not PIT fallback)
 //! ✓ High-resolution timing provides sub-millisecond precision
 //! ✓ Time advances monotonically between calls
@@ -13,15 +14,14 @@
 //! ✓ CLOCK_MONOTONIC returns Timespec with valid nanosecond values (0-999999999)
 //! ✓ CLOCK_REALTIME returns plausible RTC timestamp (year >= 2024) with sub-second precision
 //! ✓ Invalid clock IDs return EINVAL
+//! claim-lint:ok: test_clock_gettime below asserts these properties; #1859 rules the calibration check.
 //!
 //! ## What This Test Does NOT Validate
 //!
 //! ✗ Userspace calling the syscall via INT 0x80 from Ring 3
 //! ✗ copy_to_user mechanics (tested by userspace syscalls)
 //!
-//! This test runs during kernel initialization before interrupts are enabled.
-//! Once interrupts are on, the scheduler preempts to userspace and kernel_main
-//! never resumes.
+//! This test runs during kernel initialization with preemption disabled.
 //!
 //! For userspace syscall validation, see:
 //! - hello_time.elf (userspace/programs/hello_time.rs) - calls SYS_GET_TIME from Ring 3
@@ -31,6 +31,31 @@ use crate::syscall::time::{clock_gettime, CLOCK_MONOTONIC, CLOCK_REALTIME};
 use crate::syscall::ErrorCode;
 use crate::time::tsc;
 use crate::time::DateTime;
+
+#[path = "pm_reference.rs"]
+mod pm_reference;
+
+/// S19: measure against a different timer from calibration's PIT. CPUID
+/// cannot be the oracle: calibration may install it or deliberately reject it.
+fn independent_tsc_frequency() -> (u64, &'static str) {
+    use crate::arch_impl::x86_64::platform;
+    use x86_64::instructions::port::Port;
+
+    let (port, wide) = platform::pm_timer()
+        .expect("TSC validation needs an independent ACPI PM reference timer");
+    let mask = if wide { u32::MAX } else { 0x00ff_ffff };
+    let mut pm = Port::<u32>::new(port);
+    // SAFETY: platform::pm_timer obtained this I/O port from the FADT.
+    let sample = || unsafe {
+        let before = tsc::read_tsc_serialized();
+        let ticks = pm.read() & mask;
+        let after = tsc::read_tsc_serialized();
+        pm_reference::Sample { ticks, before, after }
+    };
+    let hz = pm_reference::measure(sample, mask)
+        .expect("independent ACPI PM reference remained stalled or imprecise after eight attempts");
+    (hz, "acpi-pm-1s")
+}
 
 /// In-kernel test for clock_gettime - only called in certain build configurations.
 #[allow(dead_code)]
@@ -48,13 +73,29 @@ pub fn test_clock_gettime() {
     let freq_ghz = freq_hz as f64 / 1_000_000_000.0;
     log::info!("  TSC frequency: {} Hz ({:.2} GHz)", freq_hz, freq_ghz);
 
-    // Modern x86_64 CPUs have TSC frequencies between 1-5 GHz
+    // Keep the supported 1-5 GHz bound as well as independent rate agreement.
     assert!(
-        freq_hz >= 1_000_000_000 && freq_hz <= 5_000_000_000,
-        "TSC frequency {} Hz outside reasonable range (1-5 GHz)",
+        (1_000_000_000..=5_000_000_000).contains(&freq_hz),
+        "TSC frequency {} Hz outside plausible range (1-5 GHz)",
         freq_hz
     );
-    log::info!("✓ TSC calibrated with reasonable frequency");
+    let (reference_hz, source) = independent_tsc_frequency();
+    assert!(reference_hz != 0, "independent TSC reference returned zero Hz");
+    let difference = u128::from(freq_hz.abs_diff(reference_hz));
+    log::info!(
+        "  TSC independent reference: {} Hz source={} difference={} ppm",
+        reference_hz,
+        source,
+        difference * 1_000_000 / u128::from(reference_hz)
+    );
+    assert!(
+        difference * 1000 <= u128::from(reference_hz),
+        "TSC frequency {} Hz disagrees with {} reference {} Hz by more than 0.1%",
+        freq_hz,
+        source,
+        reference_hz
+    );
+    log::info!("✓ TSC calibrated with plausible frequency and independent agreement within 0.1%");
 
     // ── Test B: TSC Is Actually Used (Not PIT Fallback) ───────────
     log::info!("Test B: Verify TSC provides sub-millisecond precision");

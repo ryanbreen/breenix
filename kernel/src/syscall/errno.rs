@@ -23,6 +23,9 @@ pub const ERESTARTSYS: i32 = 512;
 /// I/O error
 pub const EIO: i32 = 5;
 
+/// No such device or address
+pub const ENXIO: i32 = 6;
+
 /// Argument and environment list exceeds ARG_MAX.
 pub const E2BIG: i32 = 7;
 
@@ -83,6 +86,9 @@ pub const ENOSPC: i32 = 28;
 
 /// Illegal seek (not a seekable fd)
 pub const ESPIPE: i32 = 29;
+
+/// Read-only filesystem
+pub const EROFS: i32 = 30;
 
 /// Too many links
 pub const EMLINK: i32 = 31;

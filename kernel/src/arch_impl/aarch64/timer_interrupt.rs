@@ -499,6 +499,7 @@ fn arm_timer(ticks: u64) {
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
     }
+    super::irq_mask_account::armed(ticks);
 }
 
 #[inline(always)]
@@ -560,6 +561,9 @@ fn trace_kernel_resume_timer_irq(frame: &Aarch64ExceptionFrame, kind: u16) {
 /// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
+    // Fatal takeover ends peer scheduling once their device accesses have drained.
+    crate::gpu::panic::stop_if_terminal();
+
     let resume_irq_kind = if frame.is_null() {
         None
     } else {
@@ -695,6 +699,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
+        super::irq_mask_account::armed(ticks);
     } else {
         arm_timer(ticks);
     }
@@ -1013,6 +1018,11 @@ fn dump_gic_state() {
 /// waiting and reports a refusal as `[BXCAP:NOTE sched_lock_held]` after the
 /// lock-independent sections are already on the wire.
 fn check_soft_lockup(cpu0_tick: u64) {
+    // A fatal GPU takeover parks its users with IRQs masked. Remaining timer
+    // ticks do not turn that intentional terminal stop into a scheduler lockup.
+    if crate::gpu::panic::terminal() {
+        return;
+    }
     let ctx_count = crate::task::scheduler::context_switch_count();
     let last_ctx = WATCHDOG_LAST_CTX_SWITCH.load(Ordering::Relaxed);
 
@@ -1169,16 +1179,47 @@ pub fn reset_quantum() {
     CURRENT_QUANTUM[idx].store(TIME_QUANTUM, Ordering::Relaxed);
 }
 
-/// Re-arm the current CPU's timer using the configured scheduling interval.
+/// Whether a timer programmed as `ctl`/`cval` already holds this CPU's next
+/// tick: enabled, unmasked, and due within one interval of `now` either way.
+///
+/// A deadline that has passed is a tick the CPU has not taken yet (its
+/// interrupt is pending while interrupts are masked). Re-programming it to
+/// `now + ticks` withdraws that tick, and moving a future one later keeps it
+/// from arriving while the CPU schedules more often than once an interval
+/// (#2137).
+#[inline(always)]
+fn tick_pending(ctl: u64, cval: u64, now: u64, ticks: u64) -> bool {
+    let ahead = cval.wrapping_sub(now) as i64;
+    ctl & 3 == 1 && ahead <= ticks as i64 && ahead >= -(ticks as i64)
+}
+
+/// Re-arm the current CPU's timer using the configured scheduling interval,
+/// unless it already holds the next tick.
 ///
 /// Context switches can return to kernel code that briefly masks IRQs before
 /// finishing its critical section. Re-programming the per-CPU timer before the
 /// resumed thread runs ensures the next tick is pending on this CPU even if the
-/// thread immediately re-enters a short interrupt-masked region.
+/// thread immediately re-enters a short interrupt-masked region. A timer that
+/// is masked, disabled, or overdue by more than an interval is re-programmed.
 pub fn rearm_timer() {
     let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    let (vctl, vcval, vnow): (u64, u64, u64);
+    unsafe {
+        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) vctl, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) vcval, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) vnow, options(nomem, nostack));
+    }
 
     if crate::platform_config::is_vmware() {
+        let (pctl, pcval, pnow): (u64, u64, u64);
+        unsafe {
+            core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) pctl, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntp_cval_el0", out(reg) pcval, options(nomem, nostack));
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) pnow, options(nomem, nostack));
+        }
+        if tick_pending(vctl, vcval, vnow, ticks) && tick_pending(pctl, pcval, pnow, ticks) {
+            return;
+        }
         // VMware: re-arm both timers using CVAL (absolute compare value).
         // No IMASK dance needed here — rearm_timer is called from context switch
         // paths, not from interrupt handlers, so there's no pending interrupt to ack.
@@ -1197,7 +1238,8 @@ pub fn rearm_timer() {
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 1u64, options(nomem, nostack));
             core::arch::asm!("isb", options(nomem, nostack, preserves_flags));
         }
-    } else {
+        super::irq_mask_account::armed(ticks);
+    } else if !tick_pending(vctl, vcval, vnow, ticks) {
         arm_timer(ticks);
     }
 }

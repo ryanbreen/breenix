@@ -75,6 +75,8 @@ pub fn records() -> alloc::string::String {
     }
     out
 }
+// TODO(gpu-display): `draw` lost its callers when main's boot screen and console replaced the
+// software compositor's; it moves onto `console::splash` and the GPU compositor's display.
 pub fn draw(pixels: &mut [u8]) {
     let Ok(mut fb) = (unsafe {
         libgfx::framebuf::FrameBuf::from_raw(pixels.as_mut_ptr(), 1280, 800, 5120, 4, true)

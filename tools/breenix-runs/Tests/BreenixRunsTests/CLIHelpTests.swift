@@ -32,6 +32,34 @@ final class CLIHelpTests: XCTestCase {
             XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["a-file"])
         }
     }
+    func testX86ExecutionWithOverrideIsRefusedBeforeRepositoryAccessOrLaunchLine() throws {
+        let package = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let process = Process()
+        process.executableURL = package.appendingPathComponent(".build/debug/breenix-runs")
+        process.arguments = ["run", "x86", "--catchup"]
+        process.currentDirectoryURL = root
+        process.environment = ["PATH": "/nonexistent", "BREENIX_ALLOW_X86_QEMU": "1",
+                               "BREENIX_RUNS_STORE": root.appendingPathComponent("store").path]
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        let stdout = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let stderr = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(process.terminationStatus, 1, stderr)
+        XCTAssertEqual(stdout, "")
+        XCTAssertTrue(stderr.contains("execution is retired"), stderr)
+        XCTAssertTrue(stderr.contains("permits only --dry-run"), stderr)
+        XCTAssertTrue(stderr.contains("x86-metal boot loop"), stderr)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+
     func testSuiteModeWithoutSuiteIDIsRejected() throws {
         let package = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

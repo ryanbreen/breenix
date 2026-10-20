@@ -50,8 +50,6 @@ RUN_ARGS=("$@")
 # QEMU process, and exit before reaching here. #834 extended this lock's
 # coverage from docker/qemu/*.sh (its original #826/R181 scope) to run.sh
 # as well; #865 closed the x86_64-leg gap this comment used to disclose.
-# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
-source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 # Defaults: ARM64 with graphics
 ARCH="arm64"
@@ -69,8 +67,12 @@ VMWARE=false
 SUITE=""
 PACE=""
 ONLY=""
+GPU_CORE=false
 PROBE=false
 TESTS=false
+PROGRAM=""
+PROGRAM_ARG=""
+KERNEL_FEATURES=""
 BOOT_MODE=default
 GATE_TIMEOUT=1800
 DEBUG=false
@@ -178,8 +180,20 @@ while [[ $# -gt 0 ]]; do
             TESTS=true
             shift
             ;;
+        --program)
+            PROGRAM="${2:-}"
+            shift 2
+            ;;
+        --program-arg)
+            PROGRAM_ARG="${2:-}"
+            shift 2
+            ;;
+        --kernel-features)
+            KERNEL_FEATURES="${2:-}"
+            shift 2
+            ;;
         --case)
-            [ -n "${2:-}" ] || { echo "--case needs a case id"; exit 2; }
+            [ -n "${2:-}" ] || { echo "--case needs a category id"; exit 2; }
             ONLY="${2:-}"
             shift 2
             ;;
@@ -211,7 +225,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --parallels                Build and boot on Parallels Desktop VM"
             echo "  --parallels --test [N]     Build, boot, wait N sec (default 35), screenshot, exit"
-            echo "  --vmware                   Build and boot on VMware Fusion VM"
+            echo "  --vmware                   Build and boot on VMware Fusion VM (SVGA3D DX GPU core)"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --accel hvf|tcg            ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)"
@@ -223,13 +237,19 @@ while [[ $# -gt 0 ]]; do
             echo "  --serial-log PATH          Parallels/VMware: write the VM's serial output to PATH"
             echo "  --probe                    Parallels/VMware: run /sbin/probe as PID 1, wait for PROBE DONE, stop VM"
             echo "  --tests                    Parallels/VMware: boot the testing kernel, wait for its userspace report, stop VM"
-            echo "  --gate-timeout N           DONE deadline in seconds (default 1800)"
+            echo "  --program PATH             Parallels/VMware: /sbin/probe runs guest program PATH, wait for RUN DONE, stop VM"
+            echo "  --program-arg WORD         The one argument --program's PATH gets"
+            echo "  --kernel-features LIST     With --program: build the kernel with these cargo features (a measurement kernel)"
+            echo "  --gate-timeout N           Per-suite DONE deadline in seconds (default 1800)"
             echo "  --pace MS                  Hold each completed suite case outside measurement (default 0)"
-            echo "  --case CATEGORY/CASE       Run just this suite case (not full-suite evidence)"
+            echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
+            echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
-            echo "  --retina                   Parallels/VMware: native Retina resolution (default: scaled 2x, readable)"
+            echo "  BREENIX_PARALLELS_3D=off   Parallels: create the VM with 3D acceleration off (attestation control)"
+            echo "  BREENIX_VMWARE_POINTER=relative  VMware: tablet disabled, VNC buttons and wheel go to the USB mouse"
+            echo "  --retina                   VMware: keep the firmware's display autodetection (default: capped at 1280x800); both VMs show the GPU core's display at native Retina resolution"
             echo "  --resolution WxH           Set display resolution (e.g. 1920x1080)"
             echo "                             Default: auto-detect from screen"
             echo "  -h, --help                 Show this help"
@@ -252,6 +272,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Resolve the VM window choice once, after argument parsing, so --headless and
+# --serial select the same no-GUI path and Vigil metadata as the platform override.
+if [ "$HEADLESS" = true ]; then
+    if [ "$PARALLELS" = true ]; then export BREENIX_PARALLELS_NOGUI=1; fi
+    if [ "$VMWARE" = true ]; then export BREENIX_VMWARE_NOGUI=1; fi
+fi
+
 # Refuse effort work on x86-64, Parallels and VMware before builds, VM setup or host-slot
 # supervision. The supervised re-exec (BREENIX_SLOT_SESSION) inherits the normalized
 # BREENIX_CATCHUP and the checked stamp, so the check and its launch line run once.
@@ -259,6 +286,9 @@ TARGET=arm64-qemu
 if [ "$ARCH" = x86_64 ]; then TARGET=x86; fi
 if [ "$PARALLELS" = true ]; then TARGET=parallels
 elif [ "$VMWARE" = true ]; then TARGET=vmware
+fi
+if [ "$TARGET" = x86 ] && [ "$DRY_RUN" != true ]; then
+    source "$BREENIX_ROOT/scripts/x86-qemu-policy.sh"
 fi
 if [ -z "${BREENIX_SLOT_SESSION:-}" ]; then
     case "$(printf %s "${BREENIX_CATCHUP:-}" | tr '[:upper:]' '[:lower:]')" in
@@ -281,6 +311,9 @@ if [ "$DRY_RUN" = true ]; then
     echo "Target policy accepted; no build or boot requested."
     exit 0
 fi
+# shellcheck source=docker/qemu/lib/qemu-host-lock.sh
+source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
+
 host_slots_start "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" "${RUN_ARGS[@]}"
 
 if [ -n "$DISK_OVERRIDE" ]; then
@@ -310,7 +343,7 @@ fi
 # Opt in for constrained build hosts; VM execution retains normal priority.
 run_build() {
     if [ "${BREENIX_BUILD_BACKGROUND:-0}" = 1 ] && [ "$(uname)" = Darwin ]; then
-        taskpolicy -b "$@"
+        "$BREENIX_ROOT/scripts/build-background.sh" "$@"
     else
         "$@"
     fi
@@ -329,15 +362,22 @@ if [ -n "$SUITE" ]; then
         echo "--suite is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode suite --suite ID)"
         exit 1
     fi
-    if [[ ! "$SUITE" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-        echo "--suite needs a suite id (lowercase words joined by '-'), got: $SUITE"
-        exit 1
+    # A comma-separated list runs several suites in one boot (docs/suites/README.md, "Several suites in one boot").
+    if [ "$PARALLELS" = true ]; then SUITE_TARGET=parallels; else SUITE_TARGET=vmware; fi
+    SUITE=$(python3 "$BREENIX_ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target "$SUITE_TARGET") || exit 1
+    if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
+        echo "--case watches one case of one suite, not a list"; exit 2
     fi
 fi
 
+# Parallels boots give the virtio-gpu device to the GPU core (kernel/src/gpu/), which
+# shows the kernel console and serves the desktop; GPU_CORE selects the VM settings its
+# 2560x1600 scanouts need (Retina policy, vertical sync off).
+if [ "$PARALLELS" = true ]; then GPU_CORE=true; fi
+
 if [ -n "$ONLY" ]; then
     [ -n "$SUITE" ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
-        echo "--case needs --suite ID and a category/case id"; exit 2;
+        echo "--case needs --suite ID and a category id"; exit 2;
     }
 fi
 
@@ -354,6 +394,31 @@ if [ "$PROBE" = true ]; then
 elif [ -n "$SUITE" ]; then
     BOOT_MODE=suite
 fi
+if [ -n "$PROGRAM" ]; then
+    if [ "$PARALLELS" != true ] && [ "$VMWARE" != true ]; then
+        echo "--program is for --parallels or --vmware (ARM64 QEMU: scripts/boot-interactive.sh --mode program)"
+        exit 1
+    fi
+    if [ "$PROBE" = true ] || [ -n "$SUITE" ] || [ "$TESTS" = true ] || [ "$PARALLELS_TEST" = true ] || [ "$BTRT" = true ]; then
+        echo "--program cannot be combined with --probe, --suite, --tests, --test or --btrt"
+        exit 1
+    fi
+    [[ "$PROGRAM" =~ ^/[A-Za-z0-9_./-]+$ ]] || { echo "--program needs an absolute guest path"; exit 2; }
+    [ -z "$PROGRAM_ARG" ] || [[ "$PROGRAM_ARG" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+        { echo "--program-arg needs lowercase words joined by '-'"; exit 2; }
+    BOOT_MODE=program
+elif [ -n "$PROGRAM_ARG" ] || [ -n "$KERNEL_FEATURES" ]; then
+    echo "--program-arg and --kernel-features need --program"
+    exit 2
+fi
+if [ -n "$SUITE" ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+    exec python3 "$BREENIX_ROOT/scripts/suite-sequence.py" run "$SUITE" \
+        "${SERIAL_LOG_OVERRIDE:-${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}" bash "$BREENIX_ROOT/run.sh" "${RUN_ARGS[@]}"
+fi
+# The manifests of the suites this boot runs, for the quiet-host check.
+SUITE_MANIFESTS=()
+IFS=',' read -r -a SUITE_IDS <<< "$SUITE"
+for id in ${SUITE_IDS[@]+"${SUITE_IDS[@]}"}; do SUITE_MANIFESTS+=("$BREENIX_ROOT/docs/suites/$id.json"); done
 
 if [ -n "$PACE" ]; then
     [ -n "$SUITE" ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
@@ -377,8 +442,17 @@ if [ "$TESTS" = true ]; then
         echo "--tests builds the testing kernel; it cannot be combined with --no-build"
         exit 1
     fi
+    # A --disk image is booted as given; refuse one that lacks a test binary before building.
+    if [ -n "$DISK_OVERRIDE" ] && ! python3 "$BREENIX_ROOT/scripts/check-test-binaries.py" "$DISK_OVERRIDE"; then
+        exit 1
+    fi
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
+fi
+if [ -n "$KERNEL_FEATURES" ]; then
+    [[ "$KERNEL_FEATURES" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || { echo "--kernel-features needs comma-separated feature names"; exit 2; }
+    [ "$NO_BUILD" != true ] || { echo "--kernel-features builds the kernel; it cannot be combined with --no-build"; exit 1; }
+    KERNEL_FEATURE_ARGS=(--features "$KERNEL_FEATURES")
 fi
 
 # Keep host launch policy beside this run's serial, including successful catch-up overrides.
@@ -393,7 +467,51 @@ PYLAUNCH
 
 # Whether this boot writes a boot target onto a copy of the ext2 disk.
 writes_boot_target() {
-    [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ]
+    [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ]
+}
+
+# Console cases press the VM's virtual keyboard. Choose a loopback port before
+# staging their hostkeys declaration; an explicit port also supports program boots.
+configure_vmware_hostkeys() {
+    VMWARE_VNC_PORT=${BREENIX_VMWARE_VNC_PORT:-}
+    if [ -z "$VMWARE_VNC_PORT" ] && [ "$BOOT_MODE" = suite ] && [[ ",$SUITE," == *",console,"* ]]; then
+        VMWARE_VNC_PORT=$(python3 - <<'PYPORT'
+import socket
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    print(listener.getsockname()[1])
+PYPORT
+        ) || return $?
+    fi
+    if [ -n "$VMWARE_VNC_PORT" ]; then
+        [[ "$VMWARE_VNC_PORT" =~ ^[0-9]{1,5}$ ]] &&
+            [ "$((10#$VMWARE_VNC_PORT))" -ge 1 ] && [ "$((10#$VMWARE_VNC_PORT))" -le 65535 ] || {
+            echo "BREENIX_VMWARE_VNC_PORT needs a port number from 1 to 65535" >&2
+            return 2
+        }
+    fi
+}
+
+write_vmware_vnc() {
+    [ -n "${VMWARE_VNC_PORT:-}" ] || return 0
+    cat >> "$VMX_FILE" <<VMXEOF
+RemoteDisplay.vnc.enabled = "TRUE"
+RemoteDisplay.vnc.port = "$VMWARE_VNC_PORT"
+RemoteDisplay.vnc.ip = "127.0.0.1"
+VMXEOF
+}
+
+start_vm_hostkeys() {
+    [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = program ] || return 0
+    local backend=none
+    if [ "$PARALLELS" = true ]; then
+        backend="prlsdk:$PARALLELS_VM"
+    elif [ -n "${VMWARE_VNC_PORT:-}" ]; then
+        backend="vnc:127.0.0.1:$VMWARE_VNC_PORT"
+    fi
+    python3 "$BREENIX_ROOT/scripts/hostkeys.py" watch --serial "$SERIAL_LOG" --backend "$backend" \
+        --log "$SERIAL_LOG.hostkeys" --parent "$$" > /dev/null 2>&1 &
+    HOSTKEYS_PID=$!
 }
 
 # The nameserver this target's /etc/resolv.conf names. VMware's adapter is bridged
@@ -424,9 +542,21 @@ stage_boot_ext2_disk() {
     if [ "$PROBE" = true ]; then
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --probe \
             "$BREENIX_ROOT/userspace/programs/aarch64/probe.elf" || exit 1
+    elif [ "$BOOT_MODE" = program ]; then
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" --program "$PROGRAM" \
+            ${PROGRAM_ARG:+"$PROGRAM_ARG"} || exit 1
     else
-        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "$SUITE" \
-            "$BREENIX_ROOT/userspace/programs/aarch64/suite-$SUITE.elf" "" "$ONLY" "$PACE" || exit 1
+        local hostkeys_backend=none
+        if [ "$PARALLELS" = true ]; then
+            hostkeys_backend=prlsdk:declaration
+        elif [ -n "${VMWARE_VNC_PORT:-}" ]; then
+            hostkeys_backend="vnc:127.0.0.1:$VMWARE_VNC_PORT"
+        fi
+        local sequence=
+        [[ "$SUITE" != *,* ]] || sequence=$SUITE
+        BREENIX_HOSTKEYS="$(python3 "$BREENIX_ROOT/scripts/hostkeys.py" declare --backend "$hostkeys_backend")" \
+        "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "${SUITE%%,*}" \
+            "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$sequence" "$ONLY" "$PACE" || exit 1
         if [[ ",$SUITE," == *",sdk,"* ]]; then
             # The Developer SDK suite's host side stages the SDK's results onto the copy.
             python3 "$BREENIX_ROOT/scripts/sdk-suite.py" --arch aarch64 --image "$BOOT_EXT2_DISK" || exit 1
@@ -434,22 +564,31 @@ stage_boot_ext2_disk() {
     fi
 }
 
+ext2_source_identity() {
+    (set -o pipefail; shasum -a 256 "$EXT2_DISK" | awk '{print $1}')
+}
+
 # Whether the VM's wrapped data disk (whose boot-target marker file is $1) must
 # be made again: when the built disk changed, this run selects a boot target,
 # an earlier run's boot target must be cleared, or the disk names another
 # nameserver. Otherwise the wrapped disk, and any changes the guest made to it, is kept.
 ext2_rewrap_needed() {
-    local rebuilt="$1" marker="$2"
-    [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
-        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]
+    local rebuilt="$1" marker="$2" identity
+    if [ -n "$DISK_OVERRIDE" ] || [ "$rebuilt" = true ] || writes_boot_target || [ -f "$marker" ] ||
+        [ "$(cat "$marker.dns" 2>/dev/null)" != "$(target_nameserver)" ]; then
+        return 0
+    fi
+    identity=$(ext2_source_identity) || return 0
+    [ "$(cat "$marker.source.sha256" 2>/dev/null)" != "$identity" ]
 }
 
 # Record whether the data disk just wrapped carries a boot target.
 mark_wrapped_ext2() {
     local marker="$1"
-    if writes_boot_target; then echo "$BOOT_MODE $SUITE" > "$marker"; else rm -f "$marker"; fi
+    if writes_boot_target; then echo "$BOOT_MODE $SUITE$PROGRAM${PROGRAM_ARG:+ $PROGRAM_ARG}" > "$marker"; else rm -f "$marker"; fi
     # Staging verifies the nameserver before the wrapped disk is published.
     target_nameserver > "$marker.dns"
+    ext2_source_identity > "$marker.source.sha256"
 }
 
 # Cargo can restore a cached profile with an older mtime. Compare the exact
@@ -477,15 +616,62 @@ bounded_vm_command() {
     python3 "$BREENIX_ROOT/scripts/bounded-vm-command.py" 30 "$@"
 }
 
+# F21: a name is not ownership. Keep crashed-run records until deletion succeeds.
+vm_run_owner() {
+    python3 "$BREENIX_ROOT/scripts/vm-run-owner.py" "$@"
+}
+
+delete_parallels_vm() {
+    local vm="$1" info disk
+    info=$(bounded_vm_command prlctl list -i "$vm") || return 1
+    # These disks are reusable artifacts outside the VM bundle. Detach hdd0
+    # and hdd1 when present before deleting our own VM or a dead owner's VM.
+    for disk in hdd0 hdd1; do
+        if grep -q "^[[:space:]]*$disk[[:space:]]" <<< "$info"; then
+            bounded_vm_command prlctl set "$vm" --device-del "$disk" || return 1
+        fi
+    done
+    bounded_vm_command prlctl delete "$vm"
+}
+
+sweep_parallels_vms() {
+    local marker vm status
+    for marker in "$PARALLELS_OWNER_DIR"/breenix-*.json; do
+        [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+        vm_run_owner dead "$marker" || continue
+        vm=${marker##*/}; vm=${vm%.json}
+        status=$(bounded_vm_command prlctl status "$vm") || continue
+        [[ "$status" == *" stopped" ]] || continue
+        if delete_parallels_vm "$vm"; then rm -f "$marker"; fi
+    done
+}
+
+sweep_vmware_bundles() {
+    local bundle
+    for bundle in "$VM_MACHINES"/breenix-*.vmwarevm; do
+        [ -d "$bundle" ] && [ ! -L "$bundle" ] || continue
+        vm_run_owner dead "$bundle/.breenix-run-process" || continue
+        # Give the existing deletion path only the dead runner's exact bundle;
+        # it separately checks the name marker and that no VMX inside is running.
+        ( VM_BUNDLE="$bundle"; VM_NAME=${bundle##*/}; VM_NAME=${VM_NAME%.vmwarevm}
+          VM_BUNDLE_OWNED=true; delete_vmware_bundle "$bundle" )
+    done
+}
+
 # Read the VM's written disk only after stop has succeeded. VMware's deployed
 # bundle, rather than the pristine staging VMDK, holds the guest's writes.
+# A boot of several suites scores each of them here, the last with its disk checks.
 score_vm_suite_disk() {
     (
         # Whole-suite disk checks depend on other cases and are not one-case evidence.
         [ -z "${ONLY:-}" ] || exit 0
-        local manifest="$BREENIX_ROOT/docs/suites/$SUITE.json" checks disk temporary
+        local manifest="$BREENIX_ROOT/docs/suites/${SUITE##*,}.json" checks disk="" temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
-        [ "$checks" != 0 ] || exit 0
+        if [ "$checks" = 0 ]; then
+            [[ "$SUITE" == *,* ]] || exit 0
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG"
+            exit $?
+        fi
         if [ "$PARALLELS" = true ]; then
             disk=$(find "$EXT2_HDD_DIR" -name '*.hds' -type f) || exit $?
             if [ ! -f "$disk" ]; then
@@ -498,7 +684,11 @@ score_vm_suite_disk() {
             disk="$temporary/ext2.raw"
             bounded_vm_command qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
         fi
-        python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        if [[ "$SUITE" == *,* ]]; then
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --disk "$disk"
+        else
+            python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+        fi
     )
 }
 
@@ -531,15 +721,67 @@ delete_vmware_bundle() {
             echo "WARNING: vmrun deleteVM kept $bundle: $output"
         fi
     else
-        mv "$bundle" "$scratch/" || true
+        # An interrupted setup may have copied disks without writing a VMX.
+        # Leave any other contents in place so reuse fails safely.
+        rm -f "$bundle/boot.vmdk" "$bundle/ext2-data.vmdk"
     fi
     # Fusion removes its known VM files but preserves our ownership marker.
-    # Remove only that marker and an empty directory, never unknown contents.
+    # Remove only that marker, the window frame we wrote and an empty
+    # directory, never unknown contents.
     if [ -d "$bundle" ] && [ ! -e "$vmx" ]; then
-        rm -f "$bundle/.breenix-run-owner"
+        rm -f "$bundle/.breenix-run-owner" "$bundle/.breenix-run-process" "$bundle/$VM_NAME.plist"
         rmdir "$bundle" 2>/dev/null || echo "WARNING: keeping extra files in $bundle"
     fi
     rm -rf "$scratch"
+}
+
+vmware_boot_name() {
+    local identity
+    if [ "${BREENIX_BOOT_NO_QUEUE:-0}" = 1 ]; then
+        # An unqueued boot owns no slot identity and must not reuse its bundle.
+        identity=$(uuidgen) || return $?
+        printf 'breenix-unqueued-%s\n' "$identity"
+    else
+        identity=$(host_slot_number mac-boot) || return $?
+        printf 'breenix-mac-boot-%s\n' "$identity"
+    fi
+}
+
+prune_vmware_inventory() {
+    python3 "$BREENIX_ROOT/scripts/vmware-inventory.py" \
+        || echo "WARNING: could not prune VMware library"
+}
+
+cleanup_vmware_bundle() {
+    delete_vmware_bundle "$VM_BUNDLE"
+    prune_vmware_inventory
+}
+
+# Fusion opens a VM's window at the origin of the frame saved in <name>.plist in its bundle
+# and sizes the window's content to the display the guest sets, following each new one (the
+# firmware's 640x480 screen gets a 320x240-point view at native Retina resolution). Write a
+# frame whose content area shows WIDTH x HEIGHT points (shrunk to fit the screen, aspect
+# kept), centred on the main screen, so the window sits centred once it shows that size.
+write_vmware_window_frame() {
+    local plist="$1" width="$2" height="$3" frame
+    frame=$(/usr/bin/osascript -l JavaScript - "$width" "$height" <<'JS'
+ObjC.import('AppKit');
+function run(argv) {
+    const chrome = 52;
+    const screen = $.NSScreen.mainScreen.visibleFrame;
+    const width = Number(argv[0]), height = Number(argv[1]);
+    const scale = Math.min(1, screen.size.width / width, (screen.size.height - chrome) / height);
+    const w = Math.floor(width * scale), h = Math.floor(height * scale) + chrome;
+    const x = Math.floor(screen.origin.x + (screen.size.width - w) / 2);
+    const y = Math.floor(screen.origin.y + (screen.size.height - h) / 2);
+    return '{{' + x + ', ' + y + '}, {' + w + ', ' + h + '}}';
+}
+JS
+    ) || return 1
+    plutil -create xml1 "$plist" \
+        && plutil -insert singleWindowFrame -string "$frame" "$plist" \
+        && plutil -insert singleWindowIsZoomed -bool NO "$plist" \
+        && echo "  Window: $frame"
 }
 
 finish_vm_boot() {
@@ -547,10 +789,20 @@ finish_vm_boot() {
     local stopped=true
     trap '' INT HUP TERM
     trap - EXIT
+    if [ -n "${HOSTKEYS_PID:-}" ]; then
+        kill "$HOSTKEYS_PID" 2>/dev/null || true
+        wait "$HOSTKEYS_PID" 2>/dev/null || true
+        HOSTKEYS_PID=""
+    fi
     if [ -n "${LOGMON_PID:-}" ]; then
         kill "$LOGMON_PID" 2>/dev/null || true
         wait "$LOGMON_PID" 2>/dev/null || true
         LOGMON_PID=""
+    fi
+    if [ -n "${GPU_TIME_PID:-}" ]; then
+        kill "$GPU_TIME_PID" 2>/dev/null || true
+        wait "$GPU_TIME_PID" 2>/dev/null || true
+        GPU_TIME_PID=""
     fi
     if [ "$PARALLELS" = true ]; then
         prlctl stop "$PARALLELS_VM" --kill >/dev/null 2>&1 || stopped=false
@@ -561,23 +813,32 @@ finish_vm_boot() {
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
     fi
-    if [ "$status" = 0 ] && [ "${BOOT_MODE:-}" = suite ]; then
+    if [ "${BOOT_MODE:-}" = suite ] && { [ "$status" = 0 ] || [[ "$SUITE" == *,* ]]; }; then
+        # Each suite of a sequence is scored even when the boot was stopped part way.
         if [ "$stopped" != true ]; then
             echo "FAIL: could not stop VM for suite disk checks"
-            status=1
+            [ "$status" != 0 ] || status=1
         else
-            score_vm_suite_disk || status=$?
+            score_vm_suite_disk || { [ "$status" != 0 ] || status=1; }
         fi
     fi
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
-    if [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
-        # Each boot's VM goes with it, after its verdict is recorded and its slot released; the VM's
-        # vmware.log stays beside the serial log.
-        cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
+    if [ "$PARALLELS" = true ] && [ "$stopped" = true ]; then
+        [ -z "${VM_HOME:-}" ] || cp "$VM_HOME/parallels.log" "$SERIAL_LOG.parallels.log" 2>/dev/null || true
+        if delete_parallels_vm "$PARALLELS_VM"; then
+            rm -f "${PARALLELS_OWNER_FILE:-}"
+        else
+            echo "WARNING: could not delete owned VM $PARALLELS_VM" >&2
+        fi
         host_slot_release mac-boot
+    elif [ "$PARALLELS" != true ] && [ "$stopped" = true ]; then
+        # Delete and prune while the slot is still ours. The supervisor keeps
+        # the lease through its final VM stop, so it cannot stop the next boot.
+        cp "$VM_BUNDLE/vmware.log" "$SERIAL_LOG.vmware.log" 2>/dev/null || true
         delete_vmware_bundle "$VM_BUNDLE"
     fi
+    [ "$PARALLELS" = true ] || prune_vmware_inventory
     exit "$status"
 }
 
@@ -825,22 +1086,19 @@ if [ "$PARALLELS" = true ]; then
     # Use a unique VM name each time to avoid Parallels stale state issues.
     # Parallels can get stuck in "stopping"/"suspended" states that require
     # sudo service restarts. Using unique names sidesteps this entirely.
-    PARALLELS_VM="breenix-$(date +%s)"
+    PARALLELS_OWNER_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/breenix/vm-owners/parallels"
+    sweep_parallels_vms
+    PARALLELS_VM="breenix-$(date +%s)-$$"
     echo "VM name: $PARALLELS_VM"
-    # Delete earlier boots' VMs, which nothing else removed: only stopped ones named breenix-<epoch>, never a running,
-    # stopping or suspended VM and never the named VMs (breenix-dev, breenix-parallels-*).
-    # Finish this sweep before launching so none of its children outlive the runner.
-    (
-        bounded_vm_command prlctl list -a -o status,name 2>/dev/null | awk '$1 == "stopped" && $2 ~ /^breenix-[0-9]+$/ { print $2 }' |
-            while read -r old_vm; do
-                [ "$old_vm" = "$PARALLELS_VM" ] || bounded_vm_command prlctl delete "$old_vm" >/dev/null 2>&1 || true
-            done
-    )
 
     echo "Creating fresh VM '$PARALLELS_VM'..."
     prlctl create "$PARALLELS_VM" --ostype linux --distribution linux --no-hdd
+    PARALLELS_OWNER_FILE="$PARALLELS_OWNER_DIR/$PARALLELS_VM.json"
+    vm_run_owner record "$PARALLELS_OWNER_FILE" "$$"
     prlctl set "$PARALLELS_VM" --memsize 8192
     prlctl set "$PARALLELS_VM" --cpus 8
+    # Forward modifier transitions for console chords (Parallels KB 119070).
+    prlctl set "$PARALLELS_VM" --keyboard-optimize on
     # Run the vCPU threads in macOS's user-interactive QoS class, as the ARM64 QEMU launcher
     # does (scripts/qemu-ui-launch.sh). Parallels otherwise starts them in the default class,
     # priority 31, below the host's interactive work, and on a loaded Mac guest timer ticks
@@ -857,13 +1115,27 @@ if [ "$PARALLELS" = true ]; then
     # detects no display activity. Breenix runs headless/serial; we want it to
     # stay running until explicitly stopped.
     prlctl set "$PARALLELS_VM" --autostop shutdown 2>/dev/null || true
+    # Disable app sharing; this is expected to reduce host app indexing activity.
+    if ! prlctl set "$PARALLELS_VM" --sh-app-guest-to-host off --sh-app-host-to-guest off; then
+        echo "WARNING: could not disable Parallels application sharing" >&2
+    fi
 
     # Configure VM: EFI boot, attach our disks
     prlctl set "$PARALLELS_VM" --efi-boot on 2>/dev/null || true
 
-    # VirtIO GPU with 3D acceleration (required for VirGL)
-    prlctl set "$PARALLELS_VM" --3d-accelerate highest
+    # VirtIO GPU with 3D acceleration (required for VirGL). BREENIX_PARALLELS_3D=off is the
+    # host GPU time attestation's negative control (docs/gui/gpu.md section 1.6.5).
+    PARALLELS_3D="${BREENIX_PARALLELS_3D:-highest}"
+    case "$PARALLELS_3D" in
+        highest|off) ;;
+        *) echo "BREENIX_PARALLELS_3D must be highest or off, got '$PARALLELS_3D'"; exit 2 ;;
+    esac
+    prlctl set "$PARALLELS_VM" --3d-accelerate "$PARALLELS_3D"
     prlctl set "$PARALLELS_VM" --videosize 2048
+    # The GPU core presents 2560x1600 scanouts (docs/gui/gpu.md section 1.7): with the
+    # high-resolution policy they fill a 1280x800-point window at full resolution, as the
+    # GL QEMU's window shows them.
+    [ "$GPU_CORE" = true ] && RETINA=true
     # Select host and guest Retina policy explicitly before starting the VM. A new VM
     # defaults to high-resolution-in-guest=on, which makes Parallels show the guest at
     # one guest pixel per Retina pixel even with host high resolution off: the 1280x960
@@ -875,7 +1147,16 @@ if [ "$PARALLELS" = true ]; then
         RETINA_POLICY="high-resolution=off high-resolution-in-guest=off"
         prlctl set "$PARALLELS_VM" --high-resolution off --high-resolution-in-guest off
     fi
-    prlctl set "$PARALLELS_VM" --vertical-sync on
+    # With vertical sync on, Parallels answers RESOURCE_FLUSH on the host display's refresh,
+    # and the GPU core's PRESENT returns that answer: alternating 2560x1600 presents ran at
+    # 10 to 94 a second across four boots, with a 101.9 ms median flush answer in one of
+    # them. With it off the median answer was 0.22 ms. GPU-core boots run with it off;
+    # other boots keep it on.
+    if [ "$GPU_CORE" = true ]; then
+        prlctl set "$PARALLELS_VM" --vertical-sync off
+    else
+        prlctl set "$PARALLELS_VM" --vertical-sync on
+    fi
 
     # Remove any default devices Parallels created (cdrom, hdd, serial) to avoid conflicts
     for dev in hdd0 hdd1 hdd2 cdrom0 cdrom1 serial0 serial1; do
@@ -896,6 +1177,13 @@ if [ "$PARALLELS" = true ]; then
 
     # Set boot order: hard disk first (default boots from cdrom which hangs)
     prlctl set "$PARALLELS_VM" --device-bootorder "hdd0" 2>/dev/null || true
+    # A virtual TPM is this VM's only entropy device: the loader seeds the kernel's random pool
+    # from its TPM2_GetRandom (parallels-loader/src/entropy.rs). The CPU has no RNDR and Parallels
+    # offers no virtio-rng, so without it a secure getrandom caller blocks with no source to end
+    # the wait. With the TPM added and Secure Boot left at its default, the unsigned loader wrote
+    # no serial output in a probe boot; with Secure Boot off it runs.
+    prlctl set "$PARALLELS_VM" --tpm crb
+    prlctl set "$PARALLELS_VM" --efi-secure-boot off
 
     # Configure serial port output to file
     prlctl set "$PARALLELS_VM" --device-add serial --output "$SERIAL_LOG" 2>/dev/null || true
@@ -904,12 +1192,14 @@ if [ "$PARALLELS" = true ]; then
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    export BREENIX_VIGIL_DISPLAY=true
+    [ -z "${BREENIX_PARALLELS_NOGUI:-}" ] || export BREENIX_VIGIL_DISPLAY=false
     record_launch_metadata
     # A one-case run is not registered: Vigil would score it as a suite boot.
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start parallels "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
@@ -929,6 +1219,17 @@ if [ "$PARALLELS" = true ]; then
         { echo "ERROR: Parallels VM config does not carry system flags $PARALLELS_SYSTEM_FLAGS"; exit 1; }
     CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
     prlctl start "$PARALLELS_VM"
+    # A full gpu suite's hardware claim rests on the VM process's host GPU time
+    # (docs/gui/gpu.md section 1.6.5): sample it beside the serial log.
+    GPU_TIME_RECORD=""
+    if [[ ",$SUITE," == *",gpu,"* ]] && [ -z "$ONLY" ]; then
+        GPU_TIME_RECORD="$SERIAL_LOG.gpu-time.jsonl"
+        export BREENIX_GPU_TIME_JSONL="$GPU_TIME_RECORD"
+        python3 "$BREENIX_ROOT/scripts/parallels/gpu-time.py" sample --vm "$PARALLELS_VM" \
+            --serial "$SERIAL_LOG" --out "$GPU_TIME_RECORD" &
+        GPU_TIME_PID=$!
+    fi
+    start_vm_hostkeys
     echo ""
     echo "========================================="
     echo "Breenix running on Parallels"
@@ -938,9 +1239,12 @@ if [ "$PARALLELS" = true ]; then
     echo "Stop:   prlctl stop $PARALLELS_VM --kill"
     echo ""
 
-    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then
         wait_boot_done || exit $?
-        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
+        if [ -n "$GPU_TIME_RECORD" ]; then
+            python3 "$BREENIX_ROOT/scripts/parallels/gpu-time.py" judge "$GPU_TIME_RECORD" || exit 1
+        fi
+        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then exit 0; fi
         if [ "$PARALLELS_TEST" != true ]; then exit 0; fi
     fi
 
@@ -1027,6 +1331,11 @@ if [ "$VMWARE" = true ]; then
         echo "ERROR: vmrun not found. Is VMware Fusion installed?"
         exit 1
     fi
+    if ! command -v mcopy >/dev/null 2>&1; then
+        echo "ERROR: mcopy not found. Install mtools to seed the VMware boot disk."
+        exit 1
+    fi
+    prune_vmware_inventory
 
     # msg.autoAnswer dismisses Fusion's adapter errors and boots with Ethernet0
     # disconnected, even when the VMX requests a connected adapter.
@@ -1034,8 +1343,10 @@ if [ "$VMWARE" = true ]; then
 
     VMWARE_DIR="$BREENIX_ROOT/target/vmware"
     SERIAL_LOG="${SERIAL_LOG_OVERRIDE:-/tmp/breenix-vmware-serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}"
-    # Fusion's "Use full resolution for Retina display": off by default so the guest is scaled 2x.
-    if [ "${RETINA:-false}" = true ]; then VMWARE_NATIVE_RESOLUTION=TRUE; else VMWARE_NATIVE_RESOLUTION=FALSE; fi
+    # The GPU core shows a 2560x1600 display (docs/gui/gpu.md section 1.7). Fusion's "Use full
+    # resolution for Retina display" shows it at one guest pixel per Retina pixel, in a
+    # 1280x800-point window, as Parallels' high-resolution policy does.
+    VMWARE_NATIVE_RESOLUTION=TRUE
     EXT2_DISK="${DISK_OVERRIDE:-$BREENIX_ROOT/target/ext2-aarch64.img}"
     VM_MACHINES="$HOME/Virtual Machines.localized"
     LOADER_EFI="$BREENIX_ROOT/target/aarch64-unknown-uefi/release/parallels-loader.efi"
@@ -1043,9 +1354,11 @@ if [ "$VMWARE" = true ]; then
 
     if [ "$NO_BUILD" = true ]; then
         echo "Skipping builds (--no-build)"
-        if [ ! -f "$VMWARE_DIR/boot.vmdk" ]; then
-            echo "ERROR: No boot VMDK found at $VMWARE_DIR/boot.vmdk"
-            echo "Run without --no-build first to create it."
+        if [ ! -f "$LOADER_EFI" ] || [ ! -f "$KERNEL_ELF" ]; then
+            echo "ERROR: No prebuilt loader/kernel found:"
+            echo "  loader: $LOADER_EFI"
+            echo "  kernel: $KERNEL_ELF"
+            echo "Run without --no-build first to build them."
             exit 1
         fi
     else
@@ -1145,6 +1458,8 @@ if [ "$VMWARE" = true ]; then
         echo "  Boot VMDK: $VMWARE_DIR/boot.vmdk"
     fi
 
+    configure_vmware_hostkeys
+
     # Convert the ext2 data disk to VMDK (see ext2_rewrap_needed).
     EXT2_SUITE_MARKER="$VMWARE_DIR/ext2-data.vmdk.suite"
     VMWARE_REBUILT=true
@@ -1161,22 +1476,28 @@ if [ "$VMWARE" = true ]; then
     echo ""
     echo "--- Configuring VMware VM ---"
 
-    # Exclusive creation prevents clock rollback or name collisions from
-    # granting cleanup ownership of another VM. Never sweep unowned bundles.
-    VM_NAME="breenix-$(date +%s)-$(uuidgen)"
+    # One library identity per leased slot, including after a crashed run.
+    # The supervisor refuses a slot number unless this session holds its lease.
+    VM_NAME="$(vmware_boot_name)"
     VM_BUNDLE="$VM_MACHINES/$VM_NAME.vmwarevm"
     VM_BUNDLE_OWNED=false
+    sweep_vmware_bundles
+    # Exclusive creation fails if a running, unowned or unknown-content bundle
+    # survived deletion; cleanup ownership begins only after mkdir succeeds.
     mkdir "$VM_BUNDLE"
     printf '%s\n' "$VM_NAME" > "$VM_BUNDLE/.breenix-run-owner"
     VM_BUNDLE_OWNED=true
+    vm_run_owner record "$VM_BUNDLE/.breenix-run-process" "$$"
     echo "VM name: $VM_NAME"
-    trap 'delete_vmware_bundle "$VM_BUNDLE"' EXIT
+    trap cleanup_vmware_bundle EXIT
     trap 'exit 130' INT
     trap 'exit 129' HUP
     trap 'exit 143' TERM
 
     # Copy VMDKs into the bundle
-    cp "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
+    # Seed this run's boot disk; keep the reusable image above seed-free.
+    # This step also runs with --no-build, before VMware power-on.
+    python3 "$BREENIX_ROOT/scripts/vmware/boot-seed.py" "$VMWARE_DIR/boot.vmdk" "$VM_BUNDLE/boot.vmdk"
     EXT2_VMDK_ARG=""
     if [ -f "$VMWARE_DIR/ext2-data.vmdk" ]; then
         cp "$VMWARE_DIR/ext2-data.vmdk" "$VM_BUNDLE/ext2-data.vmdk"
@@ -1258,8 +1579,21 @@ usb_xhci:6.port = "6"
 svga.vramSize = "268435456"
 VMXEOF
 
-    # Keep the default scaled viewport bounded at the 1280x800 display every target runs
-    # in a GUI suite boot (BreenGL contract section 18); --retina retains GOP autodetection.
+    write_vmware_vnc
+    # A pointer measurement of the relative interface: with Fusion's absolute USB tablet
+    # disabled, its VNC server sends the USB mouse the pointer's buttons and wheel. It sends
+    # that mouse no motion (two measurement boots, with and without the gaming-mouse policy).
+    if [ "${BREENIX_VMWARE_POINTER:-}" = relative ]; then
+        cat >> "$VMX_FILE" <<VMXEOF
+mouse.vusb.absDisabled = "TRUE"
+VMXEOF
+    elif [ -n "${BREENIX_VMWARE_POINTER:-}" ]; then
+        echo "BREENIX_VMWARE_POINTER takes only 'relative'"; exit 2
+    fi
+
+    # Keep the firmware's screen bounded; --retina retains GOP autodetection. The cap makes
+    # the firmware pick 1280x800, the aspect of the GPU core's 2560x1600 display (16:10,
+    # docs/gui/gpu.md section 1.7).
     if [ "${RETINA:-false}" != true ]; then
         cat >> "$VMX_FILE" <<VMXEOF
 svga.autodetect = "FALSE"
@@ -1285,37 +1619,42 @@ msg.autoAnswer = "TRUE"
 VMXEOF
 
     echo "  VMX: $VMX_FILE ($(wc -c < "$VMX_FILE") bytes)"
+    # The window follows the guest's display: its content is 1280x800 points once the GPU
+    # core shows its 2560x1600 display, with no letterbox. A stretch mode would instead keep
+    # the size of the firmware's first screen, 4:3, and letterbox the 16:10 desktop in it.
+    write_vmware_window_frame "$VM_BUNDLE/$VM_NAME.plist" 1280 800 \
+        || { echo "ERROR: could not write the VM window frame"; exit 1; }
 
     # Records the boot's start; a timing-sensitive suite first waits for a quiet host
     # (docs/boot-path.md, "Shared host slots").
-    host_slot_quiet ${SUITE:+"$BREENIX_ROOT/docs/suites/$SUITE.json"}
+    host_slot_quiet ${SUITE_MANIFESTS[@]+"${SUITE_MANIFESTS[@]}"}
     echo ""
     echo "--- Starting VM ---"
     vmware_network_summary
     rm -f "$SERIAL_LOG"  # Remove so VMware creates fresh (avoids append/replace prompt)
     VIGIL_ID=""
     install_vm_boot_traps
+    export BREENIX_VIGIL_DISPLAY=true
+    [ -z "${BREENIX_VMWARE_NOGUI:-}" ] || export BREENIX_VIGIL_DISPLAY=false
     record_launch_metadata
     # A one-case run is not registered: Vigil would score it as a suite boot.
     [ -n "$ONLY" ] || VIGIL_ID=$("$BREENIX_ROOT/scripts/vigil-record.sh" start vmware "$BOOT_MODE" "$SUITE" "$SERIAL_LOG")
     host_slot_vm "$SERIAL_LOG" "$VMRUN" stop "$VMX_FILE" hard
     if [ -n "${BREENIX_VMWARE_NOGUI:-}" ]; then
-        # Headless automation (docker/qemu/run-vmware-gate.sh): `gui` mode
-        # "succeeds" (exit 0, no error to fall back from) even when nothing
-        # is watching it, so an unattended caller that wants no window on
-        # the operator's desktop has to skip the gui attempt entirely rather
-        # than rely on the error-fallback path below.
+        # An explicit headless request selects nogui for unattended callers.
+        # The default branch below requires a successful GUI start.
         echo "BREENIX_VMWARE_NOGUI set: starting headless (nogui)"
         CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
     else
         CLOCK_STARTED=$(python3 -c 'import time; print(time.time())')
         "$VMRUN" start "$VMX_FILE" gui 2>&1 || {
-            echo "vmrun start failed with GUI, trying nogui..."
-            "$VMRUN" start "$VMX_FILE" nogui 2>&1 || true
+            echo "ERROR: VMware GUI start failed"
+            exit 1
         }
     fi
 
+    start_vm_hostkeys
     echo ""
     echo "========================================="
     echo "Breenix running on VMware Fusion"
@@ -1325,11 +1664,11 @@ VMXEOF
     echo "VMX:    $VMX_FILE"
     echo "Stop:   \"$VMRUN\" stop \"$VMX_FILE\" hard"
     echo ""
-    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ]; then
+    if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = suite ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then
         wait_boot_done || exit $?
         vmware_check_network_log "$VM_BUNDLE/vmware.log"
         vmware_network_summary
-        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ]; then exit 0; fi
+        if [ "$BOOT_MODE" = probe ] || [ "$BOOT_MODE" = tests ] || [ "$BOOT_MODE" = program ]; then exit 0; fi
         exit 0
     fi
 
@@ -1362,8 +1701,9 @@ else
     HOME_DISK="$BREENIX_ROOT/target/ext2-home.img"
     VNC_PORT=5900
 
-    # Build command for x86_64
-    BUILD_CMD="cargo build --release --features testing,external_test_bins,interactive --bin qemu-uefi"
+    # Build command for x86_64: the production kernel, with the screen console
+    # the other x86 profiles draw too; it boots into the shell (fw_cfg below).
+    BUILD_CMD="cargo build --release --bin qemu-uefi"
 fi
 
 # Resolve display resolution
@@ -1663,6 +2003,7 @@ if [ "$ARCH" = "arm64" ]; then
         $DISPLAY_OPTS \
         $HOME_DISK_OPTS \
         $DISK_OPTS \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0,hostfwd=tcp::2323-:2323,hostfwd=tcp::7890-:7890 \
         $AUDIO_OPTS \
@@ -1723,7 +2064,9 @@ else
         -monitor tcp:127.0.0.1:4444,server,nowait \
         $QMP_OPTS \
         $GDB_OPTS \
+        -fw_cfg name=opt/breenix/mode,string=shell \
         -serial mon:stdio \
+        -serial "file:$OUTPUT_DIR/serial.txt" \
         &
 fi
 

@@ -232,8 +232,6 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # domain depending on which leg is running. #865 closed the gap this
 # comment used to disclose (the x86 leg reaching beast with no lock of its
 # own).
-# shellcheck source=lib/qemu-host-lock.sh
-source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # #797: concurrent lanes sharing one host (e.g. the beast build environment,
 # reached here via --x86) each invoking this script hardcode the identical
@@ -306,6 +304,13 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; redden 64 ;;
     esac
 done
+
+if [ "$ARCH" = x86 ]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
+fi
+
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 FEATURES="boot_tests,ext2_lock_race"
 
@@ -393,7 +398,7 @@ if [ "$ARCH" = "aarch64" ]; then
     timeout "${AARCH64_BOOT_TIMEOUT:-90}" python3 "$BREENIX_ROOT/scripts/qemu-arm64.py" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
         -kernel "$KERNEL" \
-        -display none -no-reboot \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
@@ -401,6 +406,7 @@ if [ "$ARCH" = "aarch64" ]; then
         -drive if=none,id=ext2root,format=raw,file="$OUTPUT_DIR/ext2-root-writable.img" \
         -device virtio-blk-device,drive=ext2home \
         -drive if=none,id=ext2home,format=raw,file="$OUTPUT_DIR/ext2-home-writable.img" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &
@@ -427,7 +433,7 @@ else
         -drive "if=none,id=homedisk,format=raw,readonly=on,file=$EXT2_HOME_DISK" \
         -device virtio-blk-pci,drive=homedisk,disable-modern=on,disable-legacy=off \
         -machine "pc,accel=${BREENIX_QEMU_ACCEL:-tcg}" -cpu "${BREENIX_QEMU_CPU:-qemu64}" -smp 1 -m 512 \
-        -display none -no-reboot -no-shutdown \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot -no-shutdown \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -serial "file:$OUTPUT_DIR/serial_user.txt" \
         -serial "file:$OUTPUT_DIR/serial_kernel.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &

@@ -194,6 +194,7 @@ while [ "$boot" -le "$BOOTS" ]; do
         -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$RUN_DIR/ext2-writable.img" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$SERIAL" >/dev/null 2>&1 &

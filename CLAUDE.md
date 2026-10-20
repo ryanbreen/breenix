@@ -33,13 +33,18 @@ docs/              # boot-path, efforts, suites, gui, sdk, user guide, historica
 
 ## Build & Run
 
-QEMU runs natively for both x86-64 and ARM64 architectures.
+As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop,
+not x86 QEMU. The main-path targets are ARM64 QEMU, Parallels and VMware.
+[The execution policy](docs/x86-execution-policy.md) supersedes earlier x86 QEMU
+landing and gate requirements. x86 builds and metal builds remain available; only
+`BREENIX_ALLOW_X86_QEMU=1` set by the operator enables an exceptional QEMU boot.
 
 ### Effort lanes run on ARM64 QEMU
 
-Effort lanes (`<effort id>/<lane>` from `docs/efforts/path.json`) build and race on ARM64 QEMU only; x86-64, Parallels and VMware are backported in the catch-up once that effort is green on ARM64 QEMU (operator, 2026-10-15). Only regression fixes for finished efforts and the catch-up itself use other targets.
+Effort lanes (`<effort id>/<lane>` from `docs/efforts/path.json`) build and race on ARM64 QEMU only; Parallels and VMware are backported in the catch-up once that effort is green on ARM64 QEMU (operator, 2026-10-15). Only regression fixes for finished efforts and the catch-up itself use other targets.
 
-`scripts/effort-target-guard.py` refuses a commit when any commit in its history that origin/main lacks is also in an effort lane's history, on origin or in a local branch; a `fix/*` or `scratch/*` name exempts nothing, and it refuses when origin cannot be read. `run.sh` (`--x86`, `--btrt --x86`, `--parallels`, `--vmware`, and `--dry-run` to check only) and `breenix-runs run x86` run it before building; every x86-64 QEMU boot runs it again in `qemu_host_lock_acquire` and in `qemu-uefi`. For the catch-up pass `breenix-runs run x86 --catchup` or `BREENIX_CATCHUP=1`: the launch line prints it, the x86 run manifest records it, and Parallels and VMware runs record it in `<serial log>.launch.json`. Vigil has no catch-up field.
+<!-- claim-lint:ok: tests/effort_target_guard_test.py exercises the target table and published metal ancestry. -->
+`scripts/effort-target-guard.py` applies this restriction on x86, Parallels and VMware to main-path lanes only; metal lanes may use them for landing gates. On `x86-metal`, main-path lane history is refused even with catch-up, and every commit outside `origin/main` must be first-parent reachable from a pushed `metal-*` branch (including `metal-stream/definition`). For main-path lanes on x86, Parallels and VMware, it refuses a commit when any commit in its history that origin/main lacks is also in an effort lane's history, on origin or in a local branch; a `fix/*` or `scratch/*` name exempts nothing, and it refuses when origin cannot be read. `run.sh` (`--x86`, `--btrt --x86`, `--parallels`, `--vmware`, and `--dry-run` to check only) run it before building; `breenix-runs run x86 --dry-run` checks it before printing the plan; every x86-64 QEMU boot runs it again in `qemu_host_lock_acquire` and in `qemu-uefi`. `breenix-runs run x86` retains only historical planning: pass `BREENIX_ALLOW_X86_QEMU=1` with `--dry-run`, and optionally `--catchup` to check catch-up eligibility. It cannot execute x86 QEMU, even with the override. Parallels and VMware record catch-up in `<serial log>.launch.json`. Vigil has no catch-up field.
 
 ### Interactive Mode
 
@@ -47,26 +52,19 @@ Use `./run.sh` for interactive development with graphical display:
 
 ```bash
 ./run.sh              # ARM64 with native cocoa display (default)
-./run.sh --x86        # x86_64 with VNC display
 ./run.sh --headless   # ARM64 serial output only
-./run.sh --x86 --headless  # x86_64 serial output only
 ```
 
 **Display:**
 - ARM64: Native window (cocoa) - no VNC needed
-- x86_64: VNC at localhost:5900 (use TigerVNC to connect)
+- x86-64: physical display through the x86-metal boot loop
 
 ### Test Scripts
 
 Test scripts are located in `docker/qemu/`:
 
-**x86-64:**
-- `./docker/qemu/run-boot-parallel.sh N` - Run N parallel boot tests
-- `./docker/qemu/run-kthread-parallel.sh N` - Run N parallel kthread tests
-- `./docker/qemu/run-kthread-test.sh` - Run single kthread test
-- `./docker/qemu/run-dns-test.sh` - Run DNS resolution test
-- `./docker/qemu/run-keyboard-test.sh` - Run keyboard input test
-- `./docker/qemu/run-interactive.sh` - Interactive session with VNC display
+**x86-64:** Use `scripts/metal/metal-run` for the x86-metal boot loop.
+Legacy x86 QEMU scripts are refused by default under S23.
 
 **ARM64:**
 - `./docker/qemu/run-aarch64-boot-test-native.sh` - Native ARM64 boot test (needs a kernel built with `--features boot_tests`)
@@ -90,7 +88,7 @@ prlctl stop breenix-dev --kill 2>/dev/null || true
 #   sudo pkill -9 -f prl_disp_service   (requires terminal with sudo)
 
 # 2. Build fresh kernel (touch forces recompile)
-touch kernel/src/drivers/usb/xhci.rs
+touch kernel/src/drivers/xhci/mod.rs
 scripts/parallels/build-efi.sh --kernel
 
 # 3. Deploy (writes new EFI image to HDS, truncates serial log, fresh NVRAM)
@@ -123,11 +121,7 @@ agent context). Ask the user to run this if the VM is stuck.
 # Build the kernel first (x86-64)
 cargo build --release --features testing,external_test_bins --bin qemu-uefi
 
-# Run boot tests
-./docker/qemu/run-boot-parallel.sh 1
-
-# Run multiple parallel tests for stress testing
-./docker/qemu/run-boot-parallel.sh 5
+# Prove x86-64 through the x86-metal boot loop (see docs/metal/README.md)
 
 # Build ARM64 kernel for the native/strict boot-test gates below
 # Kernel code must use the soft-float target; userspace keeps aarch64-breenix.json.
@@ -138,15 +132,6 @@ cargo build --release --features boot_tests --target aarch64-breenix-kernel.json
 
 # Run ARM64 boot test
 ./docker/qemu/run-aarch64-boot-test-native.sh
-```
-
-For kthread-focused testing:
-```bash
-# Build kthread-only kernel
-cargo build --release --features kthread_test_only --bin qemu-uefi
-
-# Run kthread tests
-./docker/qemu/run-kthread-parallel.sh 1
 ```
 
 ### Logs
@@ -194,7 +179,7 @@ Never add a workflow file.
 ```
 # DON'T run kernel directly - ALWAYS use GDB
 cargo run --release --bin qemu-uefi
-cargo run -p xtask -- boot-stages
+cargo run -p xtask -- arm64-boot-stages
 # DON'T grep through large outputs in main session
 cat target/output.txt | grep ...
 ```
@@ -705,7 +690,7 @@ Before approving changes to interrupt/syscall code:
 
 **ALL kernel execution and debugging MUST be done through GDB.** This is non-negotiable.
 
-Running the kernel directly (`cargo run`, `cargo test`, `cargo run -p xtask -- boot-stages`) without GDB:
+Running the kernel directly (`cargo run`, `cargo test`, `cargo run -p xtask -- arm64-boot-stages`) without GDB:
 - Provides only serial output, which is insufficient for timing-sensitive bugs
 - Cannot inspect register state, memory, or call stacks
 - Cannot set breakpoints to catch issues before they cascade
@@ -880,7 +865,7 @@ info address kernel::kernel_main
 
 ### When to Use GDB vs Boot Stages
 
-**Use boot stages** (`cargo run -p xtask -- boot-stages`) for:
+**Use boot stages** (`cargo run -p xtask -- arm64-boot-stages`) for:
 - Verifying a fix works
 - Checking that all subsystems initialize
 - CI/continuous testing
@@ -920,12 +905,8 @@ log::debug!("clock_gettime called");  # This changes timing!
 
 ## QEMU Process Cleanup
 
-If you need to clean up orphaned QEMU processes:
-
-```bash
-pkill -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
-pkill -9 qemu-system-aarch64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
-```
+Stop only a process this run started, by the PID recorded when it started.
+Do not use `pkill`, `killall`, or kill by process name or pattern.
 
 ## Work Tracking
 

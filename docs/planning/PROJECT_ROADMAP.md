@@ -11,6 +11,84 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The #2149 repair connects bwm's stdin keys to hotkey matching and makes keyboard
+input ready the compositor wait. The #2125/#2143 follow-up makes `run.sh`'s
+`--headless` and `--serial` select the VM no-GUI path that Vigil records.
+
+PR #2132 selects the SVGA3D DX GPU core for ordinary VMware console attachment,
+gives Parallels' virtio-gpu device to the GPU core, and deletes the
+legacy VMware compositor. bwm composes through syscall 416 on ARM64 QEMU
+`--gpu-gl`, Parallels and VMware (#2133, #2060), and the `VIRGL_COMPOSITE` route is
+retired. Its Parallels CPU0 timer stall (#2137) was the scheduler's timer
+re-arm withdrawing pending ticks; PR #2140 repairs it on main and #2132 merges
+that branch. Failed device admission also needs firmware diagnostics recovery
+(#2134).
+
+PR #2136 checks required ARM64 testing binaries on the disk before starting
+the VM, including `--no-build`. The preflight resolves directory symlinks,
+honors the first resolved search path, and rejects dangling targets without
+normalizing away missing path components (#2127).
+
+PR #2140 keeps a pending ARM64 timer tick when the scheduler re-arms the
+timer. `rearm_timer()` moved the deadline one interval ahead on each dispatch,
+so a CPU switching more often than once a millisecond lost its ticks; under
+the Parallels GPU-core desktop CPU0 fell below the regression guard's line
+(#2137). ARM64 procfs sampling records per-CPU tick counts in `/proc/kmsg` at
+30-second intervals; the #2140 review follow-up removes the periodic stdout report.
+
+Launcher work enables the VMware host-key path by default for console suite
+boots, including multi-suite lists, with loopback VNC and owned watcher cleanup.
+The unrelated boot-wait host-test matcher failure is tracked in #2097.
+
+PR #2054 carries the GPU-core handoff and repairs ARM64 scheduler-lock holds
+and GPU suite memory accounting (#2056). S37 updates the self-death receipt
+contract (#2058) to require one deferral and one reclaim on both architectures.
+Idle timer scheduling remains tracked in #2053; #2043's late completion was
+measured at the host device in the PR.
+
+Testing-boot work for #2009, #2012 and #1982 waits for BCM5720 DHCP before
+loading userspace tests, continuing with a warning if no lease arrives within
+60 seconds. Noninteractive tests prefer the attached home disk and use an
+embedded read-only ext2 fixture without an attached disk; interactive boots
+retain their writable home disk. Fixture consolidation and reproducibility
+follow-ups are tracked in #1961 and #2029.
+
+ARM64 testing accounting work (#1958, #1969) withdraws the PTY ioctl fixture
+and requires completed retirement of both busy-CPU reclaim receipts. Its
+[evidence record](green-program/aarch64-testing/1958-1969-ACCOUNTING-2026-10-18.md)
+also records verification of PR #1959's read-only fixture and truncate fixes.
+
+PR #1967 separates the ARM64 boot-test panel from the boot checklist and
+restores the display pixels under the moving cursor; its
+[retained evidence](green-program/gui/1967-evidence/README.md) includes the
+known unrelated strict-gate failures.
+
+PR #1880 enables x86 release kernel optimization; its [evidence record](../efforts/1868-x86-release-evidence.md)
+distinguishes diagnostic results from interrupted acceptance. PR #1881 bypasses
+the ext2 lock only for root entering virtual mounts; its [scope record](../efforts/1863-dns-config-scope.md)
+keeps #1863 open and tracks the remaining writer-lock cause in #1882.
+
+The x86 boot continuation and synthetic kernel Rust entries preserve SysV stack
+alignment in PR #1841; [the entry evidence](green-program/process/1841-x86-entry-alignment.md)
+records the conditional idle probe and the separate completion-accounting failure (#1854).
+
+The independent bare-metal x86-64 stream is defined in [metal.json](../efforts/metal.json),
+with its production boot stages in [the metal boot path](../metal/boot-path.json).
+
+PR #2112's persistent install work now stages slot-paired userland generations for
+#2114, retaining generation-local `/etc` and shared `/root` and home data across
+upgrade and rollback. Follow-up review repairs completed-install retries, namespace
+visibility and path traversal, and strengthens the host rollback and home checks. Its [protocol](../metal/README.md#install-and-upgrade) remains pending
+review and a later hardware window.
+
+The R240 disk-root work in [#1972](https://github.com/ryanbreen/breenix/issues/1972)
+extends installed-disk console boots to default and suite modes, with a fresh root
+installation before each boot and cold raw writeback verification. The
+[physical-root evidence](../metal/1972-1973-evidence.md) records the three suite
+results and cold disk checks. SOL capture work is tracked in
+[#1973](https://github.com/ryanbreen/breenix/issues/1973). The earlier RAM-disk
+userspace lane remains documented in [#1702](https://github.com/ryanbreen/breenix/issues/1702).
+
 ARM64 QEMU uses HVF on native Apple Silicon hosts in [#1452](https://github.com/ryanbreen/breenix/issues/1452),
 with the testing kernel, production probe and effort suites as its gates. Native
 launchers retain the shared QoS launcher and explicit TCG selection

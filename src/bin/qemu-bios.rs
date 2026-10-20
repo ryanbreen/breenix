@@ -3,7 +3,11 @@ use std::{
     process::{self, Command},
 };
 
+#[path = "../x86_qemu_policy.rs"]
+mod x86_qemu_policy;
+
 fn main() {
+    x86_qemu_policy::require_operator_override();
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.arg("-drive");
     qemu.arg(format!("format=raw,file={}", env!("BIOS_IMAGE")));

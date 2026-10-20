@@ -1027,6 +1027,14 @@ mod tests {
 #[cfg(target_arch = "aarch64")]
 pub(crate) use crate::serial_line::Line;
 
+/// A record written from a running system, whole, so another CPU's output
+/// cannot split it. The x86_64 `Line` below writes each byte to the port as
+/// it comes, for the dumps here, which GDB calls with the other CPUs stopped.
+#[cfg(target_arch = "aarch64")]
+pub(crate) use crate::serial_line::Line as Record;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use crate::serial::Line as Record;
+
 #[cfg(target_arch = "x86_64")]
 pub(crate) struct Line;
 #[cfg(target_arch = "x86_64")]

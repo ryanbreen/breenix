@@ -6,6 +6,9 @@
 //! `userspace/programs/src/suite_<id>.rs`, or in `suite_<id>/main.rs` with case tables in
 //! its modules, read from the parsed source) are the
 //! manifest's, in the same order with the same titles. Every suite source has a manifest.
+//!
+//! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
+//! docs/efforts/README.md).
 
 use std::collections::HashSet;
 use std::fs;
@@ -134,6 +137,24 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             }
             _ => errors.push(format!("{at}: diskChecks must be a nonempty array")),
         }
+        // The host reads the disk after the boot, so in a boot of several suites no suite may run after this one.
+        if object.get("sequence") != Some(&Value::String("last".into())) {
+            errors.push(format!("{at}: a suite with diskChecks runs last in a multi-suite boot: set \"sequence\": \"last\""));
+        }
+    }
+    // Where the suite must run in a boot of several suites (docs/suites/README.md, "Several suites in one boot").
+    if let Some(place) = object.get("sequence") {
+        expected.push("sequence");
+        if place != "first" && place != "last" {
+            errors.push(format!("{at}: sequence is \"first\" or \"last\" when present"));
+        }
+    }
+    // A suite that renders through a 3D GPU; launchers for targets without one leave it out of a resolved list.
+    if let Some(needs) = object.get("needs3dGpu") {
+        expected.push("needs3dGpu");
+        if needs != &Value::Bool(true) {
+            errors.push(format!("{at}: needs3dGpu is true when present"));
+        }
     }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
@@ -189,7 +210,8 @@ fn table_error(what: &str) -> String {
     format!(
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
-         optionally followed by `.case_limit_ms(N)` and `.gui()`, with no attributes inside it"
+         optionally followed by `.case_limit_ms(N)`, `.gui()` or `.defer_display()`, each category optionally \
+         followed by `.idle_before(N)`, with no attributes inside it"
     )
 }
 
@@ -240,6 +262,67 @@ fn id_and_title(args: &[&syn::Expr], name: &str, arity: usize) -> Result<Entry, 
     Ok(Entry { id: string(args[0])?, title: string(args[1])? })
 }
 
+/// Setup may prepare cases, but cannot print or bypass the suite runner.
+/// Follow local functions (including callbacks) so a helper cannot hide output
+/// or process termination. Returns and `?` in helpers return to their caller;
+/// either in main would instead bypass the runner.
+struct SetupCheck<'a> {
+    file: &'a syn::File,
+    active: HashSet<String>,
+    errors: Vec<String>,
+    in_main: bool,
+}
+impl<'ast> syn::visit::Visit<'ast> for SetupCheck<'ast> {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if self.in_main && matches!(expr, syn::Expr::Return(_) | syn::Expr::Try(_)) {
+            self.errors.push("setup can return before SUITE.run()".into());
+        }
+        if let syn::Expr::Call(call) = expr {
+            if matches!(&*call.func, syn::Expr::Path(p) if p.path.is_ident("sc"))
+                && !matches!(call.args.first(), Some(syn::Expr::Path(p)) if
+                    p.path.segments.last().is_some_and(|s| s.ident == "CLOCK_GETTIME" || s.ident == "NANOSLEEP"))
+            {
+                self.errors.push("setup syscall is not proven silent and non-exiting".into());
+            }
+        }
+        if let syn::Expr::MethodCall(call) = expr {
+            if call.method == "unwrap" || call.method == "expect" {
+                self.errors.push("setup can panic".into());
+            }
+        }
+        syn::visit::visit_expr(self, expr);
+    }
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let name = mac.path.segments.last().unwrap().ident.to_string();
+        // The networking setup reads monotonic time and sleeps through sc().
+        // Its one-instruction syscall assembly is silent and returns; calls
+        // from setup are limited below to those two non-exiting syscalls.
+        let syscall = name == "asm"
+            && mac.tokens.to_string().starts_with("\"syscall\" ,")
+            && !mac.tokens.to_string().contains("noreturn");
+        if name != "format" && !syscall {
+            self.errors.push(format!("setup macro {name} is not proven silent and non-exiting"));
+        }
+    }
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        let name = path.path.segments.last().unwrap().ident.to_string();
+        if ["exit", "abort", "_exit", "panic", "print", "println", "eprint", "eprintln"].contains(&name.as_str()) {
+            self.errors.push(format!("setup calls {name}"));
+        }
+        if self.active.insert(name.clone()) {
+            if let Some(function) = self.file.items.iter().find_map(|item| match item {
+                syn::Item::Fn(f) if f.sig.ident == name => Some(f), _ => None,
+            }) {
+                let in_main = self.in_main;
+                self.in_main = false;
+                self.visit_block(&function.block);
+                self.in_main = in_main;
+            }
+            self.active.remove(&name);
+        }
+    }
+}
+
 /// The suite id, title and categories in the table the suite's `main` runs:
 /// `main` must be `NAME.run()`, and `static NAME: Suite` is read from the parsed
 /// source, so comments, disabled code and calls outside the table play no part.
@@ -268,8 +351,8 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
             _ => None,
         })
         .ok_or_else(|| table_error("no fn main"))?;
-    let run_target = match main.block.stmts.as_slice() {
-        [syn::Stmt::Expr(syn::Expr::MethodCall(method), _)] if method.method == "run" && method.args.is_empty() => {
+    let run_target = match main.block.stmts.last() {
+        Some(syn::Stmt::Expr(syn::Expr::MethodCall(method), _)) if method.method == "run" && method.args.is_empty() => {
             match &*method.receiver {
                 syn::Expr::Path(path) if path.path.get_ident().is_some() => path.path.get_ident().cloned(),
                 _ => None,
@@ -277,6 +360,11 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
         }
         _ => None,
     };
+    let mut setup = SetupCheck { file: &file, active: HashSet::new(), errors: Vec::new(), in_main: true };
+    for stmt in main.block.stmts.iter().take(main.block.stmts.len().saturating_sub(1)) {
+        syn::visit::Visit::visit_stmt(&mut setup, stmt);
+    }
+    if !setup.errors.is_empty() { return Err(table_error(&setup.errors.join("; "))); }
     let name = run_target.ok_or_else(|| table_error("fn main is not `NAME.run()`"))?;
     if has_attributes(&main.attrs) {
         return Err(table_error("fn main has attributes"));
@@ -293,12 +381,13 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
         return Err(table_error(&format!("static {name} has attributes")));
     }
     let mut expr = &*table.expr;
-    // Builder flags that leave the table as it is: a case time limit, and `gui` (the suite's
-    // cases never skip, `gui_suites_never_skip`).
+    // Builder flags that leave the table as it is: a case time limit, `gui` (the suite's
+    // cases never skip, `gui_suites_never_skip`) and `defer_display`.
+    // claim-lint:ok: tests/suite_manifests.rs gui_suites_never_skip enforces the no-skip rule.
     while let syn::Expr::MethodCall(method) = expr {
         let arity = match method.method.to_string().as_str() {
             "case_limit_ms" => 1,
-            "gui" => 0,
+            "gui" | "defer_display" => 0,
             _ => usize::MAX,
         };
         if method.args.len() != arity || !method.attrs.is_empty() {
@@ -310,6 +399,13 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
     let suite = id_and_title(&suite_args, "suite", 3)?;
     let mut categories = Vec::new();
     for category_expr in slice(suite_args[2])? {
+        let mut category_expr = category_expr;
+        if let syn::Expr::MethodCall(method) = category_expr {
+            if method.method != "idle_before" || method.args.len() != 1 || !method.attrs.is_empty() {
+                return Err(table_error(&format!("unexpected method .{}(...)", method.method)));
+            }
+            category_expr = &method.receiver;
+        }
         let args = call(category_expr, "category")?;
         let entry = id_and_title(&args, "category", 3)?;
         let cases = case_table(args[2], "", &parsed, 0)?;
@@ -575,12 +671,10 @@ fn suite_manifests_match_their_binaries() {
         }
     }
 
-    for entry in fs::read_dir(root.join("userspace/programs/src")).unwrap() {
-        let name = entry.unwrap().file_name().to_string_lossy().to_string();
-        if let Some(module) = name.strip_prefix("suite_").map(|rest| rest.strip_suffix(".rs").unwrap_or(rest)) {
-            let id = module.replace('_', "-");
-            if !manifest_ids.contains(&id) {
-                errors.push(format!("userspace/programs/src/{name} has no manifest docs/suites/{id}.json"));
+    for (name, _) in &bins {
+        if let Some(id) = name.strip_prefix("suite-") {
+            if !manifest_ids.contains(id) {
+                errors.push(format!("Cargo binary {name} has no manifest docs/suites/{id}.json"));
             }
         }
     }
@@ -740,7 +834,7 @@ fn the_table_main_runs_is_read() {
                 ),
             ]),
             category("two", "Second", &[ case("c", "Case c", c) ]),
-        ]).case_limit_ms(500);
+        ]).case_limit_ms(500).defer_display();
         static UNUSED: Suite = suite("other", "Other", &[category("x", "X", &[case("y", "Y", y)])]);
         fn not_a_case() { let _ = case("loose", "Loose", a); }
         fn main() { S.run() }
@@ -798,6 +892,7 @@ fn tables_that_could_differ_from_what_runs_are_refused() {
         r#"static S: Suite = suite("d", "D", CATEGORIES); fn main() { S.run() }"#,
         r#"static S: Suite = suite("d", "D", &[]); fn main() { if true { S.run() } }"#,
         r#"static S: Suite = suite("d", "D", &[]); fn main() {}"#,
+        r#"static S: Suite = suite("d", "D", &[]).defer_display(true); fn main() { S.run() }"#,
     ] {
         assert!(source_suite(source).is_err(), "{source}");
     }
@@ -897,4 +992,376 @@ fn skip_calls_are_found_exactly() {
     assert!(calls_skip("fn c() -> CaseResult { skip(\"no device\") }".parse().unwrap()));
     assert!(calls_skip("fn c() -> CaseResult { if x { return suite::skip(why); } Ok(()) }".parse().unwrap()));
     assert!(!calls_skip("use libbreenix::suite::{fail, skip}; // skip(\"x\")\nfn c() { let s = \"skip(1)\"; let skipped = 0; }".parse().unwrap()));
+}
+
+/// The target ids an effort in `docs/efforts/path.json` may list, in the order a list gives them: the ids
+/// `scripts/effort-target-guard.py` uses (docs/efforts/README.md, "Targets").
+const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
+
+/// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
+/// `TARGETS` order without repeats; a note is one line of text and only sits beside a list.
+/// Vigil BreenixPath.swift:168,232-234 treats profiles without x86 as outOfScope.
+fn effort_target_errors(path: &Value) -> Vec<String> {
+    let mut errors = Vec::new();
+    for effort in path["efforts"].as_array().into_iter().flatten() {
+        let id = effort["id"].as_str().unwrap_or("?");
+        if effort.get("needsGpu").is_some_and(|value| value != &Value::Bool(true)) {
+            errors.push(format!("{id}: \"needsGpu\" must be true or omitted"));
+        }
+        let note = effort.get("targetsNote");
+        let Some(targets) = effort.get("targets") else {
+            if note.is_some() {
+                errors.push(format!("{id}: \"targetsNote\" without \"targets\""));
+            }
+            continue;
+        };
+        let names: Vec<&str> = match targets.as_array() {
+            Some(list) if !list.is_empty() => list.iter().map(|t| t.as_str().unwrap_or("")).collect(),
+            _ => {
+                errors.push(format!("{id}: \"targets\" must be a non-empty list"));
+                continue;
+            }
+        };
+        let positions: Vec<Option<usize>> = names.iter().map(|n| TARGETS.iter().position(|t| t == n)).collect();
+        for (name, position) in names.iter().zip(&positions) {
+            if position.is_none() {
+                errors.push(format!("{id}: unknown target {name:?} (expected one of {TARGETS:?})"));
+            }
+        }
+        let known: Vec<usize> = positions.into_iter().flatten().collect();
+        if known.windows(2).any(|pair| pair[0] >= pair[1]) {
+            errors.push(format!("{id}: targets {names:?} repeat or are out of the order {TARGETS:?}"));
+        }
+        match note {
+            None => {}
+            Some(Value::String(text)) if !text.trim().is_empty() && !text.contains('\n') => {}
+            Some(_) => errors.push(format!("{id}: \"targetsNote\" must be non-empty text on one line")),
+        }
+    }
+    errors
+}
+
+#[test]
+fn effort_targets_are_known_and_ordered() {
+    let root = repo_root();
+    let guard = fs::read_to_string(root.join("scripts/effort-target-guard.py")).unwrap();
+    let line = guard.lines().find(|line| line.starts_with("TARGETS = (")).expect("TARGETS in the guard");
+    let mut guarded: Vec<&str> = line.split('\'').skip(1).step_by(2).collect();
+    guarded.sort_unstable();
+    let mut ours = TARGETS.to_vec();
+    ours.push("x86-metal");
+    ours.sort_unstable();
+    assert_eq!(guarded, ours, "the guard's TARGETS and this test's differ");
+
+    let path: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("docs/efforts/path.json")).unwrap()).unwrap();
+    let errors = effort_target_errors(&path);
+    assert!(errors.is_empty(), "docs/efforts/path.json targets:\n{}", errors.join("\n"));
+    let listed = path["efforts"].as_array().unwrap().iter().filter(|e| e.get("targets").is_some()).count();
+    assert!(listed > 0, "no effort lists targets, so the check above read nothing");
+}
+
+#[test]
+fn effort_target_lists_are_checked() {
+    let check = |effort: Value| effort_target_errors(&serde_json::json!({ "efforts": [effort] }));
+    assert!(check(serde_json::json!({"needsGpu": true})).is_empty());
+    for value in [serde_json::json!(false), serde_json::json!("true"), Value::Null, serde_json::json!(1)] {
+        assert_eq!(check(serde_json::json!({"needsGpu": value})).len(), 1);
+    }
+    let profiles = serde_json::json!([{ "id": "hw", "measure": { "profiles": "first-userspace" } }]);
+    assert!(check(serde_json::json!({ "id": "a" })).is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
+        .is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware"], "milestones": profiles })).is_empty());
+    for bad in [
+        serde_json::json!({ "id": "a", "targetsNote": "no list" }),
+        serde_json::json!({ "id": "a", "targets": [] }),
+        serde_json::json!({ "id": "a", "targets": "vmware" }),
+        serde_json::json!({ "id": "a", "targets": ["qemu"] }),
+        serde_json::json!({ "id": "a", "targets": ["x86-64"] }),
+        serde_json::json!({ "id": "a", "targets": ["x86-metal"] }),
+        serde_json::json!({ "id": "a", "targets": ["vmware", "parallels"] }),
+        serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
+        serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
+        serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "two\nlines" }),
+    ] {
+        assert_eq!(check(bad.clone()).len(), 1, "{bad}");
+    }
+}
+
+fn read_definition(root: &Path, file: &str) -> Value {
+    serde_json::from_str(&fs::read_to_string(root.join(file)).unwrap()).unwrap()
+}
+
+/// Validate the independent stream without changing the main path's planned suite semantics.
+fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Value) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut ids = HashSet::new();
+    for path in [main, metal] {
+        for effort in path["efforts"].as_array().unwrap() {
+            let id = effort["id"].as_str().unwrap_or("");
+            if !is_id(id) || !ids.insert(id) {
+                errors.push(format!("duplicate or invalid effort id {id:?}"));
+            }
+        }
+    }
+    for (key, expected) in [("catalog", "xtask/src/boot_stages.rs"), ("gateArch", "x86_64"),
+                            ("bootProfile", "production"), ("scoring", "modes")] {
+        if boot[key].as_str() != Some(expected) {
+            errors.push(format!("metal boot path {key} must be {expected}"));
+        }
+    }
+    let modes = boot["modes"].as_object().unwrap();
+    let mut mode_names: Vec<&str> = modes.keys().map(String::as_str).collect();
+    mode_names.sort_unstable();
+    if mode_names != ["console", "default", "persistent", "persistent-install", "probe", "shell", "suite"] {
+        errors.push("metal modes must be console, default, persistent, persistent-install, probe, shell and suite".into());
+    }
+    let catalog = read_definition(root,
+        "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json");
+    let catalog_names: HashSet<&str> = catalog["stages"].as_array().unwrap().iter()
+        .map(|s| s["name"].as_str().unwrap()).collect();
+    let host_events = ["console-ready", "power-on", "firmware-text", "post", "image-complete", "handoff"];
+    let mut milestones = HashSet::new();
+    let mut stage_names = HashSet::new();
+    for milestone in boot["milestones"].as_array().unwrap() {
+        let id = milestone["id"].as_str().unwrap_or("");
+        if !is_id(id) || !milestones.insert(id) {
+            errors.push(format!("duplicate or invalid metal boot milestone {id:?}"));
+        }
+        if milestone.get("stub").is_some_and(|stub| stub != true) {
+            errors.push(format!("{id}: stub must be true or absent when finalized"));
+        }
+        let shapes = milestone["bootShapes"].as_array();
+        if !shapes.is_some_and(|shapes| !shapes.is_empty()
+            && shapes.iter().all(|shape| matches!(shape.as_str(), Some("ramdisk" | "install" | "disk-root" | "persistent")))
+            && shapes.iter().collect::<HashSet<_>>().len() == shapes.len()) {
+            errors.push(format!("{id}: bootShapes must name unique supported boot shapes"));
+        }
+        if let Some(boot_modes) = milestone.get("bootModes") {
+            if !boot_modes.as_array().is_some_and(|names| !names.is_empty()
+                && names.iter().all(|name| name.as_str().is_some_and(|name| modes.contains_key(name)))
+                && names.iter().collect::<HashSet<_>>().len() == names.len()) {
+                errors.push(format!("{id}: bootModes must name unique supported boot modes"));
+            }
+        }
+        let lists = milestone["stages"].as_object().unwrap();
+        if lists.is_empty() {
+            errors.push(format!("{id}: stages must not be empty, including stubs"));
+        }
+        if milestone["kernel"] == true && !lists.contains_key("x86_64") {
+            errors.push(format!("{id}: kernel milestone needs x86_64 stages"));
+        }
+        for (mode, stages) in lists {
+            if mode != "x86_64" && !modes.contains_key(mode) {
+                errors.push(format!("{id}: unknown metal stage mode {mode}"));
+            }
+            if mode == "x86_64" && milestone["kernel"] != true {
+                errors.push(format!("{id}: x86_64 stages need kernel=true"));
+            }
+            let Some(stages) = stages.as_array().filter(|s| !s.is_empty()) else {
+                errors.push(format!("{id}: stage list {mode} must not be empty"));
+                continue;
+            };
+            for stage in stages {
+                if let Some(name) = stage.as_str() {
+                    stage_names.insert(name);
+                    if !catalog_names.contains(name) {
+                        errors.push(format!("{id}: unknown x86 catalog stage {name}"));
+                    }
+                    continue;
+                }
+                let name = stage["name"].as_str().unwrap_or("");
+                if name.is_empty() {
+                    errors.push(format!("{id}: inline stage needs a name"));
+                }
+                stage_names.insert(name);
+                match (stage["marker"].as_str(), stage["host"].as_str()) {
+                    (Some(marker), None) if !marker.is_empty() => {
+                        if marker.split('|').any(|part| part.is_empty() || part.len() > 128) {
+                            errors.push(format!("{id}: invalid serial marker"));
+                        }
+                        if stage.get("match").is_some() && stage["match"] != "line" {
+                            errors.push(format!("{id}: unknown marker match rule"));
+                        }
+                    }
+                    (None, Some(host)) if host_events.contains(&host) => {}
+                    _ => errors.push(format!("{id}: stage needs one serial marker or known host event")),
+                }
+            }
+        }
+    }
+    for effort in metal["efforts"].as_array().unwrap() {
+        let id = effort["id"].as_str().unwrap_or("");
+        if !id.starts_with("metal-") || effort["targets"] != serde_json::json!(["x86-metal"]) {
+            errors.push(format!("{id}: metal effort requires metal- id and exactly x86-metal"));
+        }
+        let mut own_ids = HashSet::new();
+        for milestone in effort["milestones"].as_array().unwrap() {
+            let mid = milestone["id"].as_str().unwrap_or("");
+            if !is_id(mid) || !own_ids.insert(mid) {
+                errors.push(format!("{id}: duplicate or invalid milestone {mid}"));
+            }
+            let measure = milestone["measure"].as_object().unwrap();
+            if let Some(boot_id) = measure.get("bootPath").and_then(Value::as_str) {
+                if measure.len() != 1 || !milestones.contains(boot_id) {
+                    errors.push(format!("{id}/{mid}: unknown or mixed bootPath measure"));
+                }
+            } else if let Some(suite) = measure.get("suite").and_then(Value::as_str) {
+                let file = root.join(format!("docs/suites/{suite}.json"));
+                if !is_id(suite) || !file.is_file() {
+                    errors.push(format!("{id}/{mid}: unknown suite {suite}"));
+                    continue;
+                }
+                let manifest: Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
+                let known: HashSet<&str> = manifest["categories"].as_array().unwrap().iter()
+                    .map(|c| c["id"].as_str().unwrap()).collect();
+                let categories = measure.get("categories").and_then(Value::as_array);
+                let mut seen = HashSet::new();
+                if measure.len() != 2 || categories.is_none_or(|c| c.is_empty()) {
+                    errors.push(format!("{id}/{mid}: suite needs categories"));
+                }
+                for category in categories.into_iter().flatten() {
+                    let category = category.as_str().unwrap_or("");
+                    if !known.contains(category) || !seen.insert(category) {
+                        errors.push(format!("{id}/{mid}: unknown or repeated suite category {category}"));
+                    }
+                }
+            } else {
+                errors.push(format!("{id}/{mid}: unsupported metal measure"));
+            }
+        }
+    }
+    let mut first_ids = HashSet::new();
+    for first in boot["firsts"].as_array().unwrap() {
+        let id = first["id"].as_str().unwrap_or("");
+        if !is_id(id) || !first_ids.insert(id) ||
+            !stage_names.contains(first["stage"].as_str().unwrap_or("")) {
+            errors.push(format!("{id}: invalid first or unknown stage"));
+        }
+        if let Some(suite) = first.get("suite").and_then(Value::as_str) {
+            if !is_id(suite) || !root.join(format!("docs/suites/{suite}.json")).is_file() {
+                errors.push(format!("{id}: unknown first suite"));
+            }
+        }
+    }
+    errors
+}
+
+#[test]
+fn metal_stream_is_independent_and_resolves_its_measures() {
+    let root = repo_root();
+    let main = read_definition(&root, "docs/efforts/path.json");
+    let metal = read_definition(&root, "docs/efforts/metal.json");
+    let boot = read_definition(&root, "docs/metal/boot-path.json");
+    let errors = metal_definition_errors(&root, &main, &metal, &boot);
+    assert!(errors.is_empty(), "metal definitions:\n{}", errors.join("\n"));
+    assert_eq!(metal["efforts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap())
+        .collect::<Vec<_>>(), ["metal-bring-up", "metal-userspace", "metal-network", "metal-storage", "metal-console"]);
+    assert_eq!(boot["milestones"][0]["id"], "delivery");
+    assert_eq!(boot["milestones"][1]["id"], "first-light");
+    assert!(boot["milestones"][0].get("stub").is_none());
+    assert!(boot["milestones"][1].get("stub").is_none());
+    let milestone = |id: &str| boot["milestones"].as_array().unwrap().iter()
+        .find(|m| m["id"] == id).unwrap();
+    assert_eq!(milestone("smp")["stages"]["x86_64"][1]["marker"], "[smp] online=4 reported=4");
+    assert_eq!(boot["firsts"][2]["stage"], "Four CPUs online and reported");
+    assert_eq!(milestone("ramdisk-root")["stages"]["x86_64"].as_array().unwrap().len(), 3);
+    for id in ["sata-ahci", "disk-io", "disk-filesystem"] {
+        assert!(metal["efforts"][3]["milestones"].as_array().unwrap().iter()
+            .any(|m| m["measure"]["bootPath"] == id));
+        assert!(!milestone(id)["stages"]["probe"].as_array().unwrap().is_empty());
+    }
+    let suite_markers: HashSet<&str> = milestone("suite-finished")["stages"]["suite"][0]["marker"]
+        .as_str().unwrap().split('|').collect();
+    let expected_markers: HashSet<String> = fs::read_dir(root.join("docs/suites")).unwrap()
+        .map(Result::unwrap).map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .map(|path| {
+            let manifest: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            format!("SUITE {} DONE", manifest["id"].as_str().unwrap())
+        }).collect();
+    assert_eq!(suite_markers, expected_markers.iter().map(String::as_str).collect());
+    assert_eq!(boot["firsts"][7]["suite"], "networking");
+    assert_eq!(boot["firsts"].as_array().unwrap().last().unwrap()["stage"], "Logged-in computation answered");
+    for id in ["fb-console", "xhci", "usb-keyboard", "console-login"] {
+        assert!(metal["efforts"][4]["milestones"].as_array().unwrap().iter()
+            .any(|m| m["measure"]["bootPath"] == id));
+        let shapes = if id == "console-login" {
+            serde_json::json!(["ramdisk", "install", "disk-root"])
+        } else {
+            serde_json::json!(["ramdisk", "install", "disk-root", "persistent"])
+        };
+        assert_eq!(milestone(id)["bootShapes"], shapes);
+    }
+    assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
+        .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
+        ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
+    assert_eq!(boot["fatal"], serde_json::json!([
+        "panicked at kernel/src/", "!!! SOFT LOCKUP DETECTED !!!"]));
+}
+
+#[test]
+fn metal_definition_contract_rejects_invalid_inputs() {
+    let root = repo_root();
+    let main = read_definition(&root, "docs/efforts/path.json");
+    let metal = read_definition(&root, "docs/efforts/metal.json");
+    let boot = read_definition(&root, "docs/metal/boot-path.json");
+    for (pointer, value) in [
+        ("/efforts/0/id", main["efforts"][0]["id"].clone()),
+        ("/efforts/0/targets", serde_json::json!(["x86-metal", "x86"])),
+        ("/efforts/0/targets", Value::Null),
+        ("/efforts/0/milestones/0/measure/bootPath", serde_json::json!("missing")),
+        ("/efforts/1/milestones/3/measure/suite", serde_json::json!("missing")),
+        ("/efforts/1/milestones/3/measure/categories", serde_json::json!(["missing"])),
+    ] {
+        let mut bad = metal.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(!metal_definition_errors(&root, &main, &bad, &boot).is_empty(), "{pointer}");
+    }
+    for value in [
+        serde_json::json!([]),
+        serde_json::json!(["sutie"]),
+        serde_json::json!(["shell", "shell"]),
+        serde_json::json!("shell"),
+        serde_json::json!([null]),
+    ] {
+        let mut bad = boot.clone();
+        bad["milestones"][0]["bootModes"] = value;
+        assert!(metal_definition_errors(&root, &main, &metal, &bad)
+            .iter().any(|error| error.contains("bootModes")));
+    }
+    let mut finalized = boot.clone();
+    for milestone in finalized["milestones"].as_array_mut().unwrap() {
+        milestone.as_object_mut().unwrap().remove("stub");
+    }
+    assert!(metal_definition_errors(&root, &main, &metal, &finalized).is_empty());
+    for (pointer, value) in [
+        ("/milestones/0/bootShapes", serde_json::json!(["unknown"])),
+        ("/milestones/0", {
+            let mut invalid = boot["milestones"][0].clone();
+            invalid["stub"] = serde_json::json!("true");
+            invalid
+        }),
+        ("/scoring", serde_json::json!("arch")),
+        ("/gateArch", serde_json::json!("aarch64")),
+        ("/milestones/0/stages/x86_64/0/host", serde_json::json!("missing")),
+        ("/milestones/1/stages/x86_64/0", serde_json::json!("ARM64 kernel starting")),
+        ("/milestones/1/stages", serde_json::json!({"desktop": ["Kernel entry point"]})),
+        ("/milestones/2/stages", serde_json::json!({})),
+        ("/firsts/0/stage", serde_json::json!("missing")),
+    ] {
+        let mut bad = boot.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(!metal_definition_errors(&root, &main, &metal, &bad).is_empty(), "{pointer}");
+    }
+}
+
+#[test]
+fn setup_is_silent_and_cannot_bypass_the_table() {
+    let table = r#"static S: Suite = suite("d", "D", &[]);"#;
+    assert!(source_suite(&format!("{table} fn prepare() -> Result<(), ()> {{ Ok(()) }} fn main() {{ let _ = prepare(); S.run() }}")).is_ok());
+    for setup in ["return;", r#"println!("early");"#, "std::process::exit(0);", "let _ = prepare()?;", "prepare();"] {
+        assert!(source_suite(&format!(r#"{table} fn prepare() {{ eprintln!("hidden"); }} fn main() {{ {setup} S.run() }}"#)).is_err(), "{setup}");
+    }
 }

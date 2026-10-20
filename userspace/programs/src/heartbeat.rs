@@ -96,13 +96,14 @@ const NET_RX_COUNTER_PREFIXES: &[&str] = &[
 /// Read the KBD_NONZERO_TOTAL counter from /proc/xhci/counters.
 ///
 /// This is a guest-observable, monotonic count of non-empty USB-HID
-/// keyboard reports (kernel/src/drivers/usb/hid.rs::NONZERO_KBD_COUNT). The
+/// keyboard reports (kernel/src/drivers/hid_boot/mod.rs::NONZERO_KBD_COUNT). The
 /// Parallels launcher-smoke test harness's keyboard-delivery handshake
 /// baselines this value, injects a single inert probe key, and polls for it
 /// to increase -- proving the injected key actually reached the guest's HID
 /// stack before running the real (timing-sensitive) test gesture. Printed
 /// every heartbeat tick (~1/s) so the handshake's poll latency is bounded by
 /// this cadence, not by the 10s/20s dump_net_rx_counters() schedule.
+/// claim-lint:ok: Console::note_report in kernel/src/drivers/hid_boot/mod.rs is the counter's one increment.
 fn read_kbd_nonzero_total() -> Option<u64> {
     let fd = fs::open(XHCI_COUNTER_PATH, O_RDONLY).ok()?;
     let mut buf = [0u8; 512];
@@ -156,10 +157,20 @@ fn dump_net_rx_counters(sample: u32) {
     print!("[net-rx-counters] sample={} end\n", sample);
 }
 
+/// Sample counters through procfs, whose cold read path records ARM64 timer
+/// progress in /proc/kmsg. Periodic diagnostics must stay off stdout (#2140).
+fn sample_cpu_ticks() {
+    if let Ok(fd) = fs::open(COUNTER_PATH, O_RDONLY) {
+        let _ = io::read(fd, &mut [0u8; 1]);
+        let _ = io::close(fd);
+    }
+}
+
 fn main() {
     let tid = gettid().map(|tid| tid.raw()).unwrap_or(0);
     let mut next_dump_ms = 20_000;
     let mut sample = 1;
+    let mut next_ticks_ms = 30_000;
 
     loop {
         let uptime_ms = monotonic_ms();
@@ -172,6 +183,10 @@ fn main() {
             dump_net_rx_counters(sample);
             sample += 1;
             next_dump_ms += 10_000;
+        }
+        if uptime_ms >= next_ticks_ms {
+            sample_cpu_ticks();
+            next_ticks_ms += 30_000;
         }
         let _ = sleep_ms(1_000);
     }

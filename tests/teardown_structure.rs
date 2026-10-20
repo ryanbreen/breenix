@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 #[path = "shared_coreproof/mutation_leg_mask.rs"]
 mod mutation_leg_mask;
 
@@ -127,10 +129,25 @@ fn source<'a>(sources: &'a [(String, String)], path: &str) -> &'a str {
 /// `raw_code_mask`, with every compiled-out core-proof mutation leg additionally
 /// masked out. See `shared_coreproof/mutation_leg_mask.rs` for why the exemption
 /// exists and exactly how narrow it is.
-fn code_mask(source: &str) -> Vec<bool> {
-    let mut mask = raw_code_mask(source);
-    mutation_leg_mask::apply(source, &mut mask);
-    mask
+fn code_mask(source: &str) -> Rc<Vec<bool>> {
+    // Mutation legs copy the whole kernel snapshot but usually change one file.
+    // Reuse lexical work keyed by complete text rather than path, address or length:
+    // a private mutation (including a same-length edit) must get its own mask.
+    // Each test thread drops its cache when it finishes.
+    thread_local! {
+        static MASKS: RefCell<HashMap<String, Rc<Vec<bool>>>> = RefCell::new(HashMap::new());
+    }
+    MASKS.with(|masks| {
+        let mut masks = masks.borrow_mut();
+        if let Some(mask) = masks.get(source) {
+            return Rc::clone(mask);
+        }
+        let mut mask = raw_code_mask(source);
+        mutation_leg_mask::apply(source, &mut mask);
+        let mask = Rc::new(mask);
+        masks.insert(source.to_owned(), Rc::clone(&mask));
+        mask
+    })
 }
 
 fn raw_code_mask(source: &str) -> Vec<bool> {
@@ -315,7 +332,7 @@ fn normalized_code(fragment: &str) -> String {
     let mask = code_mask(fragment);
     let kept: Vec<u8> = fragment
         .bytes()
-        .zip(mask)
+        .zip(mask.iter().copied())
         .filter_map(|(byte, code)| code.then_some(byte))
         .collect();
     String::from_utf8_lossy(&kept)
@@ -3920,6 +3937,14 @@ let _same_line = "needle"; let _real = needle();
         vec![fixture.rfind("needle();").expect("real code occurrence")]
     );
 
+    // The same allocation and length can hold different lexical code.
+    let mut edited = String::from("// needle();");
+    assert!(code_offsets(&edited, &code_mask(&edited), "needle").is_empty());
+    edited.replace_range(..2, "  ");
+    assert_eq!(code_offsets(&edited, &code_mask(&edited), "needle"), vec![3]);
+    edited.replace_range(..2, "//");
+    assert!(code_offsets(&edited, &code_mask(&edited), "needle").is_empty());
+
     let aliases = aliases_derived_from_free_frames(
         "if let Some(mut first) = FREE_FRAMES.try_lock() { let second = &mut *first; second.insert(0, frame); }",
     );
@@ -4060,6 +4085,11 @@ const PROCESS_ROW_MAP_MUTATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn complete_fork => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=x86_64)] fn fork_process_with_context => insert", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn debug_processes => raw-binding", 1),
+    // Ruling S2: an exec by a thread other than its process's first one moves
+    // the thread's row to the process's ID once the join has removed the
+    // leader's row.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exec_take_over_group => insert", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exec_take_over_group => remove", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn insert_process => insert", 1),
     // P6a PR-2, per delta: the raw removal moved from `remove_process` into the shared `take_row_unconditionally`; still exactly one removal of a row from the map.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn take_row_unconditionally => remove", 1),
@@ -4131,6 +4161,9 @@ const BOX_LEAK_CALLS: &[(&str, &str, usize)] = &[
 /// construction, and an added one is a `+` row here.
 #[rustfmt::skip]
 const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     // Class 2 — creation-failure retire. Never reaped, never retired.
     ("kernel/src/process/manager.rs", "impl ProcessManager::fn hold_init_publication", 1),
     // Class 2 — sys_spawn's Window-3 teardown arm: the child's main thread was
@@ -4143,11 +4176,15 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     // Class 4 — the p1_row_epoch_gate harness. It must keep bumping ROW_REMOVAL_EPOCH or P1's parked-reclaimer `{row}` arm stops being driven.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
+    // Ruling S26: the busy-CPU reclaim oracle's CLONE_VM member and leader
+    // (boot_tests; the module is gated in kernel/src/task/mod.rs).
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     // Class 3 — the twenty in-kernel oracle callers, nine enclosing items.
+    // Ruling S2: the exec detach oracle's sibling, a thread's row, now leaves
+    // through its own exit and the join, so its unowned-row helper is gone.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 7),
@@ -4157,10 +4194,14 @@ const ROW_DESTRUCTOR_CALLS: &[(&str, &str, usize)] = &[
 /// The join's reap arm. `complete_wait` is the one wait4/waitid implementation
 /// both arches dispatch to — that is DEBT-4 (ii)'s "on BOTH arches", and
 /// deleting it is a `-` row. The other production reaper is the exit path's
-/// reap for a parent that declines zombies (SIGCHLD ignored or SA_NOCLDWAIT).
+/// reap of a row no wait will report: a thread's row, or a child whose parent
+/// declines zombies (SIGCHLD ignored or SA_NOCLDWAIT).
 #[rustfmt::skip]
 const JOIN_REAP_ARM_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_if_parent_declines", 1),
+    // Ruling S2: an exec by a thread other than its process's first one reaps
+    // the retired leader's row, which no wait reports, as it takes it over.
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exec_take_over_group", 1),
+    ("kernel/src/process/manager.rs", "impl ProcessManager::fn reap_if_unwaited", 1),
     ("kernel/src/syscall/wait.rs", "fn complete_wait", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn tombstone_join_oracle_test::fn reap", 1),
 ];
@@ -4173,13 +4214,26 @@ const JOIN_RETIRE_ARM_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RECLAIM_ENQUEUE_CALLS: &[(&str, &str, usize)] = &[
+    // #1958 / S24: the ARM64 PTY ioctl oracle withdraws its unscheduled
+    // fixture by the PID returned by its own creation call.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/process/mod.rs", "fn exit_process_and_retire", 1),
     ("kernel/src/process/mod.rs", "impl Drop for RetirementReceipt::fn drop", 1),
+    // The roots an exec superseded (`defer_superseded_roots`), queued by the
+    // exec system calls once PM is released, and by the exec-detach oracle's
+    // fixture execs the same way.
+    ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_exec_aarch64", 1),
+    ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_execv_with_frame", 2),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
+    // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
+    // kernel/src/task/mod.rs) retires its two fixture rows through the exit
+    // path's calls.
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn queue_superseded", 1),
     // The kernel-stack ownership oracle now retires its owned fixture row through the same deferred-reclaim helper shape as the existing oracles.
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn kernel_stack_ownership_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
@@ -4213,7 +4267,9 @@ const EXIT_PROCESS_BY_PID_CALLS: &[(&str, &str, usize)] = &[
 const EXIT_PROCESS_FOR_TEARDOWN_TEST_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
+    // Ruling S2: the exec detach oracle ends a sibling thread and then the
+    // leader through the real exit path in each of its two bodies.
+    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
 ];
 #[rustfmt::skip]
@@ -4245,6 +4301,23 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait", 1),
     ("kernel/src/task/waitqueue.rs", "impl WaitQueueHead::fn prepare_to_wait_checked", 1),
+    // #1649: x86_64 blocks the current thread under its own CPU's run-queue
+    // lock. `rq::block_current` is the one body that publishes every blocked
+    // kind there and departs the thread from the one queue a thread this CPU
+    // owns can be on; `CurrentSched`'s members forward to it, or to the
+    // `Scheduler` primitive of the same name under the whole scheduler.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    // #1649: a job stop parks a Ready user thread under the lock of the CPU
+    // that owns it (`scheduler::park_for_stop`), not the whole scheduler.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_child_exit", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io_with_timeout", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal_with_context", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_in_syscall", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
 /// value under `kernel/src`. The production rows are all blocking-family
@@ -4261,6 +4334,9 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_for_timer", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_current_inner", 1),
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
+    // #1649: the x86_64 run-queue-lock block publishes each of its five kinds.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 5),
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4269,8 +4345,12 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
 /// would arrive here as a new row.
 #[rustfmt::skip]
 const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
+    // GPU ABI Counters.state is the u64 LIVE/WARMING/QUARANTINED/RESET
+    // context-state output, not thread state (#1909, S27).
+    ("kernel/src/gpu/mod.rs", "fn op_counters", 1),
     // A TCP socket's own state machine (`TcpSockState`), returned to Bound or
-    // Unbound by `connect(AF_UNSPEC)`; no thread is involved.
+    // Unbound by `connect(AF_UNSPEC)`; no thread is involved. The socket's guard
+    // receiver is opaque to the local struct-field resolver.
     ("kernel/src/socket/tcp.rs", "impl TcpSock::fn disconnect", 1),
     // The #647 departure probe restores the state it snapshotted rather than
     // naming a variant, so its restore is an opaque store by construction. It is
@@ -4281,7 +4361,6 @@ const OPAQUE_THREAD_STATE_STORES: &[(&str, &str, usize)] = &[
     // The core-proof departure probe restores the state it snapshotted, for the
     // same reason and in the same shape as the gate above.
     ("kernel/src/task/scheduler.rs", "#[cfg(feature=coreproof)] fn block_current_coreproof_probe", 1),
-    ("kernel/src/syscall/random.rs", "impl Xorshift64Star::fn next_u64", 1),
     ("kernel/src/task/scheduler.rs", "#[cfg(all(test,target_arch=x86_64))] mod tests::fn make_thread", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn test_thread", 1),
 ];
@@ -4352,6 +4431,9 @@ const THREAD_STATE_ALIASES: &[(&str, &str, usize)] = &[
 const RAW_SCHEDULER_LOCK_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "fn lock_scheduler", 1),
     ("kernel/src/task/scheduler.rs", "fn try_lock_scheduler", 1),
+    // #1649: x86_64 reclamation takes the scheduler-wide lock without the
+    // run-queue locks, through this instrumented wrapper.
+    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] fn try_lock_scheduler_list", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_MEMORY_FRAME_RETURNS: &[(&str, &str, usize)] = &[
@@ -4365,6 +4447,8 @@ const RETURN_LEASE_DEFINITION: &[(&str, &str, usize)] = &[
 const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_frame", 1),
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_leaf_frame", 1),
+    // #583: a dropped GuardedStack gives back its user stack's external leaves.
+    ("kernel/src/memory/frame_allocator.rs", "fn release_external_leaf_frame", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn retire_bounded", 2),
 ];
 #[rustfmt::skip]
@@ -4381,11 +4465,13 @@ const TABLE_RECORDER_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/process/manager.rs", "impl ProcessManager::fn exit_process_locked => AbandonReason::AlreadyTerminated", 1),
+    // An exit whose leaves are released (a non-live ARM64 root, or an earlier
+    // terminate) retires its tables through a receipt, so production abandons a
+    // table only when a receipt cannot be queued; the release helper that still
+    // abandons is a boot-test fixture.
     ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoArchPipeline", 1),
     ("kernel/src/task/process_task.rs", "fn abandon_unqueued_reclaim => AbandonReason::NoProofPipeline", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(any(target_arch=aarch64,feature=boot_tests))] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit => AbandonReason::AlreadyTerminated", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn release_process_resources => AbandonReason::NoProofPipeline", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
@@ -4399,6 +4485,7 @@ const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "fn reclaim_deferred_process_resources_for_pass", 1),
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
 ];
 #[rustfmt::skip]
 const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
@@ -4448,10 +4535,17 @@ const DEFERRED_RECLAIM_DRAIN_SITES: &[(&str, &str, usize)] = &[
     // exec_process_with_argv makes for its manually-mapped user stack), mirroring
     // sys_spawn's identical ordering above.
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_execv_with_frame", 1),
+    // Ruling S2: an exec waiting for the other threads of its process drives
+    // the drain each interval, so the dead leader's row retires and the exec
+    // can take it over.
+    ("kernel/src/syscall/exec.rs", "fn end_other_threads", 1),
     // #653 delta (3): the boot-test arm that drives the nested-refusal residual
     // through the real production entry point. It is a test caller, not a
     // production one, and it is cfg'd to the boot-test profile.
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_prove_nested_drain_refusal", 1),
+    // Ruling S26: the reclaim daemon drains on a timer, so a machine whose CPUs
+    // stay busy still retires dead processes' page tables and address spaces.
+    ("kernel/src/task/process_task.rs", "fn reclaim_daemon", 1),
 ];
 /// Whole-tree writes include the boot-test alias arm. The separate production
 /// subset check in the page-table validator remains fixed to clone.rs +
@@ -4488,7 +4582,8 @@ const CLEAR_CHILD_TID_EXIT_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const BTRT_PROCESS_EXIT_REPORTS: &[(&str, &str, usize)] = &[
-    ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
+    // Both exit paths redeem a claimed report through this one helper.
+    ("kernel/src/task/process_task.rs", "fn redeem_exit_report", 1),
 ];
 #[rustfmt::skip]
 // P6a PR-2 re-derivation, per delta: the bump moved with the raw removal into
@@ -4525,6 +4620,8 @@ const BLOCKING_NAME_PREFIXES: &[&str] = &["block_current", "block_ready", "prepa
 /// someone must look at it.
 #[rustfmt::skip]
 const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
+    // #1958 / S24: remove only the unscheduled PTY fixture creation returned.
+    ("kernel/src/test_framework/registry.rs", "fn test_arm64_pty_ioctl_path", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 2),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn exit_schedule_trampoline", 1),
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn terminate_current_scheduler_thread", 1),
@@ -4551,12 +4648,24 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // rather than the one before it. Boot-tests only, and the probe is
     // published and withdrawn inside 1 scheduler-lock acquisition.
     ("kernel/src/task/scheduler.rs", "impl Scheduler::#[cfg(all(target_arch=aarch64,feature=boot_tests))] fn run_pin_guard_oracle", 3),
+    // #1649: the x86_64 run-queue-lock block departs its thread from this
+    // CPU's queue (`rq::Held::remove_from_ready_queue`).
+    ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
+    // #1649: under the run-queue lock of the CPU that owns the thread, a job
+    // stop parks a Ready user thread off its queue, reclamation drops a freed
+    // thread from it, and a new pin moves a thread queued on a CPU it no
+    // longer allows to its home.
+    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler/rq.rs", "fn reclaim", 1),
+    ("kernel/src/task/scheduler/rq.rs", "fn repin", 1),
+    // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
+    // kernel/src/task/mod.rs).
+    ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_real_userspace", 1),
     ("kernel/src/test_exec.rs", "fn test_exec_without_scheduling", 1),
     ("kernel/src/test_exec.rs", "fn test_shell_fork_exec", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=aarch64))] fn creating_dispatch_refusal_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn clone_admission_oracle_test::fn exit_and_remove_row", 1),
-    ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn exit_and_remove_unowned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn exec_detach_oracle_test::fn retire_and_remove_owned_row", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 4),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_group_refusal_oracle_test", 3),
@@ -4930,10 +5039,39 @@ fn validate_blocked_state_publication_family(
 /// Path-valued stores (`conn.state = TcpState::Established`,
 /// `self.state = ProcessState::Running`) are excluded by construction rather
 /// than by naming the modules they live in.
+/// Resolve `self.state` through its enclosing impl and the struct's written
+/// field type. Unknown receivers remain in the census (fail closed); a known
+/// type counts as ThreadState only when that field's written type is
+/// `ThreadState`, not because the field is named `state`.
+fn known_non_thread_state_field(source: &str, mask: &[bool], offset: usize) -> bool {
+    let Some(dot) = previous_code(source, mask, offset) else { return false; };
+    if preceding_identifier(source, mask, dot).as_deref() != Some("self") {
+        return false;
+    }
+    let spans = item_spans(source, mask);
+    let Some((_, _, implementation)) = spans.iter()
+        .filter(|(open, close, name)| *open < offset && offset < *close && name.starts_with("impl "))
+        .min_by_key(|(open, close, _)| close - open) else { return false; };
+    let Some(name) = implementation.strip_prefix("impl ") else { return false; };
+    let Some((_, fields)) = struct_item_header_and_body(source, name) else { return false; };
+    let fields_mask = code_mask(fields);
+    for field in identifier_offsets(fields, &fields_mask, "state") {
+        let Some(colon) = next_code(fields, &fields_mask, field + 5) else { continue; };
+        if fields.as_bytes()[colon] != b':' { continue; }
+        let Some(start) = next_code(fields, &fields_mask, colon + 1) else { continue; };
+        let end = fields[start..].find([',', '}']).map_or(fields.len(), |n| start + n);
+        let ty = normalized_code(&fields[start..end]);
+        return !thread_state_spellings(source, mask).iter().any(|spelling|
+            ty == *spelling || ty.ends_with(&format!("::{spelling}")));
+    }
+    false
+}
+
 fn opaque_thread_state_store_offsets(source: &str, mask: &[bool]) -> Vec<usize> {
     let bytes = source.as_bytes();
     assignment_offsets(source, mask, "state")
         .into_iter()
+        .filter(|offset| !known_non_thread_state_field(source, mask, *offset))
         .filter(|offset| {
             // A field store, not a local binding: `receiver.state = …`. The
             // receiver spelling is free, and a range expression (`..state`) is
@@ -6478,20 +6616,6 @@ fn validate_free_frame_capabilities(
     Ok(())
 }
 
-/// `allocator` with `insertion` placed where `allocate_candidate` has just popped `frame`
-/// off the free list, which the insertion names `free_list`.
-fn bypass_after_pop(allocator: &str, insertion: &str) -> String {
-    const ANCHOR: &str = "free_list.and_then(|list| list.pop())";
-    assert!(allocator.contains(ANCHOR), "mutation anchor moved: {ANCHOR}");
-    allocator.replacen(
-        ANCHOR,
-        &format!(
-            "free_list.and_then(|free_list| {{ let popped = free_list.pop(); if let Some(frame) = popped {{ {insertion} }} popped }})"
-        ),
-        1,
-    )
-}
-
 fn validate_frame_return_choke_point(
     sources: &[(String, String)],
 ) -> Result<(), Vec<String>> {
@@ -6831,8 +6955,8 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
     // The contended return holds the list as this CPU's own nested holder,
-    // through `with_free_frames` on every architecture: only that makes a
-    // return give up rather than wait.
+    // through `with_free_frames`: a return waits for a holder on another CPU
+    // on both architectures, so only that makes it give up rather than wait.
     let held = function_body(tests, "with_free_list_held");
     if held.contains("#[cfg(") || held.contains("FREE_FRAMES") {
         return Err(());
@@ -7018,7 +7142,8 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
         && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
-        && held.contains("with_free_frames(|_| f())")
+        && normalized_code(held)
+            == "fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R { with_free_frames(|_| f()) }"
         && gate.matches("healthy_round_trip()").count() == 5
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
@@ -7103,7 +7228,7 @@ fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
-    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]'";
+    const EXEC_DETACH_ORACLE_VECTOR: &str = "EXEC_DETACH_ORACLE_LITERAL='[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]'";
     const CLONE_ADMISSION_ORACLE_VECTOR: &str = "CLONE_ADMISSION_ORACLE_LITERAL='[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]'";
     const EXEC_FAILED_RELEASE_ORACLE_VECTOR: &str = "EXEC_FAILED_RELEASE_ORACLE_PATTERN='\\[EXEC_FAILED_RELEASE_ORACLE:x86:used_before=[0-9]+:used_after=[0-9]+:recorded_pre=3:leaf_recorded=1:leaf_released=1:leaf_returned=1:tables_returned=4:roots_retired=1:undecided=0:live_refused=0\\]'";
     const EXEC_FAILED_RELEASE_PROD_VECTOR: &str = "EXEC_FAILED_RELEASE_PROD_LITERAL='[EXEC_FAILED_RELEASE_PROD:x86:plain_err=true:plain_kept=true:argv_err=true:argv_kept=true:name_kept=true:balance=0:undecided=0:mid_retire=0:lost=0:custody_refused=0:decref_unregistered=0:double=0:stale=0:untracked=0:root_slot_refused=0]'";
@@ -7525,6 +7650,17 @@ fn validate_process_page_table_retire_site(
             structural,
         );
     }
+    let probe = function_body(process_task, "reclaim_progress_gate_test");
+    record_unit(
+        &mut failures,
+        "boot-test reclaim caller lost its proof gates",
+        (probe.contains("let proof = production.lock_free_root_proof(&snapshot, true);")
+            && probe.contains("let peers_clear = production.release_root_on_peers();")
+            && probe.contains("let clear = proof.blocker().is_none() && peers_clear\n            && !production.cached_root_is_live() && !production.live_row_names_root();")
+            && probe.contains("let progress = if clear {\n            Some(production.reclaim_bounded(PRODUCTION_RECLAIM_FRAME_BUDGET))"))
+        .then_some(())
+        .ok_or(()),
+    );
     failures.is_empty().then_some(()).ok_or(failures)
 }
 
@@ -7735,6 +7871,7 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     let interrupts = source(sources, "kernel/src/interrupts.rs");
     let arm_exception = source(sources, "kernel/src/arch_impl/aarch64/exception.rs");
     let stack = source(sources, "kernel/src/memory/stack.rs");
+    let graphics = source(sources, "kernel/src/syscall/graphics.rs");
     let manager = source(sources, "kernel/src/process/manager.rs");
     let arm_elf = source(sources, "kernel/src/arch_impl/aarch64/elf.rs");
 
@@ -7828,7 +7965,9 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
             return Err(());
         }
     }
-    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2 {
+    if stack.matches("register_external_leaf_frame(frame)?;").count() != 2
+        || !graphics.contains("register_external_leaf_span(")
+    {
         return Err(());
     }
 
@@ -7959,11 +8098,17 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     Ok(())
 }
 
-/// Q2's asymmetric cached-root proof is intentional: x86 has no per-thread
-/// cached CR3 writer. Discover assignments structurally, then require every
-/// writer to belong to the one aarch64 setter used by both cache and clear.
+/// Each architecture has one per-thread cached-root writer, and the cached
+/// leg of the retirement proof reads both: aarch64's setter, used by both
+/// cache and clear, and x86_64's `Thread::set_dispatch_root`, the root a user
+/// thread is dispatched on, set by the dispatch's first lookup and by exec
+/// (#1635). Discover assignments structurally, then require every writer to
+/// belong to one of those two setters.
 fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(), ()> {
-    const ALLOWED_PATH: &str = "kernel/src/arch_impl/aarch64/context_switch.rs";
+    const ALLOWED: [(&str, &str); 2] = [
+        ("kernel/src/arch_impl/aarch64/context_switch.rs", "set_thread_cached_ttbr0"),
+        ("kernel/src/task/thread.rs", "set_dispatch_root"),
+    ];
     let mut writers = Vec::new();
     for (path, module) in sources {
         let mask = code_mask(module);
@@ -7973,14 +8118,22 @@ fn validate_cached_ttbr0_single_writer(sources: &[(String, String)]) -> Result<(
                 .map(|offset| (path.as_str(), offset)),
         );
     }
-    if writers.len() != 1 || writers[0].0 != ALLOWED_PATH {
+    if writers.len() != ALLOWED.len() {
         return Err(());
     }
-    let module = source(sources, ALLOWED_PATH);
-    function_span(module, "set_thread_cached_ttbr0")
-        .contains(&writers[0].1)
-        .then_some(())
-        .ok_or(())
+    for (path, setter) in ALLOWED {
+        let module = source(sources, path);
+        let span = function_span(module, setter);
+        if writers
+            .iter()
+            .filter(|(writer_path, offset)| *writer_path == path && span.contains(offset))
+            .count()
+            != 1
+        {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 /// The shared proof must dispatch to both architectures' real hardware and
@@ -8426,7 +8579,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         && harness.contains("[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]")
         && harness.contains("[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]")
         && harness.contains("[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]")
-        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:sibling_refused=2:success_detached=2:fresh_root=2:tgid_self=2:custody_balance=0:leaf_residual=16:stack_residual=21:kstack_frames_released=128:old_group_reached_pre=2:old_group_missed_post=2:self_group_reached_post=2]")
+        && harness.contains("[EXEC_DETACH_ORACLE:x86:bodies=2:fail_preserved=2:group_waited=2:took_over=2:fresh_root=2:sharer_kept=2:custody_balance=0:leaf_residual=0:stack_residual=0:kstack_frames_released=128:old_group_reached_pre=2:group_reached_post=2:member_id_unused_post=2]")
         && harness.contains("[CLONE_ADMISSION_ORACLE:x86:admitted=1:refused=2:creating_refused=1:published_admitted=2:balance=0]")
         && harness
             .matches("page_table_custody_disposition_gate:PASS")
@@ -9741,12 +9894,8 @@ fn phase_one_retirement_fence_and_lock_domains_are_structural() {
     assert!(!park.contains("reclaim.after_epoch"));
     let unpark = function_body(process, "unpark_sweep_with_snapshot");
     assert!(
-        unpark
-            .find("reclaim_queue(&PARKED_PROCESS_RECLAIMS)")
-            .unwrap()
-            < unpark
-                .find("reclaim_queue(&PENDING_PROCESS_RECLAIMS)")
-                .unwrap()
+        unpark.find("PARKED_PROCESS_RECLAIMS.lock()").unwrap()
+            < unpark.find("PENDING_PROCESS_RECLAIMS.lock()").unwrap()
     );
 
     assert!(scheduler.contains("pub(crate) struct RetirementFence"));
@@ -9985,10 +10134,13 @@ fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
         3,
         "exec detach oracle must retain all three group-kill probes"
     );
+    // Ruling S2: before the exec a kill aimed at the process reaches the
+    // member and the leader; after it, the process's ID reaches the exec'd row
+    // alone and the member's old row ID reaches no row, which needs no take.
     assert_eq!(
         identifier_offsets(oracle, &oracle_mask, "take_pending_signal_for_test").len(),
-        5,
-        "exec detach oracle must retain all five signal-delivery observations"
+        3,
+        "exec detach oracle must retain all three signal-delivery observations"
     );
     assert_eq!(
         code_offsets(oracle, &oracle_mask, "old_group_reached_pre += 1;").len(),
@@ -10006,8 +10158,8 @@ fn exec_detach_oracle_pins_pre_exec_group_reachability_control() {
         .find("let successful_exec =")
         .expect("exec detach oracle successful-exec arm");
     let post_exec_probe = oracle
-        .find("let old_group_post_count =")
-        .expect("exec detach oracle post-exec old-group probe");
+        .find("let group_post_count =")
+        .expect("exec detach oracle post-exec group probe");
     assert!(
         pre_exec_probe < failed_exec
             && failed_exec < successful_exec
@@ -10021,7 +10173,7 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     const FORMAT_STRING: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual={}:user_stack_residual={}]";
     const OBSERVED_ARGUMENTS: &str =
         "\",\n        leaf_residual,\n        user_stack_residual\n    );";
-    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=16:user_stack_residual=16]";
+    const GATE_LITERAL: &str = "[CREATING_DISPATCH_ORACLE:aarch64:injected=1:refused_via_dispatch=1:requeue_retried=1:dispatched_after_publish=1:balance=0:leaf_residual=0:user_stack_residual=0]";
 
     let provider = repo_text("kernel/src/tracing/providers/teardown.rs");
     let oracle = function_body(&provider, "creating_dispatch_refusal_test");
@@ -10040,12 +10192,12 @@ fn creating_dispatch_refusal_oracle_is_registered_and_pinned() {
     for (constant, declaration, comparison) in [
         (
             "EXPECTED_LEAF_RESIDUAL",
-            "const EXPECTED_LEAF_RESIDUAL: u64 = 16;",
+            "const EXPECTED_LEAF_RESIDUAL: u64 = 0;",
             "if leaf_residual != EXPECTED_LEAF_RESIDUAL && first_failure.is_none() {",
         ),
         (
             "EXPECTED_USER_STACK_RESIDUAL",
-            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;",
+            "const EXPECTED_USER_STACK_RESIDUAL: i64 = 0;",
             "if user_stack_residual != EXPECTED_USER_STACK_RESIDUAL && first_failure.is_none() {",
         ),
     ] {
@@ -11594,10 +11746,11 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     }
     let process_task = source(&sources, "kernel/src/task/process_task.rs");
     let wrong_reason = process_task.replacen(
-        "page_table.abandon(AbandonReason::AlreadyTerminated);",
         "page_table.abandon(AbandonReason::NoProofPipeline);",
+        "page_table.abandon(AbandonReason::AlreadyTerminated);",
         1,
     );
+    assert_ne!(wrong_reason, process_task, "wrong-reason mutation must apply");
     let wrong_reason =
         with_replaced_source(&sources, "kernel/src/task/process_task.rs", wrong_reason);
     assert!(validate_process_page_table_dispositions(&wrong_reason).is_err());
@@ -11714,6 +11867,22 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         ),
     );
     assert!(validate_process_page_table_retire_site(&extra_reclaim).is_err());
+    for gate in [
+        "proof.blocker().is_none() && peers_clear",
+        "!production.cached_root_is_live()",
+        "!production.live_row_names_root()",
+        "let progress = if clear {",
+        "let peers_clear = production.release_root_on_peers();",
+    ] {
+        let removed_gate = process_task.replacen(gate, "true", 1);
+        assert_ne!(removed_gate, process_task, "proof-gate mutation must apply");
+        let removed_gate = with_replaced_source(
+            &sources,
+            "kernel/src/task/process_task.rs",
+            removed_gate,
+        );
+        assert!(validate_process_page_table_retire_site(&removed_gate).is_err());
+    }
     let process_manager = source(&sources, "kernel/src/process/manager.rs");
     let cross_file_retire = with_replaced_source(
         &sources,
@@ -12013,7 +12182,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         &sources,
         "kernel/src/memory/process_memory.rs",
         process_memory.replacen(
-            "                            _ => {\n                                crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);\n                            },",
+            "                        _ => {\n                            crate::trace_count!(crate::tracing::providers::teardown::LEAF_CUSTODY_REFUSED);\n                        },",
             "                            _ => { frame_decref(PhysFrame::containing_address(entry.addr())); },",
             1,
         ),
@@ -12198,14 +12367,19 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
 
-    // R1: seven syntactically distinct ways to bypass the return choke point.
+    // R1: seven syntactically distinct ways to bypass the return choke point,
+    // planted in the free-list closure allocate_candidate pops from.
     for insertion in [
-        "free_list.push(frame);",
-        "free_list.insert(0, frame);",
-        "free_list /* trivia */ .insert(0, frame);",
-        "free_list.push_within_capacity(frame);",
+        "list.push(frame);",
+        "list.insert(0, frame);",
+        "list /* trivia */ .insert(0, frame);",
+        "list.push_within_capacity(frame);",
     ] {
-        let broken = bypass_after_pop(&allocator, insertion);
+        let broken = allocator.replacen(
+            "free_list.and_then(|list| list.pop())",
+            &format!("free_list.and_then(|list| {{ let frame = list.pop()?; {insertion} Some(frame) }})"),
+            1,
+        );
         let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
         assert!(validate_frame_return_choke_point(&broken).is_err());
     }
@@ -12234,32 +12408,52 @@ fn deliberately_broken_variants_fail_the_ratchet() {
             "closure bypass not caught: {mutation}"
         );
     }
-    let reborrowed = bypass_after_pop(&allocator, "let list = &mut *free_list; list.insert(0, frame);");
+    let reborrowed = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let spare = &mut *list; spare.insert(0, frame); Some(frame) })",
+        1,
+    );
     let reborrowed =
         with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
     assert!(validate_frame_return_choke_point(&reborrowed).is_err());
-    let typed_reborrow = bypass_after_pop(&allocator, "let list: &mut Vec<PhysFrame> = &mut free_list; list.insert(0, frame);");
+    let typed_reborrow = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let spare: &mut Vec<PhysFrame> = &mut *list; spare.insert(0, frame); Some(frame) })",
+        1,
+    );
     let typed_reborrow = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         typed_reborrow,
     );
     assert!(validate_frame_return_choke_point(&typed_reborrow).is_err());
-    let parenthesized_reborrow = bypass_after_pop(&allocator, "(*free_list).insert(0, frame);");
+    let parenthesized_reborrow = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; (*list).insert(0, frame); Some(frame) })",
+        1,
+    );
     let parenthesized_reborrow = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         parenthesized_reborrow,
     );
     assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
-    let indexed_alias_store = bypass_after_pop(&allocator, "if free_list.len() > 0 { free_list[0] = frame; }");
+    let indexed_alias_store = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; if list.len() > 0 { list[0] = frame; } Some(frame) })",
+        1,
+    );
     let indexed_alias_store = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_alias_store,
     );
     assert!(validate_frame_return_choke_point(&indexed_alias_store).is_err());
-    let deref_alias_store = bypass_after_pop(&allocator, "*free_list = alloc::vec![frame, frame];");
+    let deref_alias_store = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; *list = alloc::vec![frame, frame]; Some(frame) })",
+        1,
+    );
     let deref_alias_store = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
@@ -12267,84 +12461,132 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     );
     assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
     // R1: the same physical bypass through an indexed, sliced or branch-selected alias.
-    let indexed_element_replace = bypass_after_pop(&allocator, "core::mem::replace(&mut free_list[0], frame);");
+    let indexed_element_replace = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; core::mem::replace(&mut list[0], frame); Some(frame) })",
+        1,
+    );
     let indexed_element_replace = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_element_replace,
     );
     assert!(validate_frame_return_choke_point(&indexed_element_replace).is_err());
-    let indexed_element_swap = bypass_after_pop(&allocator, "let mut spare = frame; core::mem::swap(&mut free_list[0], &mut spare);");
+    let indexed_element_swap = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = frame; core::mem::swap(&mut list[0], &mut spare); Some(frame) })",
+        1,
+    );
     let indexed_element_swap = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_element_swap,
     );
     assert!(validate_frame_return_choke_point(&indexed_element_swap).is_err());
-    let indexed_element_clone_from = bypass_after_pop(&allocator, "free_list[0].clone_from(&frame);");
+    let indexed_element_clone_from = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[0].clone_from(&frame); Some(frame) })",
+        1,
+    );
     let indexed_element_clone_from = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_element_clone_from,
     );
     assert!(validate_frame_return_choke_point(&indexed_element_clone_from).is_err());
-    let sliced_copy_from_slice = bypass_after_pop(&allocator, "free_list[..].copy_from_slice(&[frame]);");
+    let sliced_copy_from_slice = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[..].copy_from_slice(&[frame]); Some(frame) })",
+        1,
+    );
     let sliced_copy_from_slice = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         sliced_copy_from_slice,
     );
     assert!(validate_frame_return_choke_point(&sliced_copy_from_slice).is_err());
-    let sliced_fill = bypass_after_pop(&allocator, "free_list[0..1].fill(frame);");
+    let sliced_fill = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; list[0..1].fill(frame); Some(frame) })",
+        1,
+    );
     let sliced_fill = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         sliced_fill,
     );
     assert!(validate_frame_return_choke_point(&sliced_fill).is_err());
-    let indexed_helper_export = bypass_after_pop(&allocator, "publish_frame(&mut free_list[0], frame);");
+    let indexed_helper_export = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; publish_frame(&mut list[0], frame); Some(frame) })",
+        1,
+    );
     let indexed_helper_export = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         indexed_helper_export,
     );
     assert!(validate_frame_return_choke_point(&indexed_helper_export).is_err());
-    let conditional_branch_alias_store = bypass_after_pop(&allocator, "let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; *dest = alloc::vec![frame];");
+    let conditional_branch_alias_store = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; *dest = alloc::vec![frame]; Some(frame) })",
+        1,
+    );
     let conditional_branch_alias_store = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         conditional_branch_alias_store,
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_store).is_err());
-    let conditional_branch_alias_method = bypass_after_pop(&allocator, "let mut spare = alloc::vec![frame]; let dest = if free_list.len() > 1 { &mut spare } else { &mut *free_list }; dest.push(frame);");
+    let conditional_branch_alias_method = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; dest.push(frame); Some(frame) })",
+        1,
+    );
     let conditional_branch_alias_method = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         conditional_branch_alias_method,
     );
     assert!(validate_frame_return_choke_point(&conditional_branch_alias_method).is_err());
-    let helper_export = bypass_after_pop(&allocator, "stash_frame(&mut free_list, frame);");
+    let helper_export = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; stash_frame(&mut list, frame); Some(frame) })",
+        1,
+    );
     let helper_export = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         helper_export,
     );
     assert!(validate_frame_return_choke_point(&helper_export).is_err());
-    let ufcs_export = bypass_after_pop(&allocator, "Vec::insert(&mut free_list, 0, frame);");
+    let ufcs_export = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; Vec::insert(&mut list, 0, frame); Some(frame) })",
+        1,
+    );
     let ufcs_export = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         ufcs_export,
     );
     assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
-    let renamed_alias = bypass_after_pop(&allocator, "if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); }");
+    let renamed_alias = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); } Some(frame) })",
+        1,
+    );
     let renamed_alias = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
         renamed_alias,
     );
     assert!(validate_frame_return_choke_point(&renamed_alias).is_err());
-    let matched_alias = bypass_after_pop(&allocator, "match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} }");
+    let matched_alias = allocator.replacen(
+        "free_list.and_then(|list| list.pop())",
+        "free_list.and_then(|list| { let frame = list.pop()?; match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} } Some(frame) })",
+        1,
+    );
     let matched_alias = with_replaced_source(
         &sources,
         "kernel/src/memory/frame_allocator.rs",
@@ -13136,7 +13378,7 @@ fn validate_x86_direct_teardown_gates(
     teardown: &str,
     harness: &str,
 ) -> Result<(), &'static str> {
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked");
     let retirement_call = kernel_main
         .find("process_task::run_x86_retirement_fence_gate();")
         .ok_or("missing direct x86 retirement-fence call")?;
@@ -13281,38 +13523,51 @@ fn x86_teardown_gates_are_direct_reachable_and_exactly_once() {
 }
 
 #[test]
-fn direct_x86_teardown_gate_validator_rejects_dead_tail_and_duplicate_pass() {
-    let main = r#"
-        fn kernel_main_on_kernel_stack() {
-            process_task::run_x86_retirement_fence_gate();
-            process_task::run_x86_reclaim_progress_gate();
-            teardown::run_x86_retire_cohort_gate();
-        }
-    "#;
-    let process = r#"
-        fn retirement_fence_gate_test() { serial_println!("[TEST:process:retirement_fence_gate:PASS]"); }
-        fn reclaim_progress_gate_test() {}
-        fn run_x86_retirement_fence_gate() {
-            serial_println!("[TEST:process:retirement_fence_gate:START]");
-            let result = retirement_fence_gate_test();
-            serial_println!("[TEST:process:retirement_fence_gate:PASS]");
-            serial_println!("[TEST:process:retirement_fence_gate:FAIL]");
-            assert!(result.is_pass());
-        }
-        fn run_x86_reclaim_progress_gate() {
-            serial_println!("[TEST:process:reclaim_progress_gate:START]");
-            let result = reclaim_progress_gate_test();
-            serial_println!("[TEST:process:reclaim_progress_gate:PASS]");
-            serial_println!("[TEST:process:reclaim_progress_gate:FAIL]");
-            assert!(result.is_pass());
-        }
-    "#;
-    let teardown = r#"
-        fn fork_exit_defer_reclaim_pairing_test() { serial_println!("[TEST:process:x86_retire_cohort:PASS]"); }
-        fn run_x86_retire_cohort_gate() {}
-    "#;
-    let harness = "TEST:process:retirement_fence_gate:PASS TEST:process:retirement_fence_gate:PASS -eq 1 TEST:process:reclaim_progress_gate:PASS TEST:process:reclaim_progress_gate:PASS -eq 1";
-    assert!(validate_x86_direct_teardown_gates(main, process, teardown, harness).is_err());
+fn x86_naked_entry_continues_into_the_checked_boot_body() {
+    let main = repo_text("kernel/src/main.rs");
+    let entry = function_body(&main, "kernel_main_on_kernel_stack");
+    assert!(entry.contains("\"jmp {continuation}\""));
+    assert!(normalized_code(entry)
+        .contains("continuation = sym kernel_main_on_kernel_stack_checked,"));
+}
+
+#[test]
+fn direct_x86_teardown_gate_validator_rejects_ordering_and_duplicate_pass() {
+    let main = repo_text("kernel/src/main.rs");
+    let process = repo_text("kernel/src/task/process_task.rs");
+    let teardown = repo_text("kernel/src/tracing/providers/teardown.rs");
+    let harness = repo_text("docker/qemu/run-x86-boot-tests.sh");
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&main, &process, &teardown, &harness),
+        Ok(())
+    );
+
+    let reordered = main
+        .replacen("process_task::run_x86_retirement_fence_gate();", "SWAP_GATE", 1)
+        .replacen(
+            "process_task::run_x86_reclaim_progress_gate();",
+            "process_task::run_x86_retirement_fence_gate();",
+            1,
+        )
+        .replacen("SWAP_GATE", "process_task::run_x86_reclaim_progress_gate();", 1);
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&reordered, &process, &teardown, &harness),
+        Err("x86 teardown-gate ordering or rationale changed")
+    );
+
+    let body = function_body(&process, "retirement_fence_gate_test");
+    let duplicate_pass = process.replacen(
+        body,
+        &format!(
+            "{} serial_println!(\"[TEST:process:retirement_fence_gate:PASS]\"); }}",
+            body.strip_suffix('}').unwrap(),
+        ),
+        1,
+    );
+    assert_eq!(
+        validate_x86_direct_teardown_gates(&main, &duplicate_pass, &teardown, &harness),
+        Err("direct x86 gate is not fail-loud or has two PASS producers")
+    );
 }
 
 fn validate_reclaim_progress_topology_arms(process_task: &str) -> Result<(), &'static str> {
@@ -13474,7 +13729,7 @@ fn validate_single_gate_producer_per_arch(main: &str, registry: &str) -> Result<
         if !entry.contains("arch: Arch::Aarch64")
             || entry.contains("arch: Arch::Any")
             || entry.contains("arch: Arch::X86_64")
-            || !function_body(main, "kernel_main_on_kernel_stack").contains(direct_call)
+            || !function_body(main, "kernel_main_on_kernel_stack_checked").contains(direct_call)
         {
             return Err(());
         }
@@ -13496,7 +13751,7 @@ fn direct_x86_teardown_gates_keep_only_aarch64_registry_producers() {
 #[test]
 fn gate_producer_validator_rejects_arch_any_double_registration() {
     let main = r#"
-        fn kernel_main_on_kernel_stack() {
+        fn kernel_main_on_kernel_stack_checked() {
             teardown::run_x86_retire_cohort_gate();
             process_task::run_x86_retirement_fence_gate();
             process_task::run_x86_reclaim_progress_gate();
@@ -13510,46 +13765,63 @@ fn gate_producer_validator_rejects_arch_any_double_registration() {
     assert!(validate_single_gate_producer_per_arch(main, registry).is_err());
 }
 
-/// Each non-owning reclaim-queue path acquires its queue through
-/// `reclaim_queue` and handles its `None` by abandoning or returning. That
-/// helper is the one place the acquisition policy lives: aarch64 try-locks,
-/// x86_64 waits for a holder on another CPU (every hold masks interrupts and
-/// is short, and abandoning a reclaim for contention leaked its address space
-/// with four CPUs online).
+/// Each non-owning reclaim-queue path waits for its queue's lock on both
+/// architectures. A holder of either queue masks local interrupts and takes
+/// neither PROCESS_MANAGER, a scheduler lock nor the other queue, so a peer's
+/// hold is short; a failed try-lock used to abandon the receipt, and its row was
+/// settled while its address space leaked (#1693). A receipt is given
+/// up only when queue memory cannot be reserved, and only by
+/// `push_pending_or_abandon`, which counts it and settles its row; the other
+/// paths hand a receipt they cannot queue to it.
 fn validate_nonowning_reclaim_queue_acquisitions(process_task: &str) -> Result<(), ()> {
-    for name in [
-        "push_pending_or_abandon",
-        "park_reclaim",
-        "unpark_sweep_with_snapshot",
+    for (name, locks, refusal) in [
+        (
+            "push_pending_or_abandon",
+            &["PENDING_PROCESS_RECLAIMS.lock()"][..],
+            "if reservation.is_err() { false } else {",
+        ),
+        (
+            "park_reclaim",
+            &["PARKED_PROCESS_RECLAIMS.lock()"][..],
+            "if parked.try_reserve(1).is_err() { false } else {",
+        ),
+        (
+            "unpark_sweep_with_snapshot",
+            &[
+                "PARKED_PROCESS_RECLAIMS.lock()",
+                "PENDING_PROCESS_RECLAIMS.lock()",
+            ][..],
+            "if pending.try_reserve(ready_len).is_err() { false } else {",
+        ),
     ] {
-        let body = function_body(process_task, name);
-        let code = normalized_code(body);
-        if code.contains(".lock()")
-            || code.contains(".try_lock()")
-            || !code.contains("reclaim_queue(&")
+        let code = normalized_code(function_body(process_task, name));
+        let offsets = locks
+            .iter()
+            .map(|lock| code.find(lock).ok_or(()))
+            .collect::<Result<Vec<_>, _>>()?;
+        if code.contains("try_lock")
+            || code.contains("target_arch")
+            || code.matches(".lock()").count() != locks.len()
+            || !offsets.windows(2).all(|pair| pair[0] < pair[1])
+            || code.matches("false").count() != 1
+            || !code.contains(refusal)
+        {
+            return Err(());
+        }
+        let owner = name == "push_pending_or_abandon";
+        if code.contains("abandon_unqueued_reclaim") != owner
+            || (!owner && !code.contains("push_pending_or_abandon("))
         {
             return Err(());
         }
     }
-    let helper = function_body(process_task, "reclaim_queue");
-    let x86 = helper.find("#[cfg(target_arch = \"x86_64\")]").ok_or(())?;
-    let other = helper
-        .find("#[cfg(not(target_arch = \"x86_64\"))]")
-        .ok_or(())?;
-    if !(x86 < other
-        && helper[x86..other].contains("queue.lock()")
-        && helper[other..].contains("queue.try_lock()")
-        && !helper[other..].contains("queue.lock()"))
-    {
-        return Err(());
-    }
-    let push = function_body(process_task, "push_pending_or_abandon");
-    let park = function_body(process_task, "park_reclaim");
-    let unpark = function_body(process_task, "unpark_sweep_with_snapshot");
-    (push.contains("abandon_unqueued_reclaim")
-        && park.contains("push_pending_or_abandon")
-        && unpark.contains("return false")
-        && unpark.contains("abandon_unqueued_reclaim"))
+    let push = normalized_code(function_body(process_task, "push_pending_or_abandon"));
+    let refused = push.find("if !queued {").ok_or(())?;
+    let tail = &push[refused..];
+    (!push[..refused].contains("abandon_unqueued_reclaim")
+        && tail.contains("RECLAIM_ABANDONED_UNQUEUED")
+        && tail.contains("abandon_unqueued_reclaim(reclaim);")
+        && tail.contains("settle_abandoned_retirement(pid);"))
     .then_some(())
     .ok_or(())
 }
@@ -13565,22 +13837,39 @@ fn nonowning_reclaim_queue_paths_are_bounded_and_fail_closed() {
 }
 
 #[test]
-fn reclaim_queue_validator_rejects_a_blocking_enqueue_lock() {
-    let synthetic = r#"
-        fn push_pending_or_abandon(reclaim: Reclaim) {
-            let mut pending = PENDING_PROCESS_RECLAIMS.lock();
-            abandon_unqueued_reclaim(reclaim);
-        }
-        fn park_reclaim(reclaim: Reclaim) {
-            let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else { return; };
-            push_pending_or_abandon(reclaim);
-        }
-        fn unpark_sweep_with_snapshot() {
-            let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else { return false; };
-            abandon_unqueued_reclaim(parked.pop());
-        }
-    "#;
-    assert!(validate_nonowning_reclaim_queue_acquisitions(synthetic).is_err());
+fn reclaim_queue_validator_rejects_contention_abandonment() {
+    let process_task = repo_text("kernel/src/task/process_task.rs");
+    let mutate = |from: &str, to: &str| {
+        let mutated = process_task.replacen(from, to, 1);
+        assert_ne!(mutated, process_task, "mutation anchor: {from}");
+        validate_nonowning_reclaim_queue_acquisitions(&mutated)
+    };
+    // #1693's producer: the publisher try-locks and gives the receipt up when a
+    // peer holds the queue.
+    assert!(mutate(
+        "let mut pending = PENDING_PROCESS_RECLAIMS.lock();\n        #[cfg(feature = \"boot_tests\")]",
+        "let Some(mut pending) = PENDING_PROCESS_RECLAIMS.try_lock() else {\n            return false;\n        };\n        #[cfg(feature = \"boot_tests\")]",
+    )
+    .is_err());
+    // The same try-lock confined to one architecture.
+    assert!(mutate(
+        "let mut parked = PARKED_PROCESS_RECLAIMS.lock();\n        if parked.try_reserve(1).is_err() {",
+        "#[cfg(target_arch = \"aarch64\")]\n        let Some(mut parked) = PARKED_PROCESS_RECLAIMS.try_lock() else {\n            return false;\n        };\n        #[cfg(target_arch = \"x86_64\")]\n        let mut parked = PARKED_PROCESS_RECLAIMS.lock();\n        if parked.try_reserve(1).is_err() {",
+    )
+    .is_err());
+    // A sweep that drops receipts the pending queue cannot take, uncounted and
+    // with their rows unsettled.
+    assert!(mutate(
+        "                push_pending_or_abandon(reclaim);\n            }\n        }\n    }\n}",
+        "                abandon_unqueued_reclaim(reclaim);\n            }\n        }\n    }\n}",
+    )
+    .is_err());
+    // A give-up that is no longer counted.
+    assert!(mutate(
+        "        crate::trace_count!(crate::tracing::providers::teardown::RECLAIM_ABANDONED_UNQUEUED);\n        abandon_unqueued_reclaim(reclaim);",
+        "        abandon_unqueued_reclaim(reclaim);",
+    )
+    .is_err());
 }
 
 fn validate_reclaim_nesting_counter(process_task: &str, provider: &str) -> Result<(), ()> {
@@ -13887,6 +14176,12 @@ fn leaf_timing_oracle_validator_rejects_an_empty_old_root_fixture() {
     assert!(validate_x86_leaf_timing_oracle_is_live(process, teardown, harness).is_err());
 }
 
+/// A census emitter's emissions: one `serial_println!` or `diag_println!` (ruling F26; the
+/// diagnostic macro keeps the line on serial and off the screen consoles).
+fn emissions(body: &str) -> usize {
+    body.matches("serial_println!").count() + body.matches("diag_println!").count()
+}
+
 fn validate_production_root_custody_summary(
     provider: &str,
     procfs_trace: &str,
@@ -13916,10 +14211,10 @@ fn validate_production_root_custody_summary(
             return Err(());
         }
     }
-    if body.matches("serial_println!").count() != 1
+    if emissions(&body) != 1
         || !function_body(procfs_trace, "generate_counters")
             .contains("emit_root_custody_summary();")
-        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_root_custody_summary();")
         || !function_body(arm_main, "kernel_main").contains("emit_root_custody_summary();")
     {
@@ -13953,7 +14248,7 @@ fn root_custody_summary_validator_rejects_a_boot_tests_only_emitter() {
         }
     "#;
     let caller = "fn generate_counters() { emit_root_custody_summary(); }";
-    let main = "fn kernel_main_on_kernel_stack() { emit_root_custody_summary(); }";
+    let main = "fn kernel_main_on_kernel_stack_checked() { emit_root_custody_summary(); }";
     assert!(validate_production_root_custody_summary(provider, caller, main, main).is_err());
 }
 
@@ -14111,9 +14406,9 @@ fn validate_kernel_stack_ownership_gate_launch(main: &str, registry: &str) -> Re
     if code_offsets(main, &main_mask, X86_CALL).len() != 1 {
         return Err("x86 kernel-stack ownership gate launch is not unique".to_owned());
     }
-    let kernel_main = function_body(main, "kernel_main_on_kernel_stack");
+    let kernel_main = function_body(main, "kernel_main_on_kernel_stack_checked");
     if code_offsets(kernel_main, &code_mask(kernel_main), X86_CALL).len() != 1 {
-        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack".to_owned());
+        return Err("x86 kernel-stack ownership gate left kernel_main_on_kernel_stack_checked".to_owned());
     }
 
     let registry_mask = code_mask(registry);
@@ -14195,6 +14490,28 @@ fn check_kernel_stack_drop_release_order(kernel_stack: &str) -> Result<(), Strin
                 "KernelStack::drop live-slot check is not a fail-closed refusal".to_owned(),
             );
         }
+    }
+    Ok(())
+}
+
+/// x86 `release_batch` frees several stacks with one flush: each is refused
+/// while live before anything of it is unmapped, and frames and slots go back
+/// only after the flush that follows the unmaps (#1712).
+fn check_kernel_stack_batch_release_order(kernel_stack: &str) -> Result<(), String> {
+    let body = function_body(kernel_stack, "release_batch");
+    let mask = code_mask(body);
+    let live = code_offset_once(body, "if is_kernel_stack_slot_live(")?;
+    let unmap = code_offset_once(body, "unmap_kernel_page(")?;
+    let flush = code_offset_once(body, "flush_all()")?;
+    let deallocate = code_offset_once(body, "deallocate_frame(")?;
+    let slot = code_offset_once(body, "return_slot()")?;
+    if !(live < unmap && unmap < flush && flush < deallocate && flush < slot) {
+        return Err("release_batch frees a frame or slot before refusing a live stack or flushing".to_owned());
+    }
+    let refusal = braced_block(body, &mask, live)
+        .ok_or_else(|| "release_batch live-slot refusal is not braced".to_owned())?;
+    if !refusal.contains("KSTACK_DROP_REFUSED_LIVE.fetch_add(") || !refusal.contains("continue;") {
+        return Err("release_batch live-slot check is not a counted refusal".to_owned());
     }
     Ok(())
 }
@@ -14421,6 +14738,7 @@ fn validate_kernel_stack_release_mechanism(
     scheduler: &str,
 ) -> Result<(), String> {
     check_kernel_stack_drop_release_order(kernel_stack)?;
+    check_kernel_stack_batch_release_order(kernel_stack)?;
     check_kernel_stack_map_refusal_order(kernel_page_table)?;
     check_kernel_stack_allocator_live_guards(kernel_stack)?;
     check_reclaimed_threads_release_is_arch_scoped(scheduler)
@@ -14499,6 +14817,22 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
     );
     assert!(validate_kernel_stack_release_mechanism(
         &free_before_check,
+        &kernel_page_table,
+        &scheduler,
+    )
+    .is_err());
+
+    let batch_free_before_flush = kernel_stack.replacen(
+        "    if !frames.is_empty() {\n        crate::memory::tlb::flush_all();\n    }\n    for frame in frames {\n        deallocate_frame(frame);",
+        "    for frame in frames.drain(..) {\n        deallocate_frame(frame);\n    }\n    if !frames.is_empty() {\n        crate::memory::tlb::flush_all();\n    }\n    for frame in frames {\n        let _ = frame;",
+        1,
+    );
+    assert_ne!(
+        batch_free_before_flush, kernel_stack,
+        "batch release order mutation applied"
+    );
+    assert!(validate_kernel_stack_release_mechanism(
+        &batch_free_before_flush,
         &kernel_page_table,
         &scheduler,
     )
@@ -15087,10 +15421,11 @@ fn blocked_handoff_validation_rejects_removal_movement_and_teardown() {
 ///   it in the next statement to observe `ROW_REMOVAL_EPOCH`; under the join it
 ///   would both strand a tombstone and stop bumping the epoch, silently
 ///   disarming P1's parked-reclaimer gate.
-/// * **class 3 — the twenty in-kernel oracle callers** in `teardown.rs`: per-site
-///   dispositions live in the PR body. All twenty stay on the unconditional
+/// * **class 3 — the nineteen in-kernel oracle callers** in `teardown.rs`: per-site
+///   dispositions live in the PR body. All nineteen stay on the unconditional
 ///   destructor because none of their fixture rows has a retirement event to
-///   join against inside the oracle's own measurement window.
+///   join against inside the oracle's own measurement window. claim-lint:ok:
+///   19 of 19 class-3 calls are counted in `ROW_DESTRUCTOR_CALLS`.
 #[test]
 fn debt4_row_removal_routes_through_the_join_on_both_arches() {
     let sources = rust_sources_below("kernel/src");
@@ -15314,9 +15649,9 @@ fn validate_production_tombstone_census(
             return Err(());
         }
     }
-    if body.matches("serial_println!").count() != 1
+    if emissions(&body) != 1
         || !function_body(procfs_trace, "generate_counters").contains("emit_tombstone_census();")
-        || !function_body(x86_main, "kernel_main_on_kernel_stack")
+        || !function_body(x86_main, "kernel_main_on_kernel_stack_checked")
             .contains("emit_tombstone_census();")
         || !function_body(arm_main, "kernel_main").contains("emit_tombstone_census();")
         || !function_body(strand_oracle, "report_strand").contains("emit_tombstone_census();")
@@ -17505,8 +17840,9 @@ fn try_manager_mask_ratchet_is_not_vacuous() {
     // the release reddens on the release-presence failure whatever the ordering
     // is, so it reads release presence rather than ordering. This one lifts the
     // release block out and re-inserts it below both restores, which is the
-    // regression shape the guard's comment warns against.
-    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n\n";
+    // regression shape the guard's comment warns against. The x86 deferred
+    // reschedule-IPI send follows the release and moves with it.
+    let release_block = "        unsafe {\n            core::mem::ManuallyDrop::drop(&mut self.guard);\n        }\n        #[cfg(target_arch = \"x86_64\")]\n        crate::task::scheduler::send_deferred_resched_ipis();\n\n";
     let x86_restore_block = "        #[cfg(target_arch = \"x86_64\")]\n        if self.interrupts_were_enabled {\n            unsafe {\n                crate::arch_enable_interrupts();\n            }\n        }\n";
     let reordered_drop = drop_impl
         .replacen(release_block, "", 1)
@@ -18242,4 +18578,14 @@ fn exit_kick_scaled_fixture_legs_remain_present() {
     ] {
         assert!(anchor.contains(leg), "missing C5 leg: {leg}");
     }
+}
+
+#[test]
+fn console_cursor_state_is_not_scheduler_thread_state() {
+    let sources = rust_sources_below("kernel/src");
+    let fixture = with_synthetic_source(&sources, "kernel/src/synthetic_console_state.rs",
+        "struct State { row: usize } struct Grid { state: State, main: State } \
+         impl Grid { fn alternate_screen(&mut self) { self.state = self.main; } \
+         fn reset(&mut self) { self.state = State { row: 0 }; } }");
+    assert!(validate_opaque_thread_state_stores(&fixture).is_ok());
 }

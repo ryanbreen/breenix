@@ -131,6 +131,15 @@ impl TimerSignal {
         overrun as i32
     }
 
+    /// The overrun count `deliver` reports if called now, read without
+    /// recording it as shown: a due signal claimed with its timer table held
+    /// (`DueClaim`), where no expiry can be counted before `deliver`.
+    pub(super) fn pending_overrun(&self) -> i32 {
+        let counted = self.state.load(Ordering::Acquire) & 0xffff_ffff;
+        let shown = self.shown.load(Ordering::Acquire);
+        (if shown == NOT_SHOWN { counted } else { shown.min(counted) }) as i32
+    }
+
     /// Consume the expiries represented by the siginfo already copied to the
     /// recipient. Expiries after that snapshot belong to a new notification,
     /// which the scheduler binds on its next pass, even if now disarmed.

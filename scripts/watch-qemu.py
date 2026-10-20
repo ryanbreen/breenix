@@ -17,6 +17,7 @@ BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))
 ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
 VERDICT = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))
+SEQUENCE = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))
 
 
 def stop(process):
@@ -35,6 +36,8 @@ COMPLETING_MODES = ("suite", "probe", "tests", "program")
 
 
 def label(mode, suite):
+    if mode == "suite" and "," in suite:
+        return f"Suites {suite}"
     return f"Suite {suite}" if mode == "suite" else "Boot probe" if mode == "probe" else "Testing boot"
 
 
@@ -42,6 +45,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
     progress = BootProgress(serial)
     last_size = 0
     started = last_output = time.monotonic()
+    boundaries = 0
     done_at = None
     text = ""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -65,6 +69,8 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             progress.observe(text)
             if mode in COMPLETING_MODES:
                 clock.observe(text)
+                if mode == "suite" and "," in suite and SEQUENCE["boundaries"](text) > boundaries:
+                    boundaries, started = SEQUENCE["boundaries"](text), now
                 result = DONE["completion"](text, mode, suite, only)
                 if result is not None:
                     if result[1].startswith("fatal kernel output:"):
@@ -89,7 +95,15 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
             return "idle"
         time.sleep(0.2)
-    return "exit"
+    if mode not in COMPLETING_MODES:
+        return "exit"
+    # An operator quit (monitor, window, or signal) must not reboot the guest.
+    # A fatal guest record still identifies a guest death if QEMU exited first.
+    text = serial.read_bytes().decode("utf-8", errors="replace") if serial.exists() else ""
+    result = DONE["completion"](text, mode, suite, only) if mode in COMPLETING_MODES else None
+    if process.returncode >= 0 and result and result[1].startswith("fatal kernel output:"):
+        return "fatal"
+    return "cancelled"
 
 
 def main():
@@ -123,10 +137,23 @@ def main():
                        args.gate_timeout, args.suite_hold, clock, args.only)
     finally:
         stop(process)
+    if reason == "cancelled":
+        print("==> QEMU exited; operator cancellation stops suite collection", flush=True)
+        return 128 - process.returncode if process.returncode < 0 else 130
     clock_ok = True
     if args.mode in COMPLETING_MODES:
         clock_ok, clock_reason = clock.verdict()
         print(clock_reason, flush=True)
+    if args.mode == "suite" and "," in args.suite:
+        # Each suite's result, whether the sequence finished or the boot was stopped part way.
+        ok, rows = SEQUENCE["score"](args.suite.split(","), args.serial, [args.serial], args.disk)
+        for suite, status, detail in rows:
+            print(f"{status} {suite}: {detail}", flush=True)
+        passed = sum(status == "PASS" for _, status, _ in rows)
+        print(f"{'PASS' if ok else 'FAIL'}: {passed} of {len(rows)} suites passed", flush=True)
+        if reason in ("stalled", "deadline", "idle"):
+            return 124
+        return 0 if ok and clock_ok and reason == "done" else 1
     if reason == "stalled":
         return 124
     if reason == "fatal":

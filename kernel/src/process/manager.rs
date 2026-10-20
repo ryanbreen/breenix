@@ -9,8 +9,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 // Import paging types from appropriate source
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
-#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -19,7 +17,7 @@ use crate::memory::arch_stub::VirtAddr;
 use super::{Process, ProcessId};
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
-use crate::memory::process_memory::{AbandonReason, ProcessPageTable};
+use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
 
 /// The process ID reserved for init. Never handed out by ordinary allocation.
@@ -115,7 +113,6 @@ pub(crate) enum ReapOutcome {
 pub(crate) struct PreparedExecImage {
     new_page_table: crate::memory::process_memory::UnpublishedPageTable,
     loaded_elf: crate::elf::LoadedElf,
-    new_stack: Box<crate::memory::stack::GuardedStack>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
     cmdline: alloc::sync::Arc<Vec<u8>>,
@@ -235,74 +232,113 @@ impl ForkCopy {
     }
 }
 
+/// The error an exec commit returns while another thread of its process still
+/// runs (`ProcessManager::exec_blocked_by_group`). The exec system calls end
+/// those threads and wait for them before they commit
+/// (`syscall::exec::end_other_threads`), and on this error they wait again.
+pub(crate) const EXEC_GROUP_RUNNING: &str = "exec waits for the other threads of its process";
+
 impl ProcessManager {
-    /// Arch-neutral: walks only `Process`/`Thread` fields shared by both
-    /// architectures. Used by both arches' exec functions to refuse an exec
-    /// that would retire an address-space root a live `CLONE_VM` sibling
-    /// still holds (#721 B2 generalizes this off its original aarch64-only
-    /// gate — the body never referenced anything arch-specific).
-    fn find_live_clone_vm_sibling_holding_cr3(
-        &self,
-        pid: ProcessId,
-        old_cr3: u64,
-    ) -> Option<(ProcessId, u64)> {
-        self.live_clone_vm_siblings_holding_cr3(pid, old_cr3)?
-            .map(|(candidate_pid, candidate)| {
-                (candidate_pid, candidate.main_thread.as_ref().map_or(0, |thread| thread.id))
-            })
-            .next()
+    /// Whether an exec by `pid` must wait before it can run its new image as
+    /// the process (POSIX exec, S2): another row of its thread group has not
+    /// terminated, or `pid` is a thread of another row's process and that
+    /// row, the leader's, still holds resources it has not given back
+    /// (`Process::is_retired`); `exec_take_over_group` replaces the leader's
+    /// row only once its retirement has settled. A row that shares the
+    /// address space without sharing the thread group (CLONE_VM only, vfork)
+    /// does not make an exec wait: the exec gives the caller a new address
+    /// space and leaves the old one to the rows still on it.
+    pub(crate) fn exec_waits_for_group(&self, pid: ProcessId) -> bool {
+        let Some(row) = self.processes.live_row(&pid) else {
+            return false;
+        };
+        if self.group_has_other_live_rows(pid) {
+            return true;
+        }
+        row.is_non_leader_thread()
+            && row
+                .thread_group_id
+                .and_then(|group| self.processes.live_row(&ProcessId::new(group)))
+                .is_some_and(|leader| !leader.is_retired())
     }
 
-    /// The live `CLONE_VM` siblings of `pid` that hold its address-space
-    /// root `old_cr3`, which its exec would retire; `None` when exec retires
-    /// no root another row shares.
-    fn live_clone_vm_siblings_holding_cr3(
-        &self,
+    /// Whether an exec by `pid` cannot commit yet: another thread of its
+    /// process still runs (`exec_waits_for_group`), or `pid` has not taken
+    /// over its process's row (`exec_take_over_group`). The exec system calls
+    /// do both first (`syscall::exec::end_other_threads`); this keeps a
+    /// commit from retiring an address space another thread runs on.
+    fn exec_blocked_by_group(&self, pid: ProcessId) -> bool {
+        self.exec_waits_for_group(pid)
+            || self.processes.live_row(&pid).is_some_and(Process::is_non_leader_thread)
+    }
+
+    /// POSIX exec by a thread other than its process's first one (S2): the
+    /// process's other threads have ended (`exec_waits_for_group`), so the
+    /// calling row becomes the process. It takes the process ID (its thread
+    /// group's ID), the parent, the start time and the job-control report
+    /// from the leader's row, which leaves the table unreported, and its
+    /// children are told their parent's new ID. The thread keeps its thread
+    /// ID, signal mask and pending signals, as POSIX requires.
+    ///
+    /// Returns the process ID the row now has, and the leader's row for the
+    /// caller to drop once PROCESS_MANAGER is released (condition C8); the
+    /// caller then gives the thread's scheduler copy its new owner
+    /// (`scheduler::adopt_exec_owner`). When `pid` is not a thread of another
+    /// row's process, or that process still runs another thread, there is no
+    /// takeover and no row changes.
+    #[must_use]
+    pub(crate) fn exec_take_over_group(
+        &mut self,
         pid: ProcessId,
-        old_cr3: u64,
-    ) -> Option<impl Iterator<Item = (ProcessId, &Process)> + '_> {
-        let caller = self.processes.live_row(&pid)?;
-        // A non-thread CLONE_VM child borrows its parent's root. Exec gives
-        // it a new root without retiring the parent's table (vfork/spawn).
-        if caller.page_table.is_none() && caller.thread_group_id.is_none() {
+    ) -> Option<(ProcessId, Option<Process>)> {
+        let row = self.processes.live_row(&pid)?;
+        if !row.is_non_leader_thread() || self.exec_waits_for_group(pid) {
             return None;
         }
-        let owners = caller.address_space_lifetime.as_ref()?;
-        if alloc::sync::Arc::strong_count(owners) == 1 {
-            return None;
+        let leader = ProcessId::new(row.thread_group_id?);
+        // The leader's row has terminated and retired, so the reap completes
+        // the join and removes it. It credits no CPU time: the leader's
+        // account is the process's, which the calling row goes on charging.
+        let status = self
+            .processes
+            .live_row(&leader)
+            .map(|leader_row| leader_row.exit_code.unwrap_or(0));
+        let evicted = match status {
+            Some(status) => match self.reap_row(leader, leader, status) {
+                ReapOutcome::Claimed(evicted) => evicted,
+                ReapOutcome::Refused => return None,
+            },
+            None => None,
+        };
+        let mut row = self.processes.remove(&pid)?;
+        if let Some(leader_row) = evicted.as_ref() {
+            row.parent = leader_row.parent;
+            row.start_ms = leader_row.start_ms;
+            row.job.report = leader_row.job.report;
+            row.job.report_owed = leader_row.job.report_owed;
+            row.children.extend(leader_row.children.iter().copied());
         }
-        Some(self.processes.iter().filter_map(move |(&candidate_pid, candidate)| {
-            if candidate_pid == pid || candidate.is_terminated()
-                || candidate.main_thread.as_ref().is_some_and(|thread| {
-                    thread.state == crate::task::thread::ThreadState::Terminated
-                })
-                || candidate.cr3_value() != Some(old_cr3)
-                || !candidate.address_space_lifetime.as_ref()
-                    .is_some_and(|peer| alloc::sync::Arc::ptr_eq(owners, peer))
-            {
-                return None;
+        row.exec_owner_pending = true;
+        row.id = leader;
+        row.thread_group_id = None;
+        if let Some(thread) = row.main_thread.as_mut() {
+            thread.owner_pid = Some(leader.as_u64());
+        }
+        for child in &row.children {
+            if let Some(child_row) = self.processes.live_row_mut(child) {
+                child_row.parent = Some(leader);
             }
-            Some((candidate_pid, candidate))
-        }))
-    }
-
-    /// Whether an exec by `pid` should wait rather than refuse: the siblings
-    /// that would make it refuse (`find_live_clone_vm_sibling_holding_cr3`)
-    /// all exist, and every one of them has begun to exit. Such a thread may
-    /// already have cleared its clear_child_tid word, so a thread that joined
-    /// it can exec straight away; it leaves the address space shortly.
-    pub(crate) fn exec_waits_for_exiting_sibling(&self, pid: ProcessId) -> bool {
-        let Some(old_cr3) = self.processes.live_row(&pid).and_then(|row| row.cr3_value()) else {
-            return false;
-        };
-        let Some(mut siblings) = self.live_clone_vm_siblings_holding_cr3(pid, old_cr3) else {
-            return false;
-        };
-        let mut any = false;
-        siblings.all(|(_, sibling)| {
-            any = true;
-            sibling.exit_started || sibling.group_exit_code.is_some()
-        }) && any
+        }
+        crate::ipc::sysv::rename_undo(pid, leader);
+        row.publish_identity();
+        self.processes.insert(leader, row);
+        for queued in self.ready_queue.iter_mut().filter(|queued| **queued == pid) {
+            *queued = leader;
+        }
+        if self.current_pid == Some(pid) {
+            self.current_pid = Some(leader);
+        }
+        Some((leader, evicted))
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -433,13 +469,6 @@ impl ProcessManager {
 
         self.designated_init = Some(pid);
         crate::tracing::providers::teardown::record_init_designation(true);
-        // The one place the suite-mode test-control latch is decided, before init runs.
-        crate::test_control::latch_init_program(
-            self.processes
-                .live_row(&pid)
-                .and_then(|process| process.exe_path.as_deref())
-                .map_or(&[][..], |path| path.as_slice()),
-        );
         Ok(InitPublication { pid, main_thread })
     }
 
@@ -684,50 +713,24 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate a stack for the process
-        use crate::memory::stack;
-        use crate::task::thread::ThreadPrivilege;
-
-        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process: Allocating user stack");
-        let user_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User).map_err(
-                |_| {
-                    crate::serial_println!("manager.create_process: Stack allocation failed");
-                    "Failed to allocate user stack"
-                },
-            )?;
-        crate::serial_println!(
-            "manager.create_process: User stack allocated at {:#x}",
-            user_stack.top()
-        );
-
-        let stack_top = user_stack.top();
+        // The user stack, where exec puts it: pages the process page table
+        // owns, returned with its other leaves.
+        use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_SIZE};
+        let stack_top = VirtAddr::new(USER_STACK_REGION_START + USER_STACK_SIZE as u64);
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_top.as_u64() - USER_STACK_SIZE as u64;
 
-        // Store the stack in the process
-        process.stack = Some(Box::new(user_stack));
-
-        // CRITICAL: Map the user stack pages into the process page table
-        // The stack was allocated in the kernel page table, but userspace needs it mapped
-        log::debug!("Mapping user stack pages into process page table...");
         crate::serial_println!(
             "manager.create_process: Mapping user stack into process page table"
         );
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = stack_top - USER_STACK_SIZE as u64;
-            crate::memory::process_memory::map_user_stack_to_process(
-                page_table,
-                stack_bottom,
-                stack_top,
-            )
-            .map_err(|e| {
-                log::error!("Failed to map user stack to process page table: {}", e);
-                "Failed to map user stack in process page table"
-            })?;
-            log::debug!("✓ User stack mapped in process page table");
+            crate::memory::process_memory::map_new_user_stack(page_table, stack_bottom, stack_top)
+                .map_err(|e| {
+                    log::error!("Failed to map user stack to process page table: {}", e);
+                    "Failed to map user stack in process page table"
+                })?;
             crate::serial_println!("manager.create_process: User stack mapped successfully");
         } else {
             return Err("Process page table not available for stack mapping");
@@ -796,20 +799,10 @@ impl ProcessManager {
     /// #713: x86 had no argv-carrying process-creation entry point before this — only
     /// `create_process`/`build_process_at` (no argv) existed. This is assembled from
     /// `build_process_at`'s page-table/ELF-load block plus `exec_process_with_argv`'s
-    /// `setup_argv_on_stack` call, but uses `build_process_at`'s bump-allocated
-    /// `GuardedStack` stack convention throughout rather than `exec_process_with_argv`'s
-    /// fixed-address manual frame loop + fabricated dummy `GuardedStack` (precheck C4):
-    /// `process.stack` must genuinely custody the mapped stack region so P4
-    /// scheduler-single-ownership's Drop-based cleanup (#583) actually reclaims it
-    /// instead of leaking the frames behind a stack object that does not describe
-    /// what got mapped.
-    ///
-    /// Precheck C14: the stack VA still comes from `build_process_at`'s
-    /// never-reclaiming bump allocator (`stack::allocate_stack_with_privilege`,
-    /// region `USER_STACK_REGION_START`, ~68 KiB consumed per process, 16 MiB total
-    /// per `kernel/src/memory/stack.rs`) — a long-running x86 session that spawns and
-    /// reaps repeatedly will exhaust that VA region after roughly 240 process
-    /// creations. Tracked as its own follow-up issue; not fixed here.
+    /// `setup_argv_on_stack` call. Its stack is exec's: zeroed pages at exec's fixed
+    /// address that the process page table owns (`map_new_user_stack`), so the
+    /// table's leaf release returns them (#583) and no per-process address range
+    /// is consumed.
     #[cfg(target_arch = "x86_64")]
     pub fn create_process_with_argv(
         &mut self,
@@ -918,35 +911,23 @@ impl ProcessManager {
         process.heap_end = heap_base;
         process.memory_usage.code_size = elf_data.len();
 
-        // --- Stack: build_process_at's bump-allocated GuardedStack (precheck C4) ---
-        use crate::memory::stack;
-        use crate::task::thread::ThreadPrivilege;
-
-        const USER_STACK_SIZE: usize = 64 * 1024;
-        let user_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User)
-                .map_err(|_| "Failed to allocate user stack")?;
-
-        let stack_top = user_stack.top();
+        // --- Stack: where exec puts it, pages the process page table owns ---
+        use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_SIZE};
+        let stack_top = VirtAddr::new(USER_STACK_REGION_START + USER_STACK_SIZE as u64);
         let stack_bottom = stack_top - USER_STACK_SIZE as u64;
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_bottom.as_u64();
-        process.stack = Some(Box::new(user_stack));
 
         if let Some(ref mut page_table) = process.page_table {
-            crate::memory::process_memory::map_user_stack_to_process(
-                page_table,
-                stack_bottom,
-                stack_top,
-            )
-            .map_err(|e| {
-                log::error!(
-                    "create_process_with_argv: Failed to map user stack to process page table: {}",
-                    e
-                );
-                "Failed to map user stack in process page table"
-            })?;
+            crate::memory::process_memory::map_new_user_stack(page_table, stack_bottom, stack_top)
+                .map_err(|e| {
+                    log::error!(
+                        "create_process_with_argv: Failed to map user stack to process page table: {}",
+                        e
+                    );
+                    "Failed to map user stack in process page table"
+                })?;
         } else {
             return Err("Process page table not available for stack mapping");
         }
@@ -955,7 +936,7 @@ impl ProcessManager {
         let default_env: [&[u8]; 5] = [
             b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/home\0",
-            b"TERM=vt100\0",
+            b"TERM=breenix\0",
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
@@ -1075,9 +1056,6 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
     ) -> Result<ProcessId, &'static str> {
-        // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
-        use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
-
         crate::serial_println!(
             "manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}",
             name,
@@ -1158,42 +1136,11 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate physical frames for the stack
-        // On ARM64, we need to:
-        // 1. Allocate physical memory for the stack
-        // 2. Map it at USERSPACE addresses (not kernel HHDM addresses)
-        // 3. Use the userspace addresses for the thread's SP
+        // The user stack, below USER_STACK_REGION_START as exec puts it: pages
+        // the process page table owns, returned with its other leaves.
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
-
-        // allocate_stack_with_privilege returns HHDM addresses (kernel-accessible)
-        // We need to extract the physical frames and map them to userspace addresses
-        let kernel_stack = stack::allocate_stack_with_privilege(
-            USER_STACK_SIZE,
-            StackPrivilege::User,
-        )
-        .map_err(|_| {
-            crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
-            "Failed to allocate user stack"
-        })?;
-
-        // The kernel_stack.top() is an HHDM address - extract physical address
-        let kernel_stack_top = kernel_stack.top().as_u64();
-        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-        let stack_phys_top = kernel_stack_top - hhdm_base;
-        let stack_phys_bottom = stack_phys_top - USER_STACK_SIZE as u64;
-
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Stack physical range {:#x}-{:#x}",
-            stack_phys_bottom,
-            stack_phys_top
-        );
-
-        // Calculate userspace stack addresses
-        // Stack grows down, so stack_top is the highest address
         let user_stack_top = USER_STACK_REGION_START;
         let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
@@ -1207,36 +1154,15 @@ impl ProcessManager {
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_bottom;
 
-        // Store the kernel-accessible stack (for potential kernel access later)
-        process.stack = Some(Box::new(kernel_stack));
-
-        // Map the physical stack frames into the process page table at USERSPACE addresses
-        log::debug!("ARM64: Mapping user stack pages into process page table...");
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Mapping user stack into process page table"
-        );
         let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
-            crate::serial_println!(
-                "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} phys_bottom={:#x}",
-                user_stack_bottom,
-                user_stack_top,
-                stack_phys_bottom
-            );
-
-            // Map physical frames to userspace addresses
-            crate::memory::process_memory::map_user_stack_to_process_with_phys(
+            crate::memory::process_memory::map_new_user_stack(
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                process
-                    .stack
-                    .as_deref()
-                    .ok_or("user stack frames unavailable")?
-                    .frames(),
             )
             .map_err(|e| {
                 crate::serial_println!(
-                    "manager.create_process [ARM64]: map_user_stack_to_process FAILED: {}",
+                    "manager.create_process [ARM64]: user stack mapping FAILED: {}",
                     e
                 );
                 log::error!(
@@ -1245,7 +1171,6 @@ impl ProcessManager {
                 );
                 "Failed to map user stack in process page table"
             })?;
-            log::debug!("ARM64: User stack mapped in process page table");
             crate::serial_println!(
                 "manager.create_process [ARM64]: User stack mapped successfully"
             );
@@ -1353,10 +1278,7 @@ impl ProcessManager {
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
-        // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
-        use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
-
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: ENTRY - name='{}', elf_size={}, argc={}",
             name,
             elf_data.len(),
@@ -1364,13 +1286,13 @@ impl ProcessManager {
         );
 
         // Report the PID selected by the caller.
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Generated PID {}",
             pid.as_u64()
         );
 
         // Create a new page table for this process
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
         );
         let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -1386,14 +1308,14 @@ impl ProcessManager {
         );
 
         // Load the ELF binary into the process's page table
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Loading ELF into page table"
         );
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             page_table.as_mut(),
         )?;
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: ELF loaded, entry={:#x}",
             loaded_elf.entry_point
         );
@@ -1429,22 +1351,17 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate physical frames for the stack
+        // The user stack, below USER_STACK_REGION_START as exec puts it: pages
+        // the process page table owns, returned with its other leaves.
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process_with_argv [ARM64]: Allocating user stack");
-
-        let kernel_stack =
-            stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
-                .map_err(|_| "Failed to allocate user stack")?;
 
         // Calculate userspace stack addresses
         let user_stack_top = USER_STACK_REGION_START;
         let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: User stack will be at {:#x}-{:#x}",
             user_stack_bottom,
             user_stack_top
@@ -1453,19 +1370,12 @@ impl ProcessManager {
         process.memory_usage.stack_size = USER_STACK_SIZE;
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_bottom;
-        process.stack = Some(Box::new(kernel_stack));
 
-        // Map the physical stack frames into the process page table
         let initial_tpidr_el0 = if let Some(ref mut page_table) = process.page_table {
-            crate::memory::process_memory::map_user_stack_to_process_with_phys(
+            crate::memory::process_memory::map_new_user_stack(
                 page_table,
                 VirtAddr::new(user_stack_bottom),
                 VirtAddr::new(user_stack_top),
-                process
-                    .stack
-                    .as_deref()
-                    .ok_or("user stack frames unavailable")?
-                    .frames(),
             )
             .map_err(|e| {
                 log::error!(
@@ -1485,7 +1395,7 @@ impl ProcessManager {
         let default_env: [&[u8]; 5] = [
             b"PATH=/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/home\0",
-            b"TERM=vt100\0",
+            b"TERM=breenix\0",
             b"USER=root\0",
             b"SHELL=/bin/bsh\0",
         ];
@@ -1506,7 +1416,7 @@ impl ProcessManager {
             return Err("Process page table not available for argv setup");
         };
 
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: argc/argv set up on stack, SP={:#x}",
             initial_sp
         );
@@ -1526,7 +1436,7 @@ impl ProcessManager {
             pid.as_u64(),
             argv.len()
         );
-        crate::serial_println!(
+        crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: SUCCESS - returning PID {}",
             pid.as_u64()
         );
@@ -1645,7 +1555,7 @@ impl ProcessManager {
             parent.children.push(child_pid);
         }
 
-        crate::serial_println!(
+        crate::diag_println!(
             "[spawn] Created child PID {} for parent PID {}",
             child_pid.as_u64(),
             parent_pid.as_u64()
@@ -1716,6 +1626,7 @@ impl ProcessManager {
             privilege: crate::task::thread::ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1735,6 +1646,7 @@ impl ProcessManager {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1811,6 +1723,7 @@ impl ProcessManager {
             privilege: crate::task::thread::ThreadPrivilege::User,
             has_started: false,
             blocked_in_syscall: false,
+            uninterruptible_io: false,
             saved_by_inline_schedule: false,
             inline_schedule_spsr: 0,
             inline_schedule_prev_elr: 0,
@@ -1830,6 +1743,7 @@ impl ProcessManager {
             cached_ttbr0: 0,
             wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
             kill_custody: core::sync::atomic::AtomicU64::new(0),
+            futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
         };
 
@@ -1905,6 +1819,8 @@ impl ProcessManager {
     /// Insert a fully-constructed process into the manager
     pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
         crate::task::exit_tally::record_start();
+        process.publish_identity();
+        process.publish_fd_table();
         self.processes.insert(pid, process);
     }
 
@@ -1961,15 +1877,21 @@ impl ProcessManager {
 
     /// The credentials `pid` runs `image` with if its exec commits
     /// (`ProcessCredentials::after_exec`). The working directory counts as
-    /// shared when another live row holds it through `CLONE_FS`.
+    /// shared when a live row of another process holds it through `CLONE_FS`;
+    /// the other threads of the caller's own process end before the image
+    /// runs (`syscall::exec::end_other_threads`).
     pub(crate) fn credentials_after_exec(
         &self,
         pid: ProcessId,
         image: super::credentials::ExecIdentity,
     ) -> Option<super::credentials::ProcessCredentials> {
         let process = self.processes.live_row(&pid)?;
+        let group = process.thread_group_id.unwrap_or(pid.as_u64());
         let shared_fs = self.iter_processes().any(|(other, row)| {
-            other != pid && !row.is_terminated() && row.cwd.same_as(&process.cwd)
+            other != pid
+                && !row.is_terminated()
+                && row.thread_group_id.unwrap_or(other.as_u64()) != group
+                && row.cwd.same_as(&process.cwd)
         });
         Some(process.cred.after_exec(image, shared_fs))
     }
@@ -2043,6 +1965,12 @@ impl ProcessManager {
     #[must_use]
     fn take_row_unconditionally(&mut self, pid: ProcessId) -> Option<Process> {
         let row = self.processes.remove(&pid)?;
+        // Publishing the row counted a start (exit_tally::record_start beside
+        // each insert into the map). A terminated row recorded its exit in
+        // terminate or terminate_minimal; a row removed live reaches neither.
+        if !row.is_terminated() {
+            crate::task::exit_tally::withdraw_start();
+        }
         if self.designated_init == Some(pid) {
             self.designated_init = None;
             crate::tracing::providers::teardown::record_init_designation_retired();
@@ -2112,23 +2040,19 @@ impl ProcessManager {
                 already_terminated && core::mem::take(&mut process.address_space_release_deferred);
             if already_terminated && !deferred_release {
                 // Preserve the single-CoW-decref invariant: external terminate()
-                // already walked these mappings, so raw-drop them without ever
-                // routing the page table through another reclaim/decref path.
-                // File bindings leave with the mappings, so a zombie row does
-                // not keep their files open.
-                process.vmas.clear();
-                process.memory_locks.clear();
-                if let Some(page_table) = process.page_table.take() {
-                    page_table.abandon(AbandonReason::AlreadyTerminated);
-                }
-                drop(process.stack.take());
-                process.pending_old_page_tables.clear();
-                // P6a condition C2, path (b): this arm produces no receipt, so
-                // no `record_reclaim` will ever arrive for the work it just did.
-                // The latch is still refused while a receipt from this row's
+                // already released these leaves, and the table's released mark
+                // keeps the receipt's walk from releasing them again. Its tables
+                // retire through the receipt; file bindings go with the table.
+                receipt = crate::task::process_task::defer_remaining_tables(process)
+                    .map(super::RetirementReceipt::from_reclaim);
+                // P6a condition C2, path (b): a row holding no tables (its first
+                // exit took them) gets no receipt here, so no `record_reclaim`
+                // arrives for this arm. The latch is still refused while a receipt from this row's
                 // first exit is outstanding, so a repeat exit cannot retire a row
                 // whose resources are still in flight.
-                process.note_resources_absent();
+                if receipt.is_none() {
+                    process.note_resources_absent();
+                }
             } else {
                 // Fault exits always defer: the two-epoch grace covers both a
                 // peer's pre-shadow-stamp dispatch window and hardware root lag.
@@ -2136,7 +2060,6 @@ impl ProcessManager {
                 // structural issue as normal-exit deferral.
                 let reclaim = crate::task::process_task::defer_process_resources(process);
                 receipt = Some(super::RetirementReceipt::from_reclaim(reclaim));
-                drop(process.stack.take());
 
                 // Keep termination after release/deferral. Once page_table is None,
                 // cleanup_cow_frames() cannot repeat the CoW walk; restoring the old
@@ -2151,6 +2074,10 @@ impl ProcessManager {
             if self.current_pid == Some(pid) {
                 self.current_pid = None;
             }
+
+            // Clean up window buffers so the compositor stops reading freed pages
+            #[cfg(target_arch = "aarch64")]
+            crate::syscall::graphics::cleanup_windows_for_pid(pid.as_u64());
         }
 
         let children: Vec<ProcessId> = self
@@ -2179,8 +2106,9 @@ impl ProcessManager {
                 .map(crate::signal::delivery::child_exit_info);
             // A leader whose other threads still run has not exited as a
             // process: its parent is told when the last of them ends
-            // (`group_exited`).
-            let withheld = self.leader_waits_for_group(pid);
+            // (`group_exited`). A thread's row is nobody's child.
+            let withheld = self.leader_waits_for_group(pid)
+                || self.processes.live_row(&pid).is_some_and(Process::is_non_leader_thread);
             if let (Some(parent_pid), Some(info), false) = (parent_pid, child_info, withheld) {
                 signal_wake = self.queue_process_signal(parent_pid, crate::signal::constants::SIGCHLD, info);
             }
@@ -2350,27 +2278,38 @@ impl ProcessManager {
         groups
     }
 
-    /// Reap `child`, which has terminated, at once when its parent has SIGCHLD
-    /// ignored or set with SA_NOCLDWAIT: that parent's children do not become
-    /// zombies, so no wait can report them. Returns the row when the join
-    /// removed it, for the caller to drop after releasing PM (condition C8).
+    /// Reap `child`, which has terminated, at once when no wait will: it is a
+    /// thread of another row's process (`Process::is_non_leader_thread`), or
+    /// its parent has SIGCHLD ignored or set with SA_NOCLDWAIT, whose children
+    /// do not become zombies. Returns the row when the join removed it, for
+    /// the caller to drop after releasing PM (condition C8).
     #[must_use]
-    pub(crate) fn reap_if_parent_declines(&mut self, child: ProcessId) -> Option<Process> {
+    pub(crate) fn reap_if_unwaited(&mut self, child: ProcessId) -> Option<Process> {
         let row = self.processes.live_row(&child)?;
         if !row.is_terminated() || self.leader_waits_for_group(child) {
             return None;
         }
-        let parent_pid = row.parent?;
         let status = row.exit_code.unwrap_or(0);
-        let parent = self.processes.live_row_mut(&parent_pid)?;
-        let action = parent
-            .signals
-            .get_handler(crate::signal::constants::SIGCHLD);
-        if !action.is_ignore() && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0 {
-            return None;
-        }
-        parent.children.retain(|&id| id != child);
-        match self.reap_row(child, parent_pid, status) {
+        let reaper = match row.thread_group_id.filter(|_| row.is_non_leader_thread()) {
+            // The leader's row stands as reaper; a thread's reap carries no
+            // CPU time (`reap_row`), so it is credited to nobody.
+            Some(group) => ProcessId::new(group),
+            None => {
+                let parent_pid = row.parent?;
+                let parent = self.processes.live_row_mut(&parent_pid)?;
+                let action = parent
+                    .signals
+                    .get_handler(crate::signal::constants::SIGCHLD);
+                if !action.is_ignore()
+                    && action.flags & crate::signal::constants::SA_NOCLDWAIT == 0
+                {
+                    return None;
+                }
+                parent.children.retain(|&id| id != child);
+                parent_pid
+            }
+        };
+        match self.reap_row(child, reaper, status) {
             ReapOutcome::Claimed(evicted) => evicted,
             ReapOutcome::Refused => None,
         }
@@ -2391,6 +2330,7 @@ impl ProcessManager {
         let Some((pid, target)) = self.find_process_by_thread(tid) else {
             return;
         };
+        if target.killed_by_exec { return; }
         let group = target.thread_group_id.unwrap_or(pid.as_u64());
         let eligible =
             !target.signals.blocked() | target.signals.thread.wait_set.load(Ordering::Acquire);
@@ -2426,12 +2366,13 @@ impl ProcessManager {
     pub fn signal_recipient(&self, pid: ProcessId, sig: u32) -> ProcessId {
         use core::sync::atomic::Ordering;
         let Some(group) = self.thread_group_of(pid) else { return pid; };
+        let survivor = || self.group_rows(group).find(|p| !p.killed_by_exec).map(|p| p.id).unwrap_or(pid);
         self.group_rows(group).find(|p| {
-            (!p.signals.is_blocked(sig)
+            !p.killed_by_exec && (!p.signals.is_blocked(sig)
                 || p.signals.thread.wait_set.load(Ordering::Acquire)
                     & crate::signal::constants::sig_mask(sig) != 0)
                 && p.main_thread.is_some()
-        }).map(|p| p.id).unwrap_or(pid)
+        }).map(|p| p.id).unwrap_or_else(survivor)
     }
 
     /// Queue a process signal and return its eligible recipient for the caller
@@ -2442,7 +2383,7 @@ impl ProcessManager {
         let row = self.get_process_mut(recipient)?;
         row.signals.generate(sig, info, true);
         let eligible = row.signals.has_deliverable_signals()
-            || row.signals.pending & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
+            || row.signals.pending() & row.signals.thread.wait_set.load(Ordering::Acquire) != 0;
         if row.job.stopped.is_none() && eligible {
             row.main_thread.as_ref().map(|t| t.id)
         } else {
@@ -2616,7 +2557,7 @@ impl ProcessManager {
             .and_then(|parent| self.processes.live_row(&parent))
             .and_then(|row| row.main_thread.as_ref())
             .map(|thread| thread.id);
-        let reaped = self.reap_if_parent_declines(leader);
+        let reaped = self.reap_if_unwaited(leader);
         GroupExited {
             signal_wake,
             parent_tid,
@@ -2686,7 +2627,6 @@ impl ProcessManager {
         let page_table = from.page_table.take();
         let vmas = core::mem::take(&mut from.vmas);
         let memory_locks = core::mem::take(&mut from.memory_locks);
-        let stack = from.stack.take();
         let pending_old_page_tables = core::mem::take(&mut from.pending_old_page_tables);
         let memory_usage = core::mem::take(&mut from.memory_usage);
         let fb_mmap = from.fb_mmap.take();
@@ -2702,7 +2642,6 @@ impl ProcessManager {
         to.page_table = page_table;
         to.vmas = vmas;
         to.memory_locks = memory_locks;
-        to.stack = stack;
         to.pending_old_page_tables = pending_old_page_tables;
         to.memory_usage = memory_usage;
         to.fb_mmap = fb_mmap;
@@ -2757,7 +2696,9 @@ impl ProcessManager {
                 None
             } else {
                 // SAFETY: the current thread remains owned by this CPU until
-                // interrupts are restored; id and owner_pid do not change.
+                // interrupts are restored. Its id does not change, and its
+                // owner_pid changes only in its own exec
+                // (`scheduler::adopt_exec_owner`), not while it reads it here.
                 unsafe { ((*ptr).id == thread_id).then_some((*ptr).owner_pid).flatten() }
             }
         });
@@ -3499,6 +3440,8 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3656,9 +3599,6 @@ impl ProcessManager {
         // Set the child process's main thread (also transitions Creating → Ready)
         child_process.set_main_thread(child_thread);
 
-        // CoW fork: no separate stack allocation, so no stack to store
-        child_process.stack = None;
-
         // Inherit parent's user stack bounds for demand-paged growth
         child_process.user_stack_top = {
             let parent = self
@@ -3698,6 +3638,8 @@ impl ProcessManager {
         // published in it only now: a failure above leaves the table in
         // unpublished custody, released after the PM unlock.
         Self::publish_child_memory(&mut child_process, memory);
+        child_process.publish_identity();
+        child_process.publish_fd_table();
         crate::task::exit_tally::record_start();
         self.processes.insert(child_pid, child_process);
 
@@ -3924,6 +3866,7 @@ impl ProcessManager {
                 privilege: parent_thread.privilege,
                 has_started: true,
                 blocked_in_syscall: false,
+                uninterruptible_io: false,
                 saved_by_inline_schedule: false,
                 inline_schedule_spsr: 0,
                 inline_schedule_prev_elr: 0,
@@ -3943,6 +3886,7 @@ impl ProcessManager {
                 cached_ttbr0: parent_thread.cached_ttbr0,
                 wait_loop_iters: core::sync::atomic::AtomicU64::new(0),
                 kill_custody: core::sync::atomic::AtomicU64::new(0),
+                futex_group: core::sync::atomic::AtomicU64::new(0),
                 // A per-CPU worker's or hold pen's pin is not inherited: a
                 // `per_cpu_worker` pin is a claim about servicing one CPU's
                 // per-CPU state and a child services none of it; a hold-pen pin
@@ -3963,9 +3907,6 @@ impl ProcessManager {
 
             // IMPORTANT: Set RAX to 0 for the child (fork return value)
             child_thread.context.rax = 0;
-
-            // CoW fork: no separate stack allocation
-            child_process.stack = None;
 
             // Inherit parent's user stack bounds
             {
@@ -3998,6 +3939,8 @@ impl ProcessManager {
             }
 
             // Add the child process to the process table
+            child_process.publish_identity();
+            child_process.publish_fd_table();
             crate::task::exit_tally::record_start();
             self.processes.insert(child_pid, child_process);
 
@@ -4035,7 +3978,7 @@ impl ProcessManager {
     ) -> Result<u64, &'static str> {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
-        log::info!(
+        log::debug!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
         );
@@ -4054,34 +3997,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
-
-        // #721 K5: refuse to retire this address space while a live CLONE_VM sibling
-        // still holds the same CR3 — matches exec_process_with_argv (#721 B2) and
-        // aarch64's own exec_process, same relative position (right after
-        // old_cr3 capture, before any fallible page-table work).
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
-        }
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
 
         {
             let process = self
@@ -4093,7 +4016,7 @@ impl ProcessManager {
             process.drain_old_page_tables();
         }
 
-        log::info!(
+        log::debug!(
             "exec_process: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4151,10 +4074,10 @@ impl ProcessManager {
         log::info!("exec_process: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table
-        log::info!("exec_process: Loading ELF into new page table...");
+        log::debug!("exec_process: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
         let new_entry_point = loaded_elf.entry_point.as_u64();
-        log::info!(
+        log::debug!(
             "exec_process: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4171,29 +4094,17 @@ impl ProcessManager {
         let stack_top = VirtAddr::new(USER_STACK_TOP);
         let _guard_page = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64 - 0x1000);
 
-        // Map stack pages into the NEW process page table
-        log::info!("exec_process: Mapping stack pages into new process page table");
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
+        // Map zeroed stack pages into the NEW process page table
         log::info!(
             "exec_process: Stack range: {:#x} - {:#x}",
             stack_bottom.as_u64(),
             stack_top.as_u64()
         );
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            // Map into the NEW process page table with user-accessible permissions
-            new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            )?;
-        }
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
 
         // The no-argument exec path needs the same startup ABI as argv exec,
         // including the program headers used by the runtime to initialize TLS.
@@ -4209,18 +4120,18 @@ impl ProcessManager {
             &self.processes.live_row(&pid).ok_or("Process not found")?.cred,
         )?;
 
-        // For now, we'll use a dummy stack object since we manually mapped the stack
-        // In the future, we should refactor stack allocation to support mapping into specific page tables
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096, // Dummy size - we already mapped the real stack
-            crate::task::thread::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
-
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
+        }
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
@@ -4253,7 +4164,7 @@ impl ProcessManager {
         process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
-            log::info!("exec_process: Updated process name to '{}'", name);
+            log::debug!("exec_process: Updated process name to '{}'", name);
         }
         process.entry_point = loaded_elf.entry_point;
 
@@ -4261,6 +4172,7 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.cred.suid = process.cred.euid;
         process.cred.sgid = process.cred.egid;
+        process.publish_identity();
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -4284,6 +4196,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -4296,24 +4209,17 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above (#721 K5/B2) is what
-        // makes that byte-identical claim true for a failed exec: it runs
-        // before this point, so nothing here observes a sibling that still
-        // holds the old root.
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
+        process.publish_identity();
 
         // Replace the stack
-        process.stack = Some(Box::new(new_stack));
         process.user_stack_top = USER_STACK_TOP;
         process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
 
@@ -4360,10 +4266,13 @@ impl ProcessManager {
             thread.context.cs = 0x33; // User code segment (GDT index 6, ring 3)
             thread.context.ss = 0x2b; // User data segment (GDT index 5, ring 3)
 
+            // A new address space: the futex key group is read again.
+            thread.futex_group.store(0, core::sync::atomic::Ordering::Release);
+
             // Mark the thread as ready to run the new program
             thread.state = crate::task::thread::ThreadState::Ready;
 
-            log::info!(
+            log::debug!(
                 "exec_process: Updated thread {} context for new program",
                 thread_id
             );
@@ -4399,7 +4308,7 @@ impl ProcessManager {
             // The scheduler will use the process's page table during context switch
         } else {
             // Process is not scheduled - it will use the new page table when it runs
-            log::info!(
+            log::debug!(
                 "exec_process: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -4411,7 +4320,7 @@ impl ProcessManager {
         // The old table will be cleaned up at the start of the next exec or
         // when the process exits.
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process: Deferring old page table cleanup");
+            log::debug!("exec_process: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
@@ -4524,10 +4433,10 @@ impl ProcessManager {
         }
 
         // Load the ELF binary into the new page table
-        log::info!("exec_process_with_argv: Loading ELF into new page table...");
+        log::debug!("exec_process_with_argv: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
         let new_entry_point = loaded_elf.entry_point.as_u64();
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4538,25 +4447,12 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - user_stack_size as u64);
         let stack_top = VirtAddr::new(USER_STACK_TOP);
 
-        log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            if let Err(error) = new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            ) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-                return Err(error);
-            }
-        }
+        log::debug!("exec_process_with_argv: Mapping stack pages into new process page table");
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
 
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // We need to write to the new stack pages that we just mapped
@@ -4575,23 +4471,14 @@ impl ProcessManager {
             &cred,
         )?;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: argc/argv set up on stack, RSP={:#x}",
             initial_rsp
         );
 
-        // Create a dummy stack object since we manually mapped the stack
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096,
-            crate::task::thread::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
-
-        let new_stack = crate::syscall::exec::try_box(new_stack)?;
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -4613,7 +4500,15 @@ impl ProcessManager {
         pid: ProcessId,
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<
+        (
+            u64,
+            u64,
+            crate::task::scheduler::ExecSchedCommit,
+            Option<super::RetirementReceipt>,
+        ),
+        &'static str,
+    > {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         let is_current_process = self.current_pid == Some(pid);
@@ -4631,15 +4526,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while CR3 still
         // points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
         // The identity the new image runs with. The prepared stack reports the
         // credentials decided before it was built; if a set*id call or a
         // CLONE_FS sharer has changed them since, the exec is refused rather
@@ -4655,26 +4549,11 @@ impl ProcessManager {
             cred
         };
 
-        // #721 B2: refuse to retire this address space while a live CLONE_VM sibling still
-        // holds the same CR3 — matches aarch64's exec_process_with_argv, same relative
-        // position (right after old_cr3 capture, before any fallible
-        // page-table work; #721 precheck K5).
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process_with_argv: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
         }
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -4693,7 +4572,6 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -4713,8 +4591,12 @@ impl ProcessManager {
 
         // Re-borrow the process for the remaining updates.
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
@@ -4731,7 +4613,7 @@ impl ProcessManager {
 
         // Update the process with new program data
         if let Some(name) = program_name {
-            log::info!("exec_process_with_argv: Updated process name to '{}'", name);
+            log::debug!("exec_process_with_argv: Updated process name to '{}'", name);
             process.name = name;
         }
         process.exe_path = exe_path;
@@ -4764,6 +4646,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -4771,21 +4654,16 @@ impl ProcessManager {
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. The live-sibling guard above (#721 B2) is what makes
-        // that byte-identical claim true for a failed exec: it runs before this
-        // point, so nothing here observes a sibling that still holds the old root.
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
         process.cred = cred;
+        process.publish_identity();
         let new_cr3 = process
             .page_table
             .as_ref()
@@ -4793,7 +4671,6 @@ impl ProcessManager {
             .level_4_frame()
             .start_address()
             .as_u64();
-        process.stack = Some(new_stack);
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_top.as_u64() - user_stack_size as u64;
 
@@ -4835,7 +4712,7 @@ impl ProcessManager {
         thread.context.user_fs_base_set = false;
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv: Updated thread {} context for new program",
             thread_id
         );
@@ -4862,7 +4739,7 @@ impl ProcessManager {
         } else if is_scheduled {
             log::info!("exec_process_with_argv: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -4874,20 +4751,30 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        if let Some(process) = self.processes.live_row_mut(&pid) {
+        // The roots this exec superseded retire through a receipt the caller
+        // queues once PM is released, as an exit's do.
+        let superseded = self.processes.live_row_mut(&pid).and_then(|process| {
             for old_pt in &mut process.pending_old_page_tables {
                 old_pt.release_exec_file_vmas();
             }
-        }
+            crate::task::process_task::defer_superseded_roots(process)
+        });
 
-        Ok((new_entry_point, initial_rsp, sched_commit))
+        Ok((
+            new_entry_point,
+            initial_rsp,
+            sched_commit,
+            superseded.map(super::RetirementReceipt::from_reclaim),
+        ))
     }
 
     /// Replace a process's address space with a new program (exec) with argv support (ARM64)
     ///
-    /// Returns the entry point, stack pointer, and a scheduler commit receipt on success.
-    /// The caller must release the process-manager lock before applying the receipt so the
-    /// scheduler and process-manager locks are never nested in either direction.
+    /// Returns the entry point, stack pointer, a scheduler commit receipt, and the
+    /// retirement receipt for the roots exec superseded on success. The caller must
+    /// release the process-manager lock before applying the commit, so the scheduler
+    /// and process-manager locks do not nest in either direction, and before
+    /// queueing the retirement receipt.
     /// Build an unpublished image with interrupts enabled and no manager guard.
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn prepare_exec_image(
@@ -4902,8 +4789,6 @@ impl ProcessManager {
     ) -> Result<PreparedExecImage, &'static str> {
         #[cfg(target_arch = "aarch64")]
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        #[cfg(target_arch = "aarch64")]
-        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
         let exe_path = exe_path
             .map(alloc::sync::Arc::try_new)
             .transpose()
@@ -4951,13 +4836,13 @@ impl ProcessManager {
             }
         }
 
-        log::info!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
+        log::debug!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             new_page_table.as_mut(),
         )?;
         let new_entry_point = loaded_elf.entry_point;
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -4965,27 +4850,14 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(user_stack_top - user_stack_size as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Mapping stack pages into new process page table"
         );
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            if let Err(error) = new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            ) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-                return Err(error);
-            }
-        }
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
 
         let cmdline_area = Self::argv_area(user_stack_top, argv, envp);
@@ -5001,22 +4873,14 @@ impl ProcessManager {
             &cred,
         )?;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: argc/argv set up on stack, SP_EL0={:#x}",
             initial_rsp
         );
 
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096,
-            crate::memory::arch_stub::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
-
-        let new_stack = crate::syscall::exec::try_box(new_stack)?;
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -5038,7 +4902,15 @@ impl ProcessManager {
         pid: ProcessId,
         prepared: &mut Option<PreparedExecImage>,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(u64, u64, crate::task::scheduler::ExecSchedCommit), &'static str> {
+    ) -> Result<
+        (
+            u64,
+            u64,
+            crate::task::scheduler::ExecSchedCommit,
+            Option<super::RetirementReceipt>,
+        ),
+        &'static str,
+    > {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
@@ -5056,15 +4928,14 @@ impl ProcessManager {
         // a use-after-free on exec failure: if any subsequent operation fails, the Err return
         // would drop the old Box<ProcessPageTable>, freeing physical memory while TTBR0_EL1
         // still points to it. The old page table is taken later, after all fallible ops succeed.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
         // The identity the new image runs with. The prepared stack reports the
         // credentials decided before it was built; if a set*id call or a
         // CLONE_FS sharer has changed them since, the exec is refused rather
@@ -5080,22 +4951,11 @@ impl ProcessManager {
             cred
         };
 
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process_with_argv [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
         }
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -5114,7 +4974,6 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
-            new_stack,
             program_name,
             exe_path,
             cmdline,
@@ -5133,8 +4992,12 @@ impl ProcessManager {
         let new_entry_point = loaded_elf.entry_point;
 
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // Preparation and reservations succeeded; publication below has no error return.
         let process = self
@@ -5148,7 +5011,7 @@ impl ProcessManager {
         });
 
         if let Some(name) = program_name {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv [ARM64]: Updated process name to '{}'",
                 name
             );
@@ -5183,29 +5046,23 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
         closes.release_record_locks(process.lock_owner.id());
 
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. #721 B2/K6: the live-sibling guard above is what makes
-        // that byte-identical claim true for a failed exec (it was mislabeled
-        // "unrelated" here, which was false — that guard is exactly what runs
-        // before this point, so nothing here observes a sibling that still holds
-        // the old root).
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
         process.cred = cred;
+        process.publish_identity();
         let new_ttbr0 = process
             .page_table
             .as_ref()
@@ -5213,7 +5070,6 @@ impl ProcessManager {
             .level_4_frame()
             .start_address()
             .as_u64();
-        process.stack = Some(new_stack);
         process.user_stack_top = stack_top.as_u64();
         process.user_stack_bottom = stack_top.as_u64() - user_stack_size as u64;
 
@@ -5249,7 +5105,7 @@ impl ProcessManager {
         thread.kernel_stack_top = preserved_kernel_stack_top;
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process_with_argv [ARM64]: Updated thread {} context for new program",
             thread_id
         );
@@ -5278,7 +5134,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process_with_argv [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -5286,7 +5142,7 @@ impl ProcessManager {
 
         // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
+            log::debug!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }
@@ -5296,13 +5152,21 @@ impl ProcessManager {
             self.ready_queue.push(pid);
         }
 
-        if let Some(process) = self.processes.live_row_mut(&pid) {
+        // The roots this exec superseded retire through a receipt the caller
+        // queues once PM is released, as an exit's do.
+        let superseded = self.processes.live_row_mut(&pid).and_then(|process| {
             for old_pt in &mut process.pending_old_page_tables {
                 old_pt.release_exec_file_vmas();
             }
-        }
+            crate::task::process_task::defer_superseded_roots(process)
+        });
 
-        Ok((new_entry_point, initial_rsp, sched_commit))
+        Ok((
+            new_entry_point,
+            initial_rsp,
+            sched_commit,
+            superseded.map(super::RetirementReceipt::from_reclaim),
+        ))
     }
 
     /// Replace a process's address space with a new program (exec) for ARM64
@@ -5332,12 +5196,11 @@ impl ProcessManager {
         let closing_capacity = self.processes.live_row(&pid).ok_or("Process not found")?.fd_table.open_fd_count();
         closes.reserve(closing_capacity)?;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
         // Lock-free trace: exec entry
         crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Replacing process {} with new program",
             pid.as_u64()
         );
@@ -5355,30 +5218,14 @@ impl ProcessManager {
 
         // Keep the live table installed until every fallible construction step
         // has succeeded. A failed exec must leave TTBR0 custody unchanged.
-        let (thread_id, old_cr3) = {
-            let process = self.processes.live_row(&pid).ok_or("Process not found")?;
-            let old_cr3 = process.cr3_value();
-            let main_thread = process
-                .main_thread
-                .as_ref()
-                .ok_or("Process has no main thread")?;
-            (main_thread.id, old_cr3)
-        };
-
-        if let Some(old_cr3) = old_cr3 {
-            if let Some((sibling_pid, sibling_thread_id)) =
-                self.find_live_clone_vm_sibling_holding_cr3(pid, old_cr3)
-            {
-                log::warn!(
-                    "exec_process [ARM64]: rejecting exec for PID {} while CLONE_VM sibling PID {} thread {} still holds inherited CR3 {:#x}",
-                    pid.as_u64(),
-                    sibling_pid.as_u64(),
-                    sibling_thread_id,
-                    old_cr3
-                );
-                return Err("exec blocked while CLONE_VM sibling shares old address space");
-            }
-        }
+        let thread_id = self
+            .processes
+            .live_row(&pid)
+            .ok_or("Process not found")?
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?
+            .id;
 
         {
             let process = self
@@ -5388,7 +5235,7 @@ impl ProcessManager {
             process.drain_old_page_tables();
         }
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Preserving thread ID {} for process {}",
             thread_id,
             pid.as_u64()
@@ -5436,13 +5283,13 @@ impl ProcessManager {
         log::info!("exec_process [ARM64]: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table using ARM64-specific loader
-        log::info!("exec_process [ARM64]: Loading ELF into new page table...");
+        log::debug!("exec_process [ARM64]: Loading ELF into new page table...");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             new_page_table.as_mut(),
         )?;
         let new_entry_point = loaded_elf.entry_point;
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: ELF loaded successfully, entry point: {:#x}",
             new_entry_point
         );
@@ -5454,40 +5301,18 @@ impl ProcessManager {
         let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
         let stack_top = VirtAddr::new(user_stack_top);
 
-        // Map stack pages into the NEW process page table
-        log::info!("exec_process [ARM64]: Mapping stack pages into new process page table");
-        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-        let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
+        // Map zeroed stack pages into the NEW process page table
         log::info!(
             "exec_process [ARM64]: Stack range: {:#x} - {:#x}",
             stack_bottom.as_u64(),
             stack_top.as_u64()
         );
-
-        for page in Page::range_inclusive(start_page, end_page) {
-            let frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Failed to allocate frame for exec stack")?;
-
-            // Map into the NEW process page table with user-accessible permissions
-            if let Err(error) = new_page_table.map_page(
-                page,
-                frame,
-                PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE,
-            ) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
-                return Err(error);
-            }
-        }
+        crate::memory::process_memory::map_new_user_stack(
+            new_page_table.as_mut(),
+            stack_bottom,
+            stack_top,
+        )?;
         let initial_tpidr_el0 = Self::map_initial_arm64_tls(new_page_table.as_mut(), stack_top)?;
-
-        // For now, we'll use a dummy stack object since we manually mapped the stack
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096, // Dummy size - we already mapped the real stack
-            crate::memory::arch_stub::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to create stack object")?;
 
         log::info!(
             "exec_process [ARM64]: New entry point: {:#x}, new stack top: {:#x}",
@@ -5496,8 +5321,16 @@ impl ProcessManager {
         );
 
         let new_address_space_lifetime = alloc::sync::Arc::new(
-            super::process::AddressSpaceLifetime { id: pid.as_u64() },
+            super::process::AddressSpaceLifetime::new(),
         );
+
+        if self.exec_blocked_by_group(pid) {
+            return Err(EXEC_GROUP_RUNNING);
+        }
+
+        // Rows still on the old address space that share no thread group with
+        // this one (CLONE_VM only, vfork) keep it, and own it from here on.
+        self.transfer_address_space(pid);
 
         // All fallible construction is complete; only now supersede the live
         // address space and transfer the unpublished table into the Process.
@@ -5519,7 +5352,7 @@ impl ProcessManager {
         process.forked_without_exec = false;
         if let Some(name) = program_name {
             process.name = String::from(name);
-            log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
+            log::debug!("exec_process [ARM64]: Updated process name to '{}'", name);
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
@@ -5527,6 +5360,7 @@ impl ProcessManager {
         let heap_base = loaded_elf.segments_end;
         process.cred.suid = process.cred.euid;
         process.cred.sgid = process.cred.egid;
+        process.publish_identity();
         process.image_size = loaded_elf.image_size;
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
@@ -5548,6 +5382,7 @@ impl ProcessManager {
         // (CLONE_FILES) is copied first, so exec leaves that thread's
         // descriptors alone.
         process.fd_table.unshare();
+        process.publish_fd_table();
         // Close FD_CLOEXEC file descriptors per POSIX
         let ipc_close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
         process.fd_table.close_cloexec(ipc_close_pid, closes);
@@ -5560,22 +5395,15 @@ impl ProcessManager {
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table.publish());
-        // Exec detach (tranche-2 P3 / DESIGN AC-6): the row now owns a brand-new
-        // address-space root, so it is no longer a CLONE_VM member of whatever
-        // thread group it was cloned into. Both fields are reset here — after
-        // every fallible step and before the process-manager guard is released —
-        // so that any exec that fails earlier leaves them byte-identical to their
-        // pre-exec values. #721 B2/K6: the live-sibling guard above is what makes
-        // that byte-identical claim true for a failed exec (it was mislabeled
-        // "unrelated" here, which was false — that guard is exactly what runs
-        // before this point, so nothing here observes a sibling that still holds
-        // the old root).
-        process.detach_lock_owner();
-        process.detach_cpu_account();
+        // The row now owns a new address space: it borrows no other row's
+        // root and keeps no share of the one it left, which the rows still
+        // on it keep (`transfer_address_space` above). It leads its process:
+        // it is its process's only thread (`exec_blocked_by_group`).
         process.inherited_cr3 = None;
         process.address_space_lifetime = Some(new_address_space_lifetime);
         process.thread_group_id = None;
         process.exec_id = super::process::next_exec_id();
+        process.publish_identity();
         let new_ttbr0 = process
             .page_table
             .as_ref()
@@ -5585,7 +5413,6 @@ impl ProcessManager {
             .as_u64();
 
         // Replace the stack
-        process.stack = Some(Box::new(new_stack));
         process.user_stack_top = user_stack_top;
         process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
@@ -5636,7 +5463,7 @@ impl ProcessManager {
         // Mark the thread as ready to run the new program
         thread.state = crate::task::thread::ThreadState::Ready;
 
-        log::info!(
+        log::debug!(
             "exec_process [ARM64]: Updated thread {} context for new program",
             thread_id
         );
@@ -5669,7 +5496,7 @@ impl ProcessManager {
                 pid.as_u64()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "exec_process [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
                 pid.as_u64()
             );
@@ -5677,7 +5504,7 @@ impl ProcessManager {
 
         // Defer old page table cleanup (see exec_process x86_64 for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process [ARM64]: Deferring old page table cleanup");
+            log::debug!("exec_process [ARM64]: Deferring old page table cleanup");
             if let Some(process) = self.processes.live_row_mut(&pid) {
                 process.pending_old_page_tables.push(old_pt);
             }

@@ -18,6 +18,15 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
+//! A full run booted as PID 1 also prints its memory record ([`memory_record`]):
+//! `SUITE <id> MEMORY before ...` before its first case, and once DONE is out and
+//! its processes are reaped, `SUITE <id> MEMORY after ...` and
+//! `SUITE <id> MEMORY reclaimed=PASS|FAIL ...`. A suite whose memory was not
+//! reclaimed fails like one with a failing case.
+//!
+//! In a boot that runs several suites ([`sequence`]), the next suite replaces it as PID 1
+//! instead.
+//!
 //! Each record is written with a single write that starts with a newline, so output
 //! another writer left without one (the x86-64 scheduler's raw COM1 breadcrumbs, say)
 //! never prefixes it.
@@ -85,8 +94,12 @@
 //! fn main() { SUITE.run() }
 //! ```
 
+#[path = "suite_memory.rs"]
+pub mod memory_record;
 #[path = "suite_prerequisites.rs"]
 pub mod prerequisites;
+#[path = "suite_sequence.rs"]
+pub mod sequence;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -403,10 +416,28 @@ pub struct Category {
     pub id: &'static str,
     pub title: &'static str,
     pub cases: &'static [Case],
+    /// Milliseconds the full-suite run sits idle before the category's first case,
+    /// between `SUITE_IDLE <suite> <category> begin ms=N` and `... end` lines, so a host
+    /// can measure the guest at rest just before the category (0: no idle window). The
+    /// runner settles for `IDLE_SETTLE_MS` on each side of the window, so neither the
+    /// idle notice's own display work nor the category's first case lands inside it
+    /// while the host reads the serial lines late.
+    pub idle_before_ms: u64,
 }
 
+/// The quiet time on each side of an idle window: longer than a host's serial-read and
+/// GPU-time sampling intervals, and than the display's redraw interval.
+const IDLE_SETTLE_MS: u64 = 1000;
+
 pub const fn category(id: &'static str, title: &'static str, cases: &'static [Case]) -> Category {
-    Category { id, title, cases }
+    Category { id, title, cases, idle_before_ms: 0 }
+}
+
+impl Category {
+    /// The same category with an idle window of `ms` before its first case.
+    pub const fn idle_before(self, ms: u64) -> Category {
+        Category { idle_before_ms: ms, ..self }
+    }
 }
 
 /// How long a case may run before it is killed and fails, unless the suite sets its own.
@@ -426,10 +457,32 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("breengel", "png-decode/independent-fixtures", 20_000),
     ("breengel", "windows/churn", 20_000),
     ("breengel", "composition/present-rate", 20_000),
+    // Two authenticated logins, host-injected keys and init's respawn delay.
+    ("console", "getty/logout-reacquires", 30_000),
+    ("console", "getty/independent-sessions", 30_000),
 ];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.
 static CASE_DEADLINE_NS: AtomicU64 = AtomicU64::new(0);
+// Ruling 52 (gpu.md): gpu/textures/upload-visibility excludes catalogue warm-up.
+// Its private pipe starts the timed window once.
+static CASE_WINDOW_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Start upload-visibility's ten-second window after its contexts have warmed.
+/// This one-shot signal is available only in that named case; setup is still bounded
+/// by the runner and host progress supervision.
+pub fn start_case_window() -> CaseResult {
+    let fd = CASE_WINDOW_FD.swap(-1, Ordering::Relaxed);
+    if fd < 0 { return fail("this case has no pending timed window"); }
+    let now = monotonic_ns().ok_or_else(|| CaseError::Fail(String::from("no monotonic clock")))? as u64;
+    CASE_DEADLINE_NS.store(now + DEFAULT_CASE_LIMIT_MS * 1_000_000, Ordering::Relaxed);
+    let sent = io::write(Fd::from_raw(fd as u64), &now.to_le_bytes());
+    let _ = io::close(Fd::from_raw(fd as u64));
+    match sent {
+        Ok(8) => Ok(()),
+        _ => fail("could not start the case's timed window"),
+    }
+}
 
 /// The milliseconds left before the running case is killed, or `u64::MAX` when called
 /// outside a case.
@@ -491,6 +544,55 @@ fn record(kind: &str, rest: &str) {
     }
 }
 
+static HOSTKEY_METHOD: OnceLock<String> = OnceLock::new();
+static HOSTKEY_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The launcher's declared method and missing keys, if any.
+pub fn hostkey_method() -> Option<&'static str> {
+    HOSTKEY_METHOD.get().map(String::as_str)
+}
+
+/// Ask the launcher to press ordered chords through the case's serial record path.
+/// The case must check the resulting guest state before it reports success.
+pub fn hostkeys(chords: &str) -> Result<u64, String> {
+    let method = hostkey_method().filter(|value| !value.is_empty())
+        .ok_or_else(|| String::from("no host key path"))?;
+    let (path, missing) = method.split_once(";missing=").unwrap_or((method, ""));
+    for chord in chords.split(',') {
+        if chord.is_empty() || !chord.split('-').all(is_word) {
+            return Err(std::format!("invalid host key chord {chord}"));
+        }
+        if chord.split('-').any(|key| missing.split(',').any(|m| key == m)) {
+            return Err(std::format!("no host key path for {chord} on {path}"));
+        }
+    }
+    if RECORD_FD.load(Ordering::Relaxed) < 0 || RECORDS.load(Ordering::Relaxed) >= RECORDS_PER_CASE {
+        return Err(String::from("host key record unavailable"));
+    }
+    usb_input_attached()?;
+    let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
+    record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
+    Ok(seq)
+}
+
+/// On ARM64 Parallels and VMware the keyboard is a USB device that the kernel's
+/// xHCI worker attaches after PID 1 starts, and a key the host sends before then is
+/// lost. Wait up to 5 s while `/proc/xhci/trace` says the controller is still
+/// enumerating; a target without that file or controller does not wait.
+fn usb_input_attached() -> Result<(), String> {
+    let start = monotonic_ns();
+    loop {
+        let trace = std::fs::read_to_string("/proc/xhci/trace").unwrap_or_default();
+        if !trace.contains("state=enumerating") {
+            return Ok(());
+        }
+        if start.zip(monotonic_ns()).is_none_or(|(then, now)| now - then >= 5_000_000_000) {
+            return Err(String::from("USB input still enumerating after 5 s"));
+        }
+        let _ = time::sleep_ms(20);
+    }
+}
+
 /// Whether `text` is a record word: lowercase words of a-z and 0-9 joined by '-'.
 fn is_word(text: &str) -> bool {
     !text.is_empty()
@@ -541,6 +643,29 @@ pub fn pulses(every_us: i64, limit_us: i64, at_us: &[i64]) {
     record("PULSES", &rest);
 }
 
+/// End the boot splash, so the console's text has the screen: `KDSETMODE(KD_TEXT)`
+/// on tty1 (`docs/console/contract.md`, sections 7 and 12), then wait, at most three
+/// seconds, until `/proc/console/check` no longer reports the splash.
+fn console_takes_screen() {
+    const KDSETMODE: u64 = 0x4B3A;
+    const KD_TEXT: u64 = 0;
+    // `O_NOCTTY`: the open must not give the suite a controlling terminal.
+    const O_NOCTTY: u32 = 0o400;
+    if let Ok(fd) = fs::open("/dev/console", fs::O_RDWR | O_NOCTTY) {
+        // SAFETY: KDSETMODE takes its mode by value.
+        let _ = unsafe { crate::syscall::raw::syscall3(crate::syscall::nr::IOCTL, fd.raw(), KDSETMODE, KD_TEXT) };
+        let _ = io::close(fd);
+    }
+    for _ in 0..30 {
+        let splash = std::fs::read_to_string("/proc/console/check")
+            .is_ok_and(|text| text.contains("the boot splash has the display"));
+        if !splash {
+            return;
+        }
+        let _ = time::sleep_ms(100);
+    }
+}
+
 /// A suite: its id, title and categories, run in order.
 pub struct Suite {
     pub id: &'static str,
@@ -548,10 +673,11 @@ pub struct Suite {
     pub categories: &'static [Category],
     pub case_limit_ms: u64,
     pub gui: bool,
+    defer_display: bool,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui:false }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false }
 }
 
 impl Suite {
@@ -563,43 +689,69 @@ impl Suite {
         Suite { case_limit_ms: ms, ..self }
     }
 
+    /// Leave the console available to cases; take the display only for the final panel.
+    /// The cases run on the console itself, so the run starts by ending the boot splash.
+    pub const fn defer_display(self) -> Suite {
+        Suite { defer_display: true, ..self }
+    }
+
     fn total(&self) -> usize { self.categories.iter().map(|category| category.cases.len()).sum() }
 
-    /// Run the cases in manifest order, or only argv's `--case category/case`,
+    /// Run the cases in manifest order, or argv's `--case category[/case]`,
     /// then leave the final panel up and idle. One-case START/DONE carry `only=`;
     /// a one-case run stops before any suite sequence and is not full-suite
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let (only, usable_args) = match args.as_slice() {
-            [] => (None, true),
-            [flag, case] if flag == "--case" => (Some(case.as_str()), true),
-            _ => (None, false),
-        };
+        let mut only = None;
+        let mut method = None;
+        let mut usable_args = true;
+        let mut pairs = args.chunks_exact(2);
+        for pair in &mut pairs {
+            match pair[0].as_str() {
+                "--case" if only.is_none() => only = Some(pair[1].as_str()),
+                "--hostkeys" if method.is_none() => method = Some(pair[1].as_str()),
+                _ => usable_args = false,
+            }
+        }
+        usable_args &= pairs.remainder().is_empty();
+        if let Some(value) = method { let _ = HOSTKEY_METHOD.set(value.to_string()); }
         let names: Vec<String> = self.categories.iter().flat_map(|category| {
             category.cases.iter().map(move |case| std::format!("{}/{}", category.id, case.id))
         }).collect();
         let error = if !usable_args {
-            Some(std::format!("expected no arguments or --case <category>/<case>, found {:?}", args))
+            Some(std::format!("expected [--case <category>[/<case>]] [--hostkeys <method>], found {:?}", args))
         } else {
-            only.filter(|name| !names.iter().any(|valid| valid == name))
+            only.filter(|name| !names.iter().any(|valid| valid == name) && !self.categories.iter().any(|c| c.id == *name))
                 .map(|name| std::format!("unknown case {}; valid ids: {}", name, names.join(", ")))
         };
-        // A selection, or an argv that could not be read, counts as one case.
-        let total = if only.is_some() || error.is_some() { 1 } else { self.total() };
+        // An invalid selection is one failure; a category counts its cases.
+        let total = if error.is_some() { 1 } else {
+            names.iter().filter(|name| only.is_none_or(|selected| name.as_str() == selected || name.starts_with(&std::format!("{selected}/")))).count()
+        };
         let suffix = only.map_or(String::new(), |name| std::format!(" only={name}"));
         let mut states: Vec<Vec<State>> = self.categories.iter()
             .map(|category| category.cases.iter().map(|_| State::Pending).collect())
             .collect();
-        let mut screen = Screen::open(self.gui);
+        let mut screen = if self.defer_display {
+            console_takes_screen();
+            Screen::empty()
+        } else {
+            Screen::open(self.gui, self.id == "gpu")
+        };
         let pace_ms = if self.gui {crate::suite_stage::init(self)} else {0};
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
-            Some(name) => std::format!("suite {}: one case {name} (not suite evidence)", self.id),
+            Some(name) => std::format!("suite {}: selection {name} (not full-suite evidence)", self.id),
             None => std::format!("suite {}: {} cases in {} categories", self.id, self.total(), self.categories.len()),
         };
         let mut counts = Counts::default();
         let mut feed = Feed::default();
+        // A one-case run, or one whose arguments could not be read, is not part of a sequence.
+        let place = if only.is_none() && error.is_none() { sequence::read(self.id) } else { None };
+        if let Some((ids, index)) = &place {
+            sequence::prepare(ids, *index, total);
+        }
         let suite_start = monotonic_ns();
 
         let pace_suffix = if pace_ms > 0 { std::format!(" pace_ms={pace_ms}") } else { String::new() };
@@ -607,14 +759,29 @@ impl Suite {
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
+            if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
+        // A full run as PID 1 keeps the memory record; a one-case run is not
+        // full-suite evidence, and a suite run from a shell does not reap others.
+        let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        screen.prepare();
+        let before = if recording { memory_sample(self.id, "before") } else { None };
         let mut done = 0;
         for (c, category) in self.categories.iter().enumerate() {
+            if only.is_none() && category.idle_before_ms > 0 {
+                let progress = std::format!("Idle {} ms before {}", category.idle_before_ms, category.id);
+                screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
+                let _ = time::sleep_ms(IDLE_SETTLE_MS);
+                emit(&std::format!("SUITE_IDLE {} {} begin ms={}", self.id, category.id, category.idle_before_ms));
+                let _ = time::sleep_ms(category.idle_before_ms);
+                emit(&std::format!("SUITE_IDLE {} {} end", self.id, category.id));
+                let _ = time::sleep_ms(IDLE_SETTLE_MS);
+            }
             for (k, case) in category.cases.iter().enumerate() {
                 let name = std::format!("{}/{}", category.id, case.id);
-                if only.is_some_and(|selected| selected != name) { continue; }
+                if only.is_some_and(|selected| selected != name && selected != category.id) { continue; }
                 states[c][k] = State::Running;
                 let progress = std::format!("Running {}/{} ({} of {})", category.id, case.id, done + 1, total);
                 feed.start(&name);
@@ -654,48 +821,41 @@ impl Suite {
                 emit(&line);
                 states[c][k] = State::Done(outcome);
                 done += 1;
+                if place.is_some() { sequence::progress_after(done); }
             }
         }
         emit(&std::format!("SUITE {} DONE passed={} failed={} skipped={} total={}{}",
             self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
+        let reclaimed = !recording || {
+            // Each case's processes were swept after it; any left since go now.
+            let _ = sweep();
+            let display = if self.id == "gpu" { gpu_screen::await_console() } else { Ok(()) };
+            let after = match display {
+                Ok(()) => memory_sample(self.id, "after"),
+                Err(error) => {
+                    emit(&std::format!("SUITE {} ERROR memory {}", self.id, error));
+                    None
+                }
+            };
+            let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
+            emit(&line);
+            reclaimed
+        };
 
-        let summary = std::format!("{} passed, {} failed, {} skipped of {}",
+        let mut summary = std::format!("{} passed, {} failed, {} skipped of {}",
             counts.passed, counts.failed, counts.skipped, total);
-        let verdict = if counts.failed == 0 { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
+        if !reclaimed { summary.push_str("; memory not reclaimed"); }
+        let verdict = if counts.failed == 0 && reclaimed { Verdict::Passed(&summary) } else { Verdict::Failed(&summary) };
         let ms = ms_since(suite_start);
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
+        if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
-        // A sequence replaces PID 1 with the next suite after this suite has
-        // emitted its own DONE. Exec replaces the address space and closes only
-        // FD_CLOEXEC descriptors; /tmp, PID allocation and page cache persist.
-        // Single-suite disks have no sequence file and retain their final panel.
-        if let Ok(sequence) = std::fs::read_to_string("/etc/breenix/suite-sequence") {
-            let ids: Vec<&str> = sequence.trim_end().split(',').collect();
-            // The x86 sequence gate freezes and captures this boundary before
-            // acknowledging through the keyboard. Single-suite and ARM boots
-            // have no sequence file and never wait for host input.
-            let mut byte = [0u8; 1];
-            loop {
-                match io::read(Fd::STDIN, &mut byte) {
-                    Ok(1) if byte[0] == b'\n' => break,
-                    Ok(_) => { let _ = process::yield_now(); }
-                    Err(error) => {
-                        emit(&std::format!("SUITE_SEQUENCE FAIL acknowledgement: {:?}", error));
-                        idle(&mut screen, &feed);
-                    }
-                }
-            }
-            if let Some(index) = ids.iter().position(|id| *id == self.id) {
-                if let Some(next) = ids.get(index + 1) {
-                    let path = std::format!("/sbin/suite-{}\0", next);
-                    let error = process::exec(path.as_bytes()).unwrap_err();
-                    emit(&std::format!("SUITE_SEQUENCE FAIL exec {}: {:?}", next, error));
-                }
-            }
-        }
+        // In a sequence the next suite replaces this one as PID 1 (`sequence::finish`);
+        // the last keeps its final panel, as a suite booted alone does.
+        if place.is_some() { sequence::finish(); }
         idle(&mut screen, &feed)
     }
 }
@@ -717,6 +877,21 @@ pub(super) enum State {
     Pending,
     Running,
     Done(Outcome),
+}
+
+/// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
+/// line saying why it could not be read.
+fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
+    match memory_record::settled() {
+        Ok(sample) => {
+            emit(&sample.record(id, when));
+            Some(sample)
+        }
+        Err(why) => {
+            emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
+            None
+        }
+    }
 }
 
 /// Write one serial line with a single write, so it is never split, starting with
@@ -837,11 +1012,21 @@ const FRAME_MS: i128 = 66;
 /// timed by the monotonic clock, so if that clock stopped the suite would never wake
 /// to report it. Instead, polls that see the clock stand still are counted, and
 /// `CLOCK_STALL_POLLS` of them end the wait.
-fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut()) -> Waited {
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>) -> Waited {
+    let mut awaiting_window = window.is_some();
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
     loop {
+        if awaiting_window {
+            let mut bytes = [0u8; 8];
+            if let Some(fd) = window {
+                if io::read(fd, &mut bytes).ok() == Some(8) {
+                    start = Some(u64::from_le_bytes(bytes) as i128);
+                    awaiting_window = false;
+                }
+            }
+        }
         let mut status = 0;
         match process::waitpid(pid, &mut status, WNOHANG) {
             Ok(done) if done.raw() as i32 == pid => return Waited::Exited(status),
@@ -850,7 +1035,10 @@ fn wait_exit(pid: i32, start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut
         }
         let now = monotonic_ns();
         let ms = ms_since(start);
-        if ms >= limit_ms {
+        // Setup cannot outlive the existing 120-second progress watchdog. The
+        // named case gets exactly limit_ms after its one-shot warm-up signal.
+        let active_limit = if awaiting_window { 120_000 } else { limit_ms };
+        if ms >= active_limit {
             return Waited::TimedOut(ms);
         }
         if now.is_none() || now == last {
@@ -878,7 +1066,7 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
         Waited::TimedOut(_) | Waited::ClockStopped(_) => "; still running after SIGKILL",
@@ -984,6 +1172,9 @@ fn keep_record_output(suite: &str, name: &str) {
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
     screen.judged = None;screen.timing=None;
+    // G1-G6 retain the runner owner they were checked against. G7's console
+    // cases explicitly start above the kernel console, with no runner owner.
+    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() || screen.gui {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
@@ -1015,15 +1206,32 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     if screen.gui {
         screen.stage_result(crate::suite_stage::begin());
     }
+    let window = if suite == "gpu" && name == "textures/upload-visibility" {
+        match io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK) {
+            Ok(ends) => Some(ends),
+            Err(error) => {
+                let _ = (io::close(reader), io::close(writer));
+                if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
+                return Outcome::Fail { ms: 0, msg: plain(&std::format!("timed-window pipe failed: {error}")) };
+            }
+        }
+    } else { None };
     let start = monotonic_ns();
+    HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
+            sequence::in_child();
             let _ = io::close(reader);
+            if let Some((r, w)) = window {
+                let _ = io::close(r);
+                CASE_WINDOW_FD.store(w.raw() as i32, Ordering::Relaxed);
+            }
             if let Some((live_reader, live_writer)) = live {
                 let _ = io::close(live_reader);
                 LIVE_FD.store(live_writer.raw() as i32, Ordering::Relaxed);
             }
-            let deadline = start.map_or(0, |start| (start + limit_ms as i128 * 1_000_000) as u64);
+            let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
+            let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
@@ -1042,6 +1250,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
             let _ = io::close(writer);
+            if let Some((_, w)) = window { let _ = io::close(w); }
             let live_reader = live.map(|(live_reader, live_writer)| {
                 let _ = io::close(live_writer);
                 live_reader
@@ -1050,7 +1259,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 if let Some(fd) = live_reader { feed.drain(fd); }
                 screen.frame(feed);
             };
-            let outcome = match wait_exit(pid, start, limit_ms, &mut frame) {
+            let outcome = match wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r)) {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
@@ -1070,6 +1279,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             };
             if screen.gui {screen.stage_result(crate::suite_stage::end());}
             let _ = io::close(reader);
+            if let Some((r, _)) = window { let _ = io::close(r); }
             if let Some(fd) = live_reader {
                 feed.drain(fd);
                 let _ = io::close(fd);
@@ -1091,6 +1301,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         Err(error) => {
             let _ = io::close(reader);
             let _ = io::close(writer);
+            if let Some((r, w)) = window { let _ = (io::close(r), io::close(w)); }
             if let Some((r, w)) = live { let _ = (io::close(r), io::close(w)); }
             Outcome::Fail { ms: 0, msg: plain(&std::format!("could not start the case: fork failed: {error}")) }
         }
@@ -1257,6 +1468,9 @@ impl Feed {
     }
 }
 
+#[path = "suite_gpu_screen.rs"]
+mod gpu_screen;
+
 /// The suite's view of the display, when there is one to draw on.
 struct Screen {
     gui:bool,
@@ -1264,6 +1478,9 @@ struct Screen {
     judged: Option<JudgedFrame>,
     timing:Option<FrameTiming>,
     fb: Option<FrameBuf>,
+    gpu: Option<gpu_screen::GpuScreen>,
+    /// Why the GPU view was last not drawn, so each failure is reported once.
+    gpu_failure: Option<String>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
     /// Where the last full draw put the live strip.
@@ -1273,10 +1490,13 @@ struct Screen {
 impl Screen {
     /// Take the display and map all of it. Without a framebuffer the suite still
     /// runs and prints its serial lines; on a small one the panel draws what fits.
-    fn open(gui:bool) -> Screen {
+    fn open(gui: bool, gpu: bool) -> Screen {
         if gui {
             let stage_error = graphics::take_over_display().and_then(|()| graphics::give_back_display()).err().map(|e| std::format!("initialize GUI display: {e}"));
-            return Screen {gui,stage_error,live:false,fb:None,area:None,judged:None,timing:None};
+            return Screen { gui, stage_error, ..Screen::empty() };
+        }
+        if gpu {
+            return Screen { gpu: Some(gpu_screen::GpuScreen::new()), ..Screen::empty() };
         }
         let fb = (|| {
             let info = graphics::fbinfo().ok()?;
@@ -1292,7 +1512,25 @@ impl Screen {
             })
         })();
         let off = std::fs::read_to_string("/etc/breenix/suite-live").is_ok_and(|text| text.trim() == "off");
-        Screen { gui,stage_error:None,live: fb.is_some() && !off && !gui, fb, area: None, judged: None,timing:None }
+        Screen { live: fb.is_some() && !off, fb, ..Screen::empty() }
+    }
+
+    /// No display: no stage, framebuffer or GPU view, and no live strip.
+    fn empty() -> Screen {
+        Screen { gui: false, stage_error: None, judged: None, timing: None, fb: None, gpu: None, gpu_failure: None, live: false, area: None }
+    }
+
+    /// Before the memory record's first sample, create what the view keeps until its final
+    /// panel: the GPU view's context and scanout target, as `open` has already mapped a
+    /// framebuffer suite's display. Both samples then count it.
+    fn prepare(&mut self) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            let failed = gpu.open().err();
+            if failed.is_some() && failed != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", failed.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = failed;
+        }
     }
 
     fn stage_result(&mut self, result: Result<(), String>) {
@@ -1338,6 +1576,17 @@ impl Screen {
             self.stage_result(crate::suite_stage::draw(states));
             return;
         }
+        if let Some(gpu) = self.gpu.as_mut() {
+            // A GPU view failure is reported separately: without that view the suite cases still
+            // run and fail naming the layers they need. A failure is reported once
+            // each time it changes, on a line that is not a suite record.
+            let shown = gpu.draw(states).err();
+            if shown.is_some() && shown != self.gpu_failure {
+                emit(&std::format!("gpu suite view not drawn: {}", shown.as_deref().unwrap_or("")));
+            }
+            self.gpu_failure = shown;
+            return;
+        }
         let live_on = self.live;
         let Some(fb) = self.fb.as_mut() else { return; };
         let details: Vec<Vec<String>> = states.iter()
@@ -1353,7 +1602,7 @@ impl Screen {
             .collect();
         let checks: Vec<Vec<Check<'_>>> = suite.categories.iter().zip(states).zip(&details)
             .map(|((category, cases), details)| category.cases.iter().zip(cases).zip(details)
-                .filter(|((case, _), _)| only.is_none_or(|name| name == std::format!("{}/{}", category.id, case.id)))
+                .filter(|((case, _), _)| only.is_none_or(|name| name == category.id || name == std::format!("{}/{}", category.id, case.id)))
                 .map(|((case, state), detail)| Check {
                     name: case.id,
                     state: match state {

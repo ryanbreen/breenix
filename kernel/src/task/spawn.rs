@@ -88,6 +88,11 @@ pub fn spawn_thread_with_privilege(
 
     let tid = thread.id();
 
+    // The thread runs on this stack, and a spawned thread has no owner that
+    // returns its stack when it ends: it is kept rather than freed under the
+    // thread.
+    core::mem::forget(stack);
+
     // Add to scheduler
     super::scheduler::spawn(thread);
 
@@ -154,6 +159,7 @@ fn idle_thread_fn() {
             // SAFETY: This is the idle thread - we want to halt until an interrupt
             unsafe {
                 // Clear DAIF.I to enable IRQs, then wait for interrupt
+                crate::arch_impl::aarch64::irq_mask_account::closing();
                 core::arch::asm!(
                     "msr daifclr, #3", // Clear IRQ+FIQ mask (enable interrupts)
                     "wfi",             // Wait For Interrupt
@@ -167,20 +173,6 @@ fn idle_thread_fn() {
             if has_work {
                 // Yield to let scheduler pick a ready thread
                 super::scheduler::yield_current();
-            }
-        }
-
-        // Periodically wake keyboard task to ensure responsiveness
-        // This helps when returning from userspace execution
-        // Note: keyboard module is x86_64 only
-        #[cfg(target_arch = "x86_64")]
-        {
-            static mut WAKE_COUNTER: u64 = 0;
-            unsafe {
-                WAKE_COUNTER += 1;
-                if WAKE_COUNTER % 100 == 0 {
-                    crate::keyboard::stream::wake_keyboard_task();
-                }
             }
         }
     }

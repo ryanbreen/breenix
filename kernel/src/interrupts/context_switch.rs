@@ -7,7 +7,7 @@
 #![cfg(target_arch = "x86_64")]
 
 use crate::task::process_context::{
-    is_kernel_code_selector, restore_userspace_context, save_userspace_context, RestoreError,
+    is_kernel_code_selector, restore_userspace_context, RestoreError,
     SavedRegisters,
 };
 use crate::task::dispatch_strand_census::{note_fact, DispatchLogFact};
@@ -35,9 +35,6 @@ static USERSPACE_DISPATCH_NO_CR3_REFUSED: AtomicU64 = AtomicU64::new(0);
 static USERSPACE_DISPATCH_NO_CR3_LOGGED: AtomicBool = AtomicBool::new(false);
 static USERSPACE_DISPATCH_CREATING_REFUSED: AtomicU64 = AtomicU64::new(0);
 static USERSPACE_DISPATCH_CREATING_LOGGED: AtomicBool = AtomicBool::new(false);
-static DISPATCH_GUARD_UNAVAILABLE_STREAK: AtomicU64 = AtomicU64::new(0);
-static DISPATCH_GUARD_ESCALATION_LOGGED: AtomicBool = AtomicBool::new(false);
-const DISPATCH_GUARD_ESCALATION_THRESHOLD: u64 = 1024;
 
 /// Serial string output that allocates nothing and waits on SERIAL1 for a
 /// bounded time only (`serial::write_str_bounded`), then goes to the kernel
@@ -141,40 +138,6 @@ pub(crate) fn refuse_unpublished_dispatch(
 #[cfg(feature = "boot_tests")]
 pub fn userspace_dispatch_creating_refused() -> u64 {
     USERSPACE_DISPATCH_CREATING_REFUSED.load(Ordering::Relaxed)
-}
-
-#[inline(always)]
-fn note_dispatch_guard_available() {
-    DISPATCH_GUARD_UNAVAILABLE_STREAK.store(0, Ordering::Relaxed);
-}
-
-#[inline(always)]
-fn note_dispatch_guard_unavailable() {
-    let streak = DISPATCH_GUARD_UNAVAILABLE_STREAK
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1);
-    if streak >= DISPATCH_GUARD_ESCALATION_THRESHOLD
-        && !DISPATCH_GUARD_ESCALATION_LOGGED.swap(true, Ordering::Relaxed)
-    {
-        let (owner_cpu, owner_tid) = crate::process::process_manager_owner_snapshot().unwrap_or((
-            crate::process::PM_LOCK_OWNER_NONE,
-            crate::process::PM_LOCK_OWNER_NONE,
-        ));
-        let current_tid = crate::per_cpu::current_thread_id_lock_free()
-            .unwrap_or(crate::process::PM_LOCK_OWNER_TID_UNKNOWN);
-
-        DiagLine::new()
-            .text("[PMGUARD] dispatch refused streak=")
-            .number(streak)
-            .text(" owner_cpu=")
-            .number(owner_cpu)
-            .text(" owner_tid=")
-            .number(owner_tid)
-            .text(" current_tid=")
-            .number(current_tid)
-            .text("\n")
-            .write();
-    }
 }
 
 // REMOVED: NEXT_PAGE_TABLE is no longer needed since CR3 switching happens
@@ -314,13 +277,8 @@ pub extern "C" fn check_need_resched_and_switch(
     // during a boot-thread disk-completion wait). The two sites are not
     // inconsistent: each recognizes the family that is provably safe for
     // where it sits.
-    let mut current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
-        sched.current_thread_mut().is_some_and(|current| {
-            current.state.is_blocked()
-                || current.state == crate::task::thread::ThreadState::Terminated
-        })
-    })
-    .unwrap_or(false);
+    let mut current_thread_blocked_or_terminated =
+        scheduler::current_thread_blocked_or_terminated();
 
     // Check if reschedule is needed
     // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.
@@ -335,8 +293,15 @@ pub extern "C" fn check_need_resched_and_switch(
     // the first instruction boundary in Ring 3, rather than left to the
     // dispatch below: when that found the lock free a moment later it declined
     // the stop and returned the thread to user mode until the next tick, and a
-    // child that sent itself SIGSTOP ran on and exited first.
-    if from_userspace && need_resched && !current_thread_blocked_or_terminated {
+    // child that sent itself SIGSTOP ran on and exited first. Only a stop in
+    // force, or a stop signal pending, can hold the thread, and the thread's
+    // copies of its row's signal state say whether there is one, so any
+    // other switch does not wait for that lock.
+    if from_userspace
+        && need_resched
+        && !current_thread_blocked_or_terminated
+        && crate::per_cpu::current_thread().is_some_and(|thread| thread.signals.mirror.stop_possible())
+    {
         if let Some(current_tid) = scheduler::current_thread_id() {
             match crate::signal::delivery::hold_stopped_thread_on_interrupt_return_or_busy(
                 current_tid,
@@ -418,48 +383,22 @@ pub extern "C" fn check_need_resched_and_switch(
         core::sync::atomic::AtomicU64::new(0);
     let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // An idle CPU runs a full pass, which needs the process manager below, only
-    // when something is queued; otherwise its scheduling entry (expired timers
-    // included) is made without that lock, so a holder on another CPU cannot
-    // keep this CPU out of the scheduler.
+    // An idle CPU runs a full pass only when something is queued; otherwise its
+    // scheduling entry (expired timers included) is all it needs.
     let idle_cpu = !from_userspace
         && !current_thread_blocked_or_terminated
         && crate::per_cpu::running_idle_thread();
     if idle_cpu && !scheduler::x86_idle_pass() {
         return;
     }
-    // A return to Ring 3, or an idle CPU with work queued, that finds the
-    // process manager busy retries as soon as interrupts are enabled again.
-    let retry_when_busy = from_userspace || idle_cpu;
-    // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
-    // Both entry paths must resolve the process-manager dependency BEFORE committing
-    // to a scheduling decision, and both must refuse identically when it is
-    // unavailable. The kernel-entry path used to skip this check and pass `None`
-    // down, so a dispatch could be committed to a never-started user thread whose
-    // first ring-3 entry then aborted for want of this very lock, requeue the
-    // thread and re-arm need_resched, forever. Refusing here leaves the
-    // lock-holding context - the only one that can release it - running.
-    // Polled for a bounded time only: blocking here would deadlock the
-    // interrupt path. With several CPUs the holder may be waiting for an
-    // interrupt routed to this one, so a return to Ring 3 that still finds the
-    // lock busy retries as soon as interrupts are enabled again, rather than
-    // leaving the reschedule, and the signal delivery behind it, to the next
-    // tick.
-    let mut process_manager_guard = match crate::process::poll_manager() {
-        Some(guard) => {
-            note_dispatch_guard_available();
-            guard
-        }
-        None => {
-            note_dispatch_guard_unavailable();
-            scheduler::set_need_resched();
-            if retry_when_busy {
-                scheduler::retry_after_interrupts_x86();
-            }
-            return;
-        }
-    };
+    // The switch takes no PROCESS_MANAGER. The outgoing context is saved in,
+    // and the incoming one restored from, the threads' scheduler rows, and a
+    // user thread's page-table root is cached there (`dispatch_root`), so a
+    // CPU that stops while it holds PROCESS_MANAGER does not stop dispatch on
+    // the others (#1635). That lock is asked for, without waiting on it, only
+    // to fill a thread's empty root cache, once per thread, which rolls the
+    // switch back when the lock is busy, and to deliver a signal.
 
     // Perform scheduling decision
     let schedule_result = scheduler::schedule();
@@ -481,11 +420,7 @@ pub extern "C" fn check_need_resched_and_switch(
         // This case occurs when the current thread is the only ready thread (e.g., after
         // yield_now() when no other threads are runnable). Without this check, signals
         // queued for the current process (like SIGTERM from kill()) would never be delivered.
-        // The dispatch's guard is released first: delivery takes the lock
-        // itself, and with it still held here it always found the lock busy
-        // on this CPU and delivered nothing.
         if from_userspace {
-            drop(process_manager_guard);
             check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
         }
         return;
@@ -498,10 +433,8 @@ pub extern "C" fn check_need_resched_and_switch(
         trace_ctx_switch(old_thread_id, new_thread_id);
 
         if old_thread_id == new_thread_id {
-            // Same thread continues running, but check for pending signals,
-            // with the dispatch's guard released as above.
+            // Same thread continues running, but check for pending signals.
             if from_userspace {
-                drop(process_manager_guard);
                 check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
             }
             return;
@@ -550,16 +483,13 @@ pub extern "C" fn check_need_resched_and_switch(
         let save_mandatory = current_thread_blocked_or_terminated;
 
         if from_userspace {
-            // Use the already-held guard to save context (prevents TOCTOU race)
             // A terminated thread is never dispatched again, so its context
-            // needs no save. Its row may already be reaped (an exit whose
-            // parent declines zombies reaps it at once), and a save that
-            // cannot find the row must not hold the CPU on the dead thread.
-            if !save_current_thread_context_with_guard(
+            // needs no save. Its row may already be gone, and a save that
+            // cannot find it must not hold the CPU on the dead thread.
+            if !save_current_thread_context(
                 old_thread_id,
                 saved_regs,
                 interrupt_frame,
-                &mut process_manager_guard,
                 if save_mandatory {
                     DispatchSaveReason::UserMandatory
                 } else {
@@ -575,14 +505,13 @@ pub extern "C" fn check_need_resched_and_switch(
             }
         } else if !from_userspace && (blocked_in_syscall || old_thread_is_user) {
             // A user thread was interrupted in kernel mode, including a thread blocked
-            // in a syscall's HLT loop. Save the KERNEL context in process.main_thread so
+            // in a syscall's HLT loop. Save the KERNEL context in its scheduler row so
             // the user-thread restore path can resume it at the correct kernel location.
             // NOTE: No logging here - this is a hot path during blocking I/O
-            save_kernel_context_with_guard(
+            save_kernel_context(
                 old_thread_id,
                 saved_regs,
                 interrupt_frame,
-                &mut process_manager_guard,
                 if save_mandatory {
                     DispatchSaveReason::KernelBlockedMandatory
                 } else {
@@ -606,14 +535,7 @@ pub extern "C" fn check_need_resched_and_switch(
         }
 
         // Switch to the new thread
-        // Pass the process_manager_guard so we don't try to re-acquire the lock
-        switch_to_thread(
-            new_thread_id,
-            old_thread_id,
-            saved_regs,
-            interrupt_frame,
-            Some(process_manager_guard),
-        );
+        switch_to_thread(new_thread_id, old_thread_id, saved_regs, interrupt_frame);
 
         // #772: record the resume frame this dispatch installed.
         //
@@ -666,13 +588,6 @@ pub extern "C" fn check_need_resched_and_switch(
         //
         // Linux clears this in schedule_tail() after context switch.
         crate::per_cpu::clear_preempt_active();
-
-        // Log userspace transition
-        if scheduler::with_thread_mut(new_thread_id, |t| t.privilege == ThreadPrivilege::User)
-            .unwrap_or(false)
-        {
-            log::trace!("Restored userspace context for thread {}", new_thread_id);
-        }
 
         // Reset the timer quantum for the new thread
         super::timer::reset_quantum();
@@ -736,102 +651,68 @@ fn note_dispatch_save(
     trace_dispatch_save(reason, no_progress, rip);
 }
 
-/// Save the current thread's userspace context using an already-held guard
-/// Returns true if context was saved successfully, false otherwise
-///
-/// This version takes an already-acquired process manager guard to prevent
-/// TOCTOU races where the lock could be acquired between checking availability
-/// and actually using it.
-fn save_current_thread_context_with_guard(
-    thread_id: u64,
-    saved_regs: &mut SavedRegisters,
-    interrupt_frame: &mut InterruptStackFrame,
-    manager_guard: &mut crate::process::TryProcessManagerGuard,
-    save_reason: DispatchSaveReason,
-) -> bool {
-    if let Some(ref mut manager) = **manager_guard {
-        if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-            if let Some(ref mut thread) = process.main_thread {
-                save_userspace_context(thread, interrupt_frame, saved_regs);
-                // #772: recorded where the save actually happened, so the
-                // counter cannot outrun the saves.
-                note_dispatch_save(save_reason, thread_id, interrupt_frame);
-                log::trace!(
-                    "Saved context for process {} (thread {})",
-                    pid.as_u64(),
-                    thread_id
-                );
-                return true;
-            } else {
-                note_fact(DispatchLogFact::SaveNoMainThread);
-            }
-        } else {
-            note_fact(DispatchLogFact::SaveProcessNotFound);
-        }
-    } else {
-        note_fact(DispatchLogFact::SaveManagerNone);
-    }
-    false
-}
-
-/// Save kernel context for a thread blocked inside a syscall
-/// This saves the kernel-mode context (RIP in HLT loop, kernel RSP, CS=0x08)
-/// so the thread can be resumed at the correct kernel location.
-fn save_kernel_context_with_guard(
+/// Save a user thread's Ring 3 context into its scheduler row, which
+/// `restore_userspace_thread_context` resumes it from. Returns false, having
+/// saved nothing, when the scheduler has no row for the thread.
+fn save_current_thread_context(
     thread_id: u64,
     saved_regs: &SavedRegisters,
     interrupt_frame: &InterruptStackFrame,
-    manager_guard: &mut crate::process::TryProcessManagerGuard,
+    save_reason: DispatchSaveReason,
+) -> bool {
+    if !save_thread_frame(thread_id, saved_regs, interrupt_frame) {
+        note_fact(DispatchLogFact::SaveNoThread);
+        return false;
+    }
+    // #772: recorded where the save actually happened, so the counter cannot
+    // outrun the saves.
+    note_dispatch_save(save_reason, thread_id, interrupt_frame);
+    true
+}
+
+/// Save the kernel context of a user thread interrupted inside the kernel
+/// (in a blocked syscall's HLT loop, or preempted in a syscall): the kernel
+/// RIP and RSP, CS 0x08, so the thread resumes at that kernel location.
+fn save_kernel_context(
+    thread_id: u64,
+    saved_regs: &SavedRegisters,
+    interrupt_frame: &InterruptStackFrame,
     save_reason: DispatchSaveReason,
 ) {
-    if let Some(ref mut manager) = **manager_guard {
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-            if let Some(ref mut thread) = process.main_thread {
-                // Save kernel context - the thread is in kernel mode (HLT loop in pause/waitpid)
-                // Save registers from the interrupt frame (kernel mode state)
-                thread.context.rax = saved_regs.rax;
-                thread.context.rbx = saved_regs.rbx;
-                thread.context.rcx = saved_regs.rcx;
-                thread.context.rdx = saved_regs.rdx;
-                thread.context.rsi = saved_regs.rsi;
-                thread.context.rdi = saved_regs.rdi;
-                thread.context.rbp = saved_regs.rbp;
-                thread.context.r8 = saved_regs.r8;
-                thread.context.r9 = saved_regs.r9;
-                thread.context.r10 = saved_regs.r10;
-                thread.context.r11 = saved_regs.r11;
-                thread.context.r12 = saved_regs.r12;
-                thread.context.r13 = saved_regs.r13;
-                thread.context.r14 = saved_regs.r14;
-                thread.context.r15 = saved_regs.r15;
-
-                // From interrupt frame - this is the KERNEL location (HLT instruction)
-                thread.context.rip = interrupt_frame.instruction_pointer.as_u64();
-                thread.context.rsp = interrupt_frame.stack_pointer.as_u64();
-                thread.context.rflags = interrupt_frame.cpu_flags.bits();
-                thread.context.cs = interrupt_frame.code_segment.0 as u64;
-                thread.context.ss = interrupt_frame.stack_segment.0 as u64;
-
-                // #772/#775: the reason counter and the fixed atomic strand
-                // ledger cover this same successful kernel-context save.
-                note_dispatch_save(save_reason, thread_id, interrupt_frame);
-                crate::task::dispatch_strand_census::note_save(thread_id);
-            }
-        }
+    if save_thread_frame(thread_id, saved_regs, interrupt_frame) {
+        // #772/#775: the reason counter and the fixed atomic strand ledger
+        // cover this same successful kernel-context save.
+        note_dispatch_save(save_reason, thread_id, interrupt_frame);
+        crate::task::dispatch_strand_census::note_save(thread_id);
     }
 }
 
-/// Save kernel thread (kthread) context before switching away
-/// This is similar to save_kernel_context_with_guard but for pure kernel threads
-/// that are not associated with a process (they only exist in the scheduler)
+/// Save kernel thread (kthread) context before switching away: a pure kernel
+/// thread, which is not associated with a process and exists only in the
+/// scheduler.
 fn save_kthread_context(
     thread_id: u64,
     saved_regs: &SavedRegisters,
     interrupt_frame: &InterruptStackFrame,
     save_reason: DispatchSaveReason,
 ) {
+    // #772: only a save that found its thread is counted.
+    if save_thread_frame(thread_id, saved_regs, interrupt_frame) {
+        note_dispatch_save(save_reason, thread_id, interrupt_frame);
+    }
+}
+
+/// Copy the interrupted registers and return frame into the context of
+/// `thread_id`'s scheduler row, whichever ring the frame returns to. Every
+/// thread's dispatch context lives there, a user thread's included, so a
+/// switch reads and writes it under the scheduler lock alone. Returns whether
+/// the row was found.
+fn save_thread_frame(
+    thread_id: u64,
+    saved_regs: &SavedRegisters,
+    interrupt_frame: &InterruptStackFrame,
+) -> bool {
     let saved = scheduler::with_thread_mut(thread_id, |thread| {
-        // Save general purpose registers from the interrupt
         thread.context.rax = saved_regs.rax;
         thread.context.rbx = saved_regs.rbx;
         thread.context.rcx = saved_regs.rcx;
@@ -848,64 +729,39 @@ fn save_kthread_context(
         thread.context.r14 = saved_regs.r14;
         thread.context.r15 = saved_regs.r15;
 
-        // Save from interrupt frame - the kernel location where thread was preempted
         thread.context.rip = interrupt_frame.instruction_pointer.as_u64();
         thread.context.rsp = interrupt_frame.stack_pointer.as_u64();
         thread.context.rflags = interrupt_frame.cpu_flags.bits();
         thread.context.cs = interrupt_frame.code_segment.0 as u64;
         thread.context.ss = interrupt_frame.stack_segment.0 as u64;
-
-        log::trace!(
-            "KTHREAD_SAVE: thread {} RIP={:#x} RSP={:#x}",
-            thread_id,
-            thread.context.rip,
-            thread.context.rsp
-        );
     })
     .is_some();
-
-    // #772: only a save that found its thread is counted.
-    if saved {
-        note_dispatch_save(save_reason, thread_id, interrupt_frame);
-    }
 
     // Hardware memory fence to ensure all context saves are visible before
     // we switch to a different thread. This is critical for TCG mode.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    saved
 }
 
 /// The saved CS is authoritative, and this predicate deliberately mirrors the
 /// enforcement check in `restore_userspace_context`. A never-run user thread
 /// carries `cs = 0x33`, while `is_kernel_code_selector` rejects `cs == 0`, so
-/// this does not widen kernel-frame routing.
-fn saved_context_is_kernel_frame(
-    thread_id: u64,
-    guard: Option<&crate::process::TryProcessManagerGuard>,
-) -> bool {
-    let manager_has_kernel_frame = |manager: &crate::process::ProcessManager| {
-        manager
-            .find_process_by_thread(thread_id)
-            .and_then(|(_pid, process)| process.main_thread.as_ref())
-            .is_some_and(|thread| {
-                thread.privilege == ThreadPrivilege::User
-                    && is_kernel_code_selector(thread.context.cs)
-            })
-    };
+/// this does not widen kernel-frame routing. It reads the scheduler row the
+/// caller already holds, and takes no lock of its own.
+fn saved_context_is_kernel_frame(thread: &crate::task::thread::Thread) -> bool {
+    thread.privilege == ThreadPrivilege::User && is_kernel_code_selector(thread.context.cs)
+}
 
-    if let Some(manager_guard) = guard {
-        let manager_option: &Option<crate::process::ProcessManager> = manager_guard;
-        return manager_option
-            .as_ref()
-            .is_some_and(manager_has_kernel_frame);
-    }
-
-    let Some(manager_guard) = crate::process::try_manager() else {
-        return false;
-    };
-    let manager_option: &Option<crate::process::ProcessManager> = &manager_guard;
-    manager_option
-        .as_ref()
-        .is_some_and(manager_has_kernel_frame)
+/// What a switch needs to know about the thread it dispatches, read in the
+/// scheduler hold that makes it this CPU's current thread.
+struct Incoming {
+    is_idle: bool,
+    is_kernel_thread: bool,
+    /// Blocked in a syscall, or saved inside the kernel: it resumes there.
+    resumes_in_kernel: bool,
+    /// A user thread's cached page-table root, 0 until its first dispatch.
+    cached_root: u64,
+    has_started: bool,
 }
 
 /// Switch to a different thread
@@ -914,38 +770,43 @@ fn switch_to_thread(
     resume_thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
-    // Update per-CPU current thread and TSS.RSP0
-    // The x87/SSE registers follow the thread being dispatched.
-    scheduler::with_scheduler(|sched| {
-        crate::arch_impl::x86_64::fpu::hand_over(sched, Some(resume_thread_id), thread_id)
-    });
-
-    scheduler::with_thread_mut(thread_id, |thread| {
-        // Update per-CPU current thread pointer
-        let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
-        crate::per_cpu::set_current_thread(thread_ptr);
-
-        // Update TSS.RSP0 with new thread's kernel stack top
-        // This is critical for interrupt/exception handling
-        if let Some(kernel_stack_top) = thread.kernel_stack_top {
-            crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-            log::trace!(
-                "sched: switch to thread {} rsp0={:#x}",
-                thread_id,
-                kernel_stack_top
-            );
-        }
+    // The x87/SSE registers follow the thread being dispatched, and the
+    // per-CPU current thread and TSS.RSP0 are updated, in one hold of this
+    // CPU's run-queue lock that also reads how the thread resumes (#1649).
+    let incoming = scheduler::switch_in(Some(resume_thread_id), thread_id, |thread, is_idle| {
+        thread
+            .map(|thread| Incoming {
+                is_idle,
+                is_kernel_thread: thread.privilege == ThreadPrivilege::Kernel,
+                // Check if thread was blocked inside a syscall (pause/waitpid)
+                // If so, we must NOT restore userspace context - the thread needs to
+                // continue executing the syscall code and return through the normal path.
+                // The saved CS is the authoritative record of the ring where the
+                // context was captured, even if a remote waker cleared
+                // blocked_in_syscall, so a saved kernel frame resumes in the kernel too.
+                resumes_in_kernel: thread.blocked_in_syscall || saved_context_is_kernel_frame(thread),
+                cached_root: thread.cached_ttbr0,
+                has_started: thread.has_started,
+            })
+            .unwrap_or(Incoming {
+                is_idle,
+                is_kernel_thread: false,
+                resumes_in_kernel: false,
+                cached_root: 0,
+                has_started: false,
+            })
+    })
+    .unwrap_or(Incoming {
+        is_idle: false,
+        is_kernel_thread: false,
+        resumes_in_kernel: false,
+        cached_root: 0,
+        has_started: false,
     });
 
     // Switch TLS if needed (kernel threads don't have TLS)
-    let is_kernel_thread = scheduler::with_thread_mut(thread_id, |thread| {
-        thread.privilege == ThreadPrivilege::Kernel
-    })
-    .unwrap_or(false);
-
-    if !is_kernel_thread {
+    if !incoming.is_kernel_thread {
         if crate::tls::switch_tls(thread_id).is_err() {
             scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
             trace_dispatch_abandon(DispatchAbandonSite::RollbackTls);
@@ -954,16 +815,7 @@ fn switch_to_thread(
         }
     }
 
-    // Check if this is the idle thread
-    let is_idle =
-        scheduler::with_scheduler(|sched| thread_id == sched.idle_thread()).unwrap_or(false);
-
-    // Check if thread was blocked inside a syscall (pause/waitpid)
-    // If so, we must NOT restore userspace context - the thread needs to
-    // continue executing the syscall code and return through the normal path.
-    let blocked_in_syscall =
-        scheduler::with_thread_mut(thread_id, |thread| thread.blocked_in_syscall).unwrap_or(false);
-    if is_idle {
+    if incoming.is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop), restore that context
         //
@@ -993,332 +845,223 @@ fn switch_to_thread(
             // No saved context or was in idle_loop - go to idle loop
             setup_idle_return(interrupt_frame);
         }
-    } else if is_kernel_thread {
+    } else if incoming.is_kernel_thread {
         // Set up to return to kernel thread
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
-    // The saved CS is the authoritative record of the ring where the context was
-    // captured, even if a remote waker cleared blocked_in_syscall. Evaluate it
-    // only for the non-idle userspace thread that consumes the result.
-    } else if blocked_in_syscall
-        || saved_context_is_kernel_frame(thread_id, process_manager_guard.as_ref())
-    {
-        // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
-        // We need to check if there are pending signals. If so, deliver them using
-        // the saved userspace context. Otherwise, resume at the kernel HLT loop.
-
-        // CRITICAL FIX: Read saved_userspace_context from the SCHEDULER's Thread,
-        // not from process.main_thread. This fixes a race condition where:
-        // - pause() saves context to process.main_thread THEN blocks in scheduler
-        // - kill() sends signal BETWEEN these two operations
-        // - Signal arrives but context not yet saved in the scheduler's Thread
-        //
-        // By reading from the scheduler's Thread (which is updated atomically with
-        // the BlockedOnSignal state), we ensure consistency.
-        let saved_context_from_scheduler =
-            scheduler::with_thread_mut(thread_id, |thread| thread.saved_userspace_context.clone())
-                .flatten();
-
-        // Get the process page table and thread context
-        let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
-        if let Some(mut manager_guard) = guard_option {
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((pid, process, shared_table)) =
-                    manager.find_process_and_shared_table_by_thread_mut(thread_id)
-                {
-                    if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
-                        crate::task::scheduler::set_need_resched();
-                        setup_idle_return(interrupt_frame);
-                        crate::task::scheduler::switch_to_idle();
-                        trace_dispatch_abandon(DispatchAbandonSite::IdleUnpublishedBlocked);
-                        crate::task::scheduler::requeue_refused_dispatch(thread_id);
-                        unsafe {
-                            crate::memory::process_memory::switch_to_kernel_page_table();
-                        }
-                        return;
-                    }
-                    let process_cr3 = match process.cr3_value() {
-                        Some(cr3_value) => cr3_value,
-                        None => {
-                            USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
-                            if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                                DiagLine::new()
-                                    .text("[PMGUARD] no-cr3 dispatch refused tid=")
-                                    .number(thread_id)
-                                    .text(" pid=")
-                                    .number(pid.as_u64())
-                                    .text("\n")
-                                    .write();
-                            }
-                            if let Some(ref mut thread) = process.main_thread {
-                                thread.set_terminated();
-                            }
-                            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
-                                sched_thread.set_terminated();
-                            });
-                            crate::task::scheduler::set_need_resched();
-                            setup_idle_return(interrupt_frame);
-                            crate::task::scheduler::switch_to_idle();
-                            trace_dispatch_abandon(DispatchAbandonSite::IdleNoCr3Blocked);
-                            unsafe {
-                                crate::memory::process_memory::switch_to_kernel_page_table();
-                            }
-                            return;
-                        }
-                    };
-
-                    // Check if there are pending signals to deliver
-                    crate::signal::delivery::check_and_fire_alarm(process);
-                    crate::signal::delivery::collect_itimer_signals(process);
-
-                    // A stopped process's thread, or one with a stop to take,
-                    // resumes its wait in the kernel: the stop is acted on
-                    // where the syscall returns.
-                    // A default action that ends the process is left to the
-                    // syscall's return too, which runs the whole exit: taken
-                    // here, it would end the row in place and never retire it
-                    // (#1175).
-                    let has_pending_signals =
-                        crate::signal::delivery::has_deliverable_signals(process)
-                            && !crate::signal::delivery::stop_pending_or_in_force(process)
-                            && crate::signal::delivery::fatal_default_signal(process).is_none();
-                    // Use context from scheduler's Thread (single source of truth)
-                    // Fall back to process.main_thread for backwards compatibility
-                    let has_saved_context = saved_context_from_scheduler.is_some()
-                        || process
-                            .main_thread
-                            .as_ref()
-                            .map(|t| t.saved_userspace_context.is_some())
-                            .unwrap_or(false);
-
-                    if has_pending_signals && has_saved_context {
-                        // SIGNAL DELIVERY PATH: Use saved userspace context for signal delivery
-                        note_fact(DispatchLogFact::SignalPendingBlocked);
-
-                        // CRITICAL FIX: Use context from scheduler's Thread (single source of truth)
-                        // Fall back to process.main_thread for backwards compatibility
-                        let saved_ctx_option =
-                            saved_context_from_scheduler.as_ref().or_else(|| {
-                                process
-                                    .main_thread
-                                    .as_ref()
-                                    .and_then(|t| t.saved_userspace_context.as_ref())
-                            });
-
-                        if let Some(saved_ctx) = saved_ctx_option {
-                            // Restore userspace registers from saved context
-                            // But set RAX = -EINTR for the interrupted syscall
-                            saved_regs.rax = (-4i64) as u64; // -EINTR
-                            saved_regs.rbx = saved_ctx.rbx;
-                            saved_regs.rcx = saved_ctx.rcx;
-                            saved_regs.rdx = saved_ctx.rdx;
-                            saved_regs.rsi = saved_ctx.rsi;
-                            saved_regs.rdi = saved_ctx.rdi;
-                            saved_regs.rbp = saved_ctx.rbp;
-                            saved_regs.r8 = saved_ctx.r8;
-                            saved_regs.r9 = saved_ctx.r9;
-                            saved_regs.r10 = saved_ctx.r10;
-                            saved_regs.r11 = saved_ctx.r11;
-                            saved_regs.r12 = saved_ctx.r12;
-                            saved_regs.r13 = saved_ctx.r13;
-                            saved_regs.r14 = saved_ctx.r14;
-                            saved_regs.r15 = saved_ctx.r15;
-
-                            // Restore interrupt frame with USERSPACE context
-                            unsafe {
-                                interrupt_frame.as_mut().update(|frame| {
-                                    frame.instruction_pointer =
-                                        x86_64::VirtAddr::new(saved_ctx.rip);
-                                    frame.stack_pointer = x86_64::VirtAddr::new(saved_ctx.rsp);
-                                    frame.cpu_flags =
-                                        x86_64::registers::rflags::RFlags::from_bits_truncate(
-                                            saved_ctx.rflags,
-                                        );
-                                    // Use userspace code/stack segments
-                                    frame.code_segment = crate::gdt::user_code_selector();
-                                    frame.stack_segment = crate::gdt::user_data_selector();
-                                });
-                            }
-
-                            note_fact(DispatchLogFact::SignalContextBlocked);
-                        }
-
-                        // Clear blocked_in_syscall and saved context on BOTH process.main_thread
-                        // AND the scheduler's Thread to keep them in sync
-                        if let Some(ref mut thread) = process.main_thread {
-                            thread.blocked_in_syscall = false;
-                            thread.saved_userspace_context = None;
-
-                            // Update TSS RSP0 for the thread's kernel stack
-                            if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-                            }
-                        }
-
-                        // Also clear on scheduler's Thread
-                        scheduler::with_thread_mut(thread_id, |thread| {
-                            thread.blocked_in_syscall = false;
-                            thread.saved_userspace_context = None;
-                            // The syscall's kernel stack is discarded here, not
-                            // unwound, so the custody section it opened is too.
-                            thread.abandon_syscall_custody();
-                        });
-
-                        // CRITICAL: Switch to process CR3 BEFORE delivering signal
-                        // Signal delivery writes to user stack memory, which requires
-                        // the process's page table to be active (not the kernel CR3).
-                        // Without this, we get a page fault when trying to write the
-                        // signal frame to user memory.
-                        unsafe {
-                            use x86_64::registers::control::{Cr3, Cr3Flags};
-                            use x86_64::structures::paging::PhysFrame;
-                            use x86_64::PhysAddr;
-                            crate::memory::tlb::note_root_load(process_cr3);
-                            Cr3::write(
-                                PhysFrame::containing_address(PhysAddr::new(process_cr3)),
-                                Cr3Flags::empty(),
-                            );
-                        }
-                        // Now deliver the signal (modifies interrupt_frame and saved_regs)
-                        let signal_result = crate::signal::delivery::deliver_pending_signals(
-                            process,
-                            shared_table,
-                            interrupt_frame,
-                            saved_regs,
-                        );
-
-                        // Handle signal result
-                        match signal_result {
-                            // A queued fatal or frame-fault exit cannot resume;
-                            // the exit worker publishes its status.
-                            crate::signal::delivery::SignalDeliveryResult::Terminated(_)
-                            | crate::signal::delivery::SignalDeliveryResult::FrameFault
-                            | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
-                                // Process was terminated - notify parent after releasing locks
-                                // We need to return from this function and let the locks drop naturally
-                                // but first save the notification data
-                                // We have the notification info but can't call notify while holding locks.
-                                // The notification will be handled by the timer interrupt when it
-                                // eventually switches to the parent process, because:
-                                // 1. The child is now marked as terminated
-                                // 2. When the parent's waitpid resumes, it will find the terminated child
-                                // 3. The scheduler will see the parent is unblocked
-                                // However, this path is rare (signal terminating a process whose parent
-                                // is blocked in waitpid *at the exact same time*).
-                                // The parent notification happens in the other code paths.
-                                // The return frame, RSP0, and CR3 already name the terminated
-                                // thread, so bookkeeping-only rollback would make recorded and
-                                // executing threads diverge. Complete the switch to idle on its
-                                // own stack and master kernel PML4; the saved resume thread will
-                                // be dispatched again by the reschedule armed here.
-                                scheduler::set_need_resched();
-                                setup_idle_return(interrupt_frame);
-                                scheduler::switch_to_idle();
-                                trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedBlocked);
-                                unsafe {
-                                    crate::memory::process_memory::switch_to_kernel_page_table();
-                                }
-                                return;
-                            }
-                            crate::signal::delivery::SignalDeliveryResult::Delivered => {
-                                note_fact(DispatchLogFact::SignalDeliveredBlocked);
-                            }
-                            crate::signal::delivery::SignalDeliveryResult::NoAction => {}
-                        }
-                    } else {
-                        // NO PENDING SIGNALS: Resume at kernel HLT loop
-                        if let Some(ref thread) = process.main_thread {
-                            // Restore kernel context
-                            saved_regs.rax = thread.context.rax;
-                            saved_regs.rbx = thread.context.rbx;
-                            saved_regs.rcx = thread.context.rcx;
-                            saved_regs.rdx = thread.context.rdx;
-                            saved_regs.rsi = thread.context.rsi;
-                            saved_regs.rdi = thread.context.rdi;
-                            saved_regs.rbp = thread.context.rbp;
-                            saved_regs.r8 = thread.context.r8;
-                            saved_regs.r9 = thread.context.r9;
-                            saved_regs.r10 = thread.context.r10;
-                            saved_regs.r11 = thread.context.r11;
-                            saved_regs.r12 = thread.context.r12;
-                            saved_regs.r13 = thread.context.r13;
-                            saved_regs.r14 = thread.context.r14;
-                            saved_regs.r15 = thread.context.r15;
-
-                            // Restore interrupt frame with KERNEL context
-                            unsafe {
-                                interrupt_frame.as_mut().update(|frame| {
-                                    frame.instruction_pointer =
-                                        x86_64::VirtAddr::new(thread.context.rip);
-                                    frame.stack_pointer = x86_64::VirtAddr::new(thread.context.rsp);
-                                    frame.cpu_flags =
-                                        x86_64::registers::rflags::RFlags::from_bits_truncate(
-                                            thread.context.rflags,
-                                        );
-                                    // CRITICAL: Use kernel code segment (CS=0x08)
-                                    frame.code_segment = crate::gdt::kernel_code_selector();
-                                    frame.stack_segment = crate::gdt::kernel_data_selector();
-                                });
-                            }
-
-                            // #772/#775: the aggregate counter and fixed atomic
-                            // strand ledger cover this completed restore.
-                            crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
-                            crate::task::dispatch_strand_census::note_restore(thread_id);
-
-                            // Update TSS RSP0 for the thread's kernel stack
-                            if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-                            }
-                        }
-
-                        // CRITICAL: Switch CR3 IMMEDIATELY when returning to kernel mode!
-                        // The kernel code (e.g., waitpid HLT loop) will access userspace memory
-                        // (like the wstatus pointer). Without switching CR3 here, we'd be using
-                        // the previous process's page tables and get a page fault.
-                        unsafe {
-                            use x86_64::registers::control::{Cr3, Cr3Flags};
-                            use x86_64::structures::paging::PhysFrame;
-                            use x86_64::PhysAddr;
-                            crate::memory::tlb::note_root_load(process_cr3);
-                            Cr3::write(
-                                PhysFrame::containing_address(PhysAddr::new(process_cr3)),
-                                Cr3Flags::empty(),
-                            );
-                        }
-                    }
-
-                    // Set up CR3 for the process's page table
-                    unsafe {
-                        // Tell timer_entry.asm to switch CR3 before IRETQ
-                        crate::per_cpu::set_next_cr3(process_cr3);
-
-                        // Update saved_process_cr3 for future timer interrupts
-                        core::arch::asm!(
-                            "mov gs:[80], {}",
-                            in(reg) process_cr3,
-                            options(nostack, preserves_flags)
-                        );
-                    }
-                }
-            }
-        } else {
-            // CRITICAL: Cannot acquire lock to restore kernel context
-            // This is a fatal error - we cannot switch to this thread without its context
-            // Roll back the committed dispatch and re-arm rescheduling.
-            scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
-            trace_dispatch_abandon(DispatchAbandonSite::RollbackKernelContextLock);
-            scheduler::set_need_resched();
-            return;
-        }
+    } else if incoming.resumes_in_kernel {
+        resume_kernel_context(
+            thread_id,
+            resume_thread_id,
+            incoming.cached_root,
+            saved_regs,
+            interrupt_frame,
+        );
     } else {
-        // Restore userspace thread context
-        // Pass the process_manager_guard to avoid double-lock
         restore_userspace_thread_context(
             thread_id,
             resume_thread_id,
+            incoming.cached_root,
+            incoming.has_started,
             saved_regs,
             interrupt_frame,
-            process_manager_guard,
+        );
+    }
+}
+
+/// Why a user thread's page-table root could not be had for its dispatch.
+enum RootRefusal {
+    /// Its root is not cached yet, and PROCESS_MANAGER, which the first
+    /// lookup needs, is busy.
+    ManagerBusy,
+    /// Its process row is still being published.
+    Unpublished,
+    /// It has no process row, or the row has no page table.
+    NoRoot,
+}
+
+/// The page-table root to dispatch user thread `thread_id` on, given `cached`,
+/// the root its scheduler row caches (0 for none).
+///
+/// It is cached in the thread's scheduler row, so a dispatch reads it under
+/// the scheduler lock alone, in the hold that makes the thread current. The cache is filled here from the process row,
+/// with PROCESS_MANAGER, the first time the thread is dispatched once that row
+/// is published, and exec replaces it (`ExecSchedCommit::apply`). Nothing else
+/// changes a live thread's root: a CLONE_VM thread shares its creator's for
+/// good, and exec is refused while another thread shares the old one.
+/// Retirement treats a cached root as live until its thread has terminated
+/// (`cached_root_is_live` in `process_task.rs`).
+fn dispatch_root(thread_id: u64, cached: u64) -> Result<u64, RootRefusal> {
+    if cached != 0 {
+        return Ok(cached);
+    }
+    let mut manager_guard = crate::process::poll_manager().ok_or(RootRefusal::ManagerBusy)?;
+    let manager = manager_guard.as_mut().ok_or(RootRefusal::ManagerBusy)?;
+    let (pid, process) = manager
+        .find_process_by_thread_mut(thread_id)
+        .ok_or(RootRefusal::NoRoot)?;
+    if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
+        return Err(RootRefusal::Unpublished);
+    }
+    let Some(root) = process.cr3_value() else {
+        USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
+        if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
+            DiagLine::new()
+                .text("[PMGUARD] no-cr3 dispatch refused tid=")
+                .number(thread_id)
+                .text(" pid=")
+                .number(pid.as_u64())
+                .text("\n")
+                .write();
+        }
+        if let Some(ref mut thread) = process.main_thread {
+            thread.set_terminated();
+        }
+        return Err(RootRefusal::NoRoot);
+    };
+    scheduler::with_thread_mut(thread_id, |thread| thread.set_dispatch_root(root));
+    Ok(root)
+}
+
+/// Finish a user-thread dispatch that `dispatch_root` refused. A busy lock
+/// rolls the switch back and retries it as soon as interrupts are enabled; a
+/// row still being published sends the CPU to idle and requeues the thread;
+/// a thread with no address space is terminated and the CPU goes to idle.
+/// `in_kernel` is the arm that asked: a thread resuming inside the kernel, or
+/// one returning to Ring 3.
+fn refuse_user_dispatch(
+    thread_id: u64,
+    resume_thread_id: u64,
+    refusal: RootRefusal,
+    in_kernel: bool,
+    interrupt_frame: &mut InterruptStackFrame,
+) {
+    match refusal {
+        RootRefusal::ManagerBusy => {
+            scheduler::abort_dispatch_and_resume(thread_id, resume_thread_id);
+            trace_dispatch_abandon(DispatchAbandonSite::RollbackRootLock);
+            scheduler::set_need_resched();
+            scheduler::retry_after_interrupts_x86();
+        }
+        RootRefusal::Unpublished => {
+            scheduler::set_need_resched();
+            setup_idle_return(interrupt_frame);
+            scheduler::switch_to_idle();
+            trace_dispatch_abandon(if in_kernel {
+                DispatchAbandonSite::IdleUnpublishedBlocked
+            } else {
+                DispatchAbandonSite::IdleUnpublishedUser
+            });
+            scheduler::requeue_refused_dispatch(thread_id);
+            unsafe {
+                crate::memory::process_memory::switch_to_kernel_page_table();
+            }
+        }
+        RootRefusal::NoRoot => {
+            scheduler::with_thread_mut(thread_id, |thread| thread.set_terminated());
+            scheduler::set_need_resched();
+            setup_idle_return(interrupt_frame);
+            scheduler::switch_to_idle();
+            trace_dispatch_abandon(if in_kernel {
+                DispatchAbandonSite::IdleNoCr3Blocked
+            } else {
+                DispatchAbandonSite::IdleNoCr3User
+            });
+            unsafe {
+                crate::memory::process_memory::switch_to_kernel_page_table();
+            }
+        }
+    }
+}
+
+/// Resume a user thread that was switched out inside the kernel -- blocked in
+/// a syscall (pause, waitpid, a sleep) or preempted in one -- at that kernel
+/// location, on its process's page tables. A signal that came while it waited
+/// is not delivered here: the wait's own loop sees it, and the syscall's
+/// return delivers it.
+fn resume_kernel_context(
+    thread_id: u64,
+    resume_thread_id: u64,
+    cached_root: u64,
+    saved_regs: &mut SavedRegisters,
+    interrupt_frame: &mut InterruptStackFrame,
+) {
+    let root = match dispatch_root(thread_id, cached_root) {
+        Ok(root) => root,
+        Err(refusal) => {
+            refuse_user_dispatch(thread_id, resume_thread_id, refusal, true, interrupt_frame);
+            return;
+        }
+    };
+    let Some((context, kernel_stack_top)) = scheduler::with_thread_mut(thread_id, |thread| {
+        (thread.context.clone(), thread.kernel_stack_top)
+    }) else {
+        refuse_user_dispatch(thread_id, resume_thread_id, RootRefusal::NoRoot, true, interrupt_frame);
+        return;
+    };
+
+    saved_regs.rax = context.rax;
+    saved_regs.rbx = context.rbx;
+    saved_regs.rcx = context.rcx;
+    saved_regs.rdx = context.rdx;
+    saved_regs.rsi = context.rsi;
+    saved_regs.rdi = context.rdi;
+    saved_regs.rbp = context.rbp;
+    saved_regs.r8 = context.r8;
+    saved_regs.r9 = context.r9;
+    saved_regs.r10 = context.r10;
+    saved_regs.r11 = context.r11;
+    saved_regs.r12 = context.r12;
+    saved_regs.r13 = context.r13;
+    saved_regs.r14 = context.r14;
+    saved_regs.r15 = context.r15;
+
+    // Restore interrupt frame with KERNEL context
+    unsafe {
+        interrupt_frame.as_mut().update(|frame| {
+            frame.instruction_pointer = x86_64::VirtAddr::new(context.rip);
+            frame.stack_pointer = x86_64::VirtAddr::new(context.rsp);
+            frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(context.rflags);
+            // CRITICAL: Use kernel code segment (CS=0x08)
+            frame.code_segment = crate::gdt::kernel_code_selector();
+            frame.stack_segment = crate::gdt::kernel_data_selector();
+        });
+    }
+
+    // #772/#775: the aggregate counter and fixed atomic strand ledger cover
+    // this completed restore.
+    crate::trace_count!(DISPATCH_KERNEL_RESTORE_TOTAL);
+    crate::task::dispatch_strand_census::note_restore(thread_id);
+
+    // Update TSS RSP0 for the thread's kernel stack
+    if let Some(kernel_stack_top) = kernel_stack_top {
+        crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+    }
+
+    // CRITICAL: Switch CR3 IMMEDIATELY when returning to kernel mode!
+    // The kernel code (e.g., waitpid HLT loop) will access userspace memory
+    // (like the wstatus pointer). Without switching CR3 here, we'd be using
+    // the previous process's page tables and get a page fault.
+    unsafe {
+        use x86_64::registers::control::{Cr3, Cr3Flags};
+        use x86_64::structures::paging::PhysFrame;
+        use x86_64::PhysAddr;
+        crate::memory::tlb::note_root_load(root);
+        Cr3::write(
+            PhysFrame::containing_address(PhysAddr::new(root)),
+            Cr3Flags::empty(),
+        );
+    }
+
+    // Set up CR3 for the process's page table
+    unsafe {
+        // Tell timer_entry.asm to switch CR3 before IRETQ
+        crate::per_cpu::set_next_cr3(root);
+
+        // Update saved_process_cr3 for future timer interrupts
+        core::arch::asm!(
+            "mov gs:[80], {}",
+            in(reg) root,
+            options(nostack, preserves_flags)
         );
     }
 }
@@ -1328,14 +1071,7 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
     // CRITICAL: Get the idle thread's actual kernel stack from the scheduler
     // Do NOT use per_cpu::kernel_stack_top() because that gets updated during
     // context switches and may point to a different thread's stack!
-    let idle_stack = scheduler::with_scheduler(|sched| {
-        let idle_id = sched.idle_thread();
-        sched
-            .get_thread(idle_id)
-            .and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
-    })
-    .flatten()
-    .unwrap_or_else(|| {
+    let idle_stack = scheduler::idle_kernel_stack_top().unwrap_or_else(|| {
         note_fact(DispatchLogFact::IdleStackMissing);
         crate::per_cpu::kernel_stack_top() // Fallback, but this is wrong
     });
@@ -1352,18 +1088,23 @@ pub(crate) fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
                 &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
             *flags_ptr = 0x202;
 
-            frame.stack_pointer = x86_64::VirtAddr::new(idle_stack);
+            // IRETQ does not push a return address; supply the SysV entry slot.
+            frame.stack_pointer = x86_64::VirtAddr::new((idle_stack & !0xF).saturating_sub(8));
         });
 
         // NOTE: We do NOT switch page tables here. The userspace process page table
         // already has all kernel mappings (code, stacks, etc.) so we can run
-        // kernel code (idle loop) with it.
+        // kernel code (idle loop) with it. The idle loop leaves it before it
+        // halts.
 
-        // Idle never returns to user mode, so this CPU's user-return CR3 now
-        // names nothing it will load. Left set, it would keep a dead process's
-        // root looking live to the retirement proof until this CPU next ran
-        // user code.
+        // Idle runs in the kernel, so this CPU has no user-return CR3 to keep:
+        // not the one an interrupt from user mode restores, and not the one a
+        // dispatch left for the return stub (a thread resumed in the kernel
+        // that then exited there did not consume it). Left set, either keeps a
+        // dead process's root looking live to the reclaim pass's Shadow check
+        // until this CPU next ran user code.
         crate::per_cpu::set_saved_process_cr3(0);
+        crate::per_cpu::set_next_cr3(0);
 
         // CRITICAL FIX: Clear PREEMPT_ACTIVE when switching to idle!
         // PREEMPT_ACTIVE (bit 28) is set during syscall return to protect register
@@ -1439,9 +1180,10 @@ fn setup_kernel_thread_return(
         unsafe {
             crate::memory::process_memory::switch_to_kernel_page_table();
         }
-        // A kernel thread never returns to user mode: retire the user-return
-        // CR3 for the same reason `setup_idle_return` does.
+        // A kernel thread runs in the kernel only: retire both user-return
+        // CR3s for the same reason `setup_idle_return` does.
         crate::per_cpu::set_saved_process_cr3(0);
+        crate::per_cpu::set_next_cr3(0);
 
         // Hardware memory fence to ensure all writes to interrupt frame and saved_regs
         // are visible before IRETQ reads them. This is critical for TCG mode
@@ -1458,26 +1200,25 @@ fn setup_kernel_thread_return(
 fn restore_userspace_thread_context(
     thread_id: u64,
     resume_thread_id: u64,
+    cached_root: u64,
+    has_started: bool,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-    process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) {
-    log::trace!("restore_userspace_thread_context: thread {}", thread_id);
+    let root = match dispatch_root(thread_id, cached_root) {
+        Ok(root) => root,
+        Err(refusal) => {
+            refuse_user_dispatch(thread_id, resume_thread_id, refusal, false, interrupt_frame);
+            return;
+        }
+    };
 
-    // Check if this thread has ever run before
-    let has_started =
-        scheduler::with_thread_mut(thread_id, |thread| thread.has_started).unwrap_or(false);
-
+    // Whether this thread has ever run before
     if !has_started {
         // CRITICAL: This is a brand new thread that has never run
         // We need to set up for its first entry to userspace
         // For first run, we need to set up the interrupt frame to jump to userspace
-        match setup_first_userspace_entry(
-            thread_id,
-            interrupt_frame,
-            saved_regs,
-            process_manager_guard,
-        ) {
+        match setup_first_userspace_entry(thread_id, root, interrupt_frame, saved_regs) {
             FirstUserspaceEntry::Installed => {
                 scheduler::with_thread_mut(thread_id, |thread| {
                     thread.has_started = true;
@@ -1502,242 +1243,105 @@ fn restore_userspace_thread_context(
         return;
     }
 
-    // Thread has run before - do normal context restore
-    log::trace!("Resuming thread {}", thread_id);
+    // Thread has run before - do normal context restore, from its scheduler
+    // row, with the scheduler lock alone.
+    let restored = scheduler::with_thread_mut(thread_id, |thread| {
+        restore_userspace_context(thread, interrupt_frame, saved_regs)
+            .map(|()| (thread.kernel_stack_top, thread.needs_user_return_check()))
+    });
+    match restored {
+        Some(Ok((kernel_stack_top, return_work))) => {
+            // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
+            // We do NOT switch CR3 here because:
+            // 1. Kernel can run on process page tables (they have kernel mappings)
+            // 2. timer_entry.asm will perform the actual switch before IRETQ (line 324)
+            // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
+            //
+            // Instead, we set next_cr3 and saved_process_cr3 to communicate
+            // the target CR3 to the assembly code.
+            unsafe {
+                // Tell timer_entry.asm to switch CR3 before IRETQ
+                crate::per_cpu::set_next_cr3(root);
 
-    // CRITICAL: Use the passed-in guard if available, otherwise try to acquire one.
-    // The guard is passed from check_need_resched_and_switch to avoid double-lock deadlock.
-    // If we're called from elsewhere without a guard, try_manager() as fallback.
-    let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
-
-    // Track if signal termination happened (for parent notification after borrow ends)
-    let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
-
-    if let Some(mut manager_guard) = guard_option {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((pid, process, shared_table)) =
-                manager.find_process_and_shared_table_by_thread_mut(thread_id)
-            {
-                // Get CR3 before borrowing main_thread mutably
-                if refuse_unpublished_dispatch(process, thread_id, pid.as_u64()) {
-                    crate::task::scheduler::set_need_resched();
-                    setup_idle_return(interrupt_frame);
-                    crate::task::scheduler::switch_to_idle();
-                    trace_dispatch_abandon(DispatchAbandonSite::IdleUnpublishedUser);
-                    crate::task::scheduler::requeue_refused_dispatch(thread_id);
-                    return;
-                }
-                let process_cr3 = process.cr3_value();
-
-                if let Some(ref mut thread) = process.main_thread {
-                    if thread.privilege == ThreadPrivilege::User {
-                        if let Err(error) =
-                            restore_userspace_context(thread, interrupt_frame, saved_regs)
-                        {
-                            match error {
-                                RestoreError::NonCanonicalRip | RestoreError::NonCanonicalRsp => {
-                                    raw_serial_str("<BADADDR>")
-                                }
-                                RestoreError::KernelFrame => raw_serial_str("<KFRAME>"),
-                            }
-                            // The thread cannot return to this context: it dies of
-                            // SIGSEGV, through the deferred exit the user #PF and #GP
-                            // take, which tells its parent and retires the row. A
-                            // syscall that returned to a non-canonical RIP lands
-                            // here when its return switched threads, instead of at
-                            // the IRETQ #GP.
-                            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
-                            crate::task::scheduler::terminate_thread(thread_id);
-                            crate::task::scheduler::set_need_resched();
-                            setup_idle_return(interrupt_frame);
-                            crate::task::scheduler::switch_to_idle();
-                            trace_dispatch_abandon(DispatchAbandonSite::IdleRestoreError);
-                        } else {
-                            // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
-                            // We do NOT switch CR3 here because:
-                            // 1. Kernel can run on process page tables (they have kernel mappings)
-                            // 2. timer_entry.asm will perform the actual switch before IRETQ (line 324)
-                            // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
-                            //
-                            // Instead, we set next_cr3 and saved_process_cr3 to communicate
-                            // the target CR3 to the assembly code.
-                            if let Some(cr3_value) = process_cr3 {
-                                unsafe {
-                                    // Tell timer_entry.asm to switch CR3 before IRETQ
-                                    crate::per_cpu::set_next_cr3(cr3_value);
-
-                                    // Update saved_process_cr3 so future timer interrupts
-                                    // without context switch restore the correct CR3
-                                    core::arch::asm!(
-                                        "mov gs:[80], {}",
-                                        in(reg) cr3_value,
-                                        options(nostack, preserves_flags)
-                                    );
-                                }
-                            } else {
-                                USERSPACE_DISPATCH_NO_CR3_REFUSED.fetch_add(1, Ordering::Relaxed);
-                                if !USERSPACE_DISPATCH_NO_CR3_LOGGED.swap(true, Ordering::Relaxed) {
-                                    DiagLine::new()
-                                        .text("[PMGUARD] no-cr3 dispatch refused tid=")
-                                        .number(thread_id)
-                                        .text(" pid=")
-                                        .number(pid.as_u64())
-                                        .text("\n")
-                                        .write();
-                                }
-                                // With next_cr3 == 0, timer_entry.asm takes its fallback path
-                                // and restores the interrupted process's address space. Refuse
-                                // to finish this user-mode return with that wrong CR3 active.
-                                thread.set_terminated();
-                                crate::task::scheduler::with_thread_mut(
-                                    thread_id,
-                                    |sched_thread| {
-                                        sched_thread.set_terminated();
-                                    },
-                                );
-                                crate::task::scheduler::set_need_resched();
-                                setup_idle_return(interrupt_frame);
-                                crate::task::scheduler::switch_to_idle();
-                                trace_dispatch_abandon(DispatchAbandonSite::IdleNoCr3User);
-                                return;
-                            }
-
-                            // Update TSS RSP0 for the new thread's kernel stack
-                            if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
-                                log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
-                            } else {
-                                note_fact(DispatchLogFact::UserKernelStackMissing);
-                            }
-
-                            // SIGNAL DELIVERY: Check for pending signals before returning to userspace
-                            // This is the correct point to deliver signals - after context is restored
-                            // but before we actually return to userspace
-                            crate::signal::delivery::check_and_fire_alarm(process);
-                            crate::signal::delivery::collect_itimer_signals(process);
-
-                            // A stop in force or pending is deliverable work too:
-                            // delivery declines it and arms the next scheduling
-                            // point, which holds the thread.
-                            if crate::signal::delivery::needs_action_on_return_to_user(process) {
-                                note_fact(DispatchLogFact::SignalDeliverableUser);
-
-                                // CRITICAL: Switch to process CR3 BEFORE delivering signal
-                                // Signal delivery writes to user stack memory, which requires
-                                // the process's page table to be active (not the kernel CR3).
-                                // Without this, we get a page fault when trying to write the
-                                // signal frame to user memory.
-                                if let Some(cr3_val) = process.cr3_value() {
-                                    unsafe {
-                                        use x86_64::registers::control::{Cr3, Cr3Flags};
-                                        use x86_64::structures::paging::PhysFrame;
-                                        use x86_64::PhysAddr;
-                                        crate::memory::tlb::note_root_load(cr3_val);
-                                        Cr3::write(
-                                            PhysFrame::containing_address(PhysAddr::new(cr3_val)),
-                                            Cr3Flags::empty(),
-                                        );
-                                    }
-                                }
-
-                                // Deliver pending signals
-                                let signal_result =
-                                    crate::signal::delivery::deliver_pending_signals(
-                                        process,
-                                        shared_table,
-                                        interrupt_frame,
-                                        saved_regs,
-                                    );
-
-                                match signal_result {
-                                    crate::signal::delivery::SignalDeliveryResult::Terminated(
-                                        notification,
-                                    ) => {
-                                        // Signal terminated the process
-                                        crate::task::scheduler::set_need_resched();
-                                        // Save notification for later (after manager lock is released)
-                                        signal_termination_info = Some(notification);
-                                        setup_idle_return(interrupt_frame);
-                                        crate::task::scheduler::switch_to_idle();
-                                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
-                                        // Don't return here - fall through to handle notification
-                                    }
-                                    crate::signal::delivery::SignalDeliveryResult::FrameFault
-                                    | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
-                                        // The thread is no longer runnable; the exit worker drains its exit.
-                                        crate::task::scheduler::set_need_resched();
-                                        setup_idle_return(interrupt_frame);
-                                        crate::task::scheduler::switch_to_idle();
-                                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedUser);
-                                    }
-                                    crate::signal::delivery::SignalDeliveryResult::Delivered => {
-                                        // Signal was delivered and frame was modified
-                                        if process.is_terminated() {
-                                            // Process was terminated (somehow?)
-                                            crate::task::scheduler::set_need_resched();
-                                            setup_idle_return(interrupt_frame);
-                                            crate::task::scheduler::switch_to_idle();
-                                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedUser);
-                                        }
-                                    }
-                                    crate::signal::delivery::SignalDeliveryResult::NoAction => {}
-                                }
-                            }
-                        }
-                    }
-                }
+                // Update saved_process_cr3 so future timer interrupts
+                // without context switch restore the correct CR3
+                core::arch::asm!(
+                    "mov gs:[80], {}",
+                    in(reg) root,
+                    options(nostack, preserves_flags)
+                );
             }
 
-            // Now process borrow has ended - notify parent if signal terminated a child
-            // Drop manager guard first to avoid deadlock when notifying parent
-            drop(manager_guard);
-            if let Some(notification) = signal_termination_info {
-                crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+            // Update TSS RSP0 for the new thread's kernel stack
+            if let Some(kernel_stack_top) = kernel_stack_top {
+                crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+            } else {
+                note_fact(DispatchLogFact::UserKernelStackMissing);
+            }
+
+            // SIGNAL DELIVERY: Check for pending signals before returning to userspace
+            // This is the correct point to deliver signals - after context is restored
+            // but before we actually return to userspace. A thread whose
+            // return-work hint is clear has nothing to deliver, and its
+            // dispatch does not wait for PROCESS_MANAGER.
+            if return_work {
+                deliver_signals_on_user_return(
+                    thread_id,
+                    saved_regs,
+                    interrupt_frame,
+                    UserReturn::Dispatch,
+                );
             }
         }
-    } else {
-        log::error!(
-            "CRITICAL: Could not acquire process manager lock to restore context for thread {}. \
-             Interrupt frame NOT modified - will return to previous thread instead!",
-            thread_id
-        );
+        Some(Err(error)) => {
+            match error {
+                RestoreError::NonCanonicalRip | RestoreError::NonCanonicalRsp => {
+                    raw_serial_str("<BADADDR>")
+                }
+                RestoreError::KernelFrame => raw_serial_str("<KFRAME>"),
+            }
+            // The thread cannot return to this context: it dies of
+            // SIGSEGV, through the deferred exit the user #PF and #GP
+            // take, which tells its parent and retires the row. A
+            // syscall that returned to a non-canonical RIP lands
+            // here when its return switched threads, instead of at
+            // the IRETQ #GP.
+            let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
+            crate::task::scheduler::terminate_thread(thread_id);
+            crate::task::scheduler::set_need_resched();
+            setup_idle_return(interrupt_frame);
+            crate::task::scheduler::switch_to_idle();
+            trace_dispatch_abandon(DispatchAbandonSite::IdleRestoreError);
+        }
+        None => refuse_user_dispatch(
+            thread_id,
+            resume_thread_id,
+            RootRefusal::NoRoot,
+            false,
+            interrupt_frame,
+        ),
     }
 }
 
-/// Set up interrupt frame for first entry to userspace
+/// Set up interrupt frame for first entry to userspace, on page-table root
+/// `cr3_value`.
 fn setup_first_userspace_entry(
     thread_id: u64,
+    cr3_value: u64,
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
-    process_manager_guard: Option<crate::process::TryProcessManagerGuard>,
 ) -> FirstUserspaceEntry {
     // Phase 1: resolve every fallible dependency before touching the return frame.
-    let mut manager_guard = match process_manager_guard.or_else(crate::process::try_manager) {
-        Some(guard) if guard.is_some() => guard,
-        _ => return FirstUserspaceEntry::Aborted("process manager unavailable"),
+    let Some((entry_rip, user_rsp, kernel_stack_top)) =
+        scheduler::with_thread_mut(thread_id, |thread| {
+            thread
+                .kernel_stack_top
+                .map(|stack_top| (thread.context.rip, thread.context.rsp, stack_top))
+        })
+        .flatten()
+    else {
+        return FirstUserspaceEntry::Aborted("thread kernel stack unavailable");
     };
-    let (_, process) = match manager_guard
-        .as_mut()
-        .and_then(|manager| manager.find_process_by_thread_mut(thread_id))
-    {
-        Some(found) => found,
-        None => return FirstUserspaceEntry::Aborted("process lookup failed"),
-    };
-    let cr3_value = match process.cr3_value() {
-        Some(value) => value,
-        None => return FirstUserspaceEntry::Aborted("process CR3 unavailable"),
-    };
-    let thread = match process.main_thread.as_ref() {
-        Some(thread) => thread,
-        None => return FirstUserspaceEntry::Aborted("thread kernel stack unavailable"),
-    };
-    let kernel_stack_top = match thread.kernel_stack_top {
-        Some(stack_top) => stack_top,
-        None => return FirstUserspaceEntry::Aborted("thread kernel stack unavailable"),
-    };
-    let entry_rip = thread.context.rip;
-    let user_rsp = thread.context.rsp;
-    drop(manager_guard);
 
     unsafe {
         crate::per_cpu::set_next_cr3(cr3_value);
@@ -1824,14 +1428,31 @@ fn setup_first_userspace_entry(
     FirstUserspaceEntry::Installed
 }
 
+/// Where a delivery on the way back to Ring 3 is made, which names the
+/// dispatch-abandon site of a delivery that ends the thread.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UserReturn {
+    /// `restore_userspace_thread_context`, for the thread a switch dispatched.
+    Dispatch,
+    /// `check_and_deliver_signals_for_current_thread`, for a return with no
+    /// switch.
+    NoSwitch,
+}
+
 /// Check and deliver pending signals for the current thread
 ///
 /// Called when returning to userspace without a context switch (same thread continues).
 /// This ensures signals are delivered promptly even when the same thread keeps running.
+/// A thread whose return-work hint is clear has nothing to deliver, as on the
+/// syscall return, and its return does not wait for PROCESS_MANAGER.
 fn check_and_deliver_signals_for_current_thread(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    if crate::per_cpu::current_thread().is_some_and(|thread| !thread.needs_user_return_check()) {
+        return;
+    }
+
     // Get current thread ID
     let current_thread_id = match scheduler::current_thread_id() {
         Some(id) => id,
@@ -1841,6 +1462,28 @@ fn check_and_deliver_signals_for_current_thread(
     // 0 is the no-thread sentinel, not a live thread id, so there is no
     // process to deliver signals to.
     if current_thread_id == 0 {
+        return;
+    }
+
+    deliver_signals_on_user_return(
+        current_thread_id,
+        saved_regs,
+        interrupt_frame,
+        UserReturn::NoSwitch,
+    );
+}
+
+/// Deliver what is pending for user thread `thread_id`, the current thread,
+/// before its interrupt return to Ring 3, rewriting the return frame for a
+/// handler. A delivery that ends the thread sends this CPU to idle.
+fn deliver_signals_on_user_return(
+    thread_id: u64,
+    saved_regs: &mut SavedRegisters,
+    interrupt_frame: &mut InterruptStackFrame,
+    at: UserReturn,
+) {
+    // A timer's signal for a user handler needs no process manager.
+    if deliver_timer_signal_lockless(thread_id, saved_regs, interrupt_frame) {
         return;
     }
 
@@ -1863,7 +1506,7 @@ fn check_and_deliver_signals_for_current_thread(
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
         if let Some((_pid, process, shared_table)) =
-            manager.find_process_and_shared_table_by_thread_mut(current_thread_id)
+            manager.find_process_and_shared_table_by_thread_mut(thread_id)
         {
             // Note: Debug logging removed from hot path - use GDB if debugging is needed
             crate::signal::delivery::check_and_fire_alarm(process);
@@ -1873,7 +1516,15 @@ fn check_and_deliver_signals_for_current_thread(
             // declines it and arms the next scheduling point, which holds the
             // thread.
             if crate::signal::delivery::needs_action_on_return_to_user(process) {
-                // Switch to process's page table for signal delivery
+                if at == UserReturn::Dispatch {
+                    note_fact(DispatchLogFact::SignalDeliverableUser);
+                }
+
+                // CRITICAL: Switch to process CR3 BEFORE delivering signal
+                // Signal delivery writes to user stack memory, which requires
+                // the process's page table to be active (not the kernel CR3).
+                // Without this, we get a page fault when trying to write the
+                // signal frame to user memory.
                 if let Some(cr3_val) = process.cr3_value() {
                     unsafe {
                         use x86_64::registers::control::{Cr3, Cr3Flags};
@@ -1895,6 +1546,16 @@ fn check_and_deliver_signals_for_current_thread(
                     saved_regs,
                 );
 
+                let (terminated_site, process_terminated_site) = match at {
+                    UserReturn::Dispatch => (
+                        DispatchAbandonSite::IdleSignalTerminatedUser,
+                        DispatchAbandonSite::IdleProcessTerminatedUser,
+                    ),
+                    UserReturn::NoSwitch => (
+                        DispatchAbandonSite::IdleSignalTerminatedOnReturn,
+                        DispatchAbandonSite::IdleProcessTerminatedOnReturn,
+                    ),
+                };
                 match signal_result {
                     crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
                         // Signal terminated the process
@@ -1902,7 +1563,7 @@ fn check_and_deliver_signals_for_current_thread(
                         signal_termination_info = Some(notification);
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
-                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedOnReturn);
+                        trace_dispatch_abandon(terminated_site);
                         // Don't return here - fall through to handle notification
                     }
                     crate::signal::delivery::SignalDeliveryResult::FrameFault
@@ -1911,14 +1572,14 @@ fn check_and_deliver_signals_for_current_thread(
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return(interrupt_frame);
                         crate::task::scheduler::switch_to_idle();
-                        trace_dispatch_abandon(DispatchAbandonSite::IdleSignalTerminatedOnReturn);
+                        trace_dispatch_abandon(terminated_site);
                     }
                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
                         if process.is_terminated() {
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return(interrupt_frame);
                             crate::task::scheduler::switch_to_idle();
-                            trace_dispatch_abandon(DispatchAbandonSite::IdleProcessTerminatedOnReturn);
+                            trace_dispatch_abandon(process_terminated_site);
                         }
                     }
                     crate::signal::delivery::SignalDeliveryResult::NoAction => {}
@@ -1935,6 +1596,40 @@ fn check_and_deliver_signals_for_current_thread(
             crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
         }
     }
+}
+
+/// Deliver a due timer signal to its user handler without PROCESS_MANAGER
+/// (`signal::delivery::deliver_current_timer_signal_lockless`), for current
+/// thread `thread_id`, rewriting the interrupt return for the handler.
+/// Returns whether it did; otherwise the caller takes the process-manager
+/// path.
+fn deliver_timer_signal_lockless(
+    thread_id: u64,
+    saved_regs: &mut SavedRegisters,
+    interrupt_frame: &mut InterruptStackFrame,
+) -> bool {
+    let mut user_return = crate::signal::delivery::X86UserReturn {
+        rip: interrupt_frame.instruction_pointer.as_u64(),
+        rsp: interrupt_frame.stack_pointer.as_u64(),
+        rflags: interrupt_frame.cpu_flags.bits(),
+    };
+    if !crate::signal::delivery::deliver_current_timer_signal_lockless(
+        thread_id,
+        &mut user_return,
+        saved_regs,
+    ) {
+        return false;
+    }
+    // The installer accepted both addresses as canonical.
+    unsafe {
+        interrupt_frame.as_mut().update(|frame| {
+            frame.instruction_pointer = x86_64::VirtAddr::new(user_return.rip);
+            frame.stack_pointer = x86_64::VirtAddr::new(user_return.rsp);
+            frame.cpu_flags =
+                x86_64::registers::rflags::RFlags::from_bits_truncate(user_return.rflags);
+        });
+    }
+    true
 }
 
 /// Simple idle loop - made pub for exception handlers that need to jump to idle
@@ -1968,7 +1663,7 @@ pub fn idle_loop() -> ! {
         // allocation, and nothing on the context-switch path itself.
         #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
         crate::tracing::providers::teardown::x86_settled_tombstone_census();
-        crate::task::scheduler::reclaim_terminated_threads();
+        crate::task::scheduler::reclaim_terminated_threads_from_idle();
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
         crate::task::scheduler::set_idle_housekeeping(false);
@@ -1991,13 +1686,19 @@ pub fn idle_loop() -> ! {
             || crate::task::scheduler::has_queued_work_here()
         {
             crate::task::scheduler::set_need_resched();
-            // SAFETY: the reschedule vector's gate is the timer entry, which
-            // saves and restores every register; it returns here with
-            // interrupts masked, as they are now.
+            // SAFETY: the reschedule vector's gate is the reschedule entry,
+            // which saves the 15 general-purpose registers and restores them;
+            // it returns here with interrupts masked, as they are now.
             unsafe {
                 core::arch::asm!("int {vector}", vector = const super::RESCHEDULE_VECTOR);
             }
         }
+        // Leave the user root this CPU last ran on before halting. A halted
+        // CPU that still has it loaded is a target of every flush and release
+        // of that address space, and a halted vCPU answers only once its host
+        // runs it again: initiators waited up to 265 ms on the x86 gate. The
+        // next dispatch of a user thread loads its own root.
+        crate::memory::tlb::load_kernel_root(crate::per_cpu::cpu_id());
         // CRITICAL: Use enable_and_hlt() instead of just hlt()
         // This atomically enables interrupts and halts, preventing race conditions
         // where interrupts might be disabled when we enter this loop.

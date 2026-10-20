@@ -87,20 +87,6 @@ public struct BeastLaunchOptions: Sendable {
     }
 }
 
-public struct BeastLaunchResult: Sendable {
-    public var manifest: RunManifest
-    public var runDirectory: URL?
-    public var manifestURL: URL?
-    public var stored: Bool
-
-    public init(manifest: RunManifest, runDirectory: URL?, manifestURL: URL?, stored: Bool) {
-        self.manifest = manifest
-        self.runDirectory = runDirectory
-        self.manifestURL = manifestURL
-        self.stored = stored
-    }
-}
-
 public struct BeastLauncher {
     public var store: RunStore
     public var runner: ProcessRunner
@@ -109,13 +95,11 @@ public struct BeastLauncher {
     public var pathsTemplate: BeastPaths
     public var slotHelperBase64: String?
     public var progressBundleBase64: String?
-    public var vigilScript: URL?
     /// scripts/effort-target-guard.py; nil only where a caller deliberately runs without the policy.
     public var targetGuard: URL?
     public var treeHelperBase64: String?
-    var makeSignals: (ProcessRunner) -> X86LaunchSignals = { X86LaunchSignals(runner: $0) }
     public var quietOverride: String?
-    public var serialStreaming: X86SerialStreaming
+    public let x86QemuEnvironment: [String: String]
     var reconnectLimit = 60
     var reconnectDelay: ((Int) -> Void)? = nil
 
@@ -127,10 +111,9 @@ public struct BeastLauncher {
         slotHelperBase64: String? = nil,
         progressBundleBase64: String? = nil,
         treeHelperBase64: String? = nil,
-        vigilScript: URL? = nil,
-        serialStreaming: X86SerialStreaming = SSHSerialStreaming(),
         quietOverride: String? = ProcessInfo.processInfo.environment["BREENIX_QUIET"],
-        targetGuard: URL?
+        targetGuard: URL?,
+        x86QemuEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.store = store
         self.runner = runner
@@ -141,9 +124,8 @@ public struct BeastLauncher {
         self.slotHelperBase64 = slotHelperBase64
         self.progressBundleBase64 = progressBundleBase64
         self.treeHelperBase64 = treeHelperBase64
-        self.vigilScript = vigilScript
+        self.x86QemuEnvironment = x86QemuEnvironment
         self.targetGuard = targetGuard
-        self.serialStreaming = serialStreaming
         self.quietOverride = quietOverride
     }
 
@@ -197,9 +179,7 @@ public struct BeastLauncher {
         return try JSONSerialization.data(withJSONObject: files, options: [.sortedKeys]).base64EncodedString()
     }
 
-    /// Builds the exact plan a real `runX86(options:)` call would execute,
-    /// with NO side effects - this is what `--dry-run` prints, and `runX86`
-    /// calls this same function internally so the two can never drift apart.
+    /// Describes the retired remote gate for an explicitly requested dry run.
     public func plan(options: BeastLaunchOptions) throws -> RemoteCommand.Plan {
         try validate(options: options)
         let id = options.runID ?? RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
@@ -220,7 +200,8 @@ public struct BeastLauncher {
             slotHelperBase64: slotHelperBase64,
             progressBundleBase64: progressBundleBase64,
             treeHelperBase64: treeHelperBase64,
-            quietOverride: quietOverride
+            quietOverride: quietOverride,
+            allowX86Qemu: x86QemuEnvironment["BREENIX_ALLOW_X86_QEMU"] == "1"
         )
     }
 
@@ -239,258 +220,6 @@ public struct BeastLauncher {
         return result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    public func runX86(options: BeastLaunchOptions) throws -> BeastLaunchResult {
-        let startedAt = Date()
-        let id = options.runID ?? RunManifest.makeID(startedAt: startedAt, arch: .x86_64, profile: "gate")
-        var plannedOptions = options
-        plannedOptions.runID = id
-        plannedOptions.targetPolicySHA = try checkTargetPolicy(options: options)
-        let planResult = try plan(options: plannedOptions)
-
-        let startFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: startedAt)
-
-        let prepareResult: ProcessResult
-        do {
-            prepareResult = try runner.run(planResult.prepareClone)
-        } catch {
-            throw BeastLauncherError.prepareCloneFailed(exitCode: -1, output: "\(error)")
-        }
-        if prepareResult.exitCode != 0 {
-            _ = try? runner.run(planResult.removeClone)
-            throw BeastLauncherError.prepareCloneFailed(
-                exitCode: Int(prepareResult.exitCode),
-                output: prepareResult.stdoutString + prepareResult.stderrString
-            )
-        }
-
-        let runDirectory = try prepareRunDirectory(id: id, persist: options.persist)
-        defer {
-            if !options.persist {
-                try? FileManager.default.removeItem(at: runDirectory)
-            }
-        }
-
-        let signals = makeSignals(runner)
-        defer { withExtendedLifetime(signals) {} }
-        let live = try LiveX86Serials(directory: runDirectory, id: id, options: options, script: vigilScript, runner: runner)
-        live.start()
-        var stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots)) { data in
-            live.receive(data)
-        }
-        var finishStatus: Int32 = 1
-        defer { stream?.stop(); live.finish(status: finishStatus) }
-
-        let gateStdoutURL = runDirectory.appendingPathComponent("gate-stdout.txt")
-        FileManager.default.createFile(atPath: gateStdoutURL.path, contents: nil)
-        let gateOutputHandle = try FileHandle(forWritingTo: gateStdoutURL)
-        let reconnectURL = runDirectory.appendingPathComponent("reconnects.jsonl")
-        FileManager.default.createFile(atPath: reconnectURL.path, contents: nil)
-        let reconnectHandle = try FileHandle(forWritingTo: reconnectURL)
-        defer { try? reconnectHandle.close() }
-        var reconnects = 0
-        func reconnect(_ operation: String, _ status: Int32, recovering: Bool = false) -> Bool {
-            guard (recovering || signals.signalNumber == nil), reconnects < reconnectLimit else { return false }
-            reconnects += 1
-            let record: [String: Any] = ["time": ISO8601DateFormatter().string(from: Date()), "operation": operation,
-                                       "attempt": reconnects, "exit_code": status]
-            if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) {
-                reconnectHandle.write(data + Data([10]))
-            }
-            FileHandle.standardError.write(Data("[reconnect] \(operation) attempt=\(reconnects)/\(reconnectLimit) ssh_exit=\(status); following the same remote run\n".utf8))
-            if let reconnectDelay { reconnectDelay(reconnects) }
-            else {
-                let deadline = Date().addingTimeInterval(Double(min(reconnects, 10)))
-                while Date() < deadline && (recovering || signals.signalNumber == nil) {
-                    Thread.sleep(forTimeInterval: 0.05)
-                }
-            }
-            return recovering || signals.signalNumber == nil
-        }
-        func transportLost(_ result: ProcessResult) -> Bool {
-            [Int32(255), 9, 15, 124, 137, 143].contains(result.exitCode)
-        }
-        var gateResult = ProcessResult(exitCode: 1)
-        var gateError: Error?
-        var completed = false
-        let startRequest = RemoteCommand.startGateRequest(gate: planResult.runGate, paths: planResult.paths)
-        // Retry an uncertain acknowledgement against the same exclusive remote claim.
-        while signals.signalNumber == nil {
-            do {
-                gateResult = try runner.run(startRequest)
-                if gateResult.exitCode == 0 || gateResult.exitCode == 2 { break }
-                FileHandle.standardError.write(Data("Launch acknowledgement failed: exit \(gateResult.exitCode) \(gateResult.stderrString)\n".utf8))
-            } catch { gateResult = ProcessResult(exitCode: 255) }
-            if !reconnect("launch", gateResult.exitCode) { break }
-        }
-        if gateResult.exitCode == 0 && signals.signalNumber == nil {
-            reconnects = 0
-            while signals.signalNumber == nil {
-                if stream == nil || stream?.isReading == false {
-                    stream?.stop()
-                    live.resetConnection()
-                    FileHandle.standardError.write(Data("[serial] reopening live view; gate verdict remains authoritative\n".utf8))
-                    stream = try? serialStreaming.start(RemoteCommand.streamSerialsRequest(paths: planResult.paths, boots: options.boots, offsets: live.resumeOffsets)) { live.receive($0) }
-                }
-                do {
-                    gateResult = try runner.run(
-                        RemoteCommand.followGateRequest(paths: planResult.paths, offset: UInt64(fileSize(gateStdoutURL))),
-                        outputHandler: { data in
-                            gateOutputHandle.write(data)
-                            FileHandle.standardOutput.write(data)
-                        })
-                } catch { gateResult = ProcessResult(exitCode: 255) }
-                if !gateResult.stdout.isEmpty { reconnects = 0 }
-                if gateResult.exitCode == 0,
-                   let statusLine = gateResult.stderrString.split(separator: "\n").first(where: { $0.hasPrefix("BREENIX_GATE_FINISHED=") }),
-                   let status = Int32(statusLine.dropFirst("BREENIX_GATE_FINISHED=".count)) {
-                    gateResult.exitCode = status
-                    completed = true
-                    break
-                }
-                if gateResult.exitCode == 75 { reconnects = 0; continue }
-                if transportLost(gateResult) {
-                    if !reconnect("gate", gateResult.exitCode) { break }
-                    continue
-                }
-                break
-            }
-        }
-        stream?.stop()
-        finishStatus = signals.signalNumber.map { 128 + $0 } ?? (completed || [2, 76].contains(gateResult.exitCode) ? gateResult.exitCode : 255)
-        try gateOutputHandle.close()
-        // Any abandoned observer must attempt cancellation before harvesting.
-        // Recovery ignores the already-latched signal and has its own retry budget.
-        reconnects = 0
-        var quiesced = completed && signals.signalNumber == nil
-        if !quiesced {
-            var stop = ProcessResult(exitCode: 255)
-            repeat {
-                stop = (try? runner.run(RemoteCommand.stopGateRequest(paths: planResult.paths))) ?? ProcessResult(exitCode: 255)
-            } while stop.exitCode != 0 && reconnect("stop", stop.exitCode, recovering: true)
-            quiesced = stop.exitCode == 0
-        }
-        if !quiesced {
-            FileHandle.standardError.write(Data("Remote gate may still be running; evidence: \(planResult.paths.gateTmpPath); owner: \(planResult.paths.ownerPath). Its lane lock can block another run. Recover with breenix-runs recover x86 \(id).\n".utf8))
-        }
-        reconnects = 0
-
-        let endedAt = Date()
-        let endFacts = parseHostFactsSample(runner: runner, paths: planResult.paths, wallTime: endedAt)
-        var pullResult = ProcessResult(exitCode: 127)
-        if quiesced {
-            repeat {
-                pullResult = (try? runner.run(planResult.pullEvidence)) ?? ProcessResult(exitCode: 255)
-            } while transportLost(pullResult) && reconnect("evidence", pullResult.exitCode, recovering: true)
-        }
-        if pullResult.exitCode != 0 || pullResult.stdout.isEmpty {
-            if finishStatus == 0 { finishStatus = 1 }
-        }
-        finishStatus = signals.signalNumber.map { 128 + $0 } ?? finishStatus
-        let serialRefs: [SerialRef]
-        var authoritative = false
-        do {
-            serialRefs = try harvestSerials(pullResult: pullResult, runDirectory: runDirectory)
-            authoritative = pullResult.exitCode == 0 && !pullResult.stdout.isEmpty
-        } catch {
-            finishStatus = 1
-            gateError = error
-            serialRefs = [
-                SerialRef(name: "serial_user.txt", path: "serial_user.txt", bytes: fileSize(runDirectory.appendingPathComponent("serial_user.txt")), stream: .com1),
-                SerialRef(name: "serial_kernel.txt", path: "serial_kernel.txt", bytes: fileSize(runDirectory.appendingPathComponent("serial_kernel.txt")), stream: .com2)
-            ]
-        }
-        let gateStdoutBytes = fileSize(gateStdoutURL)
-        let command = readableGateCommand(paths: planResult.paths, boots: options.boots, mode: options.mode)
-        var env = gateEnvironment(paths: planResult.paths, timeoutSecs: timeoutSecs, qemuProfile: options.qemuProfile, suite: options.suite)
-        env["BREENIX_LANE_KEY"] = options.laneKey
-        env["BREENIX_REMOTE_QUIESCED"] = quiesced ? "1" : "0"
-        var captures = [CaptureRef(name: "gate-stdout.txt", path: "gate-stdout.txt", bytes: gateStdoutBytes),
-                        CaptureRef(name: "reconnects.jsonl", path: "reconnects.jsonl", bytes: fileSize(reconnectURL))]
-        for screen in screenNames(in: runDirectory) {
-            let url = runDirectory.appendingPathComponent(screen)
-            captures.append(CaptureRef(name: screen, path: screen, bytes: fileSize(url)))
-        }
-
-        let gateStdoutText = String(decoding: try Data(contentsOf: gateStdoutURL), as: UTF8.self)
-        if finishStatus == 0 && !gateStdoutText.split(separator: "\n").contains(where: { $0.hasPrefix("GATE: PASS (") }) {
-            finishStatus = 1
-        }
-        env["BREENIX_GATE_FRESH"] = options.fresh ? "1" : "0"
-        for line in gateStdoutText.split(separator: "\n") {
-            if line.hasPrefix("[gate-tree] tree="), let field = line.split(separator: " ").first(where: { $0.hasPrefix("tree=") }) {
-                env["BREENIX_REPO_DIR"] = String(field.dropFirst(5))
-            }
-            if line.hasPrefix("[gate-cache] HIT") || line.hasPrefix("[gate-cache] MISS") || line.hasPrefix("[gate-cache] FRESH") {
-                env["BREENIX_GATE_CACHE_RESULT"] = String(line)
-            }
-        }
-        env["BREENIX_CATCHUP"] = options.catchup ? "1" : "0"
-        let gateVerdictString: String
-        if gateStdoutText.contains("PASS-WITH-ATTRIBUTED-LOCKUP:") {
-            gateVerdictString = "PASS-WITH-ATTRIBUTED-LOCKUP"
-        } else if gateStdoutText.split(separator: "\n").contains(where: {
-            $0.trimmingCharacters(in: .whitespaces).hasPrefix("FAIL:")
-        }) || finishStatus != 0 {
-            gateVerdictString = "FAIL"
-        } else {
-            gateVerdictString = "PASS"
-        }
-        let verdict = Verdict.projectGateOutput(gateStdoutText, verdict: gateVerdictString,
-                                                exitCode: Int(finishStatus), command: command)
-
-        let manifest = RunManifest(
-            id: id,
-            startedAt: startedAt,
-            endedAt: endedAt,
-            arch: .x86_64,
-            profile: "gate",
-            launcher: .beastSSH,
-            kernel: KernelIdentity(buildID: nil, gitSHA: options.sha, gitDirty: options.gitDirty, imageSHA256: nil),
-            // The shared HostFactsSample fields record beast's Linux CPU model,
-            // total RAM, and QEMU version here rather than this Mac's sysctl values.
-            host: startFacts.flatMap { start in endFacts.map { HostFactsTrace(start: start, end: $0) } },
-            verdict: verdict,
-            verdictSource: .gateScript(command: command, exitCode: Int(finishStatus)),
-            serials: serialRefs,
-            captures: captures,
-            command: command,
-            env: env,
-            tags: options.tags,
-            notes: quiesced ? nil : "Remote gate may still be running at \(planResult.paths.gateTmpPath); lane lock may remain held. Recover with breenix-runs recover x86 \(id)."
-        )
-
-        live.finish(status: finishStatus)
-        if let vigilScript {
-            do {
-                try FinishedX86Registration.file(script: vigilScript, manifest: manifest, runDirectory: runDirectory, runner: runner, liveRegistered: live.registered, authoritative: authoritative)
-            } catch {
-                if options.persist { try store.writeManifest(manifest) }
-                throw error
-            }
-        }
-        if options.persist {
-            try store.writeManifest(manifest)
-        }
-        // Only remove evidence after a completed gate and successful harvest.
-        // A disconnected SSH session leaves its remote supervisor and evidence alone.
-        if quiesced && gateError == nil && pullResult.exitCode == 0 && !pullResult.stdout.isEmpty {
-            reconnects = 0
-            var removed = ProcessResult(exitCode: 255)
-            repeat {
-                removed = (try? runner.run(planResult.removeClone)) ?? ProcessResult(exitCode: 255)
-            } while transportLost(removed) && reconnect("cleanup", removed.exitCode, recovering: true)
-            if removed.exitCode != 0 {
-                FileHandle.standardError.write(Data("Remote cleanup failed: exit \(removed.exitCode); evidence: \(planResult.paths.gateTmpPath). Recover with breenix-runs recover x86 \(id).\n".utf8))
-            }
-        }
-        if let gateError { throw gateError }
-        return BeastLaunchResult(
-            manifest: manifest,
-            runDirectory: runDirectory,
-            manifestURL: options.persist ? store.manifestURL(id: id) : nil,
-            stored: options.persist
-        )
-    }
 
     /// Cancel and harvest a run whose observer exhausted its recovery budget.
     /// Retain its failure verdict: later recovery is evidence, not a new boot.
@@ -557,24 +286,7 @@ public struct BeastLauncher {
         return paths
     }
 
-    private func prepareRunDirectory(id: String, persist: Bool) throws -> URL {
-        if persist {
-            return try store.createRunDirectory(id: id)
-        }
 
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("breenix-runs-\(id)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private func parseHostFactsSample(runner: ProcessRunner, paths: BeastPaths, wallTime: Date) -> HostFactsSample? {
-        guard let result = try? runner.run(RemoteCommand.hostFactsRequest(paths: paths)),
-              result.exitCode == 0 else {
-            return nil
-        }
-        return RemoteCommand.parseHostFacts(result.stdoutString, wallTime: wallTime)
-    }
 
     private func harvestSerials(pullResult: ProcessResult, runDirectory: URL) throws -> [SerialRef] {
         let userURL = runDirectory.appendingPathComponent("serial_user.txt")
@@ -643,13 +355,6 @@ public struct BeastLauncher {
             try? FileManager.default.removeItem(at: destination)
             try? FileManager.default.copyItem(at: screen, to: destination)
         }
-    }
-
-    /// The per-boot screens `keepScreens` kept, in boot order.
-    private func screenNames(in runDirectory: URL) -> [String] {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: runDirectory.path)) ?? []
-        return names.filter { $0.hasPrefix("screen-") && $0.hasSuffix(".png") }
-            .sorted { naturalSerialKey($0) < naturalSerialKey($1) }
     }
 
     private func mergeSerials(from gateTmp: URL, userURL: URL, kernelURL: URL) throws {
@@ -737,33 +442,7 @@ public struct BeastLauncher {
         return String(path.dropFirst(rootPath.count + 1))
     }
 
-    private func readableGateCommand(paths: BeastPaths, boots: Int, mode: RemoteGateMode) -> [String] {
-        if let lane = paths.laneKey, let sha = paths.requestedSHA {
-            return ["python3", paths.gateTmpPath + "/gate-tree.py", paths.canonicalRepoDir,
-                    lane, sha, paths.gateTmpPath, "\(boots)", mode.rawValue]
-        }
-        return ["\(paths.clonePath)/docker/qemu/run-x86-gate.sh", "\(boots)", mode.rawValue]
-    }
 
-    private func gateEnvironment(paths: BeastPaths, timeoutSecs: Int, qemuProfile: X86HardwareProfile?, suite: String?) -> [String: String] {
-        var environment = [
-            "BREENIX_GATE_TMP": paths.gateTmpPath,
-            "BREENIX_REPO_DIR": paths.clonePath,
-            "BREENIX_RUST_FORK": paths.rustForkPath,
-            "BREENIX_GATE_TIMEOUT": "\(timeoutSecs)",
-            "BREENIX_FULL_BACKSTOP": "\(fullBackstopSecs)"
-        ]
-        if let lane = paths.laneKey {
-            let parent = URL(fileURLWithPath: paths.canonicalRepoDir).deletingLastPathComponent().path
-            environment["BREENIX_REPO_DIR"] = parent + "/breenix-gate-cache/" + (paths.fresh ? "fresh/" + URL(fileURLWithPath: paths.clonePath).lastPathComponent : "trees/" + lane)
-        }
-        environment["BREENIX_QEMU_PROFILE"] = (qemuProfile ?? .default).rawValue
-        if let suite {
-            environment["BREENIX_BOOT_SUITE"] = suite
-            environment["BREENIX_QMP_SOCKET"] = paths.gateTmpPath + "/qmp.sock"
-        }
-        return environment
-    }
 
     private func fileSize(_ url: URL) -> Int {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),

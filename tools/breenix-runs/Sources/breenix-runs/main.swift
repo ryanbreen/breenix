@@ -65,13 +65,14 @@ func usage() -> String {
     Default store: ~/Library/Application Support/BreenixRuns
     Override for CLI and app: BREENIX_RUNS_STORE=/absolute/store/path
     show defaults to subsystems; combine flags to select panes.
-    run arm launches local QEMU; run x86 supports the remote gate profile only.
+    run arm launches local QEMU; run x86 is refused by the S23 bare-metal-only policy.
+    Prove x86-64 on the x86-metal boot loop. BREENIX_ALLOW_X86_QEMU=1 permits only --dry-run.
     x86 --hardware selects hardware from docs/x86-profiles.json (unset: default).
     --gate-timeout sets the scoring deadline (default: 900); full mode collects completion.
     Full boots stop on USERSPACE TEST REPORT DONE. BREENIX_FULL_BACKSTOP sets the hang
     backstop for that wait (default: max(1800, deadline)).
     --mode suite requires --suite ID; it runs the full gate booting that suite.
-    --catchup allows effort catch-up on x86 after ARM64 QEMU passes; recorded in metadata.
+    --catchup checks effort catch-up eligibility for the historical x86 dry-run plan.
     --no-store avoids persistence; --dry-run prints the x86 remote plan.
     import preserves gate metadata when present; loose serial verdicts remain unknown.
     Use --help or <command> --help to print this usage without accessing the store.
@@ -451,6 +452,8 @@ func main() -> Int32 {
                 }
             case "x86":
                 var runArgs = try parseRunX86(args.dropFirst(2))
+                guard runArgs.dryRun else { throw CLIError(description: X86QemuPolicy.refusal) }
+                try X86QemuPolicy.requireOperatorOverride()
                 switch (ProcessInfo.processInfo.environment["BREENIX_CATCHUP"] ?? "").lowercased() {
                 case "", "0", "false", "no": break
                 case "1", "true", "yes": runArgs.catchup = true
@@ -484,7 +487,6 @@ func main() -> Int32 {
                     slotHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/host-slots.py")).base64EncodedString(),
                     progressBundleBase64: try BeastLauncher.progressBundle(repoRoot: root),
                     treeHelperBase64: try Data(contentsOf: root.appendingPathComponent("scripts/gate-tree.py")).base64EncodedString(),
-                    vigilScript: root.appendingPathComponent("scripts/vigil-record.sh"),
                     targetGuard: root.appendingPathComponent("scripts/effort-target-guard.py")
                 )
                 var options = BeastLaunchOptions(
@@ -500,25 +502,9 @@ func main() -> Int32 {
                     fresh: runArgs.fresh,
                     catchup: runArgs.catchup
                 )
-                if runArgs.dryRun {
-                    options.targetPolicySHA = try launcher.checkTargetPolicy(options: options)
-                    printDryRun(plan: try launcher.plan(options: options))
-                    return 0
-                }
-
-                // Register Vigil when remote serials appear; harvest remains authoritative.
-                let runID = RunManifest.makeID(startedAt: Date(), arch: .x86_64, profile: "gate")
-                options.runID = runID
-                let result = try launcher.runX86(options: options)
-                print("")
-                let records = (try? store.readBootFacts(manifest: result.manifest)) ?? []
-                printFactsBlock(manifest: result.manifest, manifestPath: result.manifestURL, records: records)
-                switch result.manifest.verdictSource {
-                case .gateScript(_, let exitCode):
-                    return exitCode != 0 ? Int32(exitCode) : (result.manifest.verdict.isFailure ? 1 : 0)
-                default:
-                    return result.manifest.verdict.isFailure ? 1 : 0
-                }
+                options.targetPolicySHA = try launcher.checkTargetPolicy(options: options)
+                printDryRun(plan: try launcher.plan(options: options))
+                return 0
             default:
                 throw CLIError(description: "run \(args[1]) is not a recognized architecture (supported: arm, x86)")
             }

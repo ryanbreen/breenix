@@ -195,7 +195,7 @@ fn scan(
 
 /// Let the calling thread run on after `block_current_for_child_exit`.
 fn unblock_self() {
-    crate::task::scheduler::with_scheduler(|sched| {
+    crate::task::scheduler::with_current(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
             thread.set_ready();
@@ -257,7 +257,7 @@ fn wait_for_child(mut selector: Selector, options: u32) -> Result<Option<Found>,
         return Ok(None);
     }
     loop {
-        crate::task::scheduler::with_scheduler(|sched| sched.block_current_for_child_exit());
+        crate::task::scheduler::with_current(|sched| sched.block_current_for_child_exit());
         crate::tracing::providers::process::trace_waitpid_block(thread_id as u16, 0);
         match scan(thread_id, &mut selector, options, &mut mutations) {
             Ok(None) => {}

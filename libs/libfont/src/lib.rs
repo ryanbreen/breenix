@@ -360,6 +360,17 @@ impl Font {
         Ok(Some(self.placement([h(2)?, h(4)?, h(6)?, h(8)?], scale)))
     }
 
+    /// Geometry for GPU text: a glyph's bitmap width and height at `pixel_size` and the segments
+    /// it flattens to (`layout_glyph`'s), without rasterizing them; (0, 0) and an empty list for
+    /// a glyph without contours.
+    pub fn glyph_segments(&self, glyph: u16, pixel_size: f32) -> Result<(usize, usize, Vec<outline::LineSegment>), FontError> {
+        let outline = self.glyph_outline(glyph)?;
+        match self.layout_glyph(&outline, glyph, Font::size26(pixel_size)?)? {
+            GlyphLayout::Empty { .. } => Ok((0, 0, Vec::new())),
+            GlyphLayout::Outline { segments, width, height, .. } => Ok((width, height, segments)),
+        }
+    }
+
     /// Rasterize a glyph at `pixel_size` (section 8.3); `BadSize` outside 1 to 1,024.
     pub fn rasterize_glyph(&self, glyph: u16, pixel_size: f32) -> Result<GlyphBitmap, FontError> {
         self.rasterize_glyph26(glyph, Font::size26(pixel_size)?)

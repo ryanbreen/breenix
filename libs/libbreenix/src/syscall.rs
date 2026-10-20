@@ -14,6 +14,9 @@
 
 use core::arch::asm;
 
+/// Read pool output without waiting for credited entropy, for non-secret callers.
+pub const GRND_INSECURE: u32 = 0x0004;
+
 /// Syscall numbers matching kernel/src/syscall/mod.rs
 ///
 /// x86_64: Uses the Linux x86_64 ABI's system call numbers.
@@ -94,6 +97,7 @@ pub mod nr {
     pub const KILL: u64 = 62;
     pub const FCNTL: u64 = 72;
     pub const FSYNC: u64 = 74;
+    pub const SYNC: u64 = 162;
     pub const FDATASYNC: u64 = 75;
     pub const TRUNCATE: u64 = 76;
     pub const FTRUNCATE: u64 = 77;
@@ -262,6 +266,7 @@ pub mod nr {
     pub const FSTAT: u64 = 80;
     pub const FSTATFS: u64 = 44;
     pub const FSYNC: u64 = 82;
+    pub const SYNC: u64 = 81;
     pub const FDATASYNC: u64 = 83;
 
     // Process management

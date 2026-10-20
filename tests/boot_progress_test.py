@@ -121,9 +121,8 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(self.progress.last_line, 'SUITE threads CASE partial PASS ms=1')
 
     def test_long_silent_case_requires_explicit_named_allowance(self):
-        # Blanket overrides remain forbidden. Only the runner's named
-        # allowances may exceed 10 s (the RTC measurement and the breengel
-        # workloads plan section 19 names), and each must fit the stall deadline.
+        # Blanket overrides remain forbidden. Each named allowance must fit
+        # the stall deadline and identify a case in its suite manifest.
         self.feed('SUITE threads START cases=141\n', 0)
         self.assertTrue(self.progress.stalled(now=121))
         # Inspect both builder calls and public-field overrides in the program
@@ -147,6 +146,8 @@ class ProgressTest(unittest.TestCase):
             ('breengel', 'png-decode/independent-fixtures'): 20_000,
             ('breengel', 'windows/churn'): 20_000,
             ('breengel', 'composition/present-rate'): 20_000,
+            ('console', 'getty/logout-reacquires'): 30_000,
+            ('console', 'getty/independent-sessions'): 30_000,
         })
         for (suite, case), limit in allowances.items():
             manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())

@@ -1,26 +1,21 @@
 //! Graphical progress display for boot tests
 //!
 //! Renders progress bars showing test execution status in real-time.
-//! Works on both x86_64 and ARM64 whenever a framebuffer is available.
-//!
-//! On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature since it
-//! needs the double-buffered framebuffer setup. Without it, the raw framebuffer
-//! is consumed by the basic text logger and no shell framebuffer exists.
-//! On ARM64, VirtIO GPU provides the framebuffer regardless of feature flags.
-//!
-//! When no framebuffer is available, this module gracefully degrades to a no-op.
+//! On ARM64 the console renderer draws the panel into its splash shadow,
+//! below the stage label, so the panel and splash have one screen writer and
+//! the full-frame read-back includes both. x86 keeps the console's screen.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-use super::progress::{
-    get_overall_progress, get_progress, get_stage_progress, is_complete, is_started,
-};
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
+use super::progress::{get_progress, get_stage_progress, is_started};
+#[cfg(target_arch = "aarch64")]
 use super::registry::{SubsystemId, TestStage};
 
 /// Whether graphical display is available and initialized
 static DISPLAY_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static REFRESH: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // Public API (always available)
@@ -55,7 +50,9 @@ pub fn render_progress() {
         return;
     }
 
-    render_to_framebuffer();
+    // The console render pass samples progress after this request.
+    #[cfg(target_arch = "aarch64")]
+    REFRESH.store(true, Ordering::Release);
 }
 
 /// Request a display refresh
@@ -73,19 +70,12 @@ pub fn request_refresh() {
 
 /// Check if framebuffer is available (architecture-specific)
 ///
-/// On x86_64, SHELL_FRAMEBUFFER only exists with the `interactive` feature.
-/// On ARM64, SHELL_FRAMEBUFFER is always available when VirtIO GPU initializes.
+/// On x86_64 the framebuffer belongs to the screen console. On ARM64,
+/// SHELL_FRAMEBUFFER is available when VirtIO GPU initializes.
 fn has_framebuffer_available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        #[cfg(feature = "interactive")]
-        {
-            crate::logger::SHELL_FRAMEBUFFER.get().is_some()
-        }
-        #[cfg(not(feature = "interactive"))]
-        {
-            false
-        }
+        false
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -98,19 +88,22 @@ fn has_framebuffer_available() -> bool {
 // Graphical rendering implementation
 // =============================================================================
 //
-// The full rendering code is compiled on platforms that can have a framebuffer:
-// - x86_64 with interactive feature (SHELL_FRAMEBUFFER exists)
-// - ARM64 (VirtIO GPU provides SHELL_FRAMEBUFFER)
-//
-// On x86_64 without interactive, a no-op stub is provided instead.
+// The full rendering code is compiled on ARM64 (VirtIO GPU provides
+// SHELL_FRAMEBUFFER). On x86_64, a no-op stub is provided instead.
 
-/// Render to the appropriate framebuffer based on platform
-#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
-fn render_to_framebuffer() {
+/// Draw a requested test-panel update into the console's retained splash.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn render_splash(
+    shadow: &mut [u8],
+    layout: crate::console::raster::Layout,
+    force: bool,
+) -> Option<core::ops::Range<usize>> {
     use crate::graphics::primitives::{
         draw_rect, draw_text, fill_rect, Canvas, Color, Rect, TextStyle,
     };
-
+    if !is_ready() || !(REFRESH.swap(false, Ordering::AcqRel) || force) {
+        return None;
+    }
     // Color scheme
     const COLOR_BACKGROUND: Color = Color::rgb(26, 26, 46);
     const COLOR_BORDER: Color = Color::rgb(74, 74, 106);
@@ -129,127 +122,166 @@ fn render_to_framebuffer() {
     const COLOR_STAGE_USER: Color = Color::rgb(180, 100, 255); // Purple - Userspace
 
     // Layout constants
-    const PANEL_MARGIN_X: i32 = 40;
-    const PANEL_MARGIN_Y: i32 = 40;
-    const PANEL_WIDTH: u32 = 600;
-    const PANEL_HEIGHT: u32 = 400;
-    const PANEL_PADDING: i32 = 20;
-    const TITLE_HEIGHT: i32 = 40;
-    const ROW_HEIGHT: i32 = 28;
+    const PANEL_PADDING: i32 = 6;
+    const TITLE_HEIGHT: i32 = 24;
+    const ROW_HEIGHT: i32 = 20;
+    const SUMMARY_HEIGHT: i32 = 20;
+    const COLUMN_GAP: i32 = 16;
     const NAME_WIDTH: i32 = 100;
-    const BAR_WIDTH: u32 = 300;
-    const BAR_HEIGHT: u32 = 16;
-    const PERCENT_WIDTH: i32 = 50;
+    const BAR_HEIGHT: u32 = 12;
+    const MIN_BAR_WIDTH: i32 = 80;
+    const PERCENT_WIDTH: i32 = 48;
+    const STATUS_WIDTH: i32 = 40;
 
-    /// Render the progress panel to a canvas
-    fn render_panel<C: Canvas>(canvas: &mut C) {
-        let panel_x = PANEL_MARGIN_X;
-        let panel_y = PANEL_MARGIN_Y;
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Status {
+        NotApplicable,
+        Pending,
+        Running,
+        Pass,
+        Fail,
+    }
 
-        // Draw panel background
-        fill_rect(
-            canvas,
-            Rect {
-                x: panel_x,
-                y: panel_y,
-                width: PANEL_WIDTH,
-                height: PANEL_HEIGHT,
-            },
-            COLOR_BACKGROUND,
-        );
+    /// One subsystem's counters, read once per render so its row and the
+    /// summary line describe the same moment.
+    #[derive(Clone, Copy)]
+    struct Row {
+        completed: u32,
+        total: u32,
+        failed: u32,
+        status: Status,
+        stages: [(u32, u32); TestStage::COUNT],
+    }
 
-        // Draw panel border
-        draw_rect(
-            canvas,
-            Rect {
-                x: panel_x,
-                y: panel_y,
-                width: PANEL_WIDTH,
-                height: PANEL_HEIGHT,
-            },
-            COLOR_BORDER,
-        );
+    fn snapshot(id: SubsystemId) -> Row {
+        let (completed, total, failed) = get_progress(id);
+        let status = if total == 0 {
+            Status::NotApplicable
+        } else if completed >= total {
+            if failed > 0 {
+                Status::Fail
+            } else {
+                Status::Pass
+            }
+        } else if !is_started(id) {
+            Status::Pending
+        } else {
+            Status::Running
+        };
+        Row {
+            completed,
+            total,
+            failed,
+            status,
+            stages: get_stage_progress(id),
+        }
+    }
 
-        // Draw title
+    /// Render the progress panel into `area`, or skip the render when `area` is
+    /// too small for its columns.
+    fn render_panel<C: Canvas>(canvas: &mut C, area: Rect) {
+        let mut rows = [None; SubsystemId::COUNT];
+        for (idx, row) in rows.iter_mut().enumerate() {
+            *row = SubsystemId::from_index(idx).map(|id| (id, snapshot(id)));
+        }
+
+        let inner_x = area.x + PANEL_PADDING;
+        let inner_width = area.width as i32 - 2 * PANEL_PADDING;
+        let rows_fit =
+            (area.height as i32 - 2 * PANEL_PADDING - TITLE_HEIGHT - SUMMARY_HEIGHT) / ROW_HEIGHT;
+        if rows_fit <= 0 {
+            return;
+        }
+        let rows_fit = rows_fit as usize;
+        let columns = SubsystemId::COUNT.div_ceil(rows_fit);
+        let rows_per_column = SubsystemId::COUNT.div_ceil(columns);
+        let column_width = (inner_width - (columns as i32 - 1) * COLUMN_GAP) / columns as i32;
+        let bar_width = column_width - NAME_WIDTH - PERCENT_WIDTH - STATUS_WIDTH;
+        if bar_width < MIN_BAR_WIDTH {
+            return;
+        }
+
+        fill_rect(canvas, area, COLOR_BACKGROUND);
+        draw_rect(canvas, area, COLOR_BORDER);
+
         let title_style = TextStyle::new().with_color(COLOR_TITLE);
+        let advance = title_style.font.metrics().char_advance() as i32;
         let title = "BREENIX PARALLEL TEST RUNNER";
-        let title_x = panel_x + (PANEL_WIDTH as i32 - title.len() as i32 * 9) / 2;
-        let title_y = panel_y + PANEL_PADDING;
+        let title_x = area.x + (area.width as i32 - title.len() as i32 * advance) / 2;
+        let title_y = area.y + PANEL_PADDING;
         draw_text(canvas, title_x, title_y, title, &title_style);
-
-        // Draw horizontal line under title
-        let line_y = panel_y + PANEL_PADDING + TITLE_HEIGHT - 8;
         fill_rect(
             canvas,
             Rect {
-                x: panel_x + PANEL_PADDING,
-                y: line_y,
-                width: PANEL_WIDTH - (PANEL_PADDING as u32 * 2),
+                x: inner_x,
+                y: title_y + TITLE_HEIGHT - 4,
+                width: inner_width as u32,
                 height: 1,
             },
             COLOR_BORDER,
         );
 
-        // Draw each subsystem row
-        let content_start_y = panel_y + PANEL_PADDING + TITLE_HEIGHT;
-        let content_x = panel_x + PANEL_PADDING;
-
-        for idx in 0..SubsystemId::COUNT {
-            if let Some(id) = SubsystemId::from_index(idx) {
-                let row_y = content_start_y + (idx as i32 * ROW_HEIGHT);
-                render_subsystem_row(canvas, content_x, row_y, id);
+        let content_y = title_y + TITLE_HEIGHT;
+        for (idx, entry) in rows.iter().enumerate() {
+            if let Some((id, row)) = entry {
+                let column = (idx / rows_per_column) as i32;
+                let x = inner_x + column * (column_width + COLUMN_GAP);
+                let y = content_y + (idx % rows_per_column) as i32 * ROW_HEIGHT;
+                render_subsystem_row(canvas, x, y, bar_width, *id, row);
             }
         }
 
-        // Draw summary line at bottom
-        let summary_y = content_start_y + (SubsystemId::COUNT as i32 * ROW_HEIGHT) + 10;
-        render_summary_line(canvas, content_x, summary_y);
+        let summary_y = content_y + rows_per_column as i32 * ROW_HEIGHT + 2;
+        render_summary_line(canvas, inner_x, summary_y, &rows);
     }
 
     /// Render a single subsystem row
-    fn render_subsystem_row<C: Canvas>(canvas: &mut C, x: i32, y: i32, id: SubsystemId) {
-        let (completed, total, failed) = get_progress(id);
-        let started = is_started(id);
-        let complete = is_complete(id);
-
-        // Determine status
-        let (status_text, status_color) = if total == 0 {
-            ("N/A ", COLOR_PEND)
-        } else if !started {
-            ("PEND", COLOR_PEND)
-        } else if complete {
-            if failed > 0 {
-                ("FAIL", COLOR_FAIL)
-            } else {
-                ("PASS", COLOR_PASS)
-            }
-        } else {
-            ("RUN ", COLOR_RUN)
+    fn render_subsystem_row<C: Canvas>(
+        canvas: &mut C,
+        x: i32,
+        y: i32,
+        bar_width: i32,
+        id: SubsystemId,
+        row: &Row,
+    ) {
+        let (status_text, status_color) = match row.status {
+            Status::NotApplicable => ("N/A", COLOR_PEND),
+            Status::Pending => ("PEND", COLOR_PEND),
+            Status::Running => ("RUN", COLOR_RUN),
+            Status::Pass => ("PASS", COLOR_PASS),
+            Status::Fail => ("FAIL", COLOR_FAIL),
         };
 
-        // Draw subsystem name
-        let name = id.name();
         let name_style = TextStyle::new().with_color(COLOR_TEXT);
-        draw_text(canvas, x, y, name, &name_style);
+        draw_text(canvas, x, y, id.name(), &name_style);
 
-        // Draw progress bar with stage-colored segments
         let bar_x = x + NAME_WIDTH;
-        let bar_y = y + (ROW_HEIGHT - BAR_HEIGHT as i32) / 2 - 2;
-        let stage_progress = get_stage_progress(id);
-        render_progress_bar(canvas, bar_x, bar_y, total, &stage_progress);
+        let bar_y = y + 2;
+        render_progress_bar(
+            canvas,
+            bar_x,
+            bar_y,
+            bar_width as u32,
+            row.total,
+            &row.stages,
+        );
 
-        // Draw percentage
-        let percent = if total > 0 {
-            (completed * 100) / total
+        let percent = if row.total > 0 {
+            (row.completed.min(row.total) as u64 * 100 / row.total as u64) as u32
         } else {
             0
         };
-        let percent_str = format_percent(percent);
-        let percent_x = bar_x + BAR_WIDTH as i32 + 10;
+        let mut percent_buf = [0u8; 4];
+        let percent_x = bar_x + bar_width + 8;
         let percent_style = TextStyle::new().with_color(COLOR_TEXT);
-        draw_text(canvas, percent_x, y, percent_str, &percent_style);
+        draw_text(
+            canvas,
+            percent_x,
+            y,
+            format_percent(percent, &mut percent_buf),
+            &percent_style,
+        );
 
-        // Draw status
         let status_x = percent_x + PERCENT_WIDTH;
         let status_style = TextStyle::new().with_color(status_color);
         draw_text(canvas, status_x, y, status_text, &status_style);
@@ -262,6 +294,7 @@ fn render_to_framebuffer() {
         canvas: &mut C,
         x: i32,
         y: i32,
+        bar_width: u32,
         total: u32,
         stage_progress: &[(u32, u32); TestStage::COUNT],
     ) {
@@ -280,7 +313,7 @@ fn render_to_framebuffer() {
             Rect {
                 x,
                 y,
-                width: BAR_WIDTH,
+                width: bar_width,
                 height: BAR_HEIGHT,
             },
             COLOR_BAR_EMPTY,
@@ -294,11 +327,11 @@ fn render_to_framebuffer() {
                 if completed > 0 {
                     // Calculate width for this stage's completed tests
                     let segment_width =
-                        ((completed as u64 * BAR_WIDTH as u64) / total as u64) as u32;
+                        ((completed as u64 * bar_width as u64) / total as u64) as u32;
 
                     if segment_width > 0 {
                         // Ensure we don't overflow the bar
-                        let remaining = BAR_WIDTH.saturating_sub((current_x - x) as u32);
+                        let remaining = bar_width.saturating_sub((current_x - x) as u32);
                         let actual_width = segment_width.min(remaining);
 
                         if actual_width > 0 {
@@ -325,67 +358,51 @@ fn render_to_framebuffer() {
             Rect {
                 x,
                 y,
-                width: BAR_WIDTH,
+                width: bar_width,
                 height: BAR_HEIGHT,
             },
             COLOR_BORDER,
         );
     }
 
-    /// Render the summary line at bottom of panel
-    fn render_summary_line<C: Canvas>(canvas: &mut C, x: i32, y: i32) {
-        let (completed, total, failed) = get_overall_progress();
-
-        // Count complete subsystems
-        let mut complete_count = 0u32;
-        for idx in 0..SubsystemId::COUNT {
-            if let Some(id) = SubsystemId::from_index(idx) {
-                if is_complete(id) {
-                    complete_count += 1;
-                }
+    /// Render the summary line from the same snapshot the rows were drawn from:
+    /// the complete count is the number of rows showing PASS or FAIL.
+    fn render_summary_line<C: Canvas>(
+        canvas: &mut C,
+        x: i32,
+        y: i32,
+        rows: &[Option<(SubsystemId, Row)>; SubsystemId::COUNT],
+    ) {
+        let (mut completed, mut total, mut failed, mut complete_count) = (0u32, 0u32, 0u32, 0u32);
+        for (_, row) in rows.iter().flatten() {
+            completed += row.completed;
+            total += row.total;
+            failed += row.failed;
+            if matches!(row.status, Status::Pass | Status::Fail) {
+                complete_count += 1;
             }
         }
 
-        // Format summary
         let summary = format_summary(completed, total, complete_count, failed);
         let style = TextStyle::new().with_color(COLOR_TEXT);
         draw_text(canvas, x, y, &summary, &style);
     }
 
-    /// Format a percentage as a string
-    fn format_percent(percent: u32) -> &'static str {
-        match percent {
-            0 => "  0%",
-            5 => "  5%",
-            10 => " 10%",
-            15 => " 15%",
-            20 => " 20%",
-            25 => " 25%",
-            30 => " 30%",
-            35 => " 35%",
-            40 => " 40%",
-            45 => " 45%",
-            50 => " 50%",
-            55 => " 55%",
-            60 => " 60%",
-            65 => " 65%",
-            70 => " 70%",
-            75 => " 75%",
-            80 => " 80%",
-            85 => " 85%",
-            90 => " 90%",
-            95 => " 95%",
-            100 => "100%",
-            _ => {
-                if percent < 10 {
-                    "  ?%"
-                } else if percent < 100 {
-                    " ??%"
-                } else {
-                    "100%"
-                }
+    /// Format a percentage (0-100) right-aligned in four characters, e.g. " 37%".
+    fn format_percent(percent: u32, buf: &mut [u8; 4]) -> &str {
+        let percent = percent.min(100);
+        *buf = *b"   %";
+        let mut value = percent;
+        let mut pos = 2;
+        loop {
+            buf[pos] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 || pos == 0 {
+                break;
             }
+            pos -= 1;
         }
+        core::str::from_utf8(buf).unwrap_or("")
     }
 
     /// Format the summary line
@@ -410,32 +427,60 @@ fn render_to_framebuffer() {
         }
     }
 
-    // Actual rendering dispatch based on architecture
-    #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-    {
-        if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
-            let mut guard = fb.lock();
-            render_panel(&mut *guard);
+    struct Shadow<'a> {
+        pixels: &'a mut [u8],
+        layout: crate::console::raster::Layout,
+    }
+    impl Canvas for Shadow<'_> {
+        fn width(&self) -> usize {
+            self.layout.width
+        }
+        fn height(&self) -> usize {
+            self.layout.height
+        }
+        fn bytes_per_pixel(&self) -> usize {
+            self.layout.bytes_per_pixel
+        }
+        fn stride(&self) -> usize {
+            self.layout.stride_bytes / self.layout.bytes_per_pixel
+        }
+        fn is_bgr(&self) -> bool {
+            self.layout.bgr
+        }
+        fn buffer(&self) -> &[u8] {
+            self.pixels
+        }
+        fn buffer_mut(&mut self) -> crate::graphics::firmware_writes::BufferMut<'_> {
+            crate::graphics::firmware_writes::BufferMut::new(self.pixels, false)
+        }
+        fn set_pixel(&mut self, x: i32, y: i32, color: Color) {
+            if x < 0 || y < 0 || x as usize >= self.width() || y as usize >= self.height() {
+                return;
+            }
+            let bpp = self.bytes_per_pixel();
+            let pixel = color.to_pixel_bytes(bpp, self.is_bgr());
+            let offset = y as usize * self.layout.stride_bytes + x as usize * bpp;
+            self.pixels[offset..offset + bpp].copy_from_slice(&pixel[..bpp]);
+        }
+        fn get_pixel(&self, x: i32, y: i32) -> Option<Color> {
+            if x < 0 || y < 0 || x as usize >= self.width() || y as usize >= self.height() {
+                return None;
+            }
+            let offset =
+                y as usize * self.layout.stride_bytes + x as usize * self.bytes_per_pixel();
+            let p = &self.pixels[offset..offset + 3];
+            Some(if self.is_bgr() {
+                Color::rgb(p[2], p[1], p[0])
+            } else {
+                Color::rgb(p[0], p[1], p[2])
+            })
         }
     }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-            let mut guard = fb.lock();
-            render_panel(&mut *guard);
-            // Flush to display on ARM64
-            guard.flush();
-        }
-    }
-}
-
-/// No-op rendering stub for x86_64 without interactive feature.
-///
-/// On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature because
-/// without it, the raw framebuffer is consumed by the basic text logger.
-/// This stub ensures the code compiles cleanly with zero warnings.
-#[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-fn render_to_framebuffer() {
-    // No graphical display available - framebuffer is used by basic text logger
+    let mut canvas = Shadow {
+        pixels: shadow,
+        layout,
+    };
+    let area = crate::graphics::boot_screen::runner_area(&canvas)?;
+    render_panel(&mut canvas, area);
+    Some(area.y as usize..area.y as usize + area.height as usize)
 }

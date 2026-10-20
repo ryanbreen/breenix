@@ -322,6 +322,7 @@ impl DoubleBufferedFrameBuffer {
                         let dst = self.hardware_ptr.add(start_offset);
                         ptr::copy_nonoverlapping(src, dst, total_len);
                     }
+                    super::firmware_writes::note_range(unsafe { self.hardware_ptr.add(start_offset) }, total_len);
                     continue;
                 }
             }
@@ -346,6 +347,7 @@ impl DoubleBufferedFrameBuffer {
                     let dst = self.hardware_ptr.add(src_start);
                     ptr::copy_nonoverlapping(src, dst, row_len);
                 }
+                super::firmware_writes::note_range(unsafe { self.hardware_ptr.add(src_start) }, row_len);
             }
         }
         self.dirty = false;
@@ -361,6 +363,7 @@ impl DoubleBufferedFrameBuffer {
             unsafe {
                 ptr::copy_nonoverlapping(self.shadow_buffer.as_ptr(), self.hardware_ptr, len);
             }
+            super::firmware_writes::note_range(self.hardware_ptr, len);
         }
         self.dirty = false;
         self.dirty_regions.clear();
@@ -408,6 +411,7 @@ impl DoubleBufferedFrameBuffer {
             let src = self.hardware_ptr.add(scroll_bytes);
             ptr::copy(src, self.hardware_ptr, len - scroll_bytes);
         }
+        super::firmware_writes::note_range(self.hardware_ptr, len - scroll_bytes);
     }
 }
 

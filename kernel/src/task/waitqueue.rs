@@ -75,7 +75,7 @@ impl WaitQueueHead {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            let published = crate::task::scheduler::with_scheduler(|sched| {
+            let published = crate::task::scheduler::with_current(|sched| {
                 sched.block_current_for_io_with_timeout(None)
             })
             .unwrap_or(false);
@@ -120,7 +120,7 @@ impl WaitQueueHead {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            let published = crate::task::scheduler::with_scheduler(|sched| {
+            let published = crate::task::scheduler::with_current(|sched| {
                 sched.block_current_for_io_with_timeout(wake_time_ns)
             })
             .unwrap_or(false);
@@ -215,6 +215,24 @@ impl WaitQueueHead {
         woken
     }
 
+    /// Try a bounded wake from hard IRQ context, where IRQs are already masked.
+    /// Contention leaves the queue for the completion publisher in task context.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn try_wake_up_n_from_irq(&self, max: u32) -> u32 {
+        let Some(mut waiters) = self.waiters.try_lock() else {
+            return 0;
+        };
+        let mut woken = 0;
+        while woken < max {
+            let Some(waiter) = waiters.pop_front() else {
+                break;
+            };
+            crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+            woken += 1;
+        }
+        woken
+    }
+
     /// Enqueue `tid` without publishing a blocked state, for a caller that
     /// watches several queues and publishes its own wait (poll, select). It
     /// rechecks its condition after publishing, and removes itself with
@@ -229,6 +247,24 @@ impl WaitQueueHead {
             }
             waiters.push_back(Waiter::new(tid));
             true
+        })
+    }
+
+    /// Take up to `out.len()` waiters off the queue, oldest first, without waking
+    /// them, for a caller that wakes them after the queue's lock is released (the
+    /// GPU core, whose waiters publish their own wait as `add_waiter` describes).
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn take_waiters(&self, out: &mut [u64]) -> usize {
+        self.with_waiters(|waiters| {
+            let mut taken = 0;
+            while taken < out.len() {
+                let Some(waiter) = waiters.pop_front() else {
+                    break;
+                };
+                out[taken] = waiter.tid;
+                taken += 1;
+            }
+            taken
         })
     }
 
@@ -347,6 +383,9 @@ fn in_interrupt_context() -> bool {
 /// that check as the end of the halt.
 #[cfg(not(target_arch = "aarch64"))]
 pub(crate) fn halt_blocked_current() {
+    #[cfg(target_arch = "x86_64")]
+    let others_ready = crate::task::scheduler::any_thread_queued();
+    #[cfg(not(target_arch = "x86_64"))]
     let others_ready =
         crate::task::scheduler::with_scheduler(|sched| sched.ready_queue_length() != 0)
             .unwrap_or(false);
@@ -369,7 +408,7 @@ pub fn schedule_current_wait() {
     crate::per_cpu::preempt_enable();
 
     loop {
-        let still_waiting = crate::task::scheduler::with_scheduler(|sched| {
+        let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched
                 .current_thread_mut()
                 .map(|thread| thread.state == ThreadState::BlockedOnIO)

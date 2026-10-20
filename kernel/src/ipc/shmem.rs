@@ -16,7 +16,9 @@ pub use namespace::{
     access_path, link_fd, link_path, mmap_fd, open_path, rename_path, stat_path, unlink_path,
     virtual_entry,
 };
-pub(crate) use object::{release_frame, Frame};
+pub(crate) use object::release_frame;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use object::Frame;
 pub use object::{page_count, MappingOrigin, ShmMapping, ShmObject};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;

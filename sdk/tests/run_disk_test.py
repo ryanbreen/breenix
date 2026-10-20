@@ -19,7 +19,9 @@ class SuppliedDiskTests(unittest.TestCase):
         for directory in ('scripts', 'docker/qemu/lib', 'target/aarch64-breenix-kernel/release',
                           'target/release/build/breenix-test/out', 'target/ovmf/x64', 'bin'):
             (self.root / directory).mkdir(parents=True)
+        shutil.copy2(ROOT / 'scripts/build-background.sh', self.root / 'scripts/build-background.sh')
         shutil.copyfile(ROOT / 'scripts/ext2-machine.py', self.root / 'scripts/ext2-machine.py')
+        shutil.copyfile(ROOT / 'scripts/x86-qemu-policy.sh', self.root / 'scripts/x86-qemu-policy.sh')
         (self.root / 'scripts/host-slots.sh').write_text('''
 host_slots_start() { :; }
 host_slot_acquire() { :; }
@@ -65,7 +67,10 @@ Path('build-called').write_text('yes')
 assert sys.argv[1] == '-b'
 from pathlib import Path
 Path('priority-called').write_text('yes')
-os.execvp(sys.argv[2], sys.argv[2:])
+args = sys.argv[2:]
+if args[:2] == ['-g', 'utility']:
+    args = args[2:]
+os.execvp(args[0], args)
 ''')
         for qemu in ('qemu-system-aarch64', 'qemu-system-x86_64'):
             self.write_tool(qemu, '''from pathlib import Path
@@ -79,7 +84,7 @@ Path('vm-called').write_text('yes')
         self.write_tool('debugfs', '''import os, struct, sys
 sys.stdout.buffer.write(b'\\x7fELF\\x02\\x01\\x01' + bytes(11) + struct.pack('<H', int(os.environ.get('TEST_MACHINE', '183'))) + bytes(44))
 ''')
-        self.env = {**os.environ, 'CARGO_BUILD_JOBS': '3', 'BREENIX_DEBUGFS': str(self.root / 'bin/debugfs'), 'PATH': str(self.root / 'bin') + ':' + os.environ['PATH']}
+        self.env = {**os.environ, 'BREENIX_ALLOW_X86_QEMU': '1', 'CARGO_BUILD_JOBS': '3', 'BREENIX_DEBUGFS': str(self.root / 'bin/debugfs'), 'PATH': str(self.root / 'bin') + ':' + os.environ['PATH']}
 
     def tearDown(self):
         self.temp.cleanup()

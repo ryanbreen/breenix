@@ -87,7 +87,7 @@ const STATUS_ACKNOWLEDGE: u8 = 1;
 const STATUS_DRIVER: u8 = 2;
 const STATUS_DRIVER_OK: u8 = 4;
 const STATUS_FEATURES_OK: u8 = 8;
-const STATUS_FAILED: u8 = 128;
+pub const STATUS_FAILED: u8 = 128;
 
 // =============================================================================
 // VirtIO Device Types (from VirtIO spec)
@@ -98,6 +98,7 @@ pub mod device_id {
     pub const NETWORK: u32 = 1;
     pub const BLOCK: u32 = 2;
     pub const CONSOLE: u32 = 3;
+    pub const ENTROPY: u32 = 4;
     pub const GPU: u32 = 16;
     pub const INPUT: u32 = 18;
     pub const SOUND: u32 = 25;
@@ -629,6 +630,11 @@ impl VirtioPciDevice {
         offset + 2 <= self.notify.length as u64
     }
 
+    /// The cached notify address of `queue`, once `cache_queue_notify_addr` has run for it.
+    pub fn cached_notify_address(&self, queue: u32) -> Option<u64> {
+        self.cached_notify_addrs.get(queue as usize).copied().filter(|&a| a != 0)
+    }
+
     /// Notify device using the cached notify address — single MMIO write.
     ///
     /// Falls back to `notify_queue()` if the address hasn't been cached.
@@ -698,6 +704,12 @@ impl VirtioPciDevice {
         } else {
             0
         }
+    }
+
+    /// The kernel virtual address of the ISR status byte, for an interrupt handler that
+    /// reads it without the device object (VirtIO 1.3, section 4.1.4.5).
+    pub fn isr_address(&self) -> Option<u64> {
+        self.isr.is_valid().then_some(self.isr.virt_base)
     }
 
     /// Acknowledge interrupts.
@@ -789,6 +801,7 @@ fn pci_device_id_to_virtio(dev: &PciDevice) -> u32 {
         0x1000 => device_id::NETWORK,
         0x1001 => device_id::BLOCK,
         0x1003 => device_id::CONSOLE,
+        0x1005 => device_id::ENTROPY,
         0x1019 => device_id::SOUND,
         _ => 0, // Unknown
     }
@@ -820,6 +833,7 @@ pub fn device_type_name(device_id: u32) -> &'static str {
         device_id::NETWORK => "network",
         device_id::BLOCK => "block",
         device_id::CONSOLE => "console",
+        device_id::ENTROPY => "entropy",
         device_id::GPU => "GPU",
         device_id::INPUT => "input",
         device_id::SOUND => "sound",

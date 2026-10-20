@@ -187,6 +187,10 @@ impl SerialPort {
             write_reg(reg::CR, cr | cr::UARTEN | cr::TXE | cr::RXE);
         }
 
+        // ARM64 kernel records need severity for the console session policy.
+        if log::set_logger(&KERNEL_LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
         SERIAL_INITIALIZED.store(true, Ordering::Release);
 
         // Publish UART virtual address for assembly-level diagnostics
@@ -289,12 +293,26 @@ pub fn disable_rx_interrupt() {
     }
 }
 
-/// Clear receive interrupt
-pub fn clear_rx_interrupt() {
+/// Rearm a deferred receive without boot-time diagnostics or a serial lock.
+pub(crate) fn resume_rx_interrupt() {
     if is_16550() {
-        // 16550: reading IIR/RBR clears the interrupt
-        let _ = read_reg8(reg16550::THR);
+        let ier = read_reg8(reg16550::IER);
+        write_reg8(reg16550::IER, ier | 0x01);
     } else {
+        let imsc = read_reg(reg::IMSC);
+        write_reg(reg::IMSC, imsc | int::RX | int::RT);
+    }
+}
+
+/// Acknowledge the receive interrupt once the FIFO has reported empty.
+///
+/// It does not read the receive register: a byte that arrived after the
+/// empty report would be consumed and lost (#1803).
+pub fn clear_rx_interrupt() {
+    // The 16550's received-data and character-timeout interrupts are cleared
+    // by the reads that drained the FIFO, so an empty 16550 FIFO needs no
+    // acknowledgement.
+    if !is_16550() {
         write_reg(reg::ICR, int::RX | int::RT);
     }
 }
@@ -318,6 +336,25 @@ pub fn get_received_byte() -> Option<u8> {
     }
 }
 
+struct KernelLogger;
+static KERNEL_LOGGER: KernelLogger = KernelLogger;
+
+impl log::Log for KernelLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            use core::fmt::Write;
+            let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
+                "{:>5}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 pub use crate::serial_writer::Writer;
 
 /// Write a single byte from `writer` to serial output.
@@ -328,13 +365,21 @@ pub fn write_byte(writer: Writer, byte: u8) {
 /// Write one caller-defined output unit from `writer` as a single record (see
 /// `serial_line`).
 pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
-    crate::serial_line::Line::for_writer(writer).bytes(bytes);
+    crate::serial_line::write_bytes(writer, bytes);
 }
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     let _ = crate::serial_line::TeeLine::new().write_fmt(args);
+}
+
+/// A kernel diagnostic record (`diag_println!`): serial and the kernel log, at DEBUG,
+/// which the screen console does not draw (`docs/console/contract.md` section 1.3).
+#[doc(hidden)]
+pub fn _diag_print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = crate::serial_line::TeeLine::with_level(log::Level::Debug).write_fmt(args);
 }
 
 /// Print without risk of deadlock. Aarch64 output takes no lock, so this
@@ -370,16 +415,22 @@ pub fn write_str_bounded(s: &str) {
     });
 }
 
-/// Wait until the output written so far has left for the UART (TCSETSW,
-/// TCSETSF). Aarch64 writers give the UART their output before they return,
-/// so there is nothing to wait for.
-pub fn drain_output() {}
+/// Wait until the terminal output written so far has left for the UART
+/// (TCSETSW, TCSETSF). Kernel records are written before they return; queued
+/// terminal output is written out here (`serial_line`).
+pub fn drain_output() {
+    crate::serial_line::drain_output();
+}
 
-/// ARM64 UART output is synchronous; no software transmit queue remains.
-pub fn flush_output() {}
+/// Discard queued terminal output.
+pub fn flush_output() {
+    crate::serial_line::flush_output();
+}
 
-/// The TTY driver gates synchronous ARM64 writes before they reach the UART.
-pub fn set_output_stopped(_stopped: bool) {}
+/// Stop or resume terminal output (IXON); queued output waits while stopped.
+pub fn set_output_stopped(stopped: bool) {
+    crate::serial_line::set_output_stopped(stopped);
+}
 
 /// Write out the lines posted on paths that may not log (`log_notice`).
 pub fn write_notices() {
@@ -390,34 +441,6 @@ pub fn write_notices() {
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
     _print(args);
-}
-
-/// The kernel's `log` sink: each warning and error is one record, `[`, the level right-aligned
-/// in five columns, `] `, the target, `: `, the message and a newline, written and counted like
-/// any other output (docs/gui/breengel.md section 22). Lower levels are not written.
-struct LogSink;
-
-impl log::Log for LogSink {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Warn
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            _print(format_args!("[{:>5}] {}: {}\n", record.level(), record.target(), record.args()));
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-static LOG_SINK: LogSink = LogSink;
-
-/// Install the `log` sink, once serial output works.
-pub fn init_log_sink() {
-    if log::set_logger(&LOG_SINK).is_ok() {
-        log::set_max_level(log::LevelFilter::Warn);
-    }
 }
 
 // =============================================================================
@@ -460,6 +483,13 @@ macro_rules! serial_print {
 macro_rules! serial_println {
     () => ($crate::serial_print!("\n"));
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
+}
+
+/// Print a kernel diagnostic line (a census or trace written for gates and debugging) to
+/// serial and the kernel log, not to a screen console.
+#[macro_export]
+macro_rules! diag_println {
+    ($($arg:tt)*) => ($crate::serial_aarch64::_diag_print(format_args!("{}\n", format_args!($($arg)*))));
 }
 
 #[macro_export]

@@ -26,12 +26,20 @@ pub mod interrupt_frame;
 pub mod ioapic;
 mod ioapic_route;
 pub mod irq;
+pub mod msi;
+mod msi_message;
+pub mod nmi_report;
+pub mod pagewalk;
 pub mod paging;
+pub mod pat;
+pub mod platform;
 pub mod percpu;
 pub mod pic;
 pub mod privilege;
 pub mod smp;
+pub mod tick_census;
 pub mod timer;
+pub mod tsc_rate;
 
 // Re-export commonly used items
 // These re-exports are part of the complete HAL API

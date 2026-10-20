@@ -10,6 +10,8 @@ extern crate alloc;
 
 pub mod arp;
 pub mod dhcp;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dns_probe;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
@@ -88,6 +90,7 @@ pub(crate) fn net_lock_guard() -> NetLockGuard {
             core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
             core::arch::asm!("msr daifset, #2", options(nomem, nostack));
         }
+        crate::arch_impl::aarch64::irq_mask_account::opened();
         NetLockGuard {
             saved_daif,
             _not_send_or_sync: PhantomData,
@@ -111,6 +114,7 @@ impl Drop for NetLockGuard {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            crate::arch_impl::aarch64::irq_mask_account::restoring(self.saved_daif);
             core::arch::asm!(
                 "msr daif, {}",
                 in(reg) self.saved_daif,
@@ -145,7 +149,7 @@ macro_rules! net_log {
 fn get_mac_address() -> Option<[u8; 6]> {
     #[cfg(target_arch = "x86_64")]
     {
-        e1000::mac_address()
+        crate::drivers::bcm5720::mac_address().or_else(e1000::mac_address)
             .or_else(crate::drivers::virtio::net_legacy::mac_address)
             .or_else(crate::drivers::rtl8139::mac_address)
     }
@@ -162,6 +166,9 @@ fn get_mac_address() -> Option<[u8; 6]> {
 fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {
+        if crate::drivers::bcm5720::is_initialized() {
+            return crate::drivers::bcm5720::transmit(data);
+        }
         if crate::drivers::virtio::net_legacy::is_initialized() {
             return crate::drivers::virtio::net_legacy::transmit(data);
         }
@@ -305,6 +312,16 @@ impl Drop for LoopbackPacket {
 }
 
 static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+/// Taken loopback packets whose delivery has to be offered again, oldest first.
+///
+/// A packet comes back here when a receive structure it needs was held on
+/// another CPU (`ipv4::Handled::Retry`): the UDP port registry is only ever
+/// try-locked on receive, and losing the packet for that would turn a held
+/// lock into a lost datagram. Only the drain guard's holder takes from or
+/// returns to this, and it takes from here before `LOOPBACK_QUEUE`, so a
+/// returned packet keeps its place ahead of everything queued after it.
+static LOOPBACK_RETRY: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+static LOOPBACK_RETRY_DEPTH: AtomicUsize = AtomicUsize::new(0);
 /// Loopback work not yet finished: queued or in-delivery loopback packets and
 /// deferred TCP segments taken but not yet sent.
 ///
@@ -325,6 +342,8 @@ static LOOPBACK_DRAIN_OWNER: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_CONTENDED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DRAIN_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_DROPPED_FULL: AtomicU64 = AtomicU64::new(0);
+/// Drains that returned packets to `LOOPBACK_RETRY`.
+static LOOPBACK_DELIVERY_RETRIES: AtomicU64 = AtomicU64::new(0);
 static IDLE_LOOPBACK_DRAIN_CALLS: AtomicU64 = AtomicU64::new(0);
 static LOOPBACK_PUMP_REARM_FROM_SCHED: AtomicU64 = AtomicU64::new(0);
 /// Longest observed queue-to-delivery latency of a loopback packet, in ticks.
@@ -462,23 +481,28 @@ pub fn loopback_dropped_full() -> u64 {
     LOOPBACK_DROPPED_FULL.load(Ordering::Relaxed)
 }
 
+pub fn loopback_delivery_retries() -> u64 {
+    LOOPBACK_DELIVERY_RETRIES.load(Ordering::Relaxed)
+}
+
+/// Packets queued or waiting to be offered again.
 fn loopback_queue_depth() -> usize {
-    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire)
+    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) + LOOPBACK_RETRY_DEPTH.load(Ordering::Acquire)
 }
 
 pub fn loopback_queue_depth_for_test() -> usize {
     loopback_queue_depth()
 }
 
-/// True when the lock-free queue-depth mirror reports pending packets.
+/// True when the lock-free depth mirrors report pending packets.
 #[inline(always)]
 pub(crate) fn loopback_queue_has_work() -> bool {
-    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) != 0
+    loopback_queue_depth() != 0
 }
 
-/// True when the lock-free queue-depth mirror reports no pending packets.
+/// True when the lock-free depth mirrors report no pending packets.
 pub(crate) fn loopback_queue_is_empty() -> bool {
-    LOOPBACK_QUEUE_DEPTH.load(Ordering::Acquire) == 0
+    loopback_queue_depth() == 0
 }
 
 /// Count one loopback packet or deferred segment as queued.
@@ -578,10 +602,17 @@ pub(crate) fn flush_arp_pending_packets(next_hop: &[u8; 4], mac: &[u8; 6]) {
     drop(queue);
 }
 
-/// Take every queued packet. Only the context delivering them takes, so the
-/// batches leave the queue in the order they are delivered.
+/// Take the queued packets, or first the packets returned for another offer.
+/// Only the context delivering them takes, so the batches leave the queue in
+/// the order they are delivered.
 fn take_queued_loopback_packets() -> Vec<LoopbackPacket> {
     let net_guard = net_lock_guard();
+    let returned = core::mem::take(&mut *LOOPBACK_RETRY.lock());
+    if !returned.is_empty() {
+        LOOPBACK_RETRY_DEPTH.store(0, Ordering::Release);
+        drop(net_guard);
+        return returned;
+    }
     let mut queue = LOOPBACK_QUEUE.lock();
     let packets = core::mem::take(&mut *queue);
     LOOPBACK_QUEUE_BYTES.store(0, Ordering::Relaxed);
@@ -589,6 +620,19 @@ fn take_queued_loopback_packets() -> Vec<LoopbackPacket> {
     drop(queue);
     drop(net_guard);
     packets
+}
+
+/// Keep taken packets whose delivery has to be offered again, oldest first.
+/// The caller holds the drain guard and has already taken the packets
+/// returned before these, so the slot is empty when these go in.
+fn return_undelivered_loopback_packets(packets: Vec<LoopbackPacket>) {
+    LOOPBACK_DELIVERY_RETRIES.fetch_add(1, Ordering::Relaxed);
+    let net_guard = net_lock_guard();
+    let mut returned = LOOPBACK_RETRY.lock();
+    LOOPBACK_RETRY_DEPTH.store(packets.len(), Ordering::Release);
+    *returned = packets;
+    drop(returned);
+    drop(net_guard);
 }
 
 /// Deliver at most `max_rounds` rounds of queued loopback packets.
@@ -620,19 +664,34 @@ pub(crate) fn drain_loopback_rounds(max_rounds: usize, source: LoopbackDrainSour
     let defer = crate::socket::object::DeferRelease::enter();
 
     for _ in 0..max_rounds {
-        let packets = take_queued_loopback_packets();
+        let mut packets = take_queued_loopback_packets();
         if packets.is_empty() {
             break;
         }
 
-        for packet in packets {
-            note_loopback_residency(packet.queued_at_tick, source);
-            if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
-                ipv4::handle_loopback_ipv4(&parsed_ip);
+        let mut delivered = 0;
+        for packet in &packets {
+            let handled = match ipv4::Ipv4Packet::parse(&packet.data) {
+                Some(parsed_ip) => ipv4::handle_loopback_ipv4(&parsed_ip),
+                None => ipv4::Handled::Done,
+            };
+            if handled == ipv4::Handled::Retry {
+                break;
             }
+            note_loopback_residency(packet.queued_at_tick, source);
+            delivered += 1;
         }
+        // Dropping a delivered packet uncounts it from `LOOPBACK_IN_FLIGHT`.
+        packets.drain(..delivered);
 
         tcp::drain_deferred_tx();
+        if !packets.is_empty() {
+            // The structure is held on another CPU for as long as its holder
+            // needs, so another round here would only spin on it. The exit
+            // below re-arms delivery for what is returned.
+            return_undelivered_loopback_packets(packets);
+            break;
+        }
     }
 
     drop(defer);
@@ -707,11 +766,12 @@ pub fn idle_loopback_drain_calls() -> u64 {
 pub fn dump_loopback_state() {
     let pump_tid = loopback_pump_tid();
     crate::serial_println!(
-        "loopback: depth={} drain_contended={} drain_completed={} dropped_full={} max_residency_ticks={} slow_deliveries={} softirq_raises={} softirq_drains={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
+        "loopback: depth={} drain_contended={} drain_completed={} dropped_full={} delivery_retries={} max_residency_ticks={} slow_deliveries={} softirq_raises={} softirq_drains={} pump_tid={} pump_passes={} pump_rearms={} pump_rearm_from_sched={} pump_wakes={} pump_wake_rejected={} pump_wake_already_awake={} isr_wakeup_depth_cpu0={} isr_wakeup_buffer_full={} stalled_reclaimed={}",
         loopback_queue_depth(),
         loopback_drain_contended(),
         loopback_drain_completed(),
         loopback_dropped_full(),
+        loopback_delivery_retries(),
         loopback_max_residency_ticks(),
         loopback_slow_deliveries(),
         loopback_softirq_raises(),
@@ -810,6 +870,8 @@ pub fn register_net_softirq() {
 /// Initialize the network stack
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
+    DHCP_POLICY.store(!crate::drivers::fw_cfg::present(), core::sync::atomic::Ordering::Release);
+
     // Register NET_RX softirq handler FIRST - before any network operations
     // This ensures the handler is ready before e1000 can raise the softirq
     register_net_softirq();
@@ -872,6 +934,13 @@ pub fn init() {
 
 /// Common initialization logic for both architectures
 fn init_common() {
+    #[cfg(target_arch = "x86_64")]
+    if uses_dhcp() {
+        dhcp::require_configuration();
+        arp::init();
+        net_log!("Network stack initialized; awaiting DHCP after carrier");
+        return;
+    }
     let mac_available = get_mac_address().is_some();
 
     if !mac_available {
@@ -939,10 +1008,10 @@ fn init_common() {
         gateway[2],
         gateway[3]
     );
-    if let Err(e) = arp::request(&gateway) {
-        net_log!("NET: Failed to send ARP request: {}", e);
+    match arp::request(&gateway) {
+        Ok(()) => net_log!("ARP request sent successfully"),
+        Err(e) => net_log!("NET: Failed to send ARP request: {}", e),
     }
-    net_log!("ARP request sent successfully");
 
     // ARP resolution completes through interrupt-driven RX after init. Do not
     // spin-poll here; that hides whether MSI-X/softirq networking works.
@@ -1027,12 +1096,20 @@ fn configure_from_dhcp() -> Option<[u8; 4]> {
     Some(lease.gateway)
 }
 
-/// Get the current network configuration.
-/// Uses bottom-half exclusion on x86_64 and IRQ masking on aarch64 to prevent
-/// same-CPU re-entry from the network softirq.
-pub fn config() -> NetConfig {
+#[cfg(target_arch = "x86_64")]
+static DHCP_POLICY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Physical x86 and bridged VMware obtain their addressing from DHCP.
+pub fn uses_dhcp() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    { DHCP_POLICY.load(core::sync::atomic::Ordering::Acquire) }
     #[cfg(target_arch = "aarch64")]
-    if active_tx_driver_is_e1000() {
+    { active_tx_driver_is_e1000() }
+}
+
+/// Current configuration; DHCP interfaces lose their address at lease expiry.
+pub fn config() -> NetConfig {
+    if uses_dhcp() {
         return dhcp::lease().map(|lease| NetConfig {
             ip_addr: lease.ip_addr, subnet_mask: lease.subnet_mask, gateway: lease.gateway,
         }).unwrap_or(VMWARE_CONFIG);
@@ -1085,6 +1162,9 @@ static X86_RX_REQUESTED: core::sync::atomic::AtomicBool =
 /// The next frame from whichever controller is attached, copied into `buffer`.
 #[cfg(target_arch = "x86_64")]
 fn x86_receive(buffer: &mut [u8]) -> Option<usize> {
+    if crate::drivers::bcm5720::is_initialized() {
+        return crate::drivers::bcm5720::receive(buffer);
+    }
     if crate::drivers::virtio::net_legacy::is_initialized() {
         return crate::drivers::virtio::net_legacy::receive(buffer);
     }
@@ -1136,6 +1216,23 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
             return PollOutcome::Drained;
         }
     }
+}
+
+/// Wait between two receive polls of a client awaiting a reply (DHCP).
+///
+/// On x86 that client runs on the BCM5720's network worker, whose receive
+/// interrupt also delivers replies through the NetRx softirq, so it sleeps.
+/// Spinning there held a CPU for the seconds an exchange and the address probe
+/// last. The loop is mostly the receive drain, which runs with bottom halves
+/// off, and a timer tick that lands there does not preempt it: that CPU went
+/// up to 25 ticks without scheduling, and a thread pinned to it barely ran
+/// (#1974). ARM64 takes its lease during network initialization and keeps
+/// polling.
+pub(crate) fn between_rx_polls() {
+    #[cfg(target_arch = "x86_64")]
+    crate::drivers::bcm5720::sleep_ms(1);
+    #[cfg(target_arch = "aarch64")]
+    core::hint::spin_loop();
 }
 
 /// Process incoming packets (ARM64 - polling or interrupt driven)
@@ -1265,6 +1362,7 @@ pub fn current_packet_src_mac() -> [u8; 6] {
 /// Process a received Ethernet frame
 /// Source-MAC state is also read from thread context, so its NetRx write is guarded.
 fn process_packet(data: &[u8]) {
+    crate::random::add_event(crate::random::Event::NetRx, data.len() as u64);
     if let Some(frame) = ethernet::EthernetFrame::parse(data) {
         crate::tracing::providers::net_rx::count_frame();
         // Save source MAC so TCP can use it for SYN-ACK routing
@@ -1282,6 +1380,16 @@ fn process_packet(data: &[u8]) {
             }
             ethernet::ETHERTYPE_IPV4 => {
                 if let Some(ip_packet) = ipv4::Ipv4Packet::parse(frame.payload) {
+                    #[cfg(target_arch = "x86_64")]
+                    if ip_packet.protocol == ipv4::PROTOCOL_UDP && ip_packet.dst_ip == config().ip_addr
+                        && ip_packet.flags_fragment & 0x3fff == 0
+                        && ipv4::internet_checksum(ip_packet.header) == 0 {
+                        if let Some((header, payload)) = udp::UdpHeader::parse(ip_packet.payload) {
+                            if (header.checksum == 0 || udp::udp_checksum(ip_packet.src_ip, ip_packet.dst_ip,
+                                &ip_packet.payload[..header.length as usize]) == 0)
+                                && dns_probe::receive(&ip_packet, &header, payload) { return; }
+                        }
+                    }
                     ipv4::handle_ipv4(&frame, &ip_packet);
                 }
             }
@@ -1302,8 +1410,7 @@ pub fn send_ethernet(
     if ethertype == ethernet::ETHERTYPE_IPV4 && ipv4::Ipv4Packet::parse(payload).is_none() {
         return Err("Invalid IPv4 packet");
     }
-    #[cfg(target_arch = "aarch64")]
-    if active_tx_driver_is_e1000() && ethertype == ethernet::ETHERTYPE_IPV4 {
+    if uses_dhcp() && ethertype == ethernet::ETHERTYPE_IPV4 {
         let ip = ipv4::Ipv4Packet::parse(payload).ok_or("Invalid IPv4 packet")?;
         // Queued packets and established sockets cannot retain an expired or
         // replaced source address. Discovery/DECLINE alone use 0.0.0.0.

@@ -11,6 +11,7 @@ BREENIX_HOST_ARGS=("$@")
 #
 # Usage: ./run-aarch64-boot-test-strict.sh [iterations]
 #        Default: 20 iterations
+# BREENIX_QEMU_DISPLAY=cocoa opens the window for a local acceptance run.
 #
 # Before booting anything, this gate runs each tests/*_structure.rs suite
 # (docker/qemu/lib/gate-structure-preflight.sh) and fails if any is red.
@@ -349,6 +350,41 @@ if ! timer_wake_oracle_sample 9 PASS | grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATT
     exit 1
 fi
 
+# Ruling S26: a CLONE_VM-only child's reclaim receipt is retired by the reclaim
+# daemon while the other drains refuse and each of the 4 CPUs is busy: CPU 0
+# runs the boot thread, which holds it with preemption disabled until init
+# (held_cpus=1), and CPUs 1-3 each run a pinned CPU-bound thread. The kernel
+# decides PASS (latency within bound_ms, 3 of 3 spinners progressed, retired by the daemon, both rows cleaned up); the pattern
+# pins the profile's constants and that verdict. mechanism_ms is 100 ms of
+# idle sleep plus a dispatch (10 ms quantum + 1 ms tick), a 10 ms retry and
+# another dispatch.
+RECLAIM_BUSY_CPU_ORACLE_PATTERN='\[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=daemon:latency_ms=[0-9]+:bound_ms=1000:mechanism_ms=132:daemon_passes=[1-9][0-9]*:enqueued=2:completed=2:cleaned=1:backstops=0:PASS\]'
+reclaim_busy_oracle_sample() {
+    printf '[RECLAIM_BUSY_CPU_ORACLE:aarch64:cpus=4:held_cpus=1:spinners=3:started=3:spinning=3:progressed=3:retired_by=%s:latency_ms=%s:bound_ms=1000:mechanism_ms=132:daemon_passes=3:enqueued=%s:completed=%s:cleaned=1:backstops=0:%s]\n' "$1" "$2" "${4:-2}" "${5:-2}" "$3"
+}
+if reclaim_busy_oracle_sample none 30000 FAIL | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+    echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts a receipt nothing retired, so this gate would score green on the strand it exists to catch"
+    exit 1
+fi
+if reclaim_busy_oracle_sample other 40 PASS | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+    echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts a receipt another drain retired, so the daemon would go unproved"
+    exit 1
+fi
+if ! reclaim_busy_oracle_sample daemon 40 PASS | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+    echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN rejects a daemon retirement inside the bound, so this gate can never pass"
+    exit 1
+fi
+
+# An empty queue (cleaned=1 in the old oracle) cannot stand in for either
+# successful publication or completion of both receipts (#1969).
+for receipts in '1 2' '2 1' '0 0'; do
+    read -r enqueued completed <<< "$receipts"
+    if reclaim_busy_oracle_sample daemon 40 PASS "$enqueued" "$completed" | grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN"; then
+        echo "FAIL: RECLAIM_BUSY_CPU_ORACLE_PATTERN accepts incomplete receipt retirement"
+        exit 1
+    fi
+done
+
 # R157/ASID-01: the scoring-only entry point further down scores a serial that
 # was captured earlier, so it needs no kernel, no disk and no preflight. Those
 # checks are guarded on this being empty; the scoring rules themselves are not
@@ -356,6 +392,39 @@ fi
 SCORE_ONLY_SERIAL="${BREENIX_STRICT_SCORE_ONLY:-}"
 # Scoring-only mode has no kernel whose feature profile can be inspected.
 KERNEL_HAS_CAPTURE_SELFTEST=0
+
+# #1862: a focused boot_tests profile keeps init running, so its completion is
+# this scorer with the profile's own producers added, not the testing
+# kernel's userspace report. strand_inject_live_outgoing adds its oracle. Live
+# boots read the profile from $KERNEL below; scoring-only mode reads it from
+# BREENIX_STRICT_SCORE_KERNEL, the kernel that produced the serial, when given.
+# The serial names the profile too: a serial that carries the oracle's line is
+# scored as that profile whether or not its kernel was given, and a serial that
+# carries it beside a kernel without its print site is not that kernel's serial.
+# The oracle reports once per boot, so its evidence is exactly one PASS line.
+STRAND_LIVE_OUTGOING_ORACLE_PATTERN='\[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=1:fired=[1-9][0-9]*:live_outgoing=[1-9][0-9]*:outgoing_tid=[0-9]+:stranded=0:PASS\]'
+kernel_has_live_outgoing() {
+    # Read through EOF: grep -q can hide a later read error after a match.
+    local status=0
+    grep -aF '[STRAND_LIVE_OUTGOING_ORACLE:aarch64:armed=' "$1" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) echo "SCORE: FAIL - cannot read kernel for live-outgoing profile ($1)"; exit 1 ;;
+    esac
+}
+KERNEL_HAS_LIVE_OUTGOING=0
+KERNEL_PROFILE_KNOWN=0
+if [ -n "${BREENIX_STRICT_SCORE_KERNEL:-}" ]; then
+    if [ ! -f "$BREENIX_STRICT_SCORE_KERNEL" ]; then
+        echo "SCORE: FAIL - BREENIX_STRICT_SCORE_KERNEL names no readable kernel ($BREENIX_STRICT_SCORE_KERNEL)"
+        exit 1
+    fi
+    KERNEL_PROFILE_KNOWN=1
+    if kernel_has_live_outgoing "$BREENIX_STRICT_SCORE_KERNEL"; then
+        KERNEL_HAS_LIVE_OUTGOING=1
+    fi
+fi
 
 if [ -z "$SCORE_ONLY_SERIAL" ]; then
 
@@ -415,7 +484,7 @@ require_boot_tests_kernel() {
 
     # A census of marker literals rather than one sentinel: a single marker
     # changing profile must not be able to disarm this guard quietly.
-    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[BOOT_TESTS:'; do
+    for marker in '[SCHED_STRAND_ORACLE:' '[STRAND_INJECT_ORACLE:' '[CENSUS_WIDEN_ORACLE:' '[FCNTL_PM_CONTENTION_ORACLE:' '[IRQ_HOLD_ORACLE:' '[UDP_LOCK_ORACLE:' '[UDP_PORTS_LOCK_ORACLE:' '[TTY_IRQ_PM_ORACLE:' '[TTY_IRQ_FG_ORACLE:' '[FUTEX_HANDOFF_ORACLE:' '[CTX596_ORACLE:' '[TOMBSTONE_JOIN_ORACLE:' '[TIMER_WAKE_LATENCY_ORACLE:' '[RECLAIM_BUSY_CPU_ORACLE:' '[BOOT_TESTS:'; do
         if ! grep -aqF "$marker" "$kernel" 2>/dev/null; then
             missing="$missing $marker"
         fi
@@ -447,6 +516,10 @@ require_boot_tests_kernel "$KERNEL"
 KERNEL_HAS_CAPTURE_SELFTEST=0
 if grep -aqF '[RING_SPAN_UNFILTERED:cpu=' "$KERNEL" 2>/dev/null; then
     KERNEL_HAS_CAPTURE_SELFTEST=1
+fi
+KERNEL_PROFILE_KNOWN=1
+if kernel_has_live_outgoing "$KERNEL"; then
+    KERNEL_HAS_LIVE_OUTGOING=1
 fi
 
 # Find ext2 disk (required for userspace)
@@ -514,6 +587,7 @@ score_serial() {
     local serial_file="$1"
     local boot_test_fail_line
     local crash_type
+    local timing_starved=0 scorer_status scorer
 
     # failure-trace-capture PR-5's own forced-fail knob: unset by default, so
     # an ordinary run's control flow here is unchanged. Set, this process
@@ -541,7 +615,15 @@ score_serial() {
         echo "Boot test failure: ${boot_test_fail_line:-[TEST:<missing>:FAIL:<missing>]}"
         return 1
     fi
-    python3 "$BREENIX_ROOT/scripts/score-softirq-deferral.py" "$serial_file" || return $?
+    for scorer in score-softirq-deferral.py score-sigkill-teardown.py; do
+        scorer_status=0
+        python3 "$BREENIX_ROOT/scripts/$scorer" "$serial_file" || scorer_status=$?
+        case "$scorer_status" in
+            0) ;;
+            2) timing_starved=1 ;;
+            *) return 1 ;;
+        esac
+    done
     if ! grep -qE "(breenix>|bsh |\[bwm\] Display:|\[bcheck\] Complete:|\[heartbeat\])" \
         "$serial_file" 2>/dev/null; then
         echo "Userspace not detected"
@@ -621,6 +703,27 @@ score_serial() {
         echo "Scheduler strand injection oracle marker missing or failed"
         return 1
     fi
+    local live_outgoing_reports
+    live_outgoing_reports=$(grep -aoF '[STRAND_LIVE_OUTGOING_ORACLE:' "$serial_file" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${live_outgoing_reports:-0}" -gt 0 ] && [ "$KERNEL_PROFILE_KNOWN" = "1" ] \
+        && [ "$KERNEL_HAS_LIVE_OUTGOING" = "0" ]; then
+        echo "Live-outgoing strand oracle line from a kernel without its print site; the serial is not this kernel's"
+        return 1
+    fi
+    if [ "$KERNEL_HAS_LIVE_OUTGOING" = "1" ] || [ "${live_outgoing_reports:-0}" -gt 0 ]; then
+        if grep -aqE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*:FAIL\]' "$serial_file" 2>/dev/null; then
+            echo "Live-outgoing strand oracle reported failure ($(grep -aoE '\[STRAND_LIVE_OUTGOING_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+            return 1
+        fi
+        if [ "${live_outgoing_reports:-0}" -gt 1 ]; then
+            echo "Live-outgoing strand oracle reported $live_outgoing_reports times; it reports once per boot"
+            return 1
+        fi
+        if ! grep -aqE "$STRAND_LIVE_OUTGOING_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+            echo "Live-outgoing strand oracle marker missing or failed"
+            return 1
+        fi
+    fi
     if ! grep -qE "$CENSUS_WIDEN_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Census widening mutation oracle marker missing or failed"
         return 1
@@ -635,6 +738,15 @@ score_serial() {
     fi
     if ! grep -qE "$TIMER_WAKE_LATENCY_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
         echo "Timer wake latency oracle marker missing or failed"
+        return 1
+    fi
+    # Ruling S26, pinned as a pair like #766 above.
+    if grep -qE '\[RECLAIM_BUSY_CPU_ORACLE:[^]]*:FAIL' "$serial_file" 2>/dev/null; then
+        echo "Busy-CPU reclaim oracle reported failure ($(grep -aoE '\[RECLAIM_BUSY_CPU_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
+        return 1
+    fi
+    if ! grep -qE "$RECLAIM_BUSY_CPU_ORACLE_PATTERN" "$serial_file" 2>/dev/null; then
+        echo "Busy-CPU reclaim oracle marker missing or failed"
         return 1
     fi
     # #796, pinned as a pair: the FAIL scan names what went wrong even when the
@@ -691,7 +803,7 @@ score_serial() {
     fi
     # #822, pinned as the same pair for the same reason.
     if grep -qF "[TTY_IRQ_FG_ORACLE:aarch64:" "$serial_file" 2>/dev/null \
-        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[a-z_]+)?\]" "$serial_file" 2>/dev/null; then
+        && grep -qE "TTY_IRQ_FG_ORACLE.*:FAIL(:[^]]*)?\]" "$serial_file" 2>/dev/null; then
         echo "TTY input IRQ foreground-pgrp oracle reported failure ($(grep -aoE '\[TTY_IRQ_FG_ORACLE:[^]]*\]' "$serial_file" | tail -1))"
         return 1
     fi
@@ -843,6 +955,10 @@ score_serial() {
         echo "BSSH publickey oracle missing, duplicated, or failed"
         return 1
     fi
+    if [ "$timing_starved" -eq 1 ]; then
+        echo "STARVED: independent checks held; rerun the boot"
+        return 2
+    fi
     return 0
 }
 
@@ -913,7 +1029,7 @@ report_failure() {
 
 run_single_test() {
     local iteration=$1
-    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$iteration"
+    local OUTPUT_DIR="$BREENIX_GATE_TMP/breenix_aarch64_strict_$attempt"
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
     # Q-1/PR-6 fix pass: avoid $OUTPUT_DIR/qmp.sock -- BREENIX_GATE_TMP is a
@@ -951,12 +1067,13 @@ run_single_test() {
         -M virt,gic-version=3 -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -qmp unix:"$QMP_SOCK",server=on,wait=off \
-        -display none -no-reboot \
+        -display "${BREENIX_QEMU_DISPLAY:-none}" -no-reboot \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" &
@@ -1238,7 +1355,10 @@ echo ""
 
 START_TIME=$(date +%s)
 
-for i in $(seq 1 $ITERATIONS); do
+i=1
+attempt=0
+while [ "$i" -le "$ITERATIONS" ]; do
+    attempt=$((attempt+1))
     if run_single_test $i; then
         SUCCESSES=$((SUCCESSES + 1))
     else
@@ -1246,11 +1366,14 @@ for i in $(seq 1 $ITERATIONS); do
         if [ "$BOOT_STATUS" -eq 2 ]; then
             STARVATIONS=$((STARVATIONS + 1))
             STARVED_ITERATIONS="$STARVED_ITERATIONS $i"
+            echo "STARVED: rerunning boot $i; attempt $attempt is not evidence"
+            continue
         else
             FAILURES=$((FAILURES + 1))
             FAILED_ITERATIONS="$FAILED_ITERATIONS $i"
         fi
     fi
+    i=$((i+1))
 done
 
 END_TIME=$(date +%s)
@@ -1267,10 +1390,7 @@ echo "Inconclusive (host starvation): $STARVATIONS"
 echo "Success rate: $(( (SUCCESSES * 100) / ITERATIONS ))%"
 echo "Duration: ${DURATION}s"
 
-if [ "$FAILURES" -eq 0 ] && [ "$STARVATIONS" -gt 0 ]; then
-    echo "INCONCLUSIVE: Host starvation in iterations:$STARVED_ITERATIONS"
-    exit 2
-elif [ $FAILURES -eq 0 ]; then
+if [ $FAILURES -eq 0 ]; then
     echo ""
     echo "========================================="
     echo "PASS: $SUCCESSES/$ITERATIONS boots succeeded"

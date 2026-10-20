@@ -884,82 +884,79 @@ pub extern "C" fn aarch64_resume_pc_refused_el0() -> ! {
     crate::arch_impl::aarch64::idle_loop_arm64()
 }
 
-/// Emit non-zero producer-classification rows for every CPU.
-pub fn emit_resume_pc_census() {
+/// Visit each CPU's producer-classification rows that have counts: the CPU,
+/// the source's name, and the counts by class.
+fn for_each_resume_pc_census_row(mut visit: impl FnMut(usize, &str, [u32; RESUME_PC_CENSUS_CLASSES])) {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
-            let mut line = crate::serial_line::Line::new();
             let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
-            let text = row[0].load(Ordering::Relaxed);
-            let kstack = row[1].load(Ordering::Relaxed);
-            let uva = row[2].load(Ordering::Relaxed);
-            let smallint = row[3].load(Ordering::Relaxed);
-            let other = row[4].load(Ordering::Relaxed);
-            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
-                continue;
+            let counts: [u32; RESUME_PC_CENSUS_CLASSES] =
+                core::array::from_fn(|class| row[class].load(Ordering::Relaxed));
+            if counts.iter().any(|&count| count != 0) {
+                visit(cpu_id, source_name, counts);
             }
-
-            line.text("[RESUME_PC_CENSUS:cpu=");
-            line.dec(cpu_id as u64);
-            line.text(":source=");
-            line.text(source_name);
-            line.text(":text=");
-            line.dec(text as u64);
-            line.text(":kstack=");
-            line.dec(kstack as u64);
-            line.text(":uva=");
-            line.dec(uva as u64);
-            line.text(":smallint=");
-            line.dec(smallint as u64);
-            line.text(":other=");
-            line.dec(other as u64);
-            line.text("]\n");
         }
     }
 }
 
-/// Emit non-zero producer-classification rows with whole-line serialization.
-pub fn emit_resume_pc_census_locked() {
-    // The selection-side custody total, and the only reader it has in a boot
-    // that does not fault. Work-stealing declines a stack-pinned thread without
-    // writing a record — the selection path takes no UART writes — so without
-    // this line the routing would be invisible in exactly the boots where it is
-    // working. Reported, never gated: routing a thread home is the fix
-    // operating, while the gate-failing fact is the dispatch refusal.
+/// Write each CPU's producer-classification rows that have counts to serial,
+/// as raw records: the fatal postmortem's copy.
+pub fn emit_resume_pc_census() {
+    for_each_resume_pc_census_row(|cpu_id, source_name, [text, kstack, uva, smallint, other]| {
+        let mut line = crate::serial_line::Line::new();
+        line.text("[RESUME_PC_CENSUS:cpu=");
+        line.dec(cpu_id as u64);
+        line.text(":source=");
+        line.text(source_name);
+        line.text(":text=");
+        line.dec(text as u64);
+        line.text(":kstack=");
+        line.dec(kstack as u64);
+        line.text(":uva=");
+        line.dec(uva as u64);
+        line.text(":smallint=");
+        line.dec(smallint as u64);
+        line.text(":other=");
+        line.dec(other as u64);
+        line.text("]\n");
+    });
+}
+
+/// Write the routing total, then the producer-classification rows that have
+/// counts, to the kernel log (`/proc/kmsg`) only.
+///
+/// This is the periodic copy a boot that does not fault takes. It is a
+/// diagnostic, so it stays off serial and off the screen console: on serial
+/// its bursts were the only output of a stalled testing boot and read as a
+/// loop, and on tty1 they scrolled the screen (#2037). The fatal postmortem
+/// still writes the rows to serial (`emit_resume_pc_census`).
+fn emit_resume_pc_census_to_kmsg() {
+    // The selection-side custody total. Work-stealing declines a stack-pinned
+    // thread without writing a record — the selection path takes no UART
+    // writes — so this line is where the routing shows in a boot that does
+    // not fault. It is reported and no gate reads it: routing a thread home is
+    // the fix operating, while the gate-failing fact is the dispatch refusal.
     let routed = crate::task::scheduler::percpu_stack_selection_routed();
     if routed != 0 {
-        crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
+        crate::serial_line::capture_fmt(format_args!(
+            "[PERCPU_STACK_SELECTION_ROUTED:total={}]\n",
+            routed
+        ));
     }
-
-    for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
-            let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
-            let text = row[0].load(Ordering::Relaxed);
-            let kstack = row[1].load(Ordering::Relaxed);
-            let uva = row[2].load(Ordering::Relaxed);
-            let smallint = row[3].load(Ordering::Relaxed);
-            let other = row[4].load(Ordering::Relaxed);
-            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
-                continue;
-            }
-
-            crate::serial_println!(
-                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]",
-                cpu_id,
-                source_name,
-                text,
-                kstack,
-                uva,
-                smallint,
-                other,
-            );
-        }
-    }
+    for_each_resume_pc_census_row(|cpu_id, source_name, [text, kstack, uva, smallint, other]| {
+        crate::serial_line::capture_fmt(format_args!(
+            "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]\n",
+            cpu_id, source_name, text, kstack, uva, smallint, other
+        ));
+    });
 }
 
 fn emit_resume_pc_census_if_due() {
     const EMIT_INTERVAL_NS: u64 = 10_000_000_000;
-    const MAX_EMISSIONS: u32 = 6;
+    // Once: the census is cumulative, and on an 8-CPU machine a burst is up to
+    // 72 rows of about 95 bytes, so six of them would overrun the 32 KiB
+    // kernel log ring.
+    const MAX_EMISSIONS: u32 = 1;
 
     if RESUME_PC_CENSUS_EMISSIONS.load(Ordering::Acquire) >= MAX_EMISSIONS {
         return;
@@ -981,7 +978,7 @@ fn emit_resume_pc_census_if_due() {
     if RESUME_PC_CENSUS_EMISSIONS.fetch_add(1, Ordering::AcqRel) >= MAX_EMISSIONS {
         return;
     }
-    emit_resume_pc_census_locked();
+    emit_resume_pc_census_to_kmsg();
 }
 
 #[inline]
@@ -1545,6 +1542,13 @@ aarch64_ret_to_kernel_context:
     ldp x29, x30, [x0, #232]
     ldr x2, [x0, #248]
     mov sp, x2
+    // SP has left the outgoing thread's kernel stack, so clear the mark an
+    // exception-return switch set on that thread (#1785); after an inline
+    // switch it is already clear. x19-x29 survive the call; the resume PC
+    // and x30 wait below the incoming SP, which is dead stack.
+    stp x1, x30, [sp, #-16]!
+    bl aarch64_complete_exception_switch
+    ldp x1, x30, [sp], #16
     msr daifclr, #3
     isb
     RESUME_PC_EL1_OK x1, x2, x3, x16, 1f
@@ -1848,7 +1852,10 @@ impl<T> Deref for CacheLineAligned<T> {
 /// Solution: store the thread ID to requeue in per-CPU data. Process it
 /// at the START of the next check_need_resched_and_switch_arm64 call,
 /// which runs on a different stack (the new thread's kernel stack or
-/// the boot stack after ERET).
+/// the boot stack after ERET). A switch that stages its frame off the old
+/// stack queues the thread at once instead, marked in `switch_save` until
+/// the return path has left that stack (#1785); this slot remains for a
+/// switch that cannot stage its frame.
 ///
 /// Value 0 = no pending requeue. Non-zero = thread ID to requeue.
 static DEFERRED_REQUEUE: CacheLineAligned<[AtomicU64; 8]> = CacheLineAligned([
@@ -4145,7 +4152,7 @@ fn restore_kernel_context_inline(
     // On QEMU, kernel code runs from HHDM (>= 0xFFFF_0000_0000_0000).
     // On Parallels, the UEFI loader jumps to kernel_main at a physical
     // address and the kernel runs identity-mapped, so function pointers
-    // resolve to physical addresses in the RAM range (0x40080000+).
+    // resolve to physical addresses in the RAM range (0x40200000+).
     let resume_pc = if thread.saved_by_inline_schedule {
         // Inline save captures only x19..x30 + SP, so x30 is its sole valid
         // architectural resume point. Exception-saved contexts keep ELR_EL1.
@@ -5244,6 +5251,7 @@ pub extern "C" fn aarch64_resume_user_time(frame: &Aarch64ExceptionFrame) {
     if (frame.spsr & 0xF) == 0 {
         crate::task::thread::resume_user_time();
     }
+    super::irq_mask_account::returning(frame.spsr);
 }
 
 // =============================================================================
@@ -5255,11 +5263,20 @@ pub extern "C" fn aarch64_resume_user_time(frame: &Aarch64ExceptionFrame) {
 /// This is called from the exception return path. The ENTIRE scheduling decision,
 /// context save, and context restore happen under a SINGLE scheduler lock hold,
 /// eliminating TOCTOU races from the previous 15-22 separate lock acquisitions.
+///
+/// Returns 0 when the frame returns to the thread it came from. After a switch
+/// it returns the address of the dispatched frame staged on this CPU's
+/// scheduler stack: the caller moves SP there, off the outgoing thread's kernel
+/// stack, and calls `aarch64_complete_exception_switch` to clear the mark on
+/// that thread, which the switch has already requeued (#1785).
 #[no_mangle]
 pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
-) {
+) -> u64 {
+    // The syscall return masks just before this call; the IRQ return is
+    // already counted from its entry.
+    super::irq_mask_account::opened();
     crate::task::process_task::drain_deferred_fault_sigsegv_exits();
 
     // ── Lock-free pre-checks ──────────────────────────────────────
@@ -5288,7 +5305,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // This entry proves an earlier handoff completed, but the current handoff
@@ -5368,7 +5385,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // Check if reschedule is needed (atomic, clears the flag)
@@ -5441,7 +5458,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 )
             ))]
             crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-            return;
+            return 0;
         }
     }
 
@@ -5465,7 +5482,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 )
             ))]
             crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-            return;
+            return 0;
         }
     };
 
@@ -5554,7 +5571,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // 3. Fix stale cpu_state if needed (atomically with the scheduling decision)
@@ -5590,7 +5607,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     let (old_id, new_id, should_requeue_old) = schedule_result.unwrap();
@@ -5622,7 +5639,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             )
         ))]
         crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
-        return;
+        return 0;
     }
 
     // 5. Trace context switch + queue state + increment watchdog counter
@@ -5722,20 +5739,34 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // 7. Commit cpu_state to reflect the new thread as "current" on this CPU
     sched.commit_cpu_state_after_save(new_id);
 
-    // Mark the old thread as "switching out" — its kernel stack is still in use
-    // by this CPU until ERET completes. This prevents wakeup paths (unblock,
-    // wake_expired_timers, etc.) from adding the old thread to the ready_queue,
-    // which would allow another CPU to dispatch it while this CPU still has
-    // stack frames on the same kernel stack, causing register/stack corruption.
-    // Cleared at the start of the NEXT context switch on this CPU (step 1).
-    if !sched.is_idle_thread_inner(old_id) {
+    // The old thread's kernel stack stays in use by this CPU until the return
+    // path leaves it: the exception frame the return path reads lives there.
+    // When the dispatched frame can be staged off that stack (step 10), the
+    // old thread is marked as still being saved and requeued now, with no
+    // reschedule IPI. Another CPU finds it at its next tick or scheduling
+    // point and skips it while the mark is set; the return path clears the
+    // mark without a lock as soon as SP has left the stack (#1785). A thread
+    // that cannot be queued without an IPI keeps the deferred requeue.
+    let staged_frame =
+        staged_frame_slot().filter(|_| is_old_idle || sched.requeues_without_ipi(old_id));
+    if staged_frame.is_some() {
+        if !is_old_idle {
+            super::switch_save::mark(cpu_id, old_id);
+            sched.requeue_switched_out(old_id);
+        }
+    } else if !is_old_idle {
+        // Mark the old thread as "switching out". This prevents wakeup paths
+        // (unblock, wake_expired_timers, etc.) from adding it to the
+        // ready_queue, which would allow another CPU to dispatch it while
+        // this CPU still has stack frames on the same kernel stack, causing
+        // register/stack corruption. Cleared by the next exception on this
+        // CPU (step 1).
         sched.cpu_state[cpu_id].previous_thread = Some(old_id);
     }
 
-    // 8. Store deferred requeue for NEXT switch
-    //    The exception frame lives on the old thread's kernel stack and must
-    //    not be overwritten until after ERET.
-    if cpu_id < DEFERRED_REQUEUE.len() {
+    // 8. A switch that cannot stage its frame stores the deferred requeue for
+    //    this CPU's next exception, which runs on another stack.
+    if staged_frame.is_none() && cpu_id < DEFERRED_REQUEUE.len() {
         let previous = DEFERRED_REQUEUE[cpu_id].swap(old_id, Ordering::AcqRel);
         let old_thread = sched.get_thread(old_id);
         trace_defer_requeue(TRACE_DEFER_REQUEUE_STORE, old_id, previous, old_thread);
@@ -5904,6 +5935,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         if user {
             crate::task::user_dispatch::note(cpu_id);
         }
+        // aarch64_ret_to_kernel_context enables interrupts before its ret.
+        super::irq_mask_account::closing();
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -6012,6 +6045,75 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         )
     ))]
     crate::task::ret_zero_pc_oracle::inject_el1_frame_resume_pc_if_armed(frame);
+
+    // 10. Stage the finished frame off the outgoing thread's kernel stack. The
+    //     return path restores from the copy, and clears the outgoing thread's
+    //     mark as soon as SP stands on it.
+    match staged_frame {
+        Some(staged) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    frame as *const Aarch64ExceptionFrame,
+                    staged as *mut Aarch64ExceptionFrame,
+                    1,
+                );
+            }
+            staged
+        }
+        None => 0,
+    }
+}
+
+/// Where an exception-return switch stages the dispatched frame: the top of
+/// this CPU's scheduler stack. A CPU already on that stack gets no address,
+/// and its switch leaves the outgoing thread deferred.
+///
+/// Until this CPU stops reading the frame, the frame lives on the outgoing
+/// thread's kernel stack, so another CPU must not run the thread: it would
+/// overwrite the frame. The thread used to stay in `DEFERRED_REQUEUE` until
+/// this CPU's next exception, which a CPU spinning with interrupts masked does
+/// not take until the spin ends, stranding the thread for as long as the spin
+/// lasts (#1785). The return path restores from the staged copy instead, and
+/// `aarch64_complete_exception_switch` clears the thread's mark once SP stands
+/// on it.
+///
+/// Interrupts stay masked from the switch to the ERET, and the inline scheduler
+/// path uses this stack only inside its own masked transaction, so the stack
+/// is free. A CPU somehow already standing on it keeps the deferred
+/// requeue rather than overwrite the frames it is running on.
+///
+/// The pivot onto the copy is the return path's `mov sp` in `boot.S` and
+/// `syscall_entry.S`, so the destination goes through the custody predicate
+/// directly rather than through this file's `pivot_destination` census.
+#[track_caller]
+fn staged_frame_slot() -> Option<u64> {
+    const STAGED_FRAME_BYTES: u64 =
+        (core::mem::size_of::<Aarch64ExceptionFrame>() as u64 + 15) & !15;
+    let cpu = CpuId::current();
+    let current_sp = read_current_sp();
+    let top = crate::arch_impl::aarch64::percpu::percpu_pivot_top_for(
+        cpu,
+        scheduler_stack_top(cpu),
+        PivotHalf::Scheduler,
+        core::panic::Location::caller(),
+    );
+    let bottom = top.saturating_sub(super::constants::PERCPU_SCHED_STACK_SIZE);
+    if current_sp >= bottom && current_sp <= top {
+        return None;
+    }
+    Some(top - STAGED_FRAME_BYTES)
+}
+
+/// Clear this CPU's mark on the thread it just switched away from, once SP no
+/// longer stands on that thread's kernel stack (#1785). One release store: no
+/// lock and no device access, as the exception return tails require.
+///
+/// Called by the exception return paths after they move SP to the staged
+/// frame, and by `aarch64_ret_to_kernel_context` once SP stands on the
+/// incoming context. Interrupts are masked.
+#[no_mangle]
+pub extern "C" fn aarch64_complete_exception_switch() {
+    super::switch_save::clear(Aarch64PerCpu::cpu_id() as usize);
 }
 
 /// Final scheduler handoff for an exiting AArch64 thread.
@@ -6045,7 +6147,7 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
         .thread_id
         .store(thread_id, Ordering::Release);
 
-    let _ = spin::MutexGuard::leak(guard);
+    guard.leak();
     let pivot_cpu = CpuId::current_checked(cpu_id);
     let scheduler_top = pivot_destination(
         pivot_cpu,
@@ -6225,7 +6327,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
-            crate::task::scheduler::force_unlock_scheduler();
+            crate::task::scheduler::force_unlock_scheduler(None);
         }
 
         let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
@@ -6329,6 +6431,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             PivotHalf::Exception,
             3,
         );
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -6445,7 +6548,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
         unsafe {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 0);
-            crate::task::scheduler::force_unlock_scheduler();
+            crate::task::scheduler::force_unlock_scheduler(Some(sched));
         }
 
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
@@ -6484,6 +6587,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         if user {
             crate::task::user_dispatch::note(cpu_id);
         }
+        // aarch64_ret_to_kernel_context enables interrupts before its ret.
+        super::irq_mask_account::closing();
         unsafe {
             aarch64_ret_to_kernel_context(ctx_ptr, resume_pc);
         }
@@ -6566,7 +6671,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     unsafe {
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
-        crate::task::scheduler::force_unlock_scheduler();
+        crate::task::scheduler::force_unlock_scheduler(Some(sched));
     }
 
     // Capture what CPU 0 is dispatching via ERET and where it's going
@@ -6595,6 +6700,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             PivotHalf::Exception,
             2,
         );
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!(
                 "mov sp, {stack}",
@@ -6722,6 +6828,7 @@ pub fn schedule_from_kernel() {
     let sched = match guard.as_mut() {
         Some(s) => s,
         None => {
+            super::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
             }
@@ -6774,6 +6881,7 @@ pub fn schedule_from_kernel() {
     cpu0_breadcrumb(cpu_id, 4); // after schedule_deferred_requeue
     let Some((old_id, new_id, should_requeue_old)) = schedule_result else {
         drop(guard);
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
@@ -6791,6 +6899,7 @@ pub fn schedule_from_kernel() {
             sched.requeue_thread_after_save(old_id);
         }
         drop(guard);
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
         }
@@ -6855,6 +6964,7 @@ pub fn schedule_from_kernel() {
         }
         None => {
             drop(guard);
+            super::irq_mask_account::closing();
             unsafe {
                 core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
             }
@@ -6875,7 +6985,7 @@ pub fn schedule_from_kernel() {
         .should_requeue_old
         .store(should_requeue_old, Ordering::Relaxed);
 
-    let _ = spin::MutexGuard::leak(guard);
+    guard.leak();
 
     // Re-read the identity at the point it is spent on a stack. Masked since
     // the mint above, so this can only disagree if something re-enabled
@@ -6937,6 +7047,7 @@ pub fn schedule_from_kernel() {
         // of the caller's IRQ state. This prevents the CPU 0 IRQ death bug
         // where a thread resumes inside a without_interrupts block and
         // re-masks DAIF.I permanently.
+        super::irq_mask_account::closing();
         core::arch::asm!("msr daifclr, #3; isb", options(nomem, nostack));
     }
     let cpu_id_after = Aarch64PerCpu::cpu_id() as usize;
@@ -7185,12 +7296,7 @@ pub static CPU0_IDLE_ITERATIONS: AtomicU64 = AtomicU64::new(0);
 
 #[inline(always)]
 fn idle_pending_isr_wakeups() -> bool {
-    for cpu in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
-        if crate::task::scheduler::isr_wakeup_depth(cpu) != 0 {
-            return true;
-        }
-    }
-    false
+    crate::task::scheduler::isr_wakeups_pending()
 }
 
 #[inline(always)]
@@ -7258,6 +7364,7 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             // has been reached and completed.
             core::arch::asm!("msr daifset, #0xf", "isb", options(nomem, nostack));
         }
+        super::irq_mask_account::opened();
 
         // Diagnostic: track idle loop iterations per CPU.
         if cpu_id < 8 {
@@ -7295,6 +7402,9 @@ pub extern "C" fn idle_loop_arm64() -> ! {
             continue;
         }
 
+        // A pending interrupt wakes the masked WFI, and the unmask after it
+        // takes the interrupt.
+        super::irq_mask_account::closing();
         unsafe {
             core::arch::asm!(
                 "dsb sy", // Match Linux cpu_do_idle() before WFI
@@ -7384,6 +7494,7 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
 
     // Track if signal termination happened (for parent notification after borrow ends)
     let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+    let mut terminated_child_pid: Option<u64> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
@@ -7435,6 +7546,7 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
                 match signal_result {
                     crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
                         crate::task::scheduler::set_need_resched();
+                        terminated_child_pid = Some(notification.child_pid.as_u64());
                         signal_termination_info = Some(notification);
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
@@ -7446,6 +7558,7 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
                     }
                     crate::signal::delivery::SignalDeliveryResult::Delivered => {
                         if process.is_terminated() {
+                            terminated_child_pid = Some(process.id.as_u64());
                             crate::task::scheduler::set_need_resched();
                             setup_idle_return_arm64(frame);
                             crate::task::scheduler::switch_to_idle();
@@ -7462,6 +7575,11 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
         // Notify parent if signal terminated a child
         if let Some(notification) = signal_termination_info {
             crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+        }
+
+        // Clean up window buffers so compositor stops reading freed pages
+        if let Some(pid) = terminated_child_pid {
+            crate::syscall::graphics::cleanup_windows_for_pid(pid);
         }
     }
 }

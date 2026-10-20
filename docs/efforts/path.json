@@ -1,11 +1,11 @@
 {
   "title": "Path to a POSIX kernel with a userspace and a desktop you can build on",
-  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a graphical desktop (BreenGL, the window manager and its applications) tested to the same bar.",
+  "outcome": "Breenix runs real programs unmodified on ARM64 and x86-64: every POSIX system interface backed and behaving to the standard, a C library and Rust std on top, POSIX utilities, an SDK for building our own applications, and a GPU-rendered graphical desktop (GPU rendering, BreenGL, the window manager and its applications) tested to the same bar.",
   "efforts": [
     {
       "id": "kernel-bring-up",
       "title": "Kernel bring-up",
-      "outcome": "Every platform boots to its first userspace process: the boot path's first six milestones pass on ARM64 QEMU, Parallels, VMware and x86-64, and x86-64 reaches userspace on every hardware profile in docs/x86-profiles.json.",
+      "outcome": "The main-path targets boot to their first userspace process through the boot path's first six milestones. x86-64 bring-up is proved separately on the x86-metal path.",
       "subsystems": [
         1,
         2,
@@ -66,7 +66,13 @@
             "profiles": "first-userspace"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "files-io",
@@ -186,7 +192,13 @@
             "interfaces": "Files & I/O"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "directories",
@@ -292,7 +304,13 @@
             "interfaces": "Directories & links"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "processes",
@@ -389,12 +407,18 @@
             "interfaces": "Processes"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "signals",
       "title": "Signals",
-      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on all four targets, including realtime signals, interval timers and frames on demand-grown main stacks and untouched anonymous and private-file alternate stacks, including cache holes, resident copy-on-write pages and CLONE_VM ownership.",
+      "outcome": "Signals are generated, blocked, delivered and handled as POSIX specifies on the effort targets, including realtime signals, interval timers and frames on demand-grown main stacks and untouched anonymous and private-file alternate stacks, including cache holes, resident copy-on-write pages and CLONE_VM ownership.",
       "suite": "signals",
       "area": "Signals",
       "subsystems": [
@@ -495,7 +519,13 @@
             "interfaces": "Signals"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "time",
@@ -554,7 +584,13 @@
             "interfaces": "Time & timers"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "memory",
@@ -623,7 +659,13 @@
             "interfaces": "Memory"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "threads",
@@ -712,7 +754,13 @@
             "interfaces": "Threads"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "ipc",
@@ -781,7 +829,13 @@
             "interfaces": "XSI & message-queue IPC"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "terminals",
@@ -852,7 +906,13 @@
             ]
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "networking",
@@ -940,7 +1000,13 @@
             "interfaces": "Sockets"
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "libc",
@@ -1031,7 +1097,13 @@
             ]
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "rust-std",
@@ -1099,7 +1171,13 @@
             ]
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "utilities",
@@ -1160,7 +1238,13 @@
             ]
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "sdk",
@@ -1222,12 +1306,213 @@
             ]
           }
         }
-      ]
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
+    },
+    {
+      "id": "gpu",
+      "title": "GPU rendering",
+      "outcome": "Breenix renders on the GPU on every target: a clean-room, GL-style Breenix API whose command streams the kernel validates and bounds per process and translates for VirGL (ARM64 QEMU and Parallels) or SVGA3D DX (VMware), executed by a hardware GPU on each host, presented at 1280\u00d7800 and at 2560\u00d71600 with HiDPI scaling, and read back from the device pixel-exact under a declared deterministic rendering profile.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "suite": "gpu",
+      "subsystems": [
+        17,
+        22,
+        25
+      ],
+      "milestones": [
+        {
+          "id": "device",
+          "title": "3D device & capability profile",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "device"
+            ]
+          }
+        },
+        {
+          "id": "submit",
+          "title": "command submission & fences",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "submit"
+            ]
+          }
+        },
+        {
+          "id": "readback",
+          "title": "device readback",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "readback"
+            ]
+          }
+        },
+        {
+          "id": "textures",
+          "title": "textures & uploads",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "textures"
+            ]
+          }
+        },
+        {
+          "id": "profile",
+          "title": "deterministic rendering profile",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "profile"
+            ]
+          }
+        },
+        {
+          "id": "pipelines",
+          "title": "drawing pipelines",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "pipelines"
+            ]
+          }
+        },
+        {
+          "id": "isolation",
+          "title": "per-process GPU isolation",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "isolation"
+            ]
+          }
+        },
+        {
+          "id": "present",
+          "title": "display modes, HiDPI & present",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "present"
+            ]
+          }
+        },
+        {
+          "id": "performance",
+          "title": "frame rate & latency",
+          "measure": {
+            "suite": "gpu",
+            "categories": [
+              "performance"
+            ]
+          }
+        }
+      ],
+      "needsGpu": true
+    },
+    {
+      "id": "console",
+      "title": "Screen console & virtual terminals",
+      "outcome": "Every target boots behind an original Breenix logo with live boot progress on its firmware or boot framebuffer, then hands the screen to a text console sized for the display: six virtual terminals with their own screens and scrollback, the kernel log on the first and a login prompt on each in console mode, switched with Alt+F1..F6, Alt+Left/Right, VT_ACTIVATE and chvt, the foreground terminal owning the keyboard, and every screen checked by reading its displayed pixels back against independently expected ones.",
+      "suite": "console",
+      "subsystems": [
+        11,
+        17,
+        18
+      ],
+      "milestones": [
+        {
+          "id": "boot-logo",
+          "title": "Boot logo & progress",
+          "measure": {
+            "bootPath": "boot-logo"
+          }
+        },
+        {
+          "id": "screen",
+          "title": "Console on the screen everywhere",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "screen"
+            ]
+          }
+        },
+        {
+          "id": "emulation",
+          "title": "Console terminal emulation",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "emulation"
+            ]
+          }
+        },
+        {
+          "id": "virtual-terminals",
+          "title": "Six virtual terminals",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "vt-devices",
+              "vt-switch",
+              "scrollback"
+            ]
+          }
+        },
+        {
+          "id": "chvt-getty",
+          "title": "chvt and a login on every terminal",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "chvt",
+              "getty"
+            ]
+          }
+        },
+        {
+          "id": "keyboard",
+          "title": "Switching from the keyboard",
+          "measure": {
+            "suite": "console",
+            "categories": [
+              "keys"
+            ]
+          }
+        }
+      ],
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path."
     },
     {
       "id": "breengel",
       "title": "BreenGL graphics library",
-      "outcome": "Programs draw with BreenGL's 2D library (clipped and alpha-blended shapes and blits, TrueType and bitmap text, PNG and BMP images, widgets and animated icons) exactly to its written contract, and the windows they commit through an authority-checked kernel interface are composed and observed on the display pixel-exact on every target.",
+      "outcome": "Programs draw with BreenGL entirely on the GPU (clipped and alpha-blended shapes and blits, bitmap and TrueType text, PNG and BMP images, widgets and animated icons) exactly to its written contract, every installed graphical program draws through it, and the windows they commit through an authority-checked kernel interface are composed by the GPU and observed by device readback, pixel-exact on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "breengel",
       "subsystems": [
         17,
@@ -1377,12 +1662,19 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "window-manager",
       "title": "Window manager",
       "outcome": "Independent programs share one desktop: keyboard and pointer events from every target's devices reach bwm through the kernel's input core, and bwm composes, stacks, focuses, moves, resizes and closes their windows, routes input and the clipboard between them with a recorded outcome for every event, and recovers from hung, crashed or misbehaving clients and from its own death, on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "window-manager",
       "subsystems": [
         17,
@@ -1520,12 +1812,19 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "ui-testing",
       "title": "UI test framework",
       "outcome": "Any GUI program can be driven by scripted keyboard, pointer and text input from inside the guest and judged by its committed frames and semantic tree at acknowledged clock epochs and causal barriers, deterministically and identically on every target, with every check shown able to fail and every failure leaving its evidence.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "ui-testing",
       "subsystems": [
         18,
@@ -1623,12 +1922,19 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     },
     {
       "id": "gui-apps",
       "title": "GUI applications",
       "outcome": "Breenix's desktop applications (bterm, blauncher, bfontpicker, blog with blogd, Gus Kit and bcheck, with the graphics demos) do their jobs correctly through real input on a real desktop, on every target.",
+      "targets": [
+        "arm64-qemu",
+        "parallels",
+        "vmware"
+      ],
+      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
       "suite": "gui-apps",
       "subsystems": [
         24,
@@ -1735,7 +2041,8 @@
             ]
           }
         }
-      ]
+      ],
+      "needsGpu": true
     }
   ]
 }

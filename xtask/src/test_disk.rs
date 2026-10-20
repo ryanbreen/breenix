@@ -107,11 +107,12 @@ impl BinaryEntry {
 }
 
 pub fn create_test_disk() -> Result<()> {
-    println!("Creating test disk image...");
+    write_test_disk(Path::new("userspace/programs"), Path::new("target/test_binaries.img"))
+}
 
-    let userspace_dir = Path::new("userspace/programs");
-    let userspace_std_dir = Path::new("userspace/programs/target/x86_64-breenix/release");
-    let output_path = Path::new("target/test_binaries.img");
+/// The x86-64 test disk from the ELFs installed in `userspace_dir`.
+fn write_test_disk(userspace_dir: &Path, output_path: &Path) -> Result<()> {
+    println!("Creating test disk image...");
 
     // Find all .elf files from userspace/programs/
     let mut binaries = Vec::new();
@@ -138,30 +139,21 @@ pub fn create_test_disk() -> Result<()> {
         }
     }
 
-    // Also include binaries from userspace/programs (Rust std tests)
-    // These are ELF binaries without the .elf extension, built with cargo
-    if userspace_std_dir.exists() {
-        // List of known std test binaries to include
-        let std_binaries = ["hello_std_real"];
-
-        for bin_name in std_binaries {
-            let bin_path = userspace_std_dir.join(bin_name);
-            if bin_path.exists() {
-                let mut file = File::open(&bin_path)?;
-                let mut data = Vec::new();
-                file.read_to_end(&mut data)?;
-
-                // Verify it's an ELF file
-                if data.len() >= 4 && &data[0..4] == b"\x7fELF" {
-                    println!("  Including std test: {} ({} bytes)", bin_name, data.len());
-                    binaries.push((bin_name.to_string(), data));
-                } else {
-                    println!("  Warning: {} is not an ELF file, skipping", bin_name);
-                }
-            } else {
-                println!("  Note: std test binary {} not found (build with: cd userspace/programs && cargo build --release)", bin_name);
-            }
+    // The testing kernel loads the Rust std test by its crate name, hello_std_real
+    // (kernel/src/test_exec.rs). build.sh installs that crate's binary as
+    // hello_world.elf, byte for byte, so it is taken from the install list: Cargo's
+    // target directory need not be visible here (a metal build binds its own only
+    // while build.sh runs).
+    match binaries.iter().find(|(name, _)| name == "hello_world") {
+        Some((_, data)) if data.starts_with(b"\x7fELF") => {
+            println!("  Including std test: hello_std_real ({} bytes, as hello_world.elf)", data.len());
+            let data = data.clone();
+            binaries.push(("hello_std_real".to_string(), data));
         }
+        _ => bail!(
+            "{}/hello_world.elf (hello_std_real) is not an installed ELF; run userspace/programs/build.sh",
+            userspace_dir.display()
+        ),
     }
 
     if binaries.is_empty() {
@@ -391,4 +383,41 @@ pub fn create_test_disk_aarch64() -> Result<()> {
 
     println!("\nARM64 test disk created: {}", output_path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entries(image: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let count = u32::from_le_bytes(image[12..16].try_into().unwrap()) as usize;
+        (0..count)
+            .map(|index| {
+                let entry = &image[SECTOR_SIZE + index * 64..SECTOR_SIZE + index * 64 + 64];
+                let name = String::from_utf8(entry[..32].iter().copied().take_while(|&b| b != 0).collect()).unwrap();
+                let offset = u64::from_le_bytes(entry[32..40].try_into().unwrap()) as usize * SECTOR_SIZE;
+                let size = u64::from_le_bytes(entry[40..48].try_into().unwrap()) as usize;
+                (name, image[offset..offset + size].to_vec())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hello_std_real_comes_from_the_installed_hello_world_elf() {
+        let directory = std::env::temp_dir().join(format!("breenix-test-disk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let output = directory.join("test_binaries.img");
+        fs::write(directory.join("fork_test.elf"), b"\x7fELFfork").unwrap();
+        // No hello_world.elf: the disk would lack a binary the testing kernel loads.
+        assert!(write_test_disk(&directory, &output).is_err());
+        fs::write(directory.join("hello_world.elf"), b"\x7fELFstd").unwrap();
+        write_test_disk(&directory, &output).unwrap();
+        let found = entries(&fs::read(&output).unwrap());
+        fs::remove_dir_all(&directory).unwrap();
+        let named = |name: &str| found.iter().find(|(entry, _)| entry == name).map(|(_, data)| data.clone());
+        assert_eq!(named("hello_std_real").as_deref(), Some(&b"\x7fELFstd"[..]));
+        assert_eq!(named("hello_world").as_deref(), Some(&b"\x7fELFstd"[..]));
+        assert_eq!(named("fork_test").as_deref(), Some(&b"\x7fELFfork"[..]));
+    }
 }

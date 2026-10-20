@@ -216,8 +216,100 @@ pub(crate) struct KickSlot {
     pub(crate) pid: AtomicU64,
     pub(crate) at: AtomicU64,
     sender_cpu: AtomicU64,
+    // Testing evidence, covered by the same publication generation as
+    // pid/at: each CPU's delivered timer ticks when the kick was published.
+    #[cfg(any(feature = "boot_tests", feature = "testing"))]
+    ticks_at_publish: [AtomicU64; crate::task::scheduler::MAX_CPUS],
     pub(crate) state: AtomicU64,
 }
+
+/// Delivered timer ticks between a kick's publication and its observation,
+/// on the observing CPU and summed over the CPUs, the CPUs that were masked
+/// across the window (`masked_across_window`), the longest time one CPU was
+/// held off a due tick inside it and that CPU (`held_across_window`), and the
+/// publishing CPU. Only testing kernels count the ticks, the masked CPUs and
+/// the held time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KickWindow {
+    pub(crate) observer_ticks: u64,
+    pub(crate) all_ticks: u64,
+    pub(crate) masked_cpus: u64,
+    pub(crate) held: u64,
+    pub(crate) held_cpu: u64,
+    pub(crate) sender_cpu: u64,
+}
+
+/// The CPUs, as a bit mask, that were masked across the window opened at
+/// counter value `at` and closing now: each is in a masked stretch that began
+/// no later than one tick after `at`. A CPU that ran with interrupts enabled
+/// after that point took the tick that fell before it; one that took none and
+/// is not counted here did not run. Zero where `MASKED_ACCOUNTING` is false.
+/// claim-lint:ok: the stretch starts are kernel/src/arch_impl/aarch64/irq_mask_account.rs's
+/// (#1715).
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+#[inline(always)]
+fn masked_across_window(at: u64) -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let tick =
+            crate::arch_impl::aarch64::timer_interrupt::TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+        (0..crate::task::scheduler::MAX_CPUS).fold(0, |mask, cpu| {
+            let since = crate::arch_impl::aarch64::irq_mask_account::masked_since(cpu);
+            if since != 0 && since.saturating_sub(at) <= tick {
+                mask | 1 << cpu
+            } else {
+                mask
+            }
+        })
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = at;
+        0
+    }
+}
+
+/// The longest time, in counter ticks, that one CPU spent inside the window
+/// opened at `at` and closing at `now` with interrupts enabled and its timer
+/// tick due but not taken, and that CPU. The guest cannot hold an enabled
+/// CPU off a due tick, so that time is the host's
+/// (`irq_mask_account::held_within`). `(0, 0)` where `MASKED_ACCOUNTING` is
+/// false.
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+#[inline(always)]
+fn held_across_window(at: u64, now: u64) -> (u64, u64) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        (0..crate::task::scheduler::MAX_CPUS).fold((0, 0), |(held, held_cpu), cpu| {
+            let cpu_held = crate::arch_impl::aarch64::irq_mask_account::held_within(cpu, at, now);
+            if cpu_held > held {
+                (cpu_held, cpu as u64)
+            } else {
+                (held, held_cpu)
+            }
+        })
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = (at, now);
+        (0, 0)
+    }
+}
+
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+type TickBaseline = [u64; crate::task::scheduler::MAX_CPUS];
+#[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+type TickBaseline = ();
+
+#[cfg(any(feature = "boot_tests", feature = "testing"))]
+#[inline(always)]
+fn tick_baseline() -> TickBaseline {
+    core::array::from_fn(|cpu| crate::tracing::providers::counters::TIMER_TICK_TOTAL.get_cpu(cpu))
+}
+
+#[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+#[inline(always)]
+fn tick_baseline() -> TickBaseline {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KickPublishResult {
@@ -244,6 +336,8 @@ impl KickSlot {
             pid: AtomicU64::new(0),
             at: AtomicU64::new(0),
             sender_cpu: AtomicU64::new(u64::MAX),
+            #[cfg(any(feature = "boot_tests", feature = "testing"))]
+            ticks_at_publish: [const { AtomicU64::new(0) }; crate::task::scheduler::MAX_CPUS],
             state: AtomicU64::new(0),
         }
     }
@@ -275,6 +369,7 @@ impl KickSlot {
         None
     }
 
+    #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     #[inline(always)]
     pub(crate) fn commit(
         &self,
@@ -282,9 +377,26 @@ impl KickSlot {
         pid: u64,
         at: u64,
     ) -> KickPublishResult {
+        self.commit_with_ticks(reservation, pid, at, tick_baseline())
+    }
+
+    #[inline(always)]
+    fn commit_with_ticks(
+        &self,
+        reservation: KickReservation,
+        pid: u64,
+        at: u64,
+        ticks: TickBaseline,
+    ) -> KickPublishResult {
         let displaced = reservation.displaced_state >> 2 != 0
             && reservation.displaced_state & EXIT_KICK_OBSERVED_BIT == 0
             && self.pid.load(Ordering::Relaxed) != pid;
+        #[cfg(any(feature = "boot_tests", feature = "testing"))]
+        for (slot, ticks) in self.ticks_at_publish.iter().zip(ticks) {
+            slot.store(ticks, Ordering::Relaxed);
+        }
+        #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+        let () = ticks;
         self.pid.store(pid, Ordering::Relaxed);
         self.at.store(at, Ordering::Relaxed);
         self.sender_cpu.store(
@@ -301,18 +413,24 @@ impl KickSlot {
 
     #[inline(always)]
     pub(crate) fn publish(&self, pid: u64, at: u64) -> KickPublishResult {
+        // Taken next to the caller's `at`, before the reservation and the
+        // test hold, so the tick window and the counter interval share a start.
+        let ticks = tick_baseline();
         match self.reserve() {
             Some(reservation) => {
                 #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
                 hold_exit_kick_test_publisher(pid);
-                self.commit(reservation, pid, at)
+                self.commit_with_ticks(reservation, pid, at, ticks)
             }
             None => KickPublishResult::ReservationLost,
         }
     }
 
     #[inline(always)]
-    pub(crate) fn observe_from_peer(&self, expected_pid: u64) -> Option<KickObservation> {
+    pub(crate) fn observe_from_peer(
+        &self,
+        expected_pid: u64,
+    ) -> Option<(KickObservation, KickWindow)> {
         self.observe_inner(expected_pid, true)
     }
 
@@ -320,10 +438,15 @@ impl KickSlot {
     #[inline(always)]
     pub(crate) fn observe(&self, expected_pid: u64) -> Option<KickObservation> {
         self.observe_inner(expected_pid, false)
+            .map(|(observation, _)| observation)
     }
 
     #[inline(always)]
-    fn observe_inner(&self, expected_pid: u64, require_peer: bool) -> Option<KickObservation> {
+    fn observe_inner(
+        &self,
+        expected_pid: u64,
+        require_peer: bool,
+    ) -> Option<(KickObservation, KickWindow)> {
         let first_state = self.state.load(Ordering::Acquire);
         if first_state >> 2 == 0 || first_state & (EXIT_KICK_LOCK | EXIT_KICK_OBSERVED_BIT) != 0 {
             return None;
@@ -332,10 +455,14 @@ impl KickSlot {
         let pid = self.pid.load(Ordering::Relaxed);
         let at = self.at.load(Ordering::Relaxed);
         let sender_cpu = self.sender_cpu.load(Ordering::Relaxed);
+        let cpu = crate::task::scheduler::current_cpu();
+        #[cfg(any(feature = "boot_tests", feature = "testing"))]
+        let ticks_at_publish: TickBaseline =
+            core::array::from_fn(|cpu| self.ticks_at_publish[cpu].load(Ordering::Relaxed));
         let second_state = self.state.load(Ordering::Acquire);
         if second_state != first_state
             || pid != expected_pid
-            || (require_peer && sender_cpu == crate::task::scheduler::current_cpu() as u64)
+            || (require_peer && sender_cpu == cpu as u64)
         {
             return None;
         }
@@ -348,10 +475,41 @@ impl KickSlot {
                 Ordering::Relaxed,
             )
             .ok()
-            .map(|_| KickObservation {
-                generation: first_state >> 2,
-                pid,
-                at,
+            .map(|_| {
+                #[cfg(any(feature = "boot_tests", feature = "testing"))]
+                let (observer_ticks, all_ticks) = ticks_at_publish.iter().enumerate().fold(
+                    (0u64, 0u64),
+                    |(observer, all), (other, baseline)| {
+                        let delivered = crate::tracing::providers::counters::TIMER_TICK_TOTAL
+                            .get_cpu(other)
+                            .wrapping_sub(*baseline);
+                        (
+                            if other == cpu { delivered } else { observer },
+                            all.saturating_add(delivered),
+                        )
+                    },
+                );
+                #[cfg(any(feature = "boot_tests", feature = "testing"))]
+                let masked_cpus = masked_across_window(at);
+                #[cfg(any(feature = "boot_tests", feature = "testing"))]
+                let (held, held_cpu) = held_across_window(at, crate::tracing::trace_timestamp());
+                #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
+                let (observer_ticks, all_ticks, masked_cpus, held, held_cpu) = (0, 0, 0, 0, 0);
+                (
+                    KickObservation {
+                        generation: first_state >> 2,
+                        pid,
+                        at,
+                    },
+                    KickWindow {
+                        observer_ticks,
+                        all_ticks,
+                        masked_cpus,
+                        held,
+                        held_cpu,
+                        sender_cpu,
+                    },
+                )
             })
     }
 
@@ -765,7 +923,7 @@ pub fn snapshot() -> [u64; COUNTER_COUNT] {
 /// cold procfs path repeats this line as the hardware run progresses. Both
 /// architecture boot paths also emit it once before launching userspace.
 pub fn emit_root_custody_summary() {
-    crate::serial_println!(
+    crate::diag_println!(
         "[PT_ROOT_CUSTODY:no_proof={}:no_arch={}:terminated={}:undecided={}:mid_retire={}:retired={}]",
         PT_ROOT_ABANDONED_NO_PROOF.aggregate(),
         PT_ROOT_ABANDONED_NO_ARCH.aggregate(),
@@ -786,7 +944,7 @@ pub fn emit_root_custody_summary() {
 /// reaped and back to zero once the drain has retired them. A `resident` that
 /// never returns to zero is a visible leak with a counter naming it.
 pub fn emit_tombstone_census() {
-    crate::serial_println!(
+    crate::diag_println!(
         "[TOMBSTONE_CENSUS:resident={}:removed={}:reap_second={}:retire_second={}:abandoned_unqueued={}]",
         TOMBSTONE_RESIDENT.aggregate(),
         TOMBSTONE_REMOVED.aggregate(),
@@ -970,6 +1128,14 @@ struct BootTestPidCountSlot {
     sgi_sent_count: AtomicU64,
     kick_observed_count: AtomicU64,
     kick_observed_interval: AtomicU64,
+    kick_observed_at: AtomicU64,
+    kick_observed_ticks: AtomicU64,
+    kick_observed_all_ticks: AtomicU64,
+    kick_observed_masked_cpus: AtomicU64,
+    kick_observed_held: AtomicU64,
+    kick_observed_held_cpu: AtomicU64,
+    kick_observed_cpu: AtomicU64,
+    kick_sender_cpu: AtomicU64,
     masked_frames_walked: AtomicU64,
     report_count: AtomicU64,
     table_frames_recorded: AtomicU64,
@@ -990,6 +1156,14 @@ impl BootTestPidCountSlot {
             sgi_sent_count: AtomicU64::new(0),
             kick_observed_count: AtomicU64::new(0),
             kick_observed_interval: AtomicU64::new(0),
+            kick_observed_at: AtomicU64::new(0),
+            kick_observed_ticks: AtomicU64::new(0),
+            kick_observed_all_ticks: AtomicU64::new(0),
+            kick_observed_masked_cpus: AtomicU64::new(0),
+            kick_observed_held: AtomicU64::new(0),
+            kick_observed_held_cpu: AtomicU64::new(0),
+            kick_observed_cpu: AtomicU64::new(0),
+            kick_sender_cpu: AtomicU64::new(0),
             masked_frames_walked: AtomicU64::new(0),
             report_count: AtomicU64::new(0),
             table_frames_recorded: AtomicU64::new(0),
@@ -1024,7 +1198,12 @@ enum BootTestPidCountKind {
     Reclaim,
     Quarantine,
     SgiSent,
-    KickObserved(u64),
+    KickObserved {
+        at: u64,
+        interval: u64,
+        window: KickWindow,
+        cpu: u64,
+    },
     MaskedFramesWalked,
     Report,
     TableFramesRecorded(u64),
@@ -1059,9 +1238,28 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 BootTestPidCountKind::SgiSent => {
                     slot.sgi_sent_count.fetch_add(1, Ordering::Relaxed);
                 }
-                BootTestPidCountKind::KickObserved(interval) => {
+                BootTestPidCountKind::KickObserved {
+                    at,
+                    interval,
+                    window,
+                    cpu,
+                } => {
                     slot.kick_observed_interval
                         .store(interval, Ordering::Relaxed);
+                    slot.kick_observed_at.store(at, Ordering::Relaxed);
+                    slot.kick_observed_masked_cpus
+                        .store(window.masked_cpus, Ordering::Relaxed);
+                    slot.kick_observed_held
+                        .store(window.held, Ordering::Relaxed);
+                    slot.kick_observed_held_cpu
+                        .store(window.held_cpu, Ordering::Relaxed);
+                    slot.kick_observed_ticks
+                        .store(window.observer_ticks, Ordering::Relaxed);
+                    slot.kick_observed_all_ticks
+                        .store(window.all_ticks, Ordering::Relaxed);
+                    slot.kick_observed_cpu.store(cpu, Ordering::Relaxed);
+                    slot.kick_sender_cpu
+                        .store(window.sender_cpu, Ordering::Relaxed);
                     slot.kick_observed_count.fetch_add(1, Ordering::Release);
                 }
                 BootTestPidCountKind::MaskedFramesWalked => {
@@ -1107,6 +1305,14 @@ fn reset_boot_test_pid_counts() -> BootTestPidCountsGuard {
         slot.sgi_sent_count.store(0, Ordering::Relaxed);
         slot.kick_observed_count.store(0, Ordering::Relaxed);
         slot.kick_observed_interval.store(0, Ordering::Relaxed);
+        slot.kick_observed_at.store(0, Ordering::Relaxed);
+        slot.kick_observed_ticks.store(0, Ordering::Relaxed);
+        slot.kick_observed_all_ticks.store(0, Ordering::Relaxed);
+        slot.kick_observed_masked_cpus.store(0, Ordering::Relaxed);
+        slot.kick_observed_held.store(0, Ordering::Relaxed);
+        slot.kick_observed_held_cpu.store(0, Ordering::Relaxed);
+        slot.kick_observed_cpu.store(0, Ordering::Relaxed);
+        slot.kick_sender_cpu.store(0, Ordering::Relaxed);
         slot.masked_frames_walked.store(0, Ordering::Relaxed);
         slot.report_count.store(0, Ordering::Relaxed);
         slot.table_frames_recorded.store(0, Ordering::Relaxed);
@@ -1272,16 +1478,28 @@ pub fn record_exit_kick_collision(bucket: usize) {
     EXIT_KICK_BUCKET_COLLISION_COUNTS[bucket].fetch_add(1, Ordering::Relaxed);
 }
 
+/// Whether this kernel accounts interrupt masking per CPU, so a kick window
+/// can say which CPUs were masked across it (`irq_mask_account`).
+pub(crate) const MASKED_ACCOUNTING: bool = cfg!(target_arch = "aarch64");
+
 #[inline(always)]
-pub fn record_exit_kick_observed(pid: u64, interval: u64) {
+pub(crate) fn record_exit_kick_observed(pid: u64, at: u64, interval: u64, window: KickWindow) {
     crate::trace_count!(EXIT_KICK_OBSERVED);
     EXIT_KICK_BUCKET_OBSERVED_COUNTS[pid as usize % EXIT_KICK_BUCKETS]
         .fetch_add(1, Ordering::Relaxed);
     crate::trace_event!(TEARDOWN_PROVIDER, EXIT_KICK_OBSERVED_EVENT, pid as u32);
     #[cfg(any(feature = "boot_tests", feature = "testing"))]
-    record_boot_test_pid_count(pid, BootTestPidCountKind::KickObserved(interval));
+    record_boot_test_pid_count(
+        pid,
+        BootTestPidCountKind::KickObserved {
+            at,
+            interval,
+            window,
+            cpu: crate::task::scheduler::current_cpu() as u64,
+        },
+    );
     #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
-    let _ = interval;
+    let _ = (at, interval, window);
 }
 
 #[inline(always)]
@@ -1310,6 +1528,14 @@ pub struct TeardownPidEvidence {
     pub sgi_sent_count: u64,
     pub kick_observed_count: u64,
     pub kick_observed_interval: u64,
+    pub kick_observed_at: u64,
+    pub kick_observed_ticks: u64,
+    pub kick_observed_all_ticks: u64,
+    pub kick_observed_masked_cpus: u64,
+    pub kick_observed_held: u64,
+    pub kick_observed_held_cpu: u64,
+    pub kick_observed_cpu: u64,
+    pub kick_sender_cpu: u64,
     pub masked_frames_walked: u64,
     pub report_count: u64,
     pub bucket_published_count: u64,
@@ -1337,6 +1563,14 @@ pub fn teardown_pid_evidence(pid: u64) -> Option<TeardownPidEvidence> {
         sgi_sent_count: slot.sgi_sent_count.load(Ordering::Acquire),
         kick_observed_count: slot.kick_observed_count.load(Ordering::Acquire),
         kick_observed_interval: slot.kick_observed_interval.load(Ordering::Acquire),
+        kick_observed_at: slot.kick_observed_at.load(Ordering::Acquire),
+        kick_observed_ticks: slot.kick_observed_ticks.load(Ordering::Acquire),
+        kick_observed_all_ticks: slot.kick_observed_all_ticks.load(Ordering::Acquire),
+        kick_observed_masked_cpus: slot.kick_observed_masked_cpus.load(Ordering::Acquire),
+        kick_observed_held: slot.kick_observed_held.load(Ordering::Acquire),
+        kick_observed_held_cpu: slot.kick_observed_held_cpu.load(Ordering::Acquire),
+        kick_observed_cpu: slot.kick_observed_cpu.load(Ordering::Acquire),
+        kick_sender_cpu: slot.kick_sender_cpu.load(Ordering::Acquire),
         masked_frames_walked: slot.masked_frames_walked.load(Ordering::Acquire),
         report_count: slot.report_count.load(Ordering::Acquire),
         bucket_published_count: EXIT_KICK_BUCKET_PUBLISH_COUNTS[bucket].load(Ordering::Acquire),
@@ -1837,9 +2071,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
 
     #[cfg(target_arch = "aarch64")]
     {
-        // Exercise the known unproved immediate-release path before the leak
-        // measurement. Its intentional abandonment is therefore present in
-        // both allocator baselines and cannot disguise a deferred-root leak.
+        // Exercise the non-live-root exit path before the leak measurement:
+        // it releases the child's leaves at once and defers its tables to a
+        // receipt, which is retired below, so both allocator baselines include
+        // it and it cannot disguise a deferred-root leak.
         let immediate_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => alloc::boxed::Box::new(page_table),
             Err(_) => return TestResult::Fail("baseline fork page-table allocation failed"),
@@ -1879,6 +2114,21 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         }
         // #813: PM scope ended; release removed rows before further observations.
         retired_rows.clear();
+        let baseline_deadline = retirement_oracle_quiesce_deadline();
+        while crate::task::process_task::boot_reclaim_locations(immediate.0.as_u64())
+            != (false, false)
+        {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if retirement_oracle_clock_now() >= baseline_deadline {
+                return TestResult::Fail("baseline child's deferred tables did not retire");
+            }
+        }
     }
 
     let mut pairing_child_pids = [0u64; 64];
@@ -3214,29 +3464,31 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     use x86_64::VirtAddr;
 
-    // The leaf residual below remains a manifestation of issue #583:
-    // `GuardedStack::drop` does not reclaim user-stack frames. `stack_residual`
-    // used to include a kernel-stack component too; `KernelStack::drop` now
-    // releases that component, leaving the user-stack residue still owned by
-    // #583.
+    // The leaves the window maps are returned in it: user stacks are pages the
+    // process page table owns (#583), returned with its other leaves.
     #[cfg(target_arch = "aarch64")]
-    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
+    const EXPECTED_LEAF_RESIDUAL: u64 = 0;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
-    // Residual measured before kernel-stack frames were released in
-    // `KernelStack::drop`.
+    const EXPECTED_LEAF_RESIDUAL: u64 = 0;
+    // Residual before kernel-stack frames are released in `KernelStack::drop`:
+    // the processes leave no frames of their own, since their user stacks go
+    // back with their page tables and exec builds no separate stack object
+    // (#583). x86 adds the leader thread's 128-frame kernel stack.
     #[cfg(target_arch = "aarch64")]
-    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 18;
+    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 0;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 149;
-    // x86: 149 - 128 * 1 = 21 (one stack dropped in the window, 128 frames per
-    // stack). aarch64: 18 - 0 = 18 because HHDM-preallocated stacks release no
-    // frames.
+    const EXPECTED_STACK_RESIDUAL_PRE_KSTACK_RELEASE: i64 = 128;
+    // x86: 128 - 128 * 1 = 0 (the leader's kernel stack is dropped in the
+    // window, 128 frames per stack). aarch64: 0 - 0 = 0 because
+    // HHDM-preallocated stacks release no frames.
     #[cfg(target_arch = "aarch64")]
-    const EXPECTED_STACK_RESIDUAL: i64 = 18;
+    const EXPECTED_STACK_RESIDUAL: i64 = 0;
     #[cfg(target_arch = "x86_64")]
-    const EXPECTED_STACK_RESIDUAL: i64 = 21;
-    const EXPECTED_ROOTS_CREATED: u64 = 5;
+    const EXPECTED_STACK_RESIDUAL: i64 = 0;
+    // The leader's root, and in each body the corrupt image's, the image of
+    // the exec that waited for its group, and the images of the two exec calls
+    // that committed.
+    const EXPECTED_ROOTS_CREATED: u64 = 9;
 
     fn test_user_entry() {}
 
@@ -3260,16 +3512,48 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         process
     }
 
-    fn mark_clone_vm_member(
+    /// A thread of `leader_pid`'s process, as `clone(CLONE_VM | CLONE_THREAD)`
+    /// makes one: on the leader's root, holding a share of its lifetime.
+    fn mark_thread_member(
         process: &mut crate::process::Process,
         leader_root: u64,
         leader_pid: crate::process::ProcessId,
+        lifetime: &alloc::sync::Arc<crate::process::process::AddressSpaceLifetime>,
     ) {
         assert!(process.inherited_cr3.replace(leader_root).is_none());
         assert!(process
             .thread_group_id
             .replace(leader_pid.as_u64())
             .is_none());
+        process.address_space_lifetime = Some(lifetime.clone());
+    }
+
+    /// The root `pid`'s row owns and the lifetime of that address space.
+    fn address_space_of(
+        pid: crate::process::ProcessId,
+    ) -> Option<(
+        u64,
+        alloc::sync::Arc<crate::process::process::AddressSpaceLifetime>,
+    )> {
+        let manager_guard = crate::process::manager();
+        let row = manager_guard.as_ref()?.get_process(pid)?;
+        Some((
+            row.page_table
+                .as_ref()?
+                .level_4_frame()
+                .start_address()
+                .as_u64(),
+            row.address_space_lifetime.clone()?,
+        ))
+    }
+
+    /// `pid`'s `inherited_cr3` and `thread_group_id`, two empty values for a missing row.
+    fn member_fields(pid: crate::process::ProcessId) -> (Option<u64>, Option<u64>) {
+        let manager_guard = crate::process::manager();
+        manager_guard
+            .as_ref()
+            .and_then(|manager| manager.get_process(pid))
+            .map_or((None, None), |row| (row.inherited_cr3, row.thread_group_id))
     }
 
     fn invoke_exec(
@@ -3278,7 +3562,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         elf: &[u8],
         with_argv: bool,
         closes: &mut crate::ipc::fd::DeferredFdCloses,
-    ) -> Result<(), &'static str> {
+    ) -> Result<Option<crate::process::RetirementReceipt>, &'static str> {
         if with_argv {
             let argv: [&[u8]; 1] = [b"exec_detach_oracle\0"];
             let cred = manager
@@ -3296,56 +3580,29 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             )?);
             manager
                 .exec_process_with_argv(pid, &mut prepared, closes)
-                .map(|(_, _, commit)| {
-                    // #721 m1: deliberately not applied. This oracle reads detach/
-                    // refusal state straight off the process row and tears the row
-                    // down immediately after (retire_and_remove_owned_row /
-                    // exit_and_remove_unowned_row), so there is no live syscall
-                    // caller here for the scheduler-side commit to matter to —
-                    // unlike every real exec path, which must apply it.
+                .map(|(_, _, commit, superseded)| {
+                    // #721 m1: deliberately not applied. This oracle reads exec
+                    // state straight off the process rows, whose threads are not scheduled,
+                    // and tears them down through retire_and_remove_owned_row or
+                    // their own exit, so there is no live syscall caller here for
+                    // the scheduler-side commit to matter to — unlike the exec
+                    // system calls, which apply it (3 of 3: one ARM64, two x86).
                     let _ = commit;
+                    superseded
                 })
         } else {
             manager
                 .exec_process(pid, elf, Some("exec_detach_oracle"), closes)
-                .map(|_| ())
+                .map(|_| None)
         }
     }
 
-    fn exit_and_remove_unowned_row(
-        pid: crate::process::ProcessId,
-        unavailable_reason: &'static str,
-        missing_reason: &'static str,
-    ) -> Result<(), &'static str> {
-        // Declared before PM guards: removed FD tables are destroyed after PM unlock.
-        let mut retired_rows = alloc::vec::Vec::new();
-        let thread_id = {
-            let manager_guard = crate::process::manager();
-            let Some(manager) = manager_guard.as_ref() else {
-                return Err(unavailable_reason);
-            };
-            manager
-                .get_process(pid)
-                .and_then(|process| process.main_thread.as_ref())
-                .map(|thread| thread.id)
-                .ok_or(missing_reason)?
-        };
-        crate::process::exit_process_for_teardown_test(pid, 0);
-        crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, 0);
-        let mut manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_mut() else {
-            return Err(unavailable_reason);
-        };
-        if !manager
-            .get_process(pid)
-            .map(|process| process.is_terminated())
-            .unwrap_or(false)
-        {
-            return Err(missing_reason);
+    /// Queue the roots a fixture exec superseded once PM is released, as the
+    /// exec system calls do.
+    fn queue_superseded(receipt: Option<crate::process::RetirementReceipt>) {
+        if let Some(reclaim) = receipt.and_then(|mut receipt| receipt.take_contents()) {
+            crate::task::process_task::enqueue_process_reclaim(reclaim);
         }
-        manager.remove_from_ready_queue(pid);
-        retired_rows.push(manager.remove_process(pid));
-        Ok(())
     }
 
     fn retire_and_remove_owned_row(
@@ -3429,7 +3686,14 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     let valid = crate::memory::process_memory::x86_valid_executable_fixture();
 
-    let leader_pid = {
+    // S2 (#1781, #1718): an exec by a thread of a thread group ends the group's
+    // other threads, waits for them to be gone and runs the new image as the
+    // process, under the group's ID. An exec by a process that shares the
+    // address space without sharing the thread group (CLONE_VM only) gets a new
+    // address space and the others keep theirs. Each body drives both rules on
+    // the row the previous body left as the process, so one real leader serves
+    // the whole oracle.
+    let mut leader_pid = {
         let mut manager_guard = crate::process::manager();
         let Some(manager) = manager_guard.as_mut() else {
             return TestResult::Fail("process manager unavailable for exec detach leader insert");
@@ -3440,39 +3704,25 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         }
     };
     let mut roots_created = 1u64;
-    let leader_root = {
-        let manager_guard = crate::process::manager();
-        let Some(manager) = manager_guard.as_ref() else {
-            return TestResult::Fail("process manager unavailable for exec detach leader root");
-        };
-        let Some(page_table) = manager
-            .get_process(leader_pid)
-            .and_then(|process| process.page_table.as_ref())
-        else {
-            return TestResult::Fail("exec detach leader row has no page table");
-        };
-        page_table.level_4_frame().start_address().as_u64()
-    };
 
     let mut bodies = 0usize;
     let mut fail_preserved = 0usize;
-    // #721 B2: the live-sibling refusal is now armed on both architectures
-    // (x86 exec_process/exec_process_with_argv gained the guard alongside
-    // aarch64's), so this oracle exercises it on both arches too — the sibling
-    // arm below is no longer aarch64-only.
-    let mut sibling_refused = 0usize;
-    let mut success_detached = 0usize;
+    let mut group_waited = 0usize;
+    let mut took_over = 0usize;
     let mut fresh_root = 0usize;
-    let mut tgid_self = 0usize;
+    let mut sharer_kept = 0usize;
     let mut old_group_reached_pre = 0usize;
-    let mut old_group_missed_post = 0usize;
-    let mut self_group_reached_post = 0usize;
+    let mut group_reached_post = 0usize;
+    let mut member_id_unused_post = 0usize;
     let mut first_failure: Option<&'static str> = None;
-    let mut reclaim_pids = [0u64; 5];
+    let mut reclaim_pids = [0u64; 7];
     let mut reclaim_pid_count = 0usize;
 
     for body in 0..2 {
         let with_argv = body == 1;
+        let Some((leader_root, leader_lifetime)) = address_space_of(leader_pid) else {
+            return TestResult::Fail("exec detach leader row has no page table");
+        };
         let member_pid = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
@@ -3481,7 +3731,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             manager.allocate_pid()
         };
         let mut member = process_row(member_pid, "exec_detach_member");
-        mark_clone_vm_member(&mut member, leader_root, leader_pid);
+        let member_thread = member.main_thread.as_ref().map(|thread| thread.id);
+        mark_thread_member(&mut member, leader_root, leader_pid, &leader_lifetime);
         {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -3506,6 +3757,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
                 Some("a kill aimed at the pre-exec group failed to reach a still-member row");
         }
 
+        // A corrupt image fails before anything changes.
         let failed_exec = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
@@ -3513,23 +3765,8 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             };
             invoke_exec(manager, member_pid, &corrupt, with_argv, &mut closes)
         };
-        let (failed_inherited_cr3, failed_thread_group_id) = {
-            let manager_guard = crate::process::manager();
-            let Some(manager) = manager_guard.as_ref() else {
-                return TestResult::Fail(
-                    "process manager unavailable for exec detach failure observation",
-                );
-            };
-            match manager.get_process(member_pid) {
-                Some(process) => (process.inherited_cr3, process.thread_group_id),
-                None => {
-                    if first_failure.is_none() {
-                        first_failure = Some("exec detach member disappeared after failed exec");
-                    }
-                    (None, None)
-                }
-            }
-        };
+        let failed_exec = failed_exec.map(queue_superseded);
+        let (failed_inherited_cr3, failed_thread_group_id) = member_fields(member_pid);
         let failure_error_exact = matches!(failed_exec, Err("Segment data out of bounds"));
         if failure_error_exact {
             roots_created = roots_created.saturating_add(1);
@@ -3549,180 +3786,311 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             fail_preserved += 1;
         }
 
+        // While another thread of the process runs, the commit waits: it
+        // retires no root and changes no row.
+        let sibling_pid = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail("process manager unavailable for exec detach sibling PID");
+            };
+            manager.allocate_pid()
+        };
+        let mut sibling = process_row(sibling_pid, "exec_detach_sibling");
+        mark_thread_member(&mut sibling, leader_root, leader_pid, &leader_lifetime);
         {
-            let sibling_pid = {
-                let manager_guard = crate::process::manager();
-                let Some(manager) = manager_guard.as_ref() else {
-                    return TestResult::Fail(
-                        "process manager unavailable for exec detach sibling PID",
-                    );
-                };
-                manager.allocate_pid()
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach sibling insert",
+                );
             };
-            let mut sibling = process_row(sibling_pid, "exec_detach_sibling");
-            mark_clone_vm_member(&mut sibling, leader_root, leader_pid);
-            {
-                let mut manager_guard = crate::process::manager();
-                let Some(manager) = manager_guard.as_mut() else {
-                    return TestResult::Fail(
-                        "process manager unavailable for exec detach sibling insert",
-                    );
-                };
-                manager.insert_process(sibling_pid, sibling);
-            }
-
-            let refused_exec = {
-                let mut manager_guard = crate::process::manager();
-                let Some(manager) = manager_guard.as_mut() else {
-                    return TestResult::Fail(
-                        "process manager unavailable for exec detach sibling arm",
-                    );
-                };
-                invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
+            manager.insert_process(sibling_pid, sibling);
+        }
+        let waited_exec = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for exec detach group arm");
             };
-            let (refused_inherited_cr3, refused_thread_group_id) = {
-                let manager_guard = crate::process::manager();
-                let Some(manager) = manager_guard.as_ref() else {
-                    return TestResult::Fail(
-                        "process manager unavailable for exec detach sibling observation",
-                    );
-                };
-                match manager.get_process(member_pid) {
-                    Some(process) => (process.inherited_cr3, process.thread_group_id),
-                    None => {
-                        if first_failure.is_none() {
-                            first_failure =
-                                Some("exec detach member disappeared after sibling refusal");
-                        }
-                        (None, None)
-                    }
-                }
-            };
-            let sibling_error_exact = matches!(
-                refused_exec,
-                Err("exec blocked while CLONE_VM sibling shares old address space")
-            );
-            let sibling_inherited_preserved = refused_inherited_cr3 == Some(leader_root);
-            let sibling_tgid_preserved = refused_thread_group_id == Some(leader_pid.as_u64());
-            if !sibling_error_exact && first_failure.is_none() {
-                first_failure = Some("live CLONE_VM sibling did not block exec");
-            }
-            if !sibling_inherited_preserved && first_failure.is_none() {
-                first_failure = Some("sibling-refused exec mutated inherited_cr3");
-            }
-            if !sibling_tgid_preserved && first_failure.is_none() {
-                first_failure = Some("sibling-refused exec mutated thread_group_id");
-            }
-            if sibling_error_exact && sibling_inherited_preserved && sibling_tgid_preserved {
-                sibling_refused += 1;
-            }
-
-            match exit_and_remove_unowned_row(
-                sibling_pid,
-                "process manager unavailable for exec detach sibling cleanup",
-                "exec detach sibling disappeared before cleanup",
-            ) {
-                Ok(()) => {
-                    reclaim_pids[reclaim_pid_count] = sibling_pid.as_u64();
-                    reclaim_pid_count += 1;
-                }
-                Err(reason) if first_failure.is_none() => first_failure = Some(reason),
-                Err(_) => {}
-            }
+            invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
+        };
+        let waited_exec = waited_exec.map(queue_superseded);
+        let (waited_inherited_cr3, waited_thread_group_id) = member_fields(member_pid);
+        let wait_error_exact = matches!(waited_exec, Err(error) if error == crate::process::manager::EXEC_GROUP_RUNNING);
+        if wait_error_exact {
+            roots_created = roots_created.saturating_add(1);
+        }
+        let leader_root_kept =
+            address_space_of(leader_pid).is_some_and(|(root, _)| root == leader_root);
+        if !wait_error_exact && first_failure.is_none() {
+            first_failure = Some("exec committed while another thread of its process ran");
+        }
+        if (waited_inherited_cr3 != Some(leader_root)
+            || waited_thread_group_id != Some(leader_pid.as_u64())
+            || !leader_root_kept)
+            && first_failure.is_none()
+        {
+            first_failure = Some("an exec that waited for its group changed a row");
+        }
+        if wait_error_exact
+            && waited_inherited_cr3 == Some(leader_root)
+            && waited_thread_group_id == Some(leader_pid.as_u64())
+            && leader_root_kept
+        {
+            group_waited += 1;
         }
 
+        // Model exec's marked but still-live victims. A process signal sent
+        // to the old leader must reach the survivor even when it blocks it.
+        let old_mask = crate::process::with_process_manager(|manager| {
+            for victim in [leader_pid, sibling_pid] {
+                let row = manager.get_process_mut(victim).unwrap();
+                row.killed_by_exec = true;
+                row.signals.set_pending(crate::signal::constants::SIGKILL);
+            }
+            let row = manager.get_process_mut(member_pid).unwrap();
+            let mask = row.signals.blocked();
+            row.signals
+                .block_signals(crate::signal::constants::sig_mask(
+                    crate::signal::constants::SIGTERM,
+                ));
+            mask
+        })
+        .unwrap();
+        crate::syscall::signal::signal_process_from_kernel(
+            leader_pid,
+            crate::signal::constants::SIGTERM,
+        );
+        let routed = crate::process::with_process_manager(|manager| {
+            let bit = crate::signal::constants::sig_mask(crate::signal::constants::SIGTERM);
+            let old_received =
+                manager.get_process(leader_pid).unwrap().signals.pending() & bit != 0;
+            let row = manager.get_process_mut(member_pid).unwrap();
+            let survived = row.signals.pending() & bit != 0;
+            row.signals.clear_pending(crate::signal::constants::SIGTERM);
+            row.signals.set_blocked(old_mask);
+            for victim in [leader_pid, sibling_pid] {
+                let row = manager.get_process_mut(victim).unwrap();
+                row.killed_by_exec = false;
+                row.signals.clear_pending(crate::signal::constants::SIGKILL);
+            }
+            survived && !old_received
+        })
+        .unwrap_or(false);
+        if !routed && first_failure.is_none() {
+            first_failure = Some("a process signal sent to an exec victim missed the survivor");
+        }
+
+        // The group ends: the sibling exits, then the leader, which hands its
+        // address space to the member and retires. The member then takes over
+        // the process's row and its exec commits under the process's ID.
+        // A thread's row is reaped by its own exit and leaves when it retires.
+        crate::process::exit_process_for_teardown_test(sibling_pid, 0);
+        reclaim_pids[reclaim_pid_count] = sibling_pid.as_u64();
+        reclaim_pid_count += 1;
+        crate::process::exit_process_for_teardown_test(leader_pid, 0);
+        reclaim_pids[reclaim_pid_count] = leader_pid.as_u64();
+        reclaim_pid_count += 1;
+        let retire_deadline = retirement_oracle_quiesce_deadline();
+        while crate::process::with_process_manager(|manager| {
+            manager.exec_waits_for_group(member_pid)
+        })
+        .unwrap_or(false)
+        {
+            crate::task::scheduler::nudge_retirement_grace_for_test();
+            let boundary_deadline =
+                retirement_oracle_clock_now().saturating_add(retirement_oracle_clock_delta(1));
+            while retirement_oracle_clock_now() < boundary_deadline {
+                core::hint::spin_loop();
+            }
+            crate::task::process_task::boot_reclaim_deferred_process_resources();
+            if retirement_oracle_clock_now() >= retire_deadline {
+                if first_failure.is_none() {
+                    first_failure = Some("exec detach leader never retired after its group ended");
+                }
+                break;
+            }
+        }
+        let takeover = crate::process::with_process_manager(|manager| {
+            manager.exec_take_over_group(member_pid)
+        })
+        .flatten();
+        let process_pid = match takeover {
+            Some((pid, leader_row)) => {
+                drop(leader_row);
+                pid
+            }
+            None => member_pid,
+        };
+        // Drive a kill in the real publication/adoption gap: the row has
+        // the leader PID but its fixture thread has no scheduler owner yet.
+        // Claiming that empty owner set used to discard SIGKILL and tear the
+        // row down. It must instead remain pending on the surviving row.
+        crate::syscall::signal::kill_process_now(
+            process_pid,
+            -(crate::signal::constants::SIGKILL as i32),
+            None,
+        );
+        let kill_deferred = crate::process::with_process_manager(|manager| {
+            let Some(row) = manager.get_process_mut(process_pid) else {
+                return false;
+            };
+            let deferred = row.exec_owner_pending
+                && !row.is_terminated()
+                && row.signals.pending()
+                    & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL)
+                    != 0;
+            // The fixture does not run a scheduler thread; finish its simulated
+            // adoption and remove the injected kill before the exec arm.
+            row.exec_owner_pending = false;
+            row.signals.clear_pending(crate::signal::constants::SIGKILL);
+            row.group_exit_code = None;
+            deferred
+        })
+        .unwrap_or(false);
+        if !kill_deferred && first_failure.is_none() {
+            first_failure = Some("SIGKILL claimed the row before exec scheduler adoption");
+        }
         let successful_exec = {
             let mut manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_mut() else {
                 return TestResult::Fail("process manager unavailable for exec detach success arm");
             };
-            invoke_exec(manager, member_pid, &valid, with_argv, &mut closes)
+            invoke_exec(manager, process_pid, &valid, with_argv, &mut closes)
         };
-        let mut detached = false;
-        let mut root_is_fresh = false;
-        let mut effective_tgid_is_self = false;
-        {
+        let successful_exec = successful_exec.map(queue_superseded);
+        if successful_exec.is_ok() {
+            roots_created = roots_created.saturating_add(1);
+        }
+        let (row_is_member, member_row_gone, sibling_gone, exec_root) = {
             let manager_guard = crate::process::manager();
             let Some(manager) = manager_guard.as_ref() else {
                 return TestResult::Fail(
                     "process manager unavailable for exec detach success observation",
                 );
             };
-            if let Some(process) = manager.get_process(member_pid) {
-                detached = process.inherited_cr3.is_none() && process.thread_group_id.is_none();
-                root_is_fresh = process
-                    .page_table
-                    .as_ref()
-                    .map(|page_table| {
-                        page_table.level_4_frame().start_address().as_u64() != leader_root
-                    })
-                    .unwrap_or(false);
-                effective_tgid_is_self =
-                    process.thread_group_id.unwrap_or(member_pid.as_u64()) == member_pid.as_u64();
-            } else if first_failure.is_none() {
-                first_failure = Some("exec detach member disappeared after successful exec");
-            }
-        }
+            let row = manager.get_process(leader_pid);
+            (
+                row.is_some_and(|row| {
+                    row.main_thread.as_ref().map(|thread| thread.id) == member_thread
+                        && row.thread_group_id.is_none()
+                        && row.inherited_cr3.is_none()
+                }),
+                manager.get_process(member_pid).is_none(),
+                manager.get_process(sibling_pid).is_none(),
+                row.and_then(|row| row.page_table.as_ref())
+                    .map(|page_table| page_table.level_4_frame().start_address().as_u64()),
+            )
+        };
         if successful_exec.is_err() && first_failure.is_none() {
-            first_failure = Some("valid exec fixture did not commit");
+            first_failure = Some("valid exec fixture did not commit once its group ended");
         }
-        if successful_exec.is_ok() {
-            roots_created = roots_created.saturating_add(1);
+        if !(process_pid == leader_pid && row_is_member && member_row_gone)
+            && first_failure.is_none()
+        {
+            first_failure = Some("the exec'd thread did not take over its process's row");
         }
-        if !detached && first_failure.is_none() {
-            first_failure = Some("successful exec did not clear both CLONE_VM fields");
+        if !sibling_gone && first_failure.is_none() {
+            first_failure = Some("the process's other thread outlived the exec");
         }
+        if successful_exec.is_ok()
+            && process_pid == leader_pid
+            && row_is_member
+            && member_row_gone
+            && sibling_gone
+        {
+            took_over += 1;
+        }
+        let root_is_fresh = exec_root.is_some_and(|root| root != leader_root);
         if !root_is_fresh && first_failure.is_none() {
             first_failure = Some("successful exec did not publish an observed fresh root");
-        }
-        if !effective_tgid_is_self && first_failure.is_none() {
-            first_failure = Some("successful exec effective thread-group ID was not self");
-        }
-        if successful_exec.is_ok() && detached {
-            success_detached += 1;
         }
         if successful_exec.is_ok() && root_is_fresh {
             fresh_root += 1;
         }
-        if successful_exec.is_ok() && effective_tgid_is_self {
-            tgid_self += 1;
-        }
 
-        let old_group_post_count =
+        let group_post_count =
             signal_thread_group_for_test(leader_pid.as_u64(), crate::signal::constants::SIGUSR1);
-        let member_reached_from_old_group =
-            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
-        let leader_reached_post =
+        let process_reached_post =
             take_pending_signal_for_test(leader_pid, crate::signal::constants::SIGUSR1);
-        if old_group_post_count == 1 && !member_reached_from_old_group && leader_reached_post {
-            old_group_missed_post += 1;
-        } else if first_failure.is_none() {
-            first_failure = Some("a kill aimed at the pre-exec group still reached the exec'd row");
-        }
-
-        let self_group_post_count =
-            signal_thread_group_for_test(member_pid.as_u64(), crate::signal::constants::SIGUSR1);
-        let member_reached_from_self_group =
-            take_pending_signal_for_test(member_pid, crate::signal::constants::SIGUSR1);
-        if self_group_post_count == 1 && member_reached_from_self_group {
-            self_group_reached_post += 1;
+        if group_post_count == 1 && process_reached_post {
+            group_reached_post += 1;
         } else if first_failure.is_none() {
             first_failure =
-                Some("a kill aimed at the post-exec group failed to reach the exec'd row");
+                Some("a kill aimed at the process failed to reach the exec'd row alone");
+        }
+        if signal_thread_group_for_test(member_pid.as_u64(), crate::signal::constants::SIGUSR1) == 0
+        {
+            member_id_unused_post += 1;
+        } else if first_failure.is_none() {
+            first_failure =
+                Some("a kill aimed at the exec'd thread's old row ID still reached a row");
         }
 
+        // A process sharing the address space without sharing the thread
+        // group: the process's exec is not refused, it gets a new root, and
+        // the sharer keeps the old one, which it now owns.
+        let Some((shared_root, shared_lifetime)) = address_space_of(leader_pid) else {
+            return TestResult::Fail("exec detach process row has no page table to share");
+        };
+        let sharer_pid = {
+            let manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_ref() else {
+                return TestResult::Fail("process manager unavailable for exec detach sharer PID");
+            };
+            manager.allocate_pid()
+        };
+        let mut sharer = process_row(sharer_pid, "exec_detach_sharer");
+        assert!(sharer.inherited_cr3.replace(shared_root).is_none());
+        sharer.address_space_lifetime = Some(shared_lifetime);
+        {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail(
+                    "process manager unavailable for exec detach sharer insert",
+                );
+            };
+            manager.insert_process(sharer_pid, sharer);
+        }
+        let shared_exec = {
+            let mut manager_guard = crate::process::manager();
+            let Some(manager) = manager_guard.as_mut() else {
+                return TestResult::Fail("process manager unavailable for exec detach sharer arm");
+            };
+            invoke_exec(manager, leader_pid, &valid, with_argv, &mut closes)
+        };
+        let shared_exec = shared_exec.map(queue_superseded);
+        if shared_exec.is_ok() {
+            roots_created = roots_created.saturating_add(1);
+        }
+        let process_root_fresh = address_space_of(leader_pid).is_some_and(|(root, lifetime)| {
+            root != shared_root
+                && address_space_of(sharer_pid).is_some_and(|(_, old)| lifetime.id != old.id)
+        });
+        let sharer_owns_old_root =
+            address_space_of(sharer_pid).is_some_and(|(root, _)| root == shared_root);
+        if shared_exec.is_err() && first_failure.is_none() {
+            first_failure = Some("a CLONE_VM sharer outside the thread group made exec refuse");
+        }
+        if !(process_root_fresh && sharer_owns_old_root) && first_failure.is_none() {
+            first_failure =
+                Some("exec beside a CLONE_VM sharer did not leave it the old address space");
+        }
+        if shared_exec.is_ok() && process_root_fresh && sharer_owns_old_root {
+            sharer_kept += 1;
+        }
         match retire_and_remove_owned_row(
-            member_pid,
-            "process manager unavailable for exec detach member cleanup",
-            "exec detach member disappeared before cleanup",
+            sharer_pid,
+            "process manager unavailable for exec detach sharer cleanup",
+            "exec detach sharer disappeared before cleanup",
         ) {
             Ok(()) => {
-                reclaim_pids[reclaim_pid_count] = member_pid.as_u64();
+                reclaim_pids[reclaim_pid_count] = sharer_pid.as_u64();
                 reclaim_pid_count += 1;
             }
             Err(reason) if first_failure.is_none() => first_failure = Some(reason),
             Err(_) => {}
         }
+        leader_pid = process_pid;
     }
 
     match retire_and_remove_owned_row(
@@ -3790,8 +4158,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     let leaf_frames_returned_delta = LEAF_FRAMES_RETURNED
         .aggregate()
         .saturating_sub(leaf_frames_returned_before);
-    // The page-table mapping records are released, but external GuardedStack
-    // frames are not returned until issue #583 is closed.
+    // Mapped leaves not returned by the end of the window.
     let leaf_residual = leaf_mappings_recorded_delta.saturating_sub(leaf_frames_returned_delta);
     let table_frames_lost_delta = PT_RETIRE_FRAMES_LOST
         .aggregate()
@@ -3839,30 +4206,30 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     if fail_preserved != 2 && first_failure.is_none() {
         first_failure = Some("failed exec preservation count was not exact");
     }
-    if sibling_refused != 2 && first_failure.is_none() {
-        first_failure = Some("live-sibling refusal count was not exact");
+    if group_waited != 2 && first_failure.is_none() {
+        first_failure = Some("group-wait count was not exact");
     }
-    if success_detached != 2 && first_failure.is_none() {
-        first_failure = Some("successful exec detach count was not exact");
+    if took_over != 2 && first_failure.is_none() {
+        first_failure = Some("thread takeover count was not exact");
     }
     if fresh_root != 2 && first_failure.is_none() {
         first_failure = Some("fresh exec root count was not exact");
     }
-    if tgid_self != 2 && first_failure.is_none() {
-        first_failure = Some("self thread-group ID count was not exact");
+    if sharer_kept != 2 && first_failure.is_none() {
+        first_failure = Some("CLONE_VM sharer count was not exact");
     }
     if old_group_reached_pre != 2 && first_failure.is_none() {
         first_failure =
             Some("a kill aimed at the pre-exec group failed to reach a still-member row");
     }
-    if old_group_missed_post != 2 && first_failure.is_none() {
-        first_failure = Some("a kill aimed at the pre-exec group still reached the exec'd row");
+    if group_reached_post != 2 && first_failure.is_none() {
+        first_failure = Some("a kill aimed at the process failed to reach the exec'd row alone");
     }
-    if self_group_reached_post != 2 && first_failure.is_none() {
-        first_failure = Some("a kill aimed at the post-exec group failed to reach the exec'd row");
+    if member_id_unused_post != 2 && first_failure.is_none() {
+        first_failure = Some("a kill aimed at the exec'd thread's old row ID still reached a row");
     }
     if roots_created != EXPECTED_ROOTS_CREATED && first_failure.is_none() {
-        first_failure = Some("exec detach oracle did not create exactly five roots");
+        first_failure = Some("exec detach oracle did not create exactly nine roots");
     }
     if table_frames_returned_delta != table_frames_recorded && first_failure.is_none() {
         first_failure = Some("exec detach table-frame custody equality failed");
@@ -3909,21 +4276,21 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
     #[cfg(target_arch = "x86_64")]
     let arch = "x86";
     crate::serial_println!(
-        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:sibling_refused={}:success_detached={}:fresh_root={}:tgid_self={}:custody_balance={}:leaf_residual={}:stack_residual={}:kstack_frames_released={}:old_group_reached_pre={}:old_group_missed_post={}:self_group_reached_post={}]",
+        "[EXEC_DETACH_ORACLE:{}:bodies={}:fail_preserved={}:group_waited={}:took_over={}:fresh_root={}:sharer_kept={}:custody_balance={}:leaf_residual={}:stack_residual={}:kstack_frames_released={}:old_group_reached_pre={}:group_reached_post={}:member_id_unused_post={}]",
         arch,
         bodies,
         fail_preserved,
-        sibling_refused,
-        success_detached,
+        group_waited,
+        took_over,
         fresh_root,
-        tgid_self,
+        sharer_kept,
         custody_balance,
         leaf_residual,
         stack_residual,
         kstack_frames_released,
         old_group_reached_pre,
-        old_group_missed_post,
-        self_group_reached_post
+        group_reached_post,
+        member_id_unused_post
     );
     if let Some(reason) = first_failure {
         return TestResult::Fail(reason);
@@ -3940,15 +4307,12 @@ pub fn creating_dispatch_refusal_test() -> crate::test_framework::registry::Test
 
     /// This oracle creates exactly one real process row through
     /// `manager.create_process(...)`; its 64 KiB user stack is 16 x 4 KiB
-    /// frames. `GuardedStack::drop` does not reclaim them (issue #583), so all
-    /// 16 mappings remain recorded instead of returned. Counted rather than
-    /// freed is deliberate: a counted leak beats an over-free. Closing #583
-    /// should drive this and the exec-detach residuals to zero together.
-    const EXPECTED_LEAF_RESIDUAL: u64 = 16;
-    /// The same unreclaimed 16 x 4 KiB user-stack frames leave the allocator
-    /// exactly 16 frames heavier. This is the same issue #583 residual class
-    /// pinned by `exec_detach_oracle_test`, and should reach zero with it.
-    const EXPECTED_USER_STACK_RESIDUAL: i64 = 16;
+    /// pages its page table owns, returned with the table's other leaves
+    /// (#583), so no mapping stays recorded.
+    const EXPECTED_LEAF_RESIDUAL: u64 = 0;
+    /// Nor does the allocator end the oracle heavier by the stack's frames,
+    /// as the exec-detach oracle's residual pins too.
+    const EXPECTED_USER_STACK_RESIDUAL: i64 = 0;
 
     fn reclaim_progress_sample() -> [u64; 4] {
         [
@@ -7563,6 +7927,46 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
     if PUBLISHER_A_CPU >= online_cpus || PUBLISHER_B_CPU >= online_cpus {
         return TestResult::Fail("exit-kick reservation-loss publisher CPU is not online");
     }
+
+    // Publisher A's hold keeps CPU 1 masked until this coordinator releases
+    // it, and an aarch64 CPU queues the thread it switched away from only at
+    // its next exception. A coordinator that CPU 1 switched away from to run
+    // A therefore waits for A, which waits for it (#1765). Keep the
+    // coordinator on B's CPU for this arm: B does not hold, so it only takes
+    // that CPU for a moment.
+    struct CoordinatorPin(u64);
+    impl Drop for CoordinatorPin {
+        fn drop(&mut self) {
+            crate::task::scheduler::set_user_affinity(self.0, None);
+        }
+    }
+    let Some(coordinator_tid) = crate::task::scheduler::current_thread_id() else {
+        return TestResult::Fail("exit-kick reservation-loss coordinator has no thread");
+    };
+    if !crate::task::scheduler::set_user_affinity(
+        coordinator_tid,
+        Some(crate::task::thread::CpuPin::per_cpu_worker(PUBLISHER_B_CPU)),
+    ) {
+        return TestResult::Fail("exit-kick reservation-loss coordinator could not be pinned");
+    }
+    let coordinator_pin = CoordinatorPin(coordinator_tid);
+    if let Err(failure) = spin_with_resched(
+        "coordinator_placement",
+        || crate::task::scheduler::current_cpu() as u64,
+        |cpu| cpu == PUBLISHER_B_CPU as u64,
+        PUBLISHER_B_CPU as u64,
+        || WaitProgress::work(0),
+        &[PUBLISHER_B_CPU],
+        test_phase_started_at,
+        gate_started_at,
+    ) {
+        return TestResult::Fail(
+            failure.message(
+                "exit_kick_gate: coordinator placement on CPU 2 stuck, CPU 2 unresponsive",
+            ),
+        );
+    }
+
     let payload_before = (
         reservation_slot.pid.load(Ordering::Relaxed),
         reservation_slot.at.load(Ordering::Relaxed),
@@ -7709,6 +8113,7 @@ pub fn exit_kick_protocol_gate_test() -> crate::test_framework::registry::TestRe
         );
     }
     core::mem::drop(hook);
+    core::mem::drop(coordinator_pin);
 
     if publisher_a_done.load(Ordering::Acquire) != 1
         || publisher_a_cpu == u64::MAX

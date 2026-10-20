@@ -380,9 +380,11 @@ fn update_preempt_count(update: impl FnOnce(u32) -> u32, order: Ordering) {
     unsafe {
         core::arch::asm!("mrs {}, daif", "msr daifset, #3", out(reg) daif, options(nostack));
     }
+    super::irq_mask_account::opened();
     if let Some(count) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
         count.store(update(count.load(Ordering::Relaxed)), order);
     }
+    super::irq_mask_account::restoring(daif);
     unsafe {
         core::arch::asm!("msr daif, {}", in(reg) daif, options(nostack));
     }

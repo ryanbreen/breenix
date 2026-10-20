@@ -80,8 +80,10 @@ fn present() -> bool {
     true
 }
 
+/// Whether the machine is QEMU: its fw_cfg device answers with the "QEMU"
+/// signature (the console rule in `serial` keys on it).
 #[cfg(target_arch = "x86_64")]
-fn present() -> bool {
+pub fn present() -> bool {
     select(FW_CFG_SIGNATURE);
     let mut signature = [0u8; 4];
     read_bytes(&mut signature);

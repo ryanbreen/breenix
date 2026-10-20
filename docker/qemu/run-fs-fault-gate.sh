@@ -63,8 +63,6 @@ BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # own): the shared qemu_host_lock_release call after the poll loop below is
 # a no-op on a leg that skipped its own acquire, so no ARCH-conditional
 # release was needed to add the x86 leg's own acquire.
-# shellcheck source=lib/qemu-host-lock.sh
-source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 # #797: concurrent lanes sharing one host (e.g. the beast build environment,
 # reached here via --x86) each invoking this script hardcode the identical
@@ -131,6 +129,13 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; redden 2 ;;
     esac
 done
+
+if [ "$ARCH" = x86 ]; then
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../scripts/x86-qemu-policy.sh"
+fi
+
+# shellcheck source=lib/qemu-host-lock.sh
+source "$SCRIPT_DIR/lib/qemu-host-lock.sh"
 
 DISARM_FEATURE=""
 case "$DISARM" in
@@ -257,6 +262,7 @@ if [ "$ARCH" = "aarch64" ]; then
         -device virtio-tablet-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$OUTPUT_DIR/ext2-writable.img" \
+        -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" >"$OUTPUT_DIR/qemu.log" 2>&1 &

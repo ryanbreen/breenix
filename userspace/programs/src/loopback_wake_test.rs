@@ -4,9 +4,11 @@
 //!
 //! Epoch-relative scheduling was tried first, but produced a false failure on
 //! a healthy x86 kernel: during the busy userspace boot phase, four `fork()`s
-//! plus `accept`/`connect`/handshake setup took about four seconds, so every
+//! plus `accept`/`connect`/handshake setup took about four seconds in that
+//! earlier specimen (later boots took roughly seventeen seconds; see #1843
+//! and #1868), so the
 //! scheduled deadline had expired before its child first ran. This version
-//! instead makes every ordering constraint an observed pipe event and measures
+//! instead uses observed pipe events for ordering and measures
 //! data delivery from a timestamp taken by the peer immediately before its
 //! write. Pipe synchronization cannot drain the loopback queue.
 //!
@@ -276,7 +278,7 @@ fn peer_child(spin_r: Fd) -> ! {
     std_process::exit(0);
 }
 
-fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
+fn load_child(ready_r: Fd, spin_w: Fd, phase_w: Fd) -> ! {
     let mut ready_signal = [0u8; 1];
     match io::read(ready_r, &mut ready_signal) {
         Ok(0) => std_process::exit(31),
@@ -284,14 +286,19 @@ fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
         Err(_) => std_process::exit(32),
     }
 
+    // S16: acknowledge completed setup with the load phase's own timestamp.
     let start_ms = role_now_or_exit(30);
+    if !matches!(io::write(phase_w, &start_ms.to_le_bytes()), Ok(8)) {
+        std_process::exit(34);
+    }
     match io::write(spin_w, b"s") {
         Ok(1) => {}
         _ => std_process::exit(33),
     }
 
-    // Never block after releasing the peer: denying idle_thread_fn the CPU
-    // across the FIN window makes kloopbackd, not the idle drain, deliver it.
+    // Keep running after releasing the peer: denying idle_thread_fn the CPU
+    // across the FIN window excludes the idle drain. The watchdog poll and
+    // sibling socket syscalls can still drain it; see the module scope note.
     let end_ms = start_ms.saturating_add(LOAD_SPIN_MS);
     // The spin already samples the clock once per iteration, so the largest gap
     // between consecutive samples is a dispatch-latency measurement over the EOF
@@ -322,13 +329,47 @@ fn load_child(ready_r: Fd, spin_w: Fd) -> ! {
     std_process::exit(0);
 }
 
-fn watchdog_child(epoch_ms: u64, reader_pid: Pid, peer_pid: Pid, load_pid: Pid) -> ! {
-    watchdog_sleep_until(epoch_ms);
+fn watchdog_child(setup_ms: u64, phase_r: Fd, reader_pid: Pid, peer_pid: Pid, load_pid: Pid) -> ! {
+    // Setup has its own bounded escape, measured from this role's entry so
+    // pre-readiness work cannot consume the load's budget. Its own deadline
+    // begins here, after this child has been created and dispatched.
+    let mut ready = [io::PollFd::new(phase_r, io::poll_events::POLLIN)];
+    let setup_deadline = role_now_or_exit(40).saturating_add(WATCHDOG_AT_MS);
+    let setup_ok = loop {
+        let remaining = setup_deadline.saturating_sub(role_now_or_exit(40));
+        if remaining == 0 {
+            break false;
+        }
+        match io::poll(&mut ready, remaining as i32) {
+            Ok(0) => break false,
+            Ok(_) => break ready[0].revents & io::poll_events::POLLIN != 0,
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(_) => break false,
+        }
+    };
+    let mut phase = [0u8; 8];
+    let armed = setup_ok && matches!(io::read(phase_r, &mut phase), Ok(8));
+    let epoch_ms = u64::from_le_bytes(phase);
+    let setup_elapsed_ms = role_now_or_exit(40).saturating_sub(setup_ms);
+    if armed {
+        watchdog_sleep_until(epoch_ms);
+    } else {
+        println!("LOOPBACK_WAKE_TEST: readiness/data-wake acknowledgement FAILED before load phase; setup_ms={}", setup_elapsed_ms);
+        let _ = signal::kill(reader_pid.raw() as i32, 9);
+        let _ = signal::kill(peer_pid.raw() as i32, 9);
+        let _ = signal::kill(load_pid.raw() as i32, 9);
+        std_process::exit(41);
+    }
     // How far past its own deadline the timed sleep returned. #766 measured
     // this quantity for sleep_until on x86; this is the same measurement taken
     // inside the test that #764 is about, from a stamp the watchdog role reaches
     // on any boot that gets this far.
     let t_wake = role_now_or_exit(40);
+    println!(
+        "LOOPBACK_WAKE_TEST: setup_ms={} acknowledged={}",
+        setup_elapsed_ms,
+        armed
+    );
     println!(
         "LOOPBACK_WAKE_TEST: watchdog_stamps target={} wake={} overrun_ms={}",
         epoch_ms.saturating_add(WATCHDOG_AT_MS),
@@ -397,8 +438,9 @@ fn main() {
         Ok(pipe) => pipe,
         Err(_) => fail("spin_pipe"),
     };
-    // Only the watchdog uses this epoch, as an outer bound on a total hang.
-    let epoch_ms = match monotonic_ms() {
+    let (phase_r, phase_w) = io::pipe().unwrap_or_else(|_| fail("phase_pipe"));
+    // Report setup separately from the watchdog's load-phase epoch.
+    let setup_start_ms = match monotonic_ms() {
         Some(now) => now,
         None => fail("clock"),
     };
@@ -420,7 +462,7 @@ fn main() {
         }
     };
     let load_pid = match fork() {
-        Ok(ForkResult::Child) => load_child(ready_r, spin_w),
+        Ok(ForkResult::Child) => load_child(ready_r, spin_w, phase_w),
         Ok(ForkResult::Parent(pid)) => pid,
         Err(_) => {
             let _ = signal::kill(reader_pid.raw() as i32, 9);
@@ -429,7 +471,7 @@ fn main() {
         }
     };
     let watchdog_pid = match fork() {
-        Ok(ForkResult::Child) => watchdog_child(epoch_ms, reader_pid, peer_pid, load_pid),
+        Ok(ForkResult::Child) => watchdog_child(setup_start_ms, phase_r, reader_pid, peer_pid, load_pid),
         Ok(ForkResult::Parent(pid)) => pid,
         Err(_) => {
             let _ = signal::kill(reader_pid.raw() as i32, 9);

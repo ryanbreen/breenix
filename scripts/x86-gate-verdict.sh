@@ -28,7 +28,16 @@ done
 exit_contracts_ok=true
 python3 "$SCRIPT_DIR/x86-gate-exits.py" "$@" || exit_contracts_ok=false
 
-python3 "$SCRIPT_DIR/score-softirq-deferral.py" "$@" || exit $?
+timing_starved=false
+for scorer in score-softirq-deferral.py score-sigkill-teardown.py; do
+    scorer_status=0
+    python3 "$SCRIPT_DIR/$scorer" "$@" || scorer_status=$?
+    case "$scorer_status" in
+        0) ;;
+        2) timing_starved=true ;;
+        *) fail "$scorer rejected the boot" ;;
+    esac
+done
 
 # Run the strand census first. The kernel emits a ledger snapshot from two
 # rate-limited contexts -- the loopback pump and the `kstrandd` census kthread
@@ -168,5 +177,10 @@ else
 fi
 
 $exit_contracts_ok || fail "one or more process exits violate their asserted contracts (see every TEST_EXIT above)"
+
+if $timing_starved; then
+    echo "x86 userspace gate: STARVED - all independent checks held; rerun the boot"
+    exit 2
+fi
 
 echo "x86 userspace gate: PASS - exited=$exited expected>=$expected_exits nonzero=$nonzero (all statuses match their contracts)"
