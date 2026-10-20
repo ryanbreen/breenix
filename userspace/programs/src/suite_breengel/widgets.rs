@@ -1256,6 +1256,7 @@ fn widgets_menu_keys() -> CaseResult {
     )
 }
 
+// gpu-text: R3 changes disabled label metrics and pixels; disabled activation remains forbidden.
 fn widgets_menu_disabled() -> CaseResult {
     let (mut m, theme) = open_menu();
     // Save, the disabled second item, is the row at y = 27 + 22 .. 27 + 44.
@@ -1271,19 +1272,19 @@ fn widgets_menu_disabled() -> CaseResult {
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    let mut want = Guarded::bgrx(23, 7);
+    let mut want = Guarded::bgrx(sans_width(b"Save") as usize, 16);
     want.reset(theme.widget_bg);
-    font5x7::draw_text(&mut want.fb(), b"Save", 0, 0, theme.text_secondary, 1);
-    for y in 0..7 {
-        for x in 0..23 {
-            let got = g.color(28 + x, 27 + 22 + 7 + y);
+    sans_draw(&mut want.fb(),b"Save",0,0,theme.text_secondary);
+    for y in 0..16 {
+        for x in 0..want.width {
+            let got = g.color(28 + x, 27 + 22 + 3 + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
                 format!(
                     "the disabled label's pixel ({},{}) is {}, the contract dims it to {}",
                     28 + x,
-                    56 + y,
+                    52 + y,
                     hex(got),
                     hex(want.color(x, y))
                 ),
