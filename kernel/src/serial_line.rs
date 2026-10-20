@@ -5,11 +5,14 @@
 //! is assembled on the caller's stack, then written to the UART in one piece
 //! while this CPU owns the UART (`uart_owner`, which has the ownership rules).
 //!
-//! Emission is synchronous. Nothing is queued: a record reaches the UART
-//! before the call that completes it returns. A record longer than the
-//! assembly buffer is written in buffer-sized pieces, each one owned. The one
-//! writer that may discard its record is [`try_write`], for breadcrumbs on
-//! paths that must not wait.
+//! Kernel records are synchronous: a kernel record reaches the UART before
+//! the call that completes it returns. A record longer than the assembly
+//! buffer is written in buffer-sized pieces, each one owned. The one writer
+//! that may discard its record is [`try_write`], for breadcrumbs on paths that
+//! must not wait. Terminal output is queued for the transmit thread once it
+//! runs (`TxRing`), and a kernel record first writes out the terminal output
+//! queued before it, so the UART still carries the records in the order they
+//! were written.
 //!
 //! Lines posted on paths that may not log (`log_notice`) are written here from
 //! thread context only: by the next logged record a thread writes, and by the idle
@@ -17,6 +20,7 @@
 use crate::serial_writer::Writer;
 use crate::uart_owner::{self, Kind, Port};
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 /// Assembly buffer size. Records up to this length are written in one owned piece.
 const CAPACITY: usize = 1024;
@@ -129,8 +133,17 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], level: log::Level, attrib
     if bytes.is_empty() {
         return;
     }
+    if writer == Writer::Tty && queue_terminal(bytes) {
+        return;
+    }
     if writer == Writer::Kernel {
         crate::output_accounting::count(bytes.len(), attributed);
+    }
+    // Terminal output queued before this record goes first, from thread context:
+    // raw kernel records (the timer's lockup capture among them) and interrupt
+    // handlers skip it, as they skip the notices.
+    if (TEE || writer == Writer::Tty) && in_thread_context() {
+        write_queued();
     }
     // Raw diagnostics (including the timer's lockup capture) must stay on
     // their fixed-width writer path. Notice draining tees into the log rings
@@ -145,6 +158,11 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], level: log::Level, attrib
     if TEE && writer == Writer::Kernel {
         crate::console::log_bytes_at(level, bytes);
     }
+}
+
+/// Thread context with interrupts enabled: not an interrupt or softirq handler.
+fn in_thread_context() -> bool {
+    crate::per_cpu::is_initialized() && crate::arch_interrupts_enabled() && !crate::per_cpu::in_interrupt()
 }
 
 /// Write out the lines posted on paths that may not log (`log_notice`), oldest
@@ -168,11 +186,7 @@ pub fn write_notices() {
 /// softirq, nor with interrupts masked, so interrupt paths and the timer's
 /// lockup report never write the list.
 pub fn write_notices_from_thread() {
-    if crate::log_notice::pending()
-        && crate::per_cpu::is_initialized()
-        && crate::arch_interrupts_enabled()
-        && !crate::per_cpu::in_interrupt()
-    {
+    if crate::log_notice::pending() && in_thread_context() {
         write_notices();
     }
 }
@@ -188,6 +202,216 @@ pub fn try_write(bytes: &[u8]) -> bool {
             true
         }
         None => false,
+    }
+}
+
+// =============================================================================
+// Terminal output queue
+// =============================================================================
+
+/// Terminal output (`Writer::Tty`) accepted from its writers and not yet given
+/// to the UART. A writer used to give the UART its own output, two traps to the
+/// emulated UART per byte with interrupts masked, so one 70-byte suite record
+/// kept its writer in write(2) for about 600 us on ARM64 QEMU, charged to the
+/// writing thread's CPU clock, and longer by however long the host held the
+/// emulated UART meanwhile (#2083; x86's COM1 queue was added for the same
+/// cause, #1415). Once the
+/// transmit thread runs, a terminal record that fits goes into this ring and
+/// the thread gives it to the UART (`terminal_transmitter`), each record whole
+/// under one ownership, as its writer would have written it. A record that
+/// does not fit, or is written before the thread runs, first writes out what
+/// is queued and then itself, as terminal output was written before.
+const TX_BYTES: usize = 8192;
+/// Each queued record is stored after its length in these many bytes.
+const TX_HEADER: usize = 2;
+
+/// Whole terminal records, each stored as its length (little endian) and its bytes.
+struct TxRing {
+    bytes: [u8; TX_BYTES],
+    head: usize,
+    len: usize,
+}
+
+impl TxRing {
+    const fn new() -> Self {
+        Self { bytes: [0; TX_BYTES], head: 0, len: 0 }
+    }
+
+    fn put(&mut self, byte: u8) {
+        if let Some(slot) = self.bytes.get_mut((self.head + self.len) % TX_BYTES) {
+            *slot = byte;
+        }
+        self.len += 1;
+    }
+
+    fn take(&mut self) -> u8 {
+        let byte = self.bytes.get(self.head).copied().unwrap_or(0);
+        self.head = (self.head + 1) % TX_BYTES;
+        self.len -= 1;
+        byte
+    }
+
+    /// Queue record `bytes` whole, or not at all when it does not fit.
+    fn push(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() > CAPACITY || TX_BYTES - self.len < TX_HEADER + bytes.len() {
+            return false;
+        }
+        for byte in (bytes.len() as u16).to_le_bytes() {
+            self.put(byte);
+        }
+        for &byte in bytes {
+            self.put(byte);
+        }
+        true
+    }
+
+    /// Take the oldest record into `out`; its length, or 0 with the ring empty.
+    fn pop(&mut self, out: &mut [u8; CAPACITY]) -> usize {
+        if self.len < TX_HEADER {
+            return 0;
+        }
+        let n = u16::from_le_bytes([self.take(), self.take()]) as usize;
+        for index in 0..n {
+            let byte = self.take();
+            if let Some(slot) = out.get_mut(index) {
+                *slot = byte;
+            }
+        }
+        n.min(CAPACITY)
+    }
+}
+
+/// Held only around copies, with interrupts masked; the UART is written after
+/// it is released, and it is the innermost lock its holders take.
+static TX: spin::Mutex<TxRing> = spin::Mutex::new(TxRing::new());
+/// The transmit thread, once it runs; 0 before.
+static TX_TID: AtomicU64 = AtomicU64::new(0);
+/// The transmit thread is blocked with the ring empty (IDLE) or has been woken
+/// to send (RUNNING). Writers move IDLE to RUNNING and wake it; only the thread
+/// moves RUNNING to IDLE.
+static TX_STATE: AtomicU8 = AtomicU8::new(TX_IDLE);
+const TX_IDLE: u8 = 0;
+const TX_RUNNING: u8 = 1;
+/// Terminal output is stopped (IXON): queued output waits.
+static TX_STOPPED: AtomicBool = AtomicBool::new(false);
+
+fn with_ring<R>(f: impl FnOnce(&mut TxRing) -> R) -> R {
+    let saved = Uart::mask_interrupts();
+    let r = f(&mut TX.lock());
+    Uart::restore_interrupts(saved);
+    r
+}
+
+/// Queue terminal record `bytes` for the transmit thread, which holds it while
+/// the terminal's output is stopped. False, leaving the ring unchanged, before
+/// the thread runs or when the record does not fit: the caller writes it itself.
+fn queue_terminal(bytes: &[u8]) -> bool {
+    let tid = TX_TID.load(Ordering::Acquire);
+    if tid == 0 || !with_ring(|ring| ring.push(bytes)) {
+        return false;
+    }
+    if TX_STATE.swap(TX_RUNNING, Ordering::AcqRel) == TX_IDLE {
+        crate::task::scheduler::wake_thread_any_context(tid);
+    }
+    true
+}
+
+/// Give the UART the oldest queued terminal record, popped and written under
+/// one ownership, so records keep their order and each goes out whole. Returns
+/// the ring bytes it took, or 0 when the ring was empty.
+fn send_queued() -> usize {
+    let mut ownership = Ownership::acquire();
+    let mut record = [0u8; CAPACITY];
+    let n = with_ring(|ring| ring.pop(&mut record));
+    if n == 0 {
+        return 0;
+    }
+    if let Some(sent) = record.get(..n) {
+        uart_owner::write::<Uart, false>(Writer::Tty, sent, Kind::Plain, &mut ownership);
+    }
+    TX_HEADER + n
+}
+
+/// Write out the terminal records queued so far, one at a time, unless the
+/// terminal's output is stopped. Records queued meanwhile are the transmit
+/// thread's.
+fn write_queued() {
+    if TX_STOPPED.load(Ordering::Acquire) {
+        return;
+    }
+    let mut left = with_ring(|ring| ring.len);
+    while left != 0 {
+        let n = send_queued();
+        if n == 0 {
+            break;
+        }
+        left = left.saturating_sub(n);
+    }
+}
+
+/// Block the transmit thread until a writer hands it output (RUNNING). It
+/// blocks for I/O, the one blocked state a wake from interrupt context (a
+/// terminal echo) applies to. The state is checked after the block is
+/// published, so a wake sent before it unblocks the thread at once.
+fn wait_for_output(tid: u64) {
+    while TX_STATE.load(Ordering::Acquire) != TX_RUNNING {
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current_for_io_with_timeout(None);
+            if TX_STATE.load(Ordering::Acquire) == TX_RUNNING {
+                sched.unblock(tid);
+            }
+        });
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_while_blocked();
+    }
+}
+
+/// The terminal transmit thread: give the UART queued terminal records one at a
+/// time, then block until a writer queues more.
+fn terminal_transmitter() {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else { return };
+    TX_TID.store(tid, Ordering::Release);
+    loop {
+        wait_for_output(tid);
+        while !TX_STOPPED.load(Ordering::Acquire) && send_queued() != 0 {}
+        TX_STATE.store(TX_IDLE, Ordering::Release);
+        // A writer that queued after the last pop saw RUNNING and did not wake us.
+        if !TX_STOPPED.load(Ordering::Acquire) && with_ring(|ring| ring.len) != 0 {
+            TX_STATE.store(TX_RUNNING, Ordering::Release);
+        }
+    }
+}
+
+/// Start the terminal transmit thread; once it runs, terminal output is queued
+/// for it rather than written by its writers. Called once, when kernel threads
+/// can run.
+pub fn start_transmitter() {
+    if let Err(error) = crate::task::kthread::kthread_run(terminal_transmitter, "ktty_tx") {
+        crate::serial_println!("[serial] no terminal transmit thread: {:?}", error);
+    }
+}
+
+/// Wait until the terminal output queued so far has gone to the UART (TCSETSW,
+/// TCSETSF): the caller writes it out itself.
+pub fn drain_output() {
+    write_queued();
+}
+
+/// Discard queued terminal output (TCFLSH, TCSETSF).
+pub fn flush_output() {
+    with_ring(|ring| {
+        ring.head = 0;
+        ring.len = 0;
+    });
+}
+
+/// Stop or resume terminal output (IXON). Resuming wakes the transmit thread.
+pub fn set_output_stopped(stopped: bool) {
+    if TX_STOPPED.swap(stopped, Ordering::AcqRel) && !stopped {
+        let tid = TX_TID.load(Ordering::Acquire);
+        if tid != 0 && TX_STATE.swap(TX_RUNNING, Ordering::AcqRel) == TX_IDLE {
+            crate::task::scheduler::wake_thread_any_context(tid);
+        }
     }
 }
 

@@ -1252,6 +1252,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     //   cursor for a process that owns the display.
     // - Skip render_task when VirGL owns the display — no 2D rendering needed.
     kernel::console::start();
+    // Terminal output goes to the UART from its own thread once that runs.
+    kernel::serial_line::start_transmitter();
     if has_display && !virgl_display {
         match kernel::graphics::render_task::spawn_render_thread() {
             Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
