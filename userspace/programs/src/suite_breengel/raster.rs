@@ -2494,6 +2494,7 @@ fn font_parser_units_per_em() -> CaseResult {
     Font::parse(&t.build()).map(|_| ()).map_err(|e| format!("unitsPerEm 16,384 is valid but was rejected: {e}")).cite("10")
 }
 
+// gpu-text: §2.2 keeps outline/flatten/refusal bounds and splits accepted glyphs into CPU crossings plus GPU work.
 fn font_parser_coords_extreme() -> CaseResult {
     use libfont::{FontError, GlyphLayout};
     let (lo, hi) = (i16::MIN, i16::MAX);
@@ -2536,6 +2537,7 @@ fn font_parser_coords_extreme() -> CaseResult {
                     Ok(GlyphLayout::Empty { .. }) => return Err(format!("{name}: laid out as empty")),
                     Ok(GlyphLayout::Outline { segments, width, height, .. }) => (segments, width, height),
                 };
+                let before=crate::gpu_checks::counters()?;
                 libfont::work::reset();
                 let raster = libfont::rasterizer::rasterize(&segments, width, height, 0, 0);
                 let steps = libfont::work::steps();
@@ -2544,7 +2546,9 @@ fn font_parser_coords_extreme() -> CaseResult {
                     Err(FontError::GlyphTooExpensive) => Err(format!("{name}: refused with GlyphTooExpensive after {steps} raster steps; the refusal comes before any raster loop")),
                     Err(e) => Err(format!("{name}: rasterization refused with {e}")),
                     Ok(_) => {
-                        let bound = raster_steps_bound(segments.len() as u64, height as u64, width as u64);
+                        let after=crate::gpu_checks::counters()?;
+                        if width>0 && height>0 && after.work_estimate<=before.work_estimate {return Err(format!("gpu-text: {name}: accepted glyph emitted no GPU coverage work"));}
+                        let bound = raster_steps_bound(segments.len() as u64, height as u64, 0);
                         if steps > bound {
                             Err(format!("{name}: rasterizing {} segments into {width} x {height} took {steps} steps; section 7 allows {bound}", segments.len()))
                         } else {
