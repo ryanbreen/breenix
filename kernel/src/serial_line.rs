@@ -115,6 +115,12 @@ impl Port for Uart {
     }
 }
 
+/// Capture a formatted record in the kernel log only, under the same
+/// exclusion as UART log capture. The formatter feeds capture directly.
+pub fn capture_fmt(args: core::fmt::Arguments) {
+    uart_owner::capture_only::<Uart>(args);
+}
+
 /// Write one record from `writer` to the UART while owning it, on a fresh
 /// line if another writer's line is open. This is the accounting boundary of
 /// kernel output (`output_accounting`): the record's bytes count once, toward

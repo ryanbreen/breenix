@@ -649,7 +649,6 @@ fn log_census(sources: &[(String, String)], patterns: &[&str]) -> Census {
 const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "#[cfg(feature=boot_tests)] fn report_user_rsp_scratch_el_census", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn drain_asm_resume_pc_refusals", 1),
-    ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn emit_resume_pc_census_locked", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn record_resume_pc_refusal_locked", 1),
     ("kernel/src/arch_impl/aarch64/context_switch.rs", "fn report_foreign_resume_pc_refusal", 1),
     ("kernel/src/arch_impl/aarch64/exception.rs", "fn handle_sync_exception", 1),
@@ -716,7 +715,9 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 // whole scheduler; `add_thread_inner` keeps its line for ARM64 and early boot.
 // #2037 removed one: the periodic resume-PC census writes its rows through the
 // raw `emit_resume_pc_census`, off the log rings and the screen console.
-const CRITICAL_PATH_LOG_TOTAL: usize = 88;
+// The periodic census then left serial for the kernel log ring alone, and
+// its routing total with it, which removed one more.
+const CRITICAL_PATH_LOG_TOTAL: usize = 87;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
     let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();
