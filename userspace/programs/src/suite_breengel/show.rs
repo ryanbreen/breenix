@@ -44,16 +44,16 @@ pub(crate) fn fbinfo() -> Result<FbInfo, String> {
     if r < 0 { Err(format!("fbinfo {}", outcome(r))) } else { Ok(info) }
 }
 
+// gpu-display: §2.2 replaces fb_info with GPU MODES, including R4 physical scale; capacity checks remain.
 fn composition_fbinfo_geometry() -> CaseResult {
-    #[cfg(target_arch = "aarch64")]
+#[cfg(target_arch = "aarch64")]
     crate::display_regressions::many_windows()?;
-    let i = fbinfo().cite("18")?;
-    value("fb-width", i.width as i64, "px", Some((1280, 1280)));
-    value("fb-height", i.height as i64, "px", Some((800, 800)));
-    ensure((i.width, i.height) == (1280, 800), "18", format!("fbinfo reports {}x{}; the contract requires 1280x800 in a GUI suite boot", i.width, i.height))?;
-    ensure(i.bytes_per_pixel == 4 && i.stride >= 1280 && i.pixel_format <= 1, "18", format!(
-        "fbinfo reports a stride of {} pixels, {} bytes per pixel and pixel format {}; the contract gives 4 bytes per pixel, a stride of at least 1280 pixels and format 0 or 1",
-        i.stride, i.bytes_per_pixel, i.pixel_format))
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
+    ensure(modes.current<modes.count && modes.count==2,"18","gpu-display: mode catalogue is incomplete")?;
+    let mode=modes.modes[modes.current as usize];
+    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18",
+        format!("gpu-display: active mode is {}x{} scale {}; expected 2560x1600 scale 2",mode.width,mode.height,mode.scale))?;
+    ensure(modes.binding_known==1 && modes.scanout_resource!=0,"18","gpu-display: the current mode has no completed scanout binding")
 }
 
 fn composition_fbmmap_pane() -> CaseResult {
