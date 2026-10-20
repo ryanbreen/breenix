@@ -129,11 +129,11 @@ pub fn capture_fmt(args: core::fmt::Arguments) {
 /// line if another writer's line is open. This is the accounting boundary of
 /// kernel output (`output_accounting`): the record's bytes count once, toward
 /// the current thread when `attributed`, and the lead newline does not count.
-fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], level: log::Level, attributed: bool) {
+fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], level: log::Level, attributed: bool) {
     if bytes.is_empty() {
         return;
     }
-    if writer == Writer::Tty && queue_terminal(bytes) {
+    if TERMINAL && writer == Writer::Tty && queue_terminal(bytes) {
         return;
     }
     if writer == Writer::Kernel {
@@ -142,7 +142,7 @@ fn emit<const TEE: bool>(writer: Writer, bytes: &[u8], level: log::Level, attrib
     // Terminal output queued before this record goes first, from thread context:
     // raw kernel records (the timer's lockup capture among them) and interrupt
     // handlers skip it, as they skip the notices.
-    if (TEE || writer == Writer::Tty) && in_thread_context() {
+    if (TEE || TERMINAL) && in_thread_context() {
         write_queued();
     }
     // Raw diagnostics (including the timer's lockup capture) must stay on
@@ -423,7 +423,17 @@ pub type Line = Buffer<false>;
 /// deferred notices first when written from thread context.
 pub type TeeLine = Buffer<true>;
 
-pub struct Buffer<const TEE: bool> {
+/// Write a caller-defined record, with the terminal queue available only to
+/// this entry point. Raw diagnostic buffers cannot link the scheduler wake.
+pub fn write_bytes(writer: Writer, bytes: &[u8]) {
+    if writer == Writer::Tty {
+        Buffer::<false, true>::for_writer(writer).bytes(bytes);
+    } else {
+        Line::for_writer(writer).bytes(bytes);
+    }
+}
+
+pub struct Buffer<const TEE: bool, const TERMINAL: bool = false> {
     bytes: [MaybeUninit<u8>; CAPACITY],
     len: usize,
     writer: Writer,
@@ -432,7 +442,7 @@ pub struct Buffer<const TEE: bool> {
     attributed: bool,
 }
 
-impl<const TEE: bool> Buffer<TEE> {
+impl<const TEE: bool, const TERMINAL: bool> Buffer<TEE, TERMINAL> {
     /// A record of kernel output.
     pub const fn new() -> Self {
         Self::for_writer(Writer::Kernel)
@@ -540,19 +550,19 @@ impl<const TEE: bool> Buffer<TEE> {
         // `char` initializes every byte below `len`.
         let record =
             unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.len) };
-        emit::<TEE>(self.writer, record, self.level, self.attributed);
+        emit::<TEE, TERMINAL>(self.writer, record, self.level, self.attributed);
         self.len = 0;
     }
 }
 
-impl<const TEE: bool> core::fmt::Write for Buffer<TEE> {
+impl<const TEE: bool, const TERMINAL: bool> core::fmt::Write for Buffer<TEE, TERMINAL> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.text(s);
         Ok(())
     }
 }
 
-impl<const TEE: bool> Drop for Buffer<TEE> {
+impl<const TEE: bool, const TERMINAL: bool> Drop for Buffer<TEE, TERMINAL> {
     fn drop(&mut self) {
         self.flush();
     }

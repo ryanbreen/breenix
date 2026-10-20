@@ -365,7 +365,7 @@ pub fn write_byte(writer: Writer, byte: u8) {
 /// Write one caller-defined output unit from `writer` as a single record (see
 /// `serial_line`).
 pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
-    crate::serial_line::Line::for_writer(writer).bytes(bytes);
+    crate::serial_line::write_bytes(writer, bytes);
 }
 
 #[doc(hidden)]
