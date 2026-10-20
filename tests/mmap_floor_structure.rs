@@ -363,15 +363,17 @@ const FLOOR_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
     ("kernel/src/syscall/memory_common.rs", "place_below", 1),
 ];
-// The graphics system call's producer moved out of `graphics.rs`: `fbmmap`
-// to `fb.rs`. The version 1 window buffers left with `window_v1.rs`.
 const DESCENT_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/mmap.rs", "sys_mmap", 1),
-    ("kernel/src/syscall/fb.rs", "fbmmap", 1),
+    ("kernel/src/syscall/graphics.rs", "handle_create_window_buffer", 1),
+    ("kernel/src/syscall/graphics.rs", "handle_resize_window_buffer", 1),
+    ("kernel/src/syscall/graphics.rs", "handle_map_window_buffer", 1),
+    ("kernel/src/syscall/graphics.rs", "handle_map_compositor_texture", 1),
+    ("kernel/src/syscall/graphics.rs", "fbmmap", 1),
 ];
 const PRODUCER_FILES: &[&str] = &[
     "kernel/src/syscall/mmap.rs",
-    "kernel/src/syscall/fb.rs",
+    "kernel/src/syscall/graphics.rs",
 ];
 
 fn shared_descent_refuses_below_floor(source: &str) -> bool {

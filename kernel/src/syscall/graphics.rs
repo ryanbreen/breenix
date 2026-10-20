@@ -1603,7 +1603,7 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     use crate::memory::vma::{MmapFlags, Protection, Vma};
     use crate::syscall::memory_common::{
         allocate_zeroed_frames, get_current_thread_id, map_prepared_frames, place_below_hint,
-        prot_to_page_flags, PAGE_SIZE,
+        prot_to_page_flags, release_placement, PAGE_SIZE,
     };
 
     #[cfg(not(target_arch = "x86_64"))]
@@ -1666,9 +1666,12 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
             return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         };
 
-        let page_table = match process.page_table.as_mut() {
-            Some(pt) => pt,
-            None => return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64),
+        if process.page_table.is_none() {
+            release_placement(process, new_addr, new_addr + total_size);
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
+        }
+        let Some(page_table) = process.page_table.as_ref() else {
+            return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
         };
 
         let root = page_table.level_4_frame().start_address().as_u64();
@@ -1676,6 +1679,7 @@ fn handle_create_window_buffer(width: u32, height: u32, out_addr_ptr: u64) -> Sy
     };
 
     let Some(frames) = allocate_zeroed_frames(num_pages) else {
+        give_back_placement(current_thread_id, new_addr, new_addr + total_size);
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     };
     let page_phys_addrs: alloc::vec::Vec<u64> = frames
@@ -1837,6 +1841,9 @@ fn handle_resize_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     let Some(new_addr) = place_below_hint(process, total_size) else {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     };
+    // PROCESS_MANAGER stays held until the VMA is published, so the range needs no pending
+    // placement (`memory_common::place_below_hint`).
+    crate::syscall::memory_common::release_placement(process, new_addr, new_addr + total_size);
     if let Err(errno) = process.memory_locks.reserve_split() {
         return SyscallResult::Err(errno);
     }
@@ -2059,6 +2066,9 @@ fn handle_map_window_buffer(cmd: &FbDrawCmd) -> SyscallResult {
     let Some(new_addr) = place_below_hint(process, total_size) else {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     };
+    // PROCESS_MANAGER stays held until the VMA is published, so the range needs no pending
+    // placement (`memory_common::place_below_hint`).
+    crate::syscall::memory_common::release_placement(process, new_addr, new_addr + total_size);
     if let Err(errno) = super::memory_advice::prepare_future(process, total_size) {
         return SyscallResult::Err(errno);
     }
@@ -2180,6 +2190,9 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
     let Some(new_addr) = place_below_hint(process, total_size) else {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     };
+    // PROCESS_MANAGER stays held until the VMA is published, so the range needs no pending
+    // placement (`memory_common::place_below_hint`).
+    crate::syscall::memory_common::release_placement(process, new_addr, new_addr + total_size);
     if let Err(errno) = super::memory_advice::prepare_future(process, total_size) {
         return SyscallResult::Err(errno);
     }
@@ -3070,6 +3083,18 @@ pub fn sys_fbmmap(width_out: u64) -> SyscallResult {
     fbmmap(width_out)
 }
 
+/// Give back a placement `place_below_hint` made for a mapping that failed while
+/// PROCESS_MANAGER was released.
+fn give_back_placement(thread_id: u64, start: u64, end: u64) {
+    let mut guard = crate::process::manager_for_address_space(thread_id);
+    if let Some((_, process)) = guard
+        .as_mut()
+        .and_then(|m| m.find_address_space_by_thread_mut(thread_id))
+    {
+        crate::syscall::memory_common::release_placement(process, start, end);
+    }
+}
+
 fn fbmmap(width_out: u64) -> SyscallResult {
     #[cfg(not(target_arch = "x86_64"))]
     use crate::memory::arch_stub::{Page, Size4KiB, VirtAddr};
@@ -3191,6 +3216,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
                     for f in &frames {
                         crate::memory::frame_allocator::deallocate_frame(*f);
                     }
+                    give_back_placement(current_thread_id, start_addr, end_addr);
                     return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
                 }
             };
@@ -3232,6 +3258,9 @@ fn fbmmap(width_out: u64) -> SyscallResult {
             return SyscallResult::Err(super::ErrorCode::NoSuchProcess as u64);
         }
     };
+    // Published below, or refused, with PROCESS_MANAGER held from here on: the placement is
+    // no longer waiting either way.
+    crate::syscall::memory_common::release_placement(process, start_addr, end_addr);
 
     let page_table = match process.page_table.as_mut() {
         Some(pt) => pt,
