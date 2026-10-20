@@ -1602,9 +1602,12 @@ fn text_entry_maxlen() -> CaseResult {
         "replacement did not count removed selection",
     )
 }
+// gpu-text: R3 derives visible cursor position from DejaVu Sans advances, preserving Home and clipping checks.
 fn text_entry_scroll_to_cursor() -> CaseResult {
     let mut f = entry_field(100);
     f.insert_str("abcdefghijklmnopqrstuvwxyz");
+    let visible:String=f.text().chars().skip(f.scroll_offset()).collect();
+    ensure(f.cursor_x()==14+sans_width(visible.as_bytes()),"15",format!("gpu-text: caret x {} disagrees with the visible substring advance {}",f.cursor_x(),sans_width(visible.as_bytes())))?;
     ensure(
         f.scroll_offset() > 0 && f.cursor_x() >= 14 && f.cursor_x() < 70,
         "15",
