@@ -121,7 +121,10 @@ fn panel_cursor_trail_detected() -> CaseResult {
         left.iter().find(|p| !near(p))))
 }
 
+// gpu-display: B7 replaces retired framebuffer painting; the GPU console must be restored byte for byte.
 fn panel_kernel_screens() -> CaseResult {
+    let (ret,modes)=libbreenix::gpu::modes();
+    ensure(ret==0 && modes.console_resource!=0,"23","gpu-display: kernel screens have no GPU console resource")?;
     interface()?;
     // This runner owns the display; giving it back shows the kernel's console screen.
     let gave = give_back();
