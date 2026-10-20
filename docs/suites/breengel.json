@@ -1308,7 +1308,7 @@
         },
         {
           "id": "compose-fullscreen",
-          "title": "A 1280x800 window at 0,0 fills the frame exactly"
+          "title": "A full-mode window at 0,0 fills the frame exactly"
         },
         {
           "id": "compose-many",

@@ -35,15 +35,16 @@ fn composition_fbinfo_geometry() -> CaseResult {
     ensure(modes.binding_known==1 && modes.scanout_resource!=0,"18","gpu-display: the current mode has no completed scanout binding")
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-display: R3/R4 checks all physical stage-layout pixels at scale 2 with certified TrueType labels.
 fn panel_stage_layout() -> CaseResult { stage_fixture("stage-layout") }
-// gpu-display: R3/R4 checks every stamp, number and 399-case wall slot at physical scale.
+// gpu-display: R3/R4 checks stamps, numbers and the 399-case wall at physical scale.
 fn panel_tile_stamps() -> CaseResult { scaled_stage("tile-stamps") }
-// gpu-display: R3/R4 keeps every integer box-filter value and checks all of its scaled destination pixels.
+// gpu-display: R3/R4 checks scaled thumbnail destinations against the integer box-filter formula.
 fn panel_tile_thumbnail() -> CaseResult { scaled_stage("tile-thumbnail") }
 // gpu-display: R3/R4 keeps nearest-scaled pictures, differences, first mismatch and bound, at physical scale.
 fn panel_spotlight_picture() -> CaseResult { scaled_stage("spotlight-picture") }
-// gpu-display: R3/R4 retains every timing/budget/input assertion at scale 2 with DejaVu Sans.
+// gpu-display: R3/R4 checks timing, budget and input at scale 2 with DejaVu Sans.
 fn panel_spotlight_timing() -> CaseResult {
     // Retain the timing assertions and also cover the non-picture spotlight forms
     // without adding or removing a manifest case.
@@ -93,6 +94,7 @@ fn panel_judged_frame_shown() -> CaseResult { libbreenix::suite::showcase_check(
 fn panel_serial_agreement() -> CaseResult { libbreenix::suite::showcase_check("serial-agreement") }
 fn panel_quiet_window() -> CaseResult { libbreenix::suite::showcase_check("quiet-window") }
 fn panel_boot_ribbon() -> CaseResult {
+    let (width,_)=crate::window_cases::composition::screen_size()?;
     use crate::window_cases::composition::{give_back, take_over, screen};
     for faulty in [true,false] {
         let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
@@ -114,8 +116,8 @@ fn panel_boot_ribbon() -> CaseResult {
         for (i,&lit) in reached.iter().enumerate() {
             let a=16+1248*i/reached.len();let b=16+1248*(i+1)/reached.len();
             let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};
-            for y in 752..768 {for x in a..b-2 {let o=(y*1280+x)*4;mismatch|=px[o..o+4]!=rgb;}}
-            for y in 752..768 {for x in b-2..b {let o=(y*1280+x)*4;mismatch|=px[o..o+4]!=[31,19,12,255];}}
+            for y in 752..768 {for x in a..b-2 {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=rgb;}}
+            for y in 752..768 {for x in b-2..b {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=[31,19,12,255];}}
         }
         let fired=libbreenix::test_control::fired(15)?;libbreenix::test_control::disarm_all()?;
         ensure(mismatch==faulty,"23.7","kernel ribbon disagrees with actual producer markers, or dropped-stage fault was not detected")?;

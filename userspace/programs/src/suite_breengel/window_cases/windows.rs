@@ -193,11 +193,26 @@ fn windows_multi_window() -> CaseResult {
     Ok(())
 }
 
+/// Establish that CREATE returned live, readable GPU targets before testing revocation.
+fn readable_window_targets(w: &W) -> CaseResult {
+    for target in &w.c.buffer[..w.c.buffers as usize] {
+        let mut pixels = vec![0xA5; w.len()];
+        let mut record = [0; libbreenix::gpu::abi::record::SIZE];
+        want_ok(libbreenix::gpu::readback(*target, [0,0,w.c.width,w.c.height], &mut pixels,
+            w.c.width*4, &mut record), "17.2", "gpu-window: live target READBACK before revocation")?;
+        ensure(pixels.chunks_exact(4).all(|p|p == [0,0,0,255]), "17.2", "gpu-window: new live target was not zeroed BGRX")?;
+    }
+    Ok(())
+}
+
 // gpu-window: §2.2 replaces unmapped pixel addresses with revoked target handles and exact GPU accounting.
 fn windows_destroy() -> CaseResult {
 interface()?;
     let before=crate::gpu_checks::counters().cite("17.2")?;
     let mut w=W::new(64,48,2)?;let id=w.id();let handles=w.c.buffer;
+    want_ok(w.register(b"destroy"),"17.2","REGISTER before DESTROY")?;
+    ensure(listed(id).cite("17.2")?.is_some(),"17.2","window was not listed before DESTROY")?;
+    readable_window_targets(&w)?;
     want_ok(w.destroy(),"17.2","gpu-window: DESTROY")?;
     ensure(listed(id).cite("17.2")?.is_none(),"17.2","gpu-window: destroyed window remains listed")?;
     for handle in &handles[..2] {
@@ -349,6 +364,7 @@ fn windows_exec_cleanup() -> CaseResult {
 fn windows_fork_no_mapping() -> CaseResult {
 interface()?;
     let w=W::new(16,16,2)?;let handles=w.c.buffer;
+    readable_window_targets(&w)?;
     step("17.2",child("GPU handles after fork",3_000,None,|| {
         let (ret,c)=libbreenix::gpu::counters(0);
         if ret!=0 || c.resources!=0 || c.contexts!=0 {return Err("gpu-window: fork inherited GPU resources or contexts".into());}
@@ -1207,6 +1223,7 @@ fn windows_churn() -> CaseResult {
 }
 
 fn windows_distinct_content() -> CaseResult {
+    let (width,_)=super::composition::screen_size()?;
     interface()?;
     let (mut kiosk, _) = kiosk().cite("24")?;
     let _ = kiosk.ask("auto 0");
@@ -1225,7 +1242,7 @@ fn windows_distinct_content() -> CaseResult {
         let (ox, oy) = (100 * (i as u32 % 4) + 10, 60 * (i as u32 / 4) + 10);
         for y in 0..50 {
             for x in 0..80 {
-                let at = (((oy + y) * 1280 + ox + x) * 4) as usize;
+                let at = ((oy + y) as usize * width + (ox + x) as usize) * 4;
                 let want = pattern(w.id() as u32, x, y);
                 ensure(screen[at..at + 3] == want[..3], "18", format!(
                     "window {} (seed {}) at screen ({},{}) shows {:02x?}; its own pixel is {:02x?}", i, w.id(), ox + x, oy + y, &screen[at..at + 3], &want[..3]))?;
@@ -1235,9 +1252,10 @@ fn windows_distinct_content() -> CaseResult {
     Ok(())
 }
 
-/// The composed screen, 1280x800 BGRX, by SCANOUT_READBACK (as root).
+/// The composed screen at the reported physical mode, by SCANOUT_READBACK (as root).
 pub(crate) fn readback() -> Result<Vec<u8>, String> {
-    let mut px = vec![0u8; 1280 * 800 * 4];
+    let (width,height)=super::composition::screen_size().map_err(|e|format!("{e:?}"))?;
+    let mut px = vec![0u8; width * height * 4];
     let mut rec = abi::ObservationRecord::ZERO;
     let mut rb = abi::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
@@ -1270,6 +1288,7 @@ fn windows_raw_client() -> CaseResult {
     ensure(listed(id).cite("17.2")?.is_none(), "17.2", "the raw client's destroyed window is still listed")
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-window: §2.2 and ruling 47 use GPU backend 4 or 5, never a legacy framebuffer backend.
 fn windows_every_target() -> CaseResult {
 interface()?;
@@ -1326,7 +1345,8 @@ fn windows_commit_waits_render()->CaseResult {
             if reply=="err 11" {super::composition::compose(&mut k)?;}
             else {ensure(reply.starts_with("ok "),"17.3",format!("gpu-window: completed composition: {reply}"))?;}
             let (screen,_)=super::composition::screen()?;
-            same(&screen,1280,800,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
+            let (width,height)=super::composition::screen_size()?;
+            same(&screen,width as u32,height as u32,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
             let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
             ensure(front.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: completed render did not become the front")?;
         }

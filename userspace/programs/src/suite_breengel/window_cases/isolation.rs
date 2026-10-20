@@ -657,7 +657,8 @@ fn isolation_efault_commit() -> CaseResult {
 fn isolation_efault_readback() -> CaseResult {
     interface()?;
     let mut record = vec![0u8; core::mem::size_of::<abi::ObservationRecord>()];
-    let screen = 1280u64 * 800 * 4;
+    let (width,height)=super::composition::screen_size()?;
+    let screen = (width*height*4) as u64;
     let mut rb = abi::Readback::ZERO;
     rb.dst = unmapped();
     rb.dst_len = screen;

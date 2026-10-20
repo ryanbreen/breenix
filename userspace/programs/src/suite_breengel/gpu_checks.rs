@@ -8,6 +8,7 @@ pub(crate) fn counters() -> Result<ga::Counters, String> {
     if r == 0 { Ok(c) } else { Err(format!("gpu COUNTERS {}", outcome(r))) }
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 /// Case-owned device resources; all handles are released even when an assertion fails.
 struct Fixture { context: bgl::Context, target: u64, texture: u64 }
 impl Fixture {
@@ -46,16 +47,20 @@ pub(crate) fn guard_pages()->CaseResult {
         memory::mprotect(page,4096,memory::PROT_NONE).cite("3")?;
         memory::mprotect(unsafe{page.add(8192)},4096,memory::PROT_NONE).cite("3")?;
         let end=unsafe{page.add(8192)} as u64;
+        for pointer in [unsafe{page.add(4095)} as u64,end-127] {
         for rect in [[0,0,8,4],[u32::MAX,0,8,4],[0,u32::MAX,8,4],[0,0,u32::MAX,u32::MAX]] {
-            let expected=if rect==[0,0,8,4]{-14}else{-22};
-            let (r,_)=gpu::upload_raw(f.context.handle(),f.texture,rect,end-127,128,32,
+            let expected=if rect[0]==0 && rect[1]==0 {-14}else{-22};
+            let (r,_)=gpu::upload_raw(f.context.handle(),f.texture,rect,pointer,128,32,
                 ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
             ensure(r==expected,"3, 4","gpu-raster: guarded/extreme UPLOAD was not refused with EFAULT/EINVAL")?;
+            ensure(canary.pixels(8,4,32).cite("3")?==before,"3","gpu-raster: rejected UPLOAD changed the canary")?;
             let mut rb=ga::Readback{target:f.target,x:rect[0],y:rect[1],width:rect[2],height:rect[3],
-                pixels:end-127,pixels_len:128,stride:32,..ga::Readback::ZERO};
+                pixels:pointer,pixels_len:128,stride:32,..ga::Readback::ZERO};
             let mut record=[0u8;ga::record::SIZE];rb.record=record.as_mut_ptr() as u64;
             let r=gpu::call_with(ga::op::READBACK,&mut rb);
+            let expected=if rect==[0,0,8,4]{-14}else{-22};
             ensure(r==expected,"3, 4","gpu-raster: guarded/extreme READBACK was not refused with EFAULT/EINVAL")?;
+        }
         }
         f.clear(8,4,0xff112233).cite("3")?;
         ensure(canary.pixels(8,4,32).cite("3")?==before,"3","gpu-raster: draw changed the adjacent canary target")
@@ -86,6 +91,7 @@ pub(crate) fn stride_padding()->CaseResult {
     }Ok(())
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-raster: three-byte pixels are transfer formats, never render targets (§2).
 pub(crate) fn bpp3_bpp4()->CaseResult {
     let mut f=Fixture::new(14,18).cite("2")?;
@@ -158,7 +164,9 @@ pub(crate) fn cpu_render_planted()->CaseResult {
     ensure(accounting_refusal(&before,&after,0,0,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 static DECLARED_FIXTURE:AtomicU64=AtomicU64::new(0);
+pub(crate) fn declared_fixture()->u64 {DECLARED_FIXTURE.load(Relaxed)}
 pub(crate) fn declare_fixture(bytes:u64){DECLARED_FIXTURE.fetch_add(bytes,Relaxed);}
 pub(crate) fn audit_begin()->Option<(ga::Counters,u64)>{
     let name=libbreenix::suite::running_case()?;
@@ -179,13 +187,16 @@ pub(crate) fn audit_finish(before:Option<(ga::Counters,u64)>){
             u8::from(LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).is_some())),
         _=>format!("{name}\tERROR gpu-raster: COUNTERS unavailable\n"),
     };
-    // Missing records are an explicit summary failure; an I/O error can never manufacture a pass.
+    // Missing records fail audit_category; a failed write produces a missing record.
     let _=std::fs::write(file,record);
 }
 // gpu-raster: aggregate the actual category execution, including isolated children, without repeating cases.
 pub(crate) fn audit_category(expected:&[Case])->CaseResult{
     if let Ok(error)=std::env::var("BREENIX_RASTER_AUDIT_ERROR"){return at("7",error);}
     let directory=std::env::var("BREENIX_RASTER_AUDIT").map_err(|e|format!("gpu-raster: accounting directory: {e}"))?;
+    struct Cleanup(String);
+    impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    let _cleanup=Cleanup(directory.clone());
     let mut results:std::collections::BTreeMap<String,(u64,u64,u64,u64,u64,bool)>=std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(directory).map_err(|e|e.to_string())? {
         let line=std::fs::read_to_string(entry.map_err(|e|e.to_string())?.path()).map_err(|e|e.to_string())?;

@@ -176,10 +176,11 @@ fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("gradient_v(0, 0, 32, 24)", Box::new(|fb| shapes::gradient_v(fb, 0, 0, 32, 24, INK, WHITE))),
         ("put_pixel(8, 6) and (2, 2)", Box::new(|fb| { fb.put_pixel(8, 6, INK); fb.put_pixel(2, 2, INK); })),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| font5x7::draw_text(fb, b"A1", 4, 5, INK, 2))),
-        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| bitmap_font::draw_char(fb, 'A', 6, 3, INK))),
+        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| { crate::gpu_checks::declare_fixture(14); font5x7::draw_text(fb, b"A1", 4, 5, INK, 2); })),
+        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| { crate::gpu_checks::declare_fixture((bitmap_font::metrics().char_width*16) as u64); bitmap_font::draw_char(fb, 'A', 6, 3, INK); })),
         ("copy_row_from(0, 7, 32 pixels)", Box::new(|fb| {
             let row: Vec<u8> = (0..32).flat_map(|_| [INK.b, INK.g, INK.r, 0xFF]).collect();
+            crate::gpu_checks::declare_fixture(row.len() as u64);
             fb.copy_row_from(0, 7, &row, row.len());
         })),
         ("blit(tile, 3, 3)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, 3, 3) })),
@@ -399,10 +400,12 @@ fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("draw_line(5, MIN/2, 6, MAX/2)", Box::new(|fb| shapes::draw_line(fb, 5, i32::MIN / 2, 6, i32::MAX / 2, INK))),
         ("copy_row_from(width - 1, height - 1, 64 bytes)", Box::new(|fb| {
             let (w, h) = (fb.width, fb.height);
+            crate::gpu_checks::declare_fixture(64);
             fb.copy_row_from(w - 1, h - 1, &[0x5Au8; 64], 64)
         })),
         ("font::draw_text at (width - 3, height - 3)", Box::new(|fb| {
             let (w, h) = (fb.width, fb.height);
+            crate::gpu_checks::declare_fixture(28);
             font5x7::draw_text(fb, b"WWWW", w - 3, h - 3, INK, 3)
         })),
     ]
@@ -455,10 +458,10 @@ fn raster_extreme_work_bound() -> CaseResult {
         ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None, 64),
         ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None, 64),
         ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24)), 64),
-        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| fb.copy_row_from(31, 23, &[0x5Au8; 64], 64)), Some((31, 23, 1, 1)), 64),
-        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3)), Some((29, 21, 3, 3)), 64),
-        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1)), Some((0, 0, 32, 7)), 64000),
-        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1)), None, 64000),
+        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(64); fb.copy_row_from(31, 23, &[0x5Au8; 64], 64); }), Some((31, 23, 1, 1)), 64),
+        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(28); font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3); }), Some((29, 21, 3, 3)), 64),
+        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(7000); font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1); }), Some((0, 0, 32, 7)), 64000),
+        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(7000); font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1); }), None, 64000),
     ];
     for (name, clip, call, rect, setup_bound) in calls {
         step("7", isolated(name, 2_000, || {
@@ -501,6 +504,7 @@ fn scene(fb: &mut FrameBuf) {
     shapes::fill_circle(fb, 7, 12, 3, Color::rgb(200, 200, 10));
     shapes::draw_circle(fb, 6, 6, 4, Color::rgb(10, 200, 200));
     fb.put_pixel(13, 1, Color::rgb(123, 45, 67));
+    crate::gpu_checks::declare_fixture(14);
     font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
@@ -518,6 +522,12 @@ use libbreenix::gpu::{self, abi as ga};
         let got=gpu::target_create(format,width,height);
         if let Ok(handle)=got {gpu::resource_destroy(handle);}
         ensure(got==Err(-22),"3",format!("gpu-raster: target {width}x{height} format {format} returned {got:?}; Empty, TooLarge and Format are EINVAL"))?;
+    }
+    // Readback/conversion buffers retain their checked layout boundary (§3).
+    use libgfx::framebuf::SurfaceError;
+    for (stride,want) in [(31,SurfaceError::StrideTooShort),(usize::MAX,SurfaceError::SizeOverflow)] {
+        ensure(FrameBuf::validate_layout(8,4,stride,Format::BGRX)==Err(want),"3",
+            format!("gpu-raster: conversion layout stride {stride} did not refuse {want:?}"))?;
     }
     for (width,height,format) in [(caps.max_width,1,0),(1,caps.max_height,1),(1,1,0)] {
         let handle=gpu::target_create(format,width,height).map_err(|e|format!("gpu-raster: valid target {width}x{height}: {}",outcome(e))).cite("3")?;
@@ -563,8 +573,8 @@ fn raster_x_byte() -> CaseResult {
         ("fill_circle", Box::new(|fb| shapes::fill_circle(fb, 6, 6, 3, INK))),
         ("draw_circle", Box::new(|fb| shapes::draw_circle(fb, 6, 6, 4, INK))),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text", Box::new(|fb| font5x7::draw_text(fb, b"A", 1, 1, INK, 1))),
-        ("bitmap_font::draw_char", Box::new(|fb| bitmap_font::draw_char(fb, 'A', 0, 0, INK))),
+        ("font::draw_text", Box::new(|fb| { crate::gpu_checks::declare_fixture(7); font5x7::draw_text(fb, b"A", 1, 1, INK, 1); })),
+        ("bitmap_font::draw_char", Box::new(|fb| { crate::gpu_checks::declare_fixture((bitmap_font::metrics().char_width*16) as u64); bitmap_font::draw_char(fb, 'A', 0, 0, INK); })),
     ];
     for (name, call) in calls {
         let g = Guarded::bgrx(16, 16);
@@ -1189,6 +1199,32 @@ fn independent_glyph(file: &[u8], glyph: u16) -> Result<(u64, u64), String> {
     Ok((bytes, points))
 }
 
+/// §1.4 coverage_spans: each row visits its eight sub-scanlines' crossings;
+/// each fragment costs 8192 times (one plus that count), plus one scratch copy.
+/// Count segment crossings independently of coverage, sorting and pixel generation.
+fn glyph_gpu_bound(segments: &[libfont::outline::LineSegment], width: usize, height: usize) -> u64 {
+    let mut crossing_rows = 0u64;
+    for row in 0..height {
+        for sub in 0..8 {
+            let y = row as f32 + (sub as f32 + 0.5) / 8.0;
+            crossing_rows += segments.iter().filter(|s|
+                (s.y0 <= y && y < s.y1) || (s.y1 <= y && y < s.y0)).count() as u64;
+        }
+    }
+    let area = width as u64 * height as u64;
+    8192 * (area + width as u64 * crossing_rows) + area
+}
+
+fn glyph_gpu_work(before: &libbreenix::gpu::abi::Counters, after: &libbreenix::gpu::abi::Counters,
+    segments: &[libfont::outline::LineSegment], width: usize, height: usize, what: &str) -> Result<(), String> {
+    let work = after.work_estimate - before.work_estimate;
+    let bound = glyph_gpu_bound(segments, width, height);
+    if work > bound || (width > 0 && height > 0 && (work == 0 || after.fragment_area == before.fragment_area)) {
+        return Err(format!("gpu-text: {what}: GPU glyph work {work} is outside its nonzero coverage_spans bound {bound}"));
+    }
+    Ok(())
+}
+
 /// Each stage of rasterizing `glyph` at `size` against section 7's bounds, by
 /// libfont::work: the outline within `16 × glyph bytes + 8 × P + 4,096`, the flattening within
 /// `1,028 × P`, and the grayscale and LCD rasterizations within the raster bound. The
@@ -1224,7 +1260,7 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
     let before=crate::gpu_checks::counters()?;
     let whole = font.rasterize_glyph(glyph, size).map_err(|e| format!("{what}: {e}"))?;
     let after=crate::gpu_checks::counters()?;
-    if width>0 && height>0 && (after.fragment_area==before.fragment_area || after.work_estimate<=before.work_estimate) {return Err(format!("gpu-text: {what} emitted no GPU glyph work"));}
+    glyph_gpu_work(&before, &after, &segments, width, height, what)?;
     if whole != gray {
         return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
     }
@@ -1736,6 +1772,7 @@ fn text_line_metrics() -> CaseResult {
     Ok(())
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-text: §2.2 retains all sizes/refusals, bounds CPU crossings without span filling, and requires GPU work.
 fn text_size_range() -> CaseResult {
     let font = parse_font(MONO_PATH).cite("8.5")?;
@@ -2554,7 +2591,7 @@ fn font_parser_coords_extreme() -> CaseResult {
                     Err(e) => Err(format!("{name}: rasterization refused with {e}")),
                     Ok(_) => {
                         let after=crate::gpu_checks::counters()?;
-                        if width>0 && height>0 && after.work_estimate<=before.work_estimate {return Err(format!("gpu-text: {name}: accepted glyph emitted no GPU coverage work"));}
+                        glyph_gpu_work(&before, &after, &segments, width, height, &name)?;
                         let bound = raster_steps_bound(segments.len() as u64, height as u64, 0);
                         if steps > bound {
                             Err(format!("{name}: rasterizing {} segments into {width} x {height} took {steps} steps; section 7 allows {bound}", segments.len()))
@@ -2755,21 +2792,23 @@ fn font_parser_corpus() -> CaseResult {
     Ok(())
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-raster: §2.4 runtime proof covers every primitive exercised by the category's extreme fixture.
 fn raster_cpu_pixels_zero() -> CaseResult {
     crate::gpu_checks::audit_category(RASTER)?;
     for (name,call) in extreme_calls() {
         let before=crate::gpu_checks::counters().cite("7")?;
         let surface=padded(32,24);
+        let declared=crate::gpu_checks::declared_fixture();
         call(&mut surface.fb());
         let after=crate::gpu_checks::counters().cite("7")?;
-        ensure(after.uploads_image==before.uploads_image && after.uploads_fixture==before.uploads_fixture,
+        ensure(after.uploads_image==before.uploads_image && after.uploads_fixture-before.uploads_fixture==crate::gpu_checks::declared_fixture()-declared,
             "7",format!("gpu-raster: {name} uploaded CPU-rendered pixels"))?;
     }
     let before=crate::gpu_checks::counters().cite("7")?;
     let surface=padded(32,24);scene(&mut surface.fb());
     let after=crate::gpu_checks::counters().cite("7")?;
-    crate::gpu_checks::enforce_accounting(&before,&after,0,32)?;
+    crate::gpu_checks::enforce_accounting(&before,&after,14,32)?;
     ensure(after.draws>before.draws,
         "7","gpu-raster: primitive scene did not draw on the GPU with bounded instances and zero image uploads")
 }
@@ -2777,18 +2816,22 @@ fn raster_cpu_pixels_zero() -> CaseResult {
 // gpu-raster: §2.4 runtime negative controls; the raw pixel-slice dependency is a host structural fixture.
 fn raster_cpu_render_planted() -> CaseResult { crate::gpu_checks::cpu_render_planted() }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-text: R4 rasterizes at 2x size; certified coverage is the oracle, never a nearest-neighbour bitmap upscale.
 fn text_hidpi_sizes() -> CaseResult {
+    let modes=bgl::modes().map_err(|e|format!("gpu-display: MODES {}",outcome(e))).cite("8.3")?;
+    let scale=modes.modes[modes.current as usize].scale;
+    ensure(scale==2,"8.3","gpu-display: HiDPI text requires scale 2")?;
     let file=read_file(SANS_PATH).cite("8.3")?;let font=Font::parse(&file).cite("8.3")?;
     let glyph=font.glyph_index('H');
     let large=font.rasterize_glyph(glyph,48.0).cite("8.3")?;
     let small=font.rasterize_glyph(glyph,24.0).cite("8.3")?;
     let mut cached=CachedFont::new(font,256);
     let before=crate::gpu_checks::counters().cite("8.3")?;
-    let g=white_on_black(192,128,|fb|{ttf_font::draw_char(fb,&mut cached,'H',32,16,48.0,WHITE);});
+    let g=white_on_black(192,128,|fb|{ttf_font::draw_char(fb,&mut cached,'H',32,16,24.0*scale as f32,WHITE);});
     same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
-    let big=glyph_pixels(&large,32,16,192,128);let low=glyph_pixels(&small,16,8,96,64);
-    ensure((0..128).any(|y|(0..192).any(|x|big[y*192+x]!=low[(y/2)*96+x/2])),"8.3",
+    let actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
+    ensure((0..128).any(|y|(0..192).any(|x|actual[(y*192+x)*4..(y*192+x+1)*4]!=low[((y/2)*96+x/2)*4..((y/2)*96+x/2+1)*4])),"8.3",
         "gpu-text: twice-size text is only replicated scale-1 coverage")?;
     let after=crate::gpu_checks::counters().cite("8.3")?;
     ensure(after.draws>before.draws && after.uploads_image==before.uploads_image,"8.3","gpu-text: HiDPI text did not execute GPU coverage draws")

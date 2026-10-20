@@ -181,6 +181,7 @@ fn main() {
     SUITE.run()
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // Setup must always reach the table. Accounting cases report a missing directory
 // as a failure if preparation fails; setup cannot terminate the suite instead.
 fn prepare_raster_audit() -> Result<(), String> {

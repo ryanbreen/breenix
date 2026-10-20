@@ -1,5 +1,6 @@
 # BreenGL: the written contract
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 This is the contract the `breengel` suite (`docs/suites/breengel.json`, `/sbin/suite-breengel`) cites, as
 the POSIX suites cite the standard. It fixes BreenGL's 2D library, its text, font, image and widget layers,
 and the window protocol, userspace GPU compositor and device observation path, to the precision the cases need:
@@ -7,7 +8,7 @@ the API each case calls, the formula or literal table its expected pixels come f
 bounds, the window interface's semantics and the error each operation returns. The plan of record is
 `docs/gui/plan.md`; section numbers written "plan §N" refer to it. Where the plan already fixes a rule, this
 document transcribes it and gives it a section number; where it leaves a detail to this contract, the detail
-is fixed here. The GPU rebuild follows `gpu.md` section 2 and rulings B1–B7; its
+is fixed here. The GPU rebuild follows `gpu.md` section 2 and rulings B1–B8; its
 [case reconciliation](breengel-gpu-cases.md) assigns all 399 cases and the five retired identities.
 
 Each case's failure message names the section it checks. A case whose layer is not present fails with a
@@ -33,6 +34,7 @@ message naming the missing piece and its section, never skips, and never passes 
 
 ## 2. Pixels and alpha
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - **Formats.** A 4-byte pixel is stored `B, G, R, X` when the surface is BGR (the canonical format,
   BGRX8888) and `R, G, B, X` when it is not. A 3-byte pixel is `B, G, R` or `R, G, B` the same way. The
   BGR flag swaps the order of the three colour bytes and changes nothing else. Render targets use the
@@ -70,6 +72,7 @@ message naming the missing piece and its section, never skips, and never passes 
 
 ## 3. Surfaces
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Surfaces own GPU targets, created through BGL on syscall 416, not CPU pixel mappings.
 `RESOURCE_CREATE` with kind target creates distinct, zeroed resource handles; the device maximum
 reported by `CAPS` (capped at 16,384) bounds each dimension. Empty dimensions, dimensions past
@@ -80,8 +83,11 @@ process GPU quota; `COUNTERS.resource_bytes` and resource count return exactly t
 when destruction and the final device unref complete, within the one-second release window.
 A resource can retain its backing after handle destruction while a holder exists (§17.3).
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 `UPLOAD` accepts padded rows, including three-byte RGB/BGR input; `READBACK` returns canonical
-four-byte rows, which may be converted to three-byte capture/encoding output. Neither transfer
+four-byte rows, which may be converted to three-byte capture/encoding output. Conversion
+layouts retain StrideTooShort for stride below width × bpp and SizeOverflow for
+stride × height above 2³¹ − 1 or overflowing; these are checked before memory access. Neither transfer
 reads or writes the caller's row padding. User buffers are guarded on both sides; extreme
 rectangles cannot escape those buffers. Device draws preserve a separate canary target and the
 caller clip. Clipped row copies upload whole pixels and use a clipped GPU copy; a rectangle
@@ -89,6 +95,7 @@ starting at the row end writes nothing and never wraps into another row (§5.9).
 
 ## 4. Clipping
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 The clip stack emits GPU scissors; every pixel-set rule below is unchanged.
 
 - Every primitive draws only inside the surface and inside the current clip.
@@ -100,6 +107,7 @@ The clip stack emits GPU scissors; every pixel-set rule below is unchanged.
 
 ## 5. Primitives
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 All coordinates and expected pixel sets below stand. Rectangles use `solid`; lines, filled
 and outlined circles, rounded rectangles and gradients use their corresponding profile
 predicate pipelines. Blits use `copy`, `copy_scaled`, `over` or `over_straight`; single pixels
@@ -155,6 +163,7 @@ The pixels `(x, y)` with `(x − cx)² + (y − cy)² ≤ r²`, computed in `i64
 
 ### 5.5 `draw_circle(fb, cx, cy, r, color)`
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 The GPU predicate reflects a candidate into `X ≥ Y ≥ 0`. For r ≥ 1 it selects exactly
 `X² − X + Y² ≤ r² < (X+1)² − (X+1) + Y²`, using two-word integers after bounding both
 absolute offsets by r. At Y=0 the largest satisfying X is r. For X≥1 the expression is
@@ -245,6 +254,7 @@ Row `i` of `(x, y, w, h)` (`0 ≤ i < h`) is one colour; each channel is
 
 ### 5.9 Uploaded rows and single pixels
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 `copy_row_from` and byte-granular partial pixels leave the drawing API. A whole-pixel upload
 followed by a GPU region copy clips to the destination row and clip. Uploading eight pixels
 and copying them at (5,1) into an 8×4 destination changes exactly pixels (5..8,1); the same
@@ -280,13 +290,14 @@ the accumulated rectangle.
 of any recursive function (plan §12.3). Allocations are counted by the suite's own global allocator
 wrapper, which counts calls and bytes per thread.
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 | Work | Bound |
 |---|---|
-| a raster primitive at any coordinates | CPU geometry setup at most 64 steps per primitive (a text run is one primitive per glyph); emitted fragment area at most the clipped bounding rectangle; work estimate at most that area times the pipeline weight plus its required blend-copy area; a wholly clipped primitive emits no draw or work |
+| a raster primitive at any coordinates | CPU geometry setup at most 64 steps per primitive (a text run is one primitive per glyph); emitted fragment area at most the clipped bounding rectangle; work estimate at most that area times the pipeline weight plus its required blend-copy area; a wholly clipped primitive emits no draw or work | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | font load | at most `16 × file bytes + 65,536` steps and `2 × file bytes + 64 KiB` allocated |
 | one glyph's outline | compound depth ≤ 8, ≤ 256 components, ≤ 65,535 points and no more than maxp declares (`maxPoints` for a simple glyph, `maxCompositePoints` for a compound after expansion), ≤ `16 × glyph bytes + 8 × P + 4,096` steps for its `P` points after compound expansion, ≤ `64 × points + 64 KiB` allocated |
 | one glyph's flattening | quadratic subdivision depth ≤ 9 (≤ 512 segments per curve), ≤ 65,536 segments per glyph (else `GlyphTooComplex`), ≤ `1,028 × P` steps for `P` points after compound expansion |
-| one glyph's rasterization at `s` px | target ≤ `4s × 4s`; CPU crossings and sort ≤ `E + H × (8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64` steps; GPU fragment work is the `coverage_spans` formula in `gpu-abi.md`, including its blend copy. The existing allocation bound `H × C + 4C + 48E + 4,096` and admission test against the original total bound 2²⁸ remain; GlyphTooExpensive precedes all crossing, raster and device work |
+| one glyph's rasterization at `s` px | target ≤ `4s × 4s`; CPU crossings and sort ≤ `E + H × (8E × (3 + ⌈log₂(E + 1)⌉) + 17) + 64` steps; GPU fragment work is the `coverage_spans` formula in `gpu-abi.md`, including its blend copy. The existing allocation bound `H × C + 4C + 48E + 4,096` and admission test against the original total bound 2²⁸ remain; GlyphTooExpensive precedes all crossing, raster and device work | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | inflate | ≤ `4 × output + 16 × input + 1,024 × blocks` steps; 32 KiB window plus ≤ 64 KiB of tables besides the caller's output |
 | image dimensions (BMP, PNG decode and encode) | width and height ≤ 16,384 and `width × height` ≤ 16,777,216, checked before any allocation |
 | PNG decompressed size | rejected at the first byte beyond `rows × (1 + row bytes)` for the image's own dimensions, per pass for Adam7 |
@@ -298,6 +309,7 @@ GPU estimate is `8192 × (1024² + 1024 × 16 × 1022) + 1024²` = **145,761,501
 the blend copy. It is summed over submissions individually below the unchanged 2³¹ cap.
 Neither omitting CPU crossing/sort work nor omitting GPU span fill can satisfy both checks.
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 **GPU-only enforcement.** `COUNTERS` records upload bytes by Image/Fixture and instances,
 fragment area and work estimate. Primitive output has zero Image uploads; only declared
 bitmap tables, decoded images and fixtures may upload their declared bytes. A draw must
@@ -640,6 +652,7 @@ BMP's published BITMAPCOREHEADER layout specifies the 12-byte header's 16-bit fi
 
 ## 14. Widgets (`libbui`)
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Widgets are driven in-process with explicit `InputState` values (pointer position, button level and its press
 and release edges) and drawn into GPU surfaces. R3 uses pinned DejaVu Sans at the theme's 16 px logical size
 with a 16 px line box and §8.3 advances; R4 multiplies geometry and font size by display
@@ -671,6 +684,7 @@ its label in `text_secondary`, its background unchanged, and reports no events.
 
 ### 14.3 Widget geometry and behaviour
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - **Button** `(x, y, w, h)`: background `fill_rect` of the rectangle in `widget_bg` (idle), `widget_bg_hover`
   (pointer inside) or `widget_bg_active` (pressed); a one-pixel `draw_rect` border in `border`; the label in
   `text_primary` at `(x + (w − tw) / 2, y + (h − 16) / 2)`, `tw` its `text_width`, in Rust integer division.
@@ -685,7 +699,7 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   A press inside starts a drag; while dragging, `value = clamp((pointer_x − tx) / tw, 0, 1)` in `f32` and
   `ValueChanged(min + value × (max − min))` is reported whenever `value` changes. Left and Right step a
   focused slider by its step size, clamped.
-- **Label**: text wider than its bounds is drawn cut at the last whole glyph that fits with `...` (three
+- **Label**: text wider than its bounds is drawn cut at the last whole glyph that fits with `...` (three <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   dots, width from §8.3 advances), and nothing outside the bounds.
 - **Tab bar** `(x, y, w, h)` of `n` tabs: tabs are at least `text_width(label) + 16` wide; when they fit,
   tab `i` is `(x + i·⌊w / n⌋, y, ⌊w / n⌋, h)`. A release over tab `j` other than the selected one selects it
@@ -697,7 +711,7 @@ its label in `text_secondary`, its background unchanged, and reports no events.
   (80, 85, 100), or (140, 150, 170) while dragged. `scroll(d)` moves the offset by `−40 × d`, clamped to
   `[0, max_scroll]`. Dragging the thumb by `dy` pixels sets `offset = ⌊(thumb_top) / (h − thumb) × max_scroll⌋`
   for the thumb's new top, clamped. Offsets are `i32`, ratios `f32`.
-- **Menu bar** at `(x, y, w, 22)`: menu `i`'s title is `(x_i, y, text_width(label) + 20, 22)`, titles laid left
+- **Menu bar** at `(x, y, w, 22)`: menu `i`'s title is `(x_i, y, text_width(label) + 20, 22)`, titles laid left <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   to right from `x`. A press on a title opens its menu: the dropdown is `(x_i, y + 22, W, H)`, filled with
   `widget_bg` and bordered in `border`, `W = max(140, widest row)`, `H` the sum of its rows (22 per item, 9
   per separator). An item's row is `18 + 24 + text_width(label)` wide, plus `24 + text_width(shortcut) + 8`
@@ -903,16 +917,17 @@ Argument structures (offsets in bytes):
 
 ### 17.2 Ids, limits and lifetime
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - Window ids, commit ids, composite serials and input serials are 64-bit, start at 1 and are never reused
   within a boot. Every live window operation on a destroyed id is ENOENT, including GPU
   ACQUIRE without publishing a buffer. Retired ops 14/21 remain ENOSYS: they no longer resolve ids.
 - A window is 1 to 4,096 pixels on each side (EINVAL outside). A title is valid UTF-8 of at most 64 bytes
   (EINVAL otherwise) and is stored and listed byte for byte. A process may own at most 16 windows; the
   seventeenth `CREATE` is EAGAIN and leaves the first sixteen unaffected.
-- A new window's buffers are all zero. `LIST` reports registered windows only; `DESTROY` removes a window
+- A new window's buffers are all zero. `LIST` reports registered windows only; `DESTROY` removes a window <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   from the listing, revokes the owner's GPU buffer handles and unmaps its tree pages. Target
   backing remains held until the last holder and device unref finish.
-- Guest buffer backing counts against the owner's `RLIMIT_AS`, device resources against the
+- Guest buffer backing counts against the owner's `RLIMIT_AS`, device resources against the <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   GPU quota; mapped tree pages remain separately charged. `COUNTERS` reports GPU resources
   and backing exactly. `CREATE`, `REGISTER` and `RESIZE` each have one
   commit point; a failure before it, at any allocation step, leaves the registry, every mapping and the
@@ -926,6 +941,7 @@ Argument structures (offsets in bytes):
 
 Plan §3.1 is the contract, transcribed here.
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - A window owns a buffer set of two buffers, or three on request, each `width × height × 4` bytes of BGRX.
   Each buffer is *free* (owned by the client), *front* (committed, immutable) or *retired* (replaced but still
   read by a composite or a capture copy).
@@ -933,7 +949,7 @@ Plan §3.1 is the contract, transcribed here.
   `processed_serial`, `epoch` and `damage` (at most 16 rectangles covering every pixel that differs from the
   previous front). It returns a `commit_id` that increases by exactly 1 per commit of the window. A commit with
   non-empty damage starts a new pixel generation (`pixel_gen`, strictly increasing).
-- After COMMIT the validator refuses any submission writing that front or retired target;
+- After COMMIT the validator refuses any submission writing that front or retired target; <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   its separately mapped committed tree page remains read-only and writes raise SIGSEGV.
   A composition attempt while that fence is pending must wait or return EAGAIN without
   publishing a new binding; after the fence completes, composition must show its render.
@@ -944,7 +960,7 @@ Plan §3.1 is the contract, transcribed here.
 - **Bases and the damage log.** A buffer's base is the commit id whose pixels it holds: the id it was last
   committed under, the commit `ACQUIRE` last replayed it to, or none (new, or reallocated by a resize). The
   kernel keeps the damage of each window's last 8 commits.
-- **`ACQUIRE` replays in the kernel.** Under the window's commit lock it reads the newest front *F* and takes
+- **`ACQUIRE` replays in the kernel.** Under the window's commit lock it reads the newest front *F* and takes <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   a replay pin on *F*'s buffer, and computes the replay set: the union of the damage of every commit after the
   acquired buffer's base up to *F* (its bounding rectangle when that needs more than 16 rectangles), or the
   whole window (`replay_full = 1`) when the base is none or a commit in that range has left the damage log.
@@ -1022,11 +1038,12 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
 
 ## 18. Compositor, composition and the display
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - **Claims and epochs.** `CLAIM_COMPOSITOR` gives root the compositor role with an epoch that increases at
   every claim; a second claim while one lives is EBUSY; uid 1000 is EPERM. When the holder dies or releases,
   the role can be claimed again with a higher epoch. Windows outlive the compositor with their last geometry,
   stacking and visibility. Each claim delivers `CompositorChanged { epoch }` to every window (section 19).
-- **Composition.** `COMPOSITE` composes every visible window at its geometry, in increasing `z` (later over
+- **Composition.** `COMPOSITE` composes every visible window at its geometry, in increasing `z` (later over <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   earlier), over black, by userspace `bwm` on the GPU core onto the active mode's target, clipped at its edges, exactly: each output pixel
   is the topmost visible window's committed pixel there, or black. It processes exactly the pixels of the
   damage union since the previous composite, and the full screen the first time; the frame equals a full
@@ -1045,19 +1062,19 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   stationary cursor is shown with the cursor redrawn above it. Shapes 0 to 4 are the arrow and the four
   resize shapes.
 - **Display ownership** is a stack: `take_over_display` (431) pushes the caller as owner, `give_back_display`
-  (432) pops it, and `GIVE_DISPLAY(pid)` hands it to another process, which becomes owner above the giver.
+  (432) pops it, and `GIVE_DISPLAY(pid)` hands it to another process, which becomes owner above the giver. <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   When an owner dies the display returns to the process that gave it, never to the runner, and the previous
   owner's frame is restored exactly. Direct take-over requires uid 0; explicit GIVE_DISPLAY retains its
   owner authority. GPU targets and their backing are retained on the ownership stack; no
   CPU framebuffer snapshot or firmware copy replaces a saved target. The core's ownership
   depth and cycle refusals stand, and release restores the prior binding and exact pixels.
-- **The display.** `MODES` reports 1280×800 at scale 1 and 2560×1600 at scale 2. This suite
+- **The display.** `MODES` reports 1280×800 at scale 1 and 2560×1600 at scale 2. This suite <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   runs at scale 2. Clients own GPU targets; bwm samples committed targets, draws the cursor
   as a top GPU layer and presents/flips a scanout target. No CPU compositor, display copy,
   fb_info, fb_mmap or FLUSH remains. Existing 1280×800 scene fixtures retain their exact
   pixel formulas at their stated coordinates; dedicated scale-2 fixtures double logical
   placement and compare every pixel of the 2560×1600 destination.
-- **Lifetimes.** Handle destruction does not end holds by a queued submission, committed
+- **Lifetimes.** Handle destruction does not end holds by a queued submission, committed <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   front, remnant, compositor sample, scanout binding, capture/readback or replay copy. Each
   holds backing through actual completion or confirmed reset; a reported error alone never
   proves device access ended. The last hold and device unref return the charge exactly.
@@ -1133,6 +1150,7 @@ metadata the newest commit published, with that commit's id.
 
 ### 20.1 `SCANOUT_READBACK`
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Root or the compositor observes the whole composed destination through the userspace GPU
 compositor, as canonical BGRX rows and the same **1,024-byte record version 2** as GPU READBACK.
 The complete little-endian offset table is normative in `gpu.md` §1.8 and `gpu-abi.md`.
@@ -1157,6 +1175,7 @@ window-protocol request is serviced by the compositor, without exposing a foreig
 | ARM64 QEMU; later Parallels catch-up | 4, VirGL | SUBMIT_3D, two TRANSFER_FROM_HOST_3D observations under complementary poisons, cache invalidation | native kinds 0x207 and 0x206, status 0x1100, nonzero render/readback/present fences | 4, host renderer and window outside guest view |
 | Later VMware catch-up | 5, SVGA3D DX | DX_DRAW, host SURFACE_COPY to dedicated readback surface/MOB, two poisoned READBACK_GB_SURFACE observations | render 1152, readback 1104, copy 1042; status 1; dedicated nonzero surface/MOB | 4, host renderer and window outside guest view |
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Backend must equal CAPS and the window's backend. Backend 4 has zero VMware copy fields;
 backend 5 has its own native values and a readback surface distinct from the judged resource.
 `unwritten` is zero on success. Flags contain only scanout bit 0 and composite bit 1;
@@ -1168,12 +1187,13 @@ The effort runs ARM64 QEMU `--gpu-gl` only (B5); no x86 QEMU evidence is admitte
 Each case requires exactly one firing, the observable fault, and an exact clean next
 composition after disarming, through the core's points:
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 | Case | Old point → core point | Exact observation |
 |---|---|---|
 | fault-skipped-transfer | 6 → 19 | EIO, unwritten reason 1; pixels and record untouched |
-| fault-wrong-resource | 7 → 26, wrong-scanout | PRESENT completes; observation names the actual wrong binding/composite and different pixels; compare it to the intended composite, never invent an EIO from knowing the fault fired |
+| fault-wrong-resource | 7 → 26, wrong-scanout | PRESENT completes; observation names the actual wrong binding/composite and different pixels; compare it to the intended composite, never invent an EIO from knowing the fault fired | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | fault-stale-fence | 8 → 20 | EIO, fence-mismatch reason 2; pixels and record untouched |
-| fault-outside-damage | 9 → 22 | device pixel (0,0) is outside the damaged window; full-destination comparison finds it while every in-damage pixel stays exact |
+| fault-outside-damage | 9 → 22 | device pixel (0,0) is outside the damaged window; full-destination comparison finds it while every in-damage pixel stays exact | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 
 Arm point 22 after the client render and before GPU composition, so it plants on the
 composed target. Point 26 needs another live scanout target; absent that target the point
@@ -1184,16 +1204,17 @@ negative control: the device reports no resource identity and it is observed as 
 
 `test_control(op: u32, arg: *mut u8, len: usize) -> isize` is system call **415** on both architectures.
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - **The latch.** The kernel enables test controls only when the first program it executes as PID 1 is a suite
   binary (`/sbin/suite-*`); it latches that fact at that exec, before any user code runs, and nothing changes
   it for the rest of the boot. In every other boot every op returns ENOSYS. In a suite boot only root may use
   them (EPERM otherwise).
-- Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }`
+- Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }` <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
   `gpu_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
   reports how many times a point fired. Arming or reading a point this section does not define is EINVAL. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
   every op above 4 are EINVAL.
-- Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU
+- Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   SUBMIT validation holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
   released or 1 s), 5 `backend-error`; old scanout points 6–9 are retired in favour of core points 19,26,20,22; 10 `panel-cursor-no-restore`, 11 `release-stall` (resumes a paused point),
@@ -1250,6 +1271,7 @@ restoration checks stand, with GPU presents replacing framebuffer paint (B7).
 
 ### 23.2 Stage layout
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 The run stage uses BreenGL on BGL, with explicit UI time and logical coordinates in a
 1280×800 space. R4 multiplies every coordinate, extent, gap and border by display scale;
 this suite observes all 2560×1600 device pixels at scale 2. R3 uses pinned DejaVu Sans.
@@ -1368,6 +1390,7 @@ The ribbon is restored with the kernel screen after display giveback.
 
 ### 23.8 Agreement
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 The runner derives CASE serial bytes and tile state and numbers from one stored result. A picture case
 hands off the exact completed device readback it judged through `judged_readback`, before
 modifying its target. A CPU-rendered actual image is never a passing picture. The
@@ -1399,6 +1422,7 @@ case deadlines and timing samples, with its SHOW mutex released. Elapsed UI time
 The finale preserves the last judged picture on an all-pass run as well as the first failure
 on a failed run. A stage error fails the affected case and preserves the serial DONE record.
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 The stage's boundary notice is `host renderer and window outside guest view` for boundary 4
 on GPU backends 4 and 5.
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.

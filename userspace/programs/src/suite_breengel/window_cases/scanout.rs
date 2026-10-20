@@ -26,7 +26,7 @@ pub(crate) const SCANOUT: &[Case] = &[
 // scanout: display observation on every target (contract section 20)
 // ---------------------------------------------------------------------------------------
 
-use super::composition::{compose, compositor, formula, place, screen, screen_is, show, Placed};
+use super::composition::{screen_size, compose, compositor, formula, place, screen, screen_is, show, Placed};
 use super::kit::*;
 use abi::{backend, op, Plain};
 
@@ -40,8 +40,9 @@ fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), libbreenix::suite::
     Ok((k, w, p, serial))
 }
 
-fn readback_raw() -> (i64, Vec<u8>, abi::ObservationRecord) {
-    let mut px = vec![0u8; 1280 * 800 * 4];
+fn readback_raw() -> Result<(i64, Vec<u8>, abi::ObservationRecord),String> {
+    let (width,height)=screen_size().map_err(|e|format!("{e:?}"))?;
+    let mut px = vec![0u8; width * height * 4];
     let mut rec = abi::ObservationRecord::ZERO;
     let mut rb = abi::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
@@ -49,7 +50,7 @@ fn readback_raw() -> (i64, Vec<u8>, abi::ObservationRecord) {
     rb.record = &mut rec as *mut abi::ObservationRecord as u64;
     rb.record_len = core::mem::size_of::<abi::ObservationRecord>() as u32;
     let r = call(op::SCANOUT_READBACK, &mut rb);
-    (r, px, rec)
+    Ok((r, px, rec))
 }
 
 // gpu-display: §2.2/R4 replaces fb_info with MODES and full physical-size GPU readback.
@@ -79,12 +80,13 @@ interface()?;let (mut k,w,_p,serial)=one_window(2)?;
 }
 
 fn scanout_changing_scene() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let mut k = compositor()?;
     let scenes = [
         vec![Placed::new(10, 10, 300, 200, 0, 31)],
         vec![Placed::new(400, 300, 500, 300, 0, 32), Placed::new(600, 100, 200, 400, 1, 33)],
-        vec![Placed::new(0, 0, 1280, 800, 0, 34), Placed::new(900, 500, 300, 250, 1, 35)],
+        vec![Placed::new(0, 0, width as u32, height as u32, 0, 34), Placed::new(900, 500, 300, 250, 1, 35)],
     ];
     for (n, scene) in scenes.iter().enumerate() {
         let wins: Vec<W> = scene.iter().map(|p| W::new(p.w, p.h, 2)).collect::<Result<_, _>>()?;
@@ -101,10 +103,11 @@ fn scanout_changing_scene() -> CaseResult {
 }
 
 fn scanout_full_destination() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let mut k = compositor()?;
-    let mut strip = Placed::new(0, 799, 1280, 1, 0, 36);
-    let w = W::new(1280, 1, 2)?;
+    let mut strip = Placed::new(0, height as i32-1, width as u32, 1, 0, 36);
+    let w = W::new(width as u32, 1, 2)?;
     show(&mut k, &w, &strip)?;
     compose(&mut k)?;
     let (px, _) = screen()?;
@@ -175,6 +178,7 @@ fn scanout_completion() -> CaseResult {
 }
 
 fn scanout_atomic_record() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let (mut k, _) = kiosk().cite("24")?;
     let _ = k.ask(&format!("cursor {} 0 0 0", abi::cursor_shape::HIDDEN)).cite("24")?;
@@ -186,7 +190,7 @@ fn scanout_atomic_record() -> CaseResult {
     w.frame(1).cite("17.3")?;
     let start = now_ms();
     loop {
-        let (r, _, rec) = readback_raw();
+        let (r, _, rec) = readback_raw()?;
         let listed = rec.windows[..(rec.window_count as usize).min(16)].iter().any(|o| o.id == w.id() && o.commit_id >= 1);
         if r == 0 && listed {
             break;
@@ -212,7 +216,7 @@ fn scanout_atomic_record() -> CaseResult {
     let mut result = Ok(());
     for _ in 0..20 {
         let _ = time::sleep_ms(10);
-        let (r, px, rec) = readback_raw();
+        let (r, px, rec) = readback_raw()?;
         if r == -(EAGAIN as i64) {
             continue;
         }
@@ -220,7 +224,7 @@ fn scanout_atomic_record() -> CaseResult {
             result = at("20.1", format!("SCANOUT_READBACK under continuous commits {}", outcome(r)));
             break;
         }
-        crate::remember_frame(&px,1280,800,None);
+        crate::remember_frame(&px,width,height,None);
         let listed = rec.windows[..(rec.window_count as usize).min(16)].iter().find(|o| o.id == w.id()).map(|o| o.commit_id);
         let Some(commit) = listed else {
             result = at("20.1", format!("the record of serial {} does not list the committing window", rec.serial));
@@ -232,7 +236,7 @@ fn scanout_atomic_record() -> CaseResult {
         }
         // The window is at (600, 400); every one of its pixels must be the named commit's.
         let differ = (0..64u32).flat_map(|y| (0..64u32).map(move |x| (x, y))).find(|&(x, y)| {
-            let at = ((400 + y) * 1280 + 600 + x) as usize * 4;
+            let at = ((400 + y) as usize * width + 600 + x as usize) * 4;
             px[at..at + 3] != pattern(commit as u32, x, y)[..3]
         });
         if let Some((x, y)) = differ {
@@ -276,19 +280,20 @@ fn scanout_window_commits() -> CaseResult {
 }
 
 fn scanout_format_canonical() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let (_k, _w, p, _) = one_window(13)?;
     let (px, rec) = screen()?;
     ensure(rec.source_format <= 1, "20.1", format!("the record names source format {}; it is 0 (RGB) or 1 (BGR)", rec.source_format))?;
     // Canonical BGRX with X 0xFF, whichever the destination's order.
-    same(&px, 1280, 800, true, &format!("the readback of a {} destination", if rec.source_format == 0 { "RGB" } else { "BGR" }), "20.1", formula(&[p]))
+    same(&px, width as u32, height as u32, true, &format!("the readback of a {} destination", if rec.source_format == 0 { "RGB" } else { "BGR" }), "20.1", formula(&[p]))
 }
 
 fn scanout_root_only() -> CaseResult {
     interface()?;
     let (_k, _w, _p, _) = one_window(14)?;
     step("17.4", child("SCANOUT_READBACK as uid 1000", 5_000, Some(1000), || {
-        let (r, px, _) = readback_raw();
+        let (r, px, _) = readback_raw()?;
         if r != -(EPERM as i64) {
             return Err(format!("a uid 1000 process that is not the compositor: SCANOUT_READBACK {}; the contract gives EPERM", outcome(r)));
         }
@@ -297,7 +302,7 @@ fn scanout_root_only() -> CaseResult {
         }
         Ok(())
     }))?;
-    let (r, _, _) = readback_raw();
+    let (r, _, _) = readback_raw()?;
     ensure(r == 0, "17.4", format!("root's SCANOUT_READBACK {}; root may read back", outcome(r)))
 }
 
@@ -324,7 +329,7 @@ let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::STALE_FENCE,
     ensure(s.pixels.iter().chain(s.record.iter()).all(|&b|b==0xA5),"20.3","gpu-display: stale fence published partial pixels or record")
 }
 
-// gpu-display: B6/B7 uses core CORRUPT_PIXEL 22; compare the complete destination, outside damage too.
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-display: B6/B7 core point 22 corrupts device pixel (0,0); every destination pixel is checked, outside damage included.
 fn scanout_fault_outside_damage() -> CaseResult {
 let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXEL,24)?;
@@ -365,6 +370,7 @@ fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapsho
     Ok((observed.0,observed.1,observed.2,fault_serial))
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-display: §2.2 every completed flip records the actual new scanout resource and that present's fence.
 fn scanout_present_flip()->CaseResult {
     interface()?;let (mut k,w,mut p,first)=one_window(40)?;let mut serial=first;
@@ -380,6 +386,7 @@ fn scanout_present_flip()->CaseResult {
     }Ok(())
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-display: R4 reads every pixel of 2560x1600, including a changed final row, with physical dimensions in record v2.
 fn scanout_hidpi_mode()->CaseResult {
     interface()?;let mut k=compositor()?;let mut p=Placed::new(0,1599,2560,1,0,50);

@@ -1016,7 +1016,7 @@ and judges nothing with it.
 | `isolation`: per-process isolation | 25 | `handle-private`, `handle-guess`, `fork-no-handles`, `exec-reclaims`, `exit-reclaims`, `kill-mid-submit`, `killed-work-drains`, `quota-memory`, `quota-handles`, `quota-contexts`, `work-estimate-refused`, `foreign-target-draw`, `foreign-readback`, `display-context-unreachable`, `no-addresses`, `fuzz-streams`, `bounded-validation`, `efault-submit`, `efault-readonly`, `quiet-errors`, `unknown-op`, `test-hooks-absent`, `killable-wait`, `client-cannot-scanout`, `irq-masked-bound` |
 | `present`: modes, HiDPI & present | 16 | `modes-listed`, `mode-1280x800`, `mode-2560x1600`, `scale-reported`, `scanout-bind`, `flip`, `present-completion`, `present-owner-only`, `readback-presented`, `takeover-giveback`, `ownership-stack`, `console-restored`, `firmware-handoff`, `mode-change-content`, `fault-skip-flush`, `fault-wrong-scanout` |
 | `performance`: frame rate & latency | 9 | `clear-rate-2560`, `rect-throughput`, `submit-latency`, `first-draw-latency`, `readback-time-2560`, `upload-bandwidth`, `coverage-throughput`, `wait-no-spin`, `present-rate-2560` |
-| **Total** | **170** | |
+| **Total** | **393** | **318** | **55** | **2** | **15** | **3** | **6** | **5** | **399** |
 
 Notes on the cases that carry the most weight:
 
@@ -1337,6 +1337,7 @@ implementation. This amendment states those interfaces, in its own PR before the
 
 ### 2.1 What changes in the architecture
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - **Drawing.** Every BreenGL primitive becomes BGL draws: rectangles to `solid`, lines/circles/rounded
   rectangles/gradients to their predicate pipelines, blits to `copy`/`copy_scaled`/`over`/`over_straight`,
   clips to scissors, bitmap-font text to `bitmap_text`, TrueType text to `coverage_spans` into a GPU atlas
@@ -1350,7 +1351,7 @@ implementation. This amendment states those interfaces, in its own PR before the
   writes a front or retired buffer, with the render-completion handoff of section 1.4.1 covering submissions
   accepted before `COMMIT`; `CAPTURE` becomes a device readback of the committed target; remnants hold the
   target. The commit protocol, damage log, authority table, events and metadata are otherwise unchanged.
-- **Composition.** The userspace compositor composes every visible window by GPU draws sampling the clients'
+- **Composition.** The userspace compositor composes every visible window by GPU draws sampling the clients' <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   front targets into the scanout target (the §18 formula: topmost window's pixel or black, damage only), with
   the cursor drawn as a top layer so readback sees it. The software compositor
   (`kernel/src/graphics/display.rs`'s backends for virtio-gpu 2D, GOP and the SVGA3 MOB) is deleted, as are
@@ -1374,7 +1375,7 @@ implementation. This amendment states those interfaces, in its own PR before the
 
 | Category | Before | Keep | Change GPU-only | Go GPU-only | Change R3/R4 | Go R3 | Add GPU-only | Add R4 | After |
 |---|---|---|---|---|---|---|---|---|---|
-| `raster` | 40 | 33 | 7 | 0 | 0 | 0 | 2 | 0 | 42 |
+| `raster` | 40 | 39 | 1 | 0 | 0 | 0 | 2 | 0 | 42 |
 | `text` | 37 | 36 | 1 | 0 | 0 | 0 | 0 | 1 | 38 |
 | `font-parser` | 22 | 20 | 2 | 0 | 0 | 0 | 0 | 0 | 22 |
 | `inflate` | 21 | 21 | 0 | 0 | 0 | 0 | 0 | 0 | 21 |
@@ -1386,22 +1387,23 @@ implementation. This amendment states those interfaces, in its own PR before the
 | `icons` | 12 | 12 | 0 | 0 | 0 | 0 | 0 | 0 | 12 |
 | `windows` | 39 | 31 | 8 | 0 | 0 | 0 | 1 | 0 | 40 |
 | `isolation` | 38 | 34 | 4 | 0 | 0 | 0 | 0 | 0 | 38 |
-| `composition` | 27 | 21 | 4 | 2 | 0 | 0 | 2 | 1 | 28 |
+| `composition` | 27 | 8 | 17 | 2 | 0 | 0 | 2 | 1 | 28 |
 | `events` | 32 | 31 | 1 | 0 | 0 | 0 | 0 | 0 | 32 |
-| `scanout` | 15 | 7 | 8 | 0 | 0 | 0 | 1 | 1 | 17 |
-| `panel` | 21 | 9 | 2 | 0 | 7 | 3 | 0 | 1 | 19 |
-| **Total** | **393** | **336** | **37** | **2** | **15** | **3** | **6** | **5** | **399** |
+| `scanout` | 15 | 0 | 15 | 0 | 0 | 0 | 1 | 1 | 17 |
+| `panel` | 21 | 5 | 6 | 0 | 7 | 3 | 0 | 1 | 19 |
+| **Total** | **393** | **318** | **55** | **2** | **15** | **3** | **6** | **5** | **399** |
 
+<!-- claim-lint:ok: Normative classification defined by docs/gui/breengel-gpu-cases.md and docs/gui/breengel-gpu-rulings.md. -->
 **Keep** means the check, its contract section and its expected values stand; only the implementation under
 it changes. Every kept drawing case (all of `raster`'s shape, alpha, blit, clip and damage cases, the `text`
 cases including `raster-identical`, the bitmap-font cases and the four reviewed-reference cases,
-`png-decode/blit`, `icons/assets`, the `compose-*` cases) keeps its formula, table or reviewed reference and
+`png-decode/blit` and `icons/assets`) keeps its formula, table or reviewed reference and
 now judges a device readback of GPU output. A pixel the GPU draws differently is a defect in a pipeline,
 never a new expectation.
 
-**Change, forced by GPU-only** (37), with how each stays exact and what it no longer covers:
+**GPU-only mechanisms** (including already-landed checks), with how each stays exact and what it no longer covers:
 
-- `raster` (7):
+- `raster`:
   - `guard-pages` splits into its two remaining risks: guard pages around the user buffers of `UPLOAD` and
     `READBACK` called with extreme rectangles (the kernel's copies are where a CPU write can now escape), and
     a canary target beside the drawn one, read back, for device-side writes outside the target or clip. What
@@ -1424,40 +1426,40 @@ never a new expectation.
   term `10C`) by libfont's counter, and the GPU's fragment-steps by the work estimate, which for the
   independent 1,024 × 1,024 square must equal its formula exactly, so a counter that skips the span fill is
   still caught. The contract recomputes both numbers; `GlyphTooExpensive` is still refused before any work.
-- `windows` (8, including B7 below): `create` returns target handles, not mapped addresses; `destroy` frees targets;
+- `windows`: `create` returns target handles, not mapped addresses; `destroy` frees targets;
   `fork-no-mapping` becomes no inherited GPU handles; `commit-immutable` becomes a refused submission to a
   front buffer with the front unchanged on readback, including a submission accepted before `COMMIT`;
   `resize-rlimit` and `rlimit-accounting` count guest backing against `RLIMIT_AS` and device memory against
   the GPU quota; `every-target` names backend 4 or 5.
-- `isolation` (4, including B7 below): `other-map` and `texture-map` become refused foreign handles and a refused sample of the
+- `isolation`: `other-map` and `texture-map` become refused foreign handles and a refused sample of the
   compositor's scanout target; `retired-ops` adds 410, 411, 412, `MAP_COMMITTED` and `MAP_COMPOSITOR_TEXTURE`.
-- `composition` (4, including B7 below): `fbinfo-geometry` becomes the mode and scale from `MODES`. `flush-irq-bound` becomes
+- `composition`: `fbinfo-geometry` becomes the mode and scale from `MODES`. `flush-irq-bound` becomes
   `irq-bound`: the same 500 µs bound and `irq-hold` gauge, over the GPU composition path (validation,
   translation, submission, fence completion and readback copies) during full-screen damage.
-- `scanout` (8, including B6/B7 below): `mode-set` checks the mode reported by `MODES` instead of `fb_info` (2560×1600 at scale 2,
+- `scanout`: `mode-set` checks the mode reported by `MODES` instead of `fb_info` (2560×1600 at scale 2,
   ruling R4); `device-path` and `boundary-stated` use record version 2's rows and boundary code 4.
 
-
-- `events` (1) and `panel` (2): B7 replaces their retired mapping/paint mechanisms; the
+- `events` and `panel`: B7 replaces their retired mapping/paint mechanisms; the
   delivered resize dimensions and exact stage/console restoration properties remain.
 
-**B6/B7 correction.** The original table counted 348 kept and 40 changed. B6 moves the four
-renumbered scanout faults to changed (344/44). B7 also moves eight cases whose mechanisms
-use retired interfaces or the legacy present path, giving **336 kept and 52 changed**.
-No formula, reviewed reference, protection property or timing bound is weakened.
-The [case reconciliation](breengel-gpu-cases.md) lists all 404 original-or-added identities,
-the five removals, the renamed IRQ case, lane ownership and the reason for every reclassification.
+**B6/B7/B8 reconciliation.** The [coordinator rulings](breengel-gpu-rulings.md) and
+[case document](breengel-gpu-cases.md) record the mechanism and screen migrations, including
+the return of already-landed core checks to kept. The partition is **318 kept and
+70 changed**, with five removals and eleven additions: 399 cases. The case document
+lists the B8 cases individually; buffers and screen indexing use MODES, and first composite
+counts are the full reported mode. The table above is generated from those case identities.
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 | Reclassified case | Replacement and retained property |
 |---|---|
-| `windows/stale-id` | MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. |
+| `windows/stale-id` | MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. Already landed; counted kept. |
 | `events/resized` | MAP_COMMITTED retired; RESIZE target readback must have the delivered size and stride. |
-| `isolation/efault-mouse` | fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. |
+| `isolation/efault-mouse` | fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. Already landed; counted kept. |
 | `composition/takeover-giveback` | fb_mmap/FLUSH paint retired; GPU PRESENT must restore the prior frame exactly. |
 | `composition/ownership-stack` | fb_mmap/FLUSH paint retired; compositor death must restore the giver's GPU binding and exact frame. |
 | `panel/handoff` | Shared paint used fb_mmap/FLUSH; child now presents a GPU target and restores the stage exactly. |
 | `panel/kernel-screens` | Shared paint used fb_mmap/FLUSH; GPU console resource and exact restoration replace that path. |
-| `scanout/binding` | Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. |
+| `scanout/binding` | Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | `scanout/fault-skipped-transfer` | B6/B7: point 6 becomes GPU point 19; EIO reason unwritten (1), no partial output, then recovery. |
 | `scanout/fault-wrong-resource` | B6/B7: point 7 becomes GPU wrong-scanout 26; actual binding/composite identity and pixels expose the mismatch, then recovery. |
 | `scanout/fault-stale-fence` | B6/B7: point 8 becomes GPU point 20; EIO reason fence-mismatch (2), no partial output, then recovery. |

@@ -1,31 +1,137 @@
 # BreenGL GPU contract case reconciliation
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
 This is the normative DISPLAY-owned reconciliation for `gpu.md` section 2.7 step 5, from `f0ed099e`.
-The 393-case baseline becomes 399: **336 kept, 52 changed, 5 removed, 11 added**.
-The 52 changed cases comprise 37 GPU-only and 15 R3/R4 changes. Check-first commits precede this manifest and contract update.
+The 393-case baseline becomes 399: **318 kept, 70 changed, 5 removed, 11 added**.
+The changed cases comprise 55 GPU-only and 15 R3/R4 changes; the table below assigns their lanes.
 No row asserts GPU acceptance; lane implementations and final proof are recorded by the contract PR.
 
-B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps the core and pure libraries; B4 excludes the obsolete x86 lane; B5 limits this effort to ARM64 QEMU with `--gpu-gl`. B6 and B7 reclassify mechanisms while preserving their guarded properties.
+B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps the core and pure libraries; B4 excludes the obsolete x86 lane; B5 limits this effort to ARM64 QEMU with `--gpu-gl`. B6 and B7 reclassify mechanisms; B8 also reclassifies retired screen dimensions.
+The coordinator decisions B1–B8 are recorded in [the rulings file](breengel-gpu-rulings.md);
+that record is the authority for the migration and the reclassifications below.
 
 ## Reclassifications from kept to changed
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
 | Case | Reason |
 |---|---|
-| `windows/stale-id` | MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. |
 | `events/resized` | MAP_COMMITTED retired; RESIZE target readback must have the delivered size and stride. |
-| `isolation/efault-mouse` | fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. |
 | `composition/takeover-giveback` | fb_mmap/FLUSH paint retired; GPU PRESENT must restore the prior frame exactly. |
 | `composition/ownership-stack` | fb_mmap/FLUSH paint retired; compositor death must restore the giver's GPU binding and exact frame. |
 | `panel/handoff` | Shared paint used fb_mmap/FLUSH; child now presents a GPU target and restores the stage exactly. |
 | `panel/kernel-screens` | Shared paint used fb_mmap/FLUSH; GPU console resource and exact restoration replace that path. |
-| `scanout/binding` | Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. |
+| `scanout/binding` | Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | `scanout/fault-skipped-transfer` | B6/B7: point 6 becomes GPU point 19; EIO reason unwritten (1), no partial output, then recovery. |
 | `scanout/fault-wrong-resource` | B6/B7: point 7 becomes GPU wrong-scanout 26; actual binding/composite identity and pixels expose the mismatch, then recovery. |
 | `scanout/fault-stale-fence` | B6/B7: point 8 becomes GPU point 20; EIO reason fence-mismatch (2), no partial output, then recovery. |
 | `scanout/fault-outside-damage` | B6/B7: point 9 becomes GPU point 22; corruption at (0,0) replaces last-row planting; full-destination comparison still finds corruption outside damage. |
 
+## Blind-review corrections
+
+The bitmap-font `A1` draw is restored to `scene`, including the BGR/RGB byte comparison.
+`composition/ownership-stack` checks nested takeover refusal with EBUSY at depth four and
+TAKE_OVER_DISPLAY refusal with EPERM for uid 1000, as §18 requires.
+The glyph work ceiling is computed independently from segment crossings: for each row's
+8 sub-scanlines, count crossings, then sum `8192 × width × (1 + crossings)`, plus the
+scratch copy area. Guarded extreme UPLOAD clips its rectangle before testing user access:
+the oversized rectangle at (0,0) is EFAULT; an origin outside the target is EINVAL.
+`surface-validate` retains StrideTooShort and SizeOverflow on conversion layouts.
+Destroy registers and lists its window; destroy and fork check successful target readback
+before testing revocation or inheritance. Scale-2 composition compares at `(x/2,y/2)`;
+widgets double the rectangle and surface as well as text and border. HiDPI text uses the
+reported scale and compares actual drawn pixels against replicated small reference pixels.
+
+Raster input declarations cover the 7-byte 5×7 glyph rows per input character, the
+16 px bitmap glyph's width × 16 coverage bytes, and the literal copy-row input bytes.
+These are input fixtures (§2.4), not generated expected images; accounting still requires
+exact declared Fixture bytes and no Image uploads. Declared bytes are measured separately
+for the extreme calls; shapes still declare no fixtures. Accounting files are removed
+when the category is checked.
+
+### Landed-core checks
+
+The following former changed cases use available core interfaces and are kept. Their
+mechanism descriptions remain in gpu.md §2.2; they impose no missing lane work:
+
+- `raster/guard-pages`: retains its property on the landed GPU core.
+- `raster/stride-padding`: retains its property on the landed GPU core.
+- `raster/surface-validate`: retains its property on the landed GPU core.
+- `raster/bpp3-bpp4`: retains its property on the landed GPU core.
+- `raster/copy-row-clip`: retains its property on the landed GPU core.
+- `raster/surface-owned`: retains its property on the landed GPU core.
+- `isolation/efault-mouse`: retains its property on the landed GPU core.
+- `windows/stale-id`: retains its property on the landed GPU core.
+
+`raster/cpu-render-planted` remains added because it has no baseline identity; its runtime
+negative controls already execute on the core and are expected to pass before lane work.
+
+### B8 screen migration
+
+Each case below used the retired screen dimensions directly or through a shared readback
+helper and moves from kept to changed, owned by gpu-display. Full first composites use
+reported width × height (4,096,000 at the mandated mode); buffers and row indexing use
+the reported dimensions. Existing fixed scene coordinates remain, except fullscreen and
+edge fixtures which follow the active screen. Already changed and added users of the
+same helpers also receive the mode-derived allocation.
+
+- `windows/distinct-content`
+- `isolation/efault-readback`
+- `composition/compose-position`
+- `composition/compose-overlap`
+- `composition/compose-offscreen`
+- `composition/compose-fullscreen`
+- `composition/compose-many`
+- `composition/no-compositor`
+- `composition/damage-work`
+- `composition/damage-screen`
+- `composition/backend-error`
+- `composition/cursor-hidden`
+- `composition/cursor-no-trail`
+- `composition/cursor-shape`
+- `composition/cursor-stationary-repaint`
+- `scanout/changing-scene`
+- `scanout/full-destination`
+- `scanout/completion`
+- `scanout/atomic-record`
+- `scanout/window-commits`
+- `scanout/format-canonical`
+- `scanout/root-only`
+- `panel/boot-ribbon`
+- `panel/between-cases`
+- `panel/cursor-restore`
+- `panel/cursor-trail-detected`
+
+### Failure ownership
+
+A kept body may still fail until its rendering implementation arrives. Raster and image
+readback/accounting failures belong to gpu-raster; coverage and UI text to gpu-text;
+window target lifecycle to gpu-window; composition, mode and stage readback to gpu-display.
+The pictured-case stage is a shared gpu-display dependency even when a case body passes.
+A stage error is recorded separately from the body result; it does not certify the body's
+later assertions. The PR records the final boot's per-case first failures against these
+owners, including any assertion not reached.
+
+### Lint records
+
+`claim-lint: scripts/claim-lint.py --base f0ed099e -> exit 0` checks the branch prose.
+Commit-message and PR-body lint records are retained in the PR description.
+
+### Minor findings
+
+Fixed: guard both ends and check the canary after rejected uploads; set the composed
+stage fixture flags to 3; remove accounting files; remove duplicate prose; provide
+claim-lint records and a PR body without host execution details.
+
+Deferred: per-primitive instance ceilings across the category; static dependency/upload
+scanner scope and alias gaps; retired CPU helper dependencies pending their lanes;
+quota-test ambiguity under ordinary allocation failure; stronger held-fence ordering in
+commit-immutable; baseline kept-case boot comparison. These do not close a lane's GPU
+acceptance and remain review follow-up work.
+
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
 ## Every case
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
 | Case | Classification | Owner | Contract row or ruling |
 |---|---|---|---|
 | `raster/fill-rect` | kept | unchanged | gpu.md 2.2 raster Keep row |
@@ -41,14 +147,14 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `raster/circle-fill` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/circle-fill-offscreen-left` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/circle-outline` | kept | unchanged | gpu.md 2.2 raster Keep row |
-| `raster/guard-pages` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/guard-pages` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
 | `raster/extreme-work-bound` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
-| `raster/stride-padding` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
-| `raster/surface-validate` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
-| `raster/bpp3-bpp4` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/stride-padding` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/surface-validate` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/bpp3-bpp4` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
 | `raster/bgr-order` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/x-byte` | kept | unchanged | gpu.md 2.2 raster Keep row |
-| `raster/copy-row-clip` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
+| `raster/copy-row-clip` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
 | `raster/premultiply` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/alpha-over-examples` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/alpha-over-sweep` | kept | unchanged | gpu.md 2.2 raster Keep row |
@@ -67,8 +173,8 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `raster/damage-exact` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/damage-noop` | kept | unchanged | gpu.md 2.2 raster Keep row |
 | `raster/damage-sound` | kept | unchanged | gpu.md 2.2 raster Keep row |
-| `raster/surface-owned` | changed | gpu-raster | gpu.md 2.2 raster GPU-only row |
-| `raster/cpu-pixels-zero` | added | gpu-raster | gpu.md 2.2 New GPU-only row |
+| `raster/surface-owned` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
+| `raster/cpu-pixels-zero` | added | gpu-raster | gpu.md 2.2 New GPU-only row | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | `raster/cpu-render-planted` | added | gpu-raster | gpu.md 2.2 New GPU-only row |
 | `text/fonts-pinned` | kept | unchanged | gpu.md 2.2 text Keep row |
 | `text/raster-identical` | kept | unchanged | gpu.md 2.2 text Keep row |
@@ -259,13 +365,13 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `windows/title-limit` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/title-utf8` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/title-change` | kept | unchanged | gpu.md 2.2 windows Keep row |
-| `windows/size-zero` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/size-zero` | kept | unchanged | gpu.md 2.2 windows Keep row | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
 | `windows/size-too-big` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/limit` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/multi-window` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/destroy` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
 | `windows/drop-destroys` | kept | unchanged | gpu.md 2.2 windows Keep row |
-| `windows/stale-id` | changed | gpu-window | B7: MAP_COMMITTED retired; stale GPU ACQUIRE stays ENOENT and publishes no buffer. |
+| `windows/stale-id` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
 | `windows/register-unwinds` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/exit-cleanup` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/exec-cleanup` | kept | unchanged | gpu.md 2.2 windows Keep row |
@@ -289,10 +395,10 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `windows/two-buffer-capture-load` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/remnant-on-death` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/churn` | kept | unchanged | gpu.md 2.2 windows Keep row |
-| `windows/distinct-content` | kept | unchanged | gpu.md 2.2 windows Keep row |
+| `windows/distinct-content` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `windows/raw-client` | kept | unchanged | gpu.md 2.2 windows Keep row |
 | `windows/every-target` | changed | gpu-window | gpu.md 2.2 windows GPU-only row |
-| `windows/commit-waits-render` | added | gpu-window | gpu.md 2.2 New GPU-only row |
+| `windows/commit-waits-render` | added | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `isolation/other-register` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/other-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/other-position` | kept | unchanged | gpu.md 2.2 isolation Keep row |
@@ -316,9 +422,9 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `isolation/efault-events` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-inject` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-composite` | kept | unchanged | gpu.md 2.2 isolation Keep row |
-| `isolation/efault-mouse` | changed | gpu-display | B7: fb_info/fb_draw/FLUSH_BATCH retired; GPU descriptor and stream copies retain EFAULT protection; mouse checks stay. |
+| `isolation/efault-mouse` | kept | unchanged | Landed GPU core already checks the retained property; no lane implementation is missing. |
 | `isolation/efault-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
-| `isolation/efault-readback` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-readback` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `isolation/efault-claim` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-cross-page` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-overflow` | kept | unchanged | gpu.md 2.2 isolation Keep row |
@@ -331,35 +437,35 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `isolation/killable` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/quiet-errors` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/controls-latched` | kept | unchanged | gpu.md 2.2 isolation Keep row |
-| `composition/compose-position` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/compose-overlap` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/compose-offscreen` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/compose-fullscreen` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/compose-many` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/compose-position` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/compose-overlap` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/compose-offscreen` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/compose-fullscreen` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/compose-many` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/generation` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/no-compositor` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/no-compositor` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/compositor-dies` | kept | unchanged | gpu.md 2.2 composition Keep row |
 | `composition/eintr` | kept | unchanged | gpu.md 2.2 composition Keep row |
 | `composition/damage-metadata` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/damage-work` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/damage-screen` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/damage-work` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/damage-screen` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/composite-record` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/backend-error` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/backend-error` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/inflight-bound` | kept | unchanged | gpu.md 2.2 composition Keep row |
 | `composition/no-change-commit` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/cursor-hidden` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/cursor-no-trail` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/cursor-shape` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/cursor-stationary-repaint` | kept | unchanged | gpu.md 2.2 composition Keep row |
+| `composition/cursor-hidden` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/cursor-no-trail` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/cursor-shape` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/cursor-stationary-repaint` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/flush-irq-bound → composition/irq-bound` | changed | gpu-display | gpu.md 2.2 composition GPU-only row |
 | `composition/present-rate` | kept | unchanged | gpu.md 2.2 composition Keep row |
-| `composition/takeover-giveback` | changed | gpu-display | B7: fb_mmap/FLUSH paint retired; GPU PRESENT must restore the prior frame exactly. |
-| `composition/ownership-stack` | changed | gpu-display | B7: fb_mmap/FLUSH paint retired; compositor death must restore the giver's GPU binding and exact frame. |
+| `composition/takeover-giveback` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/ownership-stack` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/fbinfo-geometry` | changed | gpu-display | gpu.md 2.2 composition GPU-only row |
 | `composition/fbmmap-pane` | removed | gpu-display | gpu.md 2.2 retired fb_mmap/FLUSH |
 | `composition/flush-clip` | removed | gpu-display | gpu.md 2.2 retired fb_mmap/FLUSH |
-| `composition/gpu-composite` | added | gpu-display | gpu.md 2.2 New GPU-only row |
-| `composition/target-lifetime` | added | gpu-display | gpu.md 2.2 New GPU-only row |
+| `composition/gpu-composite` | added | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `composition/target-lifetime` | added | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `composition/scale-2` | added | gpu-display | gpu.md 2.2 New R4 row |
 | `events/key-press-release` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `events/key-text` | kept | unchanged | gpu.md 2.2 events Keep row |
@@ -395,18 +501,18 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `events/malformed-write` | kept | unchanged | gpu.md 2.2 events Keep row |
 | `scanout/mode-set` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
 | `scanout/device-path` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
-| `scanout/changing-scene` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/full-destination` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/binding` | changed | gpu-display | B7: Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. |
-| `scanout/completion` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/atomic-record` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/window-commits` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/format-canonical` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/root-only` | kept | unchanged | gpu.md 2.2 scanout Keep row |
-| `scanout/fault-skipped-transfer` | changed | gpu-display | B7: B6/B7: point 6 becomes GPU point 19; EIO reason unwritten (1), no partial output, then recovery. |
-| `scanout/fault-wrong-resource` | changed | gpu-display | B7: B6/B7: point 7 becomes GPU wrong-scanout 26; actual binding/composite identity and pixels expose the mismatch, then recovery. |
-| `scanout/fault-stale-fence` | changed | gpu-display | B7: B6/B7: point 8 becomes GPU point 20; EIO reason fence-mismatch (2), no partial output, then recovery. |
-| `scanout/fault-outside-damage` | changed | gpu-display | B7: B6/B7: point 9 becomes GPU point 22; corruption at (0,0) replaces last-row planting; full-destination comparison still finds corruption outside damage. |
+| `scanout/changing-scene` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/full-destination` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/binding` | changed | gpu-display | B7: Legacy fixed-resource present assumed one persistent resource; every GPU flip must instead match its own confirmed binding and composite. | <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
+| `scanout/completion` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/atomic-record` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/window-commits` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/format-canonical` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/root-only` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `scanout/fault-skipped-transfer` | changed | gpu-display | B6/B7: point 6 becomes GPU point 19; EIO reason unwritten (1), no partial output, then recovery. |
+| `scanout/fault-wrong-resource` | changed | gpu-display | B6/B7: point 7 becomes GPU wrong-scanout 26; actual binding/composite identity and pixels expose the mismatch, then recovery. |
+| `scanout/fault-stale-fence` | changed | gpu-display | B6/B7: point 8 becomes GPU point 20; EIO reason fence-mismatch (2), no partial output, then recovery. |
+| `scanout/fault-outside-damage` | changed | gpu-display | B6/B7: point 9 becomes GPU point 22; corruption at (0,0) replaces last-row planting; full-destination comparison still finds corruption outside damage. |
 | `scanout/boundary-stated` | changed | gpu-display | gpu.md 2.2 scanout GPU-only row |
 | `scanout/present-flip` | added | gpu-display | gpu.md 2.2 New GPU-only row |
 | `scanout/hidpi-mode` | added | gpu-display | gpu.md 2.2 New R4 row |
@@ -424,11 +530,11 @@ B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps
 | `panel/judged-frame-shown` | kept | unchanged | gpu.md 2.2 panel Keep row |
 | `panel/serial-agreement` | kept | unchanged | gpu.md 2.2 panel Keep row |
 | `panel/quiet-window` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/boot-ribbon` | kept | unchanged | gpu.md 2.2 panel Keep row |
+| `panel/boot-ribbon` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `panel/boundary-notice` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/handoff` | changed | gpu-display | B7: Shared paint used fb_mmap/FLUSH; child now presents a GPU target and restores the stage exactly. |
-| `panel/between-cases` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/cursor-restore` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/cursor-trail-detected` | kept | unchanged | gpu.md 2.2 panel Keep row |
-| `panel/kernel-screens` | changed | gpu-display | B7: Shared paint used fb_mmap/FLUSH; GPU console resource and exact restoration replace that path. |
+| `panel/handoff` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/between-cases` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/cursor-restore` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/cursor-trail-detected` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
+| `panel/kernel-screens` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
 | `panel/stage-hidpi` | added | gpu-display | gpu.md 2.2 New R4 row |

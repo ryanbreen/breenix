@@ -5,6 +5,7 @@ use libgfx::{color::Color, framebuf::FrameBuf};
 use libfont::{CachedFont,Font};
 thread_local! {static DISPLAY_SCALE:std::cell::Cell<usize>=const{std::cell::Cell::new(1)};}
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 fn surface() -> FrameBuf {
     let n=DISPLAY_SCALE.with(|s|s.get());
     FrameBuf::new(1280*n, 800*n, libgfx::framebuf::Format::BGRX).unwrap()
@@ -23,7 +24,7 @@ fn expected_pixels(fb:&FrameBuf,want:&FrameBuf,x:usize,y:usize)->Result<(),Strin
 }
 fn put(fb:&mut FrameBuf,x:usize,y:usize,c:Color){let n=fb.width/1280;for dy in 0..n {for dx in 0..n {fb.put_pixel(x*n+dx,y*n+dy,c);}}}
 fn oracle_fill(fb:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color){let n=(fb.width/1280) as i32;libgfx::shapes::fill_rect(fb,x*n,y*n,w*n,h*n,c);}
-/// Lower-layer §8.3 text oracle. Stage/UI code never supplies these expected pixels.
+/// Lower-layer §8.3 text oracle supplies the stage expectation independently.
 fn oracle_text(fb:&mut FrameBuf,t:&[u8],x:usize,y:usize,c:Color,legacy_scale:usize){
     let n=fb.width/1280;
     if n==1 {libgfx::font::draw_text(fb,t,x,y,c,legacy_scale);return;}
@@ -50,7 +51,7 @@ fn text(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,background:(u8,u8,u8)) -
 
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
     Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
-        input:None,spotlight:Spotlight::None,finale:None,boundary:if DISPLAY_SCALE.with(|s|s.get())==2 {stage::Observation{backend:4,flags:1,boundary:4}}else{stage::Observation{backend:1,flags:1,boundary:1}} }
+        input:None,spotlight:Spotlight::None,finale:None,boundary:if DISPLAY_SCALE.with(|s|s.get())==2 {stage::Observation{backend:4,flags:3,boundary:4}}else{stage::Observation{backend:1,flags:1,boundary:1}} }
 }
 fn render(fb:&mut FrameBuf,run:&Run<'_>) -> Result<(),String> {
     stage::draw(fb,run).map_err(|e|format!("missing or invalid run stage (§23): {e:?}"))

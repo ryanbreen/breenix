@@ -14,12 +14,13 @@ pub(crate) const PANEL: &[Case] = &[
 // panel: the suite panel around window cases (contract section 23)
 // ---------------------------------------------------------------------------------------
 
-use super::composition::{give_back, paint, screen, take_over};
+use super::composition::{screen_size,give_back, paint, screen, take_over};
 use super::kit::*;
 
-fn first_difference(a: &[u8], b: &[u8]) -> Option<(usize, usize)> {
-    crate::remember_frame(b,1280,800,Some(a.to_vec()));
-    (0..1280 * 800).find(|&i| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4]).map(|i| (i % 1280, i / 1280))
+fn first_difference(a: &[u8], b: &[u8]) -> Result<Option<(usize, usize)>,libbreenix::suite::CaseError> {
+    let (width,height)=screen_size()?;
+    crate::remember_frame(b,width,height,Some(a.to_vec()));
+    Ok((0..width * height).find(|&i| a[i * 4..i * 4 + 4] != b[i * 4..i * 4 + 4]).map(|i| (i % width, i / width)))
 }
 
 // gpu-display: B7 replaces the child's retired framebuffer paint with GPU PRESENT; exact restoration stays.
@@ -43,7 +44,7 @@ fn panel_handoff() -> CaseResult {
     let ended = child_end(5_000, || f()).cite("23")?;
     ensure(matches!(ended, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
     let (after, _) = screen()?;
-    match first_difference(&before, &after) {
+    match first_difference(&before, &after)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("after the child gave the display back, the panel differs at ({x}, {y})")),
     }
@@ -54,7 +55,7 @@ fn panel_between_cases() -> CaseResult {
     let (a, _) = screen()?;
     let _ = time::sleep_ms(300);
     let (b, _) = screen()?;
-    match first_difference(&a, &b) {
+    match first_difference(&a, &b)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("the screen changed at ({x}, {y}) while this case ran; the panel is drawn only between cases")),
     }
@@ -86,6 +87,7 @@ const PATH: [(u32, u32); 5] = [(200, 300), (400, 320), (640, 400), (900, 500), (
 /// crossed the panel and came back to rest, with `panel-cursor-no-restore` armed for the
 /// crossing when `no_restore`.
 fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseError> {
+    let (width,height)=screen_size()?;
     move_pointer(REST.0, REST.1)?;
     let (rest, _) = screen()?;
     if no_restore {
@@ -96,10 +98,10 @@ fn trail(no_restore: bool) -> Result<Vec<(u32, u32)>, libbreenix::suite::CaseErr
     let _ = libbreenix::test_control::disarm_all();
     crossed?;
     let (back, _) = screen()?;
-    crate::remember_frame(&back,1280,800,if no_restore{None}else{Some(rest.clone())});
-    Ok((0..1280 * 800u32)
+    crate::remember_frame(&back,width,height,if no_restore{None}else{Some(rest.clone())});
+    Ok((0..(width * height) as u32)
         .filter(|&i| rest[i as usize * 4..i as usize * 4 + 4] != back[i as usize * 4..i as usize * 4 + 4])
-        .map(|i| (i % 1280, i / 1280))
+        .map(|i| (i % width as u32, i / width as u32))
         .collect())
 }
 
@@ -149,7 +151,7 @@ fn panel_kernel_screens() -> CaseResult {
     let (redrawn, _) = again?;
     ensure(retook >= 0, "18", format!("the runner's take_over_display {}", outcome(retook)))?;
     ensure(matches!(ended.cite("23")?, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
-    match first_difference(&console, &redrawn) {
+    match first_difference(&console, &redrawn)? {
         None => Ok(()),
         Some((x, y)) => at("23", format!("after a process took the display and gave it back, the kernel's console screen differs at ({x}, {y})")),
     }
