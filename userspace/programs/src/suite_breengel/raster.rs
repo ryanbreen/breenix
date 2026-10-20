@@ -573,18 +573,9 @@ fn raster_x_byte() -> CaseResult {
     Ok(())
 }
 
+// gpu-raster: §2.2 replaces byte-granular CPU row copies with clipped uploaded GPU pixels.
 fn raster_copy_row_clip() -> CaseResult {
-    step("5.9", isolated("copy_row_from(5, 1, 40 bytes)", 2_000, || {
-        let mut g = Guarded::new(8, 4, 8 * 4 + 8, 4, true);
-        g.reset(PAPER);
-        let src: Vec<u8> = (0..40u8).map(|i| [INK.b, INK.g, INK.r, 0xFF][i as usize % 4]).collect();
-        g.fb().copy_row_from(5, 1, &src, 40);
-        g.compare("copy_row_from(5, 1, 40 bytes) on an 8-pixel row",
-            |x, y| if y == 1 && x >= 5 { INK } else { PAPER })?;
-        g.fb().copy_row_from(8, 2, &src, 40);
-        g.compare("copy_row_from(8, 2, ...) at x = width",
-            |x, y| if y == 1 && x >= 5 { INK } else { PAPER })
-    }))
+crate::gpu_checks::copy_row_clip()
 }
 
 fn raster_premultiply() -> CaseResult {

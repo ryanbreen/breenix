@@ -104,3 +104,19 @@ pub(crate) fn bpp3_bpp4()->CaseResult {
         ensure(row[..42]==rgb[n*42..(n+1)*42] && row[42..].iter().all(|&b|b==0xA5),"2","gpu-raster: three-byte readback conversion changed a pixel or padding")?;
     }Ok(())
 }
+
+// gpu-raster: §5.9 uploads whole pixels and clips the GPU copy at the destination row.
+pub(crate) fn copy_row_clip()->CaseResult {
+    let mut f=Fixture::new(8,4).cite("5.9")?;
+    let pixels=[17,34,51,255].repeat(8*4);
+    let (r,_)=gpu::upload(f.context.handle(),f.texture,[0,0,8,4],&pixels,32,ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
+    ensure(r==0,"5.9","gpu-raster: upload fixture failed")?;
+    f.clear(8,4,0xff000000).cite("5.9")?;
+    f.context.begin(f.target,8,4);f.context.copy(f.texture,&[[5,1,13,2,0,0],[8,2,16,3,0,0]]);
+    f.context.submit().and_then(|s|s.wait(2_000_000_000)).map_err(|e|format!("gpu-raster: row copy {}",outcome(e))).cite("5.9")?;
+    let actual=f.pixels(8,4,32).cite("5.9")?;
+    for y in 0..4 {for x in 0..8 {
+        let want=if y==1 && x>=5 {[17,34,51,255]}else{[0,0,0,255]};
+        ensure(actual[(y*8+x)*4..(y*8+x+1)*4]==want,"5.9",format!("gpu-raster: clipped uploaded row wrapped or missed pixel {x},{y}"))?;
+    }}Ok(())
+}
