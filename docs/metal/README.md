@@ -707,7 +707,7 @@ from the firmware's console input, which joins the USB keyboard and the serial c
 
 | The lab answered | The manager |
 |---|---|
-| `test <boot>` | Shows `Test boot requested by the lab (boot <boot>)` and starts the test loop after 3 seconds. A key pressed meanwhile does not cancel it: the screen says `The lab's lease holds this machine for boot <boot>; the test boot goes ahead`. |
+| `test <boot>` | Shows `Test boot requested by the lab (boot <boot>)` and starts the test loop after 3 seconds (`Starting the test loop in 3 s; a key does not cancel it.`). A key pressed meanwhile does not cancel it: the screen says `The lab's lease holds this machine for boot <boot>; the test boot goes ahead`. |
 | `persistent <boot> <current or previous> [commit or rollback]` | A persistent session holds the lease. It applies the slot action (below), then counts down to the named entry; a key stops the countdown and the operator chooses. |
 | `busy <boot>` | The lease is held by a boot that has not powered the machine on yet; the lab will power it off. The menu stays up without a countdown and says so. |
 | no answer (DHCP or HTTP failed, or a reply it cannot read) | Says `The lab did not answer (<why>)` and counts down to **Breenix**. |

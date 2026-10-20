@@ -149,9 +149,10 @@ impl<'a> Manager<'a> {
         self.detail = detail;
     }
 
-    /// Waits up to `seconds` for a key, counting down on the screen; an empty result means the countdown ran out. With
-    /// `seconds` 0 it waits for one key without a countdown, and halts when the firmware has no console input.
-    unsafe fn wait(&mut self, seconds: u32, what: &str) -> Option<InputKey> {
+    /// Waits up to `seconds` for a key, counting down on the screen with `what` and what a key does; an empty result
+    /// means the countdown ran out. With `seconds` 0 it waits for one key without a countdown, and halts when the
+    /// firmware has no console input.
+    unsafe fn wait(&mut self, seconds: u32, what: &str, key: &str) -> Option<InputKey> {
         let con_in = (*self.system).con_in;
         let mut timer: Event = null_mut();
         if (self.boot.create_event)(EVT_TIMER, 0, None, null_mut(), &mut timer) != SUCCESS {
@@ -162,7 +163,7 @@ impl<'a> Manager<'a> {
         let mut left = seconds;
         let result = loop {
             if seconds > 0 {
-                self.countdown = line(format_args!("{} in {} s; any key stops the countdown.", what, left));
+                self.countdown = line(format_args!("{} in {} s; {}", what, left, key));
                 self.show(false);
                 if left == 0 {
                     break None;
@@ -246,7 +247,7 @@ impl<'a> Manager<'a> {
                 Item::TestLoop => "Starting the test loop",
                 Item::FirmwareSetup => "Entering firmware setup",
             };
-            let outcome = self.wait(countdown, what);
+            let outcome = self.wait(countdown, what, "any key stops the countdown.");
             countdown = 0;
             match outcome {
                 None => {}
@@ -416,7 +417,8 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
 
     match answer {
         Answer::Test(id) => {
-            if manager.wait(TEST_COUNTDOWN, "Starting the test loop").is_some() {
+            // A key does not cancel the lab's boot (it only ends the wait), so the countdown does not offer it.
+            if manager.wait(TEST_COUNTDOWN, "Starting the test loop", "a key does not cancel it.").is_some() {
                 manager.set_status(
                     line(format_args!("The lab's lease holds this machine for boot {};", id.as_str())),
                     line(format_args!("the test boot goes ahead.")),
