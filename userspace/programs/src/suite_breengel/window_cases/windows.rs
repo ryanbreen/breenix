@@ -1269,18 +1269,16 @@ fn windows_raw_client() -> CaseResult {
     ensure(listed(id).cite("17.2")?.is_none(), "17.2", "the raw client's destroyed window is still listed")
 }
 
+// gpu-window: §2.2 and ruling 47 use GPU backend 4 or 5, never a legacy framebuffer backend.
 fn windows_every_target() -> CaseResult {
-    interface()?;
-    let w = W::new(16, 16, 2)?;
-    want_ok(w.register(b"every-target"), "17.1", "REGISTER")?;
-    let info = listed(w.id()).cite("17.1")?.ok_or("the window is not listed (section 17.2)")?;
-    let name = abi::backend::name(info.backend);
-    value("backend", info.backend as i64, "", Some((1, 4)));
-    #[cfg(target_arch = "x86_64")]
-    let allowed = [abi::backend::GOP_FRAMEBUFFER];
-    #[cfg(target_arch = "aarch64")]
-    let allowed = [abi::backend::VIRTIO_GPU_2D, abi::backend::SVGA3_SCREEN_TARGET, abi::backend::VIRGL];
-    ensure(allowed.contains(&info.backend), "20.2", format!(
-        "WinInfo names backend {} ({name}); this architecture's targets use {:?}", info.backend,
-        allowed.iter().map(|&b| abi::backend::name(b)).collect::<Vec<_>>()))
+interface()?;
+    let w=W::new(16,16,2)?;want_ok(w.register(b"every-target"),"17.1","REGISTER")?;
+    let info=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
+    let (r,caps)=libbreenix::gpu::caps();
+    ensure(r==0 && [4,5].contains(&caps.backend) && info.backend==caps.backend,"20.2",
+        format!("gpu-window: WinInfo backend {} does not match admitted GPU backend {}",info.backend,caps.backend))?;
+    let mut pixels=vec![0;16*16*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+    want_ok(libbreenix::gpu::readback(w.c.buffer[0],[0,0,16,16],&mut pixels,64,&mut record),"20.2","gpu-window: backend target readback")?;
+    let word=|o|u32::from_le_bytes(record[o..o+4].try_into().unwrap());
+    ensure(word(0)==2 && word(16)==caps.backend && word(20)==4,"20.2","gpu-window: target readback is not this GPU backend's record v2")
 }
