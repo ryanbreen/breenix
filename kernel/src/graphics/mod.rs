@@ -18,8 +18,6 @@ pub enum CompositorBackend {
     None = 0,
     /// VirtIO GPU with VirGL 3D acceleration (Parallels, QEMU).
     VirGL = 1,
-    /// VMware SVGA3 with STDU display pipeline (VMware Fusion).
-    Svga3Stdu = 2,
 }
 
 static COMPOSITOR_BACKEND: AtomicU8 = AtomicU8::new(CompositorBackend::None as u8);
@@ -33,7 +31,6 @@ pub fn set_compositor_backend(backend: CompositorBackend) {
 pub fn compositor_backend() -> CompositorBackend {
     match COMPOSITOR_BACKEND.load(Ordering::Acquire) {
         1 => CompositorBackend::VirGL,
-        2 => CompositorBackend::Svga3Stdu,
         _ => CompositorBackend::None,
     }
 }

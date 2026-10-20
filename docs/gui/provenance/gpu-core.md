@@ -1088,18 +1088,22 @@ declaration, naming its line; `tests/gpu_svga.rs` translates the catalogue fragm
 | Upload: UPDATE_GB_SURFACE of the texture's MOB (its packed rows are the backing), a one-texel SURFACE_COPY into a device-owned surface of the same format, fenced | section 1.8 table; #1656 fact |
 | Readback: per band and per poison, a dedicated readback surface of the band's size on a MOB over frames charged like staging, SURFACE_COPY of the band into it, READBACK_GB_SURFACE, destroy, fenced with DX_MOB_FENCE_64; the record names the first pass's surface and MOB | section 1.8; O |
 
-The layer is selected by the `gpu_svga_experimental` kernel feature until VMware's acceptance lands; default
-boots keep the existing VMware presentation. Build and launch, from the checkout root (Mac builds at
-background priority, the VM at normal priority with its window):
+VMware acceptance landed in PR #1815 at `c4972aa0`. The SVGA3D DX backend is compiled
+into the ARM64 kernel without a feature selection. On VMware, console attachment probes
+and admits the SVGA3 device before choosing the console display. The GOP framebuffer
+provides the early splash until that handoff; the legacy SVGA3 compositor and its GPU
+client routes are retired. The core does not call or wrap that driver.
+
+Build and launch from the checkout root (Mac builds at background priority, the VM at
+normal priority with its window):
 
 ```sh
-export CARGO_BUILD_JOBS=4
-# Build the selected kernel separately, then deploy it without rebuilding.
-taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json \
-    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
-    -p kernel --bin kernel-aarch64 --features gpu_svga_experimental
-BREENIX_CATCHUP=1 "$PWD/run.sh" --vmware --no-build --suite gpu
+export CARGO_BUILD_JOBS=4 BREENIX_BUILD_BACKGROUND=1
+./run.sh --vmware --suite gpu
 ```
+
+A branch refused by the effort-target guard can use the operator-authorized
+`BREENIX_CATCHUP=1` environment setting with that command.
 
 
 ## Parallels catch-up values

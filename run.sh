@@ -64,7 +64,6 @@ PARALLELS_VM="breenix-dev"
 PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
-GPU_SVGA_EXPERIMENTAL=false
 SUITE=""
 ONLY=""
 GPU_CORE=false
@@ -120,10 +119,6 @@ while [[ $# -gt 0 ]]; do
         --vmware)
             VMWARE=true
             ARCH="arm64"
-            shift
-            ;;
-        --gpu-svga-experimental)
-            GPU_SVGA_EXPERIMENTAL=true
             shift
             ;;
         --test)
@@ -228,8 +223,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --parallels                Build and boot on Parallels Desktop VM"
             echo "  --parallels --test [N]     Build, boot, wait N sec (default 35), screenshot, exit"
-            echo "  --vmware                   Build and boot on VMware Fusion VM"
-            echo "  --gpu-svga-experimental    VMware: build the unfinished SVGA core profile"
+            echo "  --vmware                   Build and boot on VMware Fusion VM (SVGA3D DX GPU core)"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --accel hvf|tcg            ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)"
@@ -445,14 +439,6 @@ if [ -n "$KERNEL_FEATURES" ]; then
     [[ "$KERNEL_FEATURES" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || { echo "--kernel-features needs comma-separated feature names"; exit 2; }
     [ "$NO_BUILD" != true ] || { echo "--kernel-features builds the kernel; it cannot be combined with --no-build"; exit 1; }
     KERNEL_FEATURE_ARGS=(--features "$KERNEL_FEATURES")
-fi
-
-if [ "$GPU_SVGA_EXPERIMENTAL" = true ]; then
-    if [ "$VMWARE" != true ] || [ "$PARALLELS" = true ] || [ "$NO_BUILD" = true ]; then
-        echo "--gpu-svga-experimental requires --vmware and a fresh kernel build"
-        exit 2
-    fi
-    KERNEL_FEATURE_ARGS+=(--features gpu_svga_experimental)
 fi
 
 # Keep host launch policy beside this run's serial, including successful catch-up overrides.

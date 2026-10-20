@@ -932,22 +932,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         }
                     }
                 }
-                crate::graphics::CompositorBackend::Svga3Stdu => {
-                    match crate::drivers::vmware::svga3::composite_frame(pixels, width, height) {
-                        Ok(()) => {
-                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
-                            SyscallResult::Ok(0)
-                        }
-                        Err(e) => {
-                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                            crate::serial_println!(
-                                "[composite] SVGA3 composite_frame FAILED: {}",
-                                e
-                            );
-                            SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                        }
-                    }
-                }
                 crate::graphics::CompositorBackend::None => {
                     crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
@@ -1478,9 +1462,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
             crate::graphics::CompositorBackend::VirGL => {
                 crate::drivers::virtio::gpu_pci::compositor_texture_info()
             }
-            crate::graphics::CompositorBackend::Svga3Stdu => {
-                crate::drivers::vmware::svga3::compositor_texture_info()
-            }
             crate::graphics::CompositorBackend::None => None,
         };
         match info {
@@ -1527,15 +1508,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         if !any_window_dirty {
             drop(reg);
             match crate::graphics::compositor_backend() {
-                // SVGA3 STDU: cursor is drawn in VRAM by software. Update it even when
-                // no windows are dirty, so mouse movement remains responsive.
-                crate::graphics::CompositorBackend::Svga3Stdu => {
-                    if crate::drivers::vmware::svga3::update_cursor() {
-                        let _ =
-                            crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
-                    }
-                    return SyscallResult::Ok(0);
-                }
                 // VirGL: fall through — virgl_composite_windows() handles cursor-only
                 // frames via its own cursor_moved check + lightweight SUBMIT_3D.
                 crate::graphics::CompositorBackend::VirGL => {}
@@ -1641,29 +1613,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                     crate::serial_println!("[composite-windows] VirGL FAILED: {}", e);
                     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                 }
-            }
-        }
-        crate::graphics::CompositorBackend::Svga3Stdu => {
-            // BWM writes directly to VRAM — draw cursor on top, then present.
-            // update_cursor erases old cursor, saves bg, draws new cursor.
-            let cursor_changed = crate::drivers::vmware::svga3::update_cursor();
-
-            let need_present = bg_dirty || windows.iter().any(|w| w.dirty) || cursor_changed;
-            if need_present {
-                let (dx, dy, dw, dh) = if bg_dirty {
-                    dirty_rect.unwrap_or((0, 0, bg_width, bg_height))
-                } else {
-                    (0, 0, bg_width, bg_height)
-                };
-                match crate::drivers::vmware::svga3::present_rect(dx, dy, dw, dh) {
-                    Ok(()) => SyscallResult::Ok(0),
-                    Err(e) => {
-                        crate::serial_println!("[composite-windows] SVGA3 FAILED: {}", e);
-                        SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                    }
-                }
-            } else {
-                SyscallResult::Ok(0)
             }
         }
         crate::graphics::CompositorBackend::None => {
@@ -2249,9 +2198,6 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         let info = match crate::graphics::compositor_backend() {
             crate::graphics::CompositorBackend::VirGL => {
                 crate::drivers::virtio::gpu_pci::compositor_texture_info()
-            }
-            crate::graphics::CompositorBackend::Svga3Stdu => {
-                crate::drivers::vmware::svga3::compositor_texture_info()
             }
             crate::graphics::CompositorBackend::None => None,
         };
