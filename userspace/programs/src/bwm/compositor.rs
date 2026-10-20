@@ -7,7 +7,9 @@
 //! one of two scanout targets in stacking order, draws the pointer, and presents the target.
 //!
 //! The first frame and the first frame that shows a client's pixels are read back from the
-//! scanout and compared, pixel for pixel, with the frame bwm meant to show.
+//! scanout and compared, pixel for pixel, with the frame bwm meant to show. `check_fills`
+//! reads the scanout itself back (target 0) to show that the frame bwm composed is what the
+//! display shows, whole.
 
 use bgl::Context;
 use libbreenix::gpu::{self, abi};
@@ -39,6 +41,14 @@ pub struct Pointer {
     pub x: i32,
     pub y: i32,
     pub shape: u32,
+}
+
+/// What a read-back of the scanout (target 0) showed.
+pub struct Scanout {
+    /// The device resource the display shows, from the read-back's record.
+    pub resource: u64,
+    pub width: u32,
+    pub height: u32,
 }
 
 struct Surface {
@@ -86,12 +96,14 @@ pub struct Compositor {
     surfaces: Vec<Surface>,
     read_pixels: Vec<u32>,
     appbar_top: i32,
+    /// Pointer pixels per bitmap cell: the UI scale.
+    scale: i32,
 }
 
 impl Compositor {
     /// Open the GPU core for a `width` x `height` screen: a context, two scanout targets and
-    /// the desktop texture.
-    pub fn open(width: u32, height: u32, appbar_height: u32) -> Result<Self, String> {
+    /// the desktop texture. The pointer is drawn at `scale` pixels per bitmap cell.
+    pub fn open(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
         wait_for_admission()?;
         let ctx = Context::new().map_err(|e| format!("context: errno {}", -e))?;
         let mut targets = [0u64; 2];
@@ -111,6 +123,7 @@ impl Compositor {
             surfaces: Vec::new(),
             read_pixels: Vec::new(),
             appbar_top: height.saturating_sub(appbar_height) as i32,
+            scale: scale as i32,
         })
     }
 
@@ -123,7 +136,7 @@ impl Compositor {
                 let _ = gpu::resource_destroy(t);
             }
         }
-        let mut fresh = Self::open(self.width, self.height, self.height - self.appbar_top as u32)?;
+        let mut fresh = Self::open(self.width, self.height, self.height - self.appbar_top as u32, self.scale as u32)?;
         fresh.surfaces = core::mem::take(&mut self.surfaces);
         fresh.read_pixels = core::mem::take(&mut self.read_pixels);
         for s in &mut fresh.surfaces {
@@ -267,7 +280,7 @@ impl Compositor {
         // The app bar stays above the windows.
         self.ctx.copy(self.desktop, &[[0, self.appbar_top, w, h, 0, self.appbar_top]]);
         if let Some(p) = pointer {
-            let (white, black) = pointer_rects(p);
+            let (white, black) = pointer_rects(p, self.scale);
             if !white.is_empty() {
                 self.ctx.solid(CURSOR_WHITE, &white);
             }
@@ -330,11 +343,54 @@ impl Compositor {
         Ok(compared)
     }
 
+    /// Read the scanout itself (READBACK target 0) at each `(x, y, want)` sample and require
+    /// the pixel `want`, and require each sample's record to describe the display's completed
+    /// binding: the scanout flag set, a `width` x `height` resource, the same resource each
+    /// time. Returns that resource and its size.
+    pub fn check_fills(&self, samples: &[(u32, u32, u32)]) -> Result<Scanout, String> {
+        let mut pixel = prefaulted(1);
+        let mut record = Box::new([0u8; abi::record::SIZE]);
+        // SAFETY: the record is one live allocation.
+        unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
+        let mut shown: Option<Scanout> = None;
+        for &(x, y, want) in samples {
+            let (r, a) = gpu::readback_why(0, [x, y, 1, 1], as_bytes_mut(&mut pixel), 4, &mut *record);
+            if r != 0 {
+                return Err(format!("scanout readback of ({}, {}): errno {}, reason {}", x, y, -r, a.reason));
+            }
+            let u32_at = |o: usize| u32::from_le_bytes([record[o], record[o + 1], record[o + 2], record[o + 3]]);
+            let flags = u32_at(abi::record::FLAGS);
+            let (width, height) = (u32_at(abi::record::TARGET_WIDTH), u32_at(abi::record::TARGET_HEIGHT));
+            let resource = u32_at(abi::record::RESOURCE) as u64 | (u32_at(abi::record::RESOURCE + 4) as u64) << 32;
+            if flags & 1 == 0 {
+                return Err(format!("the read-back of ({}, {}) is not of the scanout (record flags {:#x})", x, y, flags));
+            }
+            if (width, height) != (self.width, self.height) {
+                return Err(format!(
+                    "the scanout is resource {} at {}x{}, bwm composed {}x{}",
+                    resource, width, height, self.width, self.height
+                ));
+            }
+            if let Some(s) = &shown {
+                if s.resource != resource {
+                    return Err(format!("the scanout changed from resource {} to {} during the check", s.resource, resource));
+                }
+            }
+            if pixel[0] != want {
+                return Err(format!("scanout pixel ({}, {}) is {:#010x}, bwm composed {:#010x}", x, y, pixel[0], want));
+            }
+            shown = Some(Scanout { resource, width, height });
+        }
+        shown.ok_or_else(|| String::from("no samples"))
+    }
+
     /// The pixel `compose` draws at `(x, y)`, worked out on the CPU from the same inputs.
     fn expected(&self, desktop: &[u32], layers: &[Layer], pointer: Option<(Pointer, &[&[u8]])>, x: i32, y: i32) -> u32 {
         if let Some((p, bitmap)) = pointer {
             let (hx, hy) = hotspot(p.shape);
-            let (cx, cy) = (x - (p.x - hx), y - (p.y - hy));
+            let s = self.scale;
+            let (dx, dy) = (x - (p.x - hx * s), y - (p.y - hy * s));
+            let (cx, cy) = (dx.div_euclid(s), dy.div_euclid(s));
             if cy >= 0 && (cy as usize) < bitmap.len() && cx >= 0 && (cx as usize) < bitmap[cy as usize].len() {
                 match bitmap[cy as usize][cx as usize] {
                     b'#' => return CURSOR_BLACK,
@@ -369,6 +425,30 @@ impl Compositor {
         let (w, h) = (cw.min(s.width as i32), ch.min(s.height as i32));
         (w > 0 && h > 0).then_some((s.texture, [x, y, x + w, y + h]))
     }
+}
+
+/// The display the GPU core shows (`MODES`, gpu.md section 1.7): the current mode's index,
+/// once the core has admitted its device.
+pub fn display() -> Result<(u32, abi::Mode), String> {
+    wait_for_admission()?;
+    let (r, m) = gpu::modes();
+    if r != 0 {
+        return Err(format!("MODES: errno {}", -r));
+    }
+    let mode = m.modes.get(m.current as usize).copied().ok_or_else(|| format!("MODES: current mode {} of {}", m.current, m.count))?;
+    Ok((m.current, mode))
+}
+
+/// The device resource the display shows, while its binding is known (`MODES`).
+pub fn scanout_resource() -> Result<u64, String> {
+    let (r, m) = gpu::modes();
+    if r != 0 {
+        return Err(format!("MODES: errno {}", -r));
+    }
+    if m.binding_known == 0 {
+        return Err(String::from("MODES: the binding is not known"));
+    }
+    Ok(m.scanout_resource)
 }
 
 /// Wait, bounded, for the GPU core to admit its device.
@@ -521,14 +601,14 @@ fn hotspot(shape: u32) -> (i32, i32) {
     }
 }
 
-/// The pointer's fill and outline as horizontal runs of rectangles.
-fn pointer_rects(p: Pointer) -> (Vec<[i32; 4]>, Vec<[i32; 4]>) {
+/// The pointer's fill and outline as horizontal runs of rectangles, `scale` pixels per cell.
+fn pointer_rects(p: Pointer, scale: i32) -> (Vec<[i32; 4]>, Vec<[i32; 4]>) {
     let (hx, hy) = hotspot(p.shape);
-    let (ox, oy) = (p.x - hx, p.y - hy);
+    let (ox, oy) = (p.x - hx * scale, p.y - hy * scale);
     let mut white = Vec::new();
     let mut black = Vec::new();
     for (row, cells) in pointer_bitmap(p.shape).iter().enumerate() {
-        let y = oy + row as i32;
+        let y = oy + row as i32 * scale;
         let mut col = 0;
         while col < cells.len() {
             let c = cells[col];
@@ -536,7 +616,7 @@ fn pointer_rects(p: Pointer) -> (Vec<[i32; 4]>, Vec<[i32; 4]>) {
             while col < cells.len() && cells[col] == c {
                 col += 1;
             }
-            let rect = [ox + start as i32, y, ox + col as i32, y + 1];
+            let rect = [ox + start as i32 * scale, y, ox + col as i32 * scale, y + scale];
             match c {
                 b'#' => black.push(rect),
                 b'o' => white.push(rect),
