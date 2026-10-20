@@ -339,13 +339,11 @@ fn scanout_fault_wrong_resource() -> CaseResult {
         "gpu-display: wrong-scanout did not expose a destination different from the intended composite")
 }
 
+// gpu-display: B6/B7 core point 20 must report the observed fence mismatch; clean recovery remains mandatory.
 fn scanout_fault_stale_fence() -> CaseResult {
-    interface()?;
-    let (r, _, rec, serial, good) = fault(libbreenix::gpu::abi::test_point::STALE_FENCE, 21)?;
-    ensure(r == -(abi::errno::EIO as i64), "20.3", format!("readback of composite {serial} with a fence answered for another serial {}; the contract gives EIO, serial", outcome(r)))?;
-    ensure(rec.serial == serial && rec.resource == good.resource, "20.3", format!(
-        "the serial failure's record names serial {} and resource {:#x}; it names composite {serial} and the composed resource {:#x}, the binding being right",
-        rec.serial, rec.resource, good.resource))
+let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::STALE_FENCE,21)?;
+    ensure(status== -5 && reason==2,"20.3","gpu-display: stale fence must be EIO, fence-mismatch (2)")?;
+    ensure(s.pixels.iter().chain(s.record.iter()).all(|&b|b==0xA5),"20.3","gpu-display: stale fence published partial pixels or record")
 }
 
 // gpu-display: B6/B7 uses core CORRUPT_PIXEL 22; compare the complete destination, outside damage too.
