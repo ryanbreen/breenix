@@ -199,11 +199,52 @@ pub fn generate_buffer() -> String {
     output
 }
 
+/// Observe ARM64 timer progress on the cold procfs sampling path. Periodic
+/// diagnostics stay in /proc/kmsg, off serial and the foreground terminal (#2140).
+#[cfg(target_arch = "aarch64")]
+fn report_cpu_ticks_if_due() {
+    const INTERVAL_NS: u64 = 30_000_000_000;
+    static LAST_REPORT_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+    let now = seconds.saturating_mul(1_000_000_000).saturating_add(nanos);
+    let last = LAST_REPORT_NS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < INTERVAL_NS {
+        return;
+    }
+    if LAST_REPORT_NS
+        .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    struct CpuTicks;
+    impl core::fmt::Display for CpuTicks {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            let ticks = &crate::tracing::providers::counters::TIMER_TICK_TOTAL;
+            for cpu in 0..crate::tracing::MAX_CPUS {
+                if crate::arch_impl::aarch64::smp::is_cpu_online(cpu) {
+                    write!(f, " cpu{}={}", cpu, ticks.get_cpu(cpu))?;
+                }
+            }
+            Ok(())
+        }
+    }
+    crate::serial_line::capture_fmt(format_args!(
+        "[cpu-ticks] uptime_ms={} TIMER_TICK_TOTAL:{}\n",
+        now / 1_000_000,
+        CpuTicks
+    ));
+}
+
 /// Generate content for /proc/trace/counters
 ///
 /// Lists all counter values in a parseable format.
 /// Format: `counter_name: total_value (cpu0=v0, cpu1=v1, ...)`
 pub fn generate_counters() -> String {
+    #[cfg(target_arch = "aarch64")]
+    report_cpu_ticks_if_due();
     // The production heartbeat reads this cold procfs endpoint periodically,
     // making late root-custody changes visible without logging in a hot path.
     crate::tracing::providers::teardown::emit_root_custody_summary();
