@@ -120,10 +120,13 @@ scripts/boot-interactive.sh --mode suite --suite files-io   # an effort suite as
 
 `./run.sh` boots in a QEMU window; `./run.sh --headless` keeps it to the serial console.
 
-The desktop (the window manager and its terminal) composites through VirGL, which the
-Parallels and VMware GPUs provide. The QEMU launchers attach a `virtio-gpu-device` without
-it, so under QEMU the window manager reports `GPU compositing required` and exits; boot the
-desktop on Parallels or VMware, below.
+The desktop (the window manager and its windows) composes through the GPU core,
+syscall 416, on ARM64 QEMU with `--gpu-gl`, Parallels and VMware: bwm uploads its
+decorations and each client's frames as textures, draws them into a scanout target and
+presents it. bwm reads its first frame, and its first frame that shows a client's
+pixels, back from the device and compares them with the frame it composed; the desktop
+boot's boot-path stages require both. ARM64 QEMU launches without `--gpu-gl` have no
+GPU-core device, so bwm reports `GPU compositing required` and exits there.
 
 ![The boot probe on ARM64 QEMU: 16 subsystem checks, all OK](docs/images/probe-arm64-qemu.png)
 

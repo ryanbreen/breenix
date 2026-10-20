@@ -137,7 +137,7 @@ pub struct HardwareConfig {
     pub runtime_region_count: u32,
     pub _pad8: u32,
     pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
-    /// `arm64_boot_contract::BOOT_FLAG_*` bits the launcher selected on the ESP.
+    /// Reserved: no boot flag is defined, and the loader writes 0.
     pub boot_flags: u32,
     pub _pad9: u32,
     /// Where `boot_seed` came from: `arm64_boot_contract::BOOT_SEED_*`, 0 for

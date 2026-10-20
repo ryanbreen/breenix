@@ -24,10 +24,6 @@ pub const BOOT_SEED_TPM: u32 = 2;
 /// `boot_seed_source`: fresh host randomness, consumed on the boot disk before handoff.
 pub const BOOT_SEED_HOST_FILE: u32 = 3;
 
-/// `boot_flags` bit: the ESP carries `\EFI\BREENIX\GPUCORE`, so the GPU core
-/// (`kernel/src/gpu/`) owns the display device instead of the legacy display driver.
-pub const BOOT_FLAG_GPU_CORE: u32 = 1 << 0;
-
 /// Firmware ranges that must remain identity mapped for physical-mode runtime
 /// services after ExitBootServices. They are excluded from usable RAM.
 pub const MAX_RUNTIME_REGIONS: usize = 64;

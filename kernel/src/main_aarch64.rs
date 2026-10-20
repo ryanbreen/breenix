@@ -1160,7 +1160,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // log and the console TTY, and gives them the screen when the splash
         // gives way.
         kernel::console::attach();
-    } else if kernel::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
+    } else if kernel::platform_config::is_vmware() {
         // The SVGA core can provide the console's screen without a firmware framebuffer.
         // Attach installs the core and prepares that screen on this path too.
         kernel::console::attach();

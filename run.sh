@@ -64,7 +64,6 @@ PARALLELS_VM="breenix-dev"
 PARALLELS_TEST=false
 PARALLELS_TEST_WAIT=35
 VMWARE=false
-GPU_SVGA_EXPERIMENTAL=false
 SUITE=""
 ONLY=""
 GPU_CORE=false
@@ -120,10 +119,6 @@ while [[ $# -gt 0 ]]; do
         --vmware)
             VMWARE=true
             ARCH="arm64"
-            shift
-            ;;
-        --gpu-svga-experimental)
-            GPU_SVGA_EXPERIMENTAL=true
             shift
             ;;
         --test)
@@ -200,10 +195,6 @@ while [[ $# -gt 0 ]]; do
             SUITE="${2:-}"
             shift 2
             ;;
-        --gpu-core)
-            GPU_CORE=true
-            shift
-            ;;
         --retina)
             RETINA=true
             shift
@@ -228,8 +219,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --parallels                Build and boot on Parallels Desktop VM"
             echo "  --parallels --test [N]     Build, boot, wait N sec (default 35), screenshot, exit"
-            echo "  --vmware                   Build and boot on VMware Fusion VM"
-            echo "  --gpu-svga-experimental    VMware: build the unfinished SVGA core profile"
+            echo "  --vmware                   Build and boot on VMware Fusion VM (SVGA3D DX GPU core)"
             echo "  --vm NAME                  Parallels VM name (default: breenix-dev)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --accel hvf|tcg            ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)"
@@ -248,8 +238,6 @@ while [[ $# -gt 0 ]]; do
             echo "  --case CATEGORY[/CASE]     Run one suite category or case (not full-suite evidence)"
             echo "  --suite ID                 Parallels/VMware: run effort suite ID (docs/suites/ID.json) as PID 1"
             echo "  --suite ID,ID,...|all      Parallels/VMware: run several suites in one boot, in order"
-            echo "  --gpu-core                 Parallels: the GPU core (kernel/src/gpu/) owns the virtio-gpu device"
-            echo "                             instead of the legacy display driver; implied by --parallels --suite gpu"
             echo "  --dry-run                  Check target policy and exit before building or booting"
             echo "  BREENIX_CATCHUP=1          Allow effort catch-up on Parallels/VMware; recorded in metadata"
             echo "  BREENIX_PARALLELS_3D=off   Parallels: create the VM with 3D acceleration off (attestation control)"
@@ -368,14 +356,10 @@ if [ -n "$SUITE" ]; then
     fi
 fi
 
-# --gpu-core: the ESP carries \EFI\BREENIX\GPUCORE, which the loader reports to the kernel
-# (arm64_boot_contract::BOOT_FLAG_GPU_CORE), so the GPU core drives the virtio-gpu device and
-# shows its kernel console. The gpu suite needs it; other boots keep the legacy display.
-if [ "$PARALLELS" = true ] && [[ ",$SUITE," == *",gpu,"* ]]; then GPU_CORE=true; fi
-if [ "$GPU_CORE" = true ] && [ "$PARALLELS" != true ]; then
-    echo "--gpu-core is for --parallels"
-    exit 2
-fi
+# Parallels boots give the virtio-gpu device to the GPU core (kernel/src/gpu/), which
+# shows the kernel console and serves the desktop; GPU_CORE selects the VM settings its
+# 2560x1600 scanouts need (Retina policy, vertical sync off).
+if [ "$PARALLELS" = true ]; then GPU_CORE=true; fi
 
 if [ -n "$ONLY" ]; then
     [ -n "$SUITE" ] && [[ "$ONLY" =~ ^[a-zA-Z0-9_./-]+$ ]] || {
@@ -449,14 +433,6 @@ if [ -n "$KERNEL_FEATURES" ]; then
     [[ "$KERNEL_FEATURES" =~ ^[a-z0-9_]+(,[a-z0-9_]+)*$ ]] || { echo "--kernel-features needs comma-separated feature names"; exit 2; }
     [ "$NO_BUILD" != true ] || { echo "--kernel-features builds the kernel; it cannot be combined with --no-build"; exit 1; }
     KERNEL_FEATURE_ARGS=(--features "$KERNEL_FEATURES")
-fi
-
-if [ "$GPU_SVGA_EXPERIMENTAL" = true ]; then
-    if [ "$VMWARE" != true ] || [ "$PARALLELS" = true ] || [ "$NO_BUILD" = true ]; then
-        echo "--gpu-svga-experimental requires --vmware and a fresh kernel build"
-        exit 2
-    fi
-    KERNEL_FEATURE_ARGS+=(--features gpu_svga_experimental)
 fi
 
 # Keep host launch policy beside this run's serial, including successful catch-up overrides.
@@ -598,7 +574,7 @@ mark_wrapped_ext2() {
 # Cargo can restore a cached profile with an older mtime. Compare the exact
 # kernel and loader contents, rather than dates, before reusing an EFI image.
 efi_artifact_identity() {
-    (set -o pipefail; shasum -a 256 "$KERNEL_ELF" "$LOADER_EFI" | awk '{print $1}') && echo "gpu-core=$GPU_CORE"
+    (set -o pipefail; shasum -a 256 "$KERNEL_ELF" "$LOADER_EFI" | awk '{print $1}')
 }
 
 efi_artifacts_match() {
@@ -1032,12 +1008,10 @@ if [ "$PARALLELS" = true ]; then
         mkdir -p "$VOLUME/EFI/BREENIX"
         cp "$LOADER_EFI" "$VOLUME/EFI/BOOT/BOOTAA64.EFI"
         cp "$KERNEL_ELF" "$VOLUME/EFI/BREENIX/KERNEL"
-        [ "$GPU_CORE" = true ] && echo gpu-core > "$VOLUME/EFI/BREENIX/GPUCORE"
         hdiutil detach "$VOLUME" >/dev/null 2>&1
 
         echo "  Loader: $(stat -f%z "$LOADER_EFI") bytes"
         echo "  Kernel: $(stat -f%z "$KERNEL_ELF") bytes"
-        echo "  GPU core: $GPU_CORE"
 
         # Convert DMG to raw disk image
         echo ""

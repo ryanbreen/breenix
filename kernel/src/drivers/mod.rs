@@ -17,8 +17,6 @@ pub mod xhci;
 #[cfg(target_arch = "x86_64")]
 pub mod rtl8139;
 pub mod virtio; // Now available on both x86_64 and aarch64
-#[cfg(target_arch = "aarch64")]
-pub mod vmware;
 
 /// Initialize the driver subsystem
 ///
@@ -307,13 +305,8 @@ pub fn init() -> usize {
             virtio_devices.len()
         );
 
-        // The launcher's GPUCORE marker gives the virtio-gpu device to the GPU core
-        // (`kernel/src/gpu/`); otherwise the legacy display driver keeps it.
-        if crate::platform_config::gpu_core_requested() {
-            crate::gpu::init();
-        } else {
-            init_legacy_gpu_pci();
-        }
+        // The GPU core (`kernel/src/gpu/`) drives Parallels' virtio-gpu device.
+        crate::gpu::init();
 
         // Initialize VirtIO network driver (PCI transport) — Parallels
         match virtio::net_pci::init() {
@@ -330,23 +323,8 @@ pub fn init() -> usize {
 
         init_entropy_pci();
 
-        // The DX backend changes the GOP aperture. It starts after the splash
-        // is verified and legacy display writers are stopped, in main_aarch64.
-        if !(crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental")) {
-            // Initialize VMware SVGA3 GPU if present (VMware Fusion on ARM64)
-            match vmware::svga3::init() {
-                Ok(()) => {
-                    serial_println!("[drivers] VMware SVGA3 GPU initialized");
-                    // SVGA3 with VRAM traces provides GPU-level compositing:
-                    // BWM writes pixels to VRAM, device monitors and updates display.
-                    crate::graphics::set_compositor_backend(
-                        crate::graphics::CompositorBackend::Svga3Stdu,
-                    );
-                    serial_println!("[drivers] Compositor backend: SVGA3 (VRAM traces)");
-                }
-                Err(e) => serial_println!("[drivers] SVGA3 init skipped: {}", e),
-            }
-        }
+        // The GPU core admits VMware's SVGA3 device when the console attaches,
+        // after the early GOP splash. No legacy SVGA driver owns the device here.
 
         // Initialize AHCI storage driver.
         // First try PCI (standard AHCI), then platform MMIO (Parallels Desktop).
@@ -377,34 +355,6 @@ pub fn init() -> usize {
     } else {
         // MMIO-based platform (QEMU virt): enumerate VirtIO MMIO
         init_virtio_mmio()
-    }
-}
-
-/// The legacy virtio-gpu PCI display driver (Parallels without the GPUCORE marker).
-#[cfg(target_arch = "aarch64")]
-fn init_legacy_gpu_pci() {
-    use crate::serial_println;
-
-    match virtio::gpu_pci::init() {
-        Ok(()) => {
-            serial_println!("[drivers] VirtIO GPU (PCI) initialized");
-            // Attempt to initialize VirGL 3D acceleration if the device supports it
-            match virtio::gpu_pci::virgl_init() {
-                Ok(()) => {
-                    serial_println!("[drivers] VirGL 3D acceleration active");
-                    crate::graphics::set_compositor_backend(
-                        crate::graphics::CompositorBackend::VirGL,
-                    );
-                    serial_println!("[drivers] Compositor backend: VirGL");
-                    // Enable yielding during GPU command waits now that init is complete.
-                    // During runtime, GPU poll loops yield to the scheduler instead of
-                    // spinning, letting other tasks run during ~3.4ms GPU processing.
-                    virtio::gpu_pci::enable_gpu_yield();
-                }
-                Err(e) => serial_println!("[drivers] VirGL init skipped: {}", e),
-            }
-        }
-        Err(e) => serial_println!("[drivers] VirtIO GPU (PCI) init failed: {}", e),
     }
 }
 

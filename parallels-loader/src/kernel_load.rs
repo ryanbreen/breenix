@@ -13,29 +13,6 @@ use uefi::CStr16;
 /// Path to the kernel binary on the ESP filesystem.
 const KERNEL_PATH: &CStr16 = uefi::cstr16!("\\EFI\\BREENIX\\KERNEL");
 
-/// The launcher's marker selecting the GPU core for the display device
-/// (`arm64_boot_contract::BOOT_FLAG_GPU_CORE`); its contents are not read.
-const GPU_CORE_PATH: &CStr16 = uefi::cstr16!("\\EFI\\BREENIX\\GPUCORE");
-
-/// The `arm64_boot_contract::BOOT_FLAG_*` bits the ESP selects.
-///
-/// This must be called while UEFI boot services are still active.
-pub fn boot_flags() -> u32 {
-    let Ok(handle) = boot::get_handle_for_protocol::<SimpleFileSystem>() else {
-        return 0;
-    };
-    let Ok(mut sfs) = boot::open_protocol_exclusive::<SimpleFileSystem>(handle) else {
-        return 0;
-    };
-    let Ok(mut root) = sfs.open_volume() else {
-        return 0;
-    };
-    match root.open(GPU_CORE_PATH, FileMode::Read, FileAttribute::empty()) {
-        Ok(_) => arm64_boot_contract::BOOT_FLAG_GPU_CORE,
-        Err(_) => 0,
-    }
-}
-
 /// ELF64 magic bytes.
 const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 

@@ -110,8 +110,6 @@ pub mod draw_op {
     pub const FLUSH_BATCH: u32 = 8;
     /// Submit VirGL GPU-rendered rectangles
     pub const VIRGL_SUBMIT_RECTS: u32 = 9;
-    /// Composite a pixel buffer as a full-screen GPU texture
-    pub const VIRGL_COMPOSITE: u32 = 10;
     /// Create a shared window pixel buffer
     pub const CREATE_WINDOW_BUFFER: u32 = 11;
     /// Register a window buffer with the compositor
@@ -497,29 +495,6 @@ pub fn virgl_submit_frame(balls: &[VirglBall], bg_color: u32) -> Result<(), Erro
     fbdraw(&cmd)
 }
 
-/// Composite a CPU-rendered pixel buffer as a full-screen GPU texture.
-///
-/// Uploads the BGRA pixel buffer to the GPU and renders it as a full-screen
-/// textured quad via VirGL. This is the primary compositing path for BWM —
-/// render window contents to a pixel buffer, then display via the GPU.
-///
-/// # Arguments
-/// * `pixels` - BGRA pixel data (one u32 per pixel, width × height elements)
-/// * `width` - Width of the pixel buffer
-/// * `height` - Height of the pixel buffer
-pub fn virgl_composite(pixels: &[u32], width: u32, height: u32) -> Result<(), Error> {
-    let buf_ptr = pixels.as_ptr() as u64;
-    let cmd = FbDrawCmd {
-        op: draw_op::VIRGL_COMPOSITE,
-        p1: buf_ptr as i32,
-        p2: (buf_ptr >> 32) as i32,
-        p3: width as i32,
-        p4: height as i32,
-        color: 0,
-    };
-    fbdraw(&cmd)
-}
-
 // =============================================================================
 // Window Buffer API — for GPU-composited window management
 // =============================================================================
@@ -655,7 +630,11 @@ pub fn list_windows(out: &mut [WindowInfo]) -> Result<usize, Error> {
 
 /// Read a window's pixel data into a local buffer.
 ///
-/// Returns (width, height) of the window. The pixel data is copied to `dst`.
+/// Returns (width, height) of the window, or (0, 0) when it has no frame newer than
+/// the last read. The pixel data is copied to `dst`. Reading a frame consumes it: a
+/// client waiting in `mark_window_dirty` for that frame is released. If `dst` is
+/// smaller than width * height * 4, only the dimensions are returned; the frame
+/// remains pending and the caller must retry with enough space.
 pub fn read_window_buffer(buffer_id: u32, dst: &mut [u8]) -> Result<(u32, u32), Error> {
     let dst_ptr = dst.as_ptr() as u64;
     let cmd = FbDrawCmd {

@@ -175,28 +175,6 @@ fn read_window_input_events(buffer_id: u32, out_ptr: u64, max_count: usize) -> R
 }
 
 #[cfg(target_arch = "aarch64")]
-fn wake_presented_client_frames() {
-    let mut has_presented_waiters = false;
-    {
-        let mut reg = WINDOW_REGISTRY.lock();
-        for slot in reg.buffers.iter_mut() {
-            let Some(buf) = slot.as_mut() else {
-                continue;
-            };
-
-            if buf.waiting_thread_id.is_some() && buf.last_read_gen == buf.generation {
-                buf.waiting_thread_id.take();
-                has_presented_waiters = true;
-            }
-        }
-    }
-
-    if has_presented_waiters {
-        CLIENT_FRAME_WQ.wake_up();
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
 fn release_presented_window_frames(
     windows: &[WindowCompositeInfo],
 ) -> [Option<u64>; MAX_WINDOW_BUFFERS] {
@@ -236,7 +214,12 @@ fn release_presented_window_frames(
 fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, u64) {
     use core::sync::atomic::Ordering;
 
-    let (mx, my, mb) = crate::input::pointer::mouse_state();
+    // The pointer sys_get_mouse_pos reports: QEMU's virtio tablet when it has one.
+    let (mx, my, mb) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        crate::drivers::virtio::input_mmio::mouse_state()
+    } else {
+        crate::input::pointer::mouse_state()
+    };
     let mouse_packed = ((mx as u64) << 32) | ((my as u64) << 16) | (mb as u64);
     let cur_reg_gen = REGISTRY_GENERATION.load(Ordering::Relaxed);
 
@@ -856,104 +839,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 }
             }
         }
-        10 => {
-            // Composite: upload pixel buffer and display via active GPU backend
-            let buf_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
-            let width = cmd.p3 as u32;
-            let height = cmd.p4 as u32;
-            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_enter(width, height);
-            if buf_ptr == 0 || buf_ptr >= USER_SPACE_MAX {
-                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            if width == 0 || height == 0 || width > 4096 || height > 4096 {
-                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-            }
-            let pixel_count = (width as u64) * (height as u64);
-            let buf_end = buf_ptr + pixel_count * 4;
-            if buf_end > USER_SPACE_MAX {
-                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            let pixels =
-                unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize) };
-            match crate::graphics::compositor_backend() {
-                crate::graphics::CompositorBackend::VirGL => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        return match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
-                            pixels, width, height,
-                        ) {
-                            Ok(()) => {
-                                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(
-                                    0,
-                                );
-                                wake_presented_client_frames();
-                                SyscallResult::Ok(0)
-                            }
-                            Err(e) => {
-                                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(
-                                    1,
-                                );
-                                crate::serial_println!(
-                                    "[composite] VirGL direct composite_frame FAILED: {}",
-                                    e
-                                );
-                                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                            }
-                        };
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(
-                        pixels, width, height,
-                    ) {
-                        Ok(()) => {
-                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
-                            SyscallResult::Ok(0)
-                        }
-                        Err(_) => {
-                            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
-                                pixels, width, height,
-                            ) {
-                                Ok(()) => {
-                                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
-                                    SyscallResult::Ok(0)
-                                }
-                                Err(e) => {
-                                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                                    crate::serial_println!(
-                                        "[composite] VirGL composite_frame FAILED: {}",
-                                        e
-                                    );
-                                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                                }
-                            }
-                        }
-                    }
-                }
-                crate::graphics::CompositorBackend::Svga3Stdu => {
-                    match crate::drivers::vmware::svga3::composite_frame(pixels, width, height) {
-                        Ok(()) => {
-                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
-                            SyscallResult::Ok(0)
-                        }
-                        Err(e) => {
-                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                            crate::serial_println!(
-                                "[composite] SVGA3 composite_frame FAILED: {}",
-                                e
-                            );
-                            SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                        }
-                    }
-                }
-                crate::graphics::CompositorBackend::None => {
-                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                }
-            }
-        }
         11 => {
             // CreateWindowBuffer: allocate shared pixel buffer
             // p1=width, p2=height, p3/p4 = output pointer (lo/hi) for mmap addr
@@ -1034,6 +919,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
         14 => {
             // ReadWindowBuffer: copy a window's pixels to caller's buffer.
             // Returns 0 if buffer hasn't changed since last read (skip copy).
+            // The copy consumes the frame: a client waiting in mark_window_dirty
+            // (op=15) for it is released, since its pixels may change again.
             // p1=buffer_id, p2/p3=dst_ptr (lo/hi), p4=max_bytes
             let buffer_id = cmd.p1 as u32;
             let dst_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
@@ -1045,6 +932,21 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             if dst_end > USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
             }
+            // Resolve the destination's faults (demand pages, copy-on-write) before the
+            // registry lock is taken, so the copy under it does not wait on them: one
+            // word per page is exchanged with the value it holds.
+            let mut page = dst_ptr & !0xFFF;
+            while page < dst_end {
+                let word = (page.max(dst_ptr) + 3) & !3;
+                if word + 4 <= dst_end {
+                    let held = crate::syscall::userptr::read_user_u32(word)
+                        .and_then(|v| crate::syscall::userptr::cmpxchg_user_u32(word, v, v));
+                    if held.is_err() {
+                        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                    }
+                }
+                page += 4096;
+            }
             let mut reg = WINDOW_REGISTRY.lock();
             match reg.find_mut(buffer_id) {
                 Some(buf) => {
@@ -1052,8 +954,13 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                     if buf.generation == buf.last_read_gen {
                         return SyscallResult::Ok(0); // 0 = no new data
                     }
-                    buf.last_read_gen = buf.generation;
-                    let copy_bytes = buf.size.min(max_bytes as usize);
+                    let dims = ((buf.width as u64) << 32) | buf.height as u64;
+                    // A resize may outgrow the compositor's destination. Report the
+                    // dimensions without consuming or releasing this frame so it can retry.
+                    if (max_bytes as usize) < buf.size {
+                        return SyscallResult::Ok(dims);
+                    }
+                    let copy_bytes = buf.size;
                     let phys_mem_offset = crate::memory::physical_memory_offset().as_u64();
                     // Copy page by page since MAP_SHARED pages are not contiguous
                     let mut offset = 0usize;
@@ -1063,16 +970,20 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         }
                         let chunk = (copy_bytes - offset).min(4096);
                         let src = (phys_mem_offset + page_phys) as *const u8;
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                src,
-                                (dst_ptr as *mut u8).add(offset),
-                                chunk,
-                            );
+                        if crate::syscall::userptr::write_user_bytes(dst_ptr + offset as u64, src, chunk)
+                            .is_err()
+                        {
+                            return SyscallResult::Err(super::ErrorCode::Fault as u64);
                         }
                         offset += chunk;
                     }
-                    SyscallResult::Ok(((buf.width as u64) << 32) | buf.height as u64)
+                    buf.last_read_gen = buf.generation;
+                    let released = buf.waiting_thread_id.take().is_some();
+                    drop(reg);
+                    if released {
+                        CLIENT_FRAME_WQ.wake_up();
+                    }
+                    SyscallResult::Ok(dims)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
             }
@@ -1478,9 +1389,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
             crate::graphics::CompositorBackend::VirGL => {
                 crate::drivers::virtio::gpu_pci::compositor_texture_info()
             }
-            crate::graphics::CompositorBackend::Svga3Stdu => {
-                crate::drivers::vmware::svga3::compositor_texture_info()
-            }
             crate::graphics::CompositorBackend::None => None,
         };
         match info {
@@ -1527,15 +1435,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
         if !any_window_dirty {
             drop(reg);
             match crate::graphics::compositor_backend() {
-                // SVGA3 STDU: cursor is drawn in VRAM by software. Update it even when
-                // no windows are dirty, so mouse movement remains responsive.
-                crate::graphics::CompositorBackend::Svga3Stdu => {
-                    if crate::drivers::vmware::svga3::update_cursor() {
-                        let _ =
-                            crate::drivers::vmware::svga3::present_rect(0, 0, bg_width, bg_height);
-                    }
-                    return SyscallResult::Ok(0);
-                }
                 // VirGL: fall through — virgl_composite_windows() handles cursor-only
                 // frames via its own cursor_moved check + lightweight SUBMIT_3D.
                 crate::graphics::CompositorBackend::VirGL => {}
@@ -1641,29 +1540,6 @@ fn handle_composite_windows(desc_ptr: u64) -> SyscallResult {
                     crate::serial_println!("[composite-windows] VirGL FAILED: {}", e);
                     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                 }
-            }
-        }
-        crate::graphics::CompositorBackend::Svga3Stdu => {
-            // BWM writes directly to VRAM — draw cursor on top, then present.
-            // update_cursor erases old cursor, saves bg, draws new cursor.
-            let cursor_changed = crate::drivers::vmware::svga3::update_cursor();
-
-            let need_present = bg_dirty || windows.iter().any(|w| w.dirty) || cursor_changed;
-            if need_present {
-                let (dx, dy, dw, dh) = if bg_dirty {
-                    dirty_rect.unwrap_or((0, 0, bg_width, bg_height))
-                } else {
-                    (0, 0, bg_width, bg_height)
-                };
-                match crate::drivers::vmware::svga3::present_rect(dx, dy, dw, dh) {
-                    Ok(()) => SyscallResult::Ok(0),
-                    Err(e) => {
-                        crate::serial_println!("[composite-windows] SVGA3 FAILED: {}", e);
-                        SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                    }
-                }
-            } else {
-                SyscallResult::Ok(0)
             }
         }
         crate::graphics::CompositorBackend::None => {
@@ -2249,9 +2125,6 @@ fn handle_map_compositor_texture(cmd: &FbDrawCmd) -> SyscallResult {
         let info = match crate::graphics::compositor_backend() {
             crate::graphics::CompositorBackend::VirGL => {
                 crate::drivers::virtio::gpu_pci::compositor_texture_info()
-            }
-            crate::graphics::CompositorBackend::Svga3Stdu => {
-                crate::drivers::vmware::svga3::compositor_texture_info()
             }
             crate::graphics::CompositorBackend::None => None,
         };

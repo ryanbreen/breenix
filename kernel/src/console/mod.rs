@@ -596,7 +596,7 @@ pub fn attach() {
     use crate::graphics::arm64_fb;
     // The SVGA core takes the screen from the GOP framebuffer, so it is installed before
     // the display is picked: the splash's stages are then met on the screen it shows.
-    if crate::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
+    if crate::platform_config::is_vmware() {
         crate::gpu::init_vmware();
     }
     // When the GPU core owns the display the console draws through it, sized for

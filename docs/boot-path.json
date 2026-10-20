@@ -884,6 +884,28 @@
           {
             "name": "Window manager started",
             "marker": "[bwm] Breenix Window Manager starting"
+          },
+          {
+            "name": "Window manager first frame read back",
+            "marker": "[bwm] first frame read back:"
+          },
+          {
+            "name": "Window manager composited a client frame",
+            "marker": "[bwm] composited client frame:"
+          }
+        ],
+        "default": [
+          {
+            "name": "Window manager started",
+            "marker": "[bwm] Breenix Window Manager starting"
+          },
+          {
+            "name": "Window manager first frame read back",
+            "marker": "[bwm] first frame read back:"
+          },
+          {
+            "name": "Window manager composited a client frame",
+            "marker": "[bwm] composited client frame:"
           }
         ],
         "probe": [

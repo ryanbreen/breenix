@@ -1,13 +1,18 @@
 //! Breenix Window Manager (bwm) — Pure Compositor + Input Router
 //!
 //! Discovers Breengel client windows registered via the kernel window buffer API,
-//! composites them onto the screen with GPU acceleration (VirGL), and routes
+//! composites them onto the screen through the GPU core (`compositor`), and routes
 //! keyboard/mouse input to the focused window via kernel ring buffers.
 //!
 //! BWM does NOT spawn child processes or emulate terminals. Those responsibilities
 //! belong to init (process spawning) and bterm (terminal emulation).
 
+#[path = "bwm/compositor.rs"]
+mod compositor;
+
 use std::process;
+
+use compositor::{Compositor, Layer, Pointer};
 
 #[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
@@ -1366,6 +1371,30 @@ fn compose_partial_redraw(
 
 
 
+/// The visible client windows as the compositor stacks them, bottom to top: each one's
+/// frame and drop shadow (as `draw_window_frame` paints them) beneath its content.
+fn frame_layers(windows: &[Window]) -> Vec<Layer> {
+    windows
+        .iter()
+        .filter(|w| !w.minimized)
+        .map(|w| {
+            let (mut frame, mut frame_len) = ([[0i32; 4]; 3], 0);
+            if !w.chromeless {
+                let (x0, y0) = (w.x, w.y);
+                let (x1, y1) = (w.x + w.width as i32, w.y + w.total_height() as i32);
+                frame = [[x0, y0, x1, y1], [x1, y0 + 3, x1 + 3, y1 + 3], [x0 + 3, y1, x1, y1 + 3]];
+                frame_len = 3;
+            }
+            Layer {
+                window_id: w.window_id,
+                frame,
+                frame_len,
+                content: [w.content_x(), w.content_y(), w.content_width() as i32, w.content_height() as i32],
+            }
+        })
+        .collect()
+}
+
 // ─── Hotkey Action Execution ─────────────────────────────────────────────────
 
 fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focused_win: usize) {
@@ -1442,47 +1471,24 @@ fn main() {
     let screen_h = info.height as usize;
     let bpp = info.bytes_per_pixel as usize;
 
-    let gpu_compositing = {
-        let test_pixel: [u32; 1] = [0xFF000000];
-        let mut ok = false;
-        for attempt in 0..20 {
-            if graphics::virgl_composite(&test_pixel, 1, 1).is_ok() {
-                ok = true;
-                break;
-            }
-            if attempt < 19 {
-                let _ = libbreenix::time::nanosleep(&libbreenix::types::Timespec {
-                    tv_sec: 0, tv_nsec: 100_000_000,
-                });
-            }
+    // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
+    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, APPBAR_HEIGHT as u32) {
+        Ok(c) if bpp == 4 => c,
+        Ok(_) => {
+            print!("[bwm] ERROR: GPU compositing required: the screen has {} bytes per pixel, not 4\n", bpp);
+            process::exit(1);
         }
-        ok
-    };
-    if !gpu_compositing {
-        print!("[bwm] ERROR: GPU compositing required\n");
-        process::exit(1);
-    }
-
-    print!("[bwm] GPU compositing mode (VirGL), display: {}x{}\n", screen_w, screen_h);
-
-    // Try to map COMPOSITE_TEX directly into our address space.
-    // If successful, all pixel writes go straight to GPU texture backing (zero-copy).
-    let (composite_buf, direct_mapped) = match graphics::map_compositor_texture() {
-        Ok((ptr, tex_w, tex_h)) => {
-            let mapped_w = tex_w as usize;
-            let mapped_h = tex_h as usize;
-            print!("[bwm] Direct compositor mapping: {}x{} at {:p}\n", mapped_w, mapped_h, ptr);
-            let buf = unsafe { core::slice::from_raw_parts_mut(ptr, mapped_w * mapped_h) };
-            (buf, true)
-        }
-        Err(_) => {
-            print!("[bwm] Fallback: heap-allocated compositor buffer\n");
-            // Leak a Vec to get a &'static mut slice — BWM runs for the lifetime of the OS
-            let v = vec![0u32; screen_w * screen_h];
-            let leaked = v.leak();
-            (leaked as &mut [u32], false)
+        Err(e) => {
+            print!("[bwm] ERROR: GPU compositing required: {}\n", e);
+            process::exit(1);
         }
     };
+    print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
+
+    // The desktop buffer: background, taskbar, window frames and app bar, drawn on the
+    // CPU and uploaded to the compositor's desktop texture. BWM runs for the lifetime of
+    // the OS, so the buffer is leaked into a &'static mut slice.
+    let composite_buf: &'static mut [u32] = vec![0u32; screen_w * screen_h].leak();
 
     let mut fb = unsafe {
         FrameBuf::from_raw(
@@ -1491,9 +1497,8 @@ fn main() {
         )
     };
 
-    // VirGL direct-mapped texture writes are not visible until the explicit
-    // compositor submit, so a second full-screen shadow buffer only burns heap
-    // during early boot. Keep the hook for non-direct fallback paths.
+    // Redraws reach the screen through the compositor's upload of the desktop buffer
+    // after they finish, so no shadow buffer is needed.
     let mut shadow_fb: Option<(&'static mut [u32], FrameBuf)> = None;
 
     // Avoid filesystem reads before the first ARM64 compositor submit. On
@@ -1520,7 +1525,7 @@ fn main() {
 
     // Paint decorative background. ARM64 keeps no full-screen cache during
     // early boot; repainting avoids a multi-megabyte allocation before bwm's
-    // first visible VirGL submit.
+    // first visible frame.
     paint_background(&mut fb);
     #[cfg(target_arch = "aarch64")]
     let bg_cache: &[u32] = &[];
@@ -1542,7 +1547,6 @@ fn main() {
     let (mut mouse_x, mut mouse_y) = graphics::mouse_pos()
         .map(|(x, y)| (x as i32, y as i32))
         .unwrap_or((0, 0));
-    #[cfg(target_arch = "aarch64")]
     let mut active_cursor_shape = graphics::cursor_shape::ARROW;
     let mut prev_buttons: u32 = 0;
     let mut dragging: Option<(usize, i32, i32)> = None;
@@ -1573,35 +1577,19 @@ fn main() {
     #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
-    // Initial composite. ARM64 uses the same op16 SUBMIT_3D compositor path as
-    // steady-state frames so presentation is gated by the GPU present fence.
-    #[cfg(target_arch = "aarch64")]
-    {
-        if direct_mapped {
-            let _ = graphics::virgl_composite_windows_rect(
-                &[],
-                0,
-                0,
-                1,
-                0,
-                0,
-                screen_w as u32,
-                screen_h as u32,
-            );
-        } else {
-            let _ =
-                graphics::virgl_composite_windows(composite_buf, screen_w as u32, screen_h as u32, true);
-        }
+    // Initial composite: the desktop alone, before any client window is discovered. It is
+    // read back from the scanout and compared with the desktop buffer (`compositor`).
+    let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
+    let first = gpu
+        .upload_desktop(composite_buf, [0, 0, screen_w as u32, screen_h as u32])
+        .and_then(|()| gpu.compose(&[], Some(first_pointer)))
+        .and_then(|()| gpu.check(composite_buf, &[], Some(first_pointer)));
+    match first {
+        Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
+        Err(e) => print!("[bwm] first frame check FAILED: {}\n", e),
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        if direct_mapped {
-            // Data is already in COMPOSITE_TEX — just tell kernel to upload + display
-            let _ = graphics::virgl_composite_windows_rect(&[], 0, 0, 1, 0, 0, screen_w as u32, screen_h as u32);
-        } else {
-            let _ = graphics::virgl_composite_windows(&composite_buf, screen_w as u32, screen_h as u32, true);
-        }
-    }
+    let mut client_frame_checked = false;
+    let mut frame_failed = false;
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [io::PollFd { fd: 0, events: io::poll_events::POLLIN as i16, revents: 0 }];
@@ -1728,7 +1716,6 @@ fn main() {
         let mut dirty_y0 = i32::MAX;
         let mut dirty_x1 = 0i32;
         let mut dirty_y1 = 0i32;
-        #[cfg(target_arch = "aarch64")]
         let mut cursor_dirty = false;
 
         // ── 4. Process mouse input (only when mouse changed) ──
@@ -1882,12 +1869,8 @@ fn main() {
                                 break; // Inside window but not on edge
                             }
                         }
-                        let _ = graphics::set_cursor_shape(hover_shape);
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            cursor_dirty |= active_cursor_shape != hover_shape;
-                            active_cursor_shape = hover_shape;
-                        }
+                        cursor_dirty |= active_cursor_shape != hover_shape;
+                        active_cursor_shape = hover_shape;
                     }
                 }
 
@@ -1897,12 +1880,8 @@ fn main() {
                 if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
                     if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
                         // Reset cursor shape back to arrow
-                        let _ = graphics::set_cursor_shape(graphics::cursor_shape::ARROW);
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            cursor_dirty |= active_cursor_shape != graphics::cursor_shape::ARROW;
-                            active_cursor_shape = graphics::cursor_shape::ARROW;
-                        }
+                        cursor_dirty |= active_cursor_shape != graphics::cursor_shape::ARROW;
+                        active_cursor_shape = graphics::cursor_shape::ARROW;
                         // Resize ended — notify client of new content dimensions
                         let new_cw = windows[win_idx].content_width();
                         let new_ch = windows[win_idx].content_height();
@@ -2040,12 +2019,8 @@ fn main() {
                                     ResizeEdge::TopLeft | ResizeEdge::BottomRight => graphics::cursor_shape::RESIZE_NWSE,
                                     ResizeEdge::TopRight | ResizeEdge::BottomLeft => graphics::cursor_shape::RESIZE_NESW,
                                 };
-                                let _ = graphics::set_cursor_shape(shape);
-                                #[cfg(target_arch = "aarch64")]
-                                {
-                                    cursor_dirty |= active_cursor_shape != shape;
-                                    active_cursor_shape = shape;
-                                }
+                                cursor_dirty |= active_cursor_shape != shape;
+                                active_cursor_shape = shape;
                                 resizing = Some((
                                     top, edge,
                                     mouse_x, mouse_y,
@@ -2093,11 +2068,10 @@ fn main() {
         }
 
         // ── 5. Window content handled by GPU ──
-        // Per-window textures are uploaded by the kernel directly from MAP_SHARED
-        // pages and composited via VirGL SUBMIT_3D with z-order interleaved
-        // frame strips. No CPU blit needed. Mark windows_dirty so the composite
-        // syscall triggers per-window GPU upload + render WITHOUT re-uploading
-        // the full COMPOSITE_TEX (which contains only frames/decorations).
+        // Client frames are uploaded to per-window textures and drawn above their
+        // frames in stacking order (section 6). No CPU blit needed. Mark windows_dirty
+        // so a client frame is composed without re-uploading the desktop buffer
+        // (which contains only the background and decorations).
         if ready & graphics::COMPOSITOR_READY_DIRTY != 0 {
             windows_dirty = true;
         }
@@ -2136,80 +2110,60 @@ fn main() {
 
         // (hotkey cooldown is managed inside HotkeyManager::update)
 
-        // ── 6. Composite to GPU (only when something changed) ──
-        #[cfg(target_arch = "aarch64")]
-        {
-            if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
-                    (&[], 0, 0)
-                } else {
-                    (&composite_buf, screen_w as u32, screen_h as u32)
-                };
-                if full_redraw {
-                    let _ = graphics::virgl_composite_windows_rect(
-                        cbuf,
-                        cw,
-                        ch,
-                        1,
-                        0,
-                        0,
-                        screen_w as u32,
-                        screen_h as u32,
-                    );
-                } else if content_dirty {
-                    let sw = screen_w as i32;
-                    let sh = screen_h as i32;
-                    let dx = dirty_x0.max(0) as u32;
-                    let dy = dirty_y0.max(0) as u32;
-                    let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
-                    let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 2, dx, dy, dw, dh);
-                } else if windows_dirty || mouse_moved_this_frame || cursor_dirty {
-                    let _ = graphics::virgl_composite_windows_rect(cbuf, cw, ch, 0, 0, 0, 0, 0);
-                }
-                full_redraw = false;
-                content_dirty = false;
-                windows_dirty = false;
-            }
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-        let (cbuf, cw, ch): (&[u32], u32, u32) = if direct_mapped {
-            (&[], 0, 0)
-        } else {
-            (&composite_buf, screen_w as u32, screen_h as u32)
-        };
-        if full_redraw {
-            let _ = graphics::virgl_composite_windows_rect(
-                cbuf, cw, ch,
-                1, 0, 0, screen_w as u32, screen_h as u32,
-            );
+        // ── 6. Composite on the GPU (only when something changed) ──
+        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
+            let upload = if full_redraw {
+                Some([0, 0, screen_w as u32, screen_h as u32])
+            } else if content_dirty {
+                let dx = dirty_x0.max(0);
+                let dy = dirty_y0.max(0);
+                let dw = (dirty_x1.min(screen_w as i32) - dx).max(0) as u32;
+                let dh = (dirty_y1.min(screen_h as i32) - dy).max(0) as u32;
+                Some([dx as u32, dy as u32, dw, dh])
+            } else {
+                None
+            };
+            let layers = frame_layers(&windows);
+            let pointer = Some(Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape });
+            let frame = upload
+                .map_or(Ok(()), |rect| gpu.upload_desktop(composite_buf, rect))
+                .and_then(|()| gpu.refresh_windows())
+                .and_then(|_| gpu.compose(&layers, pointer));
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
-        } else if content_dirty {
-            let sw = screen_w as i32;
-            let sh = screen_h as i32;
-            let dx = dirty_x0.max(0) as u32;
-            let dy = dirty_y0.max(0) as u32;
-            let dw = (dirty_x1.min(sw) - dirty_x0.max(0)).max(0) as u32;
-            let dh = (dirty_y1.min(sh) - dirty_y0.max(0)).max(0) as u32;
-            let _ = graphics::virgl_composite_windows_rect(
-                cbuf, cw, ch,
-                2, dx, dy, dw, dh,
-            );
-            content_dirty = false;
-            windows_dirty = false;
-        } else if windows_dirty || mouse_moved_this_frame {
-            // Window content and/or mouse-only update: no COMPOSITE_TEX change,
-            // but kernel uploads per-window textures and draws cursor via SUBMIT_3D.
-            // dirty_mode=0 tells kernel bg_dirty=false → skip COMPOSITE_TEX upload.
-            let _ = graphics::virgl_composite_windows_rect(
-                cbuf, cw, ch,
-                0, 0, 0, 0, 0,
-            );
-            windows_dirty = false;
-        }
+            match frame {
+                Ok(()) => {
+                    frame_failed = false;
+                    // The first frame that shows a client's pixels is read back once and
+                    // compared with the frame bwm composed.
+                    if !client_frame_checked {
+                        if let Some(id) = gpu.shows_client(&layers) {
+                            client_frame_checked = true;
+                            match gpu.check(composite_buf, &layers, pointer) {
+                                Ok(pixels) => print!(
+                                    "[bwm] composited client frame: window {} on screen, {} pixels exact\n",
+                                    id, pixels
+                                ),
+                                Err(e) => print!("[bwm] client frame check FAILED: window {}: {}\n", id, e),
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Start again with a fresh context and resources; the next frame
+                    // uploads everything.
+                    if !frame_failed {
+                        print!("[bwm] GPU frame failed: {}\n", e);
+                    }
+                    frame_failed = true;
+                    if let Err(e) = gpu.reopen() {
+                        print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
+                        process::exit(1);
+                    }
+                    full_redraw = true;
+                }
+            }
         }
         // No sleep — compositor_wait handles blocking
     }

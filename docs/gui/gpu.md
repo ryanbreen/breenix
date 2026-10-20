@@ -18,8 +18,13 @@ two kinds, kept apart throughout: those the GPU-only rule forces (a CPU mechanis
 exists), and those that answer the request for real text and display scale, which are separate rulings
 (section 5, R3 and R4, both granted).
 
-**Status.** A plan and a frozen contract. G0's host stack, provenance audit and Parallels and VMware spikes
-have run; the effort's lanes land into `gpu/integration` (section 1.11). Sections 1.3 to 1.10 are the
+**Status.** The GPU effort is on main; VMware acceptance landed in PR #1815 at
+`c4972aa0`. The ARM64 kernel includes the clean-room SVGA3D DX backend without a
+feature flag. Ordinary `./run.sh --vmware --suite gpu` boots use the core; console
+attachment hands the early GOP splash to its screen. The legacy SVGA3 compositor
+and its GPU client routes are retired. On Parallels the core drives the virtio-gpu device;
+the legacy driver is no longer selected. bwm composes the desktop through syscall 416 on ARM64 QEMU (`--gpu-gl`), Parallels and VMware, and
+the `VIRGL_COMPOSITE` route it used is retired. Sections 1.3 to 1.10 are the
 contract, frozen after the spikes reported. Section 1.12 records what the spikes changed and why, section
 1.13 the amendment G1's review required, section 1.14 the amendment G2's review required, and section 1.15
 the interface G3 needs, and section 1.16 the interfaces G6 needs. A later change to a frozen section is a contract change: it is made
@@ -109,7 +114,7 @@ apps, bwm, the suite stage
                  └─ kernel/src/gpu/: handles, quotas, validation, work bounds, fences, watchdog, readback, present, display ownership
                       ├─ kernel/src/gpu/virgl/: VirGL + TGSI encoder, virtio-gpu commands and queue → the kernel's virtio PCI transport
                       │      ARM64 QEMU (virtio-gpu-gl-pci), Parallels (its virtio-gpu PCI)
-                      └─ kernel/src/gpu/svga/: SVGA3D DX + shader-token encoder and SVGA3 command path (VMware, catch-up)
+                      └─ kernel/src/gpu/svga/: SVGA3D DX + shader-token encoder and SVGA3 command path (VMware)
 ```
 
 The effort renders full-screen under one display owner (the suite runner, or a case it gives the display
@@ -117,9 +122,11 @@ to). Windows, composition of several clients and the window interface stay in `b
 waits on bwm.
 
 **The core is clean-room only.** Everything under `kernel/src/gpu/` is written from section 1.9's allowed
-sources. It never calls, wraps or copies `drivers/virtio/gpu_pci.rs`, `drivers/virtio/virgl.rs` or
-`drivers/vmware/svga3.rs`; those drivers serve the existing display path until BreenGL deletes the software
-compositor (section 2.6). The in-place rewrite of those drivers (#1673) is closed. On ARM64 QEMU the existing
+sources. It must not call, wrap or copy `drivers/virtio/gpu_pci.rs`, `drivers/virtio/virgl.rs` or
+the retired `drivers/vmware/svga3.rs`. The legacy VirtIO drivers serve the existing display path
+until BreenGL deletes the software compositor (section 2.6), except on Parallels, where
+the core drives the virtio-gpu device; VMware retains the GOP
+framebuffer for the early console until the core attaches. The in-place rewrite of those drivers (#1673) is closed. On ARM64 QEMU the existing
 display (the boot console and main's programs through `fb_mmap` and `fb_draw`) stays on the MMIO
 `virtio-gpu-device` until G7; the core drives `virtio-gpu-gl-pci` beside it.
 
@@ -717,8 +724,10 @@ G7's argument layouts, ownership transitions, console observation, firmware writ
 present fault effects are defined in `gpu-abi.md`, "G7 display interface". These definitions
 supply the observability for the existing present cases; their case counts and expectations stay fixed.
 
-Under `--gpu-gl`, G7 shows the kernel's screen (the screen console) until E17 migrates bwm from the legacy
-compositor interface. Boots without `--gpu-gl` retain bwm's existing desktop behavior.
+Under `--gpu-gl`, on Parallels and on VMware, G7 shows the kernel's screen (the screen console) until a
+process takes the display. bwm takes it and composes the desktop through syscall 416: decorations and
+client frames uploaded as textures, drawn into one of two scanout targets, presented. Its composition
+model remains the `window-manager` effort's (section 2.6).
 G7 does not restore legacy takeover bookkeeping (ruling 39). A take-over on a GPU-core boot still makes the
 caller's terminal the display owner's (`KD_GRAPHICS`, switching refused unless `VT_PROCESS`), as the
 console contract's section 4.2 requires; while that terminal is released, the kernel's screen shows the
