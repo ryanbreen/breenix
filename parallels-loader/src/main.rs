@@ -182,8 +182,6 @@ fn main() -> Status {
             halt();
         }
     };
-    config.boot_flags = kernel_load::boot_flags();
-    log::info!("Boot flags: {:#x}", config.boot_flags);
 
     // Log RAM regions and entry address to serial for VMware debugging
     {
