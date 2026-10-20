@@ -74,6 +74,17 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
     let result=(|| {
     let mut cases=tiles(); let mut model=run(&cases,&MILESTONES);
     match name {
+        "stage-hidpi" => {
+            render(&mut fb,&model)?;
+            if (fb.width,fb.height)!=(2560,1600) {return Err("gpu-display: HiDPI stage does not cover the display".into());}
+            rect(&fb,0,799,1280,1,(12,19,31))?;
+            text(&fb,24,16,"BREENIX / fixture",3,(24,39,59))?;
+            let detailed=(32..90).any(|y|(48..750).any(|x|{
+                let p=fb.get_pixel(x,y);let q=fb.get_pixel(x&!1,y&!1);p!=q
+            }));
+            if !detailed {return Err("gpu-display: stage text is a replicated low-resolution bitmap".into());}
+            Ok(())
+        }
         "stage-layout" => {
             render(&mut fb,&model)?;
             let mut header=surface();

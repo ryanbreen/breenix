@@ -25,6 +25,7 @@ pub(crate) const PANEL: &[Case] = &[
     case("quiet-window", "No runner composite occurs inside a measured case window after detecting stage-draw-in-window", panel_quiet_window),
     case("boot-ribbon", "The restored kernel ribbon matches producer boot-stage markers after detecting ribbon-drop-stage", panel_boot_ribbon),
     case("boundary-notice", "The stage observation notice agrees with the backend flags and boundary code", panel_boundary_notice),
+    case("stage-hidpi", "The full HiDPI stage has scaled geometry and independently rasterized text", panel_stage_hidpi),
 ];
 
 #[repr(C)]
@@ -256,3 +257,6 @@ fn scaled_stage(name:&str)->CaseResult {
     ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"23","gpu-display: stage is not in the required scale-2 GPU mode")?;
     stage_fixture(name)
 }
+
+// gpu-display: R4 requires a full 2560x1600 stage with native-size text rather than replicated scale-1 pixels.
+fn panel_stage_hidpi()->CaseResult {scaled_stage("stage-hidpi")}

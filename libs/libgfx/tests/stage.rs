@@ -28,3 +28,5 @@ fn rejects_spotlight_statistics_that_disagree_with_pixels() {
     let mut fb=framebuf::FrameBuf::new(1280,800,framebuf::Format::BGRX).unwrap();
     assert_eq!(draw(&mut fb,&run),Err(StageError::Image));
 }
+
+#[test] fn stage_hidpi(){fixtures::check("stage-hidpi").unwrap();}
