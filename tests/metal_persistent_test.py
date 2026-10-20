@@ -87,6 +87,20 @@ class LayoutTest(existing.StateTest):
         with self.assertRaises(ValueError):
             metal_persist.check_layout(broken)
 
+    def test_three_large_slots_fit_and_oversized_upgrades_fail_before_request_creation(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            slot = Path(scratch) / 'slot'
+            with slot.open('wb') as stream:
+                stream.truncate(262 << 20)
+            layout = metal_persist.new_layout()
+            metal_persist.check_slot_capacity(layout, slot, {})
+            small = dict(layout, partitions=dict(layout['partitions'], esp=dict(layout['partitions']['esp'])))
+            small['partitions']['esp']['last'] = small['partitions']['esp']['first'] + (512 << 20) // 512 - 1
+            with patch.object(metal_persist, 'Request') as request:
+                with self.assertRaisesRegex(ValueError, 'CURRENT, PREVIOUS and NEXT'):
+                    metal_persist.upgrade_request(scratch, small, {}, slot, slot, {})
+                request.assert_not_called()
+
     def test_intents_and_the_tests_ramdisk(self):
         guid = str(uuid.uuid4())
         self.assertEqual(metal_persist.intent('default', root=guid),
@@ -182,6 +196,40 @@ class DriverPersistentTest(unittest.TestCase):
         with self.assertRaises(boot.Finish):
             d.on_slot_line(f'breenix-manager: slot rollback: current {current}, previous {nxt}', 3)
 
+    def test_successful_rollback_is_consumed_and_repeated_confirmation_does_not_swap_again(self):
+        d = self.driver
+        d.args.payload = 'persistent'
+        a, b = 'a' * 40, 'b' * 40
+        metal_persist.update_disk(slots={'current': {'commit': a}, 'previous': {'commit': b}})
+        m.write_json(m.STATE / m.LEASE, dict(id=d.id, state='powered', kind='persistent',
+                                            entry='current', slotAction='rollback'))
+        line = f'breenix-manager: slot rollback: current {b}, previous {a}'
+        d.on_slot_line(line, 1)
+        self.assertEqual(http.manager_answer(), f'persistent {d.id} current')
+        d.on_slot_line(line, 2)
+        self.assertEqual(metal_persist.read_disk()['slots']['current']['commit'], b)
+        self.assertIsNone(m.read_lease()['slotAction'])
+
+    def test_actual_previous_slot_changes_the_attributed_commit_and_definition(self):
+        d = self.driver
+        d.args.payload = 'persistent'
+        a, b = 'a' * 40, 'b' * 40
+        d.args.commit = a
+        metal_persist.update_disk(slots={'current': {'commit': a}, 'previous': {'commit': b}})
+        source = m.STATE / 'persistent' / b / 'definition'
+        source.mkdir(parents=True)
+        (source / 'identity').write_text(b)
+        (d.dir / 'definition').mkdir(exist_ok=True)
+        with patch.object(d, 'load_definition') as load:
+            d.on_slot_boot(f'breenix-manager: booting previous {b}', 1)
+            load.assert_called_once()
+        self.assertEqual((d.dir / 'commit').read_text(), b + '\n')
+        self.assertEqual((d.dir / 'definition/identity').read_text(), b)
+        self.assertEqual(m.read_json(d.dir / 'run.json')['bootedCommit'], b)
+        self.assertIn('manager-slot', d.seen)
+        with self.assertRaises(boot.Finish):
+            d.on_slot_boot(f'breenix-manager: booting current {b}', 2)
+
     def test_run_logs_in_types_each_command_at_a_fresh_prompt_and_logs_out(self):
         d = self.driver
         d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['writeFile("/root/a", "1")', 'sync']
@@ -229,7 +277,8 @@ class OperatorScoringTest(existing.StateTest):
         directory = m.STATE / 'boot'
         definition = directory / 'definition'
         stages = [{'name': 'attached', 'marker': '[usb] boot keyboard attached: '},
-                  {'name': 'typed', 'marker': '[hid] first key report', 'input': 'keyboard'}]
+                  {'name': 'typed', 'marker': '[hid] first key report', 'input': 'keyboard'},
+                  {'name': 'delivered', 'marker': '[tty] first key delivered', 'input': 'keyboard'}]
         m.write_json(definition / 'docs/metal/boot-path.json', {'gateArch': 'x86_64', 'milestones': [
             {'id': 'usb-keyboard', 'bootShapes': ['persistent'], 'stages': {'persistent': stages}}]})
         m.write_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
@@ -240,11 +289,16 @@ class OperatorScoringTest(existing.StateTest):
         (directory / 'serial.txt').write_text('[usb] boot keyboard attached: port 1\n')
         verdict = metal_score.score(directory)
         self.assertEqual(verdict['milestones']['usb-keyboard'],
-                         {'reached': 1, 'total': 2, 'passed': False, 'inputUnmeasured': 1})
+                         {'reached': 1, 'total': 3, 'passed': False, 'inputUnmeasured': 2})
         self.assertFalse(metal_score.falls_short(verdict))
         (directory / 'serial.txt').write_text('[usb] boot keyboard attached: port 1\n[hid] first key report\n')
         verdict = metal_score.score(directory)
-        self.assertEqual(verdict['milestones']['usb-keyboard'], {'reached': 2, 'total': 2, 'passed': True})
+        self.assertEqual(verdict['milestones']['usb-keyboard'], {'reached': 2, 'total': 3, 'passed': False})
+        self.assertTrue(metal_score.falls_short(verdict))
+        with (directory / 'serial.txt').open('a') as serial:
+            serial.write('[tty] first key delivered\n')
+        verdict = metal_score.score(directory)
+        self.assertEqual(verdict['milestones']['usb-keyboard'], {'reached': 3, 'total': 3, 'passed': True})
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ FIRST_LBA = 2048
 ROLES = ('esp', 'test', 'system', 'home')
 TYPES = {'esp': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b', 'test': 'dac951c3-27df-4e3d-8b9e-487906ac2c81',
          'system': '2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe', 'home': '9bfeaef9-4f51-45de-8bcf-5cec1603b862'}
-SIZES = {'esp': 512 << 20, 'test': 4 << 30, 'system': 8 << 30, 'home': 16 << 30}
+SIZES = {'esp': 2 << 30, 'test': 4 << 30, 'system': 8 << 30, 'home': 16 << 30}
 NAMES = {'esp': 'EFI system partition', 'test': 'Breenix test root', 'system': 'Breenix system',
          'home': 'Breenix home'}
 MANAGER_DIR = 'efi/breenix'
@@ -318,11 +318,24 @@ class Request:
         return config
 
 
+def check_slot_capacity(the_layout, slot, files):
+    """Reserve three equally bounded slots plus manager files and FAT metadata before writing any request."""
+    esp = the_layout['partitions']['esp']
+    capacity = (esp['last'] - esp['first'] + 1) * SECTOR
+    # FAT tables, directories, notes, configuration and replacement manager copies have room of their own.
+    reserve = (32 << 20) + 2 * sum(Path(source).stat().st_size for source in files.values())
+    recorded = read_disk().get('slots', {})
+    largest = max([Path(slot).stat().st_size] + [entry.get('size', 0) for entry in recorded.values() if entry])
+    if 3 * largest + reserve > capacity:
+        raise ValueError('the ESP cannot hold CURRENT, PREVIOUS and NEXT; no install request was written')
+
+
 def install_request(directory, the_layout, expect, files, slot, note, site, scratch):
     """The one-time install: the layout, the four partitions' contents and the load option.
 
     `expect` is the 512-byte LBA 0 the owned disk holds now (its whole-disk root record); `files` the ESP files
     besides the slot (the manager)."""
+    check_slot_capacity(the_layout, slot, files)
     request = Request(directory, 'install')
     request.lines.append('expect-record ' + expect.hex())
     request.lines.append('disk ' + the_layout['diskGuid'])
@@ -352,6 +365,7 @@ def install_request(directory, the_layout, expect, files, slot, note, site, scra
 
 def upgrade_request(directory, the_layout, files, slot, note, site):
     """An upgrade: the staged slot, the manager and its configuration into the EFI system partition."""
+    check_slot_capacity(the_layout, slot, files)
     request = Request(directory, 'upgrade')
     request.lines.append('expect-disk ' + the_layout['diskGuid'])
     request.lines.append('disk ' + the_layout['diskGuid'])

@@ -1174,13 +1174,44 @@ class Driver:
         slots = dict(record.get('slots') or {})
         if found.group(1) == 'commit' and slots.get('next', {}).get('commit') == found.group(2):
             slots['previous'], slots['current'] = slots.get('current'), slots.pop('next')
-        elif found.group(1) == 'rollback':
+        elif found.group(1) == 'rollback' and (slots.get('current') or {}).get('commit') != found.group(2):
             slots['current'], slots['previous'] = slots.get('previous'), slots.get('current')
         if (slots.get('current') or {}).get('commit') != found.group(2):
             self.event('slot-record-differs', observed_at=observed_at, current=found.group(2))
             raise Finish(m.EXIT_SHORT, "the manager's slots differ from the recorded ones")
+        previous = (slots.get('previous') or {}).get('commit', 'empty')
+        if previous != found.group(3):
+            raise Finish(m.EXIT_SHORT, "the manager's previous slot differs from its record")
         metal_persist.update_disk(slots={k: v for k, v in slots.items() if v})
+        # Consume a successful action before the next manager query can request another swap.
+        with m.locked('lease'):
+            lease = m.read_lease()
+            if lease and lease.get('id') == self.id and lease.get('slotAction') == found.group(1):
+                lease['slotAction'] = None
+                m.write_json(m.STATE / m.LEASE, lease)
         self.event('slots', observed_at=observed_at, action=found.group(1), current=found.group(2), previous=found.group(3))
+
+    def on_slot_boot(self, line, observed_at):
+        found = re.fullmatch(r'breenix-manager: booting (current|previous) ([0-9a-f]{40})', line)
+        if not persistent(self.args) or not found:
+            return
+        entry, commit = found.groups()
+        slot = metal_persist.read_disk().get('slots', {}).get(entry, {})
+        kept = m.STATE / 'persistent' / commit / 'definition'
+        if slot.get('commit') != commit or not kept.is_dir():
+            raise Finish(m.EXIT_SHORT, "the booted slot has no matching commit and definition")
+        if self.args.commit != commit:
+            # This line precedes the bootloader and kernel; use the selected kernel's contracts from here on.
+            shutil.rmtree(self.dir / 'definition')
+            shutil.copytree(kept, self.dir / 'definition')
+            self.args.commit = commit
+            m.write_text(self.dir / 'commit', commit + '\n')
+            self.load_definition()
+        run = m.read_json(self.dir / 'run.json', {})
+        run.update(entry=entry, bootedCommit=commit)
+        m.write_json(self.dir / 'run.json', run)
+        self.seen.add('manager-slot')
+        self.event('slot-boot', observed_at=observed_at, entry=entry, commit=commit)
 
     def challenge_persistent(self, text):
         """A persistent boot with --run: log in over SOL with the console account, type each command at a fresh
@@ -1221,6 +1252,7 @@ class Driver:
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
         self.on_slot_line(line, observed_at)
+        self.on_slot_boot(line, observed_at)
         if MANAGER_STARTED in line:
             self.manager_started = self.manager_started or observed_at
             self.event('manager-started', observed_at=observed_at, seconds=seconds)
@@ -1239,6 +1271,8 @@ class Driver:
     def disk_evidence_seen(self):
         """The disk's record, and on a disk-root console boot the kernel's account of this boot's intent."""
         needed = {None: set(), 'install': {'disk-write'}, 'root': {'disk-root'}}[getattr(self.args, 'disk', None)]
+        if persistent(self.args):
+            needed.add('manager-slot')
         if self.console_intent:
             needed.add('console-intent')
         return needed <= self.seen
