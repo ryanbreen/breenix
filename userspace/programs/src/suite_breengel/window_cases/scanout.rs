@@ -354,9 +354,10 @@ fn scanout_fault_stale_fence() -> CaseResult {
         rec.serial, rec.resource, good.resource))
 }
 
+// gpu-display: B6/B7 uses core CORRUPT_PIXEL 22; compare the complete destination, outside damage too.
 fn scanout_fault_outside_damage() -> CaseResult {
     interface()?;
-    let (r, px, _, serial, _) = fault(abi::tc_point::CORRUPT_OUTSIDE_DAMAGE, 24)?;
+    let (r, px, _, serial, _) = fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXEL, 24)?;
     ensure(r == 0, "20.3", format!("readback of composite {serial} with corruption outside its damage {}", outcome(r)))?;
     crate::remember_frame(&px,1280,800,None);
     let scene = [Placed::new(320, 200, 200, 120, 0, 25)];
