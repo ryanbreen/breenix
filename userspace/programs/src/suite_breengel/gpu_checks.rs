@@ -2,6 +2,7 @@
 use crate::*;
 use libbreenix::gpu::{self, abi as ga};
 use ga::Plain;
+use gpu::upload_audit as uploads;
 
 pub(crate) fn counters() -> Result<ga::Counters, String> {
     let (r,c) = gpu::counters(0);
@@ -76,7 +77,7 @@ pub(crate) fn stride_padding()->CaseResult {
             bytes[p..p+bpp].copy_from_slice(if bpp==4 {&[33,66,99,255]}else{&[99,66,33]});
         }}
         let unchanged=bytes.clone();
-        declare_fixture((14*18*bpp) as u64);
+        declare_fixture(if bpp==4 { &PAD_BGRA } else { &PAD_RGB });
         let (r,_)=gpu::upload(f.context.handle(),f.texture,[0,0,14,18],&bytes,stride as u32,source,ga::purpose::FIXTURE);
         ensure(r==0,"3","gpu-raster: padded UPLOAD failed")?;
         ensure(bytes==unchanged,"3","gpu-raster: UPLOAD changed its source or padding")?;
@@ -93,7 +94,7 @@ pub(crate) fn stride_padding()->CaseResult {
 // gpu-raster: three-byte upload and readback conversion (§2).
 pub(crate) fn bpp3_bpp4()->CaseResult {
     let mut f=Fixture::new(14,18).cite("2")?;
-    declare_fixture(14*18*3);
+    declare_fixture(&RGB_TABLE);
     let rgb:Vec<u8>=(0..14*18).flat_map(|n|[(n%251) as u8,73,29]).collect();
     let (r,_)=gpu::upload(f.context.handle(),f.texture,[0,0,14,18],&rgb,42,ga::upload_source::R8G8B8,ga::purpose::FIXTURE);
     ensure(r==0,"2","gpu-raster: three-byte RGB upload failed")?;
@@ -115,7 +116,7 @@ pub(crate) fn bpp3_bpp4()->CaseResult {
 // gpu-raster: §5.9 uploads whole pixels and clips the GPU copy at the destination row.
 pub(crate) fn copy_row_clip()->CaseResult {
     let mut f=Fixture::new(8,4).cite("5.9")?;
-    declare_fixture(8*4*4);
+    declare_fixture(&COPY_TABLE);
     let pixels=[17,34,51,255].repeat(8*4);
     let (r,_)=gpu::upload(f.context.handle(),f.texture,[0,0,8,4],&pixels,32,ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
     ensure(r==0,"5.9","gpu-raster: upload fixture failed")?;
@@ -129,17 +130,15 @@ pub(crate) fn copy_row_clip()->CaseResult {
     }}Ok(())
 }
 
-/// The runtime guard used for declared uploads and per-primitive instance budgets.
-fn accounting_refusal(before:&ga::Counters,after:&ga::Counters,image:u64,fixture:u64,instances:u64)->Option<&'static str>{
-    if after.uploads_image-before.uploads_image!=image {Some("cpu-image")}
-    else if after.uploads_fixture-before.uploads_fixture!=fixture {Some("passing-oracle")}
-    else if after.instances-before.instances>instances {Some("cpu-instances")}
-    else {None}
+/// Kernel counters bound instances and reconcile successful observed uploads.
+fn accounting_refusal(before:&ga::Counters,after:&ga::Counters,mark:uploads::Mark,instances:u64)->Option<&'static str>{
+    uploads::refusal(mark,after.uploads_image-before.uploads_image,after.uploads_fixture-before.uploads_fixture)
+        .or_else(||(after.instances-before.instances>instances).then_some("cpu-instances"))
 }
 
-pub(crate) fn enforce_accounting(before:&ga::Counters,after:&ga::Counters,fixture:u64,instances:u64)->CaseResult{
-    ensure(accounting_refusal(before,after,0,fixture,instances).is_none(),"7",
-        format!("gpu-raster: runtime accounting refused {:?}",accounting_refusal(before,after,0,fixture,instances)))
+pub(crate) fn enforce_accounting(before:&ga::Counters,after:&ga::Counters,mark:uploads::Mark,instances:u64)->CaseResult{
+    ensure(accounting_refusal(before,after,mark,instances).is_none(),"7",
+        format!("gpu-raster: runtime accounting refused {:?}; {}",accounting_refusal(before,after,mark,instances),uploads::hashes()))
 }
 
 // gpu-raster: §2.4 each runtime planting must be refused by the same accounting guard.
@@ -147,65 +146,86 @@ pub(crate) fn cpu_render_planted()->CaseResult {
     let mut f=Fixture::new(8,4).cite("7")?;
     let mut rendered=vec![0;128];for pixel in rendered.chunks_exact_mut(4){pixel.copy_from_slice(&[17,34,51,255]);}
     for (purpose,reason) in [(ga::purpose::IMAGE,"cpu-image"),(ga::purpose::FIXTURE,"passing-oracle")] {
-        let before=counters().cite("7")?;
+        let before=counters().cite("7")?; let mark=uploads::mark();
         let (ret,_)=gpu::upload(f.context.handle(),f.texture,[0,0,8,4],&rendered,32,ga::upload_source::B8G8R8A8,purpose);
         ensure(ret==0,"7","gpu-raster: planted upload did not execute; no negative control was exercised")?;
         let after=counters().cite("7")?;
-        ensure(accounting_refusal(&before,&after,0,0,1)==Some(reason),"7",format!("gpu-raster: CPU upload was not refused as {reason}"))?;
+        ensure(accounting_refusal(&before,&after,mark,1)==Some(reason),"7",format!("gpu-raster: CPU upload was not refused as {reason}"))?;
     }
-    let before=counters().cite("7")?;
+    let before=counters().cite("7")?; let mark=uploads::mark();
     f.context.begin(f.target,8,4);
     let per_pixel:Vec<_>=(0..4).flat_map(|y|(0..8).map(move|x|[x,y,x+1,y+1])).collect();
     f.context.solid(0xff112233,&per_pixel);
     f.context.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|e|format!("planted draw {}",outcome(e))).cite("7")?;
     let after=counters().cite("7")?;
-    ensure(accounting_refusal(&before,&after,0,0,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")
+    ensure(accounting_refusal(&before,&after,mark,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")
 }
 
-static DECLARED_FIXTURE:AtomicU64=AtomicU64::new(0);
-pub(crate) fn declared_fixture()->u64 {DECLARED_FIXTURE.load(Relaxed)}
-pub(crate) fn declare_fixture(bytes:u64){DECLARED_FIXTURE.fetch_add(bytes,Relaxed);}
-pub(crate) fn audit_begin()->Option<(ga::Counters,u64)>{
+// Static input tables for transfer tests, independent of the destination image.
+const fn repeat_pixel<const N:usize>(pixel:[u8;4],bpp:usize)->[u8;N]{
+    let mut out=[0;N];let mut i=0;while i<N{out[i]=pixel[i%bpp];i+=1;}out
+}
+static PAD_BGRA:[u8;14*18*4]=repeat_pixel([33,66,99,255],4);
+static PAD_RGB:[u8;14*18*3]=repeat_pixel([99,66,33,0],3);
+static COPY_TABLE:[u8;8*4*4]=repeat_pixel([17,34,51,255],4);
+static RGB_TABLE:[u8;14*18*3]={
+    let mut out=[0;14*18*3];let mut i=0;while i<14*18{out[i*3]=(i%251) as u8;out[i*3+1]=73;out[i*3+2]=29;i+=1;}out
+};
+pub(crate) fn declare_fixture(table:&'static [u8]){uploads::declare(table);}
+pub(crate) fn audit_begin()->Option<(ga::Counters,uploads::Mark)>{
     let name=libbreenix::suite::running_case()?;
     if !name.starts_with("raster/"){return None;}
-    counters().ok().map(|c|(c,DECLARED_FIXTURE.load(Relaxed)))
+    uploads::start();
+    declare_fixture(&font5x7::FONT_TABLE);
+    // The dependency stores coverage cells as static rows. Declare each complete size
+    // table, including replacement, before rendering.
+    use noto_sans_mono_bitmap::{get_raster,FontWeight,RasterHeight};
+    for height in [RasterHeight::Size16,RasterHeight::Size32] {
+        let mut rows=Vec::new();
+        for ch in (32u8..=126).map(char::from).chain(core::iter::once('\u{fffd}')) {
+            if let Some(r)=get_raster(ch,FontWeight::Regular,height){rows.extend_from_slice(r.raster());}
+        }
+        uploads::declare_rows(rows);
+    }
+    counters().ok().map(|c|(c,uploads::mark()))
 }
-/// Each actual case/isolated child writes one record, before stage transport or failure artifacts.
-pub(crate) fn audit_finish(before:Option<(ga::Counters,u64)>){
+/// Record each case/isolated child before stage transport and failure artifacts.
+pub(crate) fn audit_finish(before:Option<(ga::Counters,uploads::Mark)>){
     let Some(name)=libbreenix::suite::running_case() else{return;};
     if !name.starts_with("raster/"){return;}
+    uploads::stop();
     let Ok(directory)=std::env::var("BREENIX_RASTER_AUDIT")else{return;};
     static NEXT:AtomicU64=AtomicU64::new(0);
     let Ok(pid)=process::getpid()else{return;};
     let file=format!("{directory}/{}-{}",pid.raw(),NEXT.fetch_add(1,Relaxed));
     let record=match (before,counters()) {
-        (Some((b,declared)),Ok(a))=>format!("{name}\t{}\t{}\t{}\t{}\t{}\t{}\n",DECLARED_FIXTURE.load(Relaxed)-declared,
-            a.uploads_image-b.uploads_image,a.uploads_fixture-b.uploads_fixture,a.instances-b.instances,a.draws-b.draws,
-            u8::from(LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).is_some())),
+        (Some((b,mark)),Ok(a))=>format!("{name}\t{}\t{}\t{}\t{}\t{}\n",
+            uploads::refusal(mark,a.uploads_image-b.uploads_image,a.uploads_fixture-b.uploads_fixture).unwrap_or("ok"),
+            a.instances-b.instances,a.draws-b.draws,
+            u8::from(LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).is_some()),uploads::hashes()),
         _=>format!("{name}\tERROR gpu-raster: COUNTERS unavailable\n"),
     };
-    // Missing records fail audit_category; a failed write produces a missing record.
     let _=std::fs::write(file,record);
 }
-// gpu-raster: aggregate the actual category execution, including isolated children, without repeating cases.
+// Aggregate actual execution, including children, without repeating cases.
 pub(crate) fn audit_category(expected:&[Case])->CaseResult{
     if let Ok(error)=std::env::var("BREENIX_RASTER_AUDIT_ERROR"){return at("7",error);}
     let directory=std::env::var("BREENIX_RASTER_AUDIT").map_err(|e|format!("gpu-raster: accounting directory: {e}"))?;
     struct Cleanup(String);
     impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
     let _cleanup=Cleanup(directory.clone());
-    let mut results:std::collections::BTreeMap<String,(u64,u64,u64,u64,u64,bool)>=std::collections::BTreeMap::new();
+    let mut results:std::collections::BTreeMap<String,(String,u64,bool)>=std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(directory).map_err(|e|e.to_string())? {
         let line=std::fs::read_to_string(entry.map_err(|e|e.to_string())?.path()).map_err(|e|e.to_string())?;
         let fields:Vec<_>=line.trim().split('\t').collect();
-        ensure(fields.len()==7,"7",format!("gpu-raster: malformed accounting record {line}"))?;
-        let numbers=fields[1..].iter().map(|s|s.parse::<u64>()).collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+        ensure(fields.len()==6,"7",format!("gpu-raster: malformed accounting record {line}"))?;
         let r=results.entry(fields[0].to_string()).or_default();
-        r.0+=numbers[0];r.1+=numbers[1];r.2+=numbers[2];r.3+=numbers[3];r.4+=numbers[4];r.5|=numbers[5]!=0;
+        if fields[1]!="ok" {r.0=format!("{}; {}",fields[1],fields[5]);}
+        r.1+=fields[3].parse::<u64>().map_err(|e|e.to_string())?;r.2|=fields[4]=="1";
     }
     for case in expected.iter().filter(|c|!matches!(c.id,"cpu-pixels-zero"|"cpu-render-planted")) {
         let key=format!("raster/{}",case.id);let r=results.get(&key).ok_or_else(||format!("gpu-raster: {key} produced no accounting record"))?;
-        ensure(r.1==0 && r.2==r.0,"7",format!("gpu-raster: {key} uploaded {} Image and {} Fixture bytes; declared fixture bytes {}",r.1,r.2,r.0))?;
-        ensure(!r.5 || r.4>0,"7",format!("gpu-raster: {key} judged drawing without any GPU draw"))?;
+        ensure(r.0.is_empty(),"7",format!("gpu-raster: {key} refused {}",r.0))?;
+        ensure(!r.2 || r.1>0,"7",format!("gpu-raster: {key} judged drawing without any GPU draw"))?;
     }Ok(())
 }

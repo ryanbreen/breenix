@@ -32,3 +32,11 @@ B8 (2026-10-20, 8:15 PM ET). Same principle as B7 for screen size: a kept case t
    1280x800 buffer in the screen()-based cases) becomes a changed case checking the same property at the mode the
    contract mandates (2560x1600, so 4,096,000 for a full first composite), with every screen-sized buffer derived from
    the display's reported mode, never a constant. Recount the partition and list each case (#2174; coordinator requests closure).
+
+<!-- claim-lint:ok: Operator ruling B9, #2177, defines the required Fixture identity check rather than reporting lane acceptance. -->
+B9 (2026-10-20, 9:10 PM ET; coordinator requests closure of #2177). cpu-pixels-zero checks identity, not byte counts: the only legal Fixture
+   uploads are the declared static tables (the 5x7 font table, the bitmap font tables, and any other table a case
+   declares), each uploaded whole and byte-identical to the declared table (compared by content, recorded by hash);
+   any other CPU-side pixel upload under any purpose fails the case. Per-run byte-count equality and the per-case byte
+   allowances are removed. Clipping, culling and uploading a table once per context all pass; a CPU-rendered image
+   cannot pass as a Fixture. This tightens the check.

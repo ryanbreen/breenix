@@ -309,10 +309,13 @@ GPU estimate is `8192 × (1024² + 1024 × 16 × 1022) + 1024²` = **145,761,501
 the blend copy. It is summed over submissions individually below the unchanged 2³¹ cap.
 Neither omitting CPU crossing/sort work nor omitting GPU span fill can satisfy both checks.
 
-<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B9 and #2177 specify the required Fixture identity check. -->
 **GPU-only enforcement.** `COUNTERS` records upload bytes by Image/Fixture and instances,
-fragment area and work estimate. Primitive output has zero Image uploads; only declared
-bitmap tables, decoded images and fixtures may upload their declared bytes. A draw must
+fragment area and work estimate. Primitive output has zero Image uploads; only
+declared static source tables may upload as Fixture, whole and byte-identical by content
+comparison, with the content hash recorded. Any other CPU pixel upload, under any purpose,
+fails `raster/cpu-pixels-zero`. Clipped or culled runs and once-per-context table uploads
+need no per-run byte equality or per-case byte allowance. A draw must
 actually reach the GPU and stay within its constant instance budget. The same accounting
 guard refuses planted renamed CPU-fill uploads (`cpu-image`), per-pixel solid draws
 (`cpu-instances`), and a passing case's uploaded expected image (`passing-oracle`). A host

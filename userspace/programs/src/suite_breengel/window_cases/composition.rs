@@ -956,7 +956,6 @@ fn composition_scale_2()->CaseResult {
         let source:Vec<u8>=(0..p.h).flat_map(|y|(0..p.w).flat_map(move|x|{
             let c=pattern(p.seed,x,y);[c[0],c[1],c[2],255]
         })).collect();
-        crate::gpu_checks::declare_fixture(source.len() as u64);
         let (uploaded,_)=gpu::upload(context.handle(),texture.0,[0,0,p.w,p.h],&source,p.w*4,
             ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
         want_ok(uploaded,"18","gpu-display: source-window fixture upload")?;

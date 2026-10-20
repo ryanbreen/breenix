@@ -129,9 +129,29 @@ fn tile_colour(i: usize, j: usize) -> Color {
     Color::rgb((40 * i + 7) as u8, (60 * j + 11) as u8, (13 * i + 29 * j + 100) as u8)
 }
 
+// Author-time source tables; these are inputs to copies and blends.
+const fn tile_table<const N:usize>(bpp:usize,bgr:bool,alpha:bool,straight:bool)->[u8;N]{
+    let mut out=[0;N];let mut n=0;while n<20 {
+        let (i,j)=(n%5,n/5);let a=if alpha{[0u32,64,128,200,255][i]}else if straight{[0,1,128,254,255][i]}else{255};
+        let (r,g,b)=if straight{(200,100+30*j as u32,30+40*i as u32)}else{(40*i as u32+7,60*j as u32+11,13*i as u32+29*j as u32+100)};
+        let (r,g,b)=if alpha{((2*r*a+255)/510,(2*g*a+255)/510,(2*b*a+255)/510)}else{(r,g,b)};
+        out[n*bpp]=if bgr{b as u8}else{r as u8};out[n*bpp+1]=g as u8;out[n*bpp+2]=if bgr{r as u8}else{b as u8};
+        if bpp==4{out[n*bpp+3]=a as u8;}n+=1;
+    }out
+}
+static TILE_BGRX:[u8;80]=tile_table(4,true,false,false);
+static TILE_RGBX:[u8;80]=tile_table(4,false,false,false);
+static TILE_BGR:[u8;60]=tile_table(3,true,false,false);
+static TILE_RGB:[u8;60]=tile_table(3,false,false,false);
+static TILE_ALPHA:[u8;80]=tile_table(4,true,true,false);
+static TILE_STRAIGHT_BGR:[u8;80]=tile_table(4,true,false,true);
+static TILE_STRAIGHT_RGB:[u8;80]=tile_table(4,false,false,true);
+static COPY_ROW:[u8;64]=[0x5a;64];
+static INK_ROW:[u8;128]={let mut out=[0;128];let mut i=0;while i<128{out[i]=[INK.b,INK.g,INK.r,255][i%4];i+=1;}out};
+
 /// A 5 × 4 owned source of `format` holding `tile_colour`.
 fn tile(format: Format) -> Result<FrameBuf, String> {
-    crate::gpu_checks::declare_fixture((5*4*format.bpp) as u64);
+    crate::gpu_checks::declare_fixture(match (format.bpp,format.is_bgr) {(4,true)=>&TILE_BGRX,(4,false)=>&TILE_RGBX,(3,true)=>&TILE_BGR,_=>&TILE_RGB});
     let mut fb = FrameBuf::new(5, 4, format).map_err(|e| format!("FrameBuf::new(5, 4, {format:?}) failed: {e}"))?;
     for j in 0..4 {
         for i in 0..5 {
@@ -176,11 +196,11 @@ fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("gradient_v(0, 0, 32, 24)", Box::new(|fb| shapes::gradient_v(fb, 0, 0, 32, 24, INK, WHITE))),
         ("put_pixel(8, 6) and (2, 2)", Box::new(|fb| { fb.put_pixel(8, 6, INK); fb.put_pixel(2, 2, INK); })),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| { crate::gpu_checks::declare_fixture(14); font5x7::draw_text(fb, b"A1", 4, 5, INK, 2); })),
-        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| { crate::gpu_checks::declare_fixture((bitmap_font::metrics().char_width*16) as u64); bitmap_font::draw_char(fb, 'A', 6, 3, INK); })),
+        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| { font5x7::draw_text(fb, b"A1", 4, 5, INK, 2); })),
+        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| { bitmap_font::draw_char(fb, 'A', 6, 3, INK); })),
         ("copy_row_from(0, 7, 32 pixels)", Box::new(|fb| {
+            crate::gpu_checks::declare_fixture(&INK_ROW);
             let row: Vec<u8> = (0..32).flat_map(|_| [INK.b, INK.g, INK.r, 0xFF]).collect();
-            crate::gpu_checks::declare_fixture(row.len() as u64);
             fb.copy_row_from(0, 7, &row, row.len());
         })),
         ("blit(tile, 3, 3)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, 3, 3) })),
@@ -400,12 +420,11 @@ fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("draw_line(5, MIN/2, 6, MAX/2)", Box::new(|fb| shapes::draw_line(fb, 5, i32::MIN / 2, 6, i32::MAX / 2, INK))),
         ("copy_row_from(width - 1, height - 1, 64 bytes)", Box::new(|fb| {
             let (w, h) = (fb.width, fb.height);
-            crate::gpu_checks::declare_fixture(64);
-            fb.copy_row_from(w - 1, h - 1, &[0x5Au8; 64], 64)
+            crate::gpu_checks::declare_fixture(&COPY_ROW);
+            fb.copy_row_from(w - 1, h - 1, &COPY_ROW, 64)
         })),
         ("font::draw_text at (width - 3, height - 3)", Box::new(|fb| {
             let (w, h) = (fb.width, fb.height);
-            crate::gpu_checks::declare_fixture(28);
             font5x7::draw_text(fb, b"WWWW", w - 3, h - 3, INK, 3)
         })),
     ]
@@ -458,10 +477,10 @@ fn raster_extreme_work_bound() -> CaseResult {
         ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None, 64),
         ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None, 64),
         ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24)), 64),
-        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(64); fb.copy_row_from(31, 23, &[0x5Au8; 64], 64); }), Some((31, 23, 1, 1)), 64),
-        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(28); font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3); }), Some((29, 21, 3, 3)), 64),
-        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(7000); font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1); }), Some((0, 0, 32, 7)), 64000),
-        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(7000); font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1); }), None, 64000),
+        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(&COPY_ROW); fb.copy_row_from(31, 23, &COPY_ROW, 64); }), Some((31, 23, 1, 1)), 64),
+        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| { font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3); }), Some((29, 21, 3, 3)), 64),
+        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| { font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1); }), Some((0, 0, 32, 7)), 64000),
+        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| { font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1); }), None, 64000),
     ];
     for (name, clip, call, rect, setup_bound) in calls {
         step("7", isolated(name, 2_000, || {
@@ -504,7 +523,6 @@ fn scene(fb: &mut FrameBuf) {
     shapes::fill_circle(fb, 7, 12, 3, Color::rgb(200, 200, 10));
     shapes::draw_circle(fb, 6, 6, 4, Color::rgb(10, 200, 200));
     fb.put_pixel(13, 1, Color::rgb(123, 45, 67));
-    crate::gpu_checks::declare_fixture(14);
     font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
@@ -573,8 +591,8 @@ fn raster_x_byte() -> CaseResult {
         ("fill_circle", Box::new(|fb| shapes::fill_circle(fb, 6, 6, 3, INK))),
         ("draw_circle", Box::new(|fb| shapes::draw_circle(fb, 6, 6, 4, INK))),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text", Box::new(|fb| { crate::gpu_checks::declare_fixture(7); font5x7::draw_text(fb, b"A", 1, 1, INK, 1); })),
-        ("bitmap_font::draw_char", Box::new(|fb| { crate::gpu_checks::declare_fixture((bitmap_font::metrics().char_width*16) as u64); bitmap_font::draw_char(fb, 'A', 0, 0, INK); })),
+        ("font::draw_text", Box::new(|fb| { font5x7::draw_text(fb, b"A", 1, 1, INK, 1); })),
+        ("bitmap_font::draw_char", Box::new(|fb| { bitmap_font::draw_char(fb, 'A', 0, 0, INK); })),
     ];
     for (name, call) in calls {
         let g = Guarded::bgrx(16, 16);
@@ -728,7 +746,7 @@ fn raster_blit_clip() -> CaseResult {
 }
 
 fn raster_blit_alpha() -> CaseResult {
-    crate::gpu_checks::declare_fixture(80);
+    crate::gpu_checks::declare_fixture(&TILE_ALPHA);
     let src = FrameBuf::new(5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let s_of = |i: usize, j: usize| {
         let a = [0u32, 64, 128, 200, 255][i];
@@ -756,7 +774,7 @@ fn raster_blit_straight() -> CaseResult {
     let alphas = [0u32, 1, 128, 254, 255];
     let straight = |i: usize, j: usize| Color::rgb(200, (100 + 30 * j) as u8, (30 + 40 * i) as u8);
     for is_bgr in [false, true] {
-        crate::gpu_checks::declare_fixture(80);
+        crate::gpu_checks::declare_fixture(if is_bgr{&TILE_STRAIGHT_BGR}else{&TILE_STRAIGHT_RGB});
         let mut mem = vec![0u32; 5 * 4];
         let base = mem.as_mut_ptr() as *mut u8;
         for j in 0..4 {
@@ -2799,16 +2817,17 @@ fn raster_cpu_pixels_zero() -> CaseResult {
     for (name,call) in extreme_calls() {
         let before=crate::gpu_checks::counters().cite("7")?;
         let surface=padded(32,24);
-        let declared=crate::gpu_checks::declared_fixture();
+        let mark=libbreenix::gpu::upload_audit::mark();
         call(&mut surface.fb());
         let after=crate::gpu_checks::counters().cite("7")?;
-        ensure(after.uploads_image==before.uploads_image && after.uploads_fixture-before.uploads_fixture==crate::gpu_checks::declared_fixture()-declared,
-            "7",format!("gpu-raster: {name} uploaded CPU-rendered pixels"))?;
+        ensure(libbreenix::gpu::upload_audit::refusal(mark,after.uploads_image-before.uploads_image,after.uploads_fixture-before.uploads_fixture).is_none(),
+            "7",format!("gpu-raster: {name} uploaded CPU-rendered pixels; {}",libbreenix::gpu::upload_audit::hashes()))?;
     }
     let before=crate::gpu_checks::counters().cite("7")?;
+    let mark=libbreenix::gpu::upload_audit::mark();
     let surface=padded(32,24);scene(&mut surface.fb());
     let after=crate::gpu_checks::counters().cite("7")?;
-    crate::gpu_checks::enforce_accounting(&before,&after,14,32)?;
+    crate::gpu_checks::enforce_accounting(&before,&after,mark,32)?;
     ensure(after.draws>before.draws,
         "7","gpu-raster: primitive scene did not draw on the GPU with bounded instances and zero image uploads")
 }
