@@ -825,8 +825,9 @@ fn timing_classification_ignores_comments_and_literals() {
 }
 
 /// The target ids an effort in `docs/efforts/path.json` may list, in the order a list gives them: the ids
-/// `scripts/effort-target-guard.py` uses (docs/efforts/README.md, "Targets").
-const TARGETS: [&str; 4] = ["arm64-qemu", "parallels", "vmware", "x86"];
+/// `scripts/effort-target-guard.py` uses (docs/efforts/README.md, "Targets"). `x86-metal` marks an effort that
+/// x86-64 leads on bare metal; alone it belongs in `metal.json`.
+const TARGETS: [&str; 5] = ["arm64-qemu", "parallels", "vmware", "x86", "x86-metal"];
 
 /// Problems with the efforts' optional `targets` and `targetsNote`: a list must be non-empty, known ids in
 /// `TARGETS` order without repeats; a note is one line of text and only sits beside a list.
@@ -861,6 +862,8 @@ fn effort_target_errors(path: &Value) -> Vec<String> {
         let known: Vec<usize> = positions.into_iter().flatten().collect();
         if known.windows(2).any(|pair| pair[0] >= pair[1]) {
             errors.push(format!("{id}: targets {names:?} repeat or are out of the order {TARGETS:?}"));
+        } else if names == ["x86-metal"] {
+            errors.push(format!("{id}: an effort measured on x86-metal alone belongs in docs/efforts/metal.json"));
         }
         match note {
             None => {}
@@ -879,7 +882,6 @@ fn effort_targets_are_known_and_ordered() {
     let mut guarded: Vec<&str> = line.split('\'').skip(1).step_by(2).collect();
     guarded.sort_unstable();
     let mut ours = TARGETS.to_vec();
-    ours.push("x86-metal");
     ours.sort_unstable();
     assert_eq!(guarded, ours, "the guard's TARGETS and this test's differ");
 
@@ -903,6 +905,7 @@ fn effort_target_lists_are_checked() {
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "vmware"], "targetsNote": "later" }))
         .is_empty());
     assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware"], "milestones": profiles })).is_empty());
+    assert!(check(serde_json::json!({ "id": "a", "targets": ["arm64-qemu", "parallels", "vmware", "x86-metal"] })).is_empty());
     for bad in [
         serde_json::json!({ "id": "a", "targetsNote": "no list" }),
         serde_json::json!({ "id": "a", "targets": [] }),
@@ -911,6 +914,7 @@ fn effort_target_lists_are_checked() {
         serde_json::json!({ "id": "a", "targets": ["x86-64"] }),
         serde_json::json!({ "id": "a", "targets": ["x86-metal"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware", "parallels"] }),
+        serde_json::json!({ "id": "a", "targets": ["x86-metal", "arm64-qemu"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware", "vmware"] }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "" }),
         serde_json::json!({ "id": "a", "targets": ["vmware"], "targetsNote": "two\nlines" }),

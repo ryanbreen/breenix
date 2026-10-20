@@ -213,6 +213,27 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.git('push', '-q', 'origin', name)
         self.assertEqual(self.policy(merged, 'x86-metal').returncode, 0)
 
+    def test_lane_of_an_x86_led_effort_runs_on_metal_and_waits_for_catchup_elsewhere(self):
+        # An effort whose targets list x86-metal: its lanes boot on the R240 first (D6).
+        path = self.repo / 'docs/efforts/path.json'
+        definition = json.loads(path.read_text())
+        definition['efforts'].append({'id': 'lead', 'title': 'Lead', 'outcome': 'Lead.', 'milestones': [],
+                                      'targets': ['arm64-qemu', 'parallels', 'vmware', 'x86-metal']})
+        path.write_text(json.dumps(definition))
+        self.git('switch', '-qc', 'lead/first', 'main')
+        lane = self.commit('lead lane')
+        self.assertIn('not first-parent reachable', self.policy(lane, 'x86-metal').stderr)
+        self.git('push', '-q', 'origin', 'lead/first')
+        self.assertEqual(self.policy(lane, 'x86-metal').returncode, 0)
+        self.assertEqual(self.policy(lane, 'arm64-qemu').returncode, 0)
+        for target in ('parallels', 'vmware'):
+            self.assert_refused(self.policy(lane, target), 'lead/first')
+            self.assertEqual(self.policy(lane, target, '--catchup').returncode, 0)
+        self.git('switch', '-qc', 'lead/contaminated', 'breengel/window')
+        mixed = self.commit('lead lane on a main-path lane')
+        self.git('push', '-q', 'origin', 'lead/contaminated')
+        self.assertIn('main-path effort work cannot run on metal', self.policy(mixed, 'x86-metal').stderr)
+
     def test_main_path_lane_cannot_hide_on_metal_first_parent(self):
         name = 'metal-bring-up/contaminated'
         self.metal_lane(name, 'breengel/window')
