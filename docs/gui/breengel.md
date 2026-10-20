@@ -405,7 +405,10 @@ Conversion is `(coverage × (1/8)) × 255`, binary32 at each operation, clamped 
 otherwise truncated to u8. LCD scales segment x by 3 first and applies the identical order.
 The frozen CPU reference and four reviewed references remain unchanged; different device
 pixels are defects. At display scale 2, text rasterizes at twice its logical size, equals
-that size's certified reference and differs from 2× replication.
+that size's certified reference and differs from 2× replication. `text/hidpi-sizes`
+exercises the production UI text entry point with logical position (16,8) and the theme's
+logical 16 px size, and compares with the certified 32 px H at physical (32,16).
+The fixture never multiplies the size or position passed to the text stack.
 
 ### 8.4 The glyph cache
 
@@ -1073,7 +1076,16 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   as a top GPU layer and presents/flips a scanout target. No CPU compositor, display copy,
   fb_info, fb_mmap or FLUSH remains. Existing 1280×800 scene fixtures retain their exact
   pixel formulas at their stated coordinates; dedicated scale-2 fixtures double logical
-  placement and compare every pixel of the 2560×1600 destination.
+  placement and compare every pixel of the 2560×1600 destination. `composition/scale-2`
+  uses logical rectangles (40,60,128,96), (100,100,160,80), and (-20,780,100,40), in
+  increasing z order, with source-window patterns 11, 12, and 13. Each logical-size
+  source texture is a declared input fixture; COPY_SCALED with scale 2 draws it into
+  the physical client target. No expected composite is uploaded. The fixture allocates
+  targets at twice each width and height and sends
+  twice each position through SET_GEOMETRY (a physical-pixel interface). Its oracle
+  uses the unchanged scene formula at (physical_x/2, physical_y/2), including source
+  pattern coordinates and opaque black outside windows.
+  This fixture is distinct from the existing physical-pixel pattern scenes.
 - **Lifetimes.** Handle destruction does not end holds by a queued submission, committed <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   front, remnant, compositor sample, scanout binding, capture/readback or replay copy. Each
   holds backing through actual completion or confirmed reset; a reported error alone never

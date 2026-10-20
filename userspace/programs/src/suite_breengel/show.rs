@@ -95,6 +95,8 @@ fn panel_serial_agreement() -> CaseResult { libbreenix::suite::showcase_check("s
 fn panel_quiet_window() -> CaseResult { libbreenix::suite::showcase_check("quiet-window") }
 fn panel_boot_ribbon() -> CaseResult {
     let (width,_)=crate::window_cases::composition::screen_size()?;
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
+    let scale=modes.modes[modes.current as usize].scale as usize;
     use crate::window_cases::composition::{give_back, take_over, screen};
     for faulty in [true,false] {
         let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
@@ -116,8 +118,8 @@ fn panel_boot_ribbon() -> CaseResult {
         for (i,&lit) in reached.iter().enumerate() {
             let a=16+1248*i/reached.len();let b=16+1248*(i+1)/reached.len();
             let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};
-            for y in 752..768 {for x in a..b-2 {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=rgb;}}
-            for y in 752..768 {for x in b-2..b {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=[31,19,12,255];}}
+            for y in 752*scale..768*scale {for x in a*scale..(b-2)*scale {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=rgb;}}
+            for y in 752*scale..768*scale {for x in (b-2)*scale..b*scale {let o=(y*width+x)*4;mismatch|=px[o..o+4]!=[31,19,12,255];}}
         }
         let fired=libbreenix::test_control::fired(15)?;libbreenix::test_control::disarm_all()?;
         ensure(mismatch==faulty,"23.7","kernel ribbon disagrees with actual producer markers, or dropped-stage fault was not detected")?;

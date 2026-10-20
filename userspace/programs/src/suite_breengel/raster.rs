@@ -2824,11 +2824,13 @@ fn text_hidpi_sizes() -> CaseResult {
     ensure(scale==2,"8.3","gpu-display: HiDPI text requires scale 2")?;
     let file=read_file(SANS_PATH).cite("8.3")?;let font=Font::parse(&file).cite("8.3")?;
     let glyph=font.glyph_index('H');
-    let large=font.rasterize_glyph(glyph,48.0).cite("8.3")?;
-    let small=font.rasterize_glyph(glyph,24.0).cite("8.3")?;
-    let mut cached=CachedFont::new(font,256);
+    let large=font.rasterize_glyph(glyph,32.0).cite("8.3")?;
+    let small=font.rasterize_glyph(glyph,16.0).cite("8.3")?;
+    let theme=Theme::dark();
     let before=crate::gpu_checks::counters().cite("8.3")?;
-    let g=white_on_black(192,128,|fb|{ttf_font::draw_char(fb,&mut cached,'H',32,16,24.0*scale as f32,WHITE);});
+    // The production UI text entry point takes logical coordinates and the theme's
+    // logical 16 px size. The case must not perform the implementation's scaling.
+    let g=white_on_black(192,128,|fb|{libbui::text::draw_text(fb,b"H",16,8,WHITE,&theme);});
     same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
     let actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
     ensure((0..128).any(|y|(0..192).any(|x|actual[(y*192+x)*4..(y*192+x+1)*4]!=low[((y/2)*96+x/2)*4..((y/2)*96+x/2+1)*4])),"8.3",

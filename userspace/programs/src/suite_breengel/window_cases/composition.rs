@@ -937,9 +937,39 @@ pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),libbreeni
 // gpu-display: R4 applies logical scale to placement and compares the entire device destination with §18's formula.
 fn composition_scale_2()->CaseResult {
     interface()?;let mut k=compositor()?;
-    let scene=[Placed::new(40,60,128,96,0,11),Placed::new(100,100,160,80,1,12)];
-    let wins:Vec<_>=scene.iter().map(|p|W::new(p.w,p.h,2)).collect::<Result<_,_>>()?;
-    for (w,p) in wins.iter().zip(&scene){show(&mut k,w,p)?;}compose(&mut k)?;
+    // Unlike the legacy physical-pixel scenes, this fixture has logical geometry.
+    // Clients allocate physical targets; SET_GEOMETRY also takes physical positions.
+    let scene=[Placed::new(40,60,128,96,0,11),Placed::new(100,100,160,80,1,12),
+        Placed::new(-20,780,100,40,2,13)];
+    let wins:Vec<_>=scene.iter().map(|p|W::new(p.w*2,p.h*2,2)).collect::<Result<_,_>>()?;
+    let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r))).cite("18")?;
+    for (w,p) in wins.iter().zip(&scene){
+        want_ok(w.register(b"scale-2"),"17.1","REGISTER")?;
+        let acquired=w.acquire(2_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+        // A source-window fixture, not an uploaded expected composite. Device scaling
+        // makes its 2x pixel blocks; the compositor only receives physical targets.
+        use libbreenix::gpu::{self,abi as ga};
+        struct Texture(u64);
+        impl Drop for Texture {fn drop(&mut self){gpu::resource_destroy(self.0);}}
+        let texture=Texture(gpu::texture_create(ga::format::B8G8R8A8,p.w,p.h)
+            .map_err(|r|format!("gpu-display: source texture {}",outcome(r))).cite("18")?);
+        let source:Vec<u8>=(0..p.h).flat_map(|y|(0..p.w).flat_map(move|x|{
+            let c=pattern(p.seed,x,y);[c[0],c[1],c[2],255]
+        })).collect();
+        crate::gpu_checks::declare_fixture(source.len() as u64);
+        let (uploaded,_)=gpu::upload(context.handle(),texture.0,[0,0,p.w,p.h],&source,p.w*4,
+            ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
+        want_ok(uploaded,"18","gpu-display: source-window fixture upload")?;
+        context.begin(w.c.buffer[acquired.buffer as usize],w.c.width,w.c.height);
+        let mut params=[0;16];params[4]=2;
+        context.draw(bgl::pipeline::COPY_SCALED,0,texture.0,0,0,
+            &[bgl::Instance{rect:[0,0,w.c.width as i32,w.c.height as i32],params}]);
+        context.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|r|format!("gpu-display: scale-2 source draw {}",outcome(r))).cite("18")?;
+        w.commit(acquired.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
+        let physical=Placed::new(p.x*2,p.y*2,p.w*2,p.h*2,p.z,p.seed);
+        place(&mut k,w.id(),&physical,abi::geometry_flags::VISIBLE)?;
+    }
+    compose(&mut k)?;
     let s=gpu_snapshot(&mut k)?;
     ensure((s.width,s.height)==(2560,1600),"18","gpu-display: scale-2 composition has the wrong destination size")?;
     same(&s.pixels,s.width as u32,s.height as u32,true,"scaled GPU composition","18",|x,y|formula(&scene)(x/2,y/2))

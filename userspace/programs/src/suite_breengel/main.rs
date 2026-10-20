@@ -185,6 +185,11 @@ fn main() {
 // Setup must always reach the table. Accounting cases report a missing directory
 // as a failure if preparation fails; setup cannot terminate the suite instead.
 fn prepare_raster_audit() -> Result<(), String> {
+    // Filtered runs without the category auditor need no records or directory.
+    let args:Vec<_>=std::env::args().collect();
+    if args.windows(2).any(|pair|pair[0]=="--case" && !matches!(pair[1].as_str(),"raster"|"raster/cpu-pixels-zero")) {
+        return Ok(());
+    }
     let pid=process::getpid().map_err(|e|format!("suite pid: {e:?}"))?;
     let directory=format!("/tmp/breengel-raster-audit-{}",pid.raw());
     std::fs::create_dir_all(&directory).map_err(|e|format!("gpu-raster: create accounting directory: {e}"))?;
