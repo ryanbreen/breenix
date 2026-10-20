@@ -25,6 +25,8 @@ static PANIC_ATTEMPT_EPOCH: AtomicU64 = AtomicU64::new(u64::MAX);
 static PANIC_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 const PANIC_MAX_ATTEMPTS: u64 = 3;
 static NEXT_DRAW: AtomicU64 = AtomicU64::new(0);
+/// When a failed restore is tried again.
+static NEXT_RESTORE: AtomicU64 = AtomicU64::new(0);
 const DRAW_INTERVAL_NS: u64 = 250_000_000;
 
 pub(super) struct Console {
@@ -461,14 +463,11 @@ pub fn pump() {
         return;
     }
     let now = now_ns();
-    if now < NEXT_DRAW.load(Ordering::Acquire) {
-        return;
-    }
-    // Includes restore failures and construction failures, not just successful draws.
-    NEXT_DRAW.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
+    // Preparation is attempted at most once per interval, construction failures included.
     // The private target is drawn offscreen during preparation. Prepare outside
     // display transitions, including while a process owns the display after reset.
-    if HANDOFF.load(Ordering::Acquire) {
+    if now >= NEXT_DRAW.load(Ordering::Acquire) && HANDOFF.load(Ordering::Acquire) {
+        NEXT_DRAW.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
         if let Some(epoch) = with_core(|c| {
             (!c.stalled && !c.resetting && !c.reset_wanted).then_some(c.epoch)
         }).flatten() {
@@ -487,8 +486,11 @@ pub fn pump() {
             }
         }
     }
-    if RESTORE.load(Ordering::Acquire) {
+    // A pending restore is made on the next pass, not after the preparation interval: the
+    // ended owner's frame stays bound until it is (#2110). A failed restore waits an interval.
+    if RESTORE.load(Ordering::Acquire) && now >= NEXT_RESTORE.load(Ordering::Acquire) {
         if display::restore_pending().is_err() {
+            NEXT_RESTORE.store(now.saturating_add(DRAW_INTERVAL_NS), Ordering::Release);
             return;
         }
         notify();
