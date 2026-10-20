@@ -502,53 +502,20 @@ fn raster_stride_padding() -> CaseResult {
 crate::gpu_checks::stride_padding()
 }
 
+// gpu-raster: §2.2 removes pointer-only errors; target limits and renderable formats remain exact.
 fn raster_surface_validate() -> CaseResult {
-    // SizeOverflow is reachable only through from_raw: new's largest surface,
-    // 16,384 x 16,384 x 4 bytes, is 2^30 bytes.
-    use libgfx::framebuf::SurfaceError::{Empty, Format as BadFormat, Misaligned, Null, SizeOverflow, StrideTooShort, TooLarge};
-    let premultiplied3 = Format { bpp: 3, is_bgr: true, premultiplied: true };
-    for (what, w, h, format, want) in [
-        ("new(0, 4)", 0, 4, Format::BGRX, Empty),
-        ("new(4, 0)", 4, 0, Format::BGRX, Empty),
-        ("new(16385, 1)", 16_385, 1, Format::BGRX, TooLarge),
-        ("new(1, 16385)", 1, 16_385, Format::RGB, TooLarge),
-        ("new(4, 4) premultiplied with 3-byte pixels", 4, 4, premultiplied3, BadFormat),
-    ] {
-        let got = FrameBuf::new(w, h, format).err();
-        ensure(got == Some(want), "3", format!("FrameBuf::{what} gave {got:?}; the contract's table gives {want:?}"))?;
+use libbreenix::gpu::{self, abi as ga};
+    let (ret,caps)=gpu::caps();
+    ensure(ret==0 && caps.status==ga::status::ADMITTED,"3","gpu-raster: no admitted GPU target implementation")?;
+    for (width,height,format) in [(0,4,0),(4,0,0),(caps.max_width+1,1,0),(1,caps.max_height+1,0),(4,4,u32::MAX),(4,4,ga::format::R8)] {
+        let got=gpu::target_create(format,width,height);
+        if let Ok(handle)=got {gpu::resource_destroy(handle);}
+        ensure(got==Err(-22),"3",format!("gpu-raster: target {width}x{height} format {format} returned {got:?}; Empty, TooLarge and Format are EINVAL"))?;
     }
-    for (w, h, format) in [(16_384, 1, Format::BGRX), (1, 16_384, Format::RGB), (1, 1, Format::BGRA_PREMULTIPLIED)] {
-        ensure(FrameBuf::new(w, h, format).is_ok(), "3", format!("FrameBuf::new({w}, {h}, {format:?}) was refused; it breaks no rule of the table"))?;
-    }
-    let g = padded(8, 4);
-    let base = g.base;
-    // SAFETY: every call either refuses its arguments without touching memory, or (the
-    // accepted ones) describes memory inside the guarded mapping `g`, which outlives it.
-    let raw = |what: &str, p: *mut u8, w: usize, h: usize, stride: usize, bpp: usize| -> (String, Option<SurfaceError>) {
-        (format!("from_raw({what}, {w}, {h}, stride {stride}, bpp {bpp})"),
-            unsafe { FrameBuf::from_raw(p, w, h, stride, bpp, true) }.err())
-    };
-    for ((what, got), want) in [
-        (raw("base", base, 0, 4, 44, 4), Empty),
-        (raw("base", base, 8, 0, 44, 4), Empty),
-        (raw("base", base, 16_385, 1, 65_540, 4), TooLarge),
-        (raw("base", base, 8, 4, 44, 2), BadFormat),
-        (raw("base", base, 8, 4, 44, 5), BadFormat),
-        (raw("base", base, 8, 4, 31, 4), StrideTooShort),
-        (raw("base", base, 8, 4, 23, 3), StrideTooShort),
-        (raw("base", base, 8, 2, 1 << 30, 4), SizeOverflow),
-        (raw("base", base, 8, 4, usize::MAX / 2, 4), SizeOverflow),
-        (raw("null", std::ptr::null_mut(), 8, 4, 44, 4), Null),
-        (raw("base + 1", unsafe { base.add(1) }, 8, 3, 44, 4), Misaligned),
-        (raw("base + 2", unsafe { base.add(2) }, 8, 3, 44, 4), Misaligned),
-    ] {
-        ensure(got == Some(want), "3", format!("FrameBuf::{what} gave {got:?}; the contract's table gives {want:?}"))?;
-    }
-    for (stride, bpp) in [(44, 4), (32, 4), (24, 3), (44, 3)] {
-        let (what, got) = raw("base", base, 8, 4, stride, bpp);
-        ensure(got.is_none(), "3", format!("FrameBuf::{what} was refused with {got:?}; it breaks no rule of the table"))?;
-    }
-    Ok(())
+    for (width,height,format) in [(caps.max_width,1,0),(1,caps.max_height,1),(1,1,0)] {
+        let handle=gpu::target_create(format,width,height).map_err(|e|format!("gpu-raster: valid target {width}x{height}: {}",outcome(e))).cite("3")?;
+        ensure(gpu::resource_destroy(handle)==0,"3","gpu-raster: cannot destroy valid target")?;
+    }Ok(())
 }
 
 fn raster_bpp3_bpp4() -> CaseResult {
