@@ -1207,21 +1207,24 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
     fwork::reset();
     let gray = libfont::rasterizer::rasterize(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
     let steps = fwork::steps();
-    let bound = raster_steps_bound(e, height as u64, width as u64);
+    let bound = raster_steps_bound(e, height as u64, 0);
     if steps > bound {
         return Err(format!("{what}: rasterizing {e} segments into {width} x {height} took {steps} steps; section 7 allows {bound}"));
     }
     if steps < 8 * height as u64 {
         return Err(format!("{what}: rasterizing {height} rows counted only {steps} steps; each row samples 8 sub-scanlines"));
     }
+    let before=crate::gpu_checks::counters()?;
     let whole = font.rasterize_glyph(glyph, size).map_err(|e| format!("{what}: {e}"))?;
+    let after=crate::gpu_checks::counters()?;
+    if width>0 && height>0 && (after.fragment_area==before.fragment_area || after.work_estimate<=before.work_estimate) {return Err(format!("gpu-text: {what} emitted no GPU glyph work"));}
     if whole != gray {
         return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
     }
     fwork::reset();
     libfont::rasterizer::rasterize_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
     let steps = fwork::steps();
-    let bound = e + raster_steps_bound(e, height as u64, 3 * width as u64);
+    let bound = e + raster_steps_bound(e, height as u64, 0);
     if steps > bound {
         return Err(format!("{what}: the LCD rasterization took {steps} steps; section 7 allows {bound} for 3 x {width} sampled columns"));
     }
@@ -1726,6 +1729,7 @@ fn text_line_metrics() -> CaseResult {
     Ok(())
 }
 
+// gpu-text: §2.2 retains all sizes/refusals, bounds CPU crossings without span filling, and requires GPU work.
 fn text_size_range() -> CaseResult {
     let font = parse_font(MONO_PATH).cite("8.5")?;
     let h = font.glyph_index('H');
