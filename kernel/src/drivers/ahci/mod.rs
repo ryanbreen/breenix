@@ -238,6 +238,13 @@ static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Serialize no-interrupt command publication, status sampling and retirement.
+/// A poller must not carry sampled status across another poller's retirement
+/// and the waiter's reuse of the slot. IRQ masking keeps a holder runnable;
+/// pollers skip a busy port rather than spinning on another CPU.
+static PORT_POLL: [crate::irq_safe_mutex::IrqSafeMutex<()>; MAX_PORTS] =
+    [const { crate::irq_safe_mutex::IrqSafeMutex::new(()) }; MAX_PORTS];
+
 /// Per-port token for the command currently issued in slot 0. 0 = none.
 static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
     [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
@@ -876,8 +883,10 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible(cmd_num, TIMEOUT_NS);
         // The pollers stop looking at a command its waiter gave up on.
         if token.polled && !matches!(wait_result, Ok(true)) {
+            let poll_guard = PORT_POLL[port].lock();
             PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
             let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(cmd_num, 0, Ordering::AcqRel, Ordering::Acquire);
+            drop(poll_guard);
         }
         match wait_result {
             Ok(true) => {
@@ -1017,6 +1026,10 @@ fn poll_ports() -> bool {
         if implemented & (1 << port) == 0 {
             continue;
         }
+        let Some(poll_guard) = PORT_POLL[port].try_lock() else {
+            active_left = true;
+            continue;
+        };
         let active = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
         if active & 1 == 0 {
             continue;
@@ -1035,6 +1048,7 @@ fn poll_ports() -> bool {
                 completed_any = true;
             }
         }
+        drop(poll_guard);
     }
     // The completion buffered the waiter's wake: a scheduling pass applies it,
     // and the waiter runs ahead of this poller.
@@ -1580,6 +1594,7 @@ impl AhciController {
         let polled = !has_irq && port < MAX_PORTS && poller_on_this_cpu() && scheduler_sleep_ready(true);
         let arm_completion = (has_irq && scheduler_running) || polled;
         let scheduler_running = scheduler_running || polled;
+        let poll_guard = polled.then(|| PORT_POLL[port].lock());
         if arm_completion {
             AHCI_COMPLETIONS[port][0].reset();
             PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
@@ -1607,6 +1622,7 @@ impl AhciController {
             core::arch::asm!("isb", options(nostack, preserves_flags));
         }
 
+        drop(poll_guard);
         Ok(CmdToken {
             port,
             cmd_num,
