@@ -1038,41 +1038,25 @@ fn raster_damage_sound() -> CaseResult {
     }))
 }
 
+// gpu-raster: §3 owned surfaces are GPU targets; deferred unref must return exactly to the memory baseline.
 fn raster_surface_owned() -> CaseResult {
-    let allocated0 = ALLOC_BYTES.load(Relaxed);
-    let fb = FrameBuf::new(13, 7, Format::BGRX).cite("3")?;
-    let allocated = ALLOC_BYTES.load(Relaxed) - allocated0;
-    ensure((fb.width, fb.height, fb.stride, fb.bpp) == (13, 7, 52, 4), "3", format!(
-        "FrameBuf::new(13, 7, BGRX) is {} x {} with stride {} and {} bytes per pixel; the contract gives 13 x 7, stride 52, 4",
-        fb.width, fb.height, fb.stride, fb.bpp))?;
-    ensure(allocated >= 52 * 7, "3", format!("FrameBuf::new(13, 7, BGRX) allocated {allocated} bytes for its 364 bytes of pixels"))?;
-    // SAFETY: an owned 13 × 7 BGRX surface spans stride × height = 364 bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(fb.raw_ptr(), 364) };
-    if let Some(i) = bytes.iter().position(|&b| b != 0) {
-        return at("3", format!("byte {i} of a new surface is {:#04x}; the contract clears it to zero", bytes[i]));
-    }
-    let freed_before_drop = FREE_BYTES.load(Relaxed);
-    drop(fb);
-    let freed = FREE_BYTES.load(Relaxed) - freed_before_drop;
-    ensure(freed >= 364, "3", format!("dropping the owned 13 x 7 surface freed {freed} bytes; it owns 364"))?;
-    let mut fb = FrameBuf::new_filled(13, 7, Format::RGB, INK).cite("3")?;
-    ensure(fb.stride == 39, "3", format!("FrameBuf::new_filled(13, 7, RGB) has stride {}; the contract gives width x bpp = 39", fb.stride))?;
-    for y in 0..7 {
-        for x in 0..13 {
-            // SAFETY: (x, y) is inside the owned 3-byte surface.
-            let p = unsafe { std::slice::from_raw_parts(fb.raw_ptr().add(y * 39 + x * 3), 3) };
-            if p != [INK.r, INK.g, INK.b] {
-                return at("2, 3", format!("pixel ({x},{y}) of new_filled(13, 7, RGB, {}) holds bytes {p:02x?}", hex(INK)));
-            }
-        }
-    }
-    shapes::fill_rect(&mut fb, 2, 3, 4, 2, PAPER);
-    ensure(fb.get_pixel(3, 4) == PAPER && fb.get_pixel(6, 4) == INK, "3", "a fill_rect on an owned surface did not draw where it should")?;
-    let fb = FrameBuf::new_filled(5, 2, Format::BGRX, INK).cite("3")?;
-    // SAFETY: an owned 5 × 2 BGRX surface spans 40 bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(fb.raw_ptr(), 40) };
-    ensure(bytes.chunks(4).all(|p| p == [INK.b, INK.g, INK.r, 0xFF]), "2, 3",
-        format!("new_filled(5, 2, BGRX, {}) holds {bytes:02x?}; every pixel is B, G, R, 0xFF", hex(INK)))
+use libbreenix::gpu;
+    let before=crate::gpu_checks::counters().cite("3")?;
+    let target=gpu::target_create(gpu::abi::format::B8G8R8A8,13,7)
+        .map_err(|e|format!("gpu-raster: owned target {}",outcome(e))).cite("3")?;
+    let during=crate::gpu_checks::counters().cite("3")?;
+    let destroyed=gpu::resource_destroy(target);
+    ensure(during.resources==before.resources+1 && during.resource_bytes>=before.resource_bytes+364,
+        "3","gpu-raster: owned target did not charge its resource and backing")?;
+    ensure(destroyed==0,"3","gpu-raster: owned target destruction failed")?;
+    let start=now_ms();
+    loop {
+        let after=crate::gpu_checks::counters().cite("3")?;
+        if after.resources==before.resources && after.resource_bytes==before.resource_bytes {break;}
+        ensure(now_ms()-start<1_000,"3",format!("gpu-raster: dropping the target left {} resources and {} bytes; expected {} and {}",
+            after.resources,after.resource_bytes,before.resources,before.resource_bytes))?;
+        let _=time::sleep_ms(5);
+    }Ok(())
 }
 const LINE_TABLE: &[((i32, i32, i32, i32), &[(i32, i32)])] = &[
     ((0, 0, 7, 3), &[(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3)]),
