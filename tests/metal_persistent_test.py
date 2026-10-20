@@ -105,6 +105,10 @@ class LayoutTest(existing.StateTest):
         guid = str(uuid.uuid4())
         self.assertEqual(metal_persist.intent('default', root=guid),
                          f'BREENIX-BOOT 2\ntarget default\nroot {guid}\n'.encode())
+        self.assertIn(b'userland install-42\n', metal_persist.intent('persistent', root=guid, userland='install-42'))
+        for invalid in ('', '../old', 'old.new', 'x' * 65):
+            with self.assertRaises(ValueError):
+                metal_persist.intent('persistent', userland=invalid)
         with self.assertRaises(ValueError):
             metal_persist.intent('default', root='not-a-guid')
         with tempfile.TemporaryDirectory() as scratch:
@@ -114,6 +118,18 @@ class LayoutTest(existing.StateTest):
             data = ramdisk.read_bytes()
         self.assertTrue(data.startswith(f'BREENIX-BOOT 2\ntarget default\nroot {guid}\ntests 4096 1024\n'.encode()))
         self.assertEqual(data[4096:], b'BXTEST\0\0' + bytes(1016))
+
+    def test_slot_image_carries_its_immutable_userland_identity(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            layout = metal_persist.new_layout()
+            files = dict.fromkeys(metal_persist.metal_image.ESP_FILES, Path(scratch) / 'unused')
+            def assemble(output, contents):
+                data = contents['ramdisk'].read_bytes()
+                self.assertEqual(data, metal_persist.intent('persistent', root=layout['partitions']['system']['guid'],
+                    home=layout['partitions']['home']['guid'], userland='install-42'))
+                return output
+            with patch.object(metal_persist.metal_image, 'assemble', side_effect=assemble):
+                metal_persist.slot_image(Path(scratch) / 'slot', files, layout, scratch, 'install-42')
 
     def test_a_format_2_request_names_the_test_root_by_its_on_disk_guid(self):
         guid = str(uuid.uuid4())

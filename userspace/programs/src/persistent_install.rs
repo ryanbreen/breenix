@@ -1,14 +1,7 @@
-//! `/sbin/persistent-install`: the install boot's migration (docs/metal/README.md, "Install and upgrade").
-//!
-//! It runs as PID 1 with the new userland on the test root as `/` and the persistent install's system partition
-//! mounted at `/home`. The first install copies the new root's top-level paths. A populated managed path refuses
-//! the migration before any path is changed: recoverable userland upgrades still require a generation switch
-//! (#2114). `/etc` and `/root` are copied only when the system partition lacks them and are otherwise kept. `/home` (the home partition's mount point in a persistent boot), `lost+found` and the virtual
-//! filesystems are not touched, nor are top-level directories the new root does not have. Ownership, modes,
-//! symbolic links and hard links are kept. The kernel's path system calls take only UTF-8 names (they return EINVAL
-//! for others, #2102), so a name that is not UTF-8 is reported and left out; the image's one such name is the rust-std
-//! suite's second link to a file that is copied under its first name. It syncs, prints `[persistent] install
-//! complete: ...` and then waits.
+//! Stage a userland beside the running install, then publish it with one rename.
+//! The kernel slot embeds the generation ID, so no independently mutable current
+//! pointer can pair a kernel with the wrong userland. `/etc` and `/root` remain
+//! at the partition root; this program mounts no home partition.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -18,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 const TARGET: &str = "/home";
 const KEPT: [&str; 2] = ["etc", "root"];
-const UNTOUCHED: [&str; 5] = ["home", "lost+found", "proc", "dev", "sys"];
+const UNTOUCHED: [&str; 7] = ["home", "lost+found", "proc", "dev", "sys", ".breenix-generations", ".complete"];
+const GENERATIONS: &str = ".breenix-generations";
+const READY: &str = ".complete";
 
 #[derive(Default)]
 struct Totals {
@@ -40,37 +35,51 @@ fn usable(name: &std::ffi::OsStr, parent: &Path, totals: &mut Totals) -> bool {
     false
 }
 
-struct Copier {
+struct Copier<'a> {
     totals: Totals,
     /// The first copy of each multiply-linked file, by its source inode, so its other names become hard links.
     linked: HashMap<(u64, u64), PathBuf>,
     buffer: Vec<u8>,
+    checkpoint: &'a mut dyn FnMut() -> std::io::Result<()>,
 }
 
 fn fail(what: &str, path: &Path, error: std::io::Error) -> String {
     format!("{} {}: {}", what, path.display(), error)
 }
 
-fn own(path: &Path, meta: &fs::Metadata, follow: bool) -> Result<(), String> {
+fn own(path: &Path, meta: &fs::Metadata, follow: bool) -> std::io::Result<()> {
     let result = if follow {
         std::os::unix::fs::chown(path, Some(meta.uid()), Some(meta.gid()))
     } else {
         std::os::unix::fs::lchown(path, Some(meta.uid()), Some(meta.gid()))
     };
-    result.map_err(|error| fail("chown", path, error))
+    result
 }
 
-impl Copier {
+impl Copier<'_> {
+    /// Tests fail before and after each persisted operation, including writes
+    /// that may have completed before reporting an error.
+    fn change<T>(&mut self, what: &str, path: &Path, op: impl FnOnce() -> std::io::Result<T>) -> Result<T, String> {
+        (self.checkpoint)().map_err(|error| fail(what, path, error))?;
+        let result = op().map_err(|error| fail(what, path, error))?;
+        (self.checkpoint)().map_err(|error| fail(what, path, error))?;
+        Ok(result)
+    }
+
+    fn sync(&mut self, path: &Path) -> Result<(), String> {
+        self.change("sync", path, || File::open(path)?.sync_all())
+    }
+
     fn copy_tree(&mut self, source: &Path, target: &Path) -> Result<(), String> {
         let meta = fs::symlink_metadata(source).map_err(|error| fail("stat", source, error))?;
         let kind = meta.file_type();
         if kind.is_symlink() {
             let to = fs::read_link(source).map_err(|error| fail("readlink", source, error))?;
-            std::os::unix::fs::symlink(&to, target).map_err(|error| fail("symlink", target, error))?;
-            own(target, &meta, false)?;
+            self.change("symlink", target, || std::os::unix::fs::symlink(&to, target))?;
+            self.change("chown", target, || own(target, &meta, false))?;
             self.totals.links += 1;
         } else if kind.is_dir() {
-            fs::create_dir(target).map_err(|error| fail("mkdir", target, error))?;
+            self.change("mkdir", target, || fs::create_dir(target))?;
             let mut names: Vec<_> = fs::read_dir(source)
                 .map_err(|error| fail("read directory", source, error))?
                 .map(|entry| entry.map(|entry| entry.file_name()))
@@ -82,34 +91,38 @@ impl Copier {
                     self.copy_tree(&source.join(&name), &target.join(&name))?;
                 }
             }
-            own(target, &meta, true)?;
-            fs::set_permissions(target, fs::Permissions::from_mode(meta.mode() & 0o7777))
-                .map_err(|error| fail("chmod", target, error))?;
+            self.change("chown", target, || own(target, &meta, true))?;
+            self.change("chmod", target, || fs::set_permissions(target, fs::Permissions::from_mode(meta.mode() & 0o7777)))?;
+            self.sync(target)?;
             self.totals.dirs += 1;
         } else if kind.is_file() {
             let key = (meta.dev(), meta.ino());
             if meta.nlink() > 1 {
                 if let Some(first) = self.linked.get(&key) {
-                    fs::hard_link(first, target).map_err(|error| fail("link", target, error))?;
+                    let first = first.clone();
+                    self.change("link", target, || fs::hard_link(&first, target))?;
                     self.totals.hard_links += 1;
                     return Ok(());
                 }
                 self.linked.insert(key, target.to_path_buf());
             }
             let mut input = File::open(source).map_err(|error| fail("open", source, error))?;
-            let mut output = File::create(target).map_err(|error| fail("create", target, error))?;
+            let mut output = self.change("create", target, || File::create(target))?;
             loop {
                 let count = input.read(&mut self.buffer).map_err(|error| fail("read", source, error))?;
                 if count == 0 {
                     break;
                 }
+                (self.checkpoint)().map_err(|error| fail("write", target, error))?;
                 output.write_all(&self.buffer[..count]).map_err(|error| fail("write", target, error))?;
+                (self.checkpoint)().map_err(|error| fail("write", target, error))?;
                 self.totals.bytes += count as u64;
             }
+            self.change("sync file", target, || output.sync_all())?;
             drop(output);
-            own(target, &meta, true)?;
-            fs::set_permissions(target, fs::Permissions::from_mode(meta.mode() & 0o7777))
-                .map_err(|error| fail("chmod", target, error))?;
+            self.change("chown", target, || own(target, &meta, true))?;
+            self.change("chmod", target, || fs::set_permissions(target, fs::Permissions::from_mode(meta.mode() & 0o7777)))?;
+            self.sync(target)?;
             self.totals.files += 1;
         } else {
             // Devices, FIFOs and sockets belong to the running system, not to the userland on disk.
@@ -119,59 +132,109 @@ impl Copier {
     }
 }
 
-/// Reject the entire populated-system update before the first filesystem mutation.
-fn refuse_replacement(target: &Path, names: &[String]) -> Result<(), String> {
-    for name in names {
-        if !KEPT.contains(&name.as_str()) && fs::symlink_metadata(target.join(name)).is_ok() {
-            return Err(format!("upgrade refused: /{} already exists; transactional userland replacement is required", name));
-        }
+fn present(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(fail("stat", path, error)),
+    }
+}
+
+fn require_directory(path: &Path) -> Result<(), String> {
+    if !fs::symlink_metadata(path).map_err(|error| fail("stat", path, error))?.is_dir() {
+        return Err(format!("{} is not a directory", path.display()));
     }
     Ok(())
 }
 
-fn install() -> Result<Totals, String> {
-    let root_dev = fs::metadata("/").map_err(|error| fail("stat", Path::new("/"), error))?.dev();
-    let target_dev = fs::metadata(TARGET).map_err(|error| fail("stat", Path::new(TARGET), error))?.dev();
-    if root_dev == target_dev {
-        return Err(String::from("the system partition is not mounted at /home"));
+fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(String::from("invalid userland generation"));
     }
-    let mut copier = Copier { totals: Totals::default(), linked: HashMap::new(), buffer: vec![0u8; 64 * 1024] };
+    require_directory(target)?;
+    let generations = target.join(GENERATIONS);
+    let staged = generations.join(format!("{}.new", id));
+    let published = generations.join(id);
+    if present(&published)? { return Err(String::from("userland generation already exists")); }
+    for name in KEPT {
+        require_directory(&source.join(name))?;
+        if present(&target.join(name))? { require_directory(&target.join(name))?; }
+    }
+    let mut copier = Copier { totals: Totals::default(), linked: HashMap::new(), buffer: vec![0u8; 64 * 1024], checkpoint };
+    if !present(&generations)? {
+        copier.change("mkdir", &generations, || fs::create_dir(&generations))?;
+        copier.sync(target)?;
+    }
+    require_directory(&generations)?;
+    // Only this install ID's unpublished scratch tree can be removed. Final
+    // generations may still be referenced by either slot after recovery.
+    if present(&staged)? {
+        copier.change("remove scratch", &staged, || fs::remove_dir_all(&staged))?;
+    }
+    copier.change("mkdir", &staged, || fs::create_dir(&staged))?;
     let mut names = Vec::new();
-    for entry in fs::read_dir("/").map_err(|error| fail("read directory", Path::new("/"), error))? {
-        let name = entry.map_err(|error| fail("read directory", Path::new("/"), error))?.file_name();
-        if usable(&name, Path::new("/"), &mut copier.totals) {
+    for entry in fs::read_dir(source).map_err(|error| fail("read directory", source, error))? {
+        let name = entry.map_err(|error| fail("read directory", source, error))?.file_name();
+        if usable(&name, source, &mut copier.totals) {
             names.push(name.into_string().unwrap_or_default());
         }
     }
-    names.retain(|name| !UNTOUCHED.contains(&name.as_str()));
     names.sort();
-    refuse_replacement(Path::new(TARGET), &names)?;
-    for name in &names {
-        let source = Path::new("/").join(name);
-        let target = Path::new(TARGET).join(name);
-        let present = fs::symlink_metadata(&target).is_ok();
-        if KEPT.contains(&name.as_str()) && present {
-            println!("[persistent] kept /{}", name);
-            continue;
+    for name in names.iter().filter(|name| !UNTOUCHED.contains(&name.as_str()) && !KEPT.contains(&name.as_str())) {
+        copier.copy_tree(&source.join(name), &staged.join(name))?;
+    }
+    // Shared directories are copied privately when absent, then renamed into
+    // place only after the copy is durable. Existing directories are kept
+    // during upgrades, including upgrades from the old flat layout.
+    for name in KEPT {
+        let destination = target.join(name);
+        if !present(&destination)? {
+            // Keep shared scratch outside the generation: an interrupted
+            // cross-directory rename can leave both source and destination
+            // naming it. Retrying must not recurse through that alias when
+            // removing the generation's unpublished scratch tree.
+            let scratch = generations.join(format!("{}.shared-{}", id, name));
+            if present(&scratch)? {
+                copier.change("remove unpublished shared scratch", &scratch, || fs::remove_dir_all(&scratch))?;
+            }
+            // Keep hard-link groups inside each independently published tree.
+            copier.linked.clear();
+            copier.copy_tree(&source.join(name), &scratch)?;
+            copier.sync(&generations)?;
+            copier.change("publish shared directory", &destination, || fs::rename(&scratch, &destination))?;
+            copier.sync(target)?;
+            copier.sync(&generations)?;
         }
-        copier.copy_tree(&source, &target)?;
-        println!("[persistent] installed /{}", name);
     }
-    let home = Path::new(TARGET).join("home");
-    if fs::symlink_metadata(&home).is_err() {
-        fs::create_dir(&home).map_err(|error| fail("mkdir", &home, error))?;
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).map_err(|error| fail("chmod", &home, error))?;
+    for name in ["etc", "root", "home", "dev", "proc", "sys"] {
+        let mount = staged.join(name);
+        copier.change("mkdir mount", &mount, || fs::create_dir(&mount))?;
     }
+    let ready = staged.join(READY);
+    let record = format!("BREENIX-USERLAND 1\n{}\n", id);
+    let mut file = copier.change("create completion record", &ready, || File::create(&ready))?;
+    copier.change("write completion record", &ready, || file.write_all(record.as_bytes()))?;
+    copier.change("sync completion record", &ready, || file.sync_all())?;
+    copier.sync(&staged)?;
+    copier.change("publish generation", &published, || fs::rename(&staged, &published))?;
+    copier.sync(&generations)?;
     Ok(copier.totals)
+}
+
+fn install() -> Result<Totals, String> {
+    let source = Path::new("/");
+    let target = Path::new(TARGET);
+    let root_dev = fs::metadata(source).map_err(|error| fail("stat", source, error))?.dev();
+    let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
+    if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
+    let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
+    install_tree(source, target, &id, &mut || Ok(()))
 }
 
 fn main() {
     println!("[persistent] install starting: the test root's userland onto the system partition at /home");
     match install() {
         Ok(totals) => {
-            // SAFETY: sync takes no arguments and only flushes filesystem state.
-            #[cfg(not(test))]
-            unsafe { libbreenix::syscall::raw::syscall0(libbreenix::syscall::nr::SYNC) };
             println!(
                 "[persistent] install complete: files={} dirs={} links={} hard-links={} bytes={} left-out={}",
                 totals.files, totals.dirs, totals.links, totals.hard_links, totals.bytes, totals.left_out
@@ -186,18 +249,305 @@ fn main() {
 }
 
 #[cfg(test)]
+extern crate alloc;
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/ext2/generation.rs"]
+mod generation;
+#[cfg(test)]
+#[path = "../../../scripts/metal/efi-stub/src/slot_transaction.rs"]
+mod slots;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("userland-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn source(&self, name: &str) -> PathBuf {
+            let path = self.0.join(name);
+            fs::create_dir(&path).unwrap();
+            for directory in ["bin", "sbin", "etc", "root", "home", "dev", "proc", "sys"] {
+                fs::create_dir(path.join(directory)).unwrap();
+            }
+            fs::write(path.join("bin/payload"), name.as_bytes()).unwrap();
+            fs::set_permissions(path.join("bin/payload"), fs::Permissions::from_mode(0o6755)).unwrap();
+            fs::hard_link(path.join("bin/payload"), path.join("sbin/init")).unwrap();
+            std::os::unix::fs::symlink("../bin/payload", path.join("sbin/link")).unwrap();
+            fs::write(path.join("etc/config"), b"source config").unwrap();
+            fs::write(path.join("root/data"), b"source data").unwrap();
+            path
+        }
+        fn system(&self) -> PathBuf {
+            let path = self.source("system");
+            fs::write(path.join("etc/config"), b"operator config").unwrap();
+            fs::write(path.join("root/data"), b"operator data\0\xff").unwrap();
+            fs::write(path.join("home/untouched"), b"home mount point data").unwrap();
+            // A distinct home filesystem is represented beside the system.
+            fs::create_dir(self.0.join("home-partition")).unwrap();
+            fs::write(self.0.join("home-partition/data"), b"operator home\0\xff").unwrap();
+            path
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) { fs::remove_dir_all(&self.0).unwrap(); }
+    }
+
+    // Include bytes, modes, ownership, symlink targets and link groups. Ignore
+    // access times, which a read itself may update.
+    fn snapshot(path: &Path) -> BTreeMap<PathBuf, (u32, u32, u32, Vec<u8>, Option<u64>)> {
+        fn walk(root: &Path, path: &Path, result: &mut BTreeMap<PathBuf, (u32, u32, u32, Vec<u8>, Option<u64>)>) {
+            let meta = fs::symlink_metadata(path).unwrap();
+            let bytes = if meta.is_file() { fs::read(path).unwrap() }
+                else if meta.is_symlink() { fs::read_link(path).unwrap().as_os_str().as_encoded_bytes().to_vec() }
+                else { Vec::new() };
+            result.insert(path.strip_prefix(root).unwrap().into(),
+                (meta.mode(), meta.uid(), meta.gid(), bytes, meta.is_file().then_some(meta.ino())));
+            if meta.is_dir() {
+                for entry in fs::read_dir(path).unwrap() { walk(root, &entry.unwrap().path(), result); }
+            }
+        }
+        let mut result = BTreeMap::new();
+        walk(path, path, &mut result);
+        result
+    }
+
+    /// Adapter over real host directories for the kernel's production selection
+    /// code. Inode numbers here are assigned handles independent of host inode values.
+    struct Tree(RefCell<BTreeMap<u32, PathBuf>>);
+    impl Tree {
+        fn new(system: &Path) -> Self { Self(RefCell::new(BTreeMap::from([(2, system.into())]))) }
+        fn path(&self, ino: u32) -> PathBuf { self.0.borrow()[&ino].clone() }
+    }
+    impl generation::Tree for Tree {
+        fn directory(&self, parent: u32, name: &str) -> Result<u32, &'static str> {
+            let path = self.path(parent).join(name);
+            if !fs::symlink_metadata(&path).map_err(|_| "stat")?.is_dir() { return Err("not directory"); }
+            let mut paths = self.0.borrow_mut();
+            if let Some((&ino, _)) = paths.iter().find(|(_, value)| **value == path) { return Ok(ino); }
+            let ino = paths.len() as u32 + 2;
+            paths.insert(ino, path);
+            Ok(ino)
+        }
+        fn contents(&self, parent: u32, name: &str) -> Result<Vec<u8>, &'static str> {
+            let path = self.path(parent).join(name);
+            let meta = fs::symlink_metadata(&path).map_err(|_| "stat")?;
+            if !meta.is_file() || meta.len() > 128 { return Err("not record"); }
+            fs::read(path).map_err(|_| "read")
+        }
+    }
+
+    fn selected(system: &Path, id: &str) -> PathBuf {
+        assert!(generation::Namespace::RAW.is_mount(2));
+        let tree = Tree::new(system);
+        let namespace = generation::select(&tree, id).unwrap();
+        assert!(namespace.is_mount(namespace.root));
+        assert_eq!(tree.path(namespace.shared(namespace.root, b"etc").unwrap()), system.join("etc"));
+        assert_eq!(tree.path(namespace.shared(namespace.root, b"root").unwrap()), system.join("root"));
+        assert_eq!(namespace.shared(namespace.root, b"home"), None);
+        assert!(namespace.is_mount(namespace.etc));
+        tree.path(namespace.root)
+    }
 
     #[test]
-    fn populated_upgrade_refuses_before_changing_existing_binaries() {
-        let path = std::env::temp_dir().join(format!("persistent-install-{}", std::process::id()));
-        fs::create_dir(&path).unwrap();
-        fs::create_dir(path.join("bin")).unwrap();
-        fs::write(path.join("bin/shell"), b"old binary").unwrap();
-        let names = vec![String::from("bin"), String::from("etc")];
-        assert!(refuse_replacement(&path, &names).is_err());
-        assert_eq!(fs::read(path.join("bin/shell")).unwrap(), b"old binary");
-        fs::remove_dir_all(&path).unwrap();
+    fn interruption_enospc_and_io_error_at_each_operation_keep_current_bootable() {
+        for flat in [false, true] {
+            let baseline = Fixture::new();
+            let source = baseline.source("new");
+            let system = baseline.system();
+            if !flat {
+                install_tree(&baseline.source("old"), &system, "old", &mut || Ok(())).unwrap();
+            }
+            let mut checkpoints = 0;
+            install_tree(&source, &system, "count", &mut || { checkpoints += 1; Ok(()) }).unwrap();
+            for errno in [4, 5, 28] {
+                for fault in 0..checkpoints {
+                    let fixture = Fixture::new();
+                    let source = fixture.source("new");
+                    let system = fixture.system();
+                    let current = if flat { system.clone() } else {
+                        let old = fixture.source("old");
+                        install_tree(&old, &system, "old", &mut || Ok(())).unwrap();
+                        selected(&system, "old")
+                    };
+                    let old_bin = snapshot(&current.join("bin"));
+                    let old_sbin = snapshot(&current.join("sbin"));
+                    let data: Vec<_> = [system.join("etc"), system.join("root"), system.join("home"), fixture.0.join("home-partition")]
+                        .iter().map(|path| (path.clone(), snapshot(path))).collect();
+                    let mut left = fault;
+                    let result = install_tree(&source, &system, "new", &mut || {
+                        if left == 0 { return Err(std::io::Error::from_raw_os_error(errno)); }
+                        left -= 1;
+                        Ok(())
+                    });
+                    assert!(result.is_err(), "flat={flat} errno={errno} fault={fault}");
+                    if !flat { assert_eq!(selected(&system, "old"), current); }
+                    assert_eq!(snapshot(&current.join("bin")), old_bin);
+                    assert_eq!(snapshot(&current.join("sbin")), old_sbin);
+                    for (path, before) in data { assert_eq!(snapshot(&path), before); }
+                    // A reset after the final rename may leave a completed,
+                    // unselected generation. It must be bootable too.
+                    if system.join(GENERATIONS).join("new").exists() {
+                        let root = selected(&system, "new");
+                        assert_eq!(fs::read(root.join("bin/payload")).unwrap(), b"new");
+                    }
+                }
+            }
+        }
+    }
+
+    struct SlotDisk {
+        files: RefCell<BTreeMap<String, Vec<u8>>>,
+        left: Cell<usize>,
+        after: bool,
+    }
+    impl SlotDisk {
+        fn change(&self, operation: impl FnOnce(&mut BTreeMap<String, Vec<u8>>)) -> Result<(), ()> {
+            let count = self.left.get();
+            if count == 0 && !self.after { return Err(()); }
+            operation(&mut self.files.borrow_mut());
+            if count == 0 { return Err(()); }
+            self.left.set(count - 1);
+            Ok(())
+        }
+        fn id(&self, slot: &str) -> String {
+            String::from_utf8(self.files.borrow()[&format!("{}.IMG", slot)].clone()).unwrap()
+        }
+    }
+    impl slots::Store for SlotDisk {
+        type Error = ();
+        fn exists(&self, name: &str) -> bool { self.files.borrow().contains_key(name) }
+        fn read(&self, name: &str, out: &mut [u8]) -> Result<usize, ()> {
+            let files = self.files.borrow();
+            let bytes = files.get(name).ok_or(())?;
+            if bytes.len() > out.len() { return Err(()); }
+            out[..bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ()> {
+            self.change(|files| { files.insert(name.into(), bytes.into()); })
+        }
+        fn delete(&self, name: &str) -> Result<(), ()> {
+            self.change(|files| { files.remove(name); })
+        }
+        fn rename(&self, from: &str, to: &str) -> Result<(), ()> {
+            assert!(!self.files.borrow().contains_key(to));
+            self.change(|files| { let bytes = files.remove(from).unwrap(); files.insert(to.into(), bytes); })
+        }
+        fn invalid(&self) {}
+    }
+
+    #[test]
+    fn promotion_and_rollback_recover_paired_trees_byte_for_byte() {
+        let fixture = Fixture::new();
+        let system = fixture.system();
+        for id in ["old", "new"] {
+            install_tree(&fixture.source(id), &system, id, &mut || Ok(())).unwrap();
+        }
+        let old = snapshot(&selected(&system, "old"));
+        let new = snapshot(&selected(&system, "new"));
+        let initial: BTreeMap<_, _> = [("CURRENT.IMG", b"old".to_vec()), ("CURRENT.TXT", b"old".to_vec()),
+            ("NEXT.IMG", b"new".to_vec()), ("NEXT.TXT", b"new".to_vec())].into_iter().map(|(k,v)| (k.into(),v)).collect();
+        for rollback in [false, true] {
+            for after in [false, true] {
+                let probe = SlotDisk { files: RefCell::new(initial.clone()), left: Cell::new(usize::MAX), after };
+                if rollback { slots::begin(&probe, false).unwrap(); }
+                let start = probe.files.borrow().clone();
+                probe.left.set(usize::MAX);
+                slots::begin(&probe, rollback).unwrap();
+                let operations = usize::MAX - probe.left.get();
+                for fault in 0..=operations {
+                    let disk = SlotDisk { files: RefCell::new(start.clone()), left: Cell::new(fault), after };
+                    let _ = slots::begin(&disk, rollback);
+                    disk.left.set(usize::MAX);
+                    slots::recover(&disk).unwrap();
+                    let id = disk.id("CURRENT");
+                    let expected = if id == "old" { &old } else { assert_eq!(id, "new"); &new };
+                    assert_eq!(&snapshot(&selected(&system, &id)), expected);
+                    assert_eq!(disk.files.borrow()["CURRENT.TXT"], id.as_bytes());
+                    // Complete promotion then rollback without a fault: the
+                    // actual slot transaction must return exactly the old tree.
+                    if !rollback && id == "new" {
+                        slots::begin(&disk, true).unwrap();
+                        assert_eq!(disk.id("CURRENT"), "old");
+                        assert_eq!(snapshot(&selected(&system, "old")), old);
+                    }
+                }
+            }
+        }
+        assert_eq!(fs::read(system.join("root/data")).unwrap(), b"operator data\0\xff");
+        assert_eq!(fs::read(fixture.0.join("home-partition/data")).unwrap(), b"operator home\0\xff");
+    }
+
+    #[test]
+    fn first_install_retry_keeps_published_shared_data_at_each_checkpoint() {
+        let baseline = Fixture::new();
+        let source = baseline.source("new");
+        let target = baseline.0.join("blank");
+        fs::create_dir(&target).unwrap();
+        let mut count = 0;
+        install_tree(&source, &target, "first", &mut || { count += 1; Ok(()) }).unwrap();
+        for fault in 0..count {
+            let fixture = Fixture::new();
+            let source = fixture.source("new");
+            let target = fixture.0.join("blank");
+            fs::create_dir(&target).unwrap();
+            let mut left = fault;
+            assert!(install_tree(&source, &target, "first", &mut || {
+                if left == 0 { return Err(std::io::Error::from_raw_os_error(5)); }
+                left -= 1;
+                Ok(())
+            }).is_err());
+            let mut data = Vec::new();
+            for name in KEPT {
+                let path = target.join(name);
+                if path.exists() {
+                    fs::write(path.join("operator-file"), b"written after interruption").unwrap();
+                    data.push((path.clone(), snapshot(&path)));
+                }
+            }
+            if !target.join(GENERATIONS).join("first").exists() {
+                install_tree(&source, &target, "first", &mut || Ok(())).unwrap();
+            }
+            assert_eq!(fs::read(selected(&target, "first").join("bin/payload")).unwrap(), b"new");
+            for (path, before) in data { assert_eq!(snapshot(&path), before); }
+        }
+    }
+
+    #[test]
+    fn incomplete_generations_are_refused_and_first_install_resumes() {
+        let fixture = Fixture::new();
+        let source = fixture.source("new");
+        let system = fixture.0.join("blank");
+        fs::create_dir(&system).unwrap();
+        let mut checkpoints = 0;
+        // Stop inside first-install copying, then retry the same scratch ID.
+        assert!(install_tree(&source, &system, "first", &mut || {
+            checkpoints += 1;
+            if checkpoints == 30 { Err(std::io::Error::from_raw_os_error(5)) } else { Ok(()) }
+        }).is_err());
+        assert!(generation::select(&Tree::new(&system), "first").is_err());
+        install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
+        let root = selected(&system, "first");
+        assert_eq!(fs::read(root.join("bin/payload")).unwrap(), b"new");
+        assert_eq!(fs::metadata(root.join("bin/payload")).unwrap().ino(), fs::metadata(root.join("sbin/init")).unwrap().ino());
+        assert_eq!(fs::metadata(root.join("bin/payload")).unwrap().mode() & 0o7777, 0o6755);
+        let before = snapshot(&system);
+        assert!(install_tree(&source, &system, "first", &mut || panic!("mutated published tree")).is_err());
+        assert_eq!(snapshot(&system), before);
+        for id in ["../first", "first.new", "", ".", ".."] {
+            assert!(generation::select(&Tree::new(&system), id).is_err());
+            assert!(install_tree(&source, &system, id, &mut || panic!("invalid ID mutated disk")).is_err());
+        }
+        fs::write(root.join(READY), b"wrong generation\n").unwrap();
+        assert!(generation::select(&Tree::new(&system), "first").is_err());
     }
 }

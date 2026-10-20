@@ -117,7 +117,7 @@ def manager_config(site, countdown=5):
     return ['BREENIX-MANAGER 1', 'query ' + query_url(site), f'countdown {countdown}', 'test-path load-file']
 
 
-def intent(target, root=None, home=None, tests=None):
+def intent(target, root=None, home=None, tests=None, userland=None):
     """A format-2 boot intent (kernel/src/boot/intent.rs)."""
     lines = ['BREENIX-BOOT 2', 'target ' + target]
     for item, guid in (('root', root), ('home', home)):
@@ -125,6 +125,10 @@ def intent(target, root=None, home=None, tests=None):
             if not GUID.fullmatch(guid):
                 raise ValueError(f'the {item} is not a GUID')
             lines.append(f'{item} {guid}')
+    if userland is not None:
+        if not re.fullmatch(r'[A-Za-z0-9-]{1,64}', userland):
+            raise ValueError('invalid userland generation')
+        lines.append('userland ' + userland)
     if tests is not None:
         lines.append(f'tests {tests[0]} {tests[1]}')
     return ('\n'.join(lines) + '\n').encode('ascii')
@@ -144,11 +148,11 @@ def tests_ramdisk(output, target, root, binaries):
     return output
 
 
-def slot_image(output, esp_files, the_layout, scratch):
+def slot_image(output, esp_files, the_layout, scratch, generation):
     """A kernel slot: the build's bootloader, kernel and boot.json, and the persistent boot's intent as `ramdisk`."""
     parts = the_layout['partitions']
     ramdisk = Path(scratch) / 'slot-intent'
-    ramdisk.write_bytes(intent('persistent', root=parts['system']['guid'], home=parts['home']['guid']))
+    ramdisk.write_bytes(intent('persistent', root=parts['system']['guid'], home=parts['home']['guid'], userland=generation))
     files = {name: esp_files[name] for name in metal_image.ESP_FILES}
     files['ramdisk'] = ramdisk
     return metal_image.assemble(output, files)

@@ -1219,6 +1219,10 @@ fn launch_x86_production_init(
 
         let path = alloc::format!("/sbin/{}", name);
         let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+        if name == "persistent-install" {
+            let generation = kernel::boot::intent::userland().ok_or("install intent names no userland generation")?;
+            argv.push(generation.as_bytes());
+        }
         if let Some(mode) = console_mode {
             argv.push(mode.arg().as_bytes());
         }

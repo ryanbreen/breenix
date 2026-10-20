@@ -598,7 +598,7 @@ class Driver:
         scratch = self.stage / 'persist'
         scratch.mkdir(parents=True, exist_ok=True)
         slot = scratch / 'next.img'
-        metal_persist.slot_image(slot, esp_files, the_layout, scratch)
+        metal_persist.slot_image(slot, esp_files, the_layout, scratch, self.id)
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
         manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
@@ -612,7 +612,7 @@ class Driver:
         parts = the_layout['partitions']
         intent = self.stage / 'boot-intent'
         intent.write_bytes(metal_persist.intent('persistent-install', root=parts['test']['guid'],
-                                                home=parts['system']['guid']))
+                                                home=parts['system']['guid'], userland=self.id))
         files['ramdisk'] = intent
         if action == 'install':
             config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,

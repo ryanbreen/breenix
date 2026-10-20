@@ -18,6 +18,8 @@ struct Captured {
     root: Option<[u8; 36]>,
     home: Option<[u8; 36]>,
     tests: Option<(usize, usize)>,
+    userland: Option<[u8; 64]>,
+    userland_len: usize,
     refused: Option<&'static str>,
 }
 
@@ -41,7 +43,7 @@ fn parse_format_2(body: &[u8]) -> Result<Captured, &'static str> {
     }
     let text = core::str::from_utf8(&body[..end]).map_err(|_| "the boot intent is not text")?;
     let mut captured =
-        Captured { target: [0; TARGET_MAX], target_len: 0, root: None, home: None, tests: None, refused: None };
+        Captured { target: [0; TARGET_MAX], target_len: 0, root: None, home: None, tests: None, userland: None, userland_len: 0, refused: None };
     let mut target = false;
     for line in text.split('\n').filter(|line| !line.is_empty()) {
         let (item, value) = line.split_once(' ').ok_or("a boot intent line has no value")?;
@@ -54,6 +56,13 @@ fn parse_format_2(body: &[u8]) -> Result<Captured, &'static str> {
             }
             "root" if captured.root.is_none() => captured.root = Some(guid_text(value).ok_or("the root is not a GUID")?),
             "home" if captured.home.is_none() => captured.home = Some(guid_text(value).ok_or("the home is not a GUID")?),
+            "userland" if captured.userland.is_none() => {
+                if !valid_generation(value) { return Err("invalid userland generation"); }
+                let mut id = [0; 64];
+                id[..value.len()].copy_from_slice(value.as_bytes());
+                captured.userland = Some(id);
+                captured.userland_len = value.len();
+            }
             "tests" if captured.tests.is_none() => {
                 let (offset, bytes) = value.split_once(' ').ok_or("tests needs an offset and a length")?;
                 captured.tests = Some((number(offset).ok_or("bad tests offset")?, number(bytes).ok_or("bad tests length")?));
@@ -74,7 +83,7 @@ pub fn capture(bytes: &[u8]) -> bool {
     if let Some(line) = bytes.strip_prefix(FORMAT_1) {
         if line.is_empty() || line.len() > TARGET_MAX { return false; }
         let mut captured =
-            Captured { target: [0; TARGET_MAX], target_len: line.len(), root: None, home: None, tests: None, refused: None };
+            Captured { target: [0; TARGET_MAX], target_len: line.len(), root: None, home: None, tests: None, userland: None, userland_len: 0, refused: None };
         captured.target[..line.len()].copy_from_slice(line);
         BOOT_INTENT.call_once(|| captured);
         return true;
@@ -86,6 +95,8 @@ pub fn capture(bytes: &[u8]) -> bool {
         root: None,
         home: None,
         tests: None,
+        userland: None,
+        userland_len: 0,
         refused: Some(why),
     });
     BOOT_INTENT.call_once(|| captured);
@@ -115,4 +126,15 @@ pub fn tests() -> Option<(usize, usize)> {
 /// Why a format-2 intent was refused.
 pub fn refused() -> Option<&'static str> {
     BOOT_INTENT.get()?.refused
+}
+
+/// Immutable install identity embedded in the kernel slot and passed to the installer.
+pub fn userland() -> Option<&'static str> {
+    let captured = BOOT_INTENT.get()?;
+    core::str::from_utf8(&captured.userland.as_ref()?[..captured.userland_len]).ok()
+}
+
+/// Directory-component validation excludes relative paths and staging names.
+pub fn valid_generation(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }

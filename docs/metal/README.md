@@ -838,13 +838,12 @@ partition. A tests boot's RAM disk is its intent followed by the BXTEST image.
 ### Install and upgrade
 
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the
-persistent install with one leased run of two boots. Populated-system upgrades are currently refused by the
-migration before any userland path is changed; recoverable userland generations are pending in #2114. The
-one-time installation path is:
+persistent install with one leased run of two boots. The kernel slot and its userland share an immutable install
+ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 intent. The installation path is:
 
 1. **The install boot.** The build is the production kernel and userland of the commit, the delivery stub and the
    manager. The driver makes the slot image `NEXT.IMG` (the commit's kernel, intent `target persistent`, the system
-   and home GUIDs) and serves a boot disk whose stub carries an install request:
+   and home GUIDs and `userland <id>`) and serves a boot disk whose stub carries an install request:
    - On a disk without the persistent layout (the one-time install), the request carries the layout and the
      partitions' contents as extents (byte ranges of data, and ranges to clear): the protective MBR and both GPT
      copies, a FAT32 EFI system partition holding the manager, `MANAGER.CFG`, `\EFI\BOOT\BOOTX64.EFI` and the
@@ -858,20 +857,46 @@ one-time installation path is:
      comes through the manager.
 
    The stub then stages the new userland on the test root and starts the kernel with `target persistent-install`,
-   the test root as root and the system partition at `/home`. `/sbin/persistent-install` first refuses a populated
-   managed top-level path. On an empty system it copies the new root, keeps existing `/etc` and `/root`, and leaves
-   `/home`, `lost+found` and virtual filesystems untouched, syncs, and prints
-   `[persistent] install complete: ...`. The home partition is not mounted. The kernel's path calls refuse names
+   the test root as root and the system partition at `/home`. The same `userland <id>` intent item becomes the
+   installer's first argument. `/sbin/persistent-install` copies the new userland into
+   `/.breenix-generations/<id>.new` on the system partition. It preserves file bytes, ownership, modes, symlinks
+   and hard links within the copied tree. It keeps existing `/etc` and `/root`; when absent, it copies each into
+   private scratch space outside the generation, flushes it, and publishes it with a rename. The generation has empty directory mount
+   points for `/etc`, `/root`, `/home` and the virtual filesystems. The installer writes and flushes a completion
+   record (`.complete`, containing the ID), flushes the staging directory, renames the tree once to
+   `/.breenix-generations/<id>`, then flushes its parent. Only then does it print
+   `[persistent] install complete: ...`. File and directory barriers report I/O errors; an advisory `sync` result
+   cannot certify completion. The home partition is not mounted, and the system partition's existing `/home`
+   mount point and `lost+found` are untouched. The kernel's path calls refuse names
    that are not UTF-8 (#2102), so such a name is reported (`[persistent] left out ...`) and counted (`left-out=`);
    the root image's one such name is the rust-std suite's second link to a file the migration copies.
 2. **The verification boot**, under the same lease: a persistent session whose answer is `persistent <boot> current
    commit`. The manager commits `NEXT` to `CURRENT` (the old current becomes `PREVIOUS`) and boots it; the boot
-   passes at the login prompt with the persistent stages below.
+   passes at the login prompt with the persistent stages below. Before publishing its root filesystem, the kernel
+   requires the selected generation's matching completion record and directory mount points. It uses that tree's
+   inode as `/`, with `/etc` and `/root` bound from the partition root and `/home` mounted from the separate home
+   partition. Path lookup, relative paths and working-directory reconstruction use the selected namespace.
+
+A failed copy, ENOSPC, a failed barrier or a reset before publication leaves the old slots and their trees in place.
+A reset after the rename can leave a completed, unselected tree; it does not switch the running install. The driver
+requests slot promotion only after the install completion line. The manager recovers its existing ESP slot
+transaction before choosing a kernel; the embedded userland identity moves with the image, including a one-time
+previous-slot boot. There is no second current-userland pointer to update across the two partitions. A legacy slot
+without a userland item still uses the flat partition root, which migration leaves intact.
+
+Published generations are retained, including those left by an interrupted verification boot. The installer removes
+only its own unpublished `<id>.new` scratch directory on a retry and refuses to overwrite a published ID. It does
+not guess which completed tree is safe to reclaim from the boot host's potentially stale slot record. Thus this
+version needs space for the retained trees plus the new tree; lack of space fails the upgrade while keeping the
+current tree. Reclamation must account for the manager's recovered slots before deleting a generation (#2117).
 
 `metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
 the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the
-previous slot once without swapping. Rollback restores the previous kernel; it does not restore shared userland.
-This is why populated-system migration is refused until #2114 provides recoverable userland generations.
+previous slot once without swapping. Rollback restores the previous kernel and selects its unchanged userland
+tree. `/etc`, operator data in `/root`, and the separate home filesystem stay shared across promotion and rollback.
+Host transaction tests in `persistent_install.rs` interrupt filesystem operations and the manager's slot actions;
+they check retained bytes and metadata, shared data and selection of the paired tree. Hardware validation of this
+generation protocol is pending review and a later hardware window (#2114).
 
 ### Persistent sessions
 
@@ -1501,6 +1526,7 @@ manager files and FAT metadata; an oversized slot is refused before an install r
 carry a durable intent and phase markers, recovered before startup reads the slot notes. An installed manager
 with an unreadable configuration tries its existing slots and then returns to firmware with the watchdog armed.
 
-Userland upgrades are currently refused before any tree is changed when a managed top-level path already
-exists. Both kernel slots share the system partition, so deleting an old tree would invalidate rollback. A
-recoverable userland generation switch is required before populated-system upgrades can be enabled.
+The earlier populated-system refusal is replaced by the [generation protocol](#install-and-upgrade): the installer
+publishes a new tree beside the current one, and the kernel slot selects its matching tree by install ID. Existing
+flat paths, shared data directories and published generations are retained for rollback. The protocol's hardware
+validation remains deferred until after review (#2114).
