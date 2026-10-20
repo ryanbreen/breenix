@@ -2562,6 +2562,7 @@ fn font_parser_coords_extreme() -> CaseResult {
     Ok(())
 }
 
+// gpu-text: §2.2 square CPU bound excludes span fill; exact GPU work includes crossings, pixels and blend copies.
 fn font_parser_work_bound() -> CaseResult {
     use libfont::outline::LineSegment;
     // The independent square of section 7: four edges 1,022 px apart with a 1-pixel margin,
@@ -2573,14 +2574,20 @@ fn font_parser_work_bound() -> CaseResult {
         LineSegment { x0: b, y0: b, x1: b, y1: a },
         LineSegment { x0: b, y0: a, x1: a, y1: a },
     ];
-    ensure(raster_steps_bound(4, 1_024, 1_024) == 10_699_844, "7", "the suite's raster bound for the square is not the contract's 10,699,844")?;
+    ensure(raster_steps_bound(4,1_024,0)==214_084,"7","the CPU crossing formula is not 214,084")?;
+    let gpu_before=crate::gpu_checks::counters().cite("7")?;
     libfont::work::reset();
     let bitmap = libfont::rasterizer::rasterize(&square, 1_024, 1_024, 0, 0).cite("7")?;
     let steps = libfont::work::steps();
-    value("square-steps", steps as i64, "steps", Some((8_388_608, 10_699_844)));
+    value("square-steps", steps as i64, "steps", Some((8_192, 214_084)));
     ensure(bitmap.coverage[512 * 1_024 + 512] == 255 && bitmap.coverage[0] == 0, "7", "the square rasterized to the wrong coverage")?;
-    ensure((8_388_608..=10_699_844).contains(&steps), "7", format!(
-        "the 1,024 x 1,024 square took {steps} steps; section 7 requires at least 8,388,608 (8 x 1,024 x 1,024) and at most 10,699,844"))?;
+    ensure((8_192..=214_084).contains(&steps),"7",format!("gpu-text: square took {steps} CPU crossing steps; bound is [8192,214084]"))?;
+    let gpu_after=crate::gpu_checks::counters().cite("7")?;
+    // 1022 interior rows, 16 crossings per row, 1024 pixels per row; one scratch copy per pixel.
+    const EXPECTED:u64=8192*(1024*1024+1024*16*1022)+1024*1024;
+    ensure(EXPECTED==145_761_501_184,"7","independent square GPU formula is wrong")?;
+    ensure(gpu_after.work_estimate-gpu_before.work_estimate==EXPECTED,"7",
+        format!("gpu-text: square GPU work is {}; expected exactly {EXPECTED}, split across submissions below 2^31",gpu_after.work_estimate-gpu_before.work_estimate))?;
     for entry in corpus_index().cite("10")? {
         let path = format!("{CORPUS_DIR}/{}", entry.file);
         let file = read_file(&path).cite("10")?;
