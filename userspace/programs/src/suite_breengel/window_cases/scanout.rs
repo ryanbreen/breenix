@@ -61,14 +61,14 @@ fn readback_raw() -> (i64, Vec<u8>, abi::ObservationRecord) {
     (r, px, rec)
 }
 
+// gpu-display: §2.2/R4 replaces fb_info with MODES and full physical-size GPU readback.
 fn scanout_mode_set() -> CaseResult {
-    let i = fbinfo().cite("18")?;
-    ensure((i.width, i.height) == (1280, 800), "18, 20.2", format!("fbinfo reports {}x{}; the contract requires 1280x800 in a GUI suite boot", i.width, i.height))?;
-    interface()?;
-    let (_k, _w, _p, _) = one_window(1)?;
-    let (_, rec) = screen()?;
-    ensure((rec.width, rec.height) == (1280, 800) && rec.stride >= 1280 * 4, "20.1", format!(
-        "the observation record reports {}x{} with stride {}; the display runs at 1280x800", rec.width, rec.height, rec.stride))
+let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
+    let mode=modes.modes[modes.current as usize];
+    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18,20.2","gpu-display: suite mode is not 2560x1600 at scale 2")?;
+    interface()?;let (mut k,_w,_p,_)=one_window(1)?;
+    let s=super::composition::gpu_snapshot(&mut k)?;
+    ensure((s.width,s.height)==(2560,1600) && s.word(56)==2560*4,"20.1","gpu-display: record/readback dimensions or stride disagree with MODES")
 }
 
 fn scanout_device_path() -> CaseResult {
