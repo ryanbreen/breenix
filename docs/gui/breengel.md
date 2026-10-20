@@ -1411,6 +1411,8 @@ overlay, verdict, category headings and boot ribbon, with individual pixel subst
 - `/usr/local/test/bin/kiosk_test` is a test compositor: it claims the compositor, places windows where its
   command pipe tells it, composes on the GPU core after render completion and writes events
   through `WRITE_EVENTS`. `gpu-counters` returns the helper's actual GPU counters;
+  `gpu-private-scanout` retains and presents a real private target for the foreign-sample
+  negative control; its handle and device binding are distinct identities.
   `gpu-scanout <guest-file>` performs target-0 device readback as its display owner and
   publishes dimensions, record v2 and pixels, with exact status/reason on failure.
   `/usr/local/test/bin/raw-window_test` is a client that uses the raw system calls without Breengel. The

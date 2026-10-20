@@ -109,8 +109,13 @@ fn write_raw(id: u64, ptr: u64, count: u32) -> i64 {
 
 struct Kiosk {
     auto: bool,
+    gpu_fixtures: Vec<(bgl::Context,u64)>,
     /// The next input serial.
     serial: u64,
+}
+
+impl Drop for Kiosk {
+    fn drop(&mut self){for (_,target) in &self.gpu_fixtures {libbreenix::gpu::resource_destroy(*target);}}
 }
 
 impl Kiosk {
@@ -192,6 +197,16 @@ impl Kiosk {
                 let first = pages(1, 1, false).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
                 let second = pages(1, 0, true).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
                 say(&format!("{} {}", answer(first), answer(second)));
+            }
+            Some("gpu-private-scanout") => {
+                let fixture=(||->Result<(bgl::Context,u64,u64),i64>{
+                    let m=bgl::modes()?;let mode=m.modes[m.current as usize];let mut c=bgl::Context::new()?;
+                    let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height)?;
+                    c.begin(target,mode.width,mode.height);c.clear(0xff112233);
+                    if let Err(e)=c.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|c.present(target)) {libbreenix::gpu::resource_destroy(target);return Err(e);}
+                    let mode=bgl::modes()?;Ok((c,target,mode.scanout_resource))
+                })();
+                match fixture {Ok((context,target,resource))=>{self.gpu_fixtures.push((context,target));say(&format!("ok {target} {resource}"));},Err(e)=>say(&format!("err {}",-e))}
             }
             Some("gpu-counters") => {
                 let (ret,c)=libbreenix::gpu::counters(0);
@@ -304,7 +319,7 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let mut kiosk = Kiosk { auto: true, serial: 1 };
+    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new() };
     let mut seen = BTreeMap::new();
     let mut pending = Vec::new();
     loop {
