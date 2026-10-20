@@ -265,6 +265,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Resolve the VM window choice once, after argument parsing, so --headless and
+# --serial select the same no-GUI path and Vigil metadata as the platform override.
+if [ "$HEADLESS" = true ]; then
+    if [ "$PARALLELS" = true ]; then export BREENIX_PARALLELS_NOGUI=1; fi
+    if [ "$VMWARE" = true ]; then export BREENIX_VMWARE_NOGUI=1; fi
+fi
+
 # Refuse effort work on x86-64, Parallels and VMware before builds, VM setup or host-slot
 # supervision. The supervised re-exec (BREENIX_SLOT_SESSION) inherits the normalized
 # BREENIX_CATCHUP and the checked stamp, so the check and its launch line run once.

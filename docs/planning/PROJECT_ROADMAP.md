@@ -11,6 +11,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The #2149 repair connects bwm's stdin keys to hotkey matching and makes keyboard
+input ready the compositor wait. The #2125/#2143 follow-up makes `run.sh`'s
+`--headless` and `--serial` select the VM no-GUI path that Vigil records.
+
 PR #2132 selects the SVGA3D DX GPU core for ordinary VMware console attachment,
 gives Parallels' virtio-gpu device to the GPU core, and deletes the
 legacy VMware compositor. bwm composes through syscall 416 on ARM64 QEMU

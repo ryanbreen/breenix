@@ -105,12 +105,16 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
             reserved = event::reserved(&mut held, code, value, modifiers);
             Some(held)
         });
-    crate::console::keys::key(
+    let sent = crate::console::keys::key(
         device.index(),
         code,
         value,
         modifiers,
         reserved,
         device.source(),
-    )
+    );
+    // Wake for both modifier edges and bytes admitted to the compositor's stdin.
+    #[cfg(target_arch = "aarch64")]
+    crate::syscall::graphics::wake_compositor_if_waiting();
+    sent
 }
