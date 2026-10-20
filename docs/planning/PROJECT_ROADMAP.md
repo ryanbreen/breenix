@@ -11,6 +11,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+PR #2136 checks required ARM64 testing binaries on the disk before starting
+the VM, including `--no-build`. The preflight resolves directory symlinks,
+honors the first resolved search path, and rejects dangling targets without
+normalizing away missing path components (#2127).
+
 Launcher work enables the VMware host-key path by default for console suite
 boots, including multi-suite lists, with loopback VNC and owned watcher cleanup.
 The unrelated boot-wait host-test matcher failure is tracked in #2097.
