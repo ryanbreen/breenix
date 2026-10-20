@@ -29,6 +29,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
     pictured!("gpu-composite", "GPU composition draws client targets without CPU pixel uploads", composition_gpu_composite),
     pictured!("scale-2", "Scale-2 GPU composition preserves placement, clipping and exact pixels", composition_scale_2),
+    pictured!("target-lifetime", "Compositor, scanout, capture and replay holds retain GPU targets until their final release", composition_target_lifetime),
 ];
 
 pub(crate) const COMPOSITION_FLUSH: &[Case] = &[
@@ -953,4 +954,51 @@ fn composition_scale_2()->CaseResult {
     let s=gpu_snapshot(&mut k)?;
     ensure((s.width,s.height)==(2560,1600),"18","gpu-display: scale-2 composition has the wrong destination size")?;
     same(&s.pixels,2560,1600,true,"scaled GPU composition","18",formula(&scene))
+}
+
+// gpu-display: §2.2 retained fronts feed composition, capture and replay after handle drop; scanout holds backing too.
+fn composition_target_lifetime()->CaseResult {
+    interface()?;
+    let before=crate::gpu_checks::counters().cite("18")?;
+    let mut k=compositor()?;let mut w=W::new(64,48,3)?;
+    let p=Placed::new(30,40,64,48,0,17);show(&mut k,&w,&p)?;
+    let front=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
+    // The latest commit's index is returned by ACQUIRE/COMMIT; make one known front.
+    let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+    fill(w.buf(a.buffer),64,48,17);
+    let commit=w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
+    let held=crate::gpu_checks::counters().cite("18")?;
+    want_ok(libbreenix::gpu::resource_destroy(w.c.buffer[a.buffer as usize]),"18","gpu-display: drop committed target handle")?;
+    ensure(crate::gpu_checks::counters().cite("18")?.resource_bytes==held.resource_bytes,"18","gpu-display: committed target backing freed before its holders")?;
+    compose(&mut k)?;let (pixels,_)=screen()?;screen_is(&pixels,&[p],"composition after client target handle destruction")?;
+    let (captured,pixels)=capture(w.id(),64,48,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+    ensure(captured.commit_id==commit.commit_id && commit.commit_id>front.commit_id,"18","gpu-display: capture lost its retained commit")?;
+    same(&pixels,64,48,false,"capture of retained target","18",|x,y|pattern(17,x,y))?;
+    let replay=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+    ensure(replay.base==commit.commit_id,"18","gpu-display: replay lost the retained target's commit")?;
+    let mut pixels=vec![0;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+    want_ok(libbreenix::gpu::readback(w.c.buffer[replay.buffer as usize],[0,0,64,48],&mut pixels,256,&mut record),"18","gpu-display: replayed target readback")?;
+    same(&pixels,64,48,false,"replay from retained target","18",|x,y|pattern(17,x,y))?;
+    want_ok(w.destroy(),"17.2","DESTROY")?;k.kill_checked().cite("24")?;
+    let start=now_ms();while crate::gpu_checks::counters().cite("18")?.resource_bytes!=before.resource_bytes {
+        ensure(since(start)<1_000,"18","gpu-display: released window/capture/replay/compositor holds leaked backing")?;let _=time::sleep_ms(5);
+    }
+    // A scanout binding retains its resource independently of its destroyed user handle.
+    ensure(take_over()>=0,"18","gpu-display: take display for scanout lifetime")?;
+    let result=(||->CaseResult{
+        let mode=bgl::modes().map_err(|r|format!("MODES {}",outcome(r))).cite("18")?;let m=mode.modes[mode.current as usize];
+        let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r))).cite("18")?;
+        let target=libbreenix::gpu::scanout_target_create(0,m.width,m.height).map_err(|r|format!("scanout target {}",outcome(r))).cite("18")?;
+        c.begin(target,m.width,m.height);c.clear(0xff112233);c.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|c.present(target)).map_err(|r|format!("PRESENT {}",outcome(r))).cite("18")?;
+        let held=crate::gpu_checks::counters().cite("18")?.resource_bytes;
+        want_ok(libbreenix::gpu::resource_destroy(target),"18","RESOURCE_DESTROY bound scanout")?;
+        ensure(crate::gpu_checks::counters().cite("18")?.resource_bytes==held,"18","gpu-display: scanout freed backing before replacement")?;
+        let mut px=vec![0;m.width as usize*m.height as usize*4];let mut rec=[0;1024];
+        want_ok(libbreenix::gpu::readback(0,[0,0,m.width,m.height],&mut px,m.width*4,&mut rec),"18","read bound target after handle destruction")?;
+        ensure(px.chunks_exact(4).all(|p|p==[51,34,17,255]),"18","gpu-display: retained scanout pixels changed")
+    })();
+    let gave=give_back();result?;ensure(gave>=0,"18","gpu-display: release scanout hold")?;
+    let start=now_ms();while crate::gpu_checks::counters().cite("18")?.resource_bytes!=before.resource_bytes {
+        ensure(since(start)<1_000,"18","gpu-display: final scanout release leaked backing")?;let _=time::sleep_ms(5);
+    }Ok(())
 }
