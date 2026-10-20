@@ -85,7 +85,7 @@ class AcceleratorTests(unittest.TestCase):
             binary = Path(directory) / "fake qemu"
             binary.write_text(f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(37)\n")
             binary.chmod(0o755)
-            result = subprocess.run([sys.executable, str(LAUNCHER), str(binary), "-M", "virt",
+            result = subprocess.run([sys.executable, str(LAUNCHER), "--launcher", "env", str(binary), "-M", "virt",
                                      "-cpu", "max", "-drive", "file=a disk.img"],
                                     env=dict(os.environ, BREENIX_ARM64_QEMU_ACCEL="tcg"),
                                     text=True, capture_output=True)

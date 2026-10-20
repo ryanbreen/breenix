@@ -158,6 +158,32 @@ pub struct Scanout {
     pub height: u32,
 }
 
+/// The control queue as the watchdog's attribution reports it (`gpu::Hung`). Requests
+/// are numbered from 1 in the order they were made available.
+#[derive(Clone, Copy, Default)]
+pub struct QueueView {
+    /// Requests made available so far, and the latest-made one the device returned.
+    pub made: u64,
+    // Highest numbered returned request, not a contiguous completion frontier.
+    // IN_ORDER and context timelines are not negotiated; earlier requests may
+    // still complete; this is an overdue request, with its cause undetermined.
+    pub answered: u64,
+    /// The used ring's index as the device last wrote it, and as far as the driver took it.
+    pub used: u16,
+    pub taken: u16,
+    /// Requests the device holds.
+    pub outstanding: u32,
+    /// The request asked about: its number (0 when the device does not hold it), its
+    /// descriptor head and its command.
+    pub entry: u64,
+    pub head: u16,
+    pub cmd: u32,
+    /// The oldest request the device holds: its number, tag and command.
+    pub oldest: u64,
+    pub oldest_tag: Option<Tag>,
+    pub oldest_cmd: u32,
+}
+
 /// What [`Device::reap`] found in the used ring.
 pub enum Reap {
     Empty,
@@ -191,6 +217,12 @@ pub struct Device {
     pci: VirtioPciDevice,
     queue: Queue,
     inflight: Vec<Option<Request>>,
+    /// Each in-flight head's place among the requests made available, counted from 1.
+    made_at: Vec<u64>,
+    /// Requests made available since the device was found, across resets.
+    made: u64,
+    /// The latest-made request the device has returned.
+    answered: u64,
     pub info: Info,
     pub irq: Irq,
     /// The ISR status byte's address.
@@ -262,11 +294,15 @@ impl Device {
             pci,
             queue,
             inflight: Vec::new(),
+            made_at: Vec::new(),
+            made: 0,
+            answered: 0,
             info: Info { features: 0, capset_ids: Vec::new(), capset: None, scanouts: Vec::new(), num_scanouts: 0 },
             irq,
             isr,
         };
         dev.inflight.resize_with(dev.queue.size() as usize, || None);
+        dev.made_at.resize(dev.queue.size() as usize, 0);
         let up = dev.enable_queue();
         dev.info.features = dev.pci.device_features() & WANTED;
         if let Err(error) = up.and_then(|()| dev.read_info()) {
@@ -393,7 +429,37 @@ impl Device {
         req.publish();
         let Some(head) = self.queue.add(&segs) else { return Err(req) };
         self.inflight[head as usize] = Some(req);
+        self.made += 1;
+        self.made_at[head as usize] = self.made;
         Ok(())
+    }
+
+    /// Requests made available so far.
+    pub fn made(&self) -> u64 {
+        self.made
+    }
+
+    /// The control queue as the watchdog's attribution reports it, with the oldest request
+    /// the device holds that `wanted` matches.
+    pub fn view(&self, wanted: impl Fn(&Tag) -> bool) -> QueueView {
+        let (used, taken) = self.queue.used_indices();
+        let mut v = QueueView { made: self.made, answered: self.answered, used, taken, ..QueueView::default() };
+        for (head, req) in self.inflight.iter().enumerate() {
+            let Some(req) = req else { continue };
+            let at = self.made_at[head];
+            v.outstanding += 1;
+            if v.oldest == 0 || at < v.oldest {
+                v.oldest = at;
+                v.oldest_tag = Some(req.tag);
+                v.oldest_cmd = req.command_type();
+            }
+            if wanted(&req.tag) && (v.entry == 0 || at < v.entry) {
+                v.entry = at;
+                v.head = head as u16;
+                v.cmd = req.command_type();
+            }
+        }
+        v
     }
 
     /// The control queue's notification address: a 16-bit write of the queue index there
@@ -432,6 +498,7 @@ impl Device {
             return Reap::Fault;
         }
         req.resp.observe();
+        self.answered = self.answered.max(self.made_at[head as usize]);
         let answer = req.resp.u32_at(wire::HDR_TYPE);
         let echoed = req.resp.u64_at(wire::HDR_FENCE);
         let Request { tag, fence, resp, .. } = req;

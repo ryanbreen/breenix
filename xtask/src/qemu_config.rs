@@ -32,8 +32,8 @@ impl Arch {
 }
 
 /// `qemu-system-aarch64`, started through `scripts/qemu-ui-launch.sh`'s launcher so that its
-/// vCPU threads run in macOS's user-interactive priority band; the script prints `env`
-/// (QEMU unchanged) off a Mac or with `BREENIX_QEMU_UI=0`.
+/// vCPU threads run in macOS's user-interactive priority band; off a Mac or with
+/// `BREENIX_QEMU_UI=0`, it prints its own path to clear the injection environment.
 fn aarch64_qemu_command() -> Result<Command> {
     let scripts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts");
     let output = Command::new(scripts.join("qemu-ui-launch.sh"))

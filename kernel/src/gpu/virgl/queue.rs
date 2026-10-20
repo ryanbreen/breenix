@@ -187,6 +187,17 @@ impl Queue {
         Ok(Some((head, len)))
     }
 
+    /// The used ring's index as the device last wrote it, and as far as the driver has
+    /// taken entries.
+    pub fn used_indices(&self) -> (u16, u16) {
+        let _access = crate::gpu::panic::Access::enter();
+        let used = self.used.page_va(0);
+        self.used.maintain(0, 4, true);
+        // SAFETY: the used ring page is owned.
+        let idx = unsafe { core::ptr::read_volatile((used + 2) as *const u16) };
+        (idx, self.last_used)
+    }
+
     /// Return a returned chain's descriptors to the free list by walking its links.
     fn release_chain(&mut self, head: u16) {
         let count = core::mem::take(&mut self.chain[head as usize]);
