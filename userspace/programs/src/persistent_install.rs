@@ -460,6 +460,8 @@ mod tests {
         install_tree(&source, &system, "new", &mut || Ok(())).unwrap();
         let root = selected(&system, "new");
         assert_eq!(fs::metadata(&root).unwrap().mode() & 0o7777, 0o555);
+        // These ownership equalities cover the host-accessible values only;
+        // they do not prove chown preserves a distinct source uid or gid.
         assert_eq!(fs::metadata(&root).unwrap().uid(), fs::metadata(&source).unwrap().uid());
         assert_eq!(fs::metadata(&root).unwrap().gid(), fs::metadata(&source).unwrap().gid());
         // Restore write access for fixture cleanup on unprivileged hosts.
@@ -513,6 +515,7 @@ mod tests {
         let fixture = Fixture::new();
         let system = fixture.system();
         let mut recorded = BTreeMap::new();
+        let mut published = BTreeMap::new();
         for id in ["old", "new"] {
             let source = fixture.source(id);
             // Record the source before installation, independently of whatever
@@ -520,6 +523,7 @@ mod tests {
             // unprivileged tests cannot chown to arbitrary uid/gid values.
             recorded.insert(id, snapshot(&source));
             install_tree(&source, &system, id, &mut || Ok(())).unwrap();
+            published.insert(id, snapshot(&selected(&system, id)));
         }
         let old = &recorded["old"];
         let new = &recorded["new"];
@@ -556,6 +560,11 @@ mod tests {
                     assert_eq!(fs::read(selected_root.join("etc/config")).unwrap(), id.as_bytes());
                     let expected = if id == "old" { old } else { assert_eq!(id, "new"); new };
                     assert_contents(&selected_root, expected);
+                    // Slot recovery must leave both complete trees unchanged,
+                    // including mount placeholders, the record and every link.
+                    for retained in ["old", "new"] {
+                        assert_eq!(snapshot(&selected(&system, retained)), published[retained]);
+                    }
                     assert_eq!(disk.files.borrow()["CURRENT.TXT"], id.as_bytes());
                     // Complete promotion then rollback without a fault: the
                     // actual slot transaction must return exactly the old tree.
@@ -563,6 +572,9 @@ mod tests {
                         slots::begin(&disk, true).unwrap();
                         assert_eq!(disk.id("CURRENT"), "old");
                         assert_contents(&selected(&system, &disk.id("CURRENT")), old);
+                        for retained in ["old", "new"] {
+                            assert_eq!(snapshot(&selected(&system, retained)), published[retained]);
+                        }
                     }
                 }
             }

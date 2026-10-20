@@ -72,7 +72,7 @@ mod tests {
     fn selected_root_hides_record_and_reports_bound_inodes() {
         let ns = Namespace { root: 40, etc: 41, data: 12 };
         assert_eq!(ns.entry(40, b".complete", 50), None);
-        assert_eq!(ns.entry(40, b"etc", 41), ns.shared(40, b"etc"));
+        assert_eq!(ns.entry(40, b"etc", 99), Some(41));
         assert_eq!(ns.entry(40, b"root", 42), ns.shared(40, b"root"));
         for ino in [40, 41, 12] { assert_eq!(ns.entry(ino, b"..", 2), Some(40)); }
         for name in [b"etc".as_slice(), b"root", b"home", b"dev", b"proc", b"sys"] {
