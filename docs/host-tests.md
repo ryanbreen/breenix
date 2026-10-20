@@ -49,6 +49,6 @@ Run the standalone `tests/*_host.py` programs separately: discovery's
 Swift tests require the packaged app: run
 `scripts/build-background.sh make -C tools/breenix-runs app-debug` before
 `swift test --package-path tools/breenix-runs`. Its import hook check is `python3 tools/breenix-runs/scripts/test-import-hook.py`.
-On macOS, background compilation subprocesses, while keeping test executables
-and discovery at normal priority. The production-cleanliness host checks build
-their own kernel images; the root host run does not require a prior guest boot.
+On macOS, run compilation subprocesses under `scripts/build-background.sh`
+while keeping test executables and discovery at normal priority. The
+production-cleanliness host checks build their own kernel images; the root host run does not require a prior guest boot.
