@@ -157,18 +157,12 @@ fn dump_net_rx_counters(sample: u32) {
     print!("[net-rx-counters] sample={} end\n", sample);
 }
 
-/// Prints each CPU's timer tick count, so a CPU whose tick stops shows in the
-/// boot log as it happens rather than only in a panic's counter dump (#2137).
-fn print_cpu_ticks(uptime_ms: u64) {
-    let Ok(fd) = fs::open(COUNTER_PATH, O_RDONLY) else {
-        return;
-    };
-    let mut buf = [0u8; 16 * 1024];
-    let n = io::read(fd, &mut buf).unwrap_or(0);
-    let _ = io::close(fd);
-    let text = core::str::from_utf8(&buf[..n]).unwrap_or("");
-    if let Some(line) = text.lines().find(|line| line.starts_with("TIMER_TICK_TOTAL:")) {
-        print!("[cpu-ticks] uptime_ms={} {}\n", uptime_ms, line);
+/// Sample counters through procfs, whose cold read path records ARM64 timer
+/// progress in /proc/kmsg. Periodic diagnostics must stay off stdout (#2140).
+fn sample_cpu_ticks() {
+    if let Ok(fd) = fs::open(COUNTER_PATH, O_RDONLY) {
+        let _ = io::read(fd, &mut [0u8; 1]);
+        let _ = io::close(fd);
     }
 }
 
@@ -191,7 +185,7 @@ fn main() {
             next_dump_ms += 10_000;
         }
         if uptime_ms >= next_ticks_ms {
-            print_cpu_ticks(uptime_ms);
+            sample_cpu_ticks();
             next_ticks_ms += 30_000;
         }
         let _ = sleep_ms(1_000);
