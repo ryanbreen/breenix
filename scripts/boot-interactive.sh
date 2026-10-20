@@ -11,7 +11,7 @@
 #   --mode MODE          tests (default): the testing kernel and its test loader
 #                        probe | shell | desktop | program | suite: the production kernel, told the mode
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
-#                        desktop's window manager needs VirGL, which this QEMU GPU lacks, so it exits here
+#                        desktop's window manager composes through the GPU core, so it needs --gpu-gl
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID

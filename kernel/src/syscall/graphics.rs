@@ -175,28 +175,6 @@ fn read_window_input_events(buffer_id: u32, out_ptr: u64, max_count: usize) -> R
 }
 
 #[cfg(target_arch = "aarch64")]
-fn wake_presented_client_frames() {
-    let mut has_presented_waiters = false;
-    {
-        let mut reg = WINDOW_REGISTRY.lock();
-        for slot in reg.buffers.iter_mut() {
-            let Some(buf) = slot.as_mut() else {
-                continue;
-            };
-
-            if buf.waiting_thread_id.is_some() && buf.last_read_gen == buf.generation {
-                buf.waiting_thread_id.take();
-                has_presented_waiters = true;
-            }
-        }
-    }
-
-    if has_presented_waiters {
-        CLIENT_FRAME_WQ.wake_up();
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
 fn release_presented_window_frames(
     windows: &[WindowCompositeInfo],
 ) -> [Option<u64>; MAX_WINDOW_BUFFERS] {
@@ -857,88 +835,6 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(e) => {
                     crate::serial_println!("[virgl-syscall] render_rects FAILED: {}", e);
-                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                }
-            }
-        }
-        10 => {
-            // Composite: upload pixel buffer and display via active GPU backend
-            let buf_ptr = (cmd.p1 as u32 as u64) | ((cmd.p2 as u32 as u64) << 32);
-            let width = cmd.p3 as u32;
-            let height = cmd.p4 as u32;
-            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_enter(width, height);
-            if buf_ptr == 0 || buf_ptr >= USER_SPACE_MAX {
-                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            if width == 0 || height == 0 || width > 4096 || height > 4096 {
-                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
-            }
-            let pixel_count = (width as u64) * (height as u64);
-            let buf_end = buf_ptr + pixel_count * 4;
-            if buf_end > USER_SPACE_MAX {
-                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                return SyscallResult::Err(super::ErrorCode::Fault as u64);
-            }
-            let pixels =
-                unsafe { core::slice::from_raw_parts(buf_ptr as *const u32, pixel_count as usize) };
-            match crate::graphics::compositor_backend() {
-                crate::graphics::CompositorBackend::VirGL => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        return match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
-                            pixels, width, height,
-                        ) {
-                            Ok(()) => {
-                                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(
-                                    0,
-                                );
-                                wake_presented_client_frames();
-                                SyscallResult::Ok(0)
-                            }
-                            Err(e) => {
-                                crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(
-                                    1,
-                                );
-                                crate::serial_println!(
-                                    "[composite] VirGL direct composite_frame FAILED: {}",
-                                    e
-                                );
-                                SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                            }
-                        };
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    match crate::drivers::virtio::gpu_pci::virgl_composite_frame_textured(
-                        pixels, width, height,
-                    ) {
-                        Ok(()) => {
-                            crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
-                            SyscallResult::Ok(0)
-                        }
-                        Err(_) => {
-                            match crate::drivers::virtio::gpu_pci::virgl_composite_frame(
-                                pixels, width, height,
-                            ) {
-                                Ok(()) => {
-                                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(0);
-                                    SyscallResult::Ok(0)
-                                }
-                                Err(e) => {
-                                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
-                                    crate::serial_println!(
-                                        "[composite] VirGL composite_frame FAILED: {}",
-                                        e
-                                    );
-                                    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-                                }
-                            }
-                        }
-                    }
-                }
-                crate::graphics::CompositorBackend::None => {
-                    crate::tracing::providers::virtgpu::trace_bwm_composite_frame_exit(1);
                     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
                 }
             }
