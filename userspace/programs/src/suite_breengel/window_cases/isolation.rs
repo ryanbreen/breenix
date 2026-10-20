@@ -297,15 +297,24 @@ fn isolation_other_tree() -> CaseResult {
     }))
 }
 
+// gpu-window: §2.2 replaces MAP_COMPOSITOR_TEXTURE with a refused GPU scanout sample; gpu-display supplies the binding.
 fn isolation_texture_map() -> CaseResult {
-    interface()?;
-    let mut m = abi::MapTree::ZERO;
-    let r = call(op::MAP_COMPOSITOR_TEXTURE, &mut m);
-    ensure(r == -(EPERM as i64), "17.4", format!("MAP_COMPOSITOR_TEXTURE by root that is not the compositor {}; the contract gives EPERM", outcome(r)))?;
-    step("17.4", child("MAP_COMPOSITOR_TEXTURE as uid 1000", 3_000, Some(1000), || {
-        let mut m = abi::MapTree::ZERO;
-        errno_is(call(op::MAP_COMPOSITOR_TEXTURE, &mut m), EPERM, "a uid 1000 process", "MAP_COMPOSITOR_TEXTURE")
-    }))
+interface()?;
+    let (_k,_)=kiosk().cite("24")?;
+    let (ret,modes)=libbreenix::gpu::modes();
+    ensure(ret==0 && modes.binding_known==1 && modes.scanout_resource!=0,"17.4","gpu-display: compositor has no known GPU scanout binding")?;
+    let sample=|who:&str|->Result<(),String>{
+        let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r)))?;
+        let target=libbreenix::gpu::target_create(0,16,16).map_err(|r|format!("target {}",outcome(r)))?;
+        c.begin(target,16,16);c.clear(0xff000000);
+        c.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|r|format!("positive control {}",outcome(r)))?;
+        c.begin(target,16,16);c.copy(modes.scanout_resource,&[[0,0,16,16,0,0]]);
+        let refused=c.submit().err()==Some(-(EINVAL as i64));
+        libbreenix::gpu::resource_destroy(target);
+        if !refused {return Err(format!("gpu-window: {who} sampled the compositor's scanout device identity as a resource handle"));}Ok(())
+    };
+    sample("root non-compositor").cite("17.4")?;
+    as_unrelated("sample compositor scanout",sample)
 }
 
 fn isolation_composite_denied() -> CaseResult {
