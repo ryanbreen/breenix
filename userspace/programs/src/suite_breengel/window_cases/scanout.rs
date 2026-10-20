@@ -334,9 +334,10 @@ fn scanout_fault_skipped_transfer() -> CaseResult {
     ensure(px.iter().all(|&b| b == 0), "20.1", "a refused readback returned pixels without its record")
 }
 
+// gpu-display: B6/B7 uses WRONG_SCANOUT 26; a wrong transfer resource is not device-observable.
 fn scanout_fault_wrong_resource() -> CaseResult {
     interface()?;
-    let (r, _, rec, serial, good) = fault(abi::tc_point::WRONG_RESOURCE, 18)?;
+    let (r, _, rec, serial, good) = fault(libbreenix::gpu::abi::test_point::WRONG_SCANOUT, 18)?;
     ensure(r == -(abi::errno::EIO as i64), "20.3", format!("readback of composite {serial} with the flush bound to another resource {}; the contract gives EIO, binding", outcome(r)))?;
     ensure(rec.serial == serial && rec.resource != 0 && rec.resource != good.resource, "20.3", format!(
         "the binding failure's record names serial {} and resource {:#x}; it names composite {serial} and the resource the device is bound to, not the composed {:#x}",
