@@ -304,6 +304,8 @@ struct HotkeyManager {
     tap_count: u8,
     /// Whether any non-modifier key was pressed during current modifier hold
     combo_used: bool,
+    /// Super chords must not inherit ordinary typing with Shift.
+    super_combo_used: bool,
     /// Cooldown frames remaining (prevents rapid re-trigger)
     cooldown: u32,
 }
@@ -317,6 +319,7 @@ impl HotkeyManager {
             tap_release_ns: 0,
             tap_count: 0,
             combo_used: false,
+            super_combo_used: false,
             cooldown: 0,
         }
     }
@@ -449,9 +452,32 @@ impl HotkeyManager {
         Some(Hotkey { modifiers, key, taps, action })
     }
 
-    /// Called every frame with the current modifier bitmask and whether a
-    /// non-modifier key was pressed this frame. Returns an action if a
-    /// hotkey matched.
+    /// Match a stdin key using the graphics modifier snapshot. Bindings use ASCII
+    /// (Return is CR), not the client event's USB HID keycode (Return is 0x28).
+    /// The frame update owns cooldown advancement; draining keys must not shorten it.
+    fn key_pressed(&mut self, modifiers: u8, ascii: u8) -> Option<HotkeyAction> {
+        if modifiers != 0 {
+            self.combo_used = true;
+        }
+        if modifiers & modifier::SUPER != 0 {
+            self.super_combo_used = true;
+        }
+        if self.cooldown == 0 {
+            for binding in &self.bindings {
+                if binding.key != 0 && binding.taps == 1
+                    && binding.key == ascii.to_ascii_lowercase()
+                    && (modifiers & binding.modifiers) == binding.modifiers
+                {
+                    self.cooldown = 30;
+                    return Some(binding.action.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Called after draining this frame's keys, so a Super chord marks its tap
+    /// dirty before modifier-only bindings are considered.
     ///
     /// `super_taps` is the count of Super press-edges latched in the kernel HID
     /// path since the previous frame (op=31, read-and-clear). Because the latch
@@ -460,39 +486,9 @@ impl HotkeyManager {
     /// compositor-wait polls — which the level-based edge detection would miss.
     /// SUPER tap counting is driven exclusively by this latch so each physical
     /// press is counted exactly once (no double-count vs. release detection).
-    fn update(
-        &mut self,
-        current_mods: u8,
-        key_pressed: Option<u8>,
-        super_taps: u32,
-    ) -> Option<HotkeyAction> {
-        if self.cooldown > 0 {
-            self.cooldown -= 1;
-        }
-
-        // Track if any non-modifier key was pressed while modifiers are held.
-        // A combo (modifier + key) must NOT trigger the no-key double-tap launcher.
-        if key_pressed.is_some() && current_mods != 0 {
-            self.combo_used = true;
-        }
-
+    fn update(&mut self, current_mods: u8, super_taps: u32) -> Option<HotkeyAction> {
         let prev = self.prev_modifiers;
         self.prev_modifiers = current_mods;
-
-        // Check modifier+key bindings first (single-tap, key != 0)
-        if let Some(ascii) = key_pressed {
-            if self.cooldown == 0 {
-                for binding in &self.bindings {
-                    if binding.key != 0 && binding.taps == 1
-                        && binding.key == ascii.to_ascii_lowercase()
-                        && (current_mods & binding.modifiers) == binding.modifiers
-                    {
-                        self.cooldown = 30;
-                        return Some(binding.action.clone());
-                    }
-                }
-            }
-        }
 
         // ── Super multi-tap detection driven by the kernel press-edge latch ──
         // Each latched press-edge is one physical tap. If the press arrived while
@@ -500,7 +496,7 @@ impl HotkeyManager {
         // tap is treated as dirty and resets the sequence rather than counting.
         if super_taps > 0 {
             for _ in 0..super_taps {
-                if self.combo_used {
+                if self.super_combo_used {
                     // Combo in progress: this Super press is part of a combo, not
                     // a clean tap. Reset the tap sequence; do not fire the launcher.
                     self.tap_count = 0;
@@ -545,10 +541,9 @@ impl HotkeyManager {
 
         // Reset combo tracking when Super is fully released so the next clean
         // tap sequence isn't suppressed by a stale combo flag.
-        let super_was = (prev & modifier::SUPER) != 0;
         let super_now = (current_mods & modifier::SUPER) != 0;
-        if !super_now && super_was {
-            self.combo_used = false;
+        if !super_now {
+            self.super_combo_used = false;
         }
 
         // ── Multi-tap detection for ALT / CTRL / SHIFT via level edges ──
@@ -720,6 +715,8 @@ struct Window {
     window_id: u32,
     owner_pid: u32,
     minimized: bool,
+    /// The first composed frame showing this client has been checked.
+    frame_checked: bool,
     /// Stable ordering for appbar (assigned at discovery time, never changes)
     creation_order: u32,
     /// Chromeless windows have no title bar, border, or chrome buttons.
@@ -1279,6 +1276,7 @@ fn discover_windows(
             title, title_len, window_id: info.buffer_id,
             owner_pid: info.owner_pid,
             minimized: false,
+            frame_checked: false,
             creation_order: order,
             chromeless,
         });
@@ -1710,7 +1708,6 @@ fn main() {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
-    let mut client_frame_checked = false;
     let mut frame_failed = false;
 
     let mut read_buf = [0u8; 512];
@@ -1748,30 +1745,8 @@ fn main() {
         // keyboard-ready latch can't busy-loop compositor_wait.
         let super_taps = take_super_tap_count();
         let current_mods = graphics::poll_modifier_state() as u8;
-        if let Some(action) = hotkey_mgr.update(current_mods, None, super_taps) {
-            match &action {
-                HotkeyAction::FocusNext => {
-                    if !windows.is_empty() {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                        focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                        full_redraw = true;
-                    }
-                }
-                HotkeyAction::FocusPrev => {
-                    if !windows.is_empty() {
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
-                        focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
-                        focused_win = next_visible_window(&windows, focused_win);
-                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
-                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
-                        full_redraw = true;
-                    }
-                }
-                _ => execute_hotkey_action(&action, &mut windows, focused_win),
-            }
-        }
+        hotkey_mgr.cooldown = hotkey_mgr.cooldown.saturating_sub(1);
+        let mut hotkey_action = None;
 
         // ── 1. Discover new/removed client windows (only when registry changed) ──
         if ready & graphics::COMPOSITOR_READY_REGISTRY != 0 {
@@ -1813,6 +1788,10 @@ fn main() {
                                 }
                             }
                             InputEvent::Key { ascii, keycode, modifiers } => {
+                                if let Some(action) = hotkey_mgr.key_pressed(current_mods | modifiers as u8, ascii) {
+                                    hotkey_action = Some(action);
+                                    continue;
+                                }
                                 if !windows.is_empty() {
                                     let win_event = WindowInputEvent {
                                         event_type: input_event_type::KEY_PRESS,
@@ -1829,6 +1808,32 @@ fn main() {
                         }
                     }
                 }
+            }
+        }
+
+        let tap_action = hotkey_mgr.update(current_mods, super_taps);
+        if let Some(action) = hotkey_action.or(tap_action) {
+            match &action {
+                HotkeyAction::FocusNext => {
+                    if !windows.is_empty() {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                HotkeyAction::FocusPrev => {
+                    if !windows.is_empty() {
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_LOST);
+                        focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
+                        focused_win = next_visible_window(&windows, focused_win);
+                        send_focus_event(&windows, focused_win, input_event_type::FOCUS_GAINED);
+                        compose_full_redraw(composite_buf, &mut fb, &mut shadow_fb, &bg_cache, &windows, focused_win, &clock_text, &mut ui_font);
+                        full_redraw = true;
+                    }
+                }
+                _ => execute_hotkey_action(&action, &mut windows, focused_win),
             }
         }
 
@@ -2257,11 +2262,11 @@ fn main() {
             match frame {
                 Ok(()) => {
                     frame_failed = false;
-                    // The first frame that shows a client's pixels is read back once and
-                    // compared with the frame bwm composed.
-                    if !client_frame_checked {
-                        if let Some(id) = gpu.shows_client(&layers) {
-                            client_frame_checked = true;
+                    // Check each client's first visible frame, including windows opened
+                    // by a hotkey after the desktop's initial client was checked.
+                    if let Some(id) = gpu.shows_client(&layers) {
+                        if let Some(win) = windows.iter_mut().find(|win| win.window_id == id && !win.frame_checked) {
+                            win.frame_checked = true;
                             match gpu.check(composite_buf, &layers, pointer) {
                                 Ok(pixels) => print!(
                                     "[bwm] composited client frame: window {} on screen, {} pixels exact\n",

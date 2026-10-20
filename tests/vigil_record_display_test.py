@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -53,6 +54,7 @@ else:
         git = tools / "git"
         git.write_text('#!/bin/sh\ncase "$3" in\n'
                        '  status|merge-base) exit 0 ;;\n'
+                       '  rev-parse) echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;\n'
                        '  *) echo "unexpected fixture git command" >&2; exit 1 ;;\n'
                        'esac\n')
         git.chmod(0o755)
@@ -82,6 +84,43 @@ else:
     def test_unknown_display_keeps_the_registration_unchanged(self):
         run = self.start(None)
         self.assertIs(run["display"], False)
+
+    def test_vm_launchers_register_the_effective_window_choice(self):
+        source = (ROOT / "run.sh").read_text()
+        parser = source.split("# Defaults: ARM64 with graphics\n", 1)[1].split(
+            "# Refuse effort work on x86-64", 1)[0]
+        for platform in ("vmware", "parallels"):
+            override = "BREENIX_" + platform.upper() + "_NOGUI"
+            # Use each launcher's real registration block, including the export
+            # that replaces any stale display value inherited from the caller.
+            registration = source.split('    export BREENIX_VIGIL_DISPLAY=true\n')
+            registration = next(block for block in registration[1:]
+                                if 'start ' + platform + ' "$BOOT_MODE"' in block)
+            registration = 'export BREENIX_VIGIL_DISPLAY=true\n' + registration.split(
+                '    host_slot_vm ', 1)[0]
+            for args, nogui, expected in (([], "", True), (["--headless"], "", False),
+                                          (["--serial"], "", False),
+                                          (["--headless", "--graphics"], "", True),
+                                          ([], "1", False)):
+                with self.subTest(platform=platform, args=args, nogui=nogui):
+                    shutil.rmtree(self.folder, ignore_errors=True)
+                    env = dict(self.env, BREENIX_ROOT=str(ROOT), SERIAL_LOG=str(self.serial),
+                               BREENIX_VIGIL_DISPLAY=str(not expected).lower())
+                    env.pop("BREENIX_VMWARE_NOGUI", None)
+                    env.pop("BREENIX_PARALLELS_NOGUI", None)
+                    env[override] = nogui
+                    script = ("set -e\n" + parser +
+                              '\nSUITE=gpu\nrecord_launch_metadata() { :; }\n' + registration +
+                              '\nprintf "%s\\n" "$VIGIL_ID" "${' + override + ':-}"')
+                    result = subprocess.run(["bash", "-c", script, "display-test",
+                                             "--" + platform, *args], env=env,
+                                            capture_output=True, text=True, check=True)
+                    self.assertEqual(result.stderr, "")
+                    self.assertEqual(result.stdout.splitlines()[0], BOOT_ID)
+                    run = json.loads((self.folder / "run.json").read_text())
+                    self.assertIs(run["display"], expected)
+                    # The same no-GUI selector controls the actual VM start.
+                    self.assertEqual(bool(result.stdout.splitlines()[1]), not expected)
 
     def test_finish_archives_the_exact_renderer_without_relabelling_display(self):
         self.start("true")

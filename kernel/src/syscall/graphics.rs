@@ -239,7 +239,9 @@ fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, 
     // Keyboard readiness: a latched Super press-edge (captured at HID-report
     // time) means a hotkey tap may have completed between polls. Surface it so
     // compositor_wait returns and BWM drains the latch instead of re-blocking.
-    if crate::input::has_pending_super_tap() {
+    // BWM inherits the console's stdin. Check that queue after the tap latch was
+    // drained; input on another VT must not keep this compositor ready.
+    if crate::input::has_pending_super_tap() || crate::ipc::stdin::has_data() {
         ready |= 8;
     }
 
