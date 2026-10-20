@@ -165,13 +165,14 @@ fn panel_tile_stamps() -> CaseResult { scaled_stage("tile-stamps") }
 fn panel_tile_thumbnail() -> CaseResult { scaled_stage("tile-thumbnail") }
 // gpu-display: R3/R4 keeps nearest-scaled pictures, differences, first mismatch and bound, at physical scale.
 fn panel_spotlight_picture() -> CaseResult { scaled_stage("spotlight-picture") }
+// gpu-display: R3/R4 retains every timing/budget/input assertion at scale 2 with DejaVu Sans.
 fn panel_spotlight_timing() -> CaseResult {
     // Retain the timing assertions and also cover the non-picture spotlight forms
     // without adding or removing a manifest case.
     for name in ["spotlight-timing","spotlight-input","spotlight-measurement"] {
         crate::stage_fixtures::check_capture(name,|_|Ok(())).map_err(libbreenix::suite::CaseError::Fail)?;
     }
-    stage_fixture("spotlight-timing")
+    scaled_stage("spotlight-timing")
 }
 fn panel_milestone_ribbon() -> CaseResult { stage_fixture("milestone-ribbon") }
 fn panel_finale() -> CaseResult { stage_fixture("finale") }
