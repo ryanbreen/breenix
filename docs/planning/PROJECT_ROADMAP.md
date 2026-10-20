@@ -11,6 +11,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+PR #2132 selects the SVGA3D DX GPU core for ordinary VMware console attachment
+and deletes the legacy compositor on its branch. It remains open: bwm still uses
+the removed interface, breaking default and desktop boots (#2133). GPU and console
+suite acceptance does not satisfy the missing desktop evidence or GPU contract
+rule 9. Failed device admission also needs firmware diagnostics recovery (#2134).
+
 Launcher work enables the VMware host-key path by default for console suite
 boots, including multi-suite lists, with loopback VNC and owned watcher cleanup.
 The unrelated boot-wait host-test matcher failure is tracked in #2097.

@@ -1091,8 +1091,11 @@ declaration, naming its line; `tests/gpu_svga.rs` translates the catalogue fragm
 VMware acceptance landed in PR #1815 at `c4972aa0`. The SVGA3D DX backend is compiled
 into the ARM64 kernel without a feature selection. On VMware, console attachment probes
 and admits the SVGA3 device before choosing the console display. The GOP framebuffer
-provides the early splash until that handoff; the legacy SVGA3 compositor and its GPU
-client routes are retired. The core does not call or wrap that driver.
+provides the early splash until that handoff. This branch deletes the legacy SVGA3
+compositor and its GPU client routes, but bwm has not been ported: VMware default
+and desktop boots lose their window manager (#2133). PR #2132 remains blocked by
+GPU contract rule 9; the suite evidence does not cover desktop startup. The core
+does not call or wrap that driver.
 
 Build and launch from the checkout root (Mac builds at background priority, the VM at
 normal priority with its window):
@@ -1102,8 +1105,11 @@ export CARGO_BUILD_JOBS=4 BREENIX_BUILD_BACKGROUND=1
 ./run.sh --vmware --suite gpu
 ```
 
-A branch refused by the effort-target guard can use the operator-authorized
-`BREENIX_CATCHUP=1` environment setting with that command.
+A refusal by the effort-target guard requires explicit operator authorization
+for that specific run before setting `BREENIX_CATCHUP=1`; this document grants no
+standing exception. PR #2132's original evidence used that setting and described
+it as operator-authorized, but did not retain an attributable authorization.
+That authorization cannot be independently substantiated from the PR record.
 
 
 ## Parallels catch-up values

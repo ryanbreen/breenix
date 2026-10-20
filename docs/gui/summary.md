@@ -21,9 +21,13 @@ it.
 - **BreenGL is a window client, not a GL.** `libs/breengel` (about 650 lines) creates a window with a CPU
   pixel buffer, presents it and reads input. libgfx draws in software; libimg reads only 24-bit BMP; libbui has
   no text field.
-- **Only Parallels shows client windows today.** VMware draws bwm's chrome but leaves client contents black
-  (#1047). ARM64 QEMU has no compositor backend, so bwm exits. x86-64 has no window interface or pointer
-  driver. (From source and issues; nothing was booted.)
+- **The legacy desktop still needs migration.** Parallels retains its legacy VirGL
+  compositor. This branch removes VMware's old compositor without a GPU-core route
+  for bwm, so bwm exits at its startup probe in default and desktop modes (#2133),
+  before drawing chrome or client contents. PR #2132 remains blocked under GPU
+  contract rule 9. ARM64 QEMU launches without VirGL also fail that probe; GPU-core
+  suite acceptance does not cover desktop startup. x86-64 has no window interface
+  or pointer driver. (Source inspection; no new desktop boot evidence.)
 - **The window syscalls are unsafe.** Any process can map, read, inject into or reposition another's window.
   On ARM64, user pointers are read without the EFAULT fixup. Blocking calls have no timeout.
 - **Input reaches bwm as terminal bytes,** with no key releases and no key identity. Modifier hotkeys are

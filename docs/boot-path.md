@@ -113,9 +113,11 @@ instructions cannot be emulated by this QEMU version.
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
   terminal in the VM window (`--no-display` keeps it headless). The window manager
-  composites through VirGL, which only the Parallels and VMware GPUs provide: under the
-  QEMU launchers it prints `GPU compositing required` and exits after init reports the
-  services started.
+  still uses the legacy VirGL compositing interface on Parallels. On this branch,
+  VMware selects the GPU core without a bwm route, so bwm prints
+  `GPU compositing required` and exits (#2133); default mode has the same defect.
+  QEMU launches without VirGL also fail bwm's startup probe. Init reporting services
+  started does not demonstrate that the desktop rendered.
 - `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
   an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
   runs that one program, relays its output, and prints `RUN PATH START` once the program has

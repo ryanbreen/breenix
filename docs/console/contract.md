@@ -12,8 +12,9 @@ Output Protocol, the Intel SDM (PAT), the virtio specification (GPU 2D, input), 
 Ioctl numbers, structure layouts and input key codes are interface facts taken from the published headers
 (`linux/vt.h`, `linux/kd.h`, `input-event-codes.h`). Where those documents are silent, this contract chooses
 and says so; it does not claim to behave as another system does. Lanes do not read Linux, BSD or vendor
-source, and they do not open `kernel/src/drivers/usb/` (#1743) or `kernel/src/drivers/vmware/svga3.rs`
-(#1770).
+source, and they do not open `kernel/src/drivers/usb/` (#1743). The legacy VMware
+implementation formerly at `kernel/src/drivers/vmware/svga3.rs` (#1770) is deleted
+on this branch; its history remains excluded as a clean-room implementation source.
 
 **Lanes named here:** V1 console core, V2a logo art, V2b splash, V3 emulation, V4 virtual terminals (kernel),
 V4u virtual terminals (userspace), V5 input core and keys, V6 host keys, V7 ARM64 USB keyboard. A lane named
