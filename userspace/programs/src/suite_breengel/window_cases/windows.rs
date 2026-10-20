@@ -243,6 +243,7 @@ fn windows_drop_destroys() -> CaseResult {
     want_errno(call_id(op::DESTROY, id), ENOENT, "17.2", "DESTROY of the dropped Window's id")
 }
 
+// gpu-window: B7 replaces retired MAP_COMMITTED with GPU-buffer acquisition; stale ids remain ENOENT.
 fn windows_stale_id() -> CaseResult {
     interface()?;
     let mut w = W::new(8, 8, 2)?;
@@ -274,9 +275,13 @@ fn windows_stale_id() -> CaseResult {
     re.capacity = 1;
     check("READ_EVENTS", call(op::READ_EVENTS, &mut re));
     check("EVENT_FD", call_id(op::EVENT_FD, id));
-    let mut m = abi::MapBuffers::ZERO;
-    m.id = id;
-    check("MAP_COMMITTED", call(op::MAP_COMMITTED, &mut m));
+    // ACQUIRE is the GPU target handoff; a refused stale id must publish no buffer.
+    let mut stale = abi::Acquire::ZERO;
+    stale.id = id;
+    stale.buffer = u32::MAX;
+    check("GPU ACQUIRE", call(op::ACQUIRE, &mut stale));
+    ensure(stale.buffer == u32::MAX && stale.base == 0, "17.2",
+        "gpu-window: a stale id published an acquired GPU buffer or base")?;
     check("CAPTURE", capture(id, 8, 8, None).err().unwrap_or(0));
     let mut t = abi::MapTree::ZERO;
     t.id = id;
