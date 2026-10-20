@@ -28,6 +28,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
     pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
     pictured!("gpu-composite", "GPU composition draws client targets without CPU pixel uploads", composition_gpu_composite),
+    pictured!("scale-2", "Scale-2 GPU composition preserves placement, clipping and exact pixels", composition_scale_2),
 ];
 
 pub(crate) const COMPOSITION_FLUSH: &[Case] = &[
@@ -918,4 +919,38 @@ fn composition_gpu_composite()->CaseResult {
     ensure(after[0]>before[0] && after[2]==before[2] && after[3]==before[3],"18",
         "gpu-display: composition did not execute GPU draws without CPU pixel uploads")?;
     let (pixels,_)=screen()?;screen_is(&pixels,&[p],"GPU composition")
+}
+
+pub(crate) struct GpuSnapshot {pub width:usize,pub height:usize,pub record:[u8;1024],pub pixels:Vec<u8>}
+impl GpuSnapshot {
+    pub(crate) fn word(&self,o:usize)->u32 {u32::from_le_bytes(self.record[o..o+4].try_into().unwrap())}
+    pub(crate) fn quad(&self,o:usize)->u64 {u64::from_le_bytes(self.record[o..o+8].try_into().unwrap())}
+}
+/// Ask the actual display-owning helper to observe target 0; no foreign handle or CPU image is substituted.
+pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,libbreenix::suite::CaseError>{
+    static NEXT:AtomicU64=AtomicU64::new(0);
+    let path=format!("/dev/shm/breengel-gpu-{}-{}",process::getpid()?.raw(),NEXT.fetch_add(1,Relaxed));
+    struct Remove<'a>(&'a str);impl Drop for Remove<'_>{fn drop(&mut self){let _=std::fs::remove_file(self.0);}}
+    let _remove=Remove(&path);
+    let answer=k.ask(&format!("gpu-scanout {path}")).cite("24")?;
+    ensure(answer=="ok","20",format!("gpu-display: composed GPU scanout readback: {answer}"))?;
+    let bytes=std::fs::read(&path).map_err(|e|e.to_string())?;
+    ensure(bytes.len()>=1032,"20","gpu-display: truncated GPU snapshot")?;
+    let width=u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+    let height=u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    ensure(matches!((width,height),(1280,800)|(2560,1600)) && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
+    let record=bytes[8..1032].try_into().unwrap();
+    let snapshot=GpuSnapshot{width,height,record,pixels:bytes[1032..].to_vec()};
+    ensure(snapshot.word(0)==2 && snapshot.word(4)==1024,"20","gpu-display: scanout did not return record version 2")?;
+    Ok(snapshot)
+}
+// gpu-display: R4 applies logical scale to placement and compares the entire device destination with §18's formula.
+fn composition_scale_2()->CaseResult {
+    interface()?;let mut k=compositor()?;
+    let scene=[Placed::new(40,60,128,96,0,11),Placed::new(100,100,160,80,1,12)];
+    let wins:Vec<_>=scene.iter().map(|p|W::new(p.w,p.h,2)).collect::<Result<_,_>>()?;
+    for (w,p) in wins.iter().zip(&scene){show(&mut k,w,p)?;}compose(&mut k)?;
+    let s=gpu_snapshot(&mut k)?;
+    ensure((s.width,s.height)==(2560,1600),"18","gpu-display: scale-2 composition has the wrong destination size")?;
+    same(&s.pixels,2560,1600,true,"scaled GPU composition","18",formula(&scene))
 }
