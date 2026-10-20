@@ -1156,6 +1156,7 @@ fn open_menu() -> (MenuBar, Theme) {
     (m, theme)
 }
 
+// gpu-text: R3 derives menu label and shortcut widths from certified 26.6 advances.
 fn widgets_menubar_open() -> CaseResult {
     let (m, theme) = open_menu();
     ensure(
@@ -1167,9 +1168,8 @@ fn widgets_menubar_open() -> CaseResult {
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    // The dropdown is under the File title: its widest row, Save As with Ctrl+Shift+S, is
-    // 18 + 24 + 41 + 24 + 71 + 8 = 186 wide, and four items and a separator are 97 tall.
-    let (dx, dy, dw, dh) = (10usize, 27usize, 186usize, 97usize);
+    let width=18+24+sans_width(b"Save As")+24+sans_width(b"Ctrl+Shift+S")+8;
+    let (dx,dy,dw,dh)=(10usize,27usize,width as usize,97usize);
     for (x, y, want, what) in [
         (dx, dy + 30, theme.border, "its left border"),
         (dx + dw - 1, dy + 30, theme.border, "its right border"),
@@ -1188,19 +1188,19 @@ fn widgets_menubar_open() -> CaseResult {
             ),
         )?;
     }
-    let mut want = Guarded::bgrx(17, 7);
+    let mut want = Guarded::bgrx(sans_width(b"New") as usize, 16);
     want.reset(theme.widget_bg);
-    font5x7::draw_text(&mut want.fb(), b"New", 0, 0, theme.text_primary, 1);
-    for y in 0..7 {
-        for x in 0..17 {
-            let got = g.color(dx + 18 + x, dy + 7 + y);
+    sans_draw(&mut want.fb(),b"New",0,0,theme.text_primary);
+    for y in 0..16 {
+        for x in 0..want.width {
+            let got = g.color(dx + 18 + x, dy + 3 + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
                 format!(
                     "the first item's label pixel ({},{}) is {}, the contract gives {}",
                     dx + 18 + x,
-                    dy + 7 + y,
+                    dy + 3 + y,
                     hex(got),
                     hex(want.color(x, y))
                 ),
