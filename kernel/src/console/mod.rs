@@ -1087,6 +1087,24 @@ impl SplashRun {
 
     /// Give tty1's text the screen.
     fn hand_over(&mut self, reason: splash::Reason) {
+        if !self.progress_checked {
+            let why = if self.failed {
+                "a read-back differed"
+            } else if self.first.is_none() {
+                "the first read-back was not made"
+            } else if !may_draw() {
+                "the display is no longer drawable"
+            } else if self.progress_pending() {
+                "the progress read-back wait expired"
+            } else {
+                "boot progress did not move beyond the first read-back"
+            };
+            log::warn!(
+                "[splash] console took the screen without the progress read-back: {}; hand-over {}",
+                why,
+                reason.name()
+            );
+        }
         splash::end();
         REDRAW.store(true, Ordering::Release);
         SCREEN.store(true, Ordering::Release);
