@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use super::ipv4::{self, Ipv4Packet, PROTOCOL_ICMP};
+use super::ipv4::{self, Handled, Ipv4Packet, PROTOCOL_ICMP};
 
 /// ICMP type: Echo Reply
 pub const ICMP_ECHO_REPLY: u8 = 0;
@@ -105,9 +105,9 @@ impl<'a> IcmpPacket<'a> {
 }
 
 /// Handle an incoming ICMP packet
-pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
+pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) -> Handled {
     if ipv4::internet_checksum(ip.payload) != 0 {
-        return;
+        return Handled::Done;
     }
     match icmp.icmp_type {
         ICMP_ECHO_REQUEST => {
@@ -116,7 +116,7 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
                 .try_reserve_exact(ICMP_HEADER_SIZE + icmp.payload.len())
                 .is_err()
             {
-                return;
+                return Handled::Done;
             }
             reply.extend_from_slice(&[ICMP_ECHO_REPLY, 0, 0, 0]);
             reply.extend_from_slice(&icmp.identifier.to_be_bytes());
@@ -144,11 +144,12 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) {
         }
         ICMP_DEST_UNREACHABLE => {
             if let Some((src, src_port, dst, dst_port, errno)) = udp_error_quote(icmp) {
-                super::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
+                return super::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
             }
         }
         _ => {}
     }
+    Handled::Done
 }
 
 /// Send RFC 792 type 3/code 3 with the original IP header and first eight L4 bytes.

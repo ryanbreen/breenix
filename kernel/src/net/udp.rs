@@ -4,7 +4,8 @@
 
 use alloc::vec::Vec;
 
-use super::ipv4::{internet_checksum, Ipv4Packet};
+use super::ipv4::{internet_checksum, Handled, Ipv4Packet};
+use crate::socket::udp::Delivery;
 
 /// UDP header size
 pub const UDP_HEADER_SIZE: usize = 8;
@@ -107,26 +108,42 @@ pub fn udp_checksum(src: [u8; 4], dst: [u8; 4], packet: &[u8]) -> u16 {
 }
 
 /// Deliver through Weak socket bindings; no descriptor lookup or PM hold.
-pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) {
+/// `Retry` means the port registry was held on another CPU and the datagram
+/// was not delivered.
+pub fn handle_udp(ip: &Ipv4Packet, data: &[u8]) -> Handled {
     let Some((header, payload)) = UdpHeader::parse(data) else {
-        return;
+        return Handled::Done;
     };
     let l4 = &data[..header.length as usize];
     if header.checksum != 0 && udp_checksum(ip.src_ip, ip.dst_ip, l4) != 0 {
-        return;
+        return Handled::Done;
     }
-    if !crate::socket::udp::deliver(
+    match crate::socket::udp::deliver(
         ip.dst_ip,
         header.dst_port,
         ip.src_ip,
         header.src_port,
         payload,
     ) {
-        super::icmp::send_port_unreachable(ip, l4);
+        Delivery::Taken => Handled::Done,
+        Delivery::NoReceiver => {
+            super::icmp::send_port_unreachable(ip, l4);
+            Handled::Done
+        }
+        Delivery::RegistryBusy => Handled::Retry,
     }
 }
 
 /// ICMP's original UDP four-tuple identifies the socket whose error is pending.
-pub fn udp_icmp_error(src: [u8; 4], src_port: u16, dst: [u8; 4], dst_port: u16, errno: i32) {
-    crate::socket::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
+pub fn udp_icmp_error(
+    src: [u8; 4],
+    src_port: u16,
+    dst: [u8; 4],
+    dst_port: u16,
+    errno: i32,
+) -> Handled {
+    match crate::socket::udp::udp_icmp_error(src, src_port, dst, dst_port, errno) {
+        Delivery::RegistryBusy => Handled::Retry,
+        Delivery::Taken | Delivery::NoReceiver => Handled::Done,
+    }
 }

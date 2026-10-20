@@ -28,15 +28,24 @@ pub mod icmp {
             None
         }
     }
-    pub fn handle_icmp(_: &crate::ipv4::Ipv4Packet, _: &IcmpPacket) {}
+    pub fn handle_icmp(_: &crate::ipv4::Ipv4Packet, _: &IcmpPacket) -> crate::ipv4::Handled {
+        crate::ipv4::Handled::Done
+    }
     pub fn send_port_unreachable(_: &crate::ipv4::Ipv4Packet, _: &[u8]) {}
 }
 pub mod socket {
     pub mod udp {
-        pub fn deliver(_: [u8; 4], _: u16, _: [u8; 4], _: u16, _: &[u8]) -> bool {
-            false
+        pub enum Delivery {
+            Taken,
+            NoReceiver,
+            RegistryBusy,
         }
-        pub fn udp_icmp_error(_: [u8; 4], _: u16, _: [u8; 4], _: u16, _: i32) {}
+        pub fn deliver(_: [u8; 4], _: u16, _: [u8; 4], _: u16, _: &[u8]) -> Delivery {
+            Delivery::NoReceiver
+        }
+        pub fn udp_icmp_error(_: [u8; 4], _: u16, _: [u8; 4], _: u16, _: i32) -> Delivery {
+            Delivery::Taken
+        }
     }
 }
 pub mod arp {
