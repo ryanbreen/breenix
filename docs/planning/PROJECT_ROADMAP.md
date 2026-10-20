@@ -17,6 +17,11 @@ legacy VMware compositor. bwm composes through syscall 416 on ARM64 QEMU
 `--gpu-gl`, Parallels and VMware (#2133, #2060), and the `VIRGL_COMPOSITE` route is
 retired. Failed device admission also needs firmware diagnostics recovery (#2134).
 
+PR #2136 checks required ARM64 testing binaries on the disk before starting
+the VM, including `--no-build`. The preflight resolves directory symlinks,
+honors the first resolved search path, and rejects dangling targets without
+normalizing away missing path components (#2127).
+
 Launcher work enables the VMware host-key path by default for console suite
 boots, including multi-suite lists, with loopback VNC and owned watcher cleanup.
 The unrelated boot-wait host-test matcher failure is tracked in #2097.

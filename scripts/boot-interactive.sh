@@ -27,7 +27,8 @@
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
-#   --no-build           boot the kernel and disk already in target/
+#   --no-build           boot the kernel and disk already in target/; tests mode first refuses a disk
+#                        that lacks one of the testing kernel's binaries (scripts/check-test-binaries.py)
 #   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
 #                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
@@ -249,6 +250,9 @@ if [ "$TERMINAL_PROFILE" = fault ] && [ "$GPU_GL" -ne 1 ]; then
     echo "fault terminal profile needs --gpu-gl" >&2
     exit 2
 fi
+# The testing kernel loads its test binaries (kernel/src/boot/test_list.rs) from the disk; refuse a
+# disk that lacks one before the VM starts, also with --no-build, which boots whatever disk target/ holds.
+[ "$MODE" != tests ] || python3 "$ROOT/scripts/check-test-binaries.py" "$DISK"
 
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
     # The Developer SDK suite's host side builds the SDK and its test apps and stages

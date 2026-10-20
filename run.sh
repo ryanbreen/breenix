@@ -422,6 +422,10 @@ if [ "$TESTS" = true ]; then
         echo "--tests builds the testing kernel; it cannot be combined with --no-build"
         exit 1
     fi
+    # A --disk image is booted as given; refuse one that lacks a test binary before building.
+    if [ -n "$DISK_OVERRIDE" ] && ! python3 "$BREENIX_ROOT/scripts/check-test-binaries.py" "$DISK_OVERRIDE"; then
+        exit 1
+    fi
     BOOT_MODE=tests
     KERNEL_FEATURE_ARGS=(--features testing)
 fi
