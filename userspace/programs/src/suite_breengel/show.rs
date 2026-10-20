@@ -159,7 +159,8 @@ fn panel_layout() -> CaseResult {
 
 // gpu-display: R3/R4 checks all physical stage-layout pixels at scale 2 with certified TrueType labels.
 fn panel_stage_layout() -> CaseResult { stage_fixture("stage-layout") }
-fn panel_tile_stamps() -> CaseResult { stage_fixture("tile-stamps") }
+// gpu-display: R3/R4 checks every stamp, number and 399-case wall slot at physical scale.
+fn panel_tile_stamps() -> CaseResult { scaled_stage("tile-stamps") }
 fn panel_tile_thumbnail() -> CaseResult { stage_fixture("tile-thumbnail") }
 fn panel_spotlight_picture() -> CaseResult { stage_fixture("spotlight-picture") }
 fn panel_spotlight_timing() -> CaseResult {
@@ -242,4 +243,11 @@ fn panel_boundary_notice() -> CaseResult { libbreenix::suite::showcase_check("bo
 
 fn stage_fixture(name:&str)->CaseResult {
     crate::stage_fixtures::check_capture(name,|fb|libbreenix::suite::judged(fb).map_err(|e|format!("{e:?}"))).map_err(libbreenix::suite::CaseError::Fail)
+}
+
+fn scaled_stage(name:&str)->CaseResult {
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23")?;
+    let mode=modes.modes[modes.current as usize];
+    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"23","gpu-display: stage is not in the required scale-2 GPU mode")?;
+    stage_fixture(name)
 }
