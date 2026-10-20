@@ -819,7 +819,8 @@ impl Device {
         *IDS.lock() = Some(Ids {
             sids: Pool::new(1, surfaces as u32),
             mobs: Pool::new(1, mobs as u32),
-            cids: Pool::new(0, contexts as u32),
+            // Reserve ID 0 for READBACK's display selector.
+            cids: Pool::new(1, contexts as u32),
             gen: 0,
             res: BTreeMap::new(),
             ctxs: BTreeMap::new(),
