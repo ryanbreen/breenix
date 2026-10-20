@@ -243,6 +243,7 @@ fn events_close_requested() -> CaseResult {
     round_trip(b"close-requested", &[ev(kind::CLOSE_REQUESTED)], &[Event::CloseRequested], "19.1")
 }
 
+// gpu-window: B7 replaces MAP_COMMITTED with readback of the GPU handles returned by RESIZE.
 fn events_resized() -> CaseResult {
     interface()?;
     let w = W::new(32, 24, 2)?;
@@ -259,10 +260,18 @@ fn events_resized() -> CaseResult {
     // When it arrives, the buffers have that size: a capture and the listing say so.
     let (c, _) = capture(w.id(), 48, 20, None).map_err(|e| format!("CAPTURE {}", outcome(e))).cite("17.3")?;
     ensure((c.width, c.height) == (48, 20), "19.2", format!("after Resized(48x20) arrived, CAPTURE gives {}x{}", c.width, c.height))?;
-    let mut m = abi::MapBuffers::ZERO;
-    m.id = w.id();
-    want_ok(call(op::MAP_COMMITTED, &mut m), "17.1", "MAP_COMMITTED")?;
-    ensure(m.stride == 48 * 4, "19.2", format!("after Resized(48x20) arrived, the buffers' stride is {}; 48 pixels are 192 bytes", m.stride))?;
+    ensure(r.stride == 48 * 4, "19.2", format!(
+        "gpu-window: after Resized(48x20), RESIZE stride is {}; expected 192", r.stride))?;
+    for target in &r.buffer[..2] {
+        let mut pixels = vec![0xA5; 48 * 20 * 4];
+        let mut record = [0u8; libbreenix::gpu::abi::record::SIZE];
+        let ret = libbreenix::gpu::readback(*target, [0, 0, 48, 20], &mut pixels, 192, &mut record);
+        want_ok(ret, "19.2", "gpu-window: readback of resized GPU target")?;
+        use libbreenix::gpu::abi::record as off;
+        let word = |n| u32::from_le_bytes(record[n..n+4].try_into().unwrap());
+        ensure((word(off::TARGET_WIDTH), word(off::TARGET_HEIGHT)) == (48, 20), "19.2",
+            "gpu-window: the resized event arrived before its targets had the new dimensions")?;
+    }
     // And through Breengel, as Event::Resized.
     let (_k, mut bw) = setup(b"resized")?;
     bw.apply_resize(40, 30).cite("17.1")?;
