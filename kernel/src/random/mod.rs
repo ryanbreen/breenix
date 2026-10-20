@@ -7,6 +7,9 @@
 //!   them (x86-64 RDSEED, else RDRAND; ARMv8.5 RNDRRS, else RNDR), an entropy
 //!   device where the machine has one (virtio-rng), and windows of timer
 //!   jitter: the counter time of a fixed memory walk (`jitter.rs`).
+//! - On ARM64 machines booted through the UEFI loader, the loader's boot seed
+//!   (`take_boot_seed`): bytes from the firmware's EFI_RNG_PROTOCOL or the
+//!   TPM's TPM2_GetRandom, taken before ExitBootServices.
 //! - Device events (`add_event`): the cycle counter at each received network
 //!   frame and each terminal input byte, gathered lock-free and folded in at
 //!   the next read.
@@ -16,7 +19,8 @@
 //! The pool is ready once `READY_BITS` have been credited. Credit is
 //! conservative: a full word per RDSEED or RNDRRS word, half a word per RDRAND
 //! or RNDR word (each is a generator's output, not raw entropy), 8 bits per
-//! byte from an entropy device (it exists to supply them). Timer jitter and
+//! byte from an entropy device or the loader's boot seed (each exists to
+//! supply them). Timer jitter and
 //! device events add input but no credit: their entropy is not independently
 //! assessed. Passing health diagnostics (`health.rs`) does not establish it.
 //! Without any credited source the pool stays unready.
@@ -64,6 +68,69 @@ pub enum Event {
     TtyInput = 2,
 }
 
+/// Most bytes of loader boot seed the pool holds for `init`.
+const BOOT_SEED_CAPACITY: usize = 64;
+
+/// The loader's boot seed, from `take_boot_seed` until `init` mixes it in.
+struct BootSeed {
+    source: BootSeedSource,
+    len: usize,
+    bytes: [u8; BOOT_SEED_CAPACITY],
+}
+
+static BOOT_SEED: Mutex<BootSeed> = Mutex::new(BootSeed {
+    source: BootSeedSource::None,
+    len: 0,
+    bytes: [0; BOOT_SEED_CAPACITY],
+});
+
+/// Where the loader's boot seed came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BootSeedSource {
+    None,
+    EfiRng,
+    Tpm,
+}
+
+impl BootSeedSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            BootSeedSource::None => "none",
+            BootSeedSource::EfiRng => "efi-rng",
+            BootSeedSource::Tpm => "tpm",
+        }
+    }
+}
+
+/// Keep the loader's boot seed for `init`, and wipe `seed`: the loader's
+/// pages stay reserved, so its copy would otherwise outlive the boot.
+pub fn take_boot_seed(source: BootSeedSource, seed: &mut [u8]) {
+    if source != BootSeedSource::None {
+        let mut held = BOOT_SEED.lock();
+        let len = seed.len().min(BOOT_SEED_CAPACITY);
+        held.bytes[..len].copy_from_slice(&seed[..len]);
+        held.len = len;
+        held.source = source;
+    }
+    erase::wipe(seed);
+}
+
+/// Mix in the loader's boot seed; each byte earns 8 bits.
+fn mix_boot_seed() -> (BootSeedSource, u32) {
+    let mut held = BOOT_SEED.lock();
+    let source = held.source;
+    let len = held.len;
+    if source == BootSeedSource::None || len == 0 {
+        return (source, 0);
+    }
+    with_generator(|g| g.mix(&[b"boot-seed", &held.bytes[..len]]));
+    erase::wipe(&mut held.bytes);
+    held.len = 0;
+    let bits = len as u32 * 8;
+    credit(bits);
+    (source, bits)
+}
+
 /// What boot seeding found, for the boot log.
 pub struct BootReport {
     pub rdrand: bool,
@@ -71,6 +138,8 @@ pub struct BootReport {
     pub rndr: bool,
     pub hardware_bits: u32,
     pub device_bits: u32,
+    pub boot_seed: BootSeedSource,
+    pub boot_seed_bits: u32,
     pub jitter: JitterReport,
     pub ready: bool,
 }
@@ -309,6 +378,7 @@ pub fn init() -> BootReport {
 
     let hardware_bits = reseed_hardware();
     let device_bits = reseed_device();
+    let (boot_seed, boot_seed_bits) = mix_boot_seed();
     let jitter = collect_jitter();
     BootReport {
         rdrand: hardware & HW_RDRAND != 0,
@@ -316,6 +386,8 @@ pub fn init() -> BootReport {
         rndr: hardware & HW_RNDR != 0,
         hardware_bits,
         device_bits,
+        boot_seed,
+        boot_seed_bits,
         jitter,
         ready: is_ready(),
     }

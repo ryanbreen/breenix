@@ -825,6 +825,7 @@ finish_vm_boot() {
     host_slot_header "$SERIAL_LOG"
     "$BREENIX_ROOT/scripts/vigil-record.sh" finish "${VIGIL_ID:-}" "$status"
     if [ "$PARALLELS" = true ] && [ "$stopped" = true ]; then
+        [ -z "${VM_HOME:-}" ] || cp "$VM_HOME/parallels.log" "$SERIAL_LOG.parallels.log" 2>/dev/null || true
         if delete_parallels_vm "$PARALLELS_VM"; then
             rm -f "${PARALLELS_OWNER_FILE:-}"
         else
@@ -1178,6 +1179,13 @@ if [ "$PARALLELS" = true ]; then
 
     # Set boot order: hard disk first (default boots from cdrom which hangs)
     prlctl set "$PARALLELS_VM" --device-bootorder "hdd0" 2>/dev/null || true
+    # A virtual TPM is this VM's only entropy device: the loader seeds the kernel's random pool
+    # from its TPM2_GetRandom (parallels-loader/src/entropy.rs). The CPU has no RNDR and Parallels
+    # offers no virtio-rng, so without it a secure getrandom caller blocks with no source to end
+    # the wait. With the TPM added and Secure Boot left at its default, the unsigned loader wrote
+    # no serial output in a probe boot; with Secure Boot off it runs.
+    prlctl set "$PARALLELS_VM" --tpm crb
+    prlctl set "$PARALLELS_VM" --efi-secure-boot off
 
     # Configure serial port output to file
     prlctl set "$PARALLELS_VM" --device-add serial --output "$SERIAL_LOG" 2>/dev/null || true
