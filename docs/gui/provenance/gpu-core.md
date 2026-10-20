@@ -1092,10 +1092,9 @@ VMware acceptance landed in PR #1815 at `c4972aa0`. The SVGA3D DX backend is com
 into the ARM64 kernel without a feature selection. On VMware, console attachment probes
 and admits the SVGA3 device before choosing the console display. The GOP framebuffer
 provides the early splash until that handoff. This branch deletes the legacy SVGA3
-compositor and its GPU client routes, but bwm has not been ported: VMware default
-and desktop boots lose their window manager (#2133). PR #2132 remains blocked by
-GPU contract rule 9; the suite evidence does not cover desktop startup. The core
-does not call or wrap that driver.
+compositor and its GPU client routes. bwm composes through syscall 416 instead
+(`userspace/programs/src/bwm/compositor.rs`), using only BGL's public interface; it
+adds no device fact to this record. The core does not call or wrap that driver.
 
 Build and launch from the checkout root (Mac builds at background priority, the VM at
 normal priority with its window):

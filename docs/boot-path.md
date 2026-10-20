@@ -113,11 +113,13 @@ instructions cannot be emulated by this QEMU version.
   console you can type into.
 - `desktop`: the production kernel runs `/sbin/init desktop`, the window manager and a
   terminal in the VM window (`--no-display` keeps it headless). The window manager
-  still uses the legacy VirGL compositing interface on Parallels. On this branch,
-  VMware selects the GPU core without a bwm route, so bwm prints
-  `GPU compositing required` and exits (#2133); default mode has the same defect.
-  QEMU launches without VirGL also fail bwm's startup probe. Init reporting services
-  started does not demonstrate that the desktop rendered.
+  composes through the GPU core (syscall 416), so ARM64 QEMU needs `--gpu-gl`; without
+  it bwm prints `GPU compositing required` and exits. Init reporting services started
+  does not demonstrate that the desktop rendered: the runtimes milestone's desktop and
+  `default` stages require bwm's `[bwm] first frame read back:` and
+  `[bwm] composited client frame:` lines, which it prints only after reading the
+  presented frame back from the device and matching it, pixel for pixel, with the frame
+  it composed (in `default` mode the client is `bounce`).
 - `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
   an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
   runs that one program, relays its output, and prints `RUN PATH START` once the program has
@@ -153,8 +155,10 @@ instructions cannot be emulated by this QEMU version.
   `--gate-timeout N` sets the DONE deadline (default 1800 seconds for ARM64 QEMU
   suites and Parallels/VMware suites and probes); QEMU enforces it even when
   `--idle-exit 0` disables idle shutdown.
+  <!-- claim-lint:ok: bundle ownership is run.sh's exclusive creation (the comments at its bundle cleanup and creation). -->
   The `default` boot (what Parallels and VMware run without `--suite` or `--probe`) measures that
-  milestone by init's `[init] Breenix init starting (PID 1)` and `[init] Boot script completed`.
+  milestone by init's `[init] Breenix init starting (PID 1)` and `[init] Boot script completed`,
+  and the runtimes milestone by bwm's start, first frame and first client frame.
 
 The non-test modes build the kernel with no features, exactly like the prod-profile gate,
 and pass the mode to it with `-fw_cfg name=opt/breenix/mode,string=MODE`. The kernel
