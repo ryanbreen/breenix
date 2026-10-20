@@ -938,20 +938,16 @@ fn emit_resume_pc_census_to_kmsg() {
     // the fix operating, while the gate-failing fact is the dispatch refusal.
     let routed = crate::task::scheduler::percpu_stack_selection_routed();
     if routed != 0 {
-        crate::arch_without_interrupts(|| {
-            crate::log_buffer::capture_fmt(format_args!(
-                "[PERCPU_STACK_SELECTION_ROUTED:total={}]\n",
-                routed
-            ))
-        });
+        crate::serial_line::capture_fmt(format_args!(
+            "[PERCPU_STACK_SELECTION_ROUTED:total={}]\n",
+            routed
+        ));
     }
     for_each_resume_pc_census_row(|cpu_id, source_name, [text, kstack, uva, smallint, other]| {
-        crate::arch_without_interrupts(|| {
-            crate::log_buffer::capture_fmt(format_args!(
-                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]\n",
-                cpu_id, source_name, text, kstack, uva, smallint, other
-            ))
-        });
+        crate::serial_line::capture_fmt(format_args!(
+            "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]\n",
+            cpu_id, source_name, text, kstack, uva, smallint, other
+        ));
     });
 }
 
