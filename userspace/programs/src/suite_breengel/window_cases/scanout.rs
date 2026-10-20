@@ -130,7 +130,7 @@ interface()?;let (mut k,w,mut p,first)=one_window(3)?;
             "gpu-display: binding record belongs to a different composite or incomplete present")?;
     }
     let s=super::composition::gpu_snapshot(&mut k)?;
-    same(&s.pixels,s.width,s.height,true,"bound GPU composition","20.1",formula(&[p]))
+    same(&s.pixels,s.width as u32,s.height as u32,true,"bound GPU composition","20.1",formula(&[p]))
 }
 
 fn scanout_completion() -> CaseResult {
@@ -361,7 +361,7 @@ fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapsho
     p.seed=seed+2;w.frame(p.seed).cite("17.3")?;let (serial,_)=compose(&mut k)?;
     let clean=super::composition::gpu_snapshot(&mut k)?;
     ensure(clean.quad(176)==serial,"20.3","gpu-display: recovery record names another composite")?;
-    same(&clean.pixels,clean.width,clean.height,true,"GPU fault recovery","20.3",formula(&[p]))?;
+    same(&clean.pixels,clean.width as u32,clean.height as u32,true,"GPU fault recovery","20.3",formula(&[p]))?;
     Ok((observed.0,observed.1,observed.2,fault_serial))
 }
 
@@ -376,7 +376,7 @@ fn scanout_present_flip()->CaseResult {
         ensure(ret==0 && m.binding_known==1 && m.scanout_resource==resource && resource!=0 && fence!=0 && s.quad(176)==serial,
             "20","gpu-display: flipped target, binding, composite serial or completed present fence disagree")?;
         ensure(n==0 || (resource!=previous.0 && fence!=previous.1),"20","gpu-display: successive frames did not flip to a different completed target")?;
-        same(&s.pixels,s.width,s.height,true,"flipped scanout","20",formula(&[p]))?;previous=(resource,fence);
+        same(&s.pixels,s.width as u32,s.height as u32,true,"flipped scanout","20",formula(&[p]))?;previous=(resource,fence);
     }Ok(())
 }
 

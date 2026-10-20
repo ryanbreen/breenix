@@ -354,7 +354,7 @@ interface()?;
         if ret!=0 || c.resources!=0 || c.contexts!=0 {return Err("gpu-window: fork inherited GPU resources or contexts".into());}
         for target in &handles[..2] {
             let mut pixels=vec![0xA5;16*16*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
-            errno_is(libbreenix::gpu::readback(*target,[0,0,16,16],&mut pixels,64,&mut record),EINVAL,"child","parent GPU target")?;
+            if libbreenix::gpu::readback(*target,[0,0,16,16],&mut pixels,64,&mut record)!=-(EINVAL as i64){return Err("gpu-window: child read its parent's GPU target instead of EINVAL".into());}
             if pixels.iter().any(|&b|b!=0xA5){return Err("gpu-window: refused inherited target wrote pixels".into());}
         }Ok(())
     }))
