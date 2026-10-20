@@ -131,6 +131,7 @@ fn tile_colour(i: usize, j: usize) -> Color {
 
 /// A 5 × 4 owned source of `format` holding `tile_colour`.
 fn tile(format: Format) -> Result<FrameBuf, String> {
+    crate::gpu_checks::declare_fixture((5*4*format.bpp) as u64);
     let mut fb = FrameBuf::new(5, 4, format).map_err(|e| format!("FrameBuf::new(5, 4, {format:?}) failed: {e}"))?;
     for j in 0..4 {
         for i in 0..5 {
@@ -714,6 +715,7 @@ fn raster_blit_clip() -> CaseResult {
 }
 
 fn raster_blit_alpha() -> CaseResult {
+    crate::gpu_checks::declare_fixture(80);
     let src = FrameBuf::new(5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let s_of = |i: usize, j: usize| {
         let a = [0u32, 64, 128, 200, 255][i];
@@ -741,6 +743,7 @@ fn raster_blit_straight() -> CaseResult {
     let alphas = [0u32, 1, 128, 254, 255];
     let straight = |i: usize, j: usize| Color::rgb(200, (100 + 30 * j) as u8, (30 + 40 * i) as u8);
     for is_bgr in [false, true] {
+        crate::gpu_checks::declare_fixture(80);
         let mut mem = vec![0u32; 5 * 4];
         let base = mem.as_mut_ptr() as *mut u8;
         for j in 0..4 {
@@ -2751,6 +2754,7 @@ fn font_parser_corpus() -> CaseResult {
 
 // gpu-raster: §2.4 runtime proof covers every primitive exercised by the category's extreme fixture.
 fn raster_cpu_pixels_zero() -> CaseResult {
+    crate::gpu_checks::audit_category(RASTER)?;
     for (name,call) in extreme_calls() {
         let before=crate::gpu_checks::counters().cite("7")?;
         let surface=padded(32,24);

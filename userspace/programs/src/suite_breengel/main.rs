@@ -175,6 +175,9 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
 ]).gui();
 
 fn main() {
+    let directory=format!("/dev/shm/breengel-raster-audit-{}",process::getpid().expect("suite pid").raw());
+    std::fs::create_dir_all(&directory).expect("gpu-raster: create accounting directory");
+    std::env::set_var("BREENIX_RASTER_AUDIT",directory);
     SUITE.run()
 }
 
@@ -261,7 +264,9 @@ const HANDED_FRAME: i32 = 2;
 fn judged_case(run: fn() -> CaseResult) -> CaseResult {
     PICTURES.store(true, Relaxed);
     EXPLICIT_FRAME.store(false,Relaxed);
+    let audit=gpu_checks::audit_begin();
     let result = run();
+    gpu_checks::audit_finish(audit);
     match (hand_off_judged(), result) {
         (Err(msg), Ok(())) => fail(msg),
         (_, result) => result,
@@ -318,7 +323,9 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
     let mut body=|| {
         LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).take();
         EXPLICIT_FRAME.store(false,Relaxed);
+        let audit=gpu_checks::audit_begin();
         let result=callback.take().unwrap()();
+        gpu_checks::audit_finish(audit);
         let handed=export_isolated_frame(&path);
         let frame=if matches!(handed,Ok(true)){HANDED_FRAME}else{0};
         match result.and(handed.map(|_|())) {
