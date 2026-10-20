@@ -20,6 +20,7 @@ pub(crate) const SCANOUT: &[Case] = &[
     pictured!("fault-outside-damage", "Corruption written outside any damage is found by comparing the full destination", scanout_fault_outside_damage),
     pictured!("boundary-stated", "The record states what lies outside the guest's view for this backend", scanout_boundary_stated),
     pictured!("present-flip", "Every flip records its actual target and completed present fence", scanout_present_flip),
+    pictured!("hidpi-mode", "The complete 2560x1600 scanout is read back and changes in its final row are observed", scanout_hidpi_mode),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -377,5 +378,18 @@ fn scanout_present_flip()->CaseResult {
             "20","gpu-display: flipped target, binding, composite serial or completed present fence disagree")?;
         ensure(n==0 || (resource!=previous.0 && fence!=previous.1),"20","gpu-display: successive frames did not flip to a different completed target")?;
         same(&s.pixels,s.width,s.height,true,"flipped scanout","20",formula(&[p]))?;previous=(resource,fence);
+    }Ok(())
+}
+
+// gpu-display: R4 reads every pixel of 2560x1600, including a changed final row, with physical dimensions in record v2.
+fn scanout_hidpi_mode()->CaseResult {
+    interface()?;let mut k=compositor()?;let mut p=Placed::new(0,1599,2560,1,0,50);
+    let w=W::new(2560,1,2)?;show(&mut k,&w,&p)?;compose(&mut k)?;
+    for n in 0..2 {
+        if n==1 {p.seed=51;w.frame(51).cite("17.3")?;compose(&mut k)?;}
+        let s=super::composition::gpu_snapshot(&mut k)?;
+        ensure((s.width,s.height)==(2560,1600) && (s.word(40),s.word(44),s.word(48),s.word(52))==(2560,1600,2560,1600),"20",
+            "gpu-display: HiDPI readback or record omitted part of the physical destination")?;
+        same(&s.pixels,2560,1600,true,"full HiDPI scanout including its last row","20",formula(&[p]))?;
     }Ok(())
 }
