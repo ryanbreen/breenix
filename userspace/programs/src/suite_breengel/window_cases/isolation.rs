@@ -582,22 +582,17 @@ fn isolation_efault_composite() -> CaseResult {
         "the compositor's COMPOSITE with an unmapped and then a read-only descriptor answered `{bad}`; the contract gives EFAULT for both (`err 14 err 14`)"))
 }
 
+// gpu-display: B7 preserves bad-user-copy protection through GPU CAPS, RESOURCE_CREATE and SUBMIT.
 fn isolation_efault_mouse() -> CaseResult {
-    #[cfg(target_arch = "aarch64")]
-    step("17.5", child("framebuffer EFAULT", 5_000, None, || {
-        let hole = Pages::new(0, 1, true)?;
-        let bad = hole.addr();
-        let draw = |op, p1, p2, p3, p4| {
-            let cmd = libbreenix::graphics::FbDrawCmd { op, p1, p2, p3, p4, color: 1 };
-            unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const _ as u64) as i64 }
-        };
-        let lo = bad as u32 as i32;
-        let hi = (bad >> 32) as u32 as i32;
-        for (name, ret) in [
-            ("fbinfo", unsafe { raw::syscall1(SYS_FB_INFO, bad) as i64 }),
-            ("command", unsafe { raw::syscall1(SYS_FB_DRAW, bad) as i64 }),
-            ("flush rectangles", draw(8, lo, hi, 1, 0)),
-        ] { errno_is(ret, EFAULT, "unmapped user page", name)?; }
+    step("17.5", child("GPU user-copy EFAULT",5_000,None,|| {
+        use libbreenix::gpu::{self,abi as ga};
+        let hole=Pages::new(0,1,true)?;let bad=hole.addr();
+        for (op,len) in [(ga::op::CAPS,core::mem::size_of::<ga::Caps>()),(ga::op::RESOURCE_CREATE,core::mem::size_of::<ga::ResourceCreate>())] {
+            let ret=unsafe{gpu::call(op,bad as *mut u8,len)};
+            errno_is(ret,EFAULT,"unmapped user page","gpu-display: GPU descriptor")?;
+        }
+        let c=bgl::Context::new().map_err(|r|format!("GPU context {}",outcome(r)))?;
+        errno_is(gpu::submit_raw(c.handle(),bad,16).0,EFAULT,"unmapped user page","gpu-display: GPU stream")?;
         Ok(())
     }))?;
     // The pointer words (16 bytes) and the key words (8 bytes) alike.
