@@ -884,61 +884,83 @@ pub extern "C" fn aarch64_resume_pc_refused_el0() -> ! {
     crate::arch_impl::aarch64::idle_loop_arm64()
 }
 
-/// Emit non-zero producer-classification rows for every CPU.
-pub fn emit_resume_pc_census() {
+/// Visit each CPU's producer-classification rows that have counts: the CPU,
+/// the source's name, and the counts by class.
+fn for_each_resume_pc_census_row(mut visit: impl FnMut(usize, &str, [u32; RESUME_PC_CENSUS_CLASSES])) {
     for cpu_id in 0..crate::arch_impl::aarch64::constants::MAX_CPUS {
         for (source_idx, source_name) in RESUME_PC_CENSUS_SOURCE_NAMES.iter().enumerate() {
-            let mut line = crate::serial_line::Line::new();
             let row = &RESUME_PC_CENSUS[cpu_id][source_idx];
-            let text = row[0].load(Ordering::Relaxed);
-            let kstack = row[1].load(Ordering::Relaxed);
-            let uva = row[2].load(Ordering::Relaxed);
-            let smallint = row[3].load(Ordering::Relaxed);
-            let other = row[4].load(Ordering::Relaxed);
-            if text == 0 && kstack == 0 && uva == 0 && smallint == 0 && other == 0 {
-                continue;
+            let counts: [u32; RESUME_PC_CENSUS_CLASSES] =
+                core::array::from_fn(|class| row[class].load(Ordering::Relaxed));
+            if counts.iter().any(|&count| count != 0) {
+                visit(cpu_id, source_name, counts);
             }
-
-            line.text("[RESUME_PC_CENSUS:cpu=");
-            line.dec(cpu_id as u64);
-            line.text(":source=");
-            line.text(source_name);
-            line.text(":text=");
-            line.dec(text as u64);
-            line.text(":kstack=");
-            line.dec(kstack as u64);
-            line.text(":uva=");
-            line.dec(uva as u64);
-            line.text(":smallint=");
-            line.dec(smallint as u64);
-            line.text(":other=");
-            line.dec(other as u64);
-            line.text("]\n");
         }
     }
 }
 
-/// Emit the routing total, then the producer-classification rows that have counts.
-pub fn emit_resume_pc_census_locked() {
-    // The selection-side custody total, and the only reader it has in a boot
-    // that does not fault. Work-stealing declines a stack-pinned thread without
-    // writing a record — the selection path takes no UART writes — so without
-    // this line the routing would be invisible in exactly the boots where it is
-    // working. Reported, never gated: routing a thread home is the fix
-    // operating, while the gate-failing fact is the dispatch refusal.
+/// Write each CPU's producer-classification rows that have counts to serial,
+/// as raw records: the fatal postmortem's copy.
+pub fn emit_resume_pc_census() {
+    for_each_resume_pc_census_row(|cpu_id, source_name, [text, kstack, uva, smallint, other]| {
+        let mut line = crate::serial_line::Line::new();
+        line.text("[RESUME_PC_CENSUS:cpu=");
+        line.dec(cpu_id as u64);
+        line.text(":source=");
+        line.text(source_name);
+        line.text(":text=");
+        line.dec(text as u64);
+        line.text(":kstack=");
+        line.dec(kstack as u64);
+        line.text(":uva=");
+        line.dec(uva as u64);
+        line.text(":smallint=");
+        line.dec(smallint as u64);
+        line.text(":other=");
+        line.dec(other as u64);
+        line.text("]\n");
+    });
+}
+
+/// Write the routing total, then the producer-classification rows that have
+/// counts, to the kernel log (`/proc/kmsg`) only.
+///
+/// This is the periodic copy a boot that does not fault takes. It is a
+/// diagnostic, so it stays off serial and off the screen console: on serial
+/// its bursts were the only output of a stalled testing boot and read as a
+/// loop, and on tty1 they scrolled the screen (#2037). The fatal postmortem
+/// still writes the rows to serial (`emit_resume_pc_census`).
+fn emit_resume_pc_census_to_kmsg() {
+    // The selection-side custody total. Work-stealing declines a stack-pinned
+    // thread without writing a record — the selection path takes no UART
+    // writes — so this line is where the routing shows in a boot that does
+    // not fault. It is reported and no gate reads it: routing a thread home is
+    // the fix operating, while the gate-failing fact is the dispatch refusal.
     let routed = crate::task::scheduler::percpu_stack_selection_routed();
     if routed != 0 {
-        crate::serial_println!("[PERCPU_STACK_SELECTION_ROUTED:total={}]", routed);
+        crate::arch_without_interrupts(|| {
+            crate::log_buffer::capture_fmt(format_args!(
+                "[PERCPU_STACK_SELECTION_ROUTED:total={}]\n",
+                routed
+            ))
+        });
     }
-
-    // The rows go to serial as raw records, kept out of the log rings and off
-    // the screen console: a burst of them would scroll tty1's text away (#2037).
-    emit_resume_pc_census();
+    for_each_resume_pc_census_row(|cpu_id, source_name, [text, kstack, uva, smallint, other]| {
+        crate::arch_without_interrupts(|| {
+            crate::log_buffer::capture_fmt(format_args!(
+                "[RESUME_PC_CENSUS:cpu={}:source={}:text={}:kstack={}:uva={}:smallint={}:other={}]\n",
+                cpu_id, source_name, text, kstack, uva, smallint, other
+            ))
+        });
+    });
 }
 
 fn emit_resume_pc_census_if_due() {
     const EMIT_INTERVAL_NS: u64 = 10_000_000_000;
-    const MAX_EMISSIONS: u32 = 6;
+    // Once: the census is cumulative, and on an 8-CPU machine a burst is up to
+    // 72 rows of about 95 bytes, so six of them would overrun the 32 KiB
+    // kernel log ring.
+    const MAX_EMISSIONS: u32 = 1;
 
     if RESUME_PC_CENSUS_EMISSIONS.load(Ordering::Acquire) >= MAX_EMISSIONS {
         return;
@@ -960,7 +982,7 @@ fn emit_resume_pc_census_if_due() {
     if RESUME_PC_CENSUS_EMISSIONS.fetch_add(1, Ordering::AcqRel) >= MAX_EMISSIONS {
         return;
     }
-    emit_resume_pc_census_locked();
+    emit_resume_pc_census_to_kmsg();
 }
 
 #[inline]
