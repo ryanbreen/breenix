@@ -10,12 +10,31 @@ static BUTTONS: [AtomicU8; 256] = [const { AtomicU8::new(0) }; 256];
 static POINTER: AtomicU64 = AtomicU64::new(0);
 static PRESSES: AtomicU32 = AtomicU32::new(0);
 static WHEEL: AtomicI32 = AtomicI32::new(0);
+// The screen the pointer moves over, `width << 32 | height`, once the GPU core's screen
+// replaces the firmware framebuffer (`set_screen`); 0 until then.
+static SCREEN: AtomicU64 = AtomicU64::new(0);
+
+/// Scale the pointer to a `width` x `height` screen from now on.
+pub fn set_screen(width: u32, height: u32) {
+    SCREEN.store((width as u64) << 32 | height as u64, Ordering::Release);
+}
+
+/// The screen `set_screen` gave, if any.
+pub fn screen() -> Option<(u32, u32)> {
+    match SCREEN.load(Ordering::Acquire) {
+        0 => None,
+        screen => Some(((screen >> 32) as u32, screen as u32)),
+    }
+}
 
 pub fn report(port: u8, motion: Motion) {
-    let Some(info) = crate::graphics::arm64_fb::FB_INFO_CACHE.get() else {
-        return;
+    let (width, height) = match screen() {
+        Some((width, height)) => (width as usize, height as usize),
+        None => match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
+            Some(info) => (info.width, info.height),
+            None => return,
+        },
     };
-    let (width, height) = (info.width, info.height);
     let old = POINTER.load(Ordering::Acquire);
     let (x, y, buttons) = unpack(old);
     let x = motion.x.map_or(x, |axis| axis.position(x, width as u32));

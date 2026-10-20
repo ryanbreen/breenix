@@ -236,7 +236,12 @@ fn release_presented_window_frames(
 fn compositor_ready_bits(last_registry_gen: u64, prev_mouse: u64) -> (u64, u64, u64) {
     use core::sync::atomic::Ordering;
 
-    let (mx, my, mb) = crate::input::pointer::mouse_state();
+    // The pointer sys_get_mouse_pos reports: QEMU's virtio tablet when it has one.
+    let (mx, my, mb) = if crate::drivers::virtio::input_mmio::is_tablet_initialized() {
+        crate::drivers::virtio::input_mmio::mouse_state()
+    } else {
+        crate::input::pointer::mouse_state()
+    };
     let mouse_packed = ((mx as u64) << 32) | ((my as u64) << 16) | (mb as u64);
     let cur_reg_gen = REGISTRY_GENERATION.load(Ordering::Relaxed);
 
@@ -1018,6 +1023,8 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
         14 => {
             // ReadWindowBuffer: copy a window's pixels to caller's buffer.
             // Returns 0 if buffer hasn't changed since last read (skip copy).
+            // The copy consumes the frame: a client waiting in mark_window_dirty
+            // (op=15) for it is released, since its pixels may change again.
             // p1=buffer_id, p2/p3=dst_ptr (lo/hi), p4=max_bytes
             let buffer_id = cmd.p1 as u32;
             let dst_ptr = (cmd.p2 as u32 as u64) | ((cmd.p3 as u32 as u64) << 32);
@@ -1028,6 +1035,21 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
             let dst_end = dst_ptr + max_bytes as u64;
             if dst_end > USER_SPACE_MAX {
                 return SyscallResult::Err(super::ErrorCode::Fault as u64);
+            }
+            // Resolve the destination's faults (demand pages, copy-on-write) before the
+            // registry lock is taken, so the copy under it does not wait on them: one
+            // word per page is exchanged with the value it holds.
+            let mut page = dst_ptr & !0xFFF;
+            while page < dst_end {
+                let word = (page.max(dst_ptr) + 3) & !3;
+                if word + 4 <= dst_end {
+                    let held = crate::syscall::userptr::read_user_u32(word)
+                        .and_then(|v| crate::syscall::userptr::cmpxchg_user_u32(word, v, v));
+                    if held.is_err() {
+                        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+                    }
+                }
+                page += 4096;
             }
             let mut reg = WINDOW_REGISTRY.lock();
             match reg.find_mut(buffer_id) {
@@ -1047,16 +1069,20 @@ fn handle_virgl_op(cmd: &FbDrawCmd) -> SyscallResult {
                         }
                         let chunk = (copy_bytes - offset).min(4096);
                         let src = (phys_mem_offset + page_phys) as *const u8;
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                src,
-                                (dst_ptr as *mut u8).add(offset),
-                                chunk,
-                            );
+                        if crate::syscall::userptr::write_user_bytes(dst_ptr + offset as u64, src, chunk)
+                            .is_err()
+                        {
+                            return SyscallResult::Err(super::ErrorCode::Fault as u64);
                         }
                         offset += chunk;
                     }
-                    SyscallResult::Ok(((buf.width as u64) << 32) | buf.height as u64)
+                    let dims = ((buf.width as u64) << 32) | buf.height as u64;
+                    let released = buf.waiting_thread_id.take().is_some();
+                    drop(reg);
+                    if released {
+                        CLIENT_FRAME_WQ.wake_up();
+                    }
+                    SyscallResult::Ok(dims)
                 }
                 None => SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
             }

@@ -198,7 +198,10 @@ const TABLET_ABS_MAX: u32 = 32767;
 /// Get current screen dimensions from the GPU driver (fallback to 1280x800)
 #[inline]
 fn screen_dimensions() -> (u32, u32) {
-    super::gpu_mmio::dimensions().unwrap_or((1280, 800))
+    // The GPU core's screen, once it replaces the MMIO display.
+    crate::input::pointer::screen()
+        .or_else(super::gpu_mmio::dimensions)
+        .unwrap_or((1280, 800))
 }
 
 /// Current mouse X position in screen coordinates
@@ -824,4 +827,5 @@ pub fn handle_tablet_interrupt() {
             _ => {} // EV_SYN and others — ignore
         }
     }
+    crate::syscall::graphics::wake_compositor_if_waiting();
 }
