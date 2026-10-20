@@ -11,6 +11,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The server program defines four x86-led efforts in `docs/efforts/path.json`:
+`server`, `users`, `filesystem` (Breenix's own copy-on-write filesystem, D1) and
+`toolchain` (our own C compiler, assembler, linker and make, D2). Lanes are accepted
+on the R240 first and the catch-up brings the VMs to the same bar (D6). Their suites
+are skeleton manifests whose cases arrive with the lanes; the plan and the
+operator decisions are in `docs/metal/server-plan.md`.
+
 The #2149 repair connects bwm's stdin keys to hotkey matching and makes keyboard
 input ready the compositor wait. The #2125/#2143 follow-up makes `run.sh`'s
 `--headless` and `--serial` select the VM no-GUI path that Vigil records.
