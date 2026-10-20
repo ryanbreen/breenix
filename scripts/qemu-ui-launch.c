@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int qemu_name(const char *path) {
@@ -51,17 +52,27 @@ static int resolve_qemu(const char *program, char *resolved) {
         char *search = strdup(path == NULL ? "/usr/bin:/bin" : path);
         if (search == NULL) return 126;
         char *cursor = search, *part;
-        int found = 0;
+        int found = 0, denied = 0;
         while ((part = strsep(&cursor, ":")) != NULL) {
             char candidate[PATH_MAX];
-            if (snprintf(candidate, sizeof candidate, "%s/%s", *part ? part : ".", program) < (int)sizeof candidate &&
-                access(candidate, X_OK) == 0 && realpath(candidate, resolved) != NULL) {
-                found = 1;
-                break;
+            struct stat info;
+            int length = snprintf(candidate, sizeof candidate, "%s/%s", *part ? part : ".", program);
+            if (length < 0 || length >= (int)sizeof candidate) continue;
+            if (stat(candidate, &info) != 0 || access(candidate, X_OK) != 0 ||
+                realpath(candidate, resolved) == NULL) {
+                if (errno == EACCES) denied = 1;
+                continue;
             }
+            // Directory search permission satisfies X_OK, but exec cannot run it.
+            if (S_ISDIR(info.st_mode)) {
+                denied = 1;
+                continue;
+            }
+            found = 1;
+            break;
         }
         free(search);
-        if (!found) return 127;
+        if (!found) return denied ? 126 : 127;
     }
     if (!qemu_name(resolved) || access(resolved, X_OK) != 0) goto refused;
     int fd = open(resolved, O_RDONLY);
