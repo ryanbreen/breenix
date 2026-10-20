@@ -19,6 +19,7 @@ pub(crate) const SCANOUT: &[Case] = &[
     pictured!("fault-stale-fence", "A fence answered for another serial is reported as a serial mismatch", scanout_fault_stale_fence),
     pictured!("fault-outside-damage", "Corruption written outside any damage is found by comparing the full destination", scanout_fault_outside_damage),
     pictured!("boundary-stated", "The record states what lies outside the guest's view for this backend", scanout_boundary_stated),
+    pictured!("present-flip", "Every flip records its actual target and completed present fence", scanout_present_flip),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -362,4 +363,19 @@ fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapsho
     ensure(clean.quad(176)==serial,"20.3","gpu-display: recovery record names another composite")?;
     same(&clean.pixels,clean.width,clean.height,true,"GPU fault recovery","20.3",formula(&[p]))?;
     Ok((observed.0,observed.1,observed.2,fault_serial))
+}
+
+// gpu-display: §2.2 every completed flip records the actual new scanout resource and that present's fence.
+fn scanout_present_flip()->CaseResult {
+    interface()?;let (mut k,w,mut p,first)=one_window(40)?;let mut serial=first;
+    let mut previous=(0,0);
+    for n in 0..3 {
+        if n!=0 {p.seed=40+n;w.frame(p.seed).cite("17.3")?;serial=compose(&mut k)?.0;}
+        let s=super::composition::gpu_snapshot(&mut k)?;let resource=s.quad(80);let fence=s.quad(184);
+        let (ret,m)=libbreenix::gpu::modes();
+        ensure(ret==0 && m.binding_known==1 && m.scanout_resource==resource && resource!=0 && fence!=0 && s.quad(176)==serial,
+            "20","gpu-display: flipped target, binding, composite serial or completed present fence disagree")?;
+        ensure(n==0 || (resource!=previous.0 && fence!=previous.1),"20","gpu-display: successive frames did not flip to a different completed target")?;
+        same(&s.pixels,s.width,s.height,true,"flipped scanout","20",formula(&[p]))?;previous=(resource,fence);
+    }Ok(())
 }
