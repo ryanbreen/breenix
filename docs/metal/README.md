@@ -885,13 +885,48 @@ manager's milestone, the kernel's storage milestone for the system and home part
 `usb-keyboard` and the login prompt. The operator's input is `operator`: a keyboard stage the operator has not
 typed yet counts as not measured rather than missed, and the first keys typed at the machine measure it.
 
+### Measured on the R240
+
+Boots of this change on 2026-10-19 and 2026-10-20, through the boot loop:
+
+| What | Result |
+|---|---|
+| The manager's screen | 1024x768, 76 columns of 9x20 cells; read back identical on each start checked (14 rows, 1064 glyph cells) |
+| The firmware | Two HTTP boot options with vendor device paths (no URI node), no setup option, and `OsIndications` boot-to-setup not offered |
+| The one-time install | The stub wrote the layout as 399 extents (639,446,016 bytes), each read back identical, reconnected the disk, and made `Breenix boot manager` the first of three options in `BootOrder` |
+| The lab's answer | DHCP bound in about 2.0 s, the HTTP answer in 2 to 3 ms |
+| The test path | 12 of 12 test boots through the manager: `LoadImage` of the port answered `EFI_NOT_FOUND` (with the child's URI node kept or replaced), the manager set `BootNext`, and the firmware requested the boot image 67 to 68 s after power-on (about 33 s under the one-time override) |
+| Test boots on the layout | Suite `all`: 15 of 15 suites, 2,275 cases; its cold readback: raw disk checks passed=5; tests mode: 13 of 13 milestones, 272 stages; default mode: 10 of 10 milestones |
+| Console mode on the layout | 1 boot, exit 1: SOL dropped a byte of the challenge's computation command while the shell echoed it (#2105), so its answer did not match; the challenge now types a few bytes at a time |
+| Upgrade | Two upgrades through the manager; each migration copied 236 files, 20 directories and 198 hard links (78,768,091 bytes), kept `/etc` and `/root`, and left out 1 name that is not UTF-8 (#2102); each verification boot committed `NEXT` and booted it to the login prompt (persistent-install 9 of 9 stages) |
+| Rollback | The manager swapped the slots and booted the previous kernel on the system and home partitions to the login prompt |
+| Files kept | A file in `/root` and one in `/home`, written in a persistent session, read back unchanged after 8 test boots (2 of them testing-kernel boots), a cold readback, an upgrade and a rollback |
+| The write fence | The fault-test kernel's writes to the sector before and the sector after the test root were refused, and its write inside the test root was written |
+
 ### What other tools and kernels do on this disk
 
-Tools without this layout (origin/main's before this lands) set the `UefiHttp` override, so their boots skip the
-manager; their stub looks for the old whole-disk storage record in LBA 0, finds the protective MBR there, refuses
-the disk and ends the boot as a delivery failure before any write. A kernel that expects ext2 at LBA 0 finds a GPT,
-has no root and does not write the disk. Their explicit recovery install (`--disk install`) would still copy a RAM disk over
-LBA 0 and destroy the layout; it is not run on this machine.
+Measured on the R240 on 2026-10-20, while the disk carried the persistent layout:
+
+- **Tools without this layout** (origin/main's before this lands) read the old whole-disk storage record from
+  `disk.json` to stage a boot, find the persistent record there instead and stop at `Assembling the image` with
+  exit 130, before power-on (4 of 4 boots of main). Past that step their stub would compare LBA 0 with the old
+  record, find the protective MBR and refuse the disk before any write.
+- **A kernel from before this change, delivered by this change's tools**, cannot read the format-2 intent. Its
+  default and console boots panic when the RAM disk does not hold whole sectors of a root image, and its tests boot
+  finds no BXTEST disk; it finds the GPT, mounts no root and does not write the disk (4 of 4 boots of main, exit 1).
+- **This change's kernel on the old whole-disk format** refuses its root (`[storage] root refused: the boot intent
+  names no root partition`), because it mounts only the partitions the intent names.
+- **The recovery install of tools without this layout** (`--disk install`) zeroes LBA 0 and copies its RAM disk from
+  LBA 1, which removes the protective MBR, the primary GPT and the start of the EFI system partition, and its
+  driver writes `disk.json` in the old format again (run once, on 2026-10-20: 268,435,456 bytes written from LBA 0
+  and read back identical). The backup GPT and the partitions' later sectors stay on the
+  disk until the next one-time install rewrites them. UEFI 2.10 (section 5.2.3) puts a GPT behind a protective MBR
+  in LBA 0, which then holds the storage record instead.
+
+**Landing.** The kernel and the tools land together in one change, and the disk has to carry the layout before
+this change's kernel can boot on it: after this lands, the machine's first boot is
+`metal-run install-persistent --sha <the merge commit>`, the one-time install from the old format. Until then, boots
+of main refuse their root.
 
 ## Clean-room rule
 
