@@ -1171,7 +1171,7 @@ class Driver:
 
     def on_slot_line(self, line, observed_at):
         """The manager's slot commit or rollback, read from the EFI system partition after it renamed the slots."""
-        found = re.search(r'breenix-manager: slot (commit|rollback): current ([0-9a-f?]{40}), previous ([0-9a-f?]{40})', line)
+        found = re.search(r'breenix-manager: slot (commit|rollback): current ([0-9a-f]{40}), previous ([0-9a-f]{40}|empty)', line)
         if not found:
             return
         record = metal_persist.read_disk()

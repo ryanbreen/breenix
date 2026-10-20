@@ -737,8 +737,8 @@ A failure returns to the menu with its reason and no countdown.
 Slot actions. `commit` renames `CURRENT.*` to `PREVIOUS.*` (replacing the old previous slot) and `NEXT.*` to
 `CURRENT.*`; `rollback` swaps `CURRENT.*` and `PREVIOUS.*`. The manager does them through the firmware's FAT
 driver (the file protocol, section 13.5: `SetInfo` with the new name) and reads the notes back before it boots.
-Each prints one line, `breenix-manager: slot commit: current <commit>, previous <commit>` or `slot rollback: ...`,
-which the driver records in `disk.json` (`slots`). A commit with no staged `NEXT` leaves the slots as they are.
+Each prints one line, `breenix-manager: slot commit: current <commit>, previous <commit>` or `slot rollback: ...`
+(`previous empty` when no previous kernel is kept), which the driver records in `disk.json` (`slots`). A commit with no staged `NEXT` leaves the slots as they are.
 
 **The screen.** The manager draws its own text with the console font the kernel's screen console uses
 (`noto-sans-mono-bitmap`, size 20, regular), in white and black, through the graphics output protocol's `Blt`

@@ -167,6 +167,10 @@ class DriverPersistentTest(unittest.TestCase):
     def test_slot_lines_move_the_recorded_slots(self):
         d = self.driver
         current, nxt, previous = 'c' * 40, 'a' * 40, 'b' * 40
+        # The first commit after the one-time install has no previous kernel to keep.
+        metal_persist.update_disk(slots={'next': {'commit': previous}})
+        d.on_slot_line(f'breenix-manager: slot commit: current {previous}, previous empty', 0)
+        self.assertEqual(metal_persist.read_disk()['slots'], {'current': {'commit': previous}})
         metal_persist.update_disk(slots={'current': {'commit': previous}, 'next': {'commit': nxt}})
         d.on_slot_line(f'breenix-manager: slot commit: current {nxt}, previous {previous}', 1)
         slots = metal_persist.read_disk()['slots']

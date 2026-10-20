@@ -107,7 +107,11 @@ impl Note {
         core::str::from_utf8(&self.commit[..8]).unwrap_or("?")
     }
 
+    /// The commit, or `empty` for a slot that holds no kernel.
     pub fn full(&self) -> &str {
+        if !self.present {
+            return "empty";
+        }
         core::str::from_utf8(&self.commit).unwrap_or("?")
     }
 }
