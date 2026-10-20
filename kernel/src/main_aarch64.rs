@@ -347,6 +347,7 @@ impl InitLaunch {
 fn release_boot_preempt_pin() {
     kernel::per_cpu_aarch64::preempt_enable();
     kernel::task::softirqd::init_online_daemons();
+    kernel::drivers::ahci::start_completion_pollers();
 }
 
 /// Create a userspace process from a pre-loaded ELF and jump to it.
@@ -1762,6 +1763,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     kernel::task::softirqd::init_online_daemons();
+    kernel::drivers::ahci::start_completion_pollers();
     #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
     kernel::task::softirq_tests::test_deferral();
 
