@@ -928,13 +928,17 @@ impl GpuSnapshot {
     pub(crate) fn quad(&self,o:usize)->u64 {u64::from_le_bytes(self.record[o..o+8].try_into().unwrap())}
 }
 /// Ask the actual display-owning helper to observe target 0; no foreign handle or CPU image is substituted.
-pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,libbreenix::suite::CaseError>{
+pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),libbreenix::suite::CaseError>{
     static NEXT:AtomicU64=AtomicU64::new(0);
     let path=format!("/dev/shm/breengel-gpu-{}-{}",process::getpid()?.raw(),NEXT.fetch_add(1,Relaxed));
     struct Remove<'a>(&'a str);impl Drop for Remove<'_>{fn drop(&mut self){let _=std::fs::remove_file(self.0);}}
     let _remove=Remove(&path);
     let answer=k.ask(&format!("gpu-scanout {path}")).cite("24")?;
-    ensure(answer=="ok","20",format!("gpu-display: composed GPU scanout readback: {answer}"))?;
+    let (status,reason)=if answer=="ok" {(0,0)}else{
+        let fields:Vec<_>=answer.split_whitespace().collect();
+        ensure(fields.len()==4 && fields[0]=="err" && fields[2]=="reason","20",format!("gpu-display: composed GPU scanout readback: {answer}"))?;
+        (-fields[1].parse::<i64>().map_err(|e|e.to_string())?,fields[3].parse::<u32>().map_err(|e|e.to_string())?)
+    };
     let bytes=std::fs::read(&path).map_err(|e|e.to_string())?;
     ensure(bytes.len()>=1032,"20","gpu-display: truncated GPU snapshot")?;
     let width=u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
@@ -942,8 +946,7 @@ pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,libbreenix::suite:
     ensure(matches!((width,height),(1280,800)|(2560,1600)) && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
     let record=bytes[8..1032].try_into().unwrap();
     let snapshot=GpuSnapshot{width,height,record,pixels:bytes[1032..].to_vec()};
-    ensure(snapshot.word(0)==2 && snapshot.word(4)==1024,"20","gpu-display: scanout did not return record version 2")?;
-    Ok(snapshot)
+    Ok((status,reason,snapshot))
 }
 // gpu-display: R4 applies logical scale to placement and compares the entire device destination with §18's formula.
 fn composition_scale_2()->CaseResult {
@@ -1001,4 +1004,10 @@ fn composition_target_lifetime()->CaseResult {
     let start=now_ms();while crate::gpu_checks::counters().cite("18")?.resource_bytes!=before.resource_bytes {
         ensure(since(start)<1_000,"18","gpu-display: final scanout release leaked backing")?;let _=time::sleep_ms(5);
     }Ok(())
+}
+
+pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,libbreenix::suite::CaseError>{
+    let (status,reason,s)=gpu_observe(k)?;
+    ensure(status==0,"20",format!("gpu-display: GPU readback {} reason {reason}",outcome(status)))?;
+    ensure(s.word(0)==2 && s.word(4)==1024,"20","gpu-display: scanout did not return record v2")?;Ok(s)
 }

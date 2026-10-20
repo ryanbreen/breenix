@@ -325,13 +325,11 @@ fn fault(point: u32, seed: u32) -> Result<(i64, Vec<u8>, abi::ObservationRecord,
 
 // gpu-display: B6/B7 uses core point 19; a skipped readback transfer must leave poison, then recover.
 fn scanout_fault_skipped_transfer() -> CaseResult {
-    interface()?;
-    let (r, px, _, serial, _) = fault(libbreenix::gpu::abi::test_point::SKIP_TRANSFER, 15)?;
-    ensure(r == -(abi::errno::EIO as i64), "20.3", format!("gpu-display: readback of composite {serial} with core point 19 {}; record v2 must refuse unwritten pixels with EIO", outcome(r)))?;
-    ensure(px.iter().all(|&b| b == 0), "20.1", "a refused readback returned pixels without its record")
+    let (status,reason,s)=gpu_fault(libbreenix::gpu::abi::test_point::SKIP_TRANSFER,15)?;
+    ensure(status== -5 && reason==1,"20.3","gpu-display: skipped transfer must be EIO, unwritten (1)")?;
+    ensure(s.pixels.iter().chain(s.record.iter()).all(|&b|b==0xA5),"20.3","gpu-display: failed readback published partial pixels or a record")
 }
 
-// gpu-display: B6/B7 uses WRONG_SCANOUT 26; a wrong transfer resource is not device-observable.
 fn scanout_fault_wrong_resource() -> CaseResult {
     interface()?;
     let (r, _, rec, serial, good) = fault(libbreenix::gpu::abi::test_point::WRONG_SCANOUT, 18)?;
@@ -372,4 +370,19 @@ interface()?;let (mut k,_w,_p,_)=one_window(26)?;
     let s=super::composition::gpu_snapshot(&mut k)?;
     ensure([4,5].contains(&s.word(16)) && s.word(20)==4,"20.2","gpu-display: record must state that the host renderer and host window lie outside guest observation")?;
     ensure(s.word(24)==3,"20.2","gpu-display: composed scanout must set exactly the scanout and composite bits")
+}
+fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapshot),libbreenix::suite::CaseError>{
+    let (mut k,w,mut p,_)=one_window(seed)?;
+    let fired=libbreenix::test_control::fired(point).cite("21")?;
+    libbreenix::test_control::arm(point,0,0).cite("21")?;
+    p.seed=seed+1;w.frame(p.seed).cite("17.3")?;compose(&mut k)?;
+    let result=super::composition::gpu_observe(&mut k);
+    libbreenix::test_control::disarm_all().cite("21")?;
+    ensure(libbreenix::test_control::fired(point).cite("21")?==fired+1,"21",format!("gpu-display: core fault point {point} did not fire exactly once"))?;
+    let observed=result?;
+    p.seed=seed+2;w.frame(p.seed).cite("17.3")?;let (serial,_)=compose(&mut k)?;
+    let clean=super::composition::gpu_snapshot(&mut k)?;
+    ensure(clean.quad(176)==serial,"20.3","gpu-display: recovery record names another composite")?;
+    same(&clean.pixels,clean.width,clean.height,true,"GPU fault recovery","20.3",formula(&[p]))?;
+    Ok(observed)
 }

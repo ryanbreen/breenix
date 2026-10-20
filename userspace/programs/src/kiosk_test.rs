@@ -199,19 +199,20 @@ impl Kiosk {
                 else {say(&format!("err {}",-ret));}
             }
             Some("gpu-scanout") => {
+                let mut observed=(0i64,0u32);
                 let result=(||->Result<(),String>{
                     let path=*words.get(1).ok_or("missing output file")?;
                     let (ret,m)=libbreenix::gpu::modes();if ret!=0{return Err(format!("MODES {ret}"));}
                     let mode=m.modes[m.current as usize];
-                    let mut pixels=vec![0u8;mode.width as usize*mode.height as usize*4];
-                    let mut record=[0u8;libbreenix::gpu::abi::record::SIZE];
-                    let ret=libbreenix::gpu::readback(0,[0,0,mode.width,mode.height],&mut pixels,mode.width*4,&mut record);
-                    if ret!=0{return Err(format!("READBACK {ret}"));}
+                    let mut pixels=vec![0xA5u8;mode.width as usize*mode.height as usize*4];
+                    let mut record=[0xA5u8;libbreenix::gpu::abi::record::SIZE];
+                    let (ret,arg)=libbreenix::gpu::readback_why(0,[0,0,mode.width,mode.height],&mut pixels,mode.width*4,&mut record);
+                    observed=(ret,arg.reason);
                     let mut out=Vec::with_capacity(8+record.len()+pixels.len());
                     out.extend_from_slice(&mode.width.to_le_bytes());out.extend_from_slice(&mode.height.to_le_bytes());out.extend_from_slice(&record);out.extend_from_slice(&pixels);
                     std::fs::write(path,out).map_err(|e|e.to_string())
                 })();
-                match result{Ok(())=>say("ok"),Err(e)=>say(&format!("gpu-display: {e}"))}
+                match result{Ok(()) if observed.0==0=>say("ok"),Ok(())=>say(&format!("err {} reason {}",-observed.0,observed.1)),Err(e)=>say(&format!("gpu-display: {e}"))}
             }
             Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
             Some("composite2") => {
