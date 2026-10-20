@@ -115,17 +115,21 @@ fn scanout_full_destination() -> CaseResult {
     screen_is(&px, &[strip], "the screen after the last row changed")
 }
 
+// gpu-display: B7 replaces the legacy fixed-resource present assumption with each GPU present's actual binding identity.
 fn scanout_binding() -> CaseResult {
-    interface()?;
-    let (mut k, w, _p, s1) = one_window(3)?;
-    let (_, r1) = screen()?;
-    ensure(r1.serial == s1 && r1.resource != 0, "20.1", format!("the record after composite {s1} names serial {} and resource {:#x}", r1.serial, r1.resource))?;
-    w.frame(4).cite("17.3")?;
-    let (s2, _) = compose(&mut k)?;
-    let (_, r2) = screen()?;
-    ensure(r2.serial == s2 && r2.resource == r1.resource, "20.1", format!(
-        "the record after composite {s2} names serial {} and resource {:#x}; the display stays bound to the composed resource {:#x}",
-        r2.serial, r2.resource, r1.resource))
+interface()?;let (mut k,w,mut p,first)=one_window(3)?;
+    let mut serial=first;
+    for n in 0..2 {
+        if n==1 {w.frame(4).cite("17.3")?;p.seed=4;serial=compose(&mut k)?.0;}
+        let s=super::composition::gpu_snapshot(&mut k)?;
+        let (ret,m)=libbreenix::gpu::modes();
+        ensure(ret==0 && m.binding_known==1 && s.quad(80)!=0 && s.quad(80)==m.scanout_resource,"20.1",
+            "gpu-display: readback resource is not the device's confirmed scanout binding")?;
+        ensure(s.quad(176)==serial && s.word(24)==3 && s.quad(184)!=0,"20.1",
+            "gpu-display: binding record belongs to a different composite or incomplete present")?;
+    }
+    let s=super::composition::gpu_snapshot(&mut k)?;
+    same(&s.pixels,s.width,s.height,true,"bound GPU composition","20.1",formula(&[p]))
 }
 
 fn scanout_completion() -> CaseResult {
