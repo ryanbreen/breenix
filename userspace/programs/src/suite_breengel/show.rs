@@ -161,7 +161,8 @@ fn panel_layout() -> CaseResult {
 fn panel_stage_layout() -> CaseResult { stage_fixture("stage-layout") }
 // gpu-display: R3/R4 checks every stamp, number and 399-case wall slot at physical scale.
 fn panel_tile_stamps() -> CaseResult { scaled_stage("tile-stamps") }
-fn panel_tile_thumbnail() -> CaseResult { stage_fixture("tile-thumbnail") }
+// gpu-display: R3/R4 keeps every integer box-filter value and checks all of its scaled destination pixels.
+fn panel_tile_thumbnail() -> CaseResult { scaled_stage("tile-thumbnail") }
 fn panel_spotlight_picture() -> CaseResult { stage_fixture("spotlight-picture") }
 fn panel_spotlight_timing() -> CaseResult {
     // Retain the timing assertions and also cover the non-picture spotlight forms
