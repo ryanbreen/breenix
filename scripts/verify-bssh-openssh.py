@@ -4,19 +4,23 @@ import subprocess,time,json,shlex,os,argparse
 from pathlib import Path
 parser=argparse.ArgumentParser(description="Capture bounded OpenSSH acceptance probes for bsshd.")
 parser.add_argument("--port",required=True)
+parser.add_argument("--host",default="127.0.0.1")
+parser.add_argument("--user",required=True,help="an account with the identity in its ~/.ssh/authorized_keys; bsshd refuses root")
+parser.add_argument("--prompt",default="$ ",help="the account shell's prompt, after which the interactive probe types")
 parser.add_argument("--identity",type=Path,required=True)
 parser.add_argument("--known-hosts",type=Path,required=True)
 parser.add_argument("--output",type=Path,required=True)
 opts=parser.parse_args()
 out=opts.output
 out.mkdir(parents=True,exist_ok=True)
-base=['timeout','15','ssh','-vv','-p',opts.port,'-o','UserKnownHostsFile='+str(opts.known_hosts.resolve()),'-o','GlobalKnownHostsFile=/dev/null','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','PubkeyAcceptedAlgorithms=rsa-sha2-256','-i',str(opts.identity.resolve())]
+base=['timeout','15','ssh','-vv','-p',opts.port,'-o','UserKnownHostsFile='+str(opts.known_hosts.resolve()),'-o','GlobalKnownHostsFile=/dev/null','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-i',str(opts.identity.resolve())]
+target=opts.user+'@'+opts.host
 tests=[('pin','accept-new',['true'],None,0),('true','yes',['true'],None,0),('echo','yes',['echo hi'],None,0),('false','yes',['false'],None,1),('shell','yes',['-tt'],b'echo interactive-ok\nexit 7\n',7),('shell-no-pty','yes',['-T'],b'echo pipe-ok\nexit 3\n',3)]
 results=[]
 for name,strict,args,stdin,want in tests:
  cmd=base+['-o','StrictHostKeyChecking='+strict]
- if args[0].startswith('-'): cmd+=args+['root@127.0.0.1']
- else: cmd+=['root@127.0.0.1']+args
+ if args[0].startswith('-'): cmd+=args+[target]
+ else: cmd+=[target]+args
  start=time.monotonic()
  if name == 'shell':
   proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
@@ -26,7 +30,7 @@ for name,strict,args,stdin,want in tests:
    chunk=os.read(proc.stdout.fileno(),4096)
    if not chunk: break
    data+=chunk
-   if not sent and b'bsh />' in data:
+   if not sent and opts.prompt.encode() in data:
     proc.stdin.write(stdin);proc.stdin.flush();sent=True
   proc.wait()
   p=subprocess.CompletedProcess(cmd,proc.returncode,data)

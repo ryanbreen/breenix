@@ -18,7 +18,7 @@ fn wrong_signer_reaches_signature_verification() {
     let auth = source("libs/libbreenix/src/ssh/auth.rs");
     assert!(auth.contains("wrong_identity.sign(data)"));
     assert!(!auth.contains("*last ^= 0x01"));
-    assert!(auth.contains("keys::verify_rsa_signature(key_blob, signature, &signed_data)"));
+    assert!(auth.contains("keys::verify_signature(algo, key_blob, signature, &signed_data)"));
     assert!(auth.contains("signature_algo == Some(algo)"));
 }
 #[test]

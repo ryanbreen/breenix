@@ -1,7 +1,13 @@
 //! Stage a userland beside the running install, then publish it with one rename.
 //! The kernel slot embeds the generation ID, so no independently mutable current
 //! pointer can pair a kernel with the wrong userland. `/etc` belongs to the
-//! generation; `/root` stays shared. This program mounts no home partition.
+//! generation; `/root` stays shared, and so does `/.breenix-shared`, the machine
+//! state store that init reconciles into `/etc` at boot (SSH host keys, the
+//! operator's account lines and a staged authorized key). The operator account
+//! `metal-run install-persistent` stages on the test root goes into the store,
+//! not into the generation. A test image's SSH credentials (its test-only
+//! client key, its test account and `/root/.ssh`) stay behind. This
+//! program mounts no home partition.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -11,9 +17,23 @@ use std::path::{Path, PathBuf};
 
 const TARGET: &str = "/home";
 const KEPT: [&str; 1] = ["root"];
-const UNTOUCHED: [&str; 7] = ["home", "lost+found", "proc", "dev", "sys", ".breenix-generations", ".complete"];
+const UNTOUCHED: [&str; 8] = ["home", "lost+found", "proc", "dev", "sys", ".breenix-generations", ".complete", ".breenix-shared"];
 const GENERATIONS: &str = ".breenix-generations";
 const READY: &str = ".complete";
+/// The machine state store each generation binds (kernel/src/fs/ext2/generation.rs).
+const STORE: &str = ".breenix-shared";
+/// The operator account the boot host stages on the test root for this program:
+/// a `user <name>` line and a `key <public key line>` line.
+const OPERATOR: &str = "etc/breenix/operator-account";
+/// The operator account's uid and gid: the first ordinary account's.
+const OPERATOR_ID: u32 = 1000;
+/// The test image's SSH account (scripts/create_ext2_disk.sh), left out of each generation's account files.
+const TEST_ACCOUNT: &str = "sshtest";
+/// Source paths the copy leaves behind: the test image's SSH client key
+/// and test account home, and the staged operator account.
+const LEFT_BEHIND: [&str; 2] = ["etc/breenix/test-ssh", OPERATOR];
+/// Inside a copied `/root`: a test image's authorized keys are not the install's.
+const ROOT_LEFT_BEHIND: &str = "root/.ssh";
 
 #[derive(Default)]
 struct Totals {
@@ -37,6 +57,8 @@ fn usable(name: &std::ffi::OsStr, parent: &Path, totals: &mut Totals) -> bool {
 
 struct Copier<'a> {
     totals: Totals,
+    /// Source paths copy_tree passes over.
+    skip: Vec<PathBuf>,
     /// The first copy of each multiply-linked file, by its source inode, so its other names become hard links.
     linked: HashMap<(u64, u64), PathBuf>,
     buffer: Vec<u8>,
@@ -70,6 +92,34 @@ impl Copier<'_> {
         self.change("sync", path, || File::open(path)?.sync_all())
     }
 
+    /// Replace `path` with `text` at `mode`: written beside it, flushed, renamed over it.
+    fn write_file(&mut self, path: &Path, text: &str, mode: u32) -> Result<(), String> {
+        let mut name = path.file_name().unwrap_or_default().to_owned();
+        name.push(".new");
+        let staging = path.with_file_name(name);
+        if present(&staging)? {
+            self.change("remove", &staging, || fs::remove_file(&staging))?;
+        }
+        let mut file = self.change("create", &staging, || File::create(&staging))?;
+        // The mode is set before any bytes are written, so others cannot read private text.
+        self.change("chmod", &staging, || fs::set_permissions(&staging, fs::Permissions::from_mode(mode)))?;
+        self.change("write", &staging, || file.write_all(text.as_bytes()))?;
+        self.change("sync file", &staging, || file.sync_all())?;
+        drop(file);
+        self.change("rename", path, || fs::rename(&staging, path))?;
+        self.sync(path.parent().unwrap_or(Path::new("/")))
+    }
+
+    /// Create `path` as a directory at `mode` unless it is one already.
+    fn ensure_directory(&mut self, path: &Path, mode: u32) -> Result<(), String> {
+        if !present(path)? {
+            self.change("mkdir", path, || fs::create_dir(path))?;
+            self.change("chmod", path, || fs::set_permissions(path, fs::Permissions::from_mode(mode)))?;
+            self.sync(path.parent().unwrap_or(Path::new("/")))?;
+        }
+        require_directory(path)
+    }
+
     fn copy_tree(&mut self, source: &Path, target: &Path) -> Result<(), String> {
         let meta = fs::symlink_metadata(source).map_err(|error| fail("stat", source, error))?;
         let kind = meta.file_type();
@@ -87,8 +137,13 @@ impl Copier<'_> {
                 .map_err(|error| fail("read directory", source, error))?;
             names.sort();
             for name in names {
+                let child = source.join(&name);
+                if self.skip.contains(&child) {
+                    println!("[persistent] left out {}: test or staging credentials", child.display());
+                    continue;
+                }
                 if usable(&name, source, &mut self.totals) {
-                    self.copy_tree(&source.join(&name), &target.join(&name))?;
+                    self.copy_tree(&child, &target.join(&name))?;
                 }
             }
             self.change("chown", target, || own(target, &meta, true))?;
@@ -147,11 +202,142 @@ fn require_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The operator account staged on the test root.
+struct Operator {
+    name: String,
+    key: String,
+}
+
+/// An account name: a lowercase letter or `_`, then up to 31 lowercase letters, digits, `_` or `-`.
+fn valid_account_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 32
+        && (bytes[0].is_ascii_lowercase() || bytes[0] == b'_')
+        && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
+}
+
+/// One `ssh-ed25519` or `ssh-rsa` public key line: type, base64 key, optional comment.
+fn valid_public_key(line: &str) -> bool {
+    let mut words = line.split(' ');
+    matches!(words.next(), Some("ssh-ed25519" | "ssh-rsa"))
+        && words.next().is_some_and(|key| !key.is_empty()
+            && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'='))
+        && line.bytes().all(|b| (0x20..0x7f).contains(&b))
+}
+
+fn read_operator(source: &Path) -> Result<Option<Operator>, String> {
+    let path = source.join(OPERATOR);
+    if !present(&path)? {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
+    let (mut name, mut key) = (None, None);
+    for line in text.lines() {
+        match line.split_once(' ') {
+            Some(("user", value)) if name.is_none() => name = Some(value.to_string()),
+            Some(("key", value)) if key.is_none() => key = Some(value.to_string()),
+            _ => return Err(format!("{}: unexpected line", path.display())),
+        }
+    }
+    match (name, key) {
+        (Some(name), Some(key)) if valid_account_name(&name) && name != "root" && valid_public_key(&key) => {
+            Ok(Some(Operator { name, key }))
+        }
+        _ => Err(format!("{} must name a non-root account and hold one public key line", path.display())),
+    }
+}
+
+/// `existing` with `entry` in place of the line naming the same account, or appended.
+fn merge_line(existing: &str, entry: &str) -> String {
+    let name = entry.split(':').next().unwrap_or("");
+    let mut lines: Vec<&str> = existing.lines().collect();
+    match lines.iter().position(|line| line.split(':').next() == Some(name)) {
+        Some(index) => lines[index] = entry,
+        None => lines.push(entry),
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+fn read_or_empty(path: &Path) -> Result<String, String> {
+    if !present(path)? {
+        return Ok(String::new());
+    }
+    fs::read_to_string(path).map_err(|error| fail("read", path, error))
+}
+
+/// Create the machine state store, private to root, and put the operator's
+/// account lines and staged key in it (machine_state.rs in libbreenix's ssh module reads them).
+fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) -> Result<(), String> {
+    let store = target.join(STORE);
+    copier.ensure_directory(&store, 0o700)?;
+    let Some(operator) = operator else { return Ok(()) };
+    let etc = store.join("etc");
+    copier.ensure_directory(&etc, 0o755)?;
+    let name = &operator.name;
+    let passwd = read_or_empty(&etc.join("passwd"))?;
+    if passwd.lines().any(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        fields.len() == 7 && fields[0] != name && fields[2] == OPERATOR_ID.to_string()
+    }) {
+        return Err(format!("the store already gives uid {} to another account", OPERATOR_ID));
+    }
+    let entries = [
+        ("passwd", passwd, format!("{0}:x:{1}:{1}:{0}:/home/{0}:/bin/sh", name, OPERATOR_ID), 0o644),
+        ("group", read_or_empty(&etc.join("group"))?, format!("{}:x:{}:", name, OPERATOR_ID), 0o644),
+        // A locked password: the account logs in with its SSH key.
+        ("shadow", read_or_empty(&etc.join("shadow"))?, format!("{}:!:::::::", name), 0o600),
+    ];
+    for (file, existing, entry, mode) in entries {
+        let has_line = existing.lines().any(|line| line.split(':').next() == Some(name.as_str()));
+        // A shadow line the machine already holds may carry a password set since; keep it.
+        let merged = if file == "shadow" && has_line { existing.clone() } else { merge_line(&existing, &entry) };
+        if merged != existing {
+            copier.write_file(&etc.join(file), &merged, mode)?;
+        }
+    }
+    let mut pending = store.clone();
+    for (part, mode) in [("var", 0o755), ("lib", 0o755), ("accounts", 0o700), ("pending", 0o700)] {
+        pending.push(part);
+        copier.ensure_directory(&pending, mode)?;
+    }
+    copier.write_file(&pending.join(name), &format!("{}\n", operator.key), 0o600)?;
+    println!("[persistent] staged account {} (uid {}) and its SSH public key in /{}", name, OPERATOR_ID, STORE);
+    Ok(())
+}
+
+/// Leave the test image's SSH account out of a generation's account files.
+fn drop_test_account(copier: &mut Copier, etc: &Path) -> Result<(), String> {
+    for file in ["passwd", "group", "shadow"] {
+        let path = etc.join(file);
+        if !present(&path)? {
+            continue;
+        }
+        let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
+        let kept: Vec<&str> = text.lines().filter(|line| line.split(':').next() != Some(TEST_ACCOUNT)).collect();
+        if kept.len() != text.lines().count() {
+            let mode = fs::symlink_metadata(&path).map_err(|error| fail("stat", &path, error))?.mode() & 0o7777;
+            let mut kept = kept.join("\n");
+            kept.push('\n');
+            copier.write_file(&path, &kept, mode)?;
+            println!("[persistent] left out the test account {} from /etc/{}", TEST_ACCOUNT, file);
+        }
+    }
+    Ok(())
+}
+
 fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
     if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(String::from("invalid userland generation"));
     }
     require_directory(target)?;
+    let operator = read_operator(source)?;
+    let skip = LEFT_BEHIND.iter().chain([ROOT_LEFT_BEHIND].iter()).map(|path| source.join(path)).collect();
+    let mut copier = Copier { totals: Totals::default(), skip, linked: HashMap::new(), buffer: vec![0u8; 64 * 1024], checkpoint };
+    // The store is outside the generations: a retry stages the account again, and
+    // an interrupted install leaves the current generation as it was.
+    stage_store(&mut copier, target, operator.as_ref())?;
     let generations = target.join(GENERATIONS);
     let staged = generations.join(format!("{}.new", id));
     let published = generations.join(id);
@@ -173,7 +359,6 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
         require_directory(&source.join(name))?;
         if present(&target.join(name))? { require_directory(&target.join(name))?; }
     }
-    let mut copier = Copier { totals: Totals::default(), linked: HashMap::new(), buffer: vec![0u8; 64 * 1024], checkpoint };
     if !present(&generations)? {
         copier.change("mkdir", &generations, || fs::create_dir(&generations))?;
         copier.sync(target)?;
@@ -204,6 +389,9 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     names.sort();
     for name in names.iter().filter(|name| !UNTOUCHED.contains(&name.as_str()) && !KEPT.contains(&name.as_str())) {
         copier.copy_tree(&source.join(name), &staged.join(name))?;
+    }
+    if present(&staged.join("etc"))? {
+        drop_test_account(&mut copier, &staged.join("etc"))?;
     }
     // Shared directories are copied privately when absent, then renamed into
     // place only after the copy is durable. Existing directories are kept
@@ -428,6 +616,84 @@ mod tests {
                 }
             }
         }
+    }
+
+    const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOperatorPublicKeyBytesForTheHostTestOnly0 operator@boot-host";
+
+    #[test]
+    fn operator_and_host_keys_live_in_the_store_and_test_credentials_stay_behind() {
+        let fixture = Fixture::new();
+        let source = fixture.source("new");
+        fs::create_dir_all(source.join("etc/breenix/test-ssh/home")).unwrap();
+        fs::write(source.join("etc/breenix/test-ssh/id_ed25519"), b"test-only private key").unwrap();
+        fs::write(source.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
+        fs::write(source.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\nsshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh\n").unwrap();
+        fs::write(source.join("etc/group"), "root:x:0:\nsshtest:x:2000:\n").unwrap();
+        fs::create_dir(source.join("root/.ssh")).unwrap();
+        fs::write(source.join("root/.ssh/authorized_keys"), b"ssh-ed25519 AAAA test-image").unwrap();
+        // A fresh system partition: /root is copied from the image, without its .ssh.
+        let system = fixture.0.join("fresh");
+        fs::create_dir(&system).unwrap();
+        install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
+        let root = selected(&system, "first");
+        assert!(!root.join("etc/breenix/test-ssh").exists());
+        assert!(!root.join(OPERATOR).exists());
+        assert_eq!(fs::read_to_string(root.join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\n");
+        assert_eq!(fs::read_to_string(root.join("etc/group")).unwrap(), "root:x:0:\n");
+        assert_eq!(fs::read(system.join("root/data")).unwrap(), b"source data");
+        assert!(!system.join("root/.ssh").exists());
+        let store = system.join(STORE);
+        let mode = |path: &Path| fs::metadata(path).unwrap().mode() & 0o7777;
+        assert_eq!(mode(&store), 0o700);
+        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "operator:x:1000:1000:operator:/home/operator:/bin/sh\n");
+        assert_eq!(fs::read_to_string(store.join("etc/group")).unwrap(), "operator:x:1000:\n");
+        assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:!:::::::\n");
+        assert_eq!(mode(&store.join("etc/shadow")), 0o600);
+        let pending = store.join("var/lib/accounts/pending/operator");
+        assert_eq!(fs::read_to_string(&pending).unwrap(), format!("{}\n", KEY));
+        assert_eq!(mode(&pending), 0o600);
+        // What the first generation's bsshd and the box keep there survives the next install.
+        fs::create_dir(store.join("etc/ssh")).unwrap();
+        fs::write(store.join("etc/ssh/ssh_host_ed25519_key"), b"host key").unwrap();
+        fs::write(store.join("etc/shadow"), "operator:$6$set-on-the-box:::::::\n").unwrap();
+        fs::remove_file(&pending).unwrap();
+        let second = fixture.source("second");
+        fs::create_dir(second.join("etc/breenix")).unwrap();
+        fs::write(second.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
+        install_tree(&second, &system, "second", &mut || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "operator:x:1000:1000:operator:/home/operator:/bin/sh\n");
+        assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:$6$set-on-the-box:::::::\n");
+        assert_eq!(fs::read(store.join("etc/ssh/ssh_host_ed25519_key")).unwrap(), b"host key");
+        assert!(pending.exists());
+        let tree = Tree::new(&system);
+        for id in ["first", "second"] {
+            let namespace = generation::select(&tree, id).unwrap();
+            assert_eq!(tree.path(namespace.shared(namespace.root, STORE.as_bytes()).unwrap()), store);
+        }
+    }
+
+    #[test]
+    fn operator_that_is_root_unparsable_or_colliding_is_refused_before_any_write() {
+        for text in ["user root\nkey KEY\n".replace("KEY", KEY), "user operator\nkey -----BEGIN OPENSSH PRIVATE KEY-----\n".into(),
+                     "user Operator\nkey KEY\n".replace("KEY", KEY), "user operator\n".into(),
+                     "user operator\nkey KEY\nuser other\n".replace("KEY", KEY)] {
+            let fixture = Fixture::new();
+            let source = fixture.source("refused");
+            fs::create_dir(source.join("etc/breenix")).unwrap();
+            fs::write(source.join(OPERATOR), &text).unwrap();
+            let system = fixture.system();
+            assert!(install_tree(&source, &system, "new", &mut || Ok(())).is_err(), "{text:?}");
+            assert!(!system.join(STORE).exists() && !system.join(GENERATIONS).exists(), "{text:?}");
+        }
+        let fixture = Fixture::new();
+        let source = fixture.source("collide");
+        fs::create_dir(source.join("etc/breenix")).unwrap();
+        fs::write(source.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
+        let system = fixture.system();
+        fs::create_dir_all(system.join(STORE).join("etc")).unwrap();
+        fs::write(system.join(STORE).join("etc/passwd"), "someone:x:1000:1000::/home/someone:/bin/sh\n").unwrap();
+        assert!(install_tree(&source, &system, "new", &mut || Ok(())).is_err());
+        assert!(!system.join(GENERATIONS).exists());
     }
 
     #[test]

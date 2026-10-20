@@ -374,6 +374,13 @@ def metal_build(repo, logs, root, input_key):
         tree_cache.phase('userspace-build-once', start)
 
 
+def share_test_ssh_key(entry):
+    """create_ext2_disk.sh takes the image's test-only SSH key pair from this private directory, making it once."""
+    directory = entry / 'test-ssh'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ['BREENIX_TEST_SSH_KEY_DIR'] = str(directory)
+
+
 def main():
     arguments = sys.argv[1:]
     metal = arguments[:1] == ['--metal']
@@ -383,6 +390,11 @@ def main():
     if metal and 'BREENIX_GATE_CACHE_DIR' not in os.environ:
         raise RuntimeError('a metal build needs its build container\'s cache directory')
     if not metal and (os.environ.get('BREENIX_GATE_FRESH') == '1' or 'BREENIX_GATE_CACHE_DIR' not in os.environ):
+        if 'BREENIX_GATE_CACHE_DIR' in os.environ:
+            verified = Path(os.environ['BREENIX_GATE_CACHE_DIR']) / 'artifacts' / key(repo)
+            if (verified / 'verified.json').exists():
+                # The image's test-only SSH key is random; the verified entry keeps the one its disks carry.
+                share_test_ssh_key(verified)
         build_slot(True)
         build(repo, logs, 'uncached')
         build_slot(False)
@@ -436,6 +448,8 @@ def main():
             shutil.rmtree(entry)
         entry.parent.mkdir(parents=True, exist_ok=True)
         entry.mkdir()
+        # Both builds, and later fresh comparisons, make their disks with this entry's test-only SSH key.
+        share_test_ssh_key(entry)
         staging = entry
         for elf in (repo / 'userspace/programs').glob('*.elf'):
             elf.unlink()

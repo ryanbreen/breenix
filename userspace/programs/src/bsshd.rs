@@ -1,20 +1,133 @@
 //! BSSHD — Breenix SSH server daemon
 //!
-//! Listens for SSH connections on port 2222 and spawns interactive shell
-//! sessions with PTY allocation. Supports password authentication.
+//! Listens for SSH connections on port 2222 and runs each authenticated
+//! session, a shell (with a PTY when one is requested) or an exec request, as
+//! the account that logged in.
+//!
+//! - The host key is `/etc/ssh/ssh_host_ed25519_key`, generated from the
+//!   kernel's random pool on the first start that finds no key; its SHA-256
+//!   fingerprint is printed on each start. On a persistent install a new key
+//!   is also kept in the machine state store, from which init restores it into
+//!   each later generation's `/etc/ssh` (`libbreenix::ssh::machine_state`).
+//! - Logins are publickey only, against the account's `~/.ssh/authorized_keys`
+//!   (`libbreenix::ssh::account`). There is no password login, unknown users
+//!   are refused, and root does not log in.
+//! - Before a session runs, its process takes the account's groups, gid and
+//!   uid, home directory, shell and environment, as `login` does.
 //!
 //! Usage: bsshd [port]
 //!   Default port: 2222
+
+use std::ffi::CString;
+use std::path::Path;
 
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::process;
 use libbreenix::pty;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
+use libbreenix::ssh::account::{self, Account, Credentials};
+use libbreenix::ssh::host_keys;
+use libbreenix::ssh::machine_state;
+use libbreenix::ssh::keys::{fingerprint_text, HostKey};
 use libbreenix::ssh::transport::ServerSession;
 use libbreenix::types::Fd;
 
 const DEFAULT_PORT: u16 = 2222;
+
+extern "C" {
+    fn setgroups(count: usize, groups: *const u32) -> i32;
+    fn getgroups(count: i32, groups: *mut u32) -> i32;
+    fn setgid(gid: u32) -> i32;
+    fn setuid(uid: u32) -> i32;
+    fn getuid() -> u32;
+    fn geteuid() -> u32;
+    fn getgid() -> u32;
+    fn getegid() -> u32;
+}
+
+/// The process's own credentials, through the C library's system calls.
+struct System;
+
+fn errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
+}
+
+impl Credentials for System {
+    fn set_groups(&mut self, groups: &[u32]) -> Result<(), i32> {
+        if unsafe { setgroups(groups.len(), groups.as_ptr()) } == 0 { Ok(()) } else { Err(errno()) }
+    }
+    fn set_gid(&mut self, gid: u32) -> Result<(), i32> {
+        if unsafe { setgid(gid) } == 0 { Ok(()) } else { Err(errno()) }
+    }
+    fn set_uid(&mut self, uid: u32) -> Result<(), i32> {
+        if unsafe { setuid(uid) } == 0 { Ok(()) } else { Err(errno()) }
+    }
+    fn ids(&self) -> (u32, u32, u32, u32) {
+        unsafe { (getuid(), geteuid(), getgid(), getegid()) }
+    }
+    fn groups(&self) -> Vec<u32> {
+        let mut groups = vec![0u32; 64];
+        let count = unsafe { getgroups(groups.len() as i32, groups.as_mut_ptr()) };
+        groups.truncate(count.max(0) as usize);
+        groups
+    }
+}
+
+/// Fill `buffer` from the kernel's random pool; getrandom without flags waits
+/// until the pool is initialized.
+fn credited_random(buffer: &mut [u8]) -> Result<(), &'static str> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match libbreenix::crypto::rand::getrandom_bytes(&mut buffer[filled..]) {
+            Ok(0) | Err(_) => return Err("getrandom failed"),
+            Ok(n) => filled += n,
+        }
+    }
+    Ok(())
+}
+
+/// Load or generate the host key, keep a new one in the machine state store,
+/// and print its fingerprint.
+fn prepare() -> HostKey {
+    let root = Path::new("/");
+    let key = match host_keys::load_or_generate(root, credited_random) {
+        Ok((key, generated)) => {
+            println!(
+                "bsshd: host key ED25519 {} ({})",
+                fingerprint_text(&key.public_key_blob()),
+                if generated { "generated" } else { "loaded" }
+            );
+            key
+        }
+        Err(why) => {
+            eprintln!("bsshd: no host key: {}", why);
+            std::process::exit(1);
+        }
+    };
+    match machine_state::keep_host_key(root) {
+        Ok(true) => println!("bsshd: host key kept in the machine state store"),
+        Ok(false) => {}
+        Err(why) => eprintln!("bsshd: host key not kept in the machine state store: {}", why),
+    }
+    key
+}
+
+/// In a session's child process: become the account, enter its home and
+/// return its environment. The caller exits instead of running anything when
+/// this fails.
+fn enter_account(account: &Account, term: Option<&str>) -> Result<Vec<CString>, String> {
+    account::become_account(account, &mut System).map_err(|why| why.to_string())?;
+    let home = CString::new(account.home.as_str()).map_err(|_| "invalid home directory".to_string())?;
+    if process::chdir(home.as_bytes_with_nul()).is_err() {
+        eprintln!("bsshd: home directory {} is not available; starting in /", account.home);
+        let _ = process::chdir(b"/\0");
+    }
+    account::login_environment(account, term)
+        .into_iter()
+        .map(|entry| CString::new(entry).map_err(|_| "invalid environment".to_string()))
+        .collect()
+}
 
 fn main() {
     let port = std::env::args()
@@ -44,6 +157,9 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Listen before the host key is read or generated, which can wait for the
+    // random pool: early clients queue in the backlog rather than being refused.
+    let host_key = prepare();
     println!("bsshd: listening on 0.0.0.0:{}", port);
 
     // Accept loop
@@ -70,7 +186,7 @@ fn main() {
         match process::fork() {
             Ok(process::ForkResult::Child) => {
                 let _ = io::close(listen_fd);
-                handle_connection(client_fd);
+                handle_connection(client_fd, &host_key);
                 process::exit(0);
             }
             Ok(process::ForkResult::Parent(_child_pid)) => {
@@ -86,8 +202,9 @@ fn main() {
 }
 
 /// Handle a single SSH connection.
-fn handle_connection(fd: Fd) {
-    let mut session = ServerSession::new(fd);
+fn handle_connection(fd: Fd, host_key: &HostKey) {
+    let mut authorizer = account::FileAuthorizer::new("/");
+    let mut session = ServerSession::new(fd, host_key, &mut authorizer);
 
     let username = match session.handshake() {
         Ok(user) => {
@@ -96,6 +213,16 @@ fn handle_connection(fd: Fd) {
         }
         Err(e) => {
             eprintln!("bsshd: handshake failed: {:?}", e);
+            return;
+        }
+    };
+    let account = match account::read_account(Path::new("/"), &username)
+        .and_then(|account| account::may_log_in(&account).map(|_| account))
+    {
+        Ok(account) => account,
+        Err(why) => {
+            eprintln!("bsshd: session refused: {}", why);
+            session.close();
             return;
         }
     };
@@ -110,12 +237,14 @@ fn handle_connection(fd: Fd) {
     };
 
     if let Some(command) = session.take_exec_command() {
-        let status = run_exec_command(&mut session, &command);
+        let status = run_exec_command(&mut session, &account, &command);
         if let Err(e) = session.finish(status) {
             eprintln!("bsshd: exec close failed: {:?}", e);
         }
         return;
     }
+
+    let term = session.pty_term();
 
     // Shell input and output are separate pipes without a requested PTY.
     let mut child_pipe_fds = None;
@@ -187,12 +316,21 @@ fn handle_connection(fd: Fd) {
                 }
             }
 
-            // Exec the shell
-            let shell_path = b"/bin/bsh\0";
-            let _ = process::exec(shell_path);
-            // If exec fails, try init_shell
-            let fallback = b"/bin/init_shell\0";
-            let _ = process::exec(fallback);
+            // Run the account's shell as the account, as a login shell.
+            let environment = match enter_account(&account, term.as_deref()) {
+                Ok(environment) => environment,
+                Err(why) => {
+                    eprintln!("bsshd: session for '{}' refused: {}", account.name, why);
+                    process::exit(1);
+                }
+            };
+            let mut envp: Vec<*const u8> = environment.iter().map(|entry| entry.as_ptr().cast()).collect();
+            envp.push(core::ptr::null());
+            let shell = c_string(&account.shell);
+            let arg0 = c_string(&format!("-{}", account.shell.rsplit('/').next().unwrap_or("sh")));
+            let argv = [arg0.as_ptr(), core::ptr::null()];
+            let _ = process::execve(&shell, argv.as_ptr(), envp.as_ptr());
+            eprintln!("bsshd: cannot run {}", account.shell);
             process::exit(127);
         }
         Ok(process::ForkResult::Parent(child_pid)) => {
@@ -240,7 +378,7 @@ fn handle_connection(fd: Fd) {
     session.close();
 }
 
-fn run_exec_command(session: &mut ServerSession, command: &str) -> i32 {
+fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
     println!("bsshd: exec request '{}'", command);
 
     let mut last_status = 0;
@@ -250,7 +388,7 @@ fn run_exec_command(session: &mut ServerSession, command: &str) -> i32 {
             continue;
         }
 
-        last_status = run_single_exec_command(session, part);
+        last_status = run_single_exec_command(session, account, part);
         if last_status != 0 {
             break;
         }
@@ -259,7 +397,7 @@ fn run_exec_command(session: &mut ServerSession, command: &str) -> i32 {
     last_status
 }
 
-fn run_single_exec_command(session: &mut ServerSession, command: &str) -> i32 {
+fn run_single_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
     let args: Vec<&str> = command.split_whitespace().collect();
     if args.is_empty() {
         return 0;
@@ -289,11 +427,20 @@ fn run_single_exec_command(session: &mut ServerSession, command: &str) -> i32 {
                 let _ = io::close(write_fd);
             }
 
+            let environment = match enter_account(account, None) {
+                Ok(environment) => environment,
+                Err(why) => {
+                    eprintln!("bsshd: session for '{}' refused: {}", account.name, why);
+                    process::exit(1);
+                }
+            };
+            let mut envp: Vec<*const u8> = environment.iter().map(|entry| entry.as_ptr().cast()).collect();
+            envp.push(core::ptr::null());
             let path_c = c_string(&path);
             let arg_storage: Vec<Vec<u8>> = args.iter().map(|arg| c_string(arg)).collect();
             let mut argv: Vec<*const u8> = arg_storage.iter().map(|arg| arg.as_ptr()).collect();
             argv.push(core::ptr::null());
-            let _ = process::execv(&path_c, argv.as_ptr());
+            let _ = process::execve(&path_c, argv.as_ptr(), envp.as_ptr());
             process::exit(127);
         }
         Ok(process::ForkResult::Parent(child_pid)) => {
