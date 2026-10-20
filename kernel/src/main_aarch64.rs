@@ -1144,6 +1144,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         // log and the console TTY, and gives them the screen when the splash
         // gives way.
         kernel::console::attach();
+    } else if kernel::platform_config::is_vmware() && cfg!(feature = "gpu_svga_experimental") {
+        // No firmware framebuffer for the console: `attach` did not install the SVGA core,
+        // so install it here and GPU calls get its answer rather than an absent core's.
+        kernel::gpu::init_vmware();
     }
 
     // Initialize input devices (capability-based detection)
