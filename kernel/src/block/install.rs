@@ -115,6 +115,16 @@ impl Record {
     }
 }
 
+/// Discover a completed install before allowing its test root to mount or become writable.
+pub fn root_record(disk: &dyn BlockDevice) -> Result<Record, &'static str> {
+    let mut first = [0u8; SECTOR];
+    disk.read_block(0, &mut first).map_err(io)?;
+    match Record::parse(&first) {
+        Some(record @ Record::Root { bytes, .. }) if bytes <= disk.num_blocks() * SECTOR as u64 => Ok(record),
+        _ => Err("the test root holds no valid root record"),
+    }
+}
+
 /// What an install wrote, and whether reading it back found the same bytes.
 pub struct Installed {
     pub bytes: u64,
@@ -365,6 +375,7 @@ mod tests {
         assert!(!*disk.writable.lock());
         assert!(disk.bytes.lock()[..SECTOR].iter().all(|&b| b == 0));
         assert_eq!(Record::parse(&disk.bytes.lock()[..SECTOR]), None);
+        assert!(root_record(&disk).is_err());
     }
 
     #[test]
@@ -379,6 +390,7 @@ mod tests {
             assert!(install(&ram, &disk, "replacement", &mut gate(&disk)).is_err());
             assert!(!*disk.writable.lock());
             assert_eq!(Record::parse(&disk.bytes.lock()[..SECTOR]), None);
+            assert!(root_record(&disk).is_err());
             if failure == 1 {
                 assert_eq!(*disk.writes.lock(), 1, "no data write before invalidation is flushed");
             }

@@ -130,7 +130,10 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
         hardware
     );
     if test_root {
-        report_root_record(&device);
+        if let Err(why) = report_root_record(&device) {
+            log::warn!("[storage] root refused: {}", why);
+            return None;
+        }
     }
     if let Err(why) = fence_add(hardware, entry.first, entry.last) {
         log::warn!("[storage] root refused: {}", why);
@@ -145,19 +148,17 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 
 /// The storage record in the test root partition's first sector, which the delivery stub wrote last.
 #[cfg(target_arch = "x86_64")]
-fn report_root_record(device: &dyn BlockDevice) {
-    let mut first = [0u8; install::SECTOR];
-    let record = device.read_block(0, &mut first).ok().and_then(|()| install::Record::parse(&first));
-    let Some(install::Record::Root { boot, bytes, sha256 }) = record else {
-        log::warn!("[storage] the test root holds no root record");
-        return;
+fn report_root_record(device: &dyn BlockDevice) -> Result<(), &'static str> {
+    let install::Record::Root { boot, bytes, sha256 } = install::root_record(device)? else {
+        return Err("the test root holds no valid root record");
     };
     log::info!("[storage] root record: installed by boot {}, {} bytes, sha256 {}", boot, bytes, install::hex(&sha256));
     match install::matches(device, bytes, &sha256) {
         Ok(true) => log::info!("[storage] root image matches its install record"),
         Ok(false) => log::info!("[storage] root image differs from its install record: written since"),
-        Err(why) => log::warn!("[storage] root image unreadable: {}", why),
+        Err(why) => return Err(why),
     }
+    Ok(())
 }
 
 /// Whether the boot intent names a home partition.
