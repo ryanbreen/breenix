@@ -397,7 +397,9 @@ class EffortTargetGuardTest(unittest.TestCase):
     def test_vm_run_metadata_persists_catchup(self):
         source = (ROOT / 'run.sh').read_text()
         for platform in ('parallels', 'vmware'):
-            self.assertRegex(source, r'\n    install_vm_boot_traps\n(?:    (?:export |\[ )[^\n]*\n)*'
+            self.assertRegex(source, r'\n    install_vm_boot_traps\n'
+                                     r'(?:    export BREENIX_VIGIL_DISPLAY=true\n'
+                                     r'    \[ -z "\$\{BREENIX_PARALLELS_NOGUI:-\}" \] \|\| export BREENIX_VIGIL_DISPLAY=false\n)?'
                                      r'    record_launch_metadata\n(?:    #[^\n]*\n)*'
                                      r'    [^\n]*VIGIL_ID=\$\("\$BREENIX_ROOT/scripts/vigil-record\.sh" start '
                                      + platform + ' ')
