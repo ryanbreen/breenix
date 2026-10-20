@@ -297,17 +297,34 @@ impl Compositor {
 
     /// The client windows a frame composed from `layers` shows, top first: each window's id
     /// and the screen area its decorations and content cover (x0, y0, x1, y1).
-    pub fn shown_clients(&self, layers: &[Layer]) -> Vec<(u32, [u32; 4])> {
-        layers.iter().rev().filter_map(|l| {
+    pub fn shown_clients(&self, layers: &[Layer], pointer: Option<Pointer>) -> Vec<(u32, [u32; 4])> {
+        layers.iter().enumerate().rev().filter_map(|(index, l)| {
             let (_, content) = self.content_rect(l)?;
             let area = l.frame[..l.frame_len].iter().fold(content, |a, r| {
                 [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]
             });
             let clip = |v: i32, max: u32| v.clamp(0, max as i32) as u32;
             let area = [clip(area[0], self.width), clip(area[1], self.height), clip(area[2], self.width), clip(area[3], self.height)];
-            let visible = content[0].max(0) < content[2].min(self.width as i32)
-                && content[1].max(0) < content[3].min(self.height as i32);
-            visible.then_some((l.window_id, area))
+            // Keep only client pixels that compose actually leaves on screen. A
+            // bounding box alone admits clients hidden by other layers.
+            let mut exposed = vec![[content[0].max(0), content[1].max(0),
+                content[2].min(self.width as i32), content[3].min(self.appbar_top)]];
+            exposed.retain(|r| r[0] < r[2] && r[1] < r[3]);
+            for above in &layers[index + 1..] {
+                for rect in &above.frame[..above.frame_len] {
+                    subtract_rect(&mut exposed, *rect);
+                }
+                if let Some((_, rect)) = self.content_rect(above) {
+                    subtract_rect(&mut exposed, rect);
+                }
+            }
+            if let Some(p) = pointer {
+                let (white, black) = pointer_rects(p, self.scale);
+                for rect in white.into_iter().chain(black) {
+                    subtract_rect(&mut exposed, rect);
+                }
+            }
+            (!exposed.is_empty()).then_some((l.window_id, area))
         }).collect()
     }
 
@@ -442,6 +459,26 @@ impl Compositor {
         let (w, h) = (cw.min(s.width as i32), ch.min(s.height as i32));
         (w > 0 && h > 0).then_some((s.texture, [x, y, x + w, y + h]))
     }
+}
+
+/// Remove the part of each rectangle covered by an opaque rectangle.
+fn subtract_rect(rects: &mut Vec<[i32; 4]>, cover: [i32; 4]) {
+    let mut remaining = Vec::new();
+    for r in rects.drain(..) {
+        let cut = [r[0].max(cover[0]), r[1].max(cover[1]),
+            r[2].min(cover[2]), r[3].min(cover[3])];
+        if cut[0] >= cut[2] || cut[1] >= cut[3] {
+            remaining.push(r);
+            continue;
+        }
+        for part in [[r[0], r[1], r[2], cut[1]], [r[0], cut[3], r[2], r[3]],
+            [r[0], cut[1], cut[0], cut[3]], [cut[2], cut[1], r[2], cut[3]]] {
+            if part[0] < part[2] && part[1] < part[3] {
+                remaining.push(part);
+            }
+        }
+    }
+    *rects = remaining;
 }
 
 /// The display the GPU core shows (`MODES`, gpu.md section 1.7): the current mode's index,

@@ -2334,7 +2334,7 @@ fn main() {
                     // which bounds the read-back to that window. Any failure prints the
                     // line docs/boot-path.json lists as fatal.
                     let unchecked: Vec<(u32, [u32; 4])> = if windows.iter().any(|win| !win.frame_checked) {
-                        gpu.shown_clients(&layers)
+                        gpu.shown_clients(&layers, pointer)
                             .into_iter()
                             .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked))
                             .collect()
