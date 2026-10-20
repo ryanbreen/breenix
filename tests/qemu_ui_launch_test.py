@@ -166,11 +166,13 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(values[name], "46", name)
 
     def test_path_skips_directories_and_non_executable_files(self):
-        for kind in ("directory", "non-executable"):
+        for kind in ("directory", "non-executable", "symlink-loop"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
                 candidate = Path(directory) / self.probe.name
                 if kind == "directory":
                     candidate.mkdir()
+                elif kind == "symlink-loop":
+                    candidate.symlink_to(candidate.name)
                 else:
                     candidate.write_bytes(self.probe.read_bytes())
                     candidate.chmod(0o644)
@@ -192,6 +194,7 @@ class LauncherTest(unittest.TestCase):
                                         env={**os.environ, "PATH": f"{directory}:{directory}/missing"},
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertNotIn("refusing", result.stderr)
 
     def test_a_thread_created_with_its_own_class_keeps_it(self):
         _, values = self.run_probe(self.launcher)

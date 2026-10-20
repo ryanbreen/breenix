@@ -61,10 +61,6 @@ static int resolve_qemu(const char *program, char *resolved) {
             if (stat(candidate, &info) != 0 || access(candidate, X_OK) != 0 ||
                 realpath(candidate, resolved) == NULL) {
                 if (errno == EACCES) denied = 1;
-                else if (errno != ENOENT && errno != ENOTDIR) {
-                    free(search);
-                    return 126;
-                }
                 continue;
             }
             // Directory search permission satisfies X_OK, but exec cannot run it.
