@@ -175,6 +175,8 @@ def install_persistent(args):
 
 
 def boot(args):
+    if args.suite and args.mode == 'default':
+        args.mode = 'suite'
     if getattr(args, 'persistent', False):
         args.payload, args.mode = 'persistent', 'persistent'
     if (getattr(args, 'run', None) or getattr(args, 'verify', False) or getattr(args, 'entry', None)) and args.payload != 'persistent':
@@ -208,6 +210,9 @@ def boot(args):
         args.disk = 'root'
     if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         raise SystemExit('disk-before-mount needs a disk-root image boot')
+    milestone = getattr(args, 'milestone', None)
+    if milestone and (args.payload != 'image' or args.mode != 'suite' or not args.suite or args.suite == 'all' or ',' in args.suite):
+        raise SystemExit('--milestone needs one explicit --suite on an image boot')
     env = host_env()
     payload = args.payload
     sha = target = ''
@@ -237,6 +242,8 @@ def boot(args):
         command += ['--source-boot', args.source_boot]
     if args.suite:
         command += ['--suite', args.suite]
+    if milestone:
+        command += ['--milestone', milestone]
     if sha:
         command += ['--commit', sha, '--target', target]
     if args.no_wait:
@@ -399,6 +406,7 @@ def main():
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
+    p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')
     p.add_argument('--source-boot', help='completed disk suite boot to read after a cold power cycle')
     p.add_argument('--sha')
     p.add_argument('--branch')

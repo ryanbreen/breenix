@@ -47,6 +47,23 @@ class TestsBuildTest(unittest.TestCase):
             self.assertEqual(run.boot(args), 0)
         return metal.call_args.args, popen.call_args.args[0][2:]
 
+    def test_milestone_selector_reaches_the_driver(self):
+        run = load_script('metal-run')
+        with tempfile.TemporaryDirectory() as home, \
+             patch.object(run, 'host_env', return_value={}), \
+             patch.object(run, 'resolve', return_value='a' * 40), \
+             patch.object(run, 'resolve_suites', return_value='users'), \
+             patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')) as metal, \
+             patch.object(run.Path, 'home', return_value=Path(home)), \
+             patch.object(run.subprocess, 'Popen'):
+            self.assertEqual(run.boot(run_args(mode='default', suite='users', milestone='users/kernel-checks')), 0)
+        command = metal.call_args.args
+        self.assertEqual(command[command.index('--milestone') + 1], 'users/kernel-checks')
+        self.assertEqual(command[command.index('--mode') + 1], 'suite')
+        for suite in (None, 'all', 'users,server'):
+            with self.subTest(suite=suite), self.assertRaisesRegex(SystemExit, '--milestone needs'):
+                run.boot(run_args(mode='default', suite=suite, milestone='users/kernel-checks'))
+
     def test_a_tests_boot_requests_the_testing_kernel_on_a_disk_root(self):
         launch, build = self.boot(run_args())
         self.assertEqual(build, ['_build', build[1], 'a' * 40, '--features', 'testing'])

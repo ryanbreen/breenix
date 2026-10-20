@@ -61,6 +61,35 @@ class SuiteVerdictTests(unittest.TestCase):
             self.assertTrue(SCORER.verdict(mixed, selected, [selected], only="first/one")[0])
             self.assertFalse(SCORER.verdict(mixed, selected, [selected], only="later")[0])
 
+    def test_milestone_requires_its_categories_without_waiting_for_later_categories(self):
+        mixed = dict(MANIFEST, categories=MANIFEST["categories"] + [dict(id="later", cases=[])])
+        serial = FIXTURES / "all-pass.txt"
+        self.assertTrue(SCORER.verdict(mixed, serial, [serial], categories=["first", "second"])[0])
+        for categories, reason in ((["first", "later"], "planned categories"),
+                                   (["first", "missing"], "missing measured categories"),
+                                   ([], "needs categories")):
+            with self.subTest(categories=categories):
+                ok, detail = SCORER.verdict(mixed, serial, [serial], categories=categories)
+                self.assertFalse(ok)
+                self.assertIn(reason, detail)
+        self.assertFalse(SCORER.verdict(mixed, serial, [serial])[0])
+        for fixture in ("missing-case", "memory-leaked"):
+            serial = FIXTURES / (fixture + ".txt")
+            self.assertFalse(SCORER.verdict(mixed, serial, [serial], categories=["first"])[0])
+        serial = FIXTURES / "failed-case.txt"
+        self.assertTrue(SCORER.verdict(mixed, serial, [serial], categories=["second"])[0])
+        self.assertFalse(SCORER.verdict(mixed, serial, [serial], categories=["first"])[0])
+        self.assertFalse(SCORER.verdict(mixed, serial, [serial], only="first/one", categories=["first"])[0])
+
+    def test_milestone_resolution_requires_the_named_suite_measure(self):
+        path = json.loads((ROOT / "docs/efforts/path.json").read_text())
+        self.assertEqual(SCORER.milestone_categories(path, "users/kernel-checks", "users"),
+                         ["credentials", "files", "sticky", "setid-exec", "signals", "proc-dev", "umask"])
+        for milestone, suite in (("users/missing", "users"), ("users/kernel-checks", "server"),
+                                  ("kernel-bring-up/arch-bringup", "users")):
+            with self.subTest(milestone=milestone, suite=suite), self.assertRaises(ValueError):
+                SCORER.milestone_categories(path, milestone, suite)
+
     def test_memory_only_log_fails_without_start(self):
         with tempfile.TemporaryDirectory() as directory:
             serial = Path(directory) / "serial.txt"

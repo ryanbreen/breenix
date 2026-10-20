@@ -97,7 +97,9 @@ A milestone has exactly one measure:
   missing or empty categories cannot be omitted from completion requirements. This rule applies to both effort paths.
   Full-suite acceptance also requires cases in each manifest category (`scripts/suite-verdict.py`, shared by
   `scripts/suite-sequence.py` and the boot watchers). A selected case or category run is incremental evidence,
-  not full-suite or milestone completion.
+  not full-suite or milestone completion. Metal milestone acceptance uses
+  `metal-run boot --suite <suite> --milestone <effort>/<milestone>` to score the named measure's category set
+  from the boot commit while retaining the full boot's record, memory, disk and fatal-output checks.
 - `{"interfaces": "<area>"}` or `{"interfaces": ["name", ...]}`: those POSIX system interfaces are backed by a
   dispatched syscall on the architectures in the effort's target list.
 

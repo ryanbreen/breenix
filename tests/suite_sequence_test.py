@@ -37,6 +37,15 @@ class ResolveTests(unittest.TestCase):
         ids, _ = SEQUENCE["resolve"]("all", "arm64-qemu", True, read)
         self.assertEqual(ids, ["screen", "plain", "gpu", "disk"])
 
+    def test_all_skips_partially_populated_suites_but_explicit_runs_remain_available(self):
+        partial = json.loads(manifest("users"))
+        partial["categories"].append(dict(id="later", cases=[]))
+        read = self.reader({"plain": manifest("plain"), "users": json.dumps(partial)}, efforts=("plain", "users"))
+        ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", False, read)
+        self.assertEqual(ids, ["plain"])
+        self.assertEqual(skipped, [("users", "planned categories have no cases")])
+        self.assertEqual(SEQUENCE["resolve"]("users", "x86-metal", False, read)[0], ["users"])
+
     def test_a_list_runs_in_the_given_order_and_is_refused_where_isolation_needs_another_place(self):
         read = self.reader({"disk": manifest("disk", sequence="last"), "plain": manifest("plain"),
                             "screen": manifest("screen", sequence="first"), "gpu": manifest("gpu", needs3dGpu=True),

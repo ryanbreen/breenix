@@ -74,6 +74,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 skipped.append((suite, "no manifest"))
             elif planned(suite):
                 skipped.append((suite, "no cases yet"))
+            elif any(not category.get("cases") for category in manifest(suite).get("categories", [])):
+                skipped.append((suite, "planned categories have no cases"))
             elif manifest(suite).get("needs3dGpu") and not has_3d:
                 skipped.append((suite, "needs a 3D GPU"))
             elif suite not in ids:
