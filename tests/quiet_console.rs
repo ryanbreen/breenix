@@ -316,13 +316,18 @@ fn body<'a>(source: &'a str, signature: &str) -> &'a str {
 fn disk_root_intent_is_consumed_before_registering_a_ram_block_device() {
     let ramdisk = source("kernel/src/block/ramdisk.rs");
     let init = body(&ramdisk, "pub unsafe fn init(");
-    assert!(
-        init.contains("if crate::boot::intent::capture(bytes) {\n        return Ok(());")
-    );
-    assert!(
-        init.find("intent::capture(bytes)").unwrap()
-            < init.find("RamDisk::new(bytes)").unwrap()
-    );
+    let capture = init.find("if crate::boot::intent::capture(bytes) {").unwrap();
+    for registration in ["RamDisk::new(", "TEST_DISK.call_once(", "\n    DISK.call_once("] {
+        assert!(capture < init.find(registration).unwrap(),
+            "{registration} precedes boot-intent capture");
+    }
+    let captured = &init[capture..];
+    let captured = &captured[..captured.find("\n    }\n").unwrap() + "\n    }".len()];
+    assert!(captured.trim_end().ends_with("return Ok(());\n    }"));
+    assert_eq!(captured.matches("RamDisk::new(").count(), 1);
+    assert!(captured.contains("RamDisk::new(&mut bytes[offset..end])?"));
+    assert!(!captured.lines().any(|line| line.trim_start().starts_with("DISK.call_once(")),
+        "captured boot intent must not register a root device");
     let main = source("kernel/src/main.rs");
     let mode = body(&main, "fn x86_console_mode()");
     assert!(mode.contains("kernel::boot::intent::get().is_some()"));

@@ -38,7 +38,7 @@ pub enum Mount { Root, Home }
 pub enum Node { Ext2(Mount, u32) }
 pub struct Frame { name: Vec<u8>, node: Node }
 pub enum Target { Inode { mount: Mount, ino: u32 }, Virtual, Absent {} }
-pub struct Resolved { target: Target, path: String }
+pub struct Resolved { target: Target, path: alloc::boxed::Box<[u8]> }
 fn fs_errno(_: &'static str) -> u64 { 5 }
 mod ext2 {
     use super::*;
@@ -107,10 +107,10 @@ fn generation_and_shared_directory_ancestry_stay_in_the_selected_namespace() {
 fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
     for (mount, ino, expected) in [(Mount::Root, 100, true), (Mount::Root, 10, true),
         (Mount::Root, 11, true), (Mount::Root, 200, false), (Mount::Home, 2, true), (Mount::Home, 10, false)] {
-        assert_eq!(Resolved { target: Target::Inode { mount, ino }, path: String::new() }.is_mount_point(), expected);
+        assert_eq!(Resolved { target: Target::Inode { mount, ino }, path: Box::new([]) }.is_mount_point(), expected);
     }
-    assert!(Resolved { target: Target::Virtual, path: "/proc".into() }.is_mount_point());
-    assert!(!Resolved { target: Target::Absent {}, path: "/missing".into() }.is_mount_point());
+    assert!(Resolved { target: Target::Virtual, path: b"/proc".as_slice().into() }.is_mount_point());
+    assert!(!Resolved { target: Target::Absent {}, path: b"/missing".as_slice().into() }.is_mount_point());
 }
 '''
 

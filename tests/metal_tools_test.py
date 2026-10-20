@@ -795,11 +795,16 @@ class RootStagingTest(unittest.TestCase):
             site = {'GUEST_FETCH_URL': 'fixture-value', 'IDRAC_PASSWORD': 'private-fixture',
                     'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
                     'CONSOLE_IDENTITY_KEY': 'ab' * 32}
-            helper = os.environ.get('CONSOLE_HASH_HELPER')
+            helper = os.environ.get('CONSOLE_HASH_HELPER', str(Path(__file__).resolve().parents[1] / 'target/host-test-tools/sha512-crypt'))
+            prep_message = ('Missing or stale console hash helper: run scripts/build-host-test-tools.sh '
+                            '(CONSOLE_HASH_HELPER may select an existing executable)')
             self.assertTrue(helper and Path(helper).is_file() and os.access(helper, os.X_OK),
-                            'Missing CONSOLE_HASH_HELPER: install with rustc --edition=2021 -O '
-                            'scripts/metal/sha512-crypt.rs -o /tmp/sha512-crypt, then export CONSOLE_HASH_HELPER=/tmp/sha512-crypt')
+                            prep_message)
             hasher = Path(helper)
+            if 'CONSOLE_HASH_HELPER' not in os.environ:
+                source = Path(__file__).resolve().parents[1] / 'scripts/metal/sha512-crypt.rs'
+                self.assertGreaterEqual(hasher.stat().st_mtime_ns, source.stat().st_mtime_ns,
+                                        prep_message)
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
                                           ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:
@@ -1670,7 +1675,8 @@ class StagingTest(unittest.TestCase):
                           'efi-stub/src/main.rs', 'efi-stub/src/manager/clock.rs', 'efi-stub/src/manager/lab.rs',
                           'efi-stub/src/manager/main.rs', 'efi-stub/src/manager/options.rs',
                           'efi-stub/src/manager/screen.rs', 'efi-stub/src/manager/slots.rs',
-                          'efi-stub/src/persist.rs', 'efi-stub/src/suite_disk.rs', 'efi-stub/src/uefi.rs'])
+                          'efi-stub/src/persist.rs', 'efi-stub/src/slot_transaction.rs',
+                          'efi-stub/src/suite_disk.rs', 'efi-stub/src/uefi.rs'])
         self.assertTrue(all(Path(source).is_file() for source, _ in pushed))
         calls = [call.args[1:] for call in service.call_args_list]
         stage = '/var/lib/breenix-metal/stage/20261017T000009Z-metal/inputs'

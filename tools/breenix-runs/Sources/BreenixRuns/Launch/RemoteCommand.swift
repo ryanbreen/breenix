@@ -344,56 +344,6 @@ while True:
         return request
     }
 
-    /// Nonblocking output keeps the heartbeat deadline active under backpressure.
-    /// Catch up in bounded bursts; the final evidence is harvested independently.
-    static let serialReader = #"""
-import base64, json, os, pathlib, select, sys, time
-root = pathlib.Path(sys.argv[1])
-count = int(sys.argv[2])
-offsets = {tuple([int(k.split(":")[0]), k.split(":")[1]]): v for k, v in json.loads(sys.argv[3] if len(sys.argv) > 3 else "{}").items()}
-last = time.monotonic()
-pending = bytearray()
-os.set_blocking(1, False)
-while time.monotonic() - last < 5:
-    ready, writable, _ = select.select([0], [1] if pending else [], [], .01 if pending else 1)
-    if ready:
-        if not os.read(0, 4096):
-            break
-        last = time.monotonic()
-    if len(pending) < 4 * 1024 * 1024:
-        for boot in range(1, count + 1):
-            directory = root / ("breenix_gate_%d" % boot)
-            if not all((directory / ("serial_%s.log" % stream)).exists() for stream in ("user", "kernel")):
-                continue
-            for stream in ("user", "kernel"):
-                key = (boot, stream)
-                path = directory / ("serial_%s.log" % stream)
-                try:
-                    with path.open("rb") as log:
-                        log.seek(offsets.get(key, 0))
-                        data = log.read(1024 * 1024)
-                        if key not in offsets or data:
-                            offsets[key] = log.tell()
-                            pending.extend((json.dumps(dict(boot=boot, stream=stream, offset=offsets[key] - len(data), data=base64.b64encode(data).decode())) + "\n").encode())
-                except FileNotFoundError:
-                    pass
-    if pending:
-        try:
-            written = os.write(1, pending)
-            del pending[:written]
-        except BlockingIOError:
-            pass
-        except BrokenPipeError:
-            break
-"""#
-
-    public static func streamSerialsRequest(paths: BeastPaths, boots: Int, offsets: [String: Int] = [:]) -> ProcessRequest {
-        let resume = String(data: try! JSONSerialization.data(withJSONObject: offsets, options: [.sortedKeys]), encoding: .utf8)!
-        let encoded = Data(serialReader.utf8).base64EncodedString()
-        let python = "import base64;exec(base64.b64decode(\"\(encoded)\"))"
-        return sshRequest(paths: paths, remote: "sudo -n incus exec \(paths.container) -- python3 -u -c '\(python)' \(paths.gateTmpPath) \(boots) '\(resume)'", combineOutput: false, liveStream: true)
-    }
-
     /// Signal this run's supervisor and detached worker, including a worker whose
     /// foreground handle died during disconnect. PID birth checks exclude reused PIDs.
     static let gateStopper = #"""
@@ -550,58 +500,6 @@ if __name__ == "__main__":
             remote = "sudo -n incus exec \(paths.container) -- rm -rf \(paths.clonePath)"
         }
         return sshRequest(paths: paths, remote: remote)
-    }
-
-    // Beast's own host-facts sample - DESIGN.md 5.3's concept applied to the
-    // ACTUAL execution host for an x86 run, which is beast, not this Mac:
-    // loadavg/mem/CPU model from /proc on the Linux execution environment;
-    // qemu peer counts via `pgrep -c -f` (plain `-x`/`-c`
-    // without `-f` silently matches nothing - the name is >15 chars,
-    // verified against beast). No single quote appears anywhere in this
-    // script: it runs inside `bash -lc '<script>'`, so a literal `'` would
-    // terminate that quoting early. Awk field references are escaped
-    // (`\$1`) so the INNER bash's double-quote parsing does not expand them
-    // as its own positional parameters before awk ever sees them. Verified
-    // byte-for-byte against a real Foundation.Process invocation of this
-    // exact string on 2026-09-06 (exit 0, all six fields parsed correctly).
-    public static func hostFactsRequest(paths: BeastPaths) -> ProcessRequest {
-        let script = #"read la1 la2 la3 _ < /proc/loadavg; memkb=$(awk "/MemTotal/{print \$2}" /proc/meminfo); qpeers86=$(pgrep -c -f qemu-system-x86_64 || echo 0); qpeersarm=$(pgrep -c -f qemu-system-aarch64 || echo 0); qver=$(qemu-system-x86_64 --version 2>/dev/null | head -1); cpumodel=$(awk -F: "/model name/{print \$2; exit}" /proc/cpuinfo | sed "s/^ *//"); echo "loadavg=$la1 $la2 $la3"; echo "qemu_peers_x86=$qpeers86"; echo "qemu_peers_aarch64=$qpeersarm"; echo "mem_total_kb=$memkb"; echo "qemu_version=$qver"; echo "cpu_model=$cpumodel""#
-        return sshRequest(paths: paths, remote: incusBashLC(paths: paths, script: script))
-    }
-
-    /// Parses `hostFactsRequest`'s stdout into a `HostFactsSample`. Pure -
-    /// no I/O - so it is testable directly against a fixture string with no
-    /// process involved. Any line without a recognized `key=` prefix
-    /// (including beast's trailing terminal-reset escape bytes) is ignored,
-    /// not treated as an error. A field whose key is entirely absent from the
-    /// text is `nil`/`0`, never fabricated.
-    public static func parseHostFacts(_ text: String, wallTime: Date) -> HostFactsSample {
-        var fields: [String: String] = [:]
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            let key = String(line[line.startIndex..<eq])
-            let value = String(line[line.index(after: eq)...])
-            fields[key] = value
-        }
-
-        let loadParts = (fields["loadavg"] ?? "").split(separator: " ").compactMap { Double($0) }
-
-        return HostFactsSample(
-            wallTime: wallTime,
-            qemuPeersAarch64: fields["qemu_peers_aarch64"].flatMap(Int.init) ?? 0,
-            qemuPeersX86_64: fields["qemu_peers_x86"].flatMap(Int.init) ?? 0,
-            loadavg1: loadParts.count > 0 ? loadParts[0] : nil,
-            loadavg5: loadParts.count > 1 ? loadParts[1] : nil,
-            loadavg15: loadParts.count > 2 ? loadParts[2] : nil,
-            qemuCPUSeconds: nil,
-            thermalPressure: nil,
-            hostModel: fields["cpu_model"].map { $0.trimmingCharacters(in: .whitespaces) },
-            physMem: fields["mem_total_kb"].flatMap(UInt64.init).map { $0 * 1024 },
-            qemuVersion: fields["qemu_version"].map { $0.trimmingCharacters(in: .whitespaces) },
-            gitSHA: nil,
-            gitDirty: nil,
-            clockRatio: nil
-        )
     }
 
     private static func incusBashLC(paths: BeastPaths, script: String) -> String {

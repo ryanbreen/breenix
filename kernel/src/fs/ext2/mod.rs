@@ -901,17 +901,18 @@ impl Ext2Fs {
     pub fn create_file(
         &mut self,
         parent_inode_num: u32,
-        name: &str,
+        name: impl AsRef<[u8]>,
         mode: u16,
         uid: u32,
         gid: u32,
     ) -> Result<u32, &'static str> {
+        let name = name.as_ref();
         self.ensure_writable()?;
         // Validate name
         if name.is_empty() || name.len() > 255 {
             return Err("Invalid filename length");
         }
-        if name.contains('/') || name == "." || name == ".." {
+        if name.contains(&b'/') || name == b"." || name == b".." {
             return Err("Invalid filename");
         }
 
@@ -925,7 +926,7 @@ impl Ext2Fs {
         let mut dir_data = self.read_directory(&parent_inode)?;
 
         // Check if the file already exists
-        if find_entry(&dir_data, name).is_some() {
+        if dir::find_inode_bytes(&dir_data, name).is_some() {
             return Err("File already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut dir_data, name.len())?;
@@ -936,13 +937,13 @@ impl Ext2Fs {
             parent_inode_num,
             &parent_inode,
             &dir_data,
-            name.as_bytes(),
+            name,
             new_inode,
             None,
             |_, ino| Ok(ino),
         )?;
 
-        log::debug!("ext2: created file '{}' with inode {}", name, new_inode_num);
+        log::debug!("ext2: created file '{:?}' with inode {}", name, new_inode_num);
         Ok(new_inode_num)
     }
 
@@ -1120,8 +1121,9 @@ impl Ext2Fs {
     pub fn unlink_in_dir(
         &mut self,
         parent_inode_num: u32,
-        filename: &str,
+        filename: impl AsRef<[u8]>,
     ) -> Result<(), &'static str> {
+        let filename = filename.as_ref();
         self.ensure_writable()?;
         let parent_inode = self.read_inode(parent_inode_num)?;
 
@@ -1133,7 +1135,7 @@ impl Ext2Fs {
         let dir_data = self.read_directory(&parent_inode)?;
 
         // Find the entry to verify it exists and get its inode
-        let target_inode_num = dir::find_inode(&dir_data, filename).ok_or("File not found")?;
+        let target_inode_num = dir::find_inode_bytes(&dir_data, filename).ok_or("File not found")?;
 
         // Check that we're not unlinking a directory (use rmdir for that)
         let target_inode = self.read_inode(target_inode_num)?;
@@ -1191,7 +1193,7 @@ impl Ext2Fs {
         }
         drop(handle);
 
-        log::debug!("ext2: unlinked {} (inode {})", filename, target_inode_num);
+        log::debug!("ext2: unlinked {:?} (inode {})", filename, target_inode_num);
         Ok(())
     }
 
@@ -1247,17 +1249,18 @@ impl Ext2Fs {
     pub fn create_directory_in(
         &mut self,
         parent_inode_num: u32,
-        dirname: &str,
+        dirname: impl AsRef<[u8]>,
         mode: u16,
         uid: u32,
         gid: u32,
     ) -> Result<u32, &'static str> {
+        let dirname = dirname.as_ref();
         self.ensure_writable()?;
         // Validate name
         if dirname.is_empty() || dirname.len() > 255 {
             return Err("Invalid directory name length");
         }
-        if dirname.contains('/') || dirname == "." || dirname == ".." {
+        if dirname.contains(&b'/') || dirname == b"." || dirname == b".." {
             return Err("Invalid directory name");
         }
 
@@ -1275,7 +1278,7 @@ impl Ext2Fs {
         let mut parent_dir_data = self.read_directory(&parent_inode)?;
 
         // Check if the directory already exists
-        if find_entry(&parent_dir_data, dirname).is_some() {
+        if dir::find_inode_bytes(&parent_dir_data, dirname).is_some() {
             return Err("Directory already exists");
         }
         self.make_directory_room(parent_inode_num, &mut parent_inode, &mut parent_dir_data, dirname.len())?;
@@ -1312,14 +1315,14 @@ impl Ext2Fs {
             parent_inode_num,
             &parent_inode,
             &parent_dir_data,
-            dirname.as_bytes(),
+            dirname,
             new_inode,
             Some(&entries),
             |_, ino| Ok(ino),
         )?;
 
         log::debug!(
-            "ext2: created directory '{}' with inode {}",
+            "ext2: created directory '{:?}' with inode {}",
             dirname,
             new_inode_num
         );
@@ -1379,8 +1382,9 @@ impl Ext2Fs {
     pub fn remove_directory_in(
         &mut self,
         parent_inode_num: u32,
-        dir_name: &str,
+        dir_name: impl AsRef<[u8]>,
     ) -> Result<(), &'static str> {
+        let dir_name = dir_name.as_ref();
         self.ensure_writable()?;
         let parent_inode = self.read_inode(parent_inode_num)?;
         if !parent_inode.is_dir() {
@@ -1390,7 +1394,7 @@ impl Ext2Fs {
             .lookup_in_dir(&parent_inode, dir_name)?
             .ok_or("Directory not found")?;
         if target_inode_num == EXT2_ROOT_INO || self.namespace.is_mount(target_inode_num)
-            || self.namespace.mount_entry(parent_inode_num, dir_name.as_bytes()) {
+            || self.namespace.mount_entry(parent_inode_num, dir_name) {
             return Err("Cannot remove root directory");
         }
         let target_inode = self.read_inode(target_inode_num)?;
@@ -1479,7 +1483,7 @@ impl Ext2Fs {
         }
 
         log::debug!(
-            "ext2: removed directory '{}' (inode {})",
+            "ext2: removed directory '{:?}' (inode {})",
             dir_name,
             target_inode_num
         );
@@ -1528,8 +1532,9 @@ impl Ext2Fs {
         &mut self,
         source_inode_num: u32,
         new_parent_inode_num: u32,
-        new_filename: &str,
+        new_filename: impl AsRef<[u8]>,
     ) -> Result<(), &'static str> {
+        let new_filename = new_filename.as_ref();
         self.ensure_writable()?;
         let source_inode = self.read_inode(source_inode_num)?;
         if source_inode.i_links_count == 0 {
@@ -1543,9 +1548,9 @@ impl Ext2Fs {
         }
         if new_filename.is_empty()
             || new_filename.len() > 255
-            || new_filename.contains('/')
-            || new_filename == "."
-            || new_filename == ".."
+            || new_filename.contains(&b'/')
+            || new_filename == b"."
+            || new_filename == b".."
         {
             return Err("Invalid filename");
         }
@@ -1559,7 +1564,7 @@ impl Ext2Fs {
         // Read the parent directory data
         let mut dir_data = self.read_directory(&new_parent_inode)?;
 
-        if dir::find_inode(&dir_data, new_filename).is_some() {
+        if dir::find_inode_bytes(&dir_data, new_filename).is_some() {
             return Err("Destination already exists");
         }
         self.make_directory_room(new_parent_inode_num, &mut new_parent_inode, &mut dir_data, new_filename.len())?;
@@ -1606,7 +1611,7 @@ impl Ext2Fs {
             .map_err(|_| "Failed to write new directory entry")?;
 
         log::debug!(
-            "ext2: created hard link {} (inode {})",
+            "ext2: created hard link {:?} (inode {})",
             new_filename,
             source_inode_num
         );
@@ -1674,18 +1679,20 @@ impl Ext2Fs {
 
     pub fn create_symlink_in(
         &mut self,
-        target: &str,
+        target: impl AsRef<[u8]>,
         parent_inode_num: u32,
-        link_name: &str,
+        link_name: impl AsRef<[u8]>,
         uid: u32,
         gid: u32,
     ) -> Result<(), &'static str> {
+        let target = target.as_ref();
+        let link_name = link_name.as_ref();
         self.ensure_writable()?;
         // Validate the link name
         if link_name.is_empty() || link_name.len() > 255 {
             return Err("Invalid filename length");
         }
-        if link_name.contains('/') || link_name == "." || link_name == ".." {
+        if link_name.contains(&b'/') || link_name == b"." || link_name == b".." {
             return Err("Invalid filename");
         }
 
@@ -1705,7 +1712,7 @@ impl Ext2Fs {
             return Err("Parent is not a directory");
         }
 
-        if self.lookup_in_dir(&parent_inode, link_name)?.is_some() {
+        if self.lookup_in_dir_bytes(&parent_inode, link_name)?.is_some() {
             return Err("File already exists");
         }
 
@@ -1719,7 +1726,7 @@ impl Ext2Fs {
         let mut new_inode = Ext2Inode::new_symlink(target);
         new_inode.set_owner(uid, gid);
         let target_block = |_: u32, block: &mut [u8]| {
-            block[..target.len()].copy_from_slice(target.as_bytes());
+            block[..target.len()].copy_from_slice(target);
         };
         let block: Option<&dyn Fn(u32, &mut [u8])> =
             if target.len() > 60 { Some(&target_block) } else { None };
@@ -1727,13 +1734,13 @@ impl Ext2Fs {
             parent_inode_num,
             &parent_inode,
             &dir_data,
-            link_name.as_bytes(),
+            link_name,
             new_inode,
             block,
             |_, _| Ok(()),
         )?;
 
-        log::debug!("ext2: created symlink '{}' -> '{}'", link_name, target);
+        log::debug!("ext2: created symlink '{:?}' -> '{:?}'", link_name, target);
         Ok(())
     }
 }

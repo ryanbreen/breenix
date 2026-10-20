@@ -302,9 +302,10 @@ pub fn find_entry_location(data: &[u8], name: &str) -> Option<DirEntryLocation> 
 /// # Returns
 /// * `Ok(u32)` - Inode number of the removed entry
 /// * `Err(&'static str)` - Error message
-pub fn remove_entry(data: &mut [u8], name: &str, block_size: usize) -> Result<u32, &'static str> {
+pub fn remove_entry(data: &mut [u8], name: impl AsRef<[u8]>, block_size: usize) -> Result<u32, &'static str> {
+    let name = name.as_ref();
     // Cannot remove . or ..
-    if name == "." || name == ".." {
+    if name == b"." || name == b".." {
         return Err("Cannot remove . or ..");
     }
 
@@ -368,10 +369,11 @@ fn required_entry_size(name_len: usize) -> usize {
 pub fn add_directory_entry(
     dir_data: &mut Vec<u8>,
     new_inode: u32,
-    name: &str,
+    name: impl AsRef<[u8]>,
     file_type: u8,
 ) -> Result<usize, &'static str> {
-    add_directory_entry_bytes(dir_data, new_inode, name.as_bytes(), file_type)
+    let name = name.as_ref();
+    add_directory_entry_bytes(dir_data, new_inode, name, file_type)
 }
 
 pub fn add_directory_entry_bytes(dir_data: &mut Vec<u8>, new_inode: u32, name_bytes: &[u8], file_type: u8) -> Result<usize, &'static str> {
@@ -495,10 +497,11 @@ pub fn is_directory_empty(data: &[u8]) -> bool {
 /// * `Err(msg)` - Entry not found or other error
 pub fn update_directory_entry(
     dir_data: &mut [u8],
-    name: &str,
+    name: impl AsRef<[u8]>,
     new_inode: u32,
     file_type: u8,
 ) -> Result<usize, &'static str> {
+    let name = name.as_ref();
     let mut offset = 0usize;
 
     while offset < dir_data.len() {
@@ -526,7 +529,7 @@ pub fn update_directory_entry(
             let entry_name_offset = offset + MIN_DIR_ENTRY_SIZE;
             if entry_name_offset + entry_name_len <= dir_data.len() {
                 let entry_name = &dir_data[entry_name_offset..entry_name_offset + entry_name_len];
-                if entry_name == name.as_bytes() {
+                if entry_name == name {
                     // Found it - update the inode number and type
                     dir_data[offset..offset + 4].copy_from_slice(&new_inode.to_le_bytes());
                     dir_data[offset + 7] = file_type;
@@ -637,6 +640,24 @@ pub fn find_inode(data:&[u8],name:&str)->Option<u32>{ raw_entries(data).find(|en
 mod raw_tests {
     use super::*;
     #[test]
+    fn entry_mutations_preserve_non_utf8_names() {
+        let mut data = alloc::vec![0u8; 1024];
+        data[4..6].copy_from_slice(&1024u16.to_le_bytes());
+        let raw = b"name\xff";
+        let text = "name\u{fffd}";
+        add_directory_entry(&mut data, 11, raw, EXT2_FT_REG_FILE).unwrap();
+        add_directory_entry(&mut data, 12, text, EXT2_FT_REG_FILE).unwrap();
+        assert_eq!(find_inode_bytes(&data, raw), Some(11));
+        assert_eq!(find_inode(&data, text), Some(12));
+        update_directory_entry(&mut data, raw, 13, EXT2_FT_SYMLINK).unwrap();
+        assert_eq!(find_inode_bytes(&data, raw), Some(13));
+        assert_eq!(find_inode(&data, text), Some(12));
+        assert_eq!(remove_entry(&mut data, raw, 1024).unwrap(), 13);
+        assert_eq!(find_inode_bytes(&data, raw), None);
+        assert_eq!(find_inode(&data, text), Some(12));
+    }
+
+    #[test]
     fn borrowed_records_keep_exact_names_and_byte_cookies() {
         let mut data = [0u8;40];
         data[..4].copy_from_slice(&2u32.to_le_bytes()); data[4..6].copy_from_slice(&12u16.to_le_bytes());
@@ -656,14 +677,14 @@ mod raw_tests {
 }
 
 struct RawLocation { inode:u32,offset:usize,rec_len:u16,prev_offset:Option<usize>,prev_rec_len:Option<u16> }
-fn raw_location(data:&[u8],name:&str)->Option<RawLocation>{
+fn raw_location(data:&[u8],name:&[u8])->Option<RawLocation>{
     let mut offset=0usize;let mut prev_offset=None;let mut prev_rec_len=None;
     while offset<data.len(){
         let header=data.get(offset..offset.checked_add(8)?)?;
         let inode=u32::from_le_bytes(header[..4].try_into().ok()?);let len=u16::from_le_bytes(header[4..6].try_into().ok()?);
         if len<8||offset.checked_add(len as usize)?>data.len(){return None;}
         let count=header[6] as usize;
-        if inode!=0&&count+8<=len as usize&&data.get(offset+8..offset+8+count)?==name.as_bytes(){
+        if inode!=0&&count+8<=len as usize&&data.get(offset+8..offset+8+count)?==name{
             return Some(RawLocation{inode,offset,rec_len:len,prev_offset,prev_rec_len});
         }
         prev_offset=Some(offset);prev_rec_len=Some(len);offset+=len as usize;

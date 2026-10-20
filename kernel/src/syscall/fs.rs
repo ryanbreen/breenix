@@ -258,15 +258,15 @@ fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
 
 /// Copy a pathname from userspace and resolve it; `follow` says whether a
 /// final symlink is followed.
-fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolved, SyscallResult> {
+fn resolve_user(pathname: u64, follow: bool) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
     resolve_user_at(AT_FDCWD, pathname, follow)
 }
 fn resolve_user_at(
     dirfd: i32,
     pathname: u64,
     follow: bool,
-) -> Result<crate::fs::namei::Resolved, SyscallResult> {
-    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
+    let path = super::userptr::copy_path_bytes_from_user(pathname).map_err(SyscallResult::Err)?;
     super::metadata::resolve_at(dirfd, &path, follow, &current_file_credentials())
         .map_err(SyscallResult::Err)
 }
@@ -277,10 +277,10 @@ fn resolve_user_at(
 fn resolve_user_entry_at(
     dirfd: i32,
     pathname: u64,
-) -> Result<crate::fs::namei::Resolved, SyscallResult> {
-    let raw = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
+    let raw = super::userptr::copy_path_bytes_from_user(pathname).map_err(SyscallResult::Err)?;
     let start =
-        super::at_path::directory_start(dirfd, raw.starts_with('/'), super::metadata::directory)
+        super::at_path::directory_start(dirfd, raw.starts_with(b"/"), super::metadata::directory)
             .map_err(SyscallResult::Err)?;
     crate::fs::namei::resolve_entry_from(&raw, start, &current_file_credentials())
         .map_err(SyscallResult::Err)
@@ -291,10 +291,10 @@ fn resolve_user_entry_at(
 fn resolve_user_rename_at(
     dirfd: i32,
     pathname: u64,
-) -> Result<crate::fs::namei::Resolved, SyscallResult> {
-    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
+    let path = super::userptr::copy_path_bytes_from_user(pathname).map_err(SyscallResult::Err)?;
     let start =
-        super::at_path::directory_start(dirfd, path.starts_with('/'), super::metadata::directory)
+        super::at_path::directory_start(dirfd, path.starts_with(b"/"), super::metadata::directory)
             .map_err(SyscallResult::Err)?;
     crate::fs::namei::resolve_rename_from(&path, start, &current_file_credentials())
         .map_err(SyscallResult::Err)
@@ -305,8 +305,8 @@ fn resolve_user_rename_at(
 fn resolve_user_create_at(
     dirfd: i32,
     pathname: u64,
-) -> Result<crate::fs::namei::Resolved, SyscallResult> {
-    let path = super::userptr::copy_cstr_from_user(pathname).map_err(SyscallResult::Err)?;
+) -> Result<crate::fs::namei::Resolved<alloc::vec::Vec<u8>>, SyscallResult> {
+    let path = super::userptr::copy_path_bytes_from_user(pathname).map_err(SyscallResult::Err)?;
     super::metadata::resolve_create_at(dirfd, &path, &current_file_credentials())
         .map_err(SyscallResult::Err)
 }
@@ -317,7 +317,7 @@ fn resolve_user_create_at(
 /// Returns (inode_num, file_type, is_directory, is_regular, mount_id) or Err.
 fn sys_open_write_path(
     fs: &mut crate::fs::ext2::Ext2Fs,
-    resolved: &crate::fs::namei::Resolved,
+    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
     flags: u32,
     mode: u32,
     cred: &FileCredentials,
@@ -364,7 +364,7 @@ fn sys_open_write_path(
                 .ok_or(SyscallResult::Err(5))?
                 .verify(fs)
                 .map_err(|_| SyscallResult::Err(2))?;
-            let filename = resolved.path.rsplit('/').next().unwrap_or("");
+            let filename = resolved.final_name();
             let parent_inode = match fs.read_inode(parent) {
                 Ok(ino) => ino,
                 Err(_) => {
@@ -376,11 +376,11 @@ fn sys_open_write_path(
                 return Err(SyscallResult::Err(ENOTDIR as u64));
             }
             // Another creator may have won since the pathname was resolved.
-            match fs.lookup_in_dir(&parent_inode, filename) {
+            match fs.lookup_in_dir_bytes(&parent_inode, filename) {
                 Ok(Some(_)) if want_excl => return Err(SyscallResult::Err(EEXIST as u64)),
                 Ok(Some(ino)) => (ino, false),
                 Ok(None) => {
-                    log::debug!("sys_open: creating new file {}", resolved.path);
+                    log::debug!("sys_open: creating new file {:?}", resolved.path);
                     // The requested mode is used as given, less the umask: mode 0
                     // creates a file nobody but root may open.
                     let gid = super::fifo_policy::check_parent_access(&parent_inode, &cred, None)
@@ -391,7 +391,7 @@ fn sys_open_write_path(
                     match fs.create_file(parent, filename, file_mode, cred.euid, gid) {
                         Ok(new_inode) => {
                             log::debug!(
-                                "sys_open: created file {} with inode {}",
+                                "sys_open: created file {:?} with inode {}",
                                 resolved.path,
                                 new_inode
                             );
@@ -525,7 +525,7 @@ fn install_descriptor(
 /// Helper: sys_open read path — works on any Ext2Fs instance.
 fn sys_open_read_path(
     fs: &crate::fs::ext2::Ext2Fs,
-    resolved: &crate::fs::namei::Resolved,
+    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
     flags: u32,
     cred: &FileCredentials,
 ) -> Result<
@@ -598,7 +598,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     let want_excl = (flags & O_EXCL) != 0;
     // O_NOFOLLOW, and O_CREAT with O_EXCL, act on a final symlink itself.
     let follow = (flags & O_NOFOLLOW) == 0 && !(want_creat && want_excl);
-    let raw = match super::userptr::copy_cstr_from_user(pathname) {
+    let raw = match super::userptr::copy_path_bytes_from_user(pathname) {
         Ok(path) => path,
         Err(e) => return SyscallResult::Err(e),
     };
@@ -607,7 +607,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         Ok(r) => r,
         Err(e) => return SyscallResult::Err(e),
     };
-    let path = resolved.path.as_str();
+    let path = resolved.virtual_path().unwrap_or("");
 
     log::debug!(
         "sys_open: path={:?}, flags={:#x}, mode={:#o}",
@@ -1815,7 +1815,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Ok(r) => r,
         Err(e) => return e,
     };
-    let path = resolved.path.as_str();
+    let path = resolved.virtual_path().unwrap_or("");
 
     log::debug!("sys_unlink: path={:?}", path);
 
@@ -1852,7 +1852,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
             Ok(inode) => inode,
             Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
         };
-        let target = match fs.lookup_in_dir(&parent_inode, resolved.final_name()) {
+        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()) {
             Ok(Some(ino)) => ino,
             Ok(None) => return SyscallResult::Err(ENOENT as u64),
             Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
@@ -1946,7 +1946,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
         Err(e) => return e,
     };
 
-    if let Some(result) = crate::ipc::shmem::rename_path(&old.path, &new.path) {
+    if let Some(result) = crate::ipc::shmem::rename_path(old.virtual_path().unwrap_or(""), new.virtual_path().unwrap_or("")) {
         return result;
     }
     log::debug!("sys_rename: old={:?}, new={:?}", old.path, new.path);
@@ -2118,7 +2118,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
             Ok(inode) => inode,
             Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
         };
-        let target = match fs.lookup_in_dir(&parent_inode, resolved.final_name()) {
+        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()) {
             Ok(Some(ino)) => ino,
             Ok(None) => return SyscallResult::Err(ENOENT as u64),
             Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
@@ -2141,7 +2141,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
     match rmdir_result {
         Ok(()) => {
             log::debug!(
-                "sys_rmdir: successfully removed directory {}",
+                "sys_rmdir: successfully removed directory {:?}",
                 resolved.path
             );
             SyscallResult::Ok(0)
@@ -2212,7 +2212,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
         Err(e) => return e,
     };
 
-    if let Some(result) = crate::ipc::shmem::link_path(&old.path, &new.path) {
+    if let Some(result) = crate::ipc::shmem::link_path(old.virtual_path().unwrap_or(""), new.virtual_path().unwrap_or("")) {
         return result;
     }
     log::debug!("sys_link: oldpath={:?}, newpath={:?}", old.path, new.path);
@@ -2268,7 +2268,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
     match link_result {
         Ok(()) => {
             log::info!(
-                "sys_link: successfully created hard link {} -> {}",
+                "sys_link: successfully created hard link {:?} -> {:?}",
                 new.path,
                 old.path
             );
@@ -2303,7 +2303,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
 
 fn creation_parent(
     fs: &crate::fs::ext2::Ext2Fs,
-    resolved: &crate::fs::namei::Resolved,
+    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
     cred: &FileCredentials,
 ) -> Result<(u32, u32, bool), SyscallResult> {
     let parent = resolved
@@ -2349,7 +2349,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
         Ok(r) => r,
         Err(e) => return e,
     };
-    let path = resolved.path.as_str();
+    let path = resolved.virtual_path().unwrap_or("");
 
     log::debug!("sys_mkdir: path={:?}, mode={:#o}", path, mode);
 
@@ -2448,11 +2448,11 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
 }
 fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOTDIR, EPERM};
-    use super::userptr::copy_cstr_from_user;
+    use super::userptr::copy_path_bytes_from_user;
     use crate::fs::namei::{Last, Target};
 
     // Copy the target from userspace; it is stored as written.
-    let target_str = match copy_cstr_from_user(target) {
+    let target_str = match copy_path_bytes_from_user(target) {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -2511,7 +2511,7 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
     match symlink_result {
         Ok(()) => {
             log::info!(
-                "sys_symlink: successfully created symlink {} -> {}",
+                "sys_symlink: successfully created symlink {:?} -> {:?}",
                 link.path,
                 target_str
             );
@@ -2591,8 +2591,8 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
         bufsize
     );
 
-    if resolved.path.starts_with("/proc/") {
-        let target = match crate::fs::procfs::readlink(&resolved.path) {
+    if resolved.path.starts_with(b"/proc/") {
+        let target = match crate::fs::procfs::readlink(resolved.virtual_path().unwrap_or("")) {
             Ok(target) => target,
             Err(errno) => return SyscallResult::Err(errno),
         };
@@ -2621,7 +2621,7 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
                 return SyscallResult::Err(EIO as u64);
             }
         };
-        match fs.read_symlink(ino) {
+        match fs.read_symlink_bytes(ino) {
             Ok(t) => t,
             Err(e) => {
                 log::debug!("sys_readlink: failed to read symlink: {}", e);
@@ -2638,7 +2638,7 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
     };
 
     // Calculate how many bytes to copy (capped by buffer size)
-    let target_bytes = target.as_bytes();
+    let target_bytes = target.as_slice();
     let bytes_to_copy = core::cmp::min(target_bytes.len(), bufsize as usize);
 
     // Copy to user buffer (NOT null-terminated, per readlink semantics)
@@ -2673,7 +2673,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 }
 
 fn access_resolved(
-    resolved: &crate::fs::namei::Resolved,
+    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
     mode: u32,
     cred: &FileCredentials,
 ) -> SyscallResult {
@@ -2683,16 +2683,16 @@ fn access_resolved(
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
-            if let Some(result) = crate::ipc::mqueue::dev::access_path(&resolved.path, mode, cred) {
+            if let Some(result) = crate::ipc::mqueue::dev::access_path(resolved.virtual_path().unwrap_or(""), mode, cred) {
                 return result;
             }
-            if let Some(result) = crate::ipc::shmem::access_path(&resolved.path, mode, cred) {
+            if let Some(result) = crate::ipc::shmem::access_path(resolved.virtual_path().unwrap_or(""), mode, cred) {
                 return result;
             }
             if resolved.is_mount_point() {
                 return SyscallResult::Ok(0);
             }
-            if let Some(device) = resolved.path.strip_prefix("/dev/") {
+            if let Some(device) = resolved.virtual_path().unwrap_or("").strip_prefix("/dev/") {
                 if crate::fs::devfs::lookup(device).is_none() {
                     return SyscallResult::Err(ENOENT as u64);
                 }
@@ -2702,7 +2702,7 @@ fn access_resolved(
                     SyscallResult::Err(EACCES as u64)
                 };
             }
-            return if crate::fs::procfs::lookup_by_path(&resolved.path).is_some() {
+            return if crate::fs::procfs::lookup_by_path(resolved.virtual_path().unwrap_or("")).is_some() {
                 SyscallResult::Ok(0)
             } else {
                 SyscallResult::Err(ENOENT as u64)
@@ -4204,7 +4204,7 @@ fn install_fifo_descriptor(
 /// to the current working directory. Required by musl libc.
 pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> SyscallResult {
     use super::errno::{EFAULT, ENOENT};
-    use super::userptr::{copy_cstr_from_user, copy_to_user};
+    use super::userptr::{copy_path_bytes_from_user, copy_to_user};
     use crate::fs::namei::Target;
 
     if statbuf == 0 {
@@ -4215,7 +4215,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     }
 
     // Read pathname from userspace
-    let path = match copy_cstr_from_user(pathname) {
+    let path = match copy_path_bytes_from_user(pathname) {
         Ok(s) => s,
         Err(e) => return SyscallResult::Err(e as u64),
     };
@@ -4229,7 +4229,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let full_path = resolved.path.as_str();
+    let full_path = resolved.virtual_path().unwrap_or("");
 
     if let Some(result) = crate::ipc::mqueue::dev::stat_path(full_path, statbuf) {
         return result;
@@ -4344,7 +4344,7 @@ pub fn sys_faccessat(dirfd: i32, pathname: u64, mode: u32, flags: u32) -> Syscal
     if mode & !7 != 0 || flags & !(AT_SYMLINK_NOFOLLOW | AT_EACCESS) != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    let path = match super::userptr::copy_cstr_from_user(pathname) {
+    let path = match super::userptr::copy_path_bytes_from_user(pathname) {
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };
@@ -4396,7 +4396,7 @@ pub fn sys_linkat(
     flags: i32,
 ) -> SyscallResult {
     if flags == 0x1000 {
-        let old = match super::userptr::copy_cstr_from_user(oldpath) {
+        let old = match super::userptr::copy_path_bytes_from_user(oldpath) {
             Ok(s) => s,
             Err(e) => return SyscallResult::Err(e),
         };
@@ -4405,7 +4405,7 @@ pub fn sys_linkat(
                 Ok(r) => r,
                 Err(e) => return e,
             };
-            if let Some(result) = crate::ipc::shmem::link_fd(olddirfd, &new.path) {
+            if let Some(result) = crate::ipc::shmem::link_fd(olddirfd, new.virtual_path().unwrap_or("")) {
                 return result;
             }
         }
@@ -4541,7 +4541,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     }
 
     // Path-based: resolve path
-    let path = match super::userptr::copy_cstr_from_user(path_ptr) {
+    let path = match super::userptr::copy_path_bytes_from_user(path_ptr) {
         Ok(s) => s,
         Err(e) => return SyscallResult::Err(e as u64),
     };
@@ -4734,20 +4734,20 @@ fn virtual_statfs(kind: u64) -> Statfs {
     }
 }
 
-fn resolved_statfs(resolved: &crate::fs::namei::Resolved) -> Result<Statfs, u64> {
+fn resolved_statfs(resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>) -> Result<Statfs, u64> {
     use crate::fs::namei::Target;
     match resolved.target {
         Target::Inode { mount, .. } => ext2_statfs(mount),
         Target::Absent { .. } => Err(super::errno::ENOENT as u64),
         Target::Virtual if resolved.virtual_absent => Err(super::errno::ENOENT as u64),
         Target::Virtual => Ok(virtual_statfs(
-            if resolved.path == "/proc" || resolved.path.starts_with("/proc/") {
+            if resolved.path == b"/proc" || resolved.path.starts_with(b"/proc/") {
                 0x9fa0
-            } else if resolved.path == "/dev/pts" || resolved.path.starts_with("/dev/pts/") {
+            } else if resolved.path == b"/dev/pts" || resolved.path.starts_with(b"/dev/pts/") {
                 0x1cd1
-            } else if resolved.path == "/dev/mqueue" || resolved.path.starts_with("/dev/mqueue/") {
+            } else if resolved.path == b"/dev/mqueue" || resolved.path.starts_with(b"/dev/mqueue/") {
                 0x19800202
-            } else if resolved.path == "/dev/shm" || resolved.path.starts_with("/dev/shm/") {
+            } else if resolved.path == b"/dev/shm" || resolved.path.starts_with(b"/dev/shm/") {
                 0x01021994
             } else {
                 0x1373
@@ -4991,14 +4991,14 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     if length < 0 {
         return SyscallResult::Err(EINVAL as u64);
     }
-    let path = match super::userptr::copy_cstr_from_user(pathname) {
+    let path = match super::userptr::copy_path_bytes_from_user(pathname) {
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno as u64),
     };
     if path.is_empty() {
         return SyscallResult::Err(ENOENT as u64);
     }
-    let resolved = match crate::fs::namei::resolve(&path, true) {
+    let resolved = match crate::fs::namei::resolve_bytes(&path, true) {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };

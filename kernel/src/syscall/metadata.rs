@@ -51,16 +51,16 @@ pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
 
 pub(crate) fn resolve_at(
     fd: i32,
-    path: &str,
+    path: &[u8],
     follow: bool,
     cred: &Credentials,
-) -> Result<namei::Resolved, u64> {
-    let start = super::at_path::directory_start(fd, path.starts_with('/'), directory)?;
+) -> Result<namei::Resolved<alloc::vec::Vec<u8>>, u64> {
+    let start = super::at_path::directory_start(fd, path.starts_with(b"/"), directory)?;
     namei::resolve_from(path, follow, start, cred)
 }
 
-pub(crate) fn resolve_create_at(fd: i32, path: &str, cred: &Credentials) -> Result<namei::Resolved, u64> {
-    let start = super::at_path::directory_start(fd, path.starts_with('/'), directory)?;
+pub(crate) fn resolve_create_at(fd: i32, path: &[u8], cred: &Credentials) -> Result<namei::Resolved<alloc::vec::Vec<u8>>, u64> {
+    let start = super::at_path::directory_start(fd, path.starts_with(b"/"), directory)?;
     namei::resolve_create_from(path, start, cred)
 }
 
@@ -136,7 +136,7 @@ fn fifo(
 }
 
 fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -> SyscallResult {
-    let path = match super::userptr::copy_cstr_from_user(pathname) {
+    let path = match super::userptr::copy_path_bytes_from_user(pathname) {
         Ok(path) => path,
         Err(errno) => return SyscallResult::Err(errno),
     };

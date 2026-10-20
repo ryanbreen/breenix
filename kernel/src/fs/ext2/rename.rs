@@ -121,11 +121,13 @@ impl Ext2Fs {
     pub fn rename(
         &mut self,
         old_dir: &FileHandle,
-        old_name: &str,
+        old_name: impl AsRef<[u8]>,
         new_dir: &FileHandle,
-        new_name: &str,
+        new_name: impl AsRef<[u8]>,
         want_dir: bool,
     ) -> Result<(), RenameError> {
+        let old_name = old_name.as_ref();
+        let new_name = new_name.as_ref();
         let old_dir = old_dir.verify(self).map_err(|_| RenameError::NotFound)?;
         let new_dir = new_dir.verify(self).map_err(|_| RenameError::NotFound)?;
         let same_dir = old_dir == new_dir;
@@ -133,7 +135,7 @@ impl Ext2Fs {
         let mut new_dir_inode = self.named_dir(new_dir)?;
 
         let mut old_data = self.read_directory(&old_dir_inode).map_err(io)?;
-        let source = super::dir::find_inode(&old_data, old_name).ok_or(RenameError::NotFound)?;
+        let source = super::dir::find_inode_bytes(&old_data, old_name).ok_or(RenameError::NotFound)?;
         let source_inode = self.read_inode(source).map_err(io)?;
         let source_is_dir = source_inode.is_dir();
         if want_dir && !source_is_dir {
@@ -144,7 +146,7 @@ impl Ext2Fs {
         } else {
             Some(self.read_directory(&new_dir_inode).map_err(io)?)
         };
-        let replaced = super::dir::find_inode(new_data.as_deref().unwrap_or(&old_data), new_name);
+        let replaced = super::dir::find_inode_bytes(new_data.as_deref().unwrap_or(&old_data), new_name);
         // Two names for one file, or one name twice: POSIX has rename return
         // successfully and do nothing else, so both names remain.
         if replaced == Some(source) {

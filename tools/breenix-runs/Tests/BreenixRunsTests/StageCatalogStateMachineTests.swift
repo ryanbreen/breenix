@@ -42,18 +42,27 @@ final class StageCatalogStateMachineTests: XCTestCase {
         XCTAssertEqual(both[0].reachedLine, 2)
     }
 
-    func testHistoricalStrictFixtureReportsMissingSMPMarkers() throws {
+    func testHistoricalStrictFixtureReportsMissingProducerMarkers() throws {
         let catalog = try StageCatalog.load(for: .aarch64)
         let bootCompleteIndex = try XCTUnwrap(catalog.firstIndex { $0.name == "ARM64 boot complete" })
         let index = try MarkerScanner().scanFile(at: fixtureURL("05-runtime-anti-vacuity-strict-serial.txt"))
-        // This historical fixture predates both SMP markers. Keep the full catalog
-        // and assert the missing stages instead of calling an incomplete prefix green.
+        // Catalog 99726186 includes storage, network, splash and SMP producers
+        // absent from this historical serial; keep the full producer catalog.
         let states = StateMachine.evaluate(catalog: Array(catalog[...bootCompleteIndex]), index: index)
         XCTAssertEqual(states.map(\.stage.name).last, "ARM64 boot complete")
         XCTAssertEqual(states.filter { !$0.isReached }.map(\.stage.name), [
-            "All reported CPUs online", "User work ran on every online CPU"
+            "Storage device found",
+            "Storage device initialized",
+            "Storage device read",
+            "Network device found",
+            "Logo drawn",
+            "Boot progress shown",
+            "Logo read back",
+            "Progress read back as it advanced",
+            "All reported CPUs online",
+            "User work ran on every online CPU"
         ])
-        XCTAssertEqual(states.filter(\.isStoppedHere).map(\.stage.name), ["All reported CPUs online"])
+        XCTAssertEqual(states.filter(\.isStoppedHere).map(\.stage.name), ["Storage device found"])
 
     }
 
@@ -64,11 +73,11 @@ final class StageCatalogStateMachineTests: XCTestCase {
             index: MarkerScanner().scanFile(at: fixtureURL("testing-boot1-562-panic.txt"))
         )
 
-        // The fixture predates the SMP stage's marker, so the first stage it
-        // does not reach is that one rather than "ARM64 boot complete".
+        // Against catalog 99726186 this historical serial first lacks the
+        // storage producer; later observed stages do not hide that gap.
         let stopped = states.filter(\.isStoppedHere)
         XCTAssertEqual(stopped.count, 1)
-        XCTAssertEqual(stopped.first?.stage.name, "All reported CPUs online")
+        XCTAssertEqual(stopped.first?.stage.name, "Storage device found")
         XCTAssertEqual(states.first { $0.stage.name == "SMP CPUs online" }?.reachedLine, 158)
         XCTAssertNil(states.first { $0.stage.name == "ARM64 boot complete" }?.reachedLine)
     }

@@ -893,8 +893,8 @@ fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Valu
     let modes = boot["modes"].as_object().unwrap();
     let mut mode_names: Vec<&str> = modes.keys().map(String::as_str).collect();
     mode_names.sort_unstable();
-    if mode_names != ["console", "default", "probe", "shell", "suite"] {
-        errors.push("metal modes must be console, default, probe, shell and suite".into());
+    if mode_names != ["console", "default", "persistent", "persistent-install", "probe", "shell", "suite"] {
+        errors.push("metal modes must be console, default, persistent, persistent-install, probe, shell and suite".into());
     }
     let catalog = read_definition(root,
         "tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json");
@@ -913,7 +913,7 @@ fn metal_definition_errors(root: &Path, main: &Value, metal: &Value, boot: &Valu
         }
         let shapes = milestone["bootShapes"].as_array();
         if !shapes.is_some_and(|shapes| !shapes.is_empty()
-            && shapes.iter().all(|shape| matches!(shape.as_str(), Some("ramdisk" | "install" | "disk-root")))
+            && shapes.iter().all(|shape| matches!(shape.as_str(), Some("ramdisk" | "install" | "disk-root" | "persistent")))
             && shapes.iter().collect::<HashSet<_>>().len() == shapes.len()) {
             errors.push(format!("{id}: bootShapes must name unique supported boot shapes"));
         }
@@ -1066,7 +1066,12 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     for id in ["fb-console", "xhci", "usb-keyboard", "console-login"] {
         assert!(metal["efforts"][4]["milestones"].as_array().unwrap().iter()
             .any(|m| m["measure"]["bootPath"] == id));
-        assert_eq!(milestone(id)["bootShapes"], serde_json::json!(["ramdisk", "install", "disk-root"]));
+        let shapes = if id == "console-login" {
+            serde_json::json!(["ramdisk", "install", "disk-root"])
+        } else {
+            serde_json::json!(["ramdisk", "install", "disk-root", "persistent"])
+        };
+        assert_eq!(milestone(id)["bootShapes"], shapes);
     }
     assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
         .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),

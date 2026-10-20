@@ -11,6 +11,11 @@ REFUSAL = ('x86 QEMU refused by the 2026-10-18 bare-metal-only policy (S23); '
 
 
 class X86QemuPolicyTests(unittest.TestCase):
+    def require_binary(self, binary):
+        self.assertTrue(binary.is_file(),
+                        f"Missing {binary.name}; run scripts/build-host-test-tools.sh from the repository root")
+        return str(binary)
+
     def test_launchers_refuse_before_preparation(self):
         shell = [
             ('run.sh', '--x86'),
@@ -45,9 +50,9 @@ class X86QemuPolicyTests(unittest.TestCase):
                      str(ROOT / 'tools/gdb-chat/scripts')])]
         commands += [('scripts/test_timer_preemption.exp', ['expect', str(ROOT / 'scripts/test_timer_preemption.exp')])]
         binaries = Path(os.environ.get('BREENIX_POLICY_BIN_DIR', str(ROOT / 'target/release')))
-        commands += [(name, [str(binaries / name)]) for name in ('qemu-uefi', 'qemu-bios')]
+        commands += [(name, [self.require_binary(binaries / name)]) for name in ('qemu-uefi', 'qemu-bios')]
         xtask = Path(os.environ.get('BREENIX_POLICY_XTASK', str(ROOT / 'target/debug/xtask')))
-        commands += [('xtask ' + ' '.join(args), [str(xtask), *args]) for args in (
+        commands += [('xtask ' + ' '.join(args), [self.require_binary(xtask), *args]) for args in (
             ['boot-stages'], ['ring3-smoke'], ['ring3-enosys'], ['interactive'], ['interactive-test'],
             ['kthread-stress'], ['dns-test'], ['boot-test-btrt', '--arch', 'x86_64'],
             ['kthread-test', '--arch', 'x86_64'])]
@@ -65,11 +70,13 @@ class X86QemuPolicyTests(unittest.TestCase):
         env = dict(os.environ)
         env.pop('BREENIX_ALLOW_X86_QEMU', None)
         env['BREENIX_RUNS_STORE'] = '/dev/null/store'
-        result = subprocess.run([str(ROOT / 'tools/breenix-runs/.build/debug/breenix-runs'), 'run', 'x86'],
+        result = subprocess.run([self.require_binary(Path(os.environ.get('BREENIX_RUNS_BIN', ROOT / 'tools/breenix-runs/.build/debug/breenix-runs'))), 'run', 'x86'],
                                 env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(result.stdout, '')
-        self.assertEqual(result.stderr, 'error: ' + REFUSAL + '\n')
+        self.assertEqual(result.stderr, 'error: x86 QEMU execution is retired in breenix-runs under S23; '
+                         'use the x86-metal boot loop (scripts/metal/metal-run). '
+                         'BREENIX_ALLOW_X86_QEMU=1 permits only --dry-run planning.\n')
         print('REFUSED breenix-runs run x86: ' + result.stderr.strip(), flush=True)
 
     def test_shell_requires_exact_override(self):

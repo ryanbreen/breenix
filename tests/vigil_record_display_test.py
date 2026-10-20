@@ -45,7 +45,19 @@ else:
         cli.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items() if k not in
                     ("VIGIL_BOOT_ID", "BREENIX_VIGIL_CPUS", "BREENIX_VIGIL_DISPLAY", "BREENIX_HOST_RENDERER_JSON", "BREENIX_GPU_TIME_JSONL")}
-        self.env.update(VIGIL_CLI=str(cli), VIGIL_TEST_HOME=str(self.root))
+        # Provenance must not stash the active checkout: concurrent git writers
+        # can make stash create fail, which makes the best-effort recorder return
+        # success without an ID before it ever calls the fixture CLI.
+        tools = self.root / "fixture-tools"
+        tools.mkdir()
+        git = tools / "git"
+        git.write_text('#!/bin/sh\ncase "$3" in\n'
+                       '  status|merge-base) exit 0 ;;\n'
+                       '  *) echo "unexpected fixture git command" >&2; exit 1 ;;\n'
+                       'esac\n')
+        git.chmod(0o755)
+        self.env.update(VIGIL_CLI=str(cli), VIGIL_TEST_HOME=str(self.root),
+                        PATH=str(tools) + os.pathsep + self.env.get("PATH", ""))
 
     def start(self, display):
         if display is not None:

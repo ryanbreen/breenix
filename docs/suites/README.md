@@ -3,7 +3,8 @@
 As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
 The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
 and landing requirements below are superseded by [the execution policy](../x86-execution-policy.md);
-legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+legacy QEMU scripts require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+`breenix-runs run x86` is retired for execution; that variable permits only `--dry-run` planning.
 
 An effort suite is a userspace program, `/sbin/suite-<id>`, that the production kernel runs
 as PID 1 to show how far one POSIX area works: it runs a list of cases, prints one serial
@@ -267,8 +268,11 @@ Add the binary to `userspace/programs/Cargo.toml` as `suite-<id>` and to `STD_BI
 <!-- claim-lint:ok: `all` is the flag's name, resolved by scripts/suite-sequence.py. -->
 - The first three also take a list, `--suite <id>,<id>,...`, or `--suite all`, and run the
   suites one after another in one boot ("Several suites in one boot", below).
-- x86-64 gate: `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh`, or
-  `swift run breenix-runs run x86 --suite <id>` from `tools/breenix-runs`. The gate scores
+<!-- claim-lint:ok: scripts/suite-verdict.py checks the manifest case order and DONE counts; docker/qemu/run-x86-gate.sh saves QMP screens. -->
+- Legacy x86-64 QEMU gate (outside the S23 landing path):
+  `BREENIX_BOOT_SUITE=<id> docker/qemu/run-x86-gate.sh` requires an operator override.
+  `breenix-runs` retains only historical `run x86 --dry-run` planning and stored evidence recovery.
+  The legacy gate scores
   the boot with `scripts/suite-verdict.py`: one START with the manifest's case count, a CASE
   line for every manifest case in order, a DONE that agrees with them and has `failed=0`,
   `skipped=0` and `passed=total` equal to the manifest's case count, and

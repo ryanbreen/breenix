@@ -222,7 +222,7 @@ install_vm_boot_traps
 
     def test_stopped_suite_exits_before_log_watching(self):
         source = RUNNER.read_text()
-        blocks = re.findall(r'    if \[ "\$BOOT_MODE" = probe \] \|\| \[ "\$BOOT_MODE" = suite \] \|\| \[ "\$BOOT_MODE" = tests \]; then\n.*?\n    fi', source, re.S)
+        blocks = re.findall(r'    if \[ "\$BOOT_MODE" = probe \] \|\| \[ "\$BOOT_MODE" = suite \] \|\| \[ "\$BOOT_MODE" = tests \](?: \|\| \[ "\$BOOT_MODE" = program \])?; then\n.*?\n    fi', source, re.S)
         self.assertEqual(len(blocks), 2)
         for block in blocks:
             script = "BOOT_MODE=suite; PARALLELS_TEST=false; wait_boot_done() { :; }; hold_suite_panel() { :; }; vmware_check_network_log() { :; }; vmware_network_summary() { :; }; " + block + "\necho unexpected-watcher"

@@ -17,6 +17,34 @@ mod input_source;
 pub use input_source::InputSource;
 use console::{splash, vt};
 
+#[cfg(target_arch = "aarch64")]
+#[path = "../../../../kernel/src/drivers/hid_boot/pointer.rs"]
+pub mod hid_pointer;
+#[cfg(target_arch = "aarch64")]
+mod drivers {
+    pub mod hid_boot {
+        pub use crate::hid_pointer as pointer;
+    }
+}
+#[cfg(target_arch = "aarch64")]
+mod graphics {
+    pub mod arm64_fb {
+        pub struct FramebufferInfo {
+            pub width: usize,
+            pub height: usize,
+        }
+        // The keyboard harness has no firmware framebuffer.
+        pub static FB_INFO_CACHE: std::sync::OnceLock<FramebufferInfo> = std::sync::OnceLock::new();
+    }
+}
+#[cfg(target_arch = "aarch64")]
+mod syscall {
+    pub mod graphics {
+        // There is no compositor thread in this keyboard harness.
+        pub fn wake_compositor_if_waiting() {}
+    }
+}
+
 mod tty {
     pub use crate::InputSource;
     pub fn push_char_nonblock_from(byte: u8, _: InputSource) -> bool {

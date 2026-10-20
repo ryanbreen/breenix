@@ -1,6 +1,6 @@
 """Exercise the shared policy and real launchers without building or booting guests.
 
-Build breenix-runs first; override its location with BREENIX_RUNS_BIN if needed.
+Prerequisites: run scripts/build-host-test-tools.sh; BREENIX_RUNS_BIN overrides the CLI.
 """
 import base64
 import binascii
@@ -296,7 +296,7 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.assert_refused(result, 'breengel/local')
 
     def test_lane_commit_pushed_under_another_name_is_refused(self):
-        self.assertTrue(self.binary.is_file(), 'Build breenix-runs before running these host tests')
+        self.assertTrue(self.binary.is_file(), 'Missing breenix-runs; run scripts/build-host-test-tools.sh from the repository root')
         self.git('switch', '-qc', 'breengel/local', 'main')
         local = self.commit('lane work pushed elsewhere')
         self.git('push', '-q', 'origin', 'HEAD:refs/heads/wrb/tmp')
@@ -397,7 +397,11 @@ class EffortTargetGuardTest(unittest.TestCase):
     def test_vm_run_metadata_persists_catchup(self):
         source = (ROOT / 'run.sh').read_text()
         for platform in ('parallels', 'vmware'):
-            self.assertRegex(source, r'\n    install_vm_boot_traps\n    record_launch_metadata\n(?:    #[^\n]*\n)*'
+            self.assertRegex(source, r'\n    install_vm_boot_traps\n'
+                                     r'(?:    export BREENIX_VIGIL_DISPLAY=true\n'
+                                     r'    \[ -z "\$\{BREENIX_' + platform.upper() +
+                                     r'_NOGUI:-\}" \] \|\| export BREENIX_VIGIL_DISPLAY=false\n)?'
+                                     r'    record_launch_metadata\n(?:    #[^\n]*\n)*'
                                      r'    [^\n]*VIGIL_ID=\$\("\$BREENIX_ROOT/scripts/vigil-record\.sh" start '
                                      + platform + ' ')
         body = re.search(r'(?ms)^record_launch_metadata\(\) \{\n(.*?)^\}', source).group(1)
@@ -412,7 +416,7 @@ class EffortTargetGuardTest(unittest.TestCase):
                                  {'target': target, 'catchup': catchup == '1', 'commit': self.scratch})
 
     def test_real_launcher_dry_invocations(self):
-        self.assertTrue(self.binary.is_file(), 'Build breenix-runs before running these host tests')
+        self.assertTrue(self.binary.is_file(), 'Missing breenix-runs; run scripts/build-host-test-tools.sh from the repository root')
         launchers = {
             'breenix-runs x86': ('x86', None),
             'run.sh --x86': ('x86', ['--x86']),
