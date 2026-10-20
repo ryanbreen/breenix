@@ -626,9 +626,16 @@ show as reached when it is first drawn.
 - **The two read-backs (V2b).** The boot thread makes the first once the screen shows the whole shadow,
   preserving that sample when the render thread takes over. The second is made on the first boot or
   render pass where the stages reached, the bar's width and
-  the cursor's phase each differ from the first's. When a trigger arrives after the bar has moved but
-  before the second read-back, the hand-over waits up to 520 ms (half a blink and a pass) so it can still
-  be made; it does not wait otherwise.
+  the cursor's phase each differ from the first's. When a trigger arrives after the boot has moved the bar
+  past the first read-back's but before the second read-back, the hand-over waits up to 520 ms (half a
+  blink and a pass) so it can still be made; it does not wait otherwise. The bar is the boot's progress,
+  not the last frame drawn, so a trigger that arrives in the pass making the first read-back waits too.
+- **A process taking the display waits for the splash (ARM64).** `sys_take_over_display` asks the
+  splash to give way (`display-taken`) and blocks until the render thread has made its read-backs and
+  handed over, at most 1000 ms, before the caller gets the display. On the GPU core only the render thread
+  draws the splash, and init's desktop starts bwm before the splash's first frame. When the 1000 ms run
+  out, the display is taken anyway and the kernel log gets one line, `[splash] display taken before the
+  splash gave way: its read-backs were not done after 1000 ms`.
 
 **Markers** (V2b lands the exact strings with its code and the stage catalog, replacing the stub in
 `docs/boot-path.json`):
