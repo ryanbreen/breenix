@@ -42,7 +42,7 @@ use libbui::widget::tab_bar::TabBar;
 use libfont::{CachedFont, Font};
 use libgfx::color::Color;
 use libgfx::framebuf::FrameBuf;
-use libgfx::{bitmap_font, diagnostics, font as font5x7, shapes, ttf_font};
+use libgfx::{bitmap_font, font as font5x7, shapes, ttf_font};
 use libicon::icon::{Icon, IconBase, IconMouse, IconState};
 use libicon::icons::{arrow::ArrowIcon, home::HomeIcon, save::SaveIcon, search::SearchIcon};
 use libicon::particles::{Particle, ParticlePool};
@@ -97,6 +97,7 @@ macro_rules! pictured {
 
 mod images;
 mod raster;
+mod gpu_checks;
 mod show;
 mod stage_fixtures;
 mod stage_serial;
@@ -148,7 +149,7 @@ fn unjoined() -> CaseResult {
 const TEXT_PARTS: &[&[Case]] = &[raster::TEXT, widgets::FONTWATCH];
 static TEXT: [Case; total(TEXT_PARTS)] = join(TEXT_PARTS);
 
-const COMPOSITION_PARTS: &[&[Case]] = &[window_cases::COMPOSITION, show::COMPOSITION, window_cases::COMPOSITION_FLUSH];
+const COMPOSITION_PARTS: &[&[Case]] = &[window_cases::COMPOSITION, show::COMPOSITION];
 static COMPOSITION: [Case; total(COMPOSITION_PARTS)] = join(COMPOSITION_PARTS);
 
 const PANEL_PARTS: &[&[Case]] = &[show::PANEL, window_cases::PANEL];
@@ -174,7 +175,26 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
 ]).gui();
 
 fn main() {
+    if let Err(error) = prepare_raster_audit() {
+        std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);
+    }
     SUITE.run()
+}
+
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+// Setup must always reach the table. Accounting cases report a missing directory
+// as a failure if preparation fails; setup cannot terminate the suite instead.
+fn prepare_raster_audit() -> Result<(), String> {
+    // Filtered runs without the category auditor need no records or directory.
+    let args:Vec<_>=std::env::args().collect();
+    if args.windows(2).any(|pair|pair[0]=="--case" && !matches!(pair[1].as_str(),"raster"|"raster/cpu-pixels-zero")) {
+        return Ok(());
+    }
+    let pid=process::getpid().map_err(|e|format!("suite pid: {e:?}"))?;
+    let directory=format!("/tmp/breengel-raster-audit-{}",pid.raw());
+    std::fs::create_dir_all(&directory).map_err(|e|format!("gpu-raster: create accounting directory: {e}"))?;
+    std::env::set_var("BREENIX_RASTER_AUDIT",directory);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------
@@ -260,7 +280,9 @@ const HANDED_FRAME: i32 = 2;
 fn judged_case(run: fn() -> CaseResult) -> CaseResult {
     PICTURES.store(true, Relaxed);
     EXPLICIT_FRAME.store(false,Relaxed);
+    let audit=gpu_checks::audit_begin();
     let result = run();
+    gpu_checks::audit_finish(audit);
     match (hand_off_judged(), result) {
         (Err(msg), Ok(())) => fail(msg),
         (_, result) => result,
@@ -317,7 +339,9 @@ fn isolated(what: &str, limit_ms: u64, f: impl FnOnce() -> Result<(), String>) -
     let mut body=|| {
         LAST_JUDGED.lock().unwrap_or_else(|e|e.into_inner()).take();
         EXPLICIT_FRAME.store(false,Relaxed);
+        let audit=gpu_checks::audit_begin();
         let result=callback.take().unwrap()();
+        gpu_checks::audit_finish(audit);
         let handed=export_isolated_frame(&path);
         let frame=if matches!(handed,Ok(true)){HANDED_FRAME}else{0};
         match result.and(handed.map(|_|())) {

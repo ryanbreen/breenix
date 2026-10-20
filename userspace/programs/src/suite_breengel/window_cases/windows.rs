@@ -3,7 +3,7 @@
 use crate::*;
 
 pub(crate) const WINDOWS: &[Case] = &[
-    pictured!("create", "create_window returns a window id and buffers of the requested size", windows_create),
+    pictured!("create", "Window creation returns distinct zeroed GPU target handles and mapped tree pages", windows_create),
     pictured!("create-zeroed", "A new window's buffers are all zero", windows_create_zeroed),
     pictured!("register-listed", "A registered window is listed with its title, size and owner", windows_register_listed),
     pictured!("title-limit", "A 64-byte title is kept whole, and a longer one is refused with EINVAL", windows_title_limit),
@@ -13,19 +13,19 @@ pub(crate) const WINDOWS: &[Case] = &[
     pictured!("size-too-big", "A dimension over 4,096 fails with EINVAL", windows_size_too_big),
     pictured!("limit", "The seventeenth window fails with the contract's errno, and the first sixteen are unaffected", windows_limit),
     pictured!("multi-window", "One process creates and draws four windows independently", windows_multi_window),
-    pictured!("destroy", "The destroy op removes the window from the listing and unmaps its buffers", windows_destroy),
+    pictured!("destroy", "Destroy removes the window, revokes GPU target handles and releases backing", windows_destroy),
     pictured!("drop-destroys", "Dropping a Breengel Window destroys it", windows_drop_destroys),
     pictured!("stale-id", "Every op on a destroyed window's id fails with ENOENT, and ids are never reused in a boot", windows_stale_id),
     pictured!("register-unwinds", "When registration fails, Window::new frees the buffers it created", windows_register_unwinds),
     pictured!("exit-cleanup", "A process's windows disappear when it exits", windows_exit_cleanup),
     pictured!("exec-cleanup", "A process's windows disappear when it execs", windows_exec_cleanup),
-    pictured!("fork-no-mapping", "A forked child inherits no mapping of its parent's buffers", windows_fork_no_mapping),
+    pictured!("fork-no-mapping", "A forked child inherits no window GPU handles", windows_fork_no_mapping),
     pictured!("fork-no-authority", "A forked child cannot commit, resize or destroy its parent's window", windows_fork_no_authority),
     pictured!("commit-swaps", "After a commit, acquire returns a different buffer holding the committed pixels", windows_commit_swaps),
     pictured!("acquire-replays-damage", "With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front", windows_acquire_replays_damage),
     pictured!("acquire-full-copy", "A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike", windows_acquire_full_copy),
     pictured!("stale-base-commit", "Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel", windows_stale_base_commit),
-    pictured!("commit-immutable", "Writing a committed buffer, or its tree page at any tree size, faults", windows_commit_immutable),
+    pictured!("commit-immutable", "Committed GPU targets refuse later writes while accepted renders complete and tree pages stay protected", windows_commit_immutable),
     pictured!("commit-busy", "Committing a buffer twice without acquiring it again fails with EBUSY", windows_commit_busy),
     pictured!("thread-commit", "Two threads of the owner committing concurrently both succeed with distinct, ordered commit ids", windows_thread_commit),
     pictured!("release-order", "A retired buffer returns to free only after its composite and any capture copy in progress are done", windows_release_order),
@@ -34,7 +34,7 @@ pub(crate) const WINDOWS: &[Case] = &[
     pictured!("resize-error", "A resize the kernel refuses is reported as an error, and no Resized event claims the new size", windows_resize_error),
     pictured!("resize-rlimit", "A resize over RLIMIT_AS fails with ENOMEM and leaves the old buffers intact", windows_resize_rlimit),
     pictured!("resize-rollback", "A failure at each allocation step of create and resize leaves registry, mappings and accounting unchanged", windows_resize_rollback),
-    pictured!("rlimit-accounting", "Window buffers count against RLIMIT_AS, and destroying the window returns them", windows_rlimit_accounting),
+    pictured!("rlimit-accounting", "Window guest backing counts against RLIMIT_AS and the GPU quota and destruction releases both charges", windows_rlimit_accounting),
     pictured!("capture-across-destroy", "A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends", windows_capture_across_destroy),
     pictured!("two-buffer-capture-load", "A two-buffer client committing 300 frames while a reader captures it continuously and an evidence holder is registered never waits in acquire beyond one composite and one capture copy", windows_two_buffer_capture_load),
     pictured!("remnant-on-death", "When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline", windows_remnant_on_death),
@@ -42,6 +42,7 @@ pub(crate) const WINDOWS: &[Case] = &[
     pictured!("distinct-content", "Sixteen live windows each composite their own pixels, never another window's", windows_distinct_content),
     pictured!("raw-client", "A client using the raw libbreenix calls, without Breengel, creates, commits and destroys a window", windows_raw_client),
     pictured!("every-target", "Window creation works on this target's backend and reports the backend by name", windows_every_target),
+    pictured!("commit-waits-render", "Pending render fences are not composed and failed renders cannot replace the front", windows_commit_waits_render),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -52,35 +53,24 @@ use super::kit::*;
 use abi::op;
 use abi::Plain;
 
+// gpu-window: §2.2 CREATE returns GPU target handles; zeroing, count, identity and tree metadata remain guarded.
 fn windows_create() -> CaseResult {
-    interface()?;
-    for buffers in [2u32, 3] {
-        let w = W::new(64, 48, buffers)?;
-        ensure(w.id() >= 1, "17.2", format!("CREATE gave window id {}; ids start at 1", w.id()))?;
-        ensure(w.c.stride == 64 * 4, "17.1", format!("CREATE gave stride {} for a 64-pixel-wide window; BGRX rows are 256 bytes", w.c.stride))?;
+interface()?;
+    for buffers in [2u32,3] {
+        let w=W::new(64,48,buffers)?;
+        ensure(w.id()>=1 && w.c.stride==256,"17.1","gpu-window: CREATE returned invalid identity or stride")?;
+        let mut handles=std::collections::BTreeSet::new();
         for i in 0..3 {
-            let addr = w.c.buffer[i as usize];
-            if i < buffers {
-                ensure(addr != 0, "17.1", format!("CREATE with {buffers} buffers left buffer {i}'s address 0"))?;
-                let b = w.buf(i);
-                let (first, last) = (b[0], b[b.len() - 1]);
-                ensure(first == 0 && last == 0, "17.2", format!("buffer {i} of a new window holds {first}/{last} at its ends"))?;
-            } else {
-                ensure(addr == 0, "17.1", format!("CREATE with {buffers} buffers gave buffer {i} the address {addr:#x}; past `buffers` it is 0"))?;
-            }
+            let target=w.c.buffer[i];
+            if i>=buffers as usize {ensure(target==0,"17.1","gpu-window: CREATE published a target past its buffer count")?;continue;}
+            ensure(target!=0 && handles.insert(target),"17.1","gpu-window: CREATE returned zero or repeated GPU handles")?;
+            let mut px=vec![0xA5;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+            let r=libbreenix::gpu::readback(target,[0,0,64,48],&mut px,256,&mut record);
+            want_ok(r,"17.1","gpu-window: readback of CREATE target")?;
+            ensure(px.iter().all(|&b|b==0),"17.2","gpu-window: a new target is not cleared to zero")?;
         }
-        let mut seen = std::collections::BTreeSet::new();
-        for i in 0..buffers {
-            let a = w.c.buffer[i as usize];
-            ensure(seen.insert(a), "17.3", format!("buffers of one window share the address {a:#x}"))?;
-            for j in 0..buffers {
-                let b = w.c.buffer[j as usize];
-                ensure(i == j || a + w.len() as u64 <= b || b + w.len() as u64 <= a, "17.3", format!("buffers {i} and {j} overlap"))?;
-            }
-        }
-        ensure(w.c.tree != 0 && w.c.tree_kib == 64, "17.1", format!("CREATE with tree_kib 0 gave tree {:#x} of {} KiB; 0 means 64", w.c.tree, w.c.tree_kib))?;
-    }
-    Ok(())
+        ensure(w.c.tree!=0 && w.c.tree_kib==64,"17.1","gpu-window: CREATE lost its separately mapped tree pages")?;
+    }Ok(())
 }
 
 fn windows_create_zeroed() -> CaseResult {
@@ -203,32 +193,39 @@ fn windows_multi_window() -> CaseResult {
     Ok(())
 }
 
-fn windows_destroy() -> CaseResult {
-    interface()?;
-    // In a child, so the read of the unmapped buffer faults the child, not the case.
-    let ended = child_end(5_000, || {
-        let Ok(mut w) = W::new(16, 16, 2) else { return 2 };
-        if w.register(b"destroy") < 0 || listed(w.id()).ok().flatten().is_none() {
-            return 3;
-        }
-        let addr = w.c.buffer[0] as *const u8;
-        // SAFETY: the buffer is mapped until DESTROY; this read is the positive control.
-        let _ = unsafe { core::ptr::read_volatile(addr) };
-        if w.destroy() < 0 || listed(w.id()).ok().flatten().is_some() {
-            return 4;
-        }
-        // SAFETY: deliberately reading the unmapped buffer; the case expects SIGSEGV.
-        let _ = unsafe { core::ptr::read_volatile(addr) };
-        5
-    }).cite("17.2")?;
-    match ended {
-        Ended::Signal(11) => Ok(()),
-        Ended::Exit(3) => at("17.2", "the registered window is not listed"),
-        Ended::Exit(4) => at("17.2", "after DESTROY the window is still listed, or DESTROY failed"),
-        Ended::Exit(5) => at("17.2", "after DESTROY its buffer is still mapped: reading it did not fault"),
-        Ended::Exit(c) => at("17.2", format!("the child exited {c} before DESTROY")),
-        Ended::Signal(s) => at("17.2", format!("the child died of signal {s}, not SIGSEGV from the unmapped buffer")),
+/// Establish that CREATE returned live, readable GPU targets before testing revocation.
+fn readable_window_targets(w: &W) -> CaseResult {
+    for target in &w.c.buffer[..w.c.buffers as usize] {
+        let mut pixels = vec![0xA5; w.len()];
+        let mut record = [0; libbreenix::gpu::abi::record::SIZE];
+        want_ok(libbreenix::gpu::readback(*target, [0,0,w.c.width,w.c.height], &mut pixels,
+            w.c.width*4, &mut record), "17.2", "gpu-window: live target READBACK before revocation")?;
+        ensure(pixels.chunks_exact(4).all(|p|p == [0,0,0,255]), "17.2", "gpu-window: new live target was not zeroed BGRX")?;
     }
+    Ok(())
+}
+
+// gpu-window: §2.2 replaces unmapped pixel addresses with revoked target handles and exact GPU accounting.
+fn windows_destroy() -> CaseResult {
+interface()?;
+    let before=crate::gpu_checks::counters().cite("17.2")?;
+    let mut w=W::new(64,48,2)?;let id=w.id();let handles=w.c.buffer;
+    want_ok(w.register(b"destroy"),"17.2","REGISTER before DESTROY")?;
+    ensure(listed(id).cite("17.2")?.is_some(),"17.2","window was not listed before DESTROY")?;
+    readable_window_targets(&w)?;
+    want_ok(w.destroy(),"17.2","gpu-window: DESTROY")?;
+    ensure(listed(id).cite("17.2")?.is_none(),"17.2","gpu-window: destroyed window remains listed")?;
+    for handle in &handles[..2] {
+        let mut pixels=vec![0xA5;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+        want_errno(libbreenix::gpu::readback(*handle,[0,0,64,48],&mut pixels,256,&mut record),EINVAL,"17.2","gpu-window: destroyed GPU handle")?;
+        ensure(pixels.iter().all(|&b|b==0xA5),"17.2","gpu-window: revoked handle returned pixels")?;
+    }
+    let start=now_ms();loop {
+        let after=crate::gpu_checks::counters().cite("17.2")?;
+        if after.resources==before.resources && after.resource_bytes==before.resource_bytes {break;}
+        ensure(since(start)<1_000,"17.2","gpu-window: DESTROY leaked target handles or backing")?;
+        let _=time::sleep_ms(5);
+    }Ok(())
 }
 
 fn windows_drop_destroys() -> CaseResult {
@@ -243,6 +240,7 @@ fn windows_drop_destroys() -> CaseResult {
     want_errno(call_id(op::DESTROY, id), ENOENT, "17.2", "DESTROY of the dropped Window's id")
 }
 
+// gpu-window: B7 replaces retired MAP_COMMITTED with GPU-buffer acquisition; stale ids remain ENOENT.
 fn windows_stale_id() -> CaseResult {
     interface()?;
     let mut w = W::new(8, 8, 2)?;
@@ -274,9 +272,13 @@ fn windows_stale_id() -> CaseResult {
     re.capacity = 1;
     check("READ_EVENTS", call(op::READ_EVENTS, &mut re));
     check("EVENT_FD", call_id(op::EVENT_FD, id));
-    let mut m = abi::MapBuffers::ZERO;
-    m.id = id;
-    check("MAP_COMMITTED", call(op::MAP_COMMITTED, &mut m));
+    // ACQUIRE is the GPU target handoff; a refused stale id must publish no buffer.
+    let mut stale = abi::Acquire::ZERO;
+    stale.id = id;
+    stale.buffer = u32::MAX;
+    check("GPU ACQUIRE", call(op::ACQUIRE, &mut stale));
+    ensure(stale.buffer == u32::MAX && stale.base == 0, "17.2",
+        "gpu-window: a stale id published an acquired GPU buffer or base")?;
     check("CAPTURE", capture(id, 8, 8, None).err().unwrap_or(0));
     let mut t = abi::MapTree::ZERO;
     t.id = id;
@@ -358,21 +360,20 @@ fn windows_exec_cleanup() -> CaseResult {
     ensure(reply == "err 2", "17.2", format!("the exec'd image's DESTROY of its old window {id} answered `{reply}`; the window is gone (ENOENT)"))
 }
 
+// gpu-window: §2.2 fork-no-mapping becomes no inherited GPU handles, with an actual forked child.
 fn windows_fork_no_mapping() -> CaseResult {
-    interface()?;
-    let w = W::new(16, 16, 2)?;
-    fill(w.buf(0), 16, 16, 7);
-    let addr = w.c.buffer[0];
-    let ended = child_end(5_000, move || {
-        // SAFETY: deliberately reading the parent's buffer address; the child has no mapping.
-        let _ = unsafe { core::ptr::read_volatile(addr as *const u8) };
-        0
-    }).cite("17.2")?;
-    match ended {
-        Ended::Signal(11) => Ok(()),
-        Ended::Exit(_) => at("17.2", "a forked child read its parent's window buffer; window mappings are not inherited"),
-        Ended::Signal(s) => at("17.2", format!("the child died of signal {s} instead of SIGSEGV")),
-    }
+interface()?;
+    let w=W::new(16,16,2)?;let handles=w.c.buffer;
+    readable_window_targets(&w)?;
+    step("17.2",child("GPU handles after fork",3_000,None,|| {
+        let (ret,c)=libbreenix::gpu::counters(0);
+        if ret!=0 || c.resources!=0 || c.contexts!=0 {return Err("gpu-window: fork inherited GPU resources or contexts".into());}
+        for target in &handles[..2] {
+            let mut pixels=vec![0xA5;16*16*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+            if libbreenix::gpu::readback(*target,[0,0,16,16],&mut pixels,64,&mut record)!=-(EINVAL as i64){return Err("gpu-window: child read its parent's GPU target instead of EINVAL".into());}
+            if pixels.iter().any(|&b|b!=0xA5){return Err("gpu-window: refused inherited target wrote pixels".into());}
+        }Ok(())
+    }))
 }
 
 fn windows_fork_no_authority() -> CaseResult {
@@ -619,22 +620,22 @@ fn windows_stale_base_commit() -> CaseResult {
     same(w3.buf(next.buffer), 64, 16, false, "the buffer after the stale commit", "17.3", |x, y| pattern(1, x, y))
 }
 
+// gpu-window: §2.2 accepted render work survives COMMIT; later front writes are refused without changing pixels.
 fn windows_commit_immutable() -> CaseResult {
     interface()?;
-    let ended = child_end(5_000, || {
-        let Ok(w) = W::new(16, 16, 2) else { return 2 };
-        let Ok(a) = w.acquire(1_000_000_000) else { return 3 };
-        w.buf(a.buffer)[0] = 1; // writable while acquired
-        if w.commit(a.buffer, &[full(&w.c)]).is_err() { return 4; }
-        w.buf(a.buffer)[0] = 2; // the committed buffer: must fault
-        5
-    }).cite("17.3")?;
-    match ended {
-        Ended::Signal(11) => Ok(()),
-        Ended::Exit(5) => at("17.3", "writing a committed buffer did not fault; it is read-only to its owner"),
-        Ended::Exit(c) => at("17.3", format!("the child exited {c} before the write")),
-        Ended::Signal(s) => at("17.3", format!("the child died of signal {s}, not SIGSEGV")),
-    }?;
+    let w=W::new(16,16,2)?;
+    let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+    let mut context=bgl::Context::new().map_err(|r|format!("gpu-window: context {}",outcome(r))).cite("17.3")?;
+    context.begin(w.c.buffer[a.buffer as usize],16,16);context.clear(0xff112233);
+    let accepted=context.submit().map_err(|r|format!("gpu-window: acquired-target render {}",outcome(r))).cite("17.3")?;
+    w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
+    accepted.wait(2_000_000_000).map_err(|r|format!("gpu-window: pre-COMMIT fence {}",outcome(r))).cite("17.3")?;
+    let (_,before)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+    ensure(before.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: commit lost accepted render work")?;
+    context.begin(w.c.buffer[a.buffer as usize],16,16);context.clear(0xff556677);
+    ensure(context.submit().is_err(),"17.3","gpu-window: submission wrote a committed target")?;
+    let (_,after)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+    ensure(after==before,"17.3","gpu-window: refused front write changed committed pixels")?;
     // A tree size below a page: acquiring the second buffer must not open the first
     // buffer's committed tree page.
     let ended = child_end(5_000, || {
@@ -828,6 +829,7 @@ fn windows_resize_error() -> CaseResult {
     Ok(())
 }
 
+// gpu-window: §2.2 charges GPU backing to RLIMIT_AS and the GPU quota; refusal is atomic.
 fn windows_resize_rlimit() -> CaseResult {
     interface()?;
     child("the limited child", 10_000, None, || {
@@ -842,12 +844,16 @@ fn windows_resize_rlimit() -> CaseResult {
         if set_rlimit_as(base + 1024 * 1024) != 0 {
             return Err(String::from("prlimit(RLIMIT_AS) failed"));
         }
+        let gpu_before=crate::gpu_checks::counters()?;
+        if gpu_before.resources<2 {return Err("gpu-window: window buffers are not GPU resources".into());}
         let mut r = abi::Resize::ZERO;
         r.id = w.id();
         r.width = 1024;
         r.height = 1024;
         let ret = call(op::RESIZE, &mut r);
         let after = vm_size()?;
+        let gpu_after=crate::gpu_checks::counters()?;
+        if gpu_after.resource_bytes!=gpu_before.resource_bytes || gpu_after.resources!=gpu_before.resources {return Err("gpu-window: refused resize changed GPU accounting".into());}
         if ret != -(ENOMEM as i64) {
             return Err(format!("RESIZE past RLIMIT_AS {}; the contract gives ENOMEM (section 17.2)", outcome(ret)));
         }
@@ -940,17 +946,26 @@ fn windows_resize_rollback() -> CaseResult {
     }).cite("17.2")
 }
 
+// gpu-window: §2.2 separates mapped trees, guest GPU backing under RLIMIT_AS, and the GPU quota.
 fn windows_rlimit_accounting() -> CaseResult {
-    interface()?;
-    let before = vm_size().cite("17.2")?;
-    let mut w = W::new(128, 64, 3)?;
-    let during = vm_size().cite("17.2")?;
-    let want = 3 * 128 * 64 * 4 + 3 * 64 * 1024;
-    value("window-bytes", (during - before) as i64, "b", Some((want as i64, want as i64)));
-    ensure(during - before == want, "17.2", format!("a 128x64 window of three buffers raised VmSize by {} bytes; its buffers and tree pages are {want}", during - before))?;
-    want_ok(w.destroy(), "17.2", "DESTROY")?;
-    let after = vm_size().cite("17.2")?;
-    ensure(after == before, "17.2", format!("after DESTROY VmSize is {after}; it was {before} before the window"))
+interface()?;
+    let before=vm_size().cite("17.2")?;let gpu_before=crate::gpu_checks::counters().cite("17.2")?;
+    let mut w=W::new(128,64,3)?;
+    let mapped=vm_size().cite("17.2")?;let during=crate::gpu_checks::counters().cite("17.2")?;
+    ensure(mapped-before==3*64*1024,"17.2","gpu-window: only tree pages belong in the mapped window charge")?;
+    ensure(during.resources-gpu_before.resources==3 && during.resource_bytes-gpu_before.resource_bytes==3*128*64*4,
+        "17.2","gpu-window: window GPU target charge is not exact")?;
+    let over=192*1024*1024-during.resource_bytes+4096;
+    let refused=libbreenix::gpu::buffer_create(over);
+    if let Ok(h)=refused {libbreenix::gpu::resource_destroy(h);}
+    ensure(refused==Err(-(ENOMEM as i64)),"17.2","gpu-window: window backing did not consume the process GPU quota")?;
+    want_ok(w.destroy(),"17.2","DESTROY")?;
+    ensure(vm_size().cite("17.2")?==before,"17.2","gpu-window: destroyed tree mappings remain charged")?;
+    let start=now_ms();loop {let after=crate::gpu_checks::counters().cite("17.2")?;
+        if after.resource_bytes==gpu_before.resource_bytes && after.resources==gpu_before.resources {break;}
+        ensure(since(start)<1_000,"17.2","gpu-window: target charges did not return exactly to baseline")?;
+        let _=time::sleep_ms(5);
+    }Ok(())
 }
 
 fn windows_capture_across_destroy() -> CaseResult {
@@ -1208,6 +1223,7 @@ fn windows_churn() -> CaseResult {
 }
 
 fn windows_distinct_content() -> CaseResult {
+    let (width,_)=super::composition::screen_size()?;
     interface()?;
     let (mut kiosk, _) = kiosk().cite("24")?;
     let _ = kiosk.ask("auto 0");
@@ -1226,7 +1242,7 @@ fn windows_distinct_content() -> CaseResult {
         let (ox, oy) = (100 * (i as u32 % 4) + 10, 60 * (i as u32 / 4) + 10);
         for y in 0..50 {
             for x in 0..80 {
-                let at = (((oy + y) * 1280 + ox + x) * 4) as usize;
+                let at = ((oy + y) as usize * width + (ox + x) as usize) * 4;
                 let want = pattern(w.id() as u32, x, y);
                 ensure(screen[at..at + 3] == want[..3], "18", format!(
                     "window {} (seed {}) at screen ({},{}) shows {:02x?}; its own pixel is {:02x?}", i, w.id(), ox + x, oy + y, &screen[at..at + 3], &want[..3]))?;
@@ -1236,9 +1252,10 @@ fn windows_distinct_content() -> CaseResult {
     Ok(())
 }
 
-/// The composed screen, 1280x800 BGRX, by SCANOUT_READBACK (as root).
+/// The composed screen at the reported physical mode, by SCANOUT_READBACK (as root).
 pub(crate) fn readback() -> Result<Vec<u8>, String> {
-    let mut px = vec![0u8; 1280 * 800 * 4];
+    let (width,height)=super::composition::screen_size().map_err(|e|format!("{e:?}"))?;
+    let mut px = vec![0u8; width * height * 4];
     let mut rec = abi::ObservationRecord::ZERO;
     let mut rb = abi::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
@@ -1271,18 +1288,70 @@ fn windows_raw_client() -> CaseResult {
     ensure(listed(id).cite("17.2")?.is_none(), "17.2", "the raw client's destroyed window is still listed")
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+// gpu-window: §2.2 and ruling 47 use GPU backend 4 or 5, never a legacy framebuffer backend.
 fn windows_every_target() -> CaseResult {
+interface()?;
+    let w=W::new(16,16,2)?;want_ok(w.register(b"every-target"),"17.1","REGISTER")?;
+    let info=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
+    let (r,caps)=libbreenix::gpu::caps();
+    ensure(r==0 && [4,5].contains(&caps.backend) && info.backend==caps.backend,"20.2",
+        format!("gpu-window: WinInfo backend {} does not match admitted GPU backend {}",info.backend,caps.backend))?;
+    let mut pixels=vec![0;16*16*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+    want_ok(libbreenix::gpu::readback(w.c.buffer[0],[0,0,16,16],&mut pixels,64,&mut record),"20.2","gpu-window: backend target readback")?;
+    let word=|o|u32::from_le_bytes(record[o..o+4].try_into().unwrap());
+    ensure(word(0)==2 && word(16)==caps.backend && word(20)==4,"20.2","gpu-window: target readback is not this GPU backend's record v2")
+}
+// gpu-window: §2.2 render handoff must not publish a pending target, and must refuse a failed render fence.
+fn windows_commit_waits_render()->CaseResult {
     interface()?;
-    let w = W::new(16, 16, 2)?;
-    want_ok(w.register(b"every-target"), "17.1", "REGISTER")?;
-    let info = listed(w.id()).cite("17.1")?.ok_or("the window is not listed (section 17.2)")?;
-    let name = abi::backend::name(info.backend);
-    value("backend", info.backend as i64, "", Some((1, 4)));
-    #[cfg(target_arch = "x86_64")]
-    let allowed = [abi::backend::GOP_FRAMEBUFFER];
-    #[cfg(target_arch = "aarch64")]
-    let allowed = [abi::backend::VIRTIO_GPU_2D, abi::backend::SVGA3_SCREEN_TARGET, abi::backend::VIRGL];
-    ensure(allowed.contains(&info.backend), "20.2", format!(
-        "WinInfo names backend {} ({name}); this architecture's targets use {:?}", info.backend,
-        allowed.iter().map(|&b| abi::backend::name(b)).collect::<Vec<_>>()))
+    for error in [false,true] {
+        let mut k=super::composition::compositor()?;
+        let p=super::composition::Placed::new(20,20,16,16,0,7);
+        let w=W::new(16,16,3)?;super::composition::show(&mut k,&w,&p)?;super::composition::compose(&mut k)?;
+        let (_,old)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+        let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+        let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r))).cite("17.3")?;
+        c.begin(w.c.buffer[a.buffer as usize],16,16);c.clear(0xff112233);
+        let stream=c.encoded().to_vec();
+        use libbreenix::gpu::{self,abi as ga};
+        libbreenix::test_control::arm(ga::test_point::WITHHOLD_FENCE,0,if error{ga::test_point::WITHHOLD_ONE}else{ga::test_point::WITHHOLD_DEPTH}).cite("21")?;
+        let mut fences=Vec::new();
+        for _ in 0..if error{1}else{4} {let (r,s)=gpu::submit(c.handle(),&stream);want_ok(r,"17.3","gpu-window: pending render")?;fences.push(s.fence);}
+        for &fence in &fences {want_errno(gpu::wait(c.handle(),fence,0).0,ETIMEDOUT,"17.3","gpu-window: render must still be pending")?;}
+        if error {
+            want_errno(gpu::wait(c.handle(),fences[0],3_000_000_000).0,abi::errno::EIO,"17.3","gpu-window: held render watchdog")?;
+            let commit=w.commit(a.buffer,&[full(&w.c)]);
+            ensure(commit.err()==Some(-(abi::errno::EIO as i64)),"17.3","gpu-window: COMMIT accepted a failed render fence")?;
+        } else {
+            w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
+            let (ret,before)=gpu::modes();want_ok(ret,"17.3","gpu-window: binding before pending composition")?;
+            let (sent,received)=std::sync::mpsc::channel();
+            let composing=std::thread::spawn(move||{let reply=k.ask("composite");let _=sent.send(reply);k});
+            let _=time::sleep_ms(50);
+            let early=match received.try_recv(){Ok(r)=>Some(r),Err(std::sync::mpsc::TryRecvError::Empty)=>None,
+                Err(e)=>return at("17.3",format!("gpu-window: composition worker: {e}"))};
+            if let Some(reply)=&early {ensure(matches!(reply,Ok(s) if s=="err 11"),"17.3","gpu-window: composition published a pending render instead of waiting or EAGAIN")?;}
+            want_errno(gpu::wait(c.handle(),fences[3],0).0,ETIMEDOUT,"17.3","gpu-window: render still held during composition attempt")?;
+            let (ret,pending)=gpu::modes();want_ok(ret,"17.3","gpu-window: pending binding")?;
+            ensure(pending.binding_known==1 && pending.scanout_resource==before.scanout_resource,"17.3","gpu-window: pending rendering changed the scanout binding")?;
+            let release=gpu::target_create(0,1,1).map_err(|r|format!("release target {}",outcome(r))).cite("17.3")?;
+            c.begin(release,1,1);c.clear(0xff000000);
+            let (r,last)=gpu::submit(c.handle(),c.encoded());want_ok(r,"17.3","gpu-window: release held render fences")?;
+            gpu::resource_destroy(release);
+            want_ok(gpu::wait(c.handle(),last.fence,2_000_000_000).0,"17.3","gpu-window: completed render")?;
+            k=composing.join().map_err(|_|"gpu-window: composition worker panicked".to_string()).cite("17.3")?;
+            let reply=match early{Some(r)=>r,None=>received.recv().map_err(|e|e.to_string())?}.cite("17.3")?;
+            if reply=="err 11" {super::composition::compose(&mut k)?;}
+            else {ensure(reply.starts_with("ok "),"17.3",format!("gpu-window: completed composition: {reply}"))?;}
+            let (screen,_)=super::composition::screen()?;
+            let (width,height)=super::composition::screen_size()?;
+            same(&screen,width as u32,height as u32,true,"completed GPU render on scanout","17.3",|x,y|if (20..36).contains(&x) && (20..36).contains(&y){[51,34,17,255]}else{[0,0,0,255]})?;
+            let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+            ensure(front.chunks_exact(4).all(|p|p[..3]==[51,34,17]),"17.3","gpu-window: completed render did not become the front")?;
+        }
+        libbreenix::test_control::disarm_all().cite("21")?;
+        if error {let (_,front)=capture(w.id(),16,16,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+            ensure(front==old,"17.3","gpu-window: failed render changed the previous front")?;}
+    }Ok(())
 }

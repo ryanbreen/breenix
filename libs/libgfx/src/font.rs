@@ -11,7 +11,7 @@ const GLYPH_H: usize = 7;
 
 /// Look up the 5x7 bitmap glyph for an ASCII character.
 /// Returns 7 row bytes, each with the top 5 bits used (MSB = leftmost pixel).
-fn glyph_for(ch: u8) -> [u8; GLYPH_H] {
+const fn glyph_for(ch: u8) -> [u8; GLYPH_H] {
     match ch {
         b'0' => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],
         b'1' => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],
@@ -113,6 +113,19 @@ fn glyph_for(ch: u8) -> [u8; GLYPH_H] {
         _ => [0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F], // solid block
     }
 }
+
+/// The complete byte-indexed 5x7 source table, before colour, scale or clipping.
+pub static FONT_TABLE: [u8; 256 * 7] = {
+    let mut table = [0; 256 * 7];
+    let mut ch = 0;
+    while ch < 256 {
+        let glyph = glyph_for(ch as u8);
+        let mut row = 0;
+        while row < 7 { table[ch * 7 + row] = glyph[row]; row += 1; }
+        ch += 1;
+    }
+    table
+};
 
 /// Draw a single character at (x0, y0) with the given color and scale factor
 /// (docs/gui/breengel.md section 8.1): pixel (col, row) of the glyph, when set, is the

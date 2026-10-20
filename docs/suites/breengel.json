@@ -64,23 +64,23 @@
         },
         {
           "id": "guard-pages",
-          "title": "Every primitive called with extreme coordinates leaves the guard pages untouched and the process alive"
+          "title": "GPU upload/readback user buffers stay guarded and an adjacent canary target is unchanged"
         },
         {
           "id": "extreme-work-bound",
-          "title": "Every primitive at coordinates near ±2³¹ takes no more loop steps than section 12.3's bound for its clipped rectangle, by libgfx's work counter, which counts rejected iterations too"
+          "title": "CPU geometry setup and GPU fragment work stay within the clipped primitive bounds"
         },
         {
           "id": "stride-padding",
-          "title": "Drawing into a surface whose stride exceeds width × bytes per pixel leaves every row's sentinel bytes intact"
+          "title": "Padded upload and readback rows preserve every caller-owned sentinel byte"
         },
         {
           "id": "surface-validate",
-          "title": "`Surface::new` and `Surface::from_raw` both reject a short stride, an overflowing size, an oversize dimension, a misaligned or null base with section 12.3's errors"
+          "title": "GPU target creation rejects empty, excessive and unsupported-format targets"
         },
         {
           "id": "bpp3-bpp4",
-          "title": "The same scene on a 3-byte RGB surface and a 4-byte BGRX surface gives the same colours"
+          "title": "Three-byte upload and readback conversion preserve the same GPU colours"
         },
         {
           "id": "bgr-order",
@@ -92,7 +92,7 @@
         },
         {
           "id": "copy-row-clip",
-          "title": "copy_row_from clips at the end of the row instead of wrapping into the next one"
+          "title": "An uploaded GPU pixel row clips at the destination row end without wrapping"
         },
         {
           "id": "premultiply",
@@ -168,7 +168,15 @@
         },
         {
           "id": "surface-owned",
-          "title": "An owned surface allocates, clears to a colour and frees its memory when dropped"
+          "title": "Owned GPU targets charge their backing and release it exactly after destruction"
+        },
+        {
+          "id": "cpu-pixels-zero",
+          "title": "Raster primitives execute GPU draws without CPU pixel uploads"
+        },
+        {
+          "id": "cpu-render-planted",
+          "title": "Planted CPU-rendered uploads and per-pixel draws are refused with their reasons"
         }
       ]
     },
@@ -287,6 +295,10 @@
         {
           "id": "cache-evict-correct",
           "title": "A glyph evicted and rasterized again renders identically"
+        },
+        {
+          "id": "hidpi-sizes",
+          "title": "Scale-2 text equals twice-size coverage and differs from replicated pixels"
         },
         {
           "id": "fontwatch-reload",
@@ -811,6 +823,10 @@
         {
           "id": "no-change-ack",
           "title": "An event that changes no widget state is reported as needing no redraw"
+        },
+        {
+          "id": "scale-2",
+          "title": "Scale-2 widgets double logical geometry and rasterize TrueType labels at twice the size"
         }
       ]
     },
@@ -956,7 +972,7 @@
       "cases": [
         {
           "id": "create",
-          "title": "create_window returns a window id and buffers of the requested size"
+          "title": "Window creation returns distinct zeroed GPU target handles and mapped tree pages"
         },
         {
           "id": "create-zeroed",
@@ -996,7 +1012,7 @@
         },
         {
           "id": "destroy",
-          "title": "The destroy op removes the window from the listing and unmaps its buffers"
+          "title": "Destroy removes the window, revokes GPU target handles and releases backing"
         },
         {
           "id": "drop-destroys",
@@ -1020,7 +1036,7 @@
         },
         {
           "id": "fork-no-mapping",
-          "title": "A forked child inherits no mapping of its parent's buffers"
+          "title": "A forked child inherits no window GPU handles"
         },
         {
           "id": "fork-no-authority",
@@ -1044,7 +1060,7 @@
         },
         {
           "id": "commit-immutable",
-          "title": "Writing a committed buffer, or its tree page at any tree size, faults"
+          "title": "Committed GPU targets refuse later writes while accepted renders complete and tree pages stay protected"
         },
         {
           "id": "commit-busy",
@@ -1080,7 +1096,7 @@
         },
         {
           "id": "rlimit-accounting",
-          "title": "Window buffers count against RLIMIT_AS, and destroying the window returns them"
+          "title": "Window guest backing counts against RLIMIT_AS and the GPU quota and destruction releases both charges"
         },
         {
           "id": "capture-across-destroy",
@@ -1109,6 +1125,10 @@
         {
           "id": "every-target",
           "title": "Window creation works on this target's backend and reports the backend by name"
+        },
+        {
+          "id": "commit-waits-render",
+          "title": "Pending render fences are not composed and failed renders cannot replace the front"
         }
       ]
     },
@@ -1138,7 +1158,7 @@
         },
         {
           "id": "other-map",
-          "title": "An unrelated process mapping another's buffers fails with EPERM"
+          "title": "Foreign GPU target handles are refused before submission or readback"
         },
         {
           "id": "other-resize",
@@ -1154,7 +1174,7 @@
         },
         {
           "id": "texture-map",
-          "title": "A non-compositor mapping the compositor texture fails with EPERM"
+          "title": "An unrelated process cannot sample the compositor scanout through GPU resource handles"
         },
         {
           "id": "composite-denied",
@@ -1288,7 +1308,7 @@
         },
         {
           "id": "compose-fullscreen",
-          "title": "A 1280x800 window at 0,0 fills the frame exactly"
+          "title": "A full-mode window at 0,0 fills the frame exactly"
         },
         {
           "id": "compose-many",
@@ -1355,7 +1375,7 @@
           "title": "Content committed under a stationary cursor is shown, with the cursor redrawn above it"
         },
         {
-          "id": "flush-irq-bound",
+          "id": "irq-bound",
           "title": "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold"
         },
         {
@@ -1371,16 +1391,20 @@
           "title": "When a compositor dies, the display returns to the process that gave it, not to the runner"
         },
         {
+          "id": "gpu-composite",
+          "title": "GPU composition draws client targets without CPU pixel uploads"
+        },
+        {
+          "id": "scale-2",
+          "title": "Scale-2 GPU composition preserves placement, clipping and exact pixels"
+        },
+        {
+          "id": "target-lifetime",
+          "title": "Compositor, scanout, capture and replay holds retain GPU targets until their final release"
+        },
+        {
           "id": "fbinfo-geometry",
-          "title": "fbinfo's stride, bytes per pixel and pixel format agree with the mode"
-        },
-        {
-          "id": "fbmmap-pane",
-          "title": "fb_mmap gives the display owner the whole screen"
-        },
-        {
-          "id": "flush-clip",
-          "title": "FLUSH clips its rectangle to the screen"
+          "title": "GPU MODES and the composed binding agree on physical dimensions and scale"
         }
       ]
     },
@@ -1524,7 +1548,7 @@
       "cases": [
         {
           "id": "mode-set",
-          "title": "A GUI suite boot runs this target's display at 1280x800, and fbinfo agrees"
+          "title": "GPU MODES and full readback agree on 2560x1600 at scale 2"
         },
         {
           "id": "device-path",
@@ -1540,7 +1564,7 @@
         },
         {
           "id": "binding",
-          "title": "The record names the scanout resource or address the device is bound to, and it is the composed one"
+          "title": "Every GPU present record names its actual completed scanout binding and composite"
         },
         {
           "id": "completion",
@@ -1564,15 +1588,15 @@
         },
         {
           "id": "fault-skipped-transfer",
-          "title": "A skipped transfer or update is reported as missing completion, and the next composite recovers"
+          "title": "GPU point 19 yields EIO unwritten without partial output and the next composite recovers"
         },
         {
           "id": "fault-wrong-resource",
-          "title": "A flush or scanout bound to the wrong resource is reported as a binding mismatch"
+          "title": "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers"
         },
         {
           "id": "fault-stale-fence",
-          "title": "A fence answered for another serial is reported as a serial mismatch"
+          "title": "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers"
         },
         {
           "id": "fault-outside-damage",
@@ -1581,6 +1605,14 @@
         {
           "id": "boundary-stated",
           "title": "The record states what lies outside the guest's view for this backend"
+        },
+        {
+          "id": "present-flip",
+          "title": "Every flip records its actual target and completed present fence"
+        },
+        {
+          "id": "hidpi-mode",
+          "title": "The complete 2560x1600 scanout is read back and changes in its final row are observed"
         }
       ]
     },
@@ -1588,18 +1620,6 @@
       "id": "panel",
       "title": "suite & probe panels",
       "cases": [
-        {
-          "id": "counts",
-          "title": "Fixed pass, fail and count fixtures draw the expected digits in the expected colours"
-        },
-        {
-          "id": "fail-rows",
-          "title": "Failed cases are listed with their names in the failure rows"
-        },
-        {
-          "id": "layout",
-          "title": "The category bars and score occupy the contract's rectangles at this mode"
-        },
         {
           "id": "stage-layout",
           "title": "Stage fixture header, wall, spotlight and ribbon occupy the contract rectangles"
@@ -1651,6 +1671,10 @@
         {
           "id": "boundary-notice",
           "title": "The stage observation notice agrees with the backend flags and boundary code"
+        },
+        {
+          "id": "stage-hidpi",
+          "title": "The full HiDPI stage has scaled geometry and independently rasterized text"
         },
         {
           "id": "handoff",

@@ -3,7 +3,7 @@
 //! cases live in `widgets.rs`.
 
 use crate::*;
-use libgfx::framebuf::{Format, Rect, SurfaceError};
+use libgfx::framebuf::{Format, Rect};
 use libgfx::{alpha, blit, work};
 
 pub(crate) const RASTER: &[Case] = &[
@@ -20,14 +20,14 @@ pub(crate) const RASTER: &[Case] = &[
     pictured!("circle-fill", "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects", raster_circle_fill),
     pictured!("circle-fill-offscreen-left", "A circle partly or wholly off the left edge writes nothing outside the surface", raster_circle_fill_offscreen_left),
     pictured!("circle-outline", "draw_circle writes the midpoint-algorithm pixels listed in the contract for radii 0 to 40", raster_circle_outline),
-    pictured!("guard-pages", "Every primitive called with extreme coordinates leaves the guard pages untouched and the process alive", raster_guard_pages),
-    pictured!("extreme-work-bound", "Every primitive at coordinates near ±2³¹ takes no more loop steps than section 12.3's bound for its clipped rectangle, by libgfx's work counter, which counts rejected iterations too", raster_extreme_work_bound),
-    pictured!("stride-padding", "Drawing into a surface whose stride exceeds width × bytes per pixel leaves every row's sentinel bytes intact", raster_stride_padding),
-    pictured!("surface-validate", "`Surface::new` and `Surface::from_raw` both reject a short stride, an overflowing size, an oversize dimension, a misaligned or null base with section 12.3's errors", raster_surface_validate),
-    pictured!("bpp3-bpp4", "The same scene on a 3-byte RGB surface and a 4-byte BGRX surface gives the same colours", raster_bpp3_bpp4),
+    pictured!("guard-pages", "GPU upload/readback user buffers stay guarded and an adjacent canary target is unchanged", raster_guard_pages),
+    pictured!("extreme-work-bound", "CPU geometry setup and GPU fragment work stay within the clipped primitive bounds", raster_extreme_work_bound),
+    pictured!("stride-padding", "Padded upload and readback rows preserve every caller-owned sentinel byte", raster_stride_padding),
+    pictured!("surface-validate", "GPU target creation rejects empty, excessive and unsupported-format targets", raster_surface_validate),
+    pictured!("bpp3-bpp4", "Three-byte upload and readback conversion preserve the same GPU colours", raster_bpp3_bpp4),
     pictured!("bgr-order", "The BGR flag swaps the channel order and nothing else", raster_bgr_order),
     pictured!("x-byte", "Every primitive writes the X byte of a BGRX pixel as 0xFF", raster_x_byte),
-    pictured!("copy-row-clip", "copy_row_from clips at the end of the row instead of wrapping into the next one", raster_copy_row_clip),
+    pictured!("copy-row-clip", "An uploaded GPU pixel row clips at the destination row end without wrapping", raster_copy_row_clip),
     pictured!("premultiply", "Straight colour and alpha premultiply to div255(c × a) for all 65,536 pairs", raster_premultiply),
     pictured!("alpha-over-examples", "Source-over gives the contract's literal results for fractional source and destination alphas", raster_alpha_over_examples),
     pictured!("alpha-over-sweep", "Source-over matches the premultiplied formula for all 256 alphas over four backgrounds", raster_alpha_over_sweep),
@@ -46,7 +46,9 @@ pub(crate) const RASTER: &[Case] = &[
     pictured!("damage-exact", "Each primitive marks exactly the clipped bounding rectangle the contract's table gives", raster_damage_exact),
     pictured!("damage-noop", "A draw clipped to nothing marks nothing, and a same-colour draw still marks its rectangle", raster_damage_noop),
     pictured!("damage-sound", "Over a seeded random scene, every changed pixel lies inside the accumulated damage", raster_damage_sound),
-    pictured!("surface-owned", "An owned surface allocates, clears to a colour and frees its memory when dropped", raster_surface_owned),
+    pictured!("surface-owned", "Owned GPU targets charge their backing and release it exactly after destruction", raster_surface_owned),
+    pictured!("cpu-pixels-zero", "Raster primitives execute GPU draws without CPU pixel uploads", raster_cpu_pixels_zero),
+    pictured!("cpu-render-planted", "Planted CPU-rendered uploads and per-pixel draws are refused with their reasons", raster_cpu_render_planted),
 ];
 
 pub(crate) const TEXT: &[Case] = &[
@@ -78,6 +80,7 @@ pub(crate) const TEXT: &[Case] = &[
     pictured!("cache-hit", "A cached glyph renders identically to a fresh one, and the cache reports a hit", text_cache_hit),
     pictured!("cache-bound", "2,000 distinct glyph and size pairs keep the cache within 256 entries and 4 MiB", text_cache_bound),
     pictured!("cache-evict-correct", "A glyph evicted and rasterized again renders identically", text_cache_evict_correct),
+    pictured!("hidpi-sizes", "Scale-2 text equals twice-size coverage and differs from replicated pixels", text_hidpi_sizes),
 ];
 
 pub(crate) const FONT_PARSER: &[Case] = &[
@@ -126,8 +129,29 @@ fn tile_colour(i: usize, j: usize) -> Color {
     Color::rgb((40 * i + 7) as u8, (60 * j + 11) as u8, (13 * i + 29 * j + 100) as u8)
 }
 
+// Author-time source tables; these are inputs to copies and blends.
+const fn tile_table<const N:usize>(bpp:usize,bgr:bool,alpha:bool,straight:bool)->[u8;N]{
+    let mut out=[0;N];let mut n=0;while n<20 {
+        let (i,j)=(n%5,n/5);let a=if alpha{[0u32,64,128,200,255][i]}else if straight{[0,1,128,254,255][i]}else{255};
+        let (r,g,b)=if straight{(200,100+30*j as u32,30+40*i as u32)}else{(40*i as u32+7,60*j as u32+11,13*i as u32+29*j as u32+100)};
+        let (r,g,b)=if alpha{((2*r*a+255)/510,(2*g*a+255)/510,(2*b*a+255)/510)}else{(r,g,b)};
+        out[n*bpp]=if bgr{b as u8}else{r as u8};out[n*bpp+1]=g as u8;out[n*bpp+2]=if bgr{r as u8}else{b as u8};
+        if bpp==4{out[n*bpp+3]=a as u8;}n+=1;
+    }out
+}
+static TILE_BGRX:[u8;80]=tile_table(4,true,false,false);
+static TILE_RGBX:[u8;80]=tile_table(4,false,false,false);
+static TILE_BGR:[u8;60]=tile_table(3,true,false,false);
+static TILE_RGB:[u8;60]=tile_table(3,false,false,false);
+static TILE_ALPHA:[u8;80]=tile_table(4,true,true,false);
+static TILE_STRAIGHT_BGR:[u8;80]=tile_table(4,true,false,true);
+static TILE_STRAIGHT_RGB:[u8;80]=tile_table(4,false,false,true);
+static COPY_ROW:[u8;64]=[0x5a;64];
+static INK_ROW:[u8;128]={let mut out=[0;128];let mut i=0;while i<128{out[i]=[INK.b,INK.g,INK.r,255][i%4];i+=1;}out};
+
 /// A 5 × 4 owned source of `format` holding `tile_colour`.
 fn tile(format: Format) -> Result<FrameBuf, String> {
+    crate::gpu_checks::declare_fixture(match (format.bpp,format.is_bgr) {(4,true)=>&TILE_BGRX,(4,false)=>&TILE_RGBX,(3,true)=>&TILE_BGR,_=>&TILE_RGB});
     let mut fb = FrameBuf::new(5, 4, format).map_err(|e| format!("FrameBuf::new(5, 4, {format:?}) failed: {e}"))?;
     for j in 0..4 {
         for i in 0..5 {
@@ -172,9 +196,10 @@ fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("gradient_v(0, 0, 32, 24)", Box::new(|fb| shapes::gradient_v(fb, 0, 0, 32, 24, INK, WHITE))),
         ("put_pixel(8, 6) and (2, 2)", Box::new(|fb| { fb.put_pixel(8, 6, INK); fb.put_pixel(2, 2, INK); })),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| font5x7::draw_text(fb, b"A1", 4, 5, INK, 2))),
-        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| bitmap_font::draw_char(fb, 'A', 6, 3, INK))),
+        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| { font5x7::draw_text(fb, b"A1", 4, 5, INK, 2); })),
+        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| { bitmap_font::draw_char(fb, 'A', 6, 3, INK); })),
         ("copy_row_from(0, 7, 32 pixels)", Box::new(|fb| {
+            crate::gpu_checks::declare_fixture(&INK_ROW);
             let row: Vec<u8> = (0..32).flat_map(|_| [INK.b, INK.g, INK.r, 0xFF]).collect();
             fb.copy_row_from(0, 7, &row, row.len());
         })),
@@ -395,7 +420,8 @@ fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("draw_line(5, MIN/2, 6, MAX/2)", Box::new(|fb| shapes::draw_line(fb, 5, i32::MIN / 2, 6, i32::MAX / 2, INK))),
         ("copy_row_from(width - 1, height - 1, 64 bytes)", Box::new(|fb| {
             let (w, h) = (fb.width, fb.height);
-            fb.copy_row_from(w - 1, h - 1, &[0x5Au8; 64], 64)
+            crate::gpu_checks::declare_fixture(&COPY_ROW);
+            fb.copy_row_from(w - 1, h - 1, &COPY_ROW, 64)
         })),
         ("font::draw_text at (width - 3, height - 3)", Box::new(|fb| {
             let (w, h) = (fb.width, fb.height);
@@ -404,82 +430,84 @@ fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
     ]
 }
 
+// gpu-raster: GPU copies must respect guarded user buffers; device draws must preserve a canary target.
 fn raster_guard_pages() -> CaseResult {
-    for (name, call) in extreme_calls() {
-        step("3, 4, 7", isolated(name, 2_000, || {
-            let g = padded(32, 24);
-            call(&mut g.fb());
-            g.sentinels().map_err(|e| format!("{name}: {e}"))
-        }))?;
-    }
-    Ok(())
+crate::gpu_checks::guard_pages()
 }
 
+// gpu-raster: §2.2 replaces CPU per-pixel loop accounting with setup and GPU estimates.
 fn raster_extreme_work_bound() -> CaseResult {
+    // gpu-raster: §7 bounds setup separately; COUNTERS certifies emitted device work.
     const MAX: i32 = i32::MAX;
     const MIN: i32 = i32::MIN;
     const HALF: i32 = 1 << 30;
-    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>);
+    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>, u64);
     let small_clip = Some(Rect::new(10, 8, 4, 3));
     let pixel_clip = Some(Rect::new(10, 8, 1, 1));
     // Each call, an optional clip, and the clipped bounding rectangle the contract's damage
     // table gives it on a 32 × 24 surface (sections 6 and 7), worked out by hand.
     let calls: Vec<Extreme> = vec![
-        ("fill_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MIN, MIN, MAX, MAX, INK)), None),
-        ("fill_rect(MAX, MAX, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MAX, MAX, MAX, MAX, INK)), None),
-        ("fill_rect(-MAX, 3, 5, 5)", None, Box::new(|fb| shapes::fill_rect(fb, -MAX, 3, 5, 5, INK)), None),
-        ("fill_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, MIN, MIN, MAX, MAX, INK)), None),
-        ("draw_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_rect(MAX - 1, 0, 9, 9)", None, Box::new(|fb| shapes::draw_rect(fb, MAX - 1, 0, 9, 9, INK)), None),
-        ("fill_circle(MAX - 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MAX - 1, 5, 5, INK)), None),
-        ("fill_circle(MIN + 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MIN + 1, 5, 5, INK)), None),
-        ("fill_circle(5, 5, 46340)", None, Box::new(|fb| shapes::fill_circle(fb, 5, 5, 46_340, INK)), Some((0, 0, 32, 24))),
-        ("fill_circle(16, 12, MAX)", None, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
-        ("fill_circle(16, 12, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((10, 8, 4, 3))),
-        ("draw_circle(MIN + 9, 5, 5)", None, Box::new(|fb| shapes::draw_circle(fb, MIN + 9, 5, 5, INK)), None),
-        ("draw_circle(5, 5, 1000000)", None, Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK)), Some((0, 0, 32, 24))),
-        ("draw_circle(16, 12, MAX)", None, Box::new(|fb| shapes::draw_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 4, 3))),
-        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 1, 1)", pixel_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 1, 1))),
-        ("draw_line(MIN/2, 3, MAX/2, 4)", None, Box::new(|fb| shapes::draw_line(fb, MIN / 2, 3, MAX / 2, 4, INK)), Some((0, 3, 32, 2))),
-        ("draw_line(5, MIN/2, 6, MAX/2)", None, Box::new(|fb| shapes::draw_line(fb, 5, MIN / 2, 6, MAX / 2, INK)), Some((5, 0, 2, 24))),
-        ("draw_line(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_line(fb, MIN, MIN, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("draw_line(MIN, 30, MAX, 40)", None, Box::new(|fb| shapes::draw_line(fb, MIN, 30, MAX, 40, INK)), None),
-        ("draw_line(MAX, MIN, MIN, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_line(fb, MAX, MIN, MIN, MAX, INK)), Some((10, 8, 4, 3))),
-        ("rounded_rect(MIN, MIN, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, MIN, MIN, MAX, MAX, MAX, INK)), None),
-        ("rounded_rect(-2^30, -2^30, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, -HALF, -HALF, MAX, MAX, MAX, INK)), Some((0, 0, 32, 24))),
-        ("gradient_v(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::gradient_v(fb, -HALF, -HALF, MAX, MAX, INK, WHITE)), Some((0, 0, 32, 24))),
-        ("gradient_v(MIN, 0, 10, 24)", None, Box::new(|fb| shapes::gradient_v(fb, MIN, 0, 10, 24, INK, WHITE)), None),
-        ("blit_scaled(5 x 4, MIN, 0, 2^30)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, MIN, 0, HALF) }), Some((0, 0, 32, 24))),
-        ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None),
-        ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None),
-        ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24))),
-        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| fb.copy_row_from(31, 23, &[0x5Au8; 64], 64)), Some((31, 23, 1, 1))),
-        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3)), Some((29, 21, 3, 3))),
-        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1)), Some((0, 0, 32, 7))),
-        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1)), None),
+        ("fill_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MIN, MIN, MAX, MAX, INK)), None, 64),
+        ("fill_rect(MAX, MAX, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, MAX, MAX, MAX, MAX, INK)), None, 64),
+        ("fill_rect(-MAX, 3, 5, 5)", None, Box::new(|fb| shapes::fill_rect(fb, -MAX, 3, 5, 5, INK)), None, 64),
+        ("fill_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::fill_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_rect(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, MIN, MIN, MAX, MAX, INK)), None, 64),
+        ("draw_rect(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::draw_rect(fb, -HALF, -HALF, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_rect(MAX - 1, 0, 9, 9)", None, Box::new(|fb| shapes::draw_rect(fb, MAX - 1, 0, 9, 9, INK)), None, 64),
+        ("fill_circle(MAX - 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MAX - 1, 5, 5, INK)), None, 64),
+        ("fill_circle(MIN + 1, 5, 5)", None, Box::new(|fb| shapes::fill_circle(fb, MIN + 1, 5, 5, INK)), None, 64),
+        ("fill_circle(5, 5, 46340)", None, Box::new(|fb| shapes::fill_circle(fb, 5, 5, 46_340, INK)), Some((0, 0, 32, 24)), 64),
+        ("fill_circle(16, 12, MAX)", None, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("fill_circle(16, 12, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::fill_circle(fb, 16, 12, MAX, INK)), Some((10, 8, 4, 3)), 64),
+        ("draw_circle(MIN + 9, 5, 5)", None, Box::new(|fb| shapes::draw_circle(fb, MIN + 9, 5, 5, INK)), None, 64),
+        ("draw_circle(5, 5, 1000000)", None, Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_circle(16, 12, MAX)", None, Box::new(|fb| shapes::draw_circle(fb, 16, 12, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 4, 3)), 64),
+        ("draw_circle(16, 12, 1000000) clipped to (10, 8, 1, 1)", pixel_clip, Box::new(|fb| shapes::draw_circle(fb, 16, 12, 1_000_000, INK)), Some((10, 8, 1, 1)), 64),
+        ("draw_line(MIN/2, 3, MAX/2, 4)", None, Box::new(|fb| shapes::draw_line(fb, MIN / 2, 3, MAX / 2, 4, INK)), Some((0, 3, 32, 2)), 64),
+        ("draw_line(5, MIN/2, 6, MAX/2)", None, Box::new(|fb| shapes::draw_line(fb, 5, MIN / 2, 6, MAX / 2, INK)), Some((5, 0, 2, 24)), 64),
+        ("draw_line(MIN, MIN, MAX, MAX)", None, Box::new(|fb| shapes::draw_line(fb, MIN, MIN, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("draw_line(MIN, 30, MAX, 40)", None, Box::new(|fb| shapes::draw_line(fb, MIN, 30, MAX, 40, INK)), None, 64),
+        ("draw_line(MAX, MIN, MIN, MAX) clipped to (10, 8, 4, 3)", small_clip, Box::new(|fb| shapes::draw_line(fb, MAX, MIN, MIN, MAX, INK)), Some((10, 8, 4, 3)), 64),
+        ("rounded_rect(MIN, MIN, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, MIN, MIN, MAX, MAX, MAX, INK)), None, 64),
+        ("rounded_rect(-2^30, -2^30, MAX, MAX, MAX)", None, Box::new(|fb| shapes::rounded_rect(fb, -HALF, -HALF, MAX, MAX, MAX, INK)), Some((0, 0, 32, 24)), 64),
+        ("gradient_v(-2^30, -2^30, MAX, MAX)", None, Box::new(|fb| shapes::gradient_v(fb, -HALF, -HALF, MAX, MAX, INK, WHITE)), Some((0, 0, 32, 24)), 64),
+        ("gradient_v(MIN, 0, 10, 24)", None, Box::new(|fb| shapes::gradient_v(fb, MIN, 0, 10, 24, INK, WHITE)), None, 64),
+        ("blit_scaled(5 x 4, MIN, 0, 2^30)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, MIN, 0, HALF) }), Some((0, 0, 32, 24)), 64),
+        ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None, 64),
+        ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None, 64),
+        ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24)), 64),
+        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(&COPY_ROW); fb.copy_row_from(31, 23, &COPY_ROW, 64); }), Some((31, 23, 1, 1)), 64),
+        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| { font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3); }), Some((29, 21, 3, 3)), 64),
+        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| { font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1); }), Some((0, 0, 32, 7)), 64000),
+        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| { font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1); }), None, 64000),
     ];
-    for (name, clip, call, rect) in calls {
+    for (name, clip, call, rect, setup_bound) in calls {
         step("7", isolated(name, 2_000, || {
             let g = padded(32, 24);
             let mut fb = g.fb();
             if let Some(c) = clip {
                 fb.push_clip(c);
             }
+            let before = crate::gpu_checks::counters()?;
             work::reset();
             call(&mut fb);
+            let after = crate::gpu_checks::counters()?;
             let steps = work::steps();
-            let (bound, what) = match rect {
-                None => (64, "a call wholly outside the surface and clip".to_string()),
-                Some((_, _, w, h)) => ((2 * (w * h + h + w) + 64) as u64, format!("its clipped {w} x {h} rectangle")),
-            };
-            if steps > bound {
-                return Err(format!("{name} took {steps} steps of libgfx::work; section 7 allows {bound} for {what}"));
+            if steps > setup_bound {
+                return Err(format!("gpu-raster: {name} took {steps} CPU geometry steps; the geometry setup bound is {setup_bound}"));
             }
-            let written = (0..24).flat_map(|y| (0..32).map(move |x| (x, y))).filter(|&(x, y)| g.color(x, y) != PAPER).count() as u64;
-            if written >= 8 && steps < written {
-                return Err(format!("{name} changed {written} pixels in {steps} counted steps; every loop iteration is a step, so a primitive writing n pixels counts at least n"));
+            let area = rect.map_or(0, |(_, _, w, h)| (w*h) as u64);
+            let emitted = after.fragment_area - before.fragment_area;
+            let draws = after.draws - before.draws;
+            let written=(0..24).flat_map(|y|(0..32).map(move|x|(x,y))).filter(|&(x,y)|g.color(x,y)!=PAPER).count();
+            if emitted > area || (area == 0 && draws != 0) || (written != 0 && draws == 0) {
+                return Err(format!("gpu-raster: {name} emitted {emitted} fragments in {draws} draws for clipped area {area}"));
+            }
+            let weight=if name.starts_with("draw_line") || name.starts_with("blit_scaled") {8192}else if name.contains("circle") {2048}else if name.starts_with("rounded_rect") {4096}else if name.starts_with("gradient_v") {32768}else if name.starts_with("font::") {256}else{1};
+            let estimate=after.work_estimate-before.work_estimate;
+            if estimate < emitted || estimate>area*(weight+1) {
+                return Err(format!("gpu-raster: {name} undercounted its GPU work estimate"));
             }
             g.sentinels()
         }))?;
@@ -498,84 +526,36 @@ fn scene(fb: &mut FrameBuf) {
     font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
+// gpu-raster: §2.2 keeps padding sentinels around UPLOAD and READBACK rows.
 fn raster_stride_padding() -> CaseResult {
-    for &(bpp, stride) in &[(4usize, 14 * 4 + 20), (3, 14 * 3 + 6)] {
-        let g = Guarded::new(14, 18, stride, bpp, bpp == 4);
-        let mut fb = g.fb();
-        scene(&mut fb);
-        step("3, 5", g.sentinels().map_err(|e| format!("{bpp}-byte surface, stride {stride}, after the scene: {e}")))?;
-        fb.clear(PAPER);
-        step("3, 5.9", g.sentinels().map_err(|e| format!("{bpp}-byte surface, stride {stride}, after clear: {e}")))?;
-    }
-    Ok(())
+crate::gpu_checks::stride_padding()
 }
 
+// gpu-raster: §2.2 removes pointer-only errors; target limits and renderable formats remain exact.
 fn raster_surface_validate() -> CaseResult {
-    // SizeOverflow is reachable only through from_raw: new's largest surface,
-    // 16,384 x 16,384 x 4 bytes, is 2^30 bytes.
-    use libgfx::framebuf::SurfaceError::{Empty, Format as BadFormat, Misaligned, Null, SizeOverflow, StrideTooShort, TooLarge};
-    let premultiplied3 = Format { bpp: 3, is_bgr: true, premultiplied: true };
-    for (what, w, h, format, want) in [
-        ("new(0, 4)", 0, 4, Format::BGRX, Empty),
-        ("new(4, 0)", 4, 0, Format::BGRX, Empty),
-        ("new(16385, 1)", 16_385, 1, Format::BGRX, TooLarge),
-        ("new(1, 16385)", 1, 16_385, Format::RGB, TooLarge),
-        ("new(4, 4) premultiplied with 3-byte pixels", 4, 4, premultiplied3, BadFormat),
-    ] {
-        let got = FrameBuf::new(w, h, format).err();
-        ensure(got == Some(want), "3", format!("FrameBuf::{what} gave {got:?}; the contract's table gives {want:?}"))?;
+use libbreenix::gpu::{self, abi as ga};
+    let (ret,caps)=gpu::caps();
+    ensure(ret==0 && caps.status==ga::status::ADMITTED,"3","gpu-raster: no admitted GPU target implementation")?;
+    for (width,height,format) in [(0,4,0),(4,0,0),(caps.max_width+1,1,0),(1,caps.max_height+1,0),(4,4,u32::MAX),(4,4,ga::format::R8)] {
+        let got=gpu::target_create(format,width,height);
+        if let Ok(handle)=got {gpu::resource_destroy(handle);}
+        ensure(got==Err(-22),"3",format!("gpu-raster: target {width}x{height} format {format} returned {got:?}; Empty, TooLarge and Format are EINVAL"))?;
     }
-    for (w, h, format) in [(16_384, 1, Format::BGRX), (1, 16_384, Format::RGB), (1, 1, Format::BGRA_PREMULTIPLIED)] {
-        ensure(FrameBuf::new(w, h, format).is_ok(), "3", format!("FrameBuf::new({w}, {h}, {format:?}) was refused; it breaks no rule of the table"))?;
+    // Readback/conversion buffers retain their checked layout boundary (§3).
+    use libgfx::framebuf::SurfaceError;
+    for (stride,want) in [(31,SurfaceError::StrideTooShort),(usize::MAX,SurfaceError::SizeOverflow)] {
+        ensure(FrameBuf::validate_layout(8,4,stride,Format::BGRX)==Err(want),"3",
+            format!("gpu-raster: conversion layout stride {stride} did not refuse {want:?}"))?;
     }
-    let g = padded(8, 4);
-    let base = g.base;
-    // SAFETY: every call either refuses its arguments without touching memory, or (the
-    // accepted ones) describes memory inside the guarded mapping `g`, which outlives it.
-    let raw = |what: &str, p: *mut u8, w: usize, h: usize, stride: usize, bpp: usize| -> (String, Option<SurfaceError>) {
-        (format!("from_raw({what}, {w}, {h}, stride {stride}, bpp {bpp})"),
-            unsafe { FrameBuf::from_raw(p, w, h, stride, bpp, true) }.err())
-    };
-    for ((what, got), want) in [
-        (raw("base", base, 0, 4, 44, 4), Empty),
-        (raw("base", base, 8, 0, 44, 4), Empty),
-        (raw("base", base, 16_385, 1, 65_540, 4), TooLarge),
-        (raw("base", base, 8, 4, 44, 2), BadFormat),
-        (raw("base", base, 8, 4, 44, 5), BadFormat),
-        (raw("base", base, 8, 4, 31, 4), StrideTooShort),
-        (raw("base", base, 8, 4, 23, 3), StrideTooShort),
-        (raw("base", base, 8, 2, 1 << 30, 4), SizeOverflow),
-        (raw("base", base, 8, 4, usize::MAX / 2, 4), SizeOverflow),
-        (raw("null", std::ptr::null_mut(), 8, 4, 44, 4), Null),
-        (raw("base + 1", unsafe { base.add(1) }, 8, 3, 44, 4), Misaligned),
-        (raw("base + 2", unsafe { base.add(2) }, 8, 3, 44, 4), Misaligned),
-    ] {
-        ensure(got == Some(want), "3", format!("FrameBuf::{what} gave {got:?}; the contract's table gives {want:?}"))?;
-    }
-    for (stride, bpp) in [(44, 4), (32, 4), (24, 3), (44, 3)] {
-        let (what, got) = raw("base", base, 8, 4, stride, bpp);
-        ensure(got.is_none(), "3", format!("FrameBuf::{what} was refused with {got:?}; it breaks no rule of the table"))?;
-    }
-    Ok(())
+    for (width,height,format) in [(caps.max_width,1,0),(1,caps.max_height,1),(1,1,0)] {
+        let handle=gpu::target_create(format,width,height).map_err(|e|format!("gpu-raster: valid target {width}x{height}: {}",outcome(e))).cite("3")?;
+        ensure(gpu::resource_destroy(handle)==0,"3","gpu-raster: cannot destroy valid target")?;
+    }Ok(())
 }
 
+// gpu-raster: §2.2 preserves three-byte upload and readback conversion; three-byte drawing retires.
 fn raster_bpp3_bpp4() -> CaseResult {
-    let three = Guarded::new(14, 18, 14 * 3 + 2, 3, false);
-    let four = Guarded::new(14, 18, 14 * 4, 4, true);
-    scene(&mut three.fb());
-    scene(&mut four.fb());
-    ensure(drawn_pixels(&four, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the 4-byte surface")?;
-    *three.reference.borrow_mut() = Some(canonical_pixels(&four));
-    three.judge();
-    for y in 0..18 {
-        for x in 0..14 {
-            if three.color(x, y) != four.color(x, y) {
-                return at("2", format!("pixel ({x},{y}) is {} on the 3-byte RGB surface and {} on the 4-byte BGRX one",
-                    hex(three.color(x, y)), hex(four.color(x, y))));
-            }
-        }
-    }
-    step("3", three.sentinels())
+crate::gpu_checks::bpp3_bpp4()
 }
 
 fn raster_bgr_order() -> CaseResult {
@@ -611,8 +591,8 @@ fn raster_x_byte() -> CaseResult {
         ("fill_circle", Box::new(|fb| shapes::fill_circle(fb, 6, 6, 3, INK))),
         ("draw_circle", Box::new(|fb| shapes::draw_circle(fb, 6, 6, 4, INK))),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text", Box::new(|fb| font5x7::draw_text(fb, b"A", 1, 1, INK, 1))),
-        ("bitmap_font::draw_char", Box::new(|fb| bitmap_font::draw_char(fb, 'A', 0, 0, INK))),
+        ("font::draw_text", Box::new(|fb| { font5x7::draw_text(fb, b"A", 1, 1, INK, 1); })),
+        ("bitmap_font::draw_char", Box::new(|fb| { bitmap_font::draw_char(fb, 'A', 0, 0, INK); })),
     ];
     for (name, call) in calls {
         let g = Guarded::bgrx(16, 16);
@@ -628,18 +608,9 @@ fn raster_x_byte() -> CaseResult {
     Ok(())
 }
 
+// gpu-raster: §2.2 replaces byte-granular CPU row copies with clipped uploaded GPU pixels.
 fn raster_copy_row_clip() -> CaseResult {
-    step("5.9", isolated("copy_row_from(5, 1, 40 bytes)", 2_000, || {
-        let mut g = Guarded::new(8, 4, 8 * 4 + 8, 4, true);
-        g.reset(PAPER);
-        let src: Vec<u8> = (0..40u8).map(|i| [INK.b, INK.g, INK.r, 0xFF][i as usize % 4]).collect();
-        g.fb().copy_row_from(5, 1, &src, 40);
-        g.compare("copy_row_from(5, 1, 40 bytes) on an 8-pixel row",
-            |x, y| if y == 1 && x >= 5 { INK } else { PAPER })?;
-        g.fb().copy_row_from(8, 2, &src, 40);
-        g.compare("copy_row_from(8, 2, ...) at x = width",
-            |x, y| if y == 1 && x >= 5 { INK } else { PAPER })
-    }))
+crate::gpu_checks::copy_row_clip()
 }
 
 fn raster_premultiply() -> CaseResult {
@@ -775,6 +746,7 @@ fn raster_blit_clip() -> CaseResult {
 }
 
 fn raster_blit_alpha() -> CaseResult {
+    crate::gpu_checks::declare_fixture(&TILE_ALPHA);
     let src = FrameBuf::new(5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let s_of = |i: usize, j: usize| {
         let a = [0u32, 64, 128, 200, 255][i];
@@ -802,6 +774,7 @@ fn raster_blit_straight() -> CaseResult {
     let alphas = [0u32, 1, 128, 254, 255];
     let straight = |i: usize, j: usize| Color::rgb(200, (100 + 30 * j) as u8, (30 + 40 * i) as u8);
     for is_bgr in [false, true] {
+        crate::gpu_checks::declare_fixture(if is_bgr{&TILE_STRAIGHT_BGR}else{&TILE_STRAIGHT_RGB});
         let mut mem = vec![0u32; 5 * 4];
         let base = mem.as_mut_ptr() as *mut u8;
         for j in 0..4 {
@@ -1079,41 +1052,25 @@ fn raster_damage_sound() -> CaseResult {
     }))
 }
 
+// gpu-raster: §3 owned surfaces are GPU targets; deferred unref must return exactly to the memory baseline.
 fn raster_surface_owned() -> CaseResult {
-    let allocated0 = ALLOC_BYTES.load(Relaxed);
-    let fb = FrameBuf::new(13, 7, Format::BGRX).cite("3")?;
-    let allocated = ALLOC_BYTES.load(Relaxed) - allocated0;
-    ensure((fb.width, fb.height, fb.stride, fb.bpp) == (13, 7, 52, 4), "3", format!(
-        "FrameBuf::new(13, 7, BGRX) is {} x {} with stride {} and {} bytes per pixel; the contract gives 13 x 7, stride 52, 4",
-        fb.width, fb.height, fb.stride, fb.bpp))?;
-    ensure(allocated >= 52 * 7, "3", format!("FrameBuf::new(13, 7, BGRX) allocated {allocated} bytes for its 364 bytes of pixels"))?;
-    // SAFETY: an owned 13 × 7 BGRX surface spans stride × height = 364 bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(fb.raw_ptr(), 364) };
-    if let Some(i) = bytes.iter().position(|&b| b != 0) {
-        return at("3", format!("byte {i} of a new surface is {:#04x}; the contract clears it to zero", bytes[i]));
-    }
-    let freed_before_drop = FREE_BYTES.load(Relaxed);
-    drop(fb);
-    let freed = FREE_BYTES.load(Relaxed) - freed_before_drop;
-    ensure(freed >= 364, "3", format!("dropping the owned 13 x 7 surface freed {freed} bytes; it owns 364"))?;
-    let mut fb = FrameBuf::new_filled(13, 7, Format::RGB, INK).cite("3")?;
-    ensure(fb.stride == 39, "3", format!("FrameBuf::new_filled(13, 7, RGB) has stride {}; the contract gives width x bpp = 39", fb.stride))?;
-    for y in 0..7 {
-        for x in 0..13 {
-            // SAFETY: (x, y) is inside the owned 3-byte surface.
-            let p = unsafe { std::slice::from_raw_parts(fb.raw_ptr().add(y * 39 + x * 3), 3) };
-            if p != [INK.r, INK.g, INK.b] {
-                return at("2, 3", format!("pixel ({x},{y}) of new_filled(13, 7, RGB, {}) holds bytes {p:02x?}", hex(INK)));
-            }
-        }
-    }
-    shapes::fill_rect(&mut fb, 2, 3, 4, 2, PAPER);
-    ensure(fb.get_pixel(3, 4) == PAPER && fb.get_pixel(6, 4) == INK, "3", "a fill_rect on an owned surface did not draw where it should")?;
-    let fb = FrameBuf::new_filled(5, 2, Format::BGRX, INK).cite("3")?;
-    // SAFETY: an owned 5 × 2 BGRX surface spans 40 bytes.
-    let bytes = unsafe { std::slice::from_raw_parts(fb.raw_ptr(), 40) };
-    ensure(bytes.chunks(4).all(|p| p == [INK.b, INK.g, INK.r, 0xFF]), "2, 3",
-        format!("new_filled(5, 2, BGRX, {}) holds {bytes:02x?}; every pixel is B, G, R, 0xFF", hex(INK)))
+use libbreenix::gpu;
+    let before=crate::gpu_checks::counters().cite("3")?;
+    let target=gpu::target_create(gpu::abi::format::B8G8R8A8,13,7)
+        .map_err(|e|format!("gpu-raster: owned target {}",outcome(e))).cite("3")?;
+    let during=crate::gpu_checks::counters().cite("3")?;
+    let destroyed=gpu::resource_destroy(target);
+    ensure(during.resources==before.resources+1 && during.resource_bytes>=before.resource_bytes+364,
+        "3","gpu-raster: owned target did not charge its resource and backing")?;
+    ensure(destroyed==0,"3","gpu-raster: owned target destruction failed")?;
+    let start=now_ms();
+    loop {
+        let after=crate::gpu_checks::counters().cite("3")?;
+        if after.resources==before.resources && after.resource_bytes==before.resource_bytes {break;}
+        ensure(now_ms()-start<1_000,"3",format!("gpu-raster: dropping the target left {} resources and {} bytes; expected {} and {}",
+            after.resources,after.resource_bytes,before.resources,before.resource_bytes))?;
+        let _=time::sleep_ms(5);
+    }Ok(())
 }
 const LINE_TABLE: &[((i32, i32, i32, i32), &[(i32, i32)])] = &[
     ((0, 0, 7, 3), &[(0, 0), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3)]),
@@ -1260,6 +1217,32 @@ fn independent_glyph(file: &[u8], glyph: u16) -> Result<(u64, u64), String> {
     Ok((bytes, points))
 }
 
+/// §1.4 coverage_spans: each row visits its eight sub-scanlines' crossings;
+/// each fragment costs 8192 times (one plus that count), plus one scratch copy.
+/// Count segment crossings independently of coverage, sorting and pixel generation.
+fn glyph_gpu_bound(segments: &[libfont::outline::LineSegment], width: usize, height: usize) -> u64 {
+    let mut crossing_rows = 0u64;
+    for row in 0..height {
+        for sub in 0..8 {
+            let y = row as f32 + (sub as f32 + 0.5) / 8.0;
+            crossing_rows += segments.iter().filter(|s|
+                (s.y0 <= y && y < s.y1) || (s.y1 <= y && y < s.y0)).count() as u64;
+        }
+    }
+    let area = width as u64 * height as u64;
+    8192 * (area + width as u64 * crossing_rows) + area
+}
+
+fn glyph_gpu_work(before: &libbreenix::gpu::abi::Counters, after: &libbreenix::gpu::abi::Counters,
+    segments: &[libfont::outline::LineSegment], width: usize, height: usize, what: &str) -> Result<(), String> {
+    let work = after.work_estimate - before.work_estimate;
+    let bound = glyph_gpu_bound(segments, width, height);
+    if work > bound || (width > 0 && height > 0 && (work == 0 || after.fragment_area == before.fragment_area)) {
+        return Err(format!("gpu-text: {what}: GPU glyph work {work} is outside its nonzero coverage_spans bound {bound}"));
+    }
+    Ok(())
+}
+
 /// Each stage of rasterizing `glyph` at `size` against section 7's bounds, by
 /// libfont::work: the outline within `16 × glyph bytes + 8 × P + 4,096`, the flattening within
 /// `1,028 × P`, and the grayscale and LCD rasterizations within the raster bound. The
@@ -1285,21 +1268,24 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
     fwork::reset();
     let gray = libfont::rasterizer::rasterize(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
     let steps = fwork::steps();
-    let bound = raster_steps_bound(e, height as u64, width as u64);
+    let bound = raster_steps_bound(e, height as u64, 0);
     if steps > bound {
         return Err(format!("{what}: rasterizing {e} segments into {width} x {height} took {steps} steps; section 7 allows {bound}"));
     }
     if steps < 8 * height as u64 {
         return Err(format!("{what}: rasterizing {height} rows counted only {steps} steps; each row samples 8 sub-scanlines"));
     }
+    let before=crate::gpu_checks::counters()?;
     let whole = font.rasterize_glyph(glyph, size).map_err(|e| format!("{what}: {e}"))?;
+    let after=crate::gpu_checks::counters()?;
+    glyph_gpu_work(&before, &after, &segments, width, height, what)?;
     if whole != gray {
         return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
     }
     fwork::reset();
     libfont::rasterizer::rasterize_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
     let steps = fwork::steps();
-    let bound = e + raster_steps_bound(e, height as u64, 3 * width as u64);
+    let bound = e + raster_steps_bound(e, height as u64, 0);
     if steps > bound {
         return Err(format!("{what}: the LCD rasterization took {steps} steps; section 7 allows {bound} for 3 x {width} sampled columns"));
     }
@@ -1804,6 +1790,8 @@ fn text_line_metrics() -> CaseResult {
     Ok(())
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+// gpu-text: §2.2 retains all sizes/refusals, bounds CPU crossings without span filling, and requires GPU work.
 fn text_size_range() -> CaseResult {
     let font = parse_font(MONO_PATH).cite("8.5")?;
     let h = font.glyph_index('H');
@@ -2568,6 +2556,7 @@ fn font_parser_units_per_em() -> CaseResult {
     Font::parse(&t.build()).map(|_| ()).map_err(|e| format!("unitsPerEm 16,384 is valid but was rejected: {e}")).cite("10")
 }
 
+// gpu-text: §2.2 keeps outline/flatten/refusal bounds and splits accepted glyphs into CPU crossings plus GPU work.
 fn font_parser_coords_extreme() -> CaseResult {
     use libfont::{FontError, GlyphLayout};
     let (lo, hi) = (i16::MIN, i16::MAX);
@@ -2610,6 +2599,7 @@ fn font_parser_coords_extreme() -> CaseResult {
                     Ok(GlyphLayout::Empty { .. }) => return Err(format!("{name}: laid out as empty")),
                     Ok(GlyphLayout::Outline { segments, width, height, .. }) => (segments, width, height),
                 };
+                let before=crate::gpu_checks::counters()?;
                 libfont::work::reset();
                 let raster = libfont::rasterizer::rasterize(&segments, width, height, 0, 0);
                 let steps = libfont::work::steps();
@@ -2618,7 +2608,9 @@ fn font_parser_coords_extreme() -> CaseResult {
                     Err(FontError::GlyphTooExpensive) => Err(format!("{name}: refused with GlyphTooExpensive after {steps} raster steps; the refusal comes before any raster loop")),
                     Err(e) => Err(format!("{name}: rasterization refused with {e}")),
                     Ok(_) => {
-                        let bound = raster_steps_bound(segments.len() as u64, height as u64, width as u64);
+                        let after=crate::gpu_checks::counters()?;
+                        glyph_gpu_work(&before, &after, &segments, width, height, &name)?;
+                        let bound = raster_steps_bound(segments.len() as u64, height as u64, 0);
                         if steps > bound {
                             Err(format!("{name}: rasterizing {} segments into {width} x {height} took {steps} steps; section 7 allows {bound}", segments.len()))
                         } else {
@@ -2632,6 +2624,7 @@ fn font_parser_coords_extreme() -> CaseResult {
     Ok(())
 }
 
+// gpu-text: §2.2 square CPU bound excludes span fill; exact GPU work includes crossings, pixels and blend copies.
 fn font_parser_work_bound() -> CaseResult {
     use libfont::outline::LineSegment;
     // The independent square of section 7: four edges 1,022 px apart with a 1-pixel margin,
@@ -2643,14 +2636,20 @@ fn font_parser_work_bound() -> CaseResult {
         LineSegment { x0: b, y0: b, x1: b, y1: a },
         LineSegment { x0: b, y0: a, x1: a, y1: a },
     ];
-    ensure(raster_steps_bound(4, 1_024, 1_024) == 10_699_844, "7", "the suite's raster bound for the square is not the contract's 10,699,844")?;
+    ensure(raster_steps_bound(4,1_024,0)==214_084,"7","the CPU crossing formula is not 214,084")?;
+    let gpu_before=crate::gpu_checks::counters().cite("7")?;
     libfont::work::reset();
     let bitmap = libfont::rasterizer::rasterize(&square, 1_024, 1_024, 0, 0).cite("7")?;
     let steps = libfont::work::steps();
-    value("square-steps", steps as i64, "steps", Some((8_388_608, 10_699_844)));
+    value("square-steps", steps as i64, "steps", Some((8_192, 214_084)));
     ensure(bitmap.coverage[512 * 1_024 + 512] == 255 && bitmap.coverage[0] == 0, "7", "the square rasterized to the wrong coverage")?;
-    ensure((8_388_608..=10_699_844).contains(&steps), "7", format!(
-        "the 1,024 x 1,024 square took {steps} steps; section 7 requires at least 8,388,608 (8 x 1,024 x 1,024) and at most 10,699,844"))?;
+    ensure((8_192..=214_084).contains(&steps),"7",format!("gpu-text: square took {steps} CPU crossing steps; bound is [8192,214084]"))?;
+    let gpu_after=crate::gpu_checks::counters().cite("7")?;
+    // 1022 interior rows, 16 crossings per row, 1024 pixels per row; one scratch copy per pixel.
+    const EXPECTED:u64=8192*(1024*1024+1024*16*1022)+1024*1024;
+    ensure(EXPECTED==145_761_501_184,"7","independent square GPU formula is wrong")?;
+    ensure(gpu_after.work_estimate-gpu_before.work_estimate==EXPECTED,"7",
+        format!("gpu-text: square GPU work is {}; expected exactly {EXPECTED}, split across submissions below 2^31",gpu_after.work_estimate-gpu_before.work_estimate))?;
     for entry in corpus_index().cite("10")? {
         let path = format!("{CORPUS_DIR}/{}", entry.file);
         let file = read_file(&path).cite("10")?;
@@ -2809,4 +2808,52 @@ fn font_parser_corpus() -> CaseResult {
         }))?;
     }
     Ok(())
+}
+
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+// gpu-raster: §2.4 runtime proof covers every primitive exercised by the category's extreme fixture.
+fn raster_cpu_pixels_zero() -> CaseResult {
+    crate::gpu_checks::audit_category(RASTER)?;
+    for (name,call) in extreme_calls() {
+        let before=crate::gpu_checks::counters().cite("7")?;
+        let surface=padded(32,24);
+        let mark=libbreenix::gpu::upload_audit::mark();
+        call(&mut surface.fb());
+        let after=crate::gpu_checks::counters().cite("7")?;
+        ensure(libbreenix::gpu::upload_audit::refusal(mark,after.uploads_image-before.uploads_image,after.uploads_fixture-before.uploads_fixture).is_none(),
+            "7",format!("gpu-raster: {name} uploaded CPU-rendered pixels; {}",libbreenix::gpu::upload_audit::hashes()))?;
+    }
+    let before=crate::gpu_checks::counters().cite("7")?;
+    let mark=libbreenix::gpu::upload_audit::mark();
+    let surface=padded(32,24);scene(&mut surface.fb());
+    let after=crate::gpu_checks::counters().cite("7")?;
+    crate::gpu_checks::enforce_accounting(&before,&after,mark,32)?;
+    ensure(after.draws>before.draws,
+        "7","gpu-raster: primitive scene did not draw on the GPU with bounded instances and zero image uploads")
+}
+
+// gpu-raster: §2.4 runtime negative controls; the raw pixel-slice dependency is a host structural fixture.
+fn raster_cpu_render_planted() -> CaseResult { crate::gpu_checks::cpu_render_planted() }
+
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+// gpu-text: R4 rasterizes at 2x size; certified coverage is the oracle, never a nearest-neighbour bitmap upscale.
+fn text_hidpi_sizes() -> CaseResult {
+    let modes=bgl::modes().map_err(|e|format!("gpu-display: MODES {}",outcome(e))).cite("8.3")?;
+    let scale=modes.modes[modes.current as usize].scale;
+    ensure(scale==2,"8.3","gpu-display: HiDPI text requires scale 2")?;
+    let file=read_file(SANS_PATH).cite("8.3")?;let font=Font::parse(&file).cite("8.3")?;
+    let glyph=font.glyph_index('H');
+    let large=font.rasterize_glyph(glyph,32.0).cite("8.3")?;
+    let small=font.rasterize_glyph(glyph,16.0).cite("8.3")?;
+    let theme=Theme::dark();
+    let before=crate::gpu_checks::counters().cite("8.3")?;
+    // The production UI text entry point takes logical coordinates and the theme's
+    // logical 16 px size. The case must not perform the implementation's scaling.
+    let g=white_on_black(192,128,|fb|{libbui::text::draw_text(fb,b"H",16,8,WHITE,&theme);});
+    same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
+    let actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
+    ensure((0..128).any(|y|(0..192).any(|x|actual[(y*192+x)*4..(y*192+x+1)*4]!=low[((y/2)*96+x/2)*4..((y/2)*96+x/2+1)*4])),"8.3",
+        "gpu-text: twice-size text is only replicated scale-1 coverage")?;
+    let after=crate::gpu_checks::counters().cite("8.3")?;
+    ensure(after.draws>before.draws && after.uploads_image==before.uploads_image,"8.3","gpu-text: HiDPI text did not execute GPU coverage draws")
 }

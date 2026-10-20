@@ -109,8 +109,13 @@ fn write_raw(id: u64, ptr: u64, count: u32) -> i64 {
 
 struct Kiosk {
     auto: bool,
+    gpu_fixtures: Vec<(bgl::Context,u64)>,
     /// The next input serial.
     serial: u64,
+}
+
+impl Drop for Kiosk {
+    fn drop(&mut self){for (_,target) in &self.gpu_fixtures {libbreenix::gpu::resource_destroy(*target);}}
 }
 
 impl Kiosk {
@@ -192,6 +197,37 @@ impl Kiosk {
                 let first = pages(1, 1, false).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
                 let second = pages(1, 0, true).map_or(-1, |p| raw(op::COMPOSITE, p as u64, size));
                 say(&format!("{} {}", answer(first), answer(second)));
+            }
+            Some("gpu-private-scanout") => {
+                let fixture=(||->Result<(bgl::Context,u64,u64),i64>{
+                    let m=bgl::modes()?;let mode=m.modes[m.current as usize];let mut c=bgl::Context::new()?;
+                    let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height)?;
+                    c.begin(target,mode.width,mode.height);c.clear(0xff112233);
+                    if let Err(e)=c.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|c.present(target)) {libbreenix::gpu::resource_destroy(target);return Err(e);}
+                    let mode=bgl::modes()?;Ok((c,target,mode.scanout_resource))
+                })();
+                match fixture {Ok((context,target,resource))=>{self.gpu_fixtures.push((context,target));say(&format!("ok {target} {resource}"));},Err(e)=>say(&format!("err {}",-e))}
+            }
+            Some("gpu-counters") => {
+                let (ret,c)=libbreenix::gpu::counters(0);
+                if ret==0 {say(&format!("ok {} {} {} {} {} {}",c.draws,c.instances,c.uploads_image,c.uploads_fixture,c.resources,c.resource_bytes));}
+                else {say(&format!("err {}",-ret));}
+            }
+            Some("gpu-scanout") => {
+                let mut observed=(0i64,0u32);
+                let result=(||->Result<(),String>{
+                    let path=*words.get(1).ok_or("missing output file")?;
+                    let (ret,m)=libbreenix::gpu::modes();if ret!=0{return Err(format!("MODES {ret}"));}
+                    let mode=m.modes[m.current as usize];
+                    let mut pixels=vec![0xA5u8;mode.width as usize*mode.height as usize*4];
+                    let mut record=[0xA5u8;libbreenix::gpu::abi::record::SIZE];
+                    let (ret,arg)=libbreenix::gpu::readback_why(0,[0,0,mode.width,mode.height],&mut pixels,mode.width*4,&mut record);
+                    observed=(ret,arg.reason);
+                    let mut out=Vec::with_capacity(8+record.len()+pixels.len());
+                    out.extend_from_slice(&mode.width.to_le_bytes());out.extend_from_slice(&mode.height.to_le_bytes());out.extend_from_slice(&record);out.extend_from_slice(&pixels);
+                    std::fs::write(path,out).map_err(|e|e.to_string())
+                })();
+                match result{Ok(()) if observed.0==0=>say("ok"),Ok(())=>say(&format!("err {} reason {}",-observed.0,observed.1)),Err(e)=>say(&format!("gpu-display: {e}"))}
             }
             Some("composite") => reply(window::composite().map(|(serial, pixels)| format!("{serial} {pixels}"))),
             Some("composite2") => {
@@ -283,7 +319,7 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let mut kiosk = Kiosk { auto: true, serial: 1 };
+    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new() };
     let mut seen = BTreeMap::new();
     let mut pending = Vec::new();
     loop {

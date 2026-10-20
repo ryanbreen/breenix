@@ -8,11 +8,11 @@ pub(crate) const ISOLATION: &[Case] = &[
     pictured!("other-position", "A non-compositor setting a window's position fails with EPERM", isolation_other_position),
     pictured!("other-inject", "A non-compositor writing events into a window fails with EPERM", isolation_other_inject),
     pictured!("other-read", "An unrelated non-root process capturing another's window fails with EPERM, and root succeeds", isolation_other_read),
-    pictured!("other-map", "An unrelated process mapping another's buffers fails with EPERM", isolation_other_map),
+    pictured!("other-map", "Foreign GPU target handles are refused before submission or readback", isolation_other_map),
     pictured!("other-resize", "An unrelated process resizing another's window fails with EPERM", isolation_other_resize),
     pictured!("other-destroy", "An unrelated process destroying another's window fails with EPERM", isolation_other_destroy),
     pictured!("other-tree", "An unrelated non-root process mapping another's tree page fails with EPERM", isolation_other_tree),
-    pictured!("texture-map", "A non-compositor mapping the compositor texture fails with EPERM", isolation_texture_map),
+    pictured!("texture-map", "An unrelated process cannot sample the compositor scanout through GPU resource handles", isolation_texture_map),
     pictured!("composite-denied", "A non-compositor compositing fails with EPERM", isolation_composite_denied),
     pictured!("claim-unprivileged", "A uid 1000 process claiming the compositor fails with EPERM, and root's claim succeeds", isolation_claim_unprivileged),
     pictured!("claim-twice", "A second compositor claim fails with EBUSY while the first lives", isolation_claim_twice),
@@ -230,18 +230,20 @@ fn isolation_other_read() -> CaseResult {
     }))
 }
 
+// gpu-window: §2.2 replaces retired mapping authority with validator ownership of GPU handles (EINVAL).
 fn isolation_other_map() -> CaseResult {
-    interface()?;
-    let w = shown(16, 16, 8, b"other-map")?;
-    let id = w.id();
-    as_unrelated("MAP_COMMITTED", |who| {
-        let mut m = abi::MapBuffers::ZERO;
-        m.id = id;
-        errno_is(call(op::MAP_COMMITTED, &mut m), EPERM, who, &format!("MAP_COMMITTED of window {id}"))?;
-        if m.buffer.iter().any(|&a| a != 0) {
-            return Err(format!("a refused MAP_COMMITTED still reported buffer addresses {:x?}", m.buffer));
-        }
-        Ok(())
+interface()?;
+    let w=W::new(16,16,2)?;let target=w.c.buffer[0];
+    let mut px=vec![0;1024];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+    want_ok(libbreenix::gpu::readback(target,[0,0,16,16],&mut px,64,&mut record),"17.4","gpu-window: owner's GPU target readback")?;
+    as_unrelated("foreign GPU handle",|who| {
+        let mut c=bgl::Context::new().map_err(|r|format!("CONTEXT_CREATE {}",outcome(r)))?;
+        c.begin(target,16,16);c.clear(0xff112233);
+        let result=c.submit();
+        if result.err()!=Some(-(EINVAL as i64)){return Err(format!("gpu-window: {who} submitted to another owner's GPU target"));}
+        let mut px=vec![0xA5;1024];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+        errno_is(libbreenix::gpu::readback(target,[0,0,16,16],&mut px,64,&mut record),EINVAL,who,"foreign GPU target")?;
+        if px.iter().any(|&b|b!=0xA5){return Err("gpu-window: foreign readback returned pixels".into());}Ok(())
     })
 }
 
@@ -295,15 +297,30 @@ fn isolation_other_tree() -> CaseResult {
     }))
 }
 
+// gpu-window: §2.2 replaces MAP_COMPOSITOR_TEXTURE with a refused GPU scanout sample; gpu-display supplies the binding.
 fn isolation_texture_map() -> CaseResult {
-    interface()?;
-    let mut m = abi::MapTree::ZERO;
-    let r = call(op::MAP_COMPOSITOR_TEXTURE, &mut m);
-    ensure(r == -(EPERM as i64), "17.4", format!("MAP_COMPOSITOR_TEXTURE by root that is not the compositor {}; the contract gives EPERM", outcome(r)))?;
-    step("17.4", child("MAP_COMPOSITOR_TEXTURE as uid 1000", 3_000, Some(1000), || {
-        let mut m = abi::MapTree::ZERO;
-        errno_is(call(op::MAP_COMPOSITOR_TEXTURE, &mut m), EPERM, "a uid 1000 process", "MAP_COMPOSITOR_TEXTURE")
-    }))
+interface()?;
+    let (mut k,_)=kiosk().cite("24")?;
+    let fixture=k.ask("gpu-private-scanout").cite("24")?;
+    let fields:Vec<_>=fixture.split_whitespace().collect();
+    ensure(fields.len()==3 && fields[0]=="ok","17.4",format!("gpu-display: private scanout fixture: {fixture}"))?;
+    let handle=fields[1].parse::<u64>().map_err(|e|e.to_string())?;
+    let device=fields[2].parse::<u64>().map_err(|e|e.to_string())?;
+    ensure(handle!=0 && ![0,255].contains(&(handle>>56)),"17.4","gpu-window: fixture did not expose an actual GPU resource handle")?;
+    let (ret,modes)=libbreenix::gpu::modes();
+    ensure(ret==0 && modes.binding_known==1 && modes.scanout_resource==device && device!=0,"17.4","gpu-display: compositor has no known GPU scanout binding")?;
+    let sample=|who:&str|->Result<(),String>{
+        let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r)))?;
+        let target=libbreenix::gpu::target_create(0,16,16).map_err(|r|format!("target {}",outcome(r)))?;
+        c.begin(target,16,16);c.clear(0xff000000);
+        c.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|r|format!("positive control {}",outcome(r)))?;
+        c.begin(target,16,16);c.copy(handle,&[[0,0,16,16,0,0]]);
+        let refused=c.submit().err()==Some(-(EINVAL as i64));
+        libbreenix::gpu::resource_destroy(target);
+        if !refused {return Err(format!("gpu-window: {who} sampled the compositor's live private scanout handle"));}Ok(())
+    };
+    sample("root non-compositor").cite("17.4")?;
+    as_unrelated("sample compositor scanout",sample)
 }
 
 fn isolation_composite_denied() -> CaseResult {
@@ -571,22 +588,17 @@ fn isolation_efault_composite() -> CaseResult {
         "the compositor's COMPOSITE with an unmapped and then a read-only descriptor answered `{bad}`; the contract gives EFAULT for both (`err 14 err 14`)"))
 }
 
+// gpu-display: B7 preserves bad-user-copy protection through GPU CAPS, RESOURCE_CREATE and SUBMIT.
 fn isolation_efault_mouse() -> CaseResult {
-    #[cfg(target_arch = "aarch64")]
-    step("17.5", child("framebuffer EFAULT", 5_000, None, || {
-        let hole = Pages::new(0, 1, true)?;
-        let bad = hole.addr();
-        let draw = |op, p1, p2, p3, p4| {
-            let cmd = libbreenix::graphics::FbDrawCmd { op, p1, p2, p3, p4, color: 1 };
-            unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const _ as u64) as i64 }
-        };
-        let lo = bad as u32 as i32;
-        let hi = (bad >> 32) as u32 as i32;
-        for (name, ret) in [
-            ("fbinfo", unsafe { raw::syscall1(SYS_FB_INFO, bad) as i64 }),
-            ("command", unsafe { raw::syscall1(SYS_FB_DRAW, bad) as i64 }),
-            ("flush rectangles", draw(8, lo, hi, 1, 0)),
-        ] { errno_is(ret, EFAULT, "unmapped user page", name)?; }
+    step("17.5", child("GPU user-copy EFAULT",5_000,None,|| {
+        use libbreenix::gpu::{self,abi as ga};
+        let hole=Pages::new(0,1,true)?;let bad=hole.addr();
+        for (op,len) in [(ga::op::CAPS,core::mem::size_of::<ga::Caps>()),(ga::op::RESOURCE_CREATE,core::mem::size_of::<ga::ResourceCreate>())] {
+            let ret=unsafe{gpu::call(op,bad as *mut u8,len)};
+            errno_is(ret,EFAULT,"unmapped user page","gpu-display: GPU descriptor")?;
+        }
+        let c=bgl::Context::new().map_err(|r|format!("GPU context {}",outcome(r)))?;
+        errno_is(gpu::submit_raw(c.handle(),bad,16).0,EFAULT,"unmapped user page","gpu-display: GPU stream")?;
         Ok(())
     }))?;
     // The pointer words (16 bytes) and the key words (8 bytes) alike.
@@ -645,7 +657,8 @@ fn isolation_efault_commit() -> CaseResult {
 fn isolation_efault_readback() -> CaseResult {
     interface()?;
     let mut record = vec![0u8; core::mem::size_of::<abi::ObservationRecord>()];
-    let screen = 1280u64 * 800 * 4;
+    let (width,height)=super::composition::screen_size()?;
+    let screen = (width*height*4) as u64;
     let mut rb = abi::Readback::ZERO;
     rb.dst = unmapped();
     rb.dst_len = screen;
@@ -1052,7 +1065,17 @@ fn isolation_test_hooks_absent() -> CaseResult {
     ensure(live.is_empty(), "17.6", format!("the wait-stress ops do not return ENOSYS in this production kernel: fb_draw {}; the contract requires ENOSYS from each", live.join(", ")))
 }
 
+// gpu-apps: §2.2 retires framebuffer syscalls and pixel mappings with their last consumers.
 fn isolation_retired_ops() -> CaseResult {
+    for number in [SYS_FB_INFO,SYS_FB_DRAW,SYS_FB_MMAP] {
+        let mut storage=[0u64;16];
+        let ret=unsafe{raw::syscall1(number,storage.as_mut_ptr() as u64) as i64};
+        want_errno(ret,38,"17.6",&format!("gpu-apps: retired syscall {number}"))?;
+    }
+    let mut buffers=abi::MapBuffers::ZERO;
+    let mut texture=abi::MapTree::ZERO;
+    want_errno(call(op::MAP_COMMITTED,&mut buffers),38,"17.6","gpu-apps: MAP_COMMITTED")?;
+    want_errno(call(op::MAP_COMPOSITOR_TEXTURE,&mut texture),38,"17.6","gpu-apps: MAP_COMPOSITOR_TEXTURE")?;
     // The demo ops 0 to 5, 7 and 9 and the version 1 window ops 10 to 26 and 31. Arguments
     // that would do nothing were an op live: empty rectangles, a zero radius, a one-pixel line,
     // null descriptors and pointers, window id 0 and a zero timeout; op 0 clears with black.

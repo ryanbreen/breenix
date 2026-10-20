@@ -135,6 +135,7 @@ pub(crate) const WIDGETS: &[Case] = &[
         "An event that changes no widget state is reported as needing no redraw",
         widgets_no_change_ack,
     ),
+    pictured!("scale-2", "Scale-2 widgets double logical geometry and rasterize TrueType labels at twice the size", widgets_scale_2),
 ];
 
 pub(crate) const TEXT_ENTRY: &[Case] = &[
@@ -667,6 +668,7 @@ fn same_as(
     Ok(())
 }
 
+// gpu-text: R3 centers the certified DejaVu Sans 16 px label using 26.6 advances.
 fn widgets_button_draw() -> CaseResult {
     let theme = Theme::dark();
     let mut g = Guarded::bgrx(100, 40);
@@ -681,8 +683,8 @@ fn widgets_button_draw() -> CaseResult {
         |fb| {
             shapes::fill_rect(fb, 10, 8, 60, 20, theme.widget_bg);
             shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
-            // text_width("OK") = 11 and the glyphs are 7 high: (10 + 49 / 2, 8 + 13 / 2).
-            font5x7::draw_text(fb, b"OK", 34, 14, theme.text_primary, 1);
+            // R3 uses font advances and a 16 px line box.
+            sans_center(fb,b"OK",Rect::new(10,8,60,20),theme.text_primary);
         },
     )
 }
@@ -762,6 +764,7 @@ fn widgets_button_cancel() -> CaseResult {
     )
 }
 
+// gpu-text: R3 changes only the label metrics and certified text pixels; disabled input and colours remain exact.
 fn widgets_button_disabled() -> CaseResult {
     let theme = Theme::dark();
     let mut b = Button::new(Rect::new(10, 8, 60, 20), b"OK");
@@ -782,11 +785,12 @@ fn widgets_button_disabled() -> CaseResult {
     same_as(&g, PAPER, "disabled button", "14.2", |fb| {
         shapes::fill_rect(fb, 10, 8, 60, 20, theme.widget_bg);
         shapes::draw_rect(fb, 10, 8, 60, 20, theme.border);
-        font5x7::draw_text(fb, b"OK", 34, 14, theme.text_secondary, 1);
+        sans_center(fb,b"OK",Rect::new(10,8,60,20),theme.text_secondary);
     })?;
     snapshot(&g)
 }
 
+// gpu-text: R3 uses DejaVu Sans label pixels; both toggle events and checkbox geometry stay exact.
 fn widgets_checkbox_toggle() -> CaseResult {
     let theme = Theme::dark();
     let mut c = Checkbox::new(Rect::new(10, 10, 120, 20), b"Opt");
@@ -812,7 +816,7 @@ fn widgets_checkbox_toggle() -> CaseResult {
         shapes::draw_line(fb, bx + 3, by + 7, bx + 5, by + 10, theme.text_primary);
         shapes::draw_line(fb, bx + 5, by + 10, bx + 11, by + 3, theme.text_primary);
         shapes::draw_rect(fb, bx, by, 14, 14, theme.border);
-        font5x7::draw_text(fb, b"Opt", 28, 16, theme.text_primary, 1);
+        sans_draw(fb,b"Opt",28,12,theme.text_primary);
     })?;
     let got = events(|i| c.update(i), &[press(15, 18), release(15, 18)]);
     ensure(
@@ -939,22 +943,26 @@ fn widgets_slider_keys() -> CaseResult {
     Ok(())
 }
 
+// gpu-text: R3 derives ellipsis prefixes from 26.6 DejaVu advances; clipping and empty areas remain exact.
 fn widgets_label_clip() -> CaseResult {
     let theme = Theme::dark();
     let mut g = Guarded::bgrx(80, 40);
     g.reset(PAPER);
-    Label::new(Rect::new(10, 8, 35, 7), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
+    Label::new(Rect::new(10, 8, 35, 16), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
     snapshot(&g)?;
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
-        font5x7::draw_text(fb, b"ABC...", 10, 8, theme.text_primary, 1);
+        let mut prefix=Vec::new();
+        for c in b"ABCDEFGHIJKLM" {let mut next=prefix.clone();next.push(*c);next.extend_from_slice(b"...");if sans_width(&next)>35 {break;}prefix.push(*c);}
+        prefix.extend_from_slice(b"...");fb.push_clip(libgfx::framebuf::Rect::new(10,8,35,16));
+        sans_draw(fb,&prefix,10,8,theme.text_primary);fb.pop_clip();
     })?;
     let mut narrow = Guarded::bgrx(80, 40);
     narrow.reset(PAPER);
-    Label::new(Rect::new(10, 8, 12, 7), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
+    Label::new(Rect::new(10, 8, 12, 16), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
     snapshot(&narrow)?;
     for y in 0..40 {
         for x in 0..80 {
-            if !in_rect(x as i64, y as i64, 10, 8, 12, 7) {
+            if !in_rect(x as i64, y as i64, 10, 8, 12, 16) {
                 ensure(
                     narrow.color(x, y) == PAPER,
                     "14.3",
@@ -968,10 +976,10 @@ fn widgets_label_clip() -> CaseResult {
         "14.3",
         "small label drew no visible ellipsis",
     )?;
-    // Coordinator ruling 2026-10-15 (confirmed by the operator brief): include the dot rows;
-    // its clipped third dot has no ink inside the twelve-pixel width.
-    same_as(&narrow, PAPER, "12x7 ellipsis", "14.3", |fb| {
-        font5x7::draw_text(fb, b"..", 10, 8, theme.text_primary, 1);
+    // R3 uses the certified glyph pixels and clips the final dot at the physical bounds.
+    same_as(&narrow, PAPER, "12x16 DejaVu ellipsis", "14.3", |fb| {
+        fb.push_clip(libgfx::framebuf::Rect::new(10,8,12,16));
+        sans_draw(fb,b"...",10,8,theme.text_primary);fb.pop_clip();
     })?;
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 3), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
@@ -1149,6 +1157,7 @@ fn open_menu() -> (MenuBar, Theme) {
     (m, theme)
 }
 
+// gpu-text: R3 derives menu label and shortcut widths from certified 26.6 advances.
 fn widgets_menubar_open() -> CaseResult {
     let (m, theme) = open_menu();
     ensure(
@@ -1160,9 +1169,8 @@ fn widgets_menubar_open() -> CaseResult {
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    // The dropdown is under the File title: its widest row, Save As with Ctrl+Shift+S, is
-    // 18 + 24 + 41 + 24 + 71 + 8 = 186 wide, and four items and a separator are 97 tall.
-    let (dx, dy, dw, dh) = (10usize, 27usize, 186usize, 97usize);
+    let width=18+24+sans_width(b"Save As")+24+sans_width(b"Ctrl+Shift+S")+8;
+    let (dx,dy,dw,dh)=(10usize,27usize,width as usize,97usize);
     for (x, y, want, what) in [
         (dx, dy + 30, theme.border, "its left border"),
         (dx + dw - 1, dy + 30, theme.border, "its right border"),
@@ -1181,19 +1189,19 @@ fn widgets_menubar_open() -> CaseResult {
             ),
         )?;
     }
-    let mut want = Guarded::bgrx(17, 7);
+    let mut want = Guarded::bgrx(sans_width(b"New") as usize, 16);
     want.reset(theme.widget_bg);
-    font5x7::draw_text(&mut want.fb(), b"New", 0, 0, theme.text_primary, 1);
-    for y in 0..7 {
-        for x in 0..17 {
-            let got = g.color(dx + 18 + x, dy + 7 + y);
+    sans_draw(&mut want.fb(),b"New",0,0,theme.text_primary);
+    for y in 0..16 {
+        for x in 0..want.width {
+            let got = g.color(dx + 18 + x, dy + 3 + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
                 format!(
                     "the first item's label pixel ({},{}) is {}, the contract gives {}",
                     dx + 18 + x,
-                    dy + 7 + y,
+                    dy + 3 + y,
                     hex(got),
                     hex(want.color(x, y))
                 ),
@@ -1249,6 +1257,7 @@ fn widgets_menu_keys() -> CaseResult {
     )
 }
 
+// gpu-text: R3 changes disabled label metrics and pixels; disabled activation remains forbidden.
 fn widgets_menu_disabled() -> CaseResult {
     let (mut m, theme) = open_menu();
     // Save, the disabled second item, is the row at y = 27 + 22 .. 27 + 44.
@@ -1264,19 +1273,19 @@ fn widgets_menu_disabled() -> CaseResult {
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    let mut want = Guarded::bgrx(23, 7);
+    let mut want = Guarded::bgrx(sans_width(b"Save") as usize, 16);
     want.reset(theme.widget_bg);
-    font5x7::draw_text(&mut want.fb(), b"Save", 0, 0, theme.text_secondary, 1);
-    for y in 0..7 {
-        for x in 0..23 {
-            let got = g.color(28 + x, 27 + 22 + 7 + y);
+    sans_draw(&mut want.fb(),b"Save",0,0,theme.text_secondary);
+    for y in 0..16 {
+        for x in 0..want.width {
+            let got = g.color(28 + x, 27 + 22 + 3 + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
                 format!(
                     "the disabled label's pixel ({},{}) is {}, the contract dims it to {}",
                     28 + x,
-                    56 + y,
+                    52 + y,
                     hex(got),
                     hex(want.color(x, y))
                 ),
@@ -1318,6 +1327,7 @@ fn widgets_layout_stack() -> CaseResult {
     )
 }
 
+// gpu-text: R3 adds certified DejaVu label pixels to the unchanged five-widget focus ring checks.
 fn widgets_focus_ring() -> CaseResult {
     let rect = Rect::new(20, 20, 100, 24);
     let theme = Theme::dark();
@@ -1362,6 +1372,11 @@ fn widgets_focus_ring() -> CaseResult {
             }
         }
     }
+    g.reset(PAPER);b.set_focused(true);b.draw(&mut g.fb(),&theme);
+    same_as(&g,PAPER,"focused TrueType button","14.3",|fb|{
+        shapes::fill_rect(fb,20,20,100,24,theme.widget_bg);shapes::draw_rect(fb,20,20,100,24,theme.border);
+        sans_center(fb,b"OK",rect,theme.text_primary);shapes::draw_rect(fb,18,18,104,28,theme.focus_ring);
+    })?;
     snapshot(&g)
 }
 
@@ -1588,9 +1603,12 @@ fn text_entry_maxlen() -> CaseResult {
         "replacement did not count removed selection",
     )
 }
+// gpu-text: R3 derives visible cursor position from DejaVu Sans advances, preserving Home and clipping checks.
 fn text_entry_scroll_to_cursor() -> CaseResult {
     let mut f = entry_field(100);
     f.insert_str("abcdefghijklmnopqrstuvwxyz");
+    let visible:String=f.text().chars().enumerate().filter_map(|(i,c)| (i>=f.scroll_offset()).then_some(c)).collect();
+    ensure(f.cursor_x()==14+sans_width(visible.as_bytes()),"15",format!("gpu-text: caret x {} disagrees with the visible substring advance {}",f.cursor_x(),sans_width(visible.as_bytes())))?;
     ensure(
         f.scroll_offset() > 0 && f.cursor_x() >= 14 && f.cursor_x() < 70,
         "15",
@@ -2634,4 +2652,38 @@ fn watch_frame(w: &mut FontWatcher, mono: bool) -> Guarded {
     .expect("loaded watcher font");
     ttf_font::draw_text(&mut g.fb(), font, "Wi é A", 8, 40, size, Color::WHITE);
     g
+}
+
+/// R3 lower-layer oracle: the pinned font and §8.3's already-certified 26.6 metrics.
+fn sans_width(text:&[u8])->i32 {
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
+    let font=Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid");
+    let glyphs:Vec<_>=ttf_font::decode_utf8(text).map(|cp|font.glyph_for(cp)).collect();
+    let pen:i32=glyphs.iter().enumerate().map(|(i,&g)|font.advance26(g,1024)+glyphs.get(i+1).map_or(0,|&next|font.kern26(g,next,1024))).sum();
+    (pen+32)/64
+}
+fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
+    let mut font=CachedFont::new(Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid"),256);
+    ttf_font::draw_text_bytes(fb,&mut font,text,x,y,16.0,colour);
+}
+fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
+    sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
+}
+
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+// gpu-text: R4 doubles logical geometry and uses DejaVu Sans at 32 px, never replicated 16 px pixels.
+fn widgets_scale_2()->CaseResult {
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("14")?;
+    ensure(modes.modes[modes.current as usize].scale==2,"14","gpu-display: widget case is not in scale-2 mode")?;
+    let theme=Theme::dark();let mut g=Guarded::bgrx(400,160);g.reset(PAPER);
+    Button::new(Rect::new(20,16,120,40),b"OK").draw(&mut g.fb(),&theme);
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").map_err(|e|e.to_string())?;
+    let mut font=CachedFont::new(Font::parse(&bytes).cite("14")?,256);
+    let width=ttf_font::text_width(&mut font,"OK",32.0);
+    same_as(&g,PAPER,"scale-2 TrueType button","14",|fb|{
+        shapes::fill_rect(fb,40,32,240,80,theme.widget_bg);
+        for inset in 0..2 {shapes::draw_rect(fb,40+inset,32+inset,240-2*inset,80-2*inset,theme.border);}
+        ttf_font::draw_text(fb,&mut font,"OK",40+(240-width)/2,56,32.0,theme.text_primary);
+    })
 }

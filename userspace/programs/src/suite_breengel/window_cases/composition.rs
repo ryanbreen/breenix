@@ -6,7 +6,7 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("compose-position", "A committed pattern appears at the window's position in the composed frame, exactly", composition_compose_position),
     pictured!("compose-overlap", "Two overlapping windows compose in z order, exactly", composition_compose_overlap),
     pictured!("compose-offscreen", "A window partly off the screen is clipped at the screen edge", composition_compose_offscreen),
-    pictured!("compose-fullscreen", "A 1280x800 window at 0,0 fills the frame exactly", composition_compose_fullscreen),
+    pictured!("compose-fullscreen", "A full-mode window at 0,0 fills the frame exactly", composition_compose_fullscreen),
     pictured!("compose-many", "Sixteen windows in a fixed stack compose to the formula, exactly", composition_compose_many),
     pictured!("generation", "Each commit advances the window's commit id by exactly one", composition_generation),
     pictured!("no-compositor", "A commit with no compositor returns within 250 ms and is composed once a compositor claims", composition_no_compositor),
@@ -23,14 +23,13 @@ pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("cursor-no-trail", "Moving the cursor over a static scene restores every pixel it covered", composition_cursor_no_trail),
     pictured!("cursor-shape", "Setting a cursor shape draws that shape at the pointer", composition_cursor_shape),
     pictured!("cursor-stationary-repaint", "Content committed under a stationary cursor is shown, with the cursor redrawn above it", composition_cursor_stationary_repaint),
-    pictured!("flush-irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_flush_irq_bound),
+    pictured!("irq-bound", "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold", composition_irq_bound),
     pictured!("present-rate", "One 256x256 window composes at least 60 commits a second", composition_present_rate),
     pictured!("takeover-giveback", "Display takeover and giveback restore the previous owner's frame exactly", composition_takeover_giveback),
     pictured!("ownership-stack", "When a compositor dies, the display returns to the process that gave it, not to the runner", composition_ownership_stack),
-];
-
-pub(crate) const COMPOSITION_FLUSH: &[Case] = &[
-    pictured!("flush-clip", "FLUSH clips its rectangle to the screen", composition_flush_clip),
+    pictured!("gpu-composite", "GPU composition draws client targets without CPU pixel uploads", composition_gpu_composite),
+    pictured!("scale-2", "Scale-2 GPU composition preserves placement, clipping and exact pixels", composition_scale_2),
+    pictured!("target-lifetime", "Compositor, scanout, capture and replay holds retain GPU targets until their final release", composition_target_lifetime),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -114,9 +113,20 @@ pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), libbreenix::suite::C
     }
 }
 
+// claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
+/// The active physical mode owns every screen allocation and row index (B8).
+pub(crate) fn screen_size() -> Result<(usize,usize), libbreenix::suite::CaseError> {
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
+    ensure((modes.current as usize)<modes.modes.len(),"18","gpu-display: invalid current mode")?;
+    let mode=&modes.modes[modes.current as usize];
+    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18","gpu-display: required scale-2 mode is absent")?;
+    Ok((mode.width as usize,mode.height as usize))
+}
+
 /// The whole composed screen and its observation record (`SCANOUT_READBACK`, as root).
 pub(crate) fn screen() -> Result<(Vec<u8>, abi::ObservationRecord), libbreenix::suite::CaseError> {
-    let mut px = vec![0u8; 1280 * 800 * 4];
+    let (width,height) = screen_size()?;
+    let mut px = vec![0u8; width * height * 4];
     let mut rec = abi::ObservationRecord::ZERO;
     let mut rb = abi::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
@@ -132,7 +142,8 @@ pub(crate) fn screen() -> Result<(Vec<u8>, abi::ObservationRecord), libbreenix::
 
 /// The screen must equal `scene`'s formula everywhere.
 pub(crate) fn screen_is(px: &[u8], scene: &[Placed], what: &str) -> CaseResult {
-    same(px, 1280, 800, true, what, "18", formula(scene))
+    let (width,height)=screen_size()?;
+    same(px, width as u32, height as u32, true, what, "18", formula(scene))
 }
 
 /// A composite's record entries, `(id, commit_id, pixel_gen, pixels)`, with its header pixels.
@@ -189,12 +200,14 @@ fn composition_compose_overlap() -> CaseResult {
 }
 
 fn composition_compose_offscreen() -> CaseResult {
-    scene_case(&[Placed::new(-30, -20, 100, 60, 0, 4), Placed::new(1220, 770, 120, 50, 1, 5), Placed::new(-10, 500, 40, 40, 2, 6)],
+    let (width,height)=screen_size()?;
+    scene_case(&[Placed::new(-30, -20, 100, 60, 0, 4), Placed::new(width as i32-60, height as i32-30, 120, 50, 1, 5), Placed::new(-10, 500, 40, 40, 2, 6)],
         "windows partly off every screen edge")
 }
 
 fn composition_compose_fullscreen() -> CaseResult {
-    scene_case(&[Placed::new(0, 0, 1280, 800, 0, 7)], "a 1280x800 window at (0, 0)")
+    let (width,height)=screen_size()?;
+    scene_case(&[Placed::new(0, 0, width as u32, height as u32, 0, 7)], "a full-mode window at (0, 0)")
 }
 
 fn composition_compose_many() -> CaseResult {
@@ -389,7 +402,8 @@ fn composition_damage_work() -> CaseResult {
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     let (_, first) = compose(&mut k)?;
-    ensure(first == 1280 * 800, "18", format!("the claim's first composite processed {first} pixels; it composes the whole screen, 1,024,000"))?;
+    let (width,height)=screen_size()?;
+    ensure(first == (width*height) as u64, "18", format!("the claim's first composite processed {first} pixels; it must cover the reported mode"))?;
     let damaged = |w: &W, seed: u32| -> CaseResult {
         let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
         fill_rect(w.buf(a.buffer), 200, abi::Rect::new(20, 30, 10, 10), seed);
@@ -418,6 +432,7 @@ fn composition_damage_work() -> CaseResult {
 }
 
 fn composition_damage_screen() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let mut k = compositor()?;
     let scene = [Placed::new(50, 60, 300, 200, 0, 8), Placed::new(250, 160, 200, 150, 1, 9)];
@@ -437,12 +452,12 @@ fn composition_damage_screen() -> CaseResult {
     drop(k);
     let mut fresh = compositor()?;
     let (_, pixels) = compose(&mut fresh)?;
-    ensure(pixels == 1280 * 800, "18", format!("a new compositor's first composite processed {pixels} pixels, not the whole screen"))?;
+    ensure(pixels == (width*height) as u64, "18", format!("a new compositor's first composite processed {pixels} pixels, not the whole screen"))?;
     let (full, _) = screen()?;
-    match (0..1280 * 800).find(|&i| partial[i * 4..i * 4 + 4] != full[i * 4..i * 4 + 4]) {
+    match (0..width * height).find(|&i| partial[i * 4..i * 4 + 4] != full[i * 4..i * 4 + 4]) {
         None => Ok(()),
         Some(i) => at("18", format!("the partial composite's frame differs from a full recomposition at ({}, {}): {:02x?} against {:02x?}",
-            i % 1280, i / 1280, &partial[i * 4..i * 4 + 4], &full[i * 4..i * 4 + 4])),
+            i % width, i / width, &partial[i * 4..i * 4 + 4], &full[i * 4..i * 4 + 4])),
     }
 }
 
@@ -553,21 +568,22 @@ fn composition_no_change_commit() -> CaseResult {
 }
 
 /// The pixels of `px` that differ from the formula, as (x, y).
-fn differing(px: &[u8], scene: &[Placed]) -> Vec<(u32, u32)> {
+fn differing(px: &[u8], scene: &[Placed]) -> Result<Vec<(u32, u32)>,libbreenix::suite::CaseError> {
+    let (width,height)=screen_size()?;
     let f = formula(scene);
-    let mut reference=Vec::with_capacity(1280*800*4);
-    for y in 0..800 {for x in 0..1280 {reference.extend_from_slice(&f(x,y));}}
-    crate::remember_frame(px,1280,800,Some(reference));
+    let mut reference=Vec::with_capacity(width*height*4);
+    for y in 0..height as u32 {for x in 0..width as u32 {reference.extend_from_slice(&f(x,y));}}
+    crate::remember_frame(px,width,height,Some(reference));
     let mut out = Vec::new();
-    for y in 0..800u32 {
-        for x in 0..1280u32 {
-            let i = ((y * 1280 + x) * 4) as usize;
+    for y in 0..height as u32 {
+        for x in 0..width as u32 {
+            let i = ((y as usize * width + x as usize) * 4) as usize;
             if px[i..i + 4] != f(x, y) {
                 out.push((x, y));
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn cursor(k: &mut Helper, shape: u32, visible: bool, x: i32, y: i32) -> CaseResult {
@@ -596,7 +612,7 @@ fn composition_cursor_no_trail() -> CaseResult {
     cursor(&mut k, abi::cursor_shape::ARROW, true, 300, 250)?;
     compose(&mut k)?;
     let (px, _) = screen()?;
-    let first = differing(&px, &scene);
+    let first = differing(&px, &scene)?;
     ensure(!first.is_empty() && first.iter().all(|&(x, y)| x.abs_diff(300) < 32 && y.abs_diff(250) < 32), "18", format!(
         "with the arrow at (300, 250), {} pixels differ from the windows, the first at {:?}; the sprite is drawn there and nowhere else", first.len(), first.first()))?;
     for (x, y) in [(320, 260), (500, 400), (900, 700), (150, 120)] {
@@ -604,7 +620,7 @@ fn composition_cursor_no_trail() -> CaseResult {
         compose(&mut k)?;
     }
     let (px, _) = screen()?;
-    let trail: Vec<(u32, u32)> = differing(&px, &scene).into_iter().filter(|&(x, y)| x.abs_diff(150) >= 32 || y.abs_diff(120) >= 32).collect();
+    let trail: Vec<(u32, u32)> = differing(&px, &scene)?.into_iter().filter(|&(x, y)| x.abs_diff(150) >= 32 || y.abs_diff(120) >= 32).collect();
     ensure(trail.is_empty(), "18", format!("after the cursor moved on, {} pixels away from it still differ from the scene, the first at {:?}: a trail", trail.len(), trail.first()))?;
     cursor(&mut k, abi::cursor_shape::ARROW, false, 150, 120)?;
     compose(&mut k)?;
@@ -613,6 +629,7 @@ fn composition_cursor_no_trail() -> CaseResult {
 }
 
 fn composition_cursor_shape() -> CaseResult {
+    let (width,_)=screen_size()?;
     interface()?;
     let mut k = compositor()?;
     let mut sprites: Vec<Vec<(u32, u32, [u8; 4])>> = Vec::new();
@@ -621,8 +638,8 @@ fn composition_cursor_shape() -> CaseResult {
         cursor(&mut k, shape, true, 640, 400)?;
         compose(&mut k)?;
         let (px, _) = screen()?;
-        let drawn: Vec<(u32, u32, [u8; 4])> = differing(&px, &[]).into_iter().map(|(x, y)| {
-            let i = ((y * 1280 + x) * 4) as usize;
+        let drawn: Vec<(u32, u32, [u8; 4])> = differing(&px, &[])?.into_iter().map(|(x, y)| {
+            let i = ((y as usize * width + x as usize) * 4) as usize;
             (x, y, [px[i], px[i + 1], px[i + 2], px[i + 3]])
         }).collect();
         ensure(!drawn.is_empty(), "18", format!("shape {shape} at (640, 400) drew no pixel over the black screen"))?;
@@ -637,6 +654,7 @@ fn composition_cursor_shape() -> CaseResult {
 }
 
 fn composition_cursor_stationary_repaint() -> CaseResult {
+    let (width,_)=screen_size()?;
     interface()?;
     let mut k = compositor()?;
     let mut scene = [Placed::new(200, 150, 400, 300, 0, 24)];
@@ -645,7 +663,7 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
     cursor(&mut k, abi::cursor_shape::ARROW, true, 380, 290)?;
     compose(&mut k)?;
     let (px, _) = screen()?;
-    let sprite: Vec<(u32, u32)> = differing(&px, &scene);
+    let sprite: Vec<(u32, u32)> = differing(&px, &scene)?;
     ensure(!sprite.is_empty(), "18", "the visible arrow cursor at (380, 290) drew no pixel over the window")?;
     ensure(sprite.iter().all(|&(x, y)| x.abs_diff(380) < 32 && y.abs_diff(290) < 32), "18", format!(
         "the cursor at (380, 290) changed pixels outside the 32-pixel box around it, the first at {:?}",
@@ -655,26 +673,28 @@ fn composition_cursor_stationary_repaint() -> CaseResult {
     w.frame(25).cite("17.3")?;
     compose(&mut k)?;
     let (px2, _) = screen()?;
-    let now = differing(&px2, &scene);
+    let now = differing(&px2, &scene)?;
     ensure(now == sprite, "18", format!(
         "after new content was committed under the stationary cursor, {} pixels differ from the new frame (the sprite covered {}); the content shows with the cursor redrawn above it",
         now.len(), sprite.len()))?;
     for &(x, y) in sprite.iter() {
-        let i = ((y * 1280 + x) * 4) as usize;
+        let i = ((y as usize * width + x as usize) * 4) as usize;
         ensure(px[i..i + 4] == px2[i..i + 4], "18", format!("the cursor sprite's pixel ({x}, {y}) changed when the content under it did"))?;
     }
     Ok(())
 }
 
-/// The trace gauge `display_irq_masked_max_us`.
+/// The GPU path gauge, including validation, translation, fences and readback copies.
 fn irq_gauge() -> Result<u64, libbreenix::suite::CaseError> {
-    counter("display_irq_masked_max_us").cite("18")
+    counter("gpu_irq_masked_max_us").cite("18")
 }
 
-fn composition_flush_irq_bound() -> CaseResult {
+// gpu-display: §2.2 keeps the calibrated 500 us bound over the entire GPU composition path.
+fn composition_irq_bound() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let mut k = compositor()?;
-    let p = Placed::new(0, 0, 1280, 800, 0, 26);
+    let p = Placed::new(0, 0, width as u32, height as u32, 0, 26);
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     libbreenix::test_control::arm(abi::tc_point::IRQ_HOLD, 0, 0).map_err(|e| format!("ARM irq-hold: {e}")).cite("21")?;
@@ -692,10 +712,11 @@ fn composition_flush_irq_bound() -> CaseResult {
     for i in 0..20 {
         w.frame(28 + i).cite("17.3")?;
         compose(&mut k)?;
+        let _=screen()?;
     }
     let bound = irq_gauge()?;
     value("irq-masked-max", bound as i64, "us", Some((0, 500)));
-    ensure(bound <= 500, "18", format!("over 20 composites of full-screen damage the longest IRQ-masked interval in the display copy was {bound} us; the bound is 500"))
+    ensure(bound <= 500, "18", format!("over 20 composites of full-screen damage the longest IRQ-masked interval in GPU composition and readback was {bound} us; the bound is 500"))
 }
 
 fn composition_present_rate() -> CaseResult {
@@ -742,46 +763,21 @@ pub(crate) fn give_back() -> i64 {
     unsafe { raw::syscall0(SYS_GIVE_BACK_DISPLAY) as i64 }
 }
 
-/// Map the display (the caller owns it) and fill all of it with `colour` (BGRX), then FLUSH it.
+/// Draw and present a solid GPU target in the caller's display-owner context.
 pub(crate) fn paint(colour: [u8; 4]) -> Result<(), String> {
-    let info = crate::show::fbinfo()?;
-    let mut width: u64 = 0;
-    // SAFETY: the kernel writes the mapped width into this live value.
-    let addr = unsafe { raw::syscall1(SYS_FB_MMAP, &mut width as *mut u64 as u64) as i64 };
-    if addr <= 0 {
-        return Err(format!("fb_mmap {}", outcome(addr)));
-    }
-    let stride = info.stride as usize * 4;
-    for y in 0..info.height as usize {
-        // SAFETY: fb_mmap mapped `height` rows of `stride` bytes at `addr`.
-        let row = unsafe { core::slice::from_raw_parts_mut((addr as usize + y * stride) as *mut u8, info.width as usize * 4) };
-        for px in row.chunks_exact_mut(4) {
-            px.copy_from_slice(&colour);
-        }
-    }
-    match flush(0, 0, info.width as i32, info.height as i32) {
-        0 => Ok(()),
-        r => Err(format!("FLUSH {}", outcome(r))),
-    }
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r)))?;
+    let mode=modes.modes[modes.current as usize];
+    let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r)))?;
+    let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height).map_err(|r|format!("gpu-display: scanout target {}",outcome(r)))?;
+    context.begin(target,mode.width,mode.height);context.clear(u32::from_le_bytes([colour[0],colour[1],colour[2],255]));
+    let result=context.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|context.present(target)).map(|_|());
+    libbreenix::gpu::resource_destroy(target);
+    result.map_err(|r|format!("gpu-display: GPU draw/present {}",outcome(r)))
 }
 
-#[repr(C)]
-struct FbDrawCmd {
-    op: u32,
-    p1: i32,
-    p2: i32,
-    p3: i32,
-    p4: i32,
-    color: u32,
-}
-
-fn flush(x: i32, y: i32, w: i32, h: i32) -> i64 {
-    let cmd = FbDrawCmd { op: 6, p1: x, p2: y, p3: w, p4: h, color: 0 };
-    // SAFETY: the kernel reads one FbDrawCmd from this live stack value.
-    unsafe { raw::syscall1(SYS_FB_DRAW, &cmd as *const FbDrawCmd as u64) as i64 }
-}
-
+// gpu-display: B7 replaces retired fb_mmap/FLUSH painting with a GPU present; exact restoration stays.
 fn composition_takeover_giveback() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
     let (before, _) = screen()?;
     let mut f = || {
@@ -810,16 +806,47 @@ fn composition_takeover_giveback() -> CaseResult {
     let given = h.ask("go").cite("24")?;
     ensure(given == "given", "18", format!("the child's give_back_display: `{given}`"))?;
     let (after, _) = screen()?;
-    crate::remember_frame(&after,1280,800,Some(before.clone()));
-    match (0..1280 * 800).find(|&i| before[i * 4..i * 4 + 4] != after[i * 4..i * 4 + 4]) {
+    crate::remember_frame(&after,width,height,Some(before.clone()));
+    match (0..width * height).find(|&i| before[i * 4..i * 4 + 4] != after[i * 4..i * 4 + 4]) {
         None => Ok(()),
         Some(i) => at("18", format!("after giveback the screen differs from the previous owner's frame at ({}, {}): {:02x?} against {:02x?}",
-            i % 1280, i / 1280, &after[i * 4..i * 4 + 4], &before[i * 4..i * 4 + 4])),
+            i % width, i / width, &after[i * 4..i * 4 + 4], &before[i * 4..i * 4 + 4])),
     }
 }
 
+/// The case already owns one stack entry; three descendants fit and the fourth is EBUSY.
+fn nested_takeover(depth: u32) -> i32 {
+    let ret = take_over();
+    if depth == 4 { return if ret == -(EBUSY as i64) { 0 } else { 1 }; }
+    if ret != 0 { return 2; }
+    let mut body = || nested_takeover(depth + 1);
+    let Ok(pid) = libbreenix::suite::spawn(&[], libbreenix::suite::Run::Call(&mut body)) else { return 3; };
+    let mut status = 0;
+    if process::waitpid(pid.raw() as i32, &mut status, 0).is_err() { return 4; }
+    if !process::wifexited(status) || process::wexitstatus(status) != 0 { return 5; }
+    if give_back() != 0 { return 6; }
+    0
+}
+
+fn ownership_refusals() -> CaseResult {
+    let mut body = || nested_takeover(1);
+    let pid = libbreenix::suite::spawn(&[], libbreenix::suite::Run::Call(&mut body))?;
+    let mut status = 0;
+    process::waitpid(pid.raw() as i32, &mut status, 0)?;
+    ensure(process::wifexited(status) && process::wexitstatus(status) == 0,
+        "18", "display ownership nesting did not refuse depth four with EBUSY")?;
+    child("uid-1000 display takeover", 3_000, Some(1000), || {
+        let ret = take_over();
+        if ret == -(EPERM as i64) { Ok(()) }
+        else { Err(format!("unprivileged TAKE_OVER_DISPLAY {}; expected EPERM", outcome(ret))) }
+    }).cite("18")
+}
+
+// gpu-display: B7 replaces the giver's framebuffer paint with GPU PRESENT; owner death restores that binding.
 fn composition_ownership_stack() -> CaseResult {
+    let (width,height)=screen_size()?;
     interface()?;
+    ownership_refusals()?;
     // The giver: takes the display, paints it, and hands it to a compositor it names.
     let mut giver_body = || {
         let took = take_over();
@@ -849,59 +876,153 @@ fn composition_ownership_stack() -> CaseResult {
     let w = W::new(p.w, p.h, 2)?;
     show(&mut k, &w, &p)?;
     compose(&mut k)?;
+    let (ret,binding)=libbreenix::gpu::modes();
+    ensure(ret==0 && binding.binding_known==1 && binding.scanout_resource!=0,"18","gpu-display: ownership stack has no completed GPU binding")?;
     let (px, _) = screen()?;
-    crate::remember_frame(&px,1280,800,None);
-    ensure(px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 3] == pattern(28, 50, 50)[..3], "18", "the compositor given the display does not show its composition")?;
+    crate::remember_frame(&px,width,height,None);
+    ensure(px[(150 * width + 150) * 4..(150 * width + 150) * 4 + 3] == pattern(28, 50, 50)[..3], "18", "the compositor given the display does not show its composition")?;
     k.kill_checked().cite("24")?;
     let _ = time::sleep_ms(50);
+    let (ret,restored)=libbreenix::gpu::modes();
+    ensure(ret==0 && restored.binding_known==1 && restored.scanout_resource!=binding.scanout_resource,"18","gpu-display: compositor death did not restore the giver's GPU target")?;
     let (px, _) = screen()?;
-    crate::remember_frame(&px,1280,800,None);
-    ensure(px[..4] == [0x11, 0x99, 0x33, 0xFF] && px[(150 * 1280 + 150) * 4..(150 * 1280 + 150) * 4 + 4] == [0x11, 0x99, 0x33, 0xFF], "18", format!(
+    crate::remember_frame(&px,width,height,None);
+    ensure(px[..4] == [0x11, 0x99, 0x33, 0xFF] && px[(150 * width + 150) * 4..(150 * width + 150) * 4 + 4] == [0x11, 0x99, 0x33, 0xFF], "18", format!(
         "after the compositor died the screen shows {:02x?} at (0, 0); the display returns to the giver and its frame is restored exactly", &px[..4]))
 }
 
-fn composition_flush_clip() -> CaseResult {
-    interface()?;
-    let mut f = || {
-        let took = take_over();
-        if took < 0 {
-            return stop(format!("take_over_display {}", outcome(took)));
-        }
-        if let Err(e) = paint([0, 0, 0, 0]) {
-            return stop(e);
-        }
-        let info = match crate::show::fbinfo() {
-            Ok(i) => i,
-            Err(e) => return stop(e),
-        };
-        let mut width: u64 = 0;
-        // SAFETY: the kernel writes the mapped width into this live value.
-        let addr = unsafe { raw::syscall1(SYS_FB_MMAP, &mut width as *mut u64 as u64) as i64 };
-        if addr <= 0 {
-            return stop(format!("fb_mmap {}", outcome(addr)));
-        }
-        let stride = info.stride as usize * 4;
-        for y in 700..800usize {
-            for x in 1180..1280usize {
-                // SAFETY: inside the mapped screen.
-                unsafe { core::ptr::copy_nonoverlapping([0x40u8, 0x50, 0x60, 0].as_ptr(), (addr as usize + y * stride + x * 4) as *mut u8, 4) };
-            }
-        }
-        let r = flush(1180, 700, 400, 300);
-        let _ = io::write(Fd::from_raw(1), format!("flushed {r}\n").as_bytes());
-        let mut b = [0u8; 1];
-        let _ = io::read(Fd::from_raw(0), &mut b);
-        let _ = give_back();
-        0
+
+fn compositor_gpu_counts(k:&mut Helper)->Result<Vec<u64>,libbreenix::suite::CaseError>{
+    let line=k.ask("gpu-counters").cite("24")?;
+    let nums=line.strip_prefix("ok ").ok_or_else(||format!("gpu-display: compositor COUNTERS: {line}"))?
+        .split_whitespace().map(str::parse).collect::<Result<Vec<u64>,_>>().map_err(|e|e.to_string())?;
+    ensure(nums.len()==6,"18","gpu-display: incomplete compositor counters")?;Ok(nums)
+}
+// gpu-display: §2.2 requires actual GPU draws, no client-pixel upload by the compositor, and exact composed pixels.
+fn composition_gpu_composite()->CaseResult {
+    interface()?;let mut k=compositor()?;
+    let p=Placed::new(20,30,64,48,0,9);let w=W::new(64,48,2)?;show(&mut k,&w,&p)?;
+    let before=compositor_gpu_counts(&mut k)?;compose(&mut k)?;let after=compositor_gpu_counts(&mut k)?;
+    ensure(after[0]>before[0] && after[1]-before[1]<=4 && after[2]==before[2] && after[3]==before[3],"18",
+        "gpu-display: composition did not use bounded GPU instances without CPU pixel uploads")?;
+    let (pixels,_)=screen()?;screen_is(&pixels,&[p],"GPU composition")
+}
+
+pub(crate) struct GpuSnapshot {pub width:usize,pub height:usize,pub record:[u8;1024],pub pixels:Vec<u8>}
+impl GpuSnapshot {
+    pub(crate) fn word(&self,o:usize)->u32 {u32::from_le_bytes(self.record[o..o+4].try_into().unwrap())}
+    pub(crate) fn quad(&self,o:usize)->u64 {u64::from_le_bytes(self.record[o..o+8].try_into().unwrap())}
+}
+/// Ask the actual display-owning helper to observe target 0; no foreign handle or CPU image is substituted.
+pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),libbreenix::suite::CaseError>{
+    static NEXT:AtomicU64=AtomicU64::new(0);
+    let path=format!("/dev/shm/breengel-gpu-{}-{}",process::getpid()?.raw(),NEXT.fetch_add(1,Relaxed));
+    struct Remove<'a>(&'a str);impl Drop for Remove<'_>{fn drop(&mut self){let _=std::fs::remove_file(self.0);}}
+    let _remove=Remove(&path);
+    let answer=k.ask(&format!("gpu-scanout {path}")).cite("24")?;
+    let (status,reason)=if answer=="ok" {(0,0)}else{
+        let fields:Vec<_>=answer.split_whitespace().collect();
+        ensure(fields.len()==4 && fields[0]=="err" && fields[2]=="reason","20",format!("gpu-display: composed GPU scanout readback: {answer}"))?;
+        (-fields[1].parse::<i64>().map_err(|e|e.to_string())?,fields[3].parse::<u32>().map_err(|e|e.to_string())?)
     };
-    let mut h = Helper::call(&mut f).cite("24")?;
-    let said = h.line(5_000).cite("24")?;
-    ensure(said == "flushed 0", "18", format!("FLUSH of (1180, 700, 400, 300), running past the screen's edges: `{said}`; it is clipped to the screen and succeeds"))?;
-    let (px, _) = screen()?;
-    crate::remember_frame(&px,1280,800,None);
-    for (x, y, want) in [(1180usize, 700usize, [0x40u8, 0x50, 0x60, 0xFF]), (1279, 799, [0x40, 0x50, 0x60, 0xFF]), (1179, 700, [0, 0, 0, 0xFF])] {
-        let i = (y * 1280 + x) * 4;
-        ensure(px[i..i + 4] == want, "18", format!("after the clipped FLUSH the screen's pixel ({x}, {y}) is {:02x?}, not {want:02x?}", &px[i..i + 4]))?;
+    let bytes=std::fs::read(&path).map_err(|e|e.to_string())?;
+    ensure(bytes.len()>=1032,"20","gpu-display: truncated GPU snapshot")?;
+    let width=u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+    let height=u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    ensure(matches!((width,height),(1280,800)|(2560,1600)) && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
+    let record=bytes[8..1032].try_into().unwrap();
+    let snapshot=GpuSnapshot{width,height,record,pixels:bytes[1032..].to_vec()};
+    Ok((status,reason,snapshot))
+}
+// gpu-display: R4 applies logical scale to placement and compares the entire device destination with §18's formula.
+fn composition_scale_2()->CaseResult {
+    interface()?;let mut k=compositor()?;
+    // Unlike the legacy physical-pixel scenes, this fixture has logical geometry.
+    // Clients allocate physical targets; SET_GEOMETRY also takes physical positions.
+    let scene=[Placed::new(40,60,128,96,0,11),Placed::new(100,100,160,80,1,12),
+        Placed::new(-20,780,100,40,2,13)];
+    let wins:Vec<_>=scene.iter().map(|p|W::new(p.w*2,p.h*2,2)).collect::<Result<_,_>>()?;
+    let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r))).cite("18")?;
+    for (w,p) in wins.iter().zip(&scene){
+        want_ok(w.register(b"scale-2"),"17.1","REGISTER")?;
+        let acquired=w.acquire(2_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+        // A source-window fixture, not an uploaded expected composite. Device scaling
+        // makes its 2x pixel blocks; the compositor only receives physical targets.
+        use libbreenix::gpu::{self,abi as ga};
+        struct Texture(u64);
+        impl Drop for Texture {fn drop(&mut self){gpu::resource_destroy(self.0);}}
+        let texture=Texture(gpu::texture_create(ga::format::B8G8R8A8,p.w,p.h)
+            .map_err(|r|format!("gpu-display: source texture {}",outcome(r))).cite("18")?);
+        let source:Vec<u8>=(0..p.h).flat_map(|y|(0..p.w).flat_map(move|x|{
+            let c=pattern(p.seed,x,y);[c[0],c[1],c[2],255]
+        })).collect();
+        let (uploaded,_)=gpu::upload(context.handle(),texture.0,[0,0,p.w,p.h],&source,p.w*4,
+            ga::upload_source::B8G8R8A8,ga::purpose::FIXTURE);
+        want_ok(uploaded,"18","gpu-display: source-window fixture upload")?;
+        context.begin(w.c.buffer[acquired.buffer as usize],w.c.width,w.c.height);
+        let mut params=[0;16];params[4]=2;
+        context.draw(bgl::pipeline::COPY_SCALED,0,texture.0,0,0,
+            &[bgl::Instance{rect:[0,0,w.c.width as i32,w.c.height as i32],params}]);
+        context.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|r|format!("gpu-display: scale-2 source draw {}",outcome(r))).cite("18")?;
+        w.commit(acquired.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
+        let physical=Placed::new(p.x*2,p.y*2,p.w*2,p.h*2,p.z,p.seed);
+        place(&mut k,w.id(),&physical,abi::geometry_flags::VISIBLE)?;
     }
-    Ok(())
+    compose(&mut k)?;
+    let s=gpu_snapshot(&mut k)?;
+    ensure((s.width,s.height)==(2560,1600),"18","gpu-display: scale-2 composition has the wrong destination size")?;
+    same(&s.pixels,s.width as u32,s.height as u32,true,"scaled GPU composition","18",|x,y|formula(&scene)(x/2,y/2))
+}
+
+// gpu-display: §2.2 retained fronts feed composition, capture and replay after handle drop; scanout holds backing too.
+fn composition_target_lifetime()->CaseResult {
+    interface()?;
+    let before=crate::gpu_checks::counters().cite("18")?;
+    let mut k=compositor()?;let mut w=W::new(64,48,3)?;
+    let p=Placed::new(30,40,64,48,0,17);show(&mut k,&w,&p)?;
+    let front=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
+    // The latest commit's index is returned by ACQUIRE/COMMIT; make one known front.
+    let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+    fill(w.buf(a.buffer),64,48,17);
+    let commit=w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
+    let held=crate::gpu_checks::counters().cite("18")?;
+    want_ok(libbreenix::gpu::resource_destroy(w.c.buffer[a.buffer as usize]),"18","gpu-display: drop committed target handle")?;
+    ensure(crate::gpu_checks::counters().cite("18")?.resource_bytes==held.resource_bytes,"18","gpu-display: committed target backing freed before its holders")?;
+    compose(&mut k)?;let (pixels,_)=screen()?;screen_is(&pixels,&[p],"composition after client target handle destruction")?;
+    let (captured,pixels)=capture(w.id(),64,48,None).map_err(|r|format!("CAPTURE {}",outcome(r))).cite("17.3")?;
+    ensure(captured.commit_id==commit.commit_id && commit.commit_id>front.commit_id,"18","gpu-display: capture lost its retained commit")?;
+    same(&pixels,64,48,false,"capture of retained target","18",|x,y|pattern(17,x,y))?;
+    let replay=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
+    ensure(replay.base==commit.commit_id,"18","gpu-display: replay lost the retained target's commit")?;
+    let mut pixels=vec![0;64*48*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
+    want_ok(libbreenix::gpu::readback(w.c.buffer[replay.buffer as usize],[0,0,64,48],&mut pixels,256,&mut record),"18","gpu-display: replayed target readback")?;
+    same(&pixels,64,48,false,"replay from retained target","18",|x,y|pattern(17,x,y))?;
+    want_ok(w.destroy(),"17.2","DESTROY")?;k.kill_checked().cite("24")?;
+    let start=now_ms();while crate::gpu_checks::counters().cite("18")?.resource_bytes!=before.resource_bytes {
+        ensure(since(start)<1_000,"18","gpu-display: released window/capture/replay/compositor holds leaked backing")?;let _=time::sleep_ms(5);
+    }
+    // A scanout binding retains its resource independently of its destroyed user handle.
+    ensure(take_over()>=0,"18","gpu-display: take display for scanout lifetime")?;
+    let result=(||->CaseResult{
+        let mode=bgl::modes().map_err(|r|format!("MODES {}",outcome(r))).cite("18")?;let m=mode.modes[mode.current as usize];
+        let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r))).cite("18")?;
+        let target=libbreenix::gpu::scanout_target_create(0,m.width,m.height).map_err(|r|format!("scanout target {}",outcome(r))).cite("18")?;
+        c.begin(target,m.width,m.height);c.clear(0xff112233);c.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|c.present(target)).map_err(|r|format!("PRESENT {}",outcome(r))).cite("18")?;
+        let held=crate::gpu_checks::counters().cite("18")?.resource_bytes;
+        want_ok(libbreenix::gpu::resource_destroy(target),"18","RESOURCE_DESTROY bound scanout")?;
+        ensure(crate::gpu_checks::counters().cite("18")?.resource_bytes==held,"18","gpu-display: scanout freed backing before replacement")?;
+        let mut px=vec![0;m.width as usize*m.height as usize*4];let mut rec=[0;1024];
+        want_ok(libbreenix::gpu::readback(0,[0,0,m.width,m.height],&mut px,m.width*4,&mut rec),"18","read bound target after handle destruction")?;
+        ensure(px.chunks_exact(4).all(|p|p==[51,34,17,255]),"18","gpu-display: retained scanout pixels changed")
+    })();
+    let gave=give_back();result?;ensure(gave>=0,"18","gpu-display: release scanout hold")?;
+    let start=now_ms();while crate::gpu_checks::counters().cite("18")?.resource_bytes!=before.resource_bytes {
+        ensure(since(start)<1_000,"18","gpu-display: final scanout release leaked backing")?;let _=time::sleep_ms(5);
+    }Ok(())
+}
+
+pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,libbreenix::suite::CaseError>{
+    let (status,reason,s)=gpu_observe(k)?;
+    ensure(status==0,"20",format!("gpu-display: GPU readback {} reason {reason}",outcome(status)))?;
+    ensure(s.word(0)==2 && s.word(4)==1024,"20","gpu-display: scanout did not return record v2")?;Ok(s)
 }

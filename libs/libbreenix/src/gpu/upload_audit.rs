@@ -1,0 +1,288 @@
+//! Suite-only observation of successful syscall 416 uploads, before failure artifacts.
+//! Declarations retain static source bytes; content comparison precedes hash recording.
+use super::abi;
+use crate::crypto::sha256::sha256;
+use std::{collections::BTreeMap, sync::Mutex, vec::Vec};
+
+struct Table {
+    rows: Vec<&'static [u8]>,
+}
+#[derive(Clone, Copy, Default)]
+pub struct Mark {
+    image: u64,
+    fixture: u64,
+    refused: u64,
+}
+#[derive(Default)]
+struct Audit {
+    active: bool,
+    tables: Vec<Table>,
+    resources: BTreeMap<u64, abi::ResourceCreate>,
+    mark: Mark,
+    hashes: Vec<([u8; 32], bool)>,
+}
+static AUDIT: Mutex<Audit> = Mutex::new(Audit {
+    active: false,
+    tables: Vec::new(),
+    resources: BTreeMap::new(),
+    mark: Mark {
+        image: 0,
+        fixture: 0,
+        refused: 0,
+    },
+    hashes: Vec::new(),
+});
+fn locked() -> std::sync::MutexGuard<'static, Audit> {
+    AUDIT.lock().unwrap_or_else(|e| e.into_inner())
+}
+pub fn start() {
+    let mut a = locked();
+    let resources = core::mem::take(&mut a.resources);
+    *a = Audit {
+        active: true,
+        resources,
+        ..Audit::default()
+    };
+}
+pub fn stop() {
+    locked().active = false;
+}
+pub fn declare(bytes: &'static [u8]) {
+    declare_rows(std::vec![bytes]);
+}
+/// A static table may be stored as separate static rows (the bitmap-font dependency).
+pub fn declare_rows(rows: Vec<&'static [u8]>) {
+    locked().tables.push(Table { rows });
+}
+pub fn mark() -> Mark {
+    locked().mark
+}
+pub fn refusal(before: Mark, image: u64, fixture: u64) -> Option<&'static str> {
+    locked().refusal(before, image, fixture)
+}
+
+pub fn hashes() -> std::string::String {
+    use std::fmt::Write;
+    let a = locked();
+    let mut text = std::string::String::new();
+    for (hash, legal) in &a.hashes {
+        if !text.is_empty() {
+            text.push(',');
+        }
+        text.push_str(if *legal { "table:" } else { "refused:" });
+        for b in hash {
+            let _ = write!(text, "{b:02x}");
+        }
+    }
+    if text.is_empty() {
+        text.push('-');
+    }
+    text
+}
+impl Audit {
+    fn refusal(&self, before: Mark, image: u64, fixture: u64) -> Option<&'static str> {
+        if image != 0 {
+            Some("cpu-image")
+        } else if self.mark.refused != before.refused {
+            Some("passing-oracle")
+        } else if self.mark.image - before.image != image
+            || self.mark.fixture - before.fixture != fixture
+        {
+            Some("unobserved-upload")
+        } else {
+            None
+        }
+    }
+
+    fn pixels(&mut self, purpose: u32, bytes: &[u8]) {
+        let legal = purpose == abi::purpose::FIXTURE
+            && self.tables.iter().any(|t| {
+                t.rows.iter().map(|r| r.len()).sum::<usize>() == bytes.len()
+                    && t.rows.iter().flat_map(|r| r.iter()).eq(bytes.iter())
+            });
+        if !legal {
+            self.mark.refused += 1;
+        }
+        self.hashes.push((sha256(bytes), legal));
+    }
+}
+/// Called only after a successful GPU syscall. Successful uploads have readable clipped
+/// source rows. Resource extents determine exactly those rows, including for raw uploads.
+///
+/// # Safety
+/// `arg` has the validity required by `gpu::call` and remains live after that call.
+pub(super) unsafe fn observe(op: u32, arg: *mut u8, len: usize) {
+    observe_in(&mut locked(), op, arg, len);
+}
+unsafe fn observe_in(a: &mut Audit, op: u32, arg: *mut u8, len: usize) {
+    match op {
+        abi::op::RESOURCE_CREATE if len == core::mem::size_of::<abi::ResourceCreate>() => {
+            let r = *(arg as *const abi::ResourceCreate);
+            a.resources.insert(r.handle, r);
+        }
+        abi::op::RESOURCE_DESTROY if len == core::mem::size_of::<abi::Handle>() => {
+            a.resources.remove(&(*(arg as *const abi::Handle)).handle);
+        }
+        abi::op::UPLOAD if a.active && len == core::mem::size_of::<abi::Upload>() => {
+            let u = *(arg as *const abi::Upload);
+            let Some(r) = a.resources.get(&u.resource).copied() else {
+                a.mark.refused += 1;
+                return;
+            };
+            let (w, h) = if r.kind == abi::kind::BUFFER {
+                (r.size, 1)
+            } else {
+                (r.width as u64, r.height as u64)
+            };
+            let cw = (u.width as u64).min(w.saturating_sub(u.x as u64));
+            let ch = (u.height as u64).min(h.saturating_sub(u.y as u64));
+            let row = cw * abi::upload_source::bytes(u.source) as u64;
+            let n = row * ch;
+            if u.purpose == abi::purpose::FIXTURE {
+                a.mark.fixture += n;
+            } else {
+                a.mark.image += n;
+            }
+            // Geometry buffers are not pixel uploads, but still reconcile their byte counters.
+            if r.kind == abi::kind::BUFFER {
+                return;
+            }
+            let mut bytes = Vec::with_capacity(n as usize);
+            for y in 0..ch {
+                bytes.extend_from_slice(core::slice::from_raw_parts(
+                    (u.pixels + y * u.stride as u64) as *const u8,
+                    row as usize,
+                ));
+            }
+            // A clipped UPLOAD is a partial table, even if its visible bytes match another table.
+            if cw != u.width as u64 || ch != u.height as u64 {
+                a.mark.refused += 1;
+            }
+            a.pixels(u.purpose, &bytes);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use abi::Plain;
+    const FONT: &[u8] = &[14, 17, 17, 31, 17, 17, 17, 4, 12, 4, 4, 4, 4, 14];
+    fn audit() -> Audit {
+        Audit {
+            active: true,
+            tables: std::vec![Table {
+                rows: std::vec![FONT]
+            }],
+            ..Audit::default()
+        }
+    }
+    fn upload(a: &mut Audit, bytes: &[u8], purpose: u32, extent: u32) {
+        let mut r = abi::ResourceCreate {
+            handle: 1,
+            kind: abi::kind::TEXTURE,
+            width: extent,
+            height: 1,
+            format: abi::format::R8,
+            ..abi::ResourceCreate::ZERO
+        };
+        let mut u = abi::Upload {
+            resource: 1,
+            width: bytes.len() as u32,
+            height: 1,
+            pixels: bytes.as_ptr() as u64,
+            pixels_len: bytes.len() as u64,
+            stride: bytes.len() as u32,
+            source: abi::upload_source::R8,
+            purpose,
+            ..abi::Upload::ZERO
+        };
+        // Simulate the successful syscall boundary, including resource metadata and payload capture.
+        unsafe {
+            observe_in(
+                a,
+                abi::op::RESOURCE_CREATE,
+                &mut r as *mut _ as *mut u8,
+                core::mem::size_of_val(&r),
+            );
+            observe_in(
+                a,
+                abi::op::UPLOAD,
+                &mut u as *mut _ as *mut u8,
+                core::mem::size_of_val(&u),
+            );
+        }
+    }
+    #[test]
+    fn cpu_rendered_image_tagged_fixture_fails() {
+        let mut a = audit();
+        let before = a.mark;
+        let rendered = [17, 34, 51, 255].repeat(32 * 24);
+        upload(
+            &mut a,
+            &rendered,
+            abi::purpose::FIXTURE,
+            rendered.len() as u32,
+        );
+        assert_eq!(
+            a.refusal(before, 0, rendered.len() as u64),
+            Some("passing-oracle")
+        );
+        assert_eq!(a.hashes, std::vec![(sha256(&rendered), false)]);
+        // Equal length, a partial table and Image purpose cannot masquerade as a table.
+        for (bytes, purpose) in [
+            (&[0; 14][..], abi::purpose::FIXTURE),
+            (&FONT[..7], abi::purpose::FIXTURE),
+            (FONT, abi::purpose::IMAGE),
+        ] {
+            let before = a.mark;
+            upload(&mut a, bytes, purpose, bytes.len() as u32);
+            assert_eq!(
+                a.refusal(
+                    before,
+                    if purpose == abi::purpose::IMAGE {
+                        bytes.len() as u64
+                    } else {
+                        0
+                    },
+                    if purpose == abi::purpose::FIXTURE {
+                        bytes.len() as u64
+                    } else {
+                        0
+                    }
+                ),
+                Some(if purpose == abi::purpose::IMAGE {
+                    "cpu-image"
+                } else {
+                    "passing-oracle"
+                })
+            );
+        }
+    }
+    #[test]
+    fn clipped_run_accepts_whole_table_but_not_clipped_upload() {
+        let mut a = audit();
+        let before = a.mark;
+        // Only one glyph of the run is visible: upload its whole source table once.
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
+        assert_eq!(a.hashes, std::vec![(sha256(FONT), true)]);
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, 7);
+        assert_eq!(a.refusal(before, 0, 7), Some("passing-oracle"));
+    }
+    #[test]
+    fn once_per_context_table_upload_allows_later_runs_without_uploads() {
+        let mut a = audit();
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
+        let before = a.mark;
+        // Cached or offscreen runs need no UPLOAD.
+        assert_eq!(a.refusal(before, 0, 0), None);
+        assert_eq!(a.hashes.len(), 1);
+        // A bypassed successful syscall is still refused by kernel-counter reconciliation.
+        assert_eq!(a.refusal(before, 0, 14), Some("unobserved-upload"));
+    }
+}
