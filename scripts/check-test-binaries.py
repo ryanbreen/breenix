@@ -17,6 +17,7 @@ from pathlib import Path
 import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -66,14 +67,14 @@ class Image:
         return result.stdout
 
     def listing(self, directory):
-        """Map each entry of one directory to its (octal mode, size); empty when the directory is absent."""
+        """Map names in a directory inode to (octal mode, size, inode)."""
         if directory not in self.listings:
             entries = {}
             # inode  mode  (type)  uid  gid  size  date time  name
-            for line in self.run(f"ls -l {directory}").decode(errors="replace").splitlines():
+            for line in self.run(f"ls -l <{directory}>").decode(errors="replace").splitlines():
                 fields = line.split(None, 8)
                 if len(fields) == 9 and fields[1].isdigit() and fields[5].isdigit():
-                    entries[fields[8]] = (fields[1], int(fields[5]))
+                    entries[fields[8]] = (fields[1], int(fields[5]), int(fields[0]))
             self.listings[directory] = entries
         return self.listings[directory]
 
@@ -82,21 +83,44 @@ class Image:
         fast = re.search(r'Fast link dest: "(.*)"', stat)
         return fast.group(1) if fast else self.run(f"cat {path}").decode(errors="replace")
 
-    def loads(self, directory, name):
-        """Whether the kernel's lookup of directory/name ends at a regular, non-empty file."""
-        for _ in range(MAX_SYMLINK_DEPTH + 1):
-            mode, size = self.listing(directory).get(name, ("", 0))
-            if len(mode) == 6 and mode.startswith("12"):
-                target = self.link_target(posixpath.join(directory, name))
-                directory, name = posixpath.split(posixpath.normpath(posixpath.join(directory, target)))
+    def resolve(self, path, depth=0):
+        """Resolve each component, including intermediate links, as ext2 resolve_path does."""
+        if depth > MAX_SYMLINK_DEPTH:
+            return None
+        entry = self.listing(2)["."]
+        components = [part for part in path.split("/") if part]
+        for index, component in enumerate(components):
+            mode, size, inode = entry
+            if not stat.S_ISDIR(int(mode, 8)):
+                return None
+            if component == ".":
                 continue
-            return len(mode) == 6 and mode.startswith("10") and size > 0
+            entry = self.listing(inode).get(component)
+            if entry is None:
+                return None
+            if stat.S_ISLNK(int(entry[0], 8)):
+                target = self.link_target(f"<{entry[2]}>")
+                if not target.startswith("/"):
+                    target = "/" + "/".join(components[:index]) + "/" + target
+                remaining = components[index + 1:]
+                if remaining:
+                    target += "/" + "/".join(remaining)
+                return self.resolve(target, depth + 1)
+        return entry
+
+    def loads(self, name, directories):
+        """Validate the first resolved search path; an unusable entry shadows later copies."""
+        for directory in directories:
+            entry = self.resolve(posixpath.join(directory, name))
+            if entry is not None:
+                mode, size, inode = entry
+                return stat.S_ISREG(int(mode, 8)) and size > 0
         return False
 
 
 def missing_binaries(disk, names, directories, debugfs):
     image = Image(disk, debugfs)
-    return [name for name in names if not any(image.loads(d, name) for d in directories)]
+    return [name for name in names if not image.loads(name, directories)]
 
 
 def main(argv):
