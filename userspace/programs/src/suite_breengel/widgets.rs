@@ -789,6 +789,7 @@ fn widgets_button_disabled() -> CaseResult {
     snapshot(&g)
 }
 
+// gpu-text: R3 uses DejaVu Sans label pixels; both toggle events and checkbox geometry stay exact.
 fn widgets_checkbox_toggle() -> CaseResult {
     let theme = Theme::dark();
     let mut c = Checkbox::new(Rect::new(10, 10, 120, 20), b"Opt");
@@ -814,7 +815,7 @@ fn widgets_checkbox_toggle() -> CaseResult {
         shapes::draw_line(fb, bx + 3, by + 7, bx + 5, by + 10, theme.text_primary);
         shapes::draw_line(fb, bx + 5, by + 10, bx + 11, by + 3, theme.text_primary);
         shapes::draw_rect(fb, bx, by, 14, 14, theme.border);
-        font5x7::draw_text(fb, b"Opt", 28, 16, theme.text_primary, 1);
+        sans_draw(fb,b"Opt",28,12,theme.text_primary);
     })?;
     let got = events(|i| c.update(i), &[press(15, 18), release(15, 18)]);
     ensure(
