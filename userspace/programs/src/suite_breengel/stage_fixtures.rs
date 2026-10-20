@@ -1,30 +1,56 @@
 //! Literal section 23 fixtures shared by the guest cases and the host developer loop.
 //! Expected bytes come only from contract rectangles, colours and formulas.
 use super::stage::{self, Finale, Image, Milestone, Run, Spotlight, Stamp, Tile};
-use libgfx::{color::Color, font, framebuf::FrameBuf};
+use libgfx::{color::Color, framebuf::FrameBuf};
+use libfont::{CachedFont,Font};
+thread_local! {static DISPLAY_SCALE:std::cell::Cell<usize>=const{std::cell::Cell::new(1)};}
 
 fn surface() -> FrameBuf {
-    FrameBuf::new(1280, 800, libgfx::framebuf::Format::BGRX).unwrap()
+    let n=DISPLAY_SCALE.with(|s|s.get());
+    FrameBuf::new(1280*n, 800*n, libgfx::framebuf::Format::BGRX).unwrap()
 }
 fn expect_pixel(fb:&FrameBuf,x:usize,y:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
-    let p=fb.get_pixel(x,y);
-    if (p.r,p.g,p.b)==rgb { Ok(()) } else { Err(format!("pixel {x},{y}: got {},{},{} expected {rgb:?}",p.r,p.g,p.b)) }
+    let n=fb.width/1280;
+    for dy in 0..n {for dx in 0..n {let p=fb.get_pixel(x*n+dx,y*n+dy);
+        if (p.r,p.g,p.b)!=rgb {return Err(format!("pixel {},{}: got {},{},{} expected {rgb:?}",x*n+dx,y*n+dy,p.r,p.g,p.b));}
+    }}Ok(())
 }
+fn expected_pixels(fb:&FrameBuf,want:&FrameBuf,x:usize,y:usize)->Result<(),String>{
+    let n=fb.width/1280;
+    for dy in 0..n {for dx in 0..n {let (x,y)=(x*n+dx,y*n+dy);let (p,q)=(fb.get_pixel(x,y),want.get_pixel(x,y));
+        if p!=q {return Err(format!("gpu-display: stage pixel {x},{y} differs from the certified reference"));}
+    }}Ok(())
+}
+fn put(fb:&mut FrameBuf,x:usize,y:usize,c:Color){let n=fb.width/1280;for dy in 0..n {for dx in 0..n {fb.put_pixel(x*n+dx,y*n+dy,c);}}}
+fn oracle_fill(fb:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color){let n=(fb.width/1280) as i32;libgfx::shapes::fill_rect(fb,x*n,y*n,w*n,h*n,c);}
+/// Lower-layer §8.3 text oracle. Stage/UI code never supplies these expected pixels.
+fn oracle_text(fb:&mut FrameBuf,t:&[u8],x:usize,y:usize,c:Color,legacy_scale:usize){
+    let n=fb.width/1280;
+    if n==1 {libgfx::font::draw_text(fb,t,x,y,c,legacy_scale);return;}
+    let font=Font::parse(include_bytes!("../../../../fonts/DejaVuSans.ttf")).expect("pinned DejaVu Sans");
+    let mut font=CachedFont::new(font,256);
+    libgfx::ttf_font::draw_text_bytes(fb,&mut font,t,(x*n) as i32,(y*n) as i32,(7*legacy_scale*n) as f32,c);
+}
+
 fn rect(fb:&FrameBuf,x:usize,y:usize,w:usize,h:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
     for py in y..y+h { for px in x..x+w { expect_pixel(fb,px,py,rgb)?; } } Ok(())
 }
-fn text(fb:&FrameBuf,x:usize,y:usize,s:&str,scale:usize,background:(u8,u8,u8)) -> Result<(),String> {
-    let w=font::text_width(s.as_bytes(),scale); let h=7*scale;
+fn text(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,background:(u8,u8,u8)) -> Result<(),String> {
+    let n=fb.width/1280;
+    let (w,h)=if n==1 {(libgfx::font::text_width(t.as_bytes(),scale),7*scale)}else{
+        let mut f=CachedFont::new(Font::parse(include_bytes!("../../../../fonts/DejaVuSans.ttf")).map_err(|e|e.to_string())?,256);
+        let size=(7*scale*n) as f32;let m=f.metrics(size);
+        ((libgfx::ttf_font::text_width(&mut f,t,size) as usize).div_ceil(n),((m.ascender-m.descender+m.line_gap).ceil() as usize).div_ceil(n))
+    };
     let mut reference=surface();
-    for py in y..y+h { for px in x..x+w { reference.put_pixel(px,py,Color::rgb(background.0,background.1,background.2)); } }
-    font::draw_text(&mut reference,s.as_bytes(),x,y,Color::WHITE,scale);
-    for py in y..y+h { for px in x..x+w {
-        let p=reference.get_pixel(px,py); expect_pixel(fb,px,py,(p.r,p.g,p.b))?;
-    } } Ok(())
+    for py in y..y+h {for px in x..(x+w).min(1280) {put(&mut reference,px,py,Color::rgb(background.0,background.1,background.2));}}
+    oracle_text(&mut reference,t.as_bytes(),x,y,Color::WHITE,scale);
+    for py in y..y+h {for px in x..(x+w).min(1280) {expected_pixels(fb,&reference,px,py)?;}}Ok(())
 }
+
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
     Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
-        input:None,spotlight:Spotlight::None,finale:None,boundary:stage::Observation{backend:1,flags:1,boundary:1} }
+        input:None,spotlight:Spotlight::None,finale:None,boundary:if DISPLAY_SCALE.with(|s|s.get())==2 {stage::Observation{backend:4,flags:1,boundary:4}}else{stage::Observation{backend:1,flags:1,boundary:1}} }
 }
 fn render(fb:&mut FrameBuf,run:&Run<'_>) -> Result<(),String> {
     stage::draw(fb,run).map_err(|e|format!("missing or invalid run stage (§23): {e:?}"))
@@ -41,6 +67,9 @@ const MILESTONES:[Milestone<'static>;2]=[Milestone {id:"alpha",first:0,end:2},Mi
 #[cfg(test)]
 pub fn check(name:&str) -> Result<(),String> {check_capture(name,|_|Ok(()))}
 pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>) -> Result<(),String> {
+    let scaled=matches!(name,"stage-layout"|"tile-stamps"|"tile-thumbnail"|"spotlight-picture"|"spotlight-timing"|"spotlight-input"|"spotlight-measurement"|"milestone-ribbon"|"finale"|"stage-hidpi");
+    DISPLAY_SCALE.with(|s|s.set(if scaled{2}else{1}));
+    struct Reset;impl Drop for Reset{fn drop(&mut self){DISPLAY_SCALE.with(|s|s.set(1));}}let _reset=Reset;
     let mut fb=surface();
     let result=(|| {
     let mut cases=tiles(); let mut model=run(&cases,&MILESTONES);
@@ -48,11 +77,11 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
         "stage-layout" => {
             render(&mut fb,&model)?;
             let mut header=surface();
-            libgfx::shapes::fill_rect(&mut header,0,0,1280,96,Color::rgb(24,39,59));
+            oracle_fill(&mut header,0,0,1280,96,Color::rgb(24,39,59));
             for (x,y,t,scale) in [(24,16,"BREENIX / fixture",3),(24,48,"qemu  case 3 of 5  elapsed 250 ms  fps 60",1),(24,68,"1 passed  1 failed  1 not reached",2)] {
-                font::draw_text(&mut header,t.as_bytes(),x,y,Color::WHITE,scale);
+                oracle_text(&mut header,t.as_bytes(),x,y,Color::WHITE,scale);
             }
-            for y in 0..96 {for x in 0..1280 {let p=header.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
+            for y in 0..96 {for x in 0..1280 {expected_pixels(&fb,&header,x,y)?;}}
             rect(&fb,0,0,1280,16,(24,39,59))?;
             rect(&fb,0,96,1280,16,(12,19,31))?;
             rect(&fb,832,112,432,8,(18,29,44))?;
@@ -70,9 +99,9 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,18,272,"0/3 pass",4,(24,39,59))?;
             rect(&fb,16,320,800,380,(12,19,31))?;
             let mut ef=surface();
-            for y in 776..783 {for x in 24..1280 {ef.put_pixel(x,y,Color::rgb(12,19,31));}}
-            font::draw_text(&mut ef,b"host copy and window outside guest view",24,776,Color::rgb(161,183,204),1);
-            for y in 776..783 {for x in 24..1280 {let p=ef.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
+            for y in 776..783 {for x in 24..1280 {put(&mut ef,x,y,Color::rgb(12,19,31));}}
+            oracle_text(&mut ef,b"host renderer and window outside guest view",24,776,Color::rgb(161,183,204),1);
+            for y in 776..783 {for x in 24..1280 {expected_pixels(&fb,&ef,x,y)?;}}
             let reached=[true,false,true];
             stage::draw_boot_ribbon(&mut fb,&reached).map_err(|e|format!("{e:?}"))?;
             for (i,lit) in reached.iter().enumerate() {
@@ -91,8 +120,8 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 rect(&fb,x,y+1,1,94,color)?;rect(&fb,x+151,y+1,1,94,color)?;
                 let mut ef=surface();
                 for py in y+60..y+95 {for px in x+1..x+151 {ef.put_pixel(px,py,Color::rgb(color.0,color.1,color.2));}}
-                font::draw_text(&mut ef,format!("{key}").as_bytes(),x+8,y+64,Color::WHITE,4);
-                for py in y+60..y+95 {for px in x+1..x+151 {let p=ef.get_pixel(px,py);expect_pixel(&fb,px,py,(p.r,p.g,p.b))?;}}
+                oracle_text(&mut ef,format!("{key}").as_bytes(),x+8,y+64,Color::WHITE,4);
+                for py in y+60..y+95 {for px in x+1..x+151 {expected_pixels(&fb,&ef,px,py)?;}}
             }
             rect(&fb,656,112,152,96,(12,19,31))?;
             rect(&fb,496,216,152,1,(48,67,96))?;
@@ -109,12 +138,12 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
                 text(&fb,840,144,&format!("key {key}"),1,(18,29,44))?;
             }
             // The complete suite fits without dropping tiles or truncating category names.
-            let sizes=[40,37,22,21,9,31,7,23,19,12,39,38,27,32,15,21];
+            let sizes=[42,38,22,21,9,31,7,24,19,12,40,38,28,32,17,19];
             let ids:Vec<String>=sizes.iter().enumerate().flat_map(|(i,n)|(0..*n).map(move|k|format!("cat{i}/case{k}"))).collect();
             let tiles:Vec<_>=ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
             let wall=stage::Wall::for_tiles(&tiles).map_err(|e|format!("wall: {e:?}"))?;
-            if tiles.len()!=393 || wall.scale!=1 || wall.columns!=20 {return Err("full wall size or scale changed".into());}
-            for i in 0..393 {let (x,y)=wall.origin(wall.slot(&tiles,i));if x+38>816 || y+24>700{return Err(format!("tile {i} is outside wall"));}}
+            if tiles.len()!=399 || wall.scale!=1 || wall.columns!=20 {return Err("full wall size or scale changed".into());}
+            for i in 0..399 {let (x,y)=wall.origin(wall.slot(&tiles,i));if x+38>816 || y+24>700{return Err(format!("tile {i} is outside wall"));}}
             // Exercise the reported growth: two cases in existing groups and 13 in a new one.
             let mut larger = ids.clone();
             larger.insert(1,"cat0/extra0".into()); larger.insert(2,"cat0/extra1".into());
@@ -129,7 +158,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             let mut grown=run(&bigger,&groups);grown.selected=0;
             render(&mut fb,&grown)?;
             let packed=stage::Wall::for_tiles(&bigger).map_err(|e|format!("grown wall: {e:?}"))?;
-            for i in 0..408 {let (x,y)=packed.origin(packed.slot(&bigger,i));rect(&fb,x,y,38,1,(48,67,96))?;if y+24>700{return Err("grown wall overflow".into());}}
+            for i in 0..414 {let (x,y)=packed.origin(packed.slot(&bigger,i));rect(&fb,x,y,38,1,(48,67,96))?;if y+24>700{return Err("grown wall overflow".into());}}
             // A single category also supports more than the retired 420-case cap.
             let many_ids:Vec<_>=(0..430).map(|i|format!("one/{i}")).collect();
             let many:Vec<_>=many_ids.iter().map(|id|Tile{id,stamp:Stamp::Pending,key:0,thumbnail:None}).collect();
@@ -249,11 +278,11 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,72,312,"1 passed  1 failed  1 not reached",2,(24,39,59))?;
             text(&fb,72,352,"slowest alpha/fail 9 ms",1,(24,39,59))?;
             let mut ef=surface();
-            for y in 240..480 {for x in 48..768 {ef.put_pixel(x,y,Color::rgb(24,39,59));}}
+            for y in 240..480 {for x in 48..768 {put(&mut ef,x,y,Color::rgb(24,39,59));}}
             for (x,y,t,scale) in [(72,264,"RUN COMPLETE",3),(72,312,"1 passed  1 failed  1 not reached",2),(72,352,"slowest alpha/fail 9 ms",1)] {
-                font::draw_text(&mut ef,t.as_bytes(),x,y,Color::WHITE,scale);
+                oracle_text(&mut ef,t.as_bytes(),x,y,Color::WHITE,scale);
             }
-            for y in 240..480 {for x in 48..768 {let p=ef.get_pixel(x,y);expect_pixel(&fb,x,y,(p.r,p.g,p.b))?;}}
+            for y in 240..480 {for x in 48..768 {expected_pixels(&fb,&ef,x,y)?;}}
             text(&fb,840,120,"CASE 2 / alpha",1,(18,29,44))?;
             text(&fb,840,132,"fail",1,(18,29,44))
         }
