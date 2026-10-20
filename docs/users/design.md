@@ -177,7 +177,8 @@ root:adm, O_APPEND, fsync) and to `/dev/kmsg`. No password or hash is written.
 1. Validate the account: a shadow line, not expired, a shell listed in `/etc/shells`.
 2. Give the user the tty at 0620.
 3. initgroups, setresgid, setresuid.
-4. Confirm `setuid(0)` fails.
+4. For a non-root target (uid != 0), confirm `setuid(0)` fails. For a root target, skip this no-regain-root
+   assertion: su and sudo have intentionally become root, so `setuid(0)` succeeds.
 5. Set the umask from `/etc/login.defs`.
 6. Install a clean environment and chdir to the home.
 7. Exec the login shell.
@@ -275,7 +276,7 @@ graphical login is later main-path work.
   `ua`), with a hash generated at image build. It is not committed and not staged on the persistent install.
 - **Cases:** each forks a child that becomes a fixture account through `become`, performs the operation and
   reports through a pipe.
-- **Targets:** ARM64 QEMU for iteration (S2); acceptance is `metal-run boot --suite users` on the R240. The `ssh`
+- **Targets:** ARM64 QEMU for iteration (S2); acceptance is `metal-run boot --suite users --milestone users/<milestone-id>` on the R240. The `ssh`
   category uses loopback bssh on QEMU and the boot host's OpenSSH on the R240.
 
 | Category | Representative cases |
@@ -300,7 +301,7 @@ The failure delays are fixed waits, not timing assertions, so the suite is not `
 
 In `docs/efforts/path.json` after `server`, with targets ARM64 QEMU, Parallels, VMware and x86-metal (D6). Lanes
 iterate on ARM64 QEMU and are accepted on the R240 first; the catch-up then brings the VMs to the same bar. Each R240 item
-below is one metal-run sequence at the lane's final head. The `users` suite has no cases yet: each category's cases
+below is one metal-run sequence at the lane's final head, selecting that row's milestone with `--milestone users/<milestone-id>`. The `users` suite has no cases yet: each category's cases
 arrive with the lane that implements it.
 
 | # | Milestone | Measure | On the R240 |

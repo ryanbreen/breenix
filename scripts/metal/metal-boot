@@ -277,6 +277,7 @@ class Driver:
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
                # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
                'suite': suites(self.args)[0] if len(suites(self.args)) == 1 else None, 'suites': suites(self.args) or None,
+               'milestone': getattr(self.args, 'milestone', None),
                'sourceBoot': getattr(self.args, 'source_boot', None),
                'disk': 'persistent' if persistent(self.args) else getattr(self.args, 'disk', None),
                'toolsCommit': tools_commit(),
@@ -848,6 +849,8 @@ class Driver:
             root.chmod(0o755)
             several = len(suites(self.args)) > 1
             names = ['scripts/suite-verdict.py', 'docs/boot-path.json'] + ['docs/suites/' + s + '.json' for s in suites(self.args)]
+            if getattr(self.args, 'milestone', None):
+                names.append('docs/efforts/path.json')
             for name in names + (['scripts/suite-sequence.py'] if several else []):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -875,6 +878,8 @@ class Driver:
             else:
                 command += [str(sandbox / 'scripts/suite-verdict.py'),
                             str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
+            if getattr(self.args, 'milestone', None):
+                command += ['--milestone', self.args.milestone]
             if disk is not None:
                 command += ['--disk', str(sandbox / 'disk.img')]
             try:
@@ -901,7 +906,7 @@ class Driver:
             raise ValueError('cold raw disk evidence differs from the completed suite boot')
         run = m.read_json(source / 'run.json')
         args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
-                                  inject=None)
+                                  inject=None, milestone=run.get('milestone'))
         scorer = Driver(args)
         passed = scorer.score_suite(disk=image)
         milestone = m.read_json(source / 'milestone-verdict.json', {})
@@ -1936,6 +1941,7 @@ def main():
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
+        p.add_argument('--milestone')
         p.add_argument('--source-boot')
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
@@ -1979,6 +1985,8 @@ def main():
                 parser.error('suite mode needs --suite ID, or distinct ids joined by commas')
         elif args.suite:
             parser.error('--suite needs suite mode')
+        if args.milestone and (args.mode != 'suite' or len(suites(args)) != 1):
+            parser.error('--milestone needs one suite')
         if (args.payload == 'persistent') != (args.mode == 'persistent'):
             parser.error('a persistent boot needs the persistent payload and mode together')
         if args.payload not in ('image', 'persistent') and args.mode != 'default':

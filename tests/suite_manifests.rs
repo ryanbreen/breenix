@@ -531,7 +531,9 @@ fn suite_manifests_match_their_binaries() {
                 suite.id, suite.title, manifest.title
             ));
         }
-        // The binary runs the categories that have cases; planned ones wait for their lanes.
+        // The binary runs populated categories for incremental development. This is not
+        // completion: suite-verdict.py blocks full-suite acceptance while any category
+        // is planned; a milestone must have cases in each category it measures.
         let populated: Vec<Category> =
             manifest.categories.into_iter().filter(|category| !category.cases.is_empty()).collect();
         if categories != populated {

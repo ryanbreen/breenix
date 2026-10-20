@@ -91,7 +91,15 @@ A milestone has exactly one measure:
   outside measurement on the main path under S23.
 - `{"suite": "<id>", "categories": ["<category id>", ...]}`: the cases in those categories of that suite
   must pass. It is done when it passes on the targets listed by the effort (ARM64 QEMU, Parallels and VMware); until the suite
-  has those categories the milestone is shown as not measured yet, which is the work of writing its cases.
+  has cases in each named category the milestone is not measured yet, even if the populated categories pass.
+  A planned category with no cases blocks completion on each target and therefore blocks the milestone.
+  Scorers and tools must check category presence and non-empty case lists before summing case results;
+  missing or empty categories cannot be omitted from completion requirements. This rule applies to both effort paths.
+  Full-suite acceptance also requires cases in each manifest category (`scripts/suite-verdict.py`, shared by
+  `scripts/suite-sequence.py` and the boot watchers). A selected case or category run is incremental evidence,
+  not full-suite or milestone completion. Metal milestone acceptance uses
+  `metal-run boot --suite <suite> --milestone <effort>/<milestone>` to score the named measure's category set
+  from the boot commit while retaining the full boot's record, memory, disk and fatal-output checks.
 - `{"interfaces": "<area>"}` or `{"interfaces": ["name", ...]}`: those POSIX system interfaces are backed by a
   dispatched syscall on the architectures in the effort's target list.
 

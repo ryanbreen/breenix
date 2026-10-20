@@ -43,7 +43,15 @@ and runs the others exactly as above, so a boot does not report an empty categor
 in which each category is planned is a skeleton (`server`, `users`, `filesystem` and `toolchain`
 today): it has no suite source, binary or install entry yet, `scripts/suite-sequence.py`
 refuses it in a `--suite` list, and `all` leaves it out with "no cases yet". An effort
-milestone measured by a planned category reads as not measured yet. <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
+milestone measured by a planned category is not complete, including when its other categories pass.
+Full-suite scoring refuses acceptance while a manifest category has no cases; targeted runs of populated
+categories remain available for development. A milestone acceptance boot uses
+`metal-run boot --suite users --milestone users/kernel-checks`: the scorer resolves the category set from
+that boot commit's `docs/efforts/path.json` and refuses missing or empty measured categories. It checks the full
+boot record order, counts, memory and fatal output, then requires the measured cases to pass. Other categories'
+case failures remain in the serial evidence and do not complete their milestones. This is a milestone verdict,
+not a full-suite PASS. `all` leaves partially populated suites out with "planned categories have no cases";
+run those suites explicitly with their milestone selector. See [effort measures](../efforts/README.md#measures). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) implements this paragraph and tests/suite_sequence_test.py exercises it. -->
 
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
@@ -314,7 +322,7 @@ tests/suite_sequence_test.py exercises it. -->
 `scripts/suite-sequence.py resolve` turns the argument into the list, checked before the
 boot: known, distinct suite ids, each with a manifest. `all` is every suite of
 `docs/efforts/path.json` the target runs (on x86-metal every main-path effort's), in path order,
-leaving out those with no manifest yet and, on a target without a 3D GPU (x86-metal; ARM64
+leaving out those with no manifest yet or planned categories and, on a target without a 3D GPU (x86-metal; ARM64
 QEMU without `--gpu-gl`), those whose manifest says `"needs3dGpu": true`. Two suites cannot
 share a boot anywhere but at one end, and their manifests say so with `"sequence"`:
 `console` (`"first"`) needs the kernel's own console on screen, and nothing gives the
