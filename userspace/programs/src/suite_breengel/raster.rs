@@ -501,6 +501,7 @@ fn scene(fb: &mut FrameBuf) {
     shapes::fill_circle(fb, 7, 12, 3, Color::rgb(200, 200, 10));
     shapes::draw_circle(fb, 6, 6, 4, Color::rgb(10, 200, 200));
     fb.put_pixel(13, 1, Color::rgb(123, 45, 67));
+    font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
 // gpu-raster: §2.2 keeps padding sentinels around UPLOAD and READBACK rows.

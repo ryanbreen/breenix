@@ -793,9 +793,38 @@ fn composition_takeover_giveback() -> CaseResult {
     }
 }
 
+/// The case already owns one stack entry; three descendants fit and the fourth is EBUSY.
+fn nested_takeover(depth: u32) -> i32 {
+    let ret = take_over();
+    if depth == 4 { return if ret == -(EBUSY as i64) { 0 } else { 1 }; }
+    if ret != 0 { return 2; }
+    let mut body = || nested_takeover(depth + 1);
+    let Ok(pid) = libbreenix::suite::spawn(&[], libbreenix::suite::Run::Call(&mut body)) else { return 3; };
+    let mut status = 0;
+    if process::waitpid(pid.raw() as i32, &mut status, 0).is_err() { return 4; }
+    if !process::wifexited(status) || process::wexitstatus(status) != 0 { return 5; }
+    if give_back() != 0 { return 6; }
+    0
+}
+
+fn ownership_refusals() -> CaseResult {
+    let mut body = || nested_takeover(1);
+    let pid = libbreenix::suite::spawn(&[], libbreenix::suite::Run::Call(&mut body))?;
+    let mut status = 0;
+    process::waitpid(pid.raw() as i32, &mut status, 0)?;
+    ensure(process::wifexited(status) && process::wexitstatus(status) == 0,
+        "18", "display ownership nesting did not refuse depth four with EBUSY")?;
+    child("uid-1000 display takeover", 3_000, Some(1000), || {
+        let ret = take_over();
+        if ret == -(EPERM as i64) { Ok(()) }
+        else { Err(format!("unprivileged TAKE_OVER_DISPLAY {}; expected EPERM", outcome(ret))) }
+    }).cite("18")
+}
+
 // gpu-display: B7 replaces the giver's framebuffer paint with GPU PRESENT; owner death restores that binding.
 fn composition_ownership_stack() -> CaseResult {
     interface()?;
+    ownership_refusals()?;
     // The giver: takes the display, paints it, and hands it to a compositor it names.
     let mut giver_body = || {
         let took = take_over();
