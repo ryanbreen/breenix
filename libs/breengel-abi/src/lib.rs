@@ -771,7 +771,7 @@ layout!(Capture, 56, id @ 0, dst @ 8, dst_len @ 16, tree_dst @ 24, tree_len @ 32
     height @ 52);
 layout!(MapTree, 24, id @ 0, addr @ 8, len @ 16);
 layout!(Claim, 16, flags @ 0, reserved @ 4, epoch @ 8);
-layout!(Composite, 24, flags @ 0, reserved @ 4, serial @ 8, pixels @ 16);
+layout!(Composite, 112, snapshot @ 0, target @ 8, stream @ 16, length @ 24, flags @ 32, reserved @ 36, serial @ 40, pixels @ 48, render_fence @ 56, present_fence @ 64, estimate @ 72, error_index @ 80, error @ 84, reason @ 88, fence_status @ 92, answer @ 96, phase @ 100, scene_target @ 104);
 layout!(RecordQuery, 24, serial @ 0, ptr @ 8, len @ 16, reserved @ 20);
 layout!(Readback, 40, dst @ 0, dst_len @ 8, record @ 16, record_len @ 24, reserved @ 28, serial @ 32);
 layout!(Cursor, 16, shape @ 0, visible @ 4, x @ 8, y @ 12);
