@@ -8323,6 +8323,12 @@ static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 
+/// Scratch diagnostic: the unreclaimed terminated-thread count.
+#[cfg(target_arch = "x86_64")]
+pub fn diag_terminated_unreclaimed() -> u64 {
+    TERMINATED_UNRECLAIMED.load(Ordering::Acquire)
+}
+
 /// x86_64: `thread` has just been marked Terminated (`Thread::set_terminated`):
 /// it is to be reclaimed, caches no page-table root, and the thread index
 /// says it has terminated.

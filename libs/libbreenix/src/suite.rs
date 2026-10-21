@@ -619,7 +619,9 @@ fn diag_case(name: &str) {
     let frames = std::fs::read_to_string("/proc/breenix/frames").unwrap_or_default();
     let mut parts: Vec<String> = Vec::new();
     for line in frames.lines() {
-        if line.starts_with("owner user") || line.starts_with("owner page_tables") || line.starts_with("owner kernel_stacks") {
+        if line.starts_with("kstack") || line.starts_with("terminated_unreclaimed") {
+            parts.push(String::from(line));
+        } else if line.starts_with("owner user") || line.starts_with("owner page_tables") || line.starts_with("owner kernel_stacks") {
             parts.push(String::from(&line[6..]));
         } else if line.starts_with("site ") && (line.ends_with("interrupts.rs:1088") || line.contains("anon_map.rs") || line.contains("process_memory.rs:3812") || line.contains("elf.rs") || line.contains("fork.rs")) {
             parts.push(String::from(&line[5..]));
