@@ -277,21 +277,34 @@ impl Kiosk {
                 Ok(f) => say(&format!("ok {} {}", f.serial, f.pixels)),
                 Err(e) => say(&format!("err {}", -e)),
             },
+            // Two composites at once from independent callers: each a thread with its own
+            // context and targets, sharing no lock, so only the kernel's admission orders
+            // them. Each answers its frame and its trace through the kernel.
             Some("composite2") => {
                 custody();
-                let word = |r: Result<libbreenix::compositor::Frame, i64>| match r {
-                    Ok(f) => format!("ok {} {}", f.serial, f.pixels),
+                type Traced = (Result<libbreenix::compositor::Frame, i64>, libbreenix::compositor::Trace);
+                let word = |(r, t): Traced| match r {
+                    Ok(f) => format!("ok {} {} {} {} {} {}", f.serial, f.pixels, t.began_ns, t.returned_ns, t.refused, t.first_refused_ns),
                     Err(e) => format!("err {}", -e),
                 };
-                match self.compositor() {
-                    Ok(c) => {
-                        let theirs = c.clone();
-                        let other = std::thread::spawn(move || theirs.lock().map_err(|_| -5i64).and_then(|mut c| c.compose()));
-                        let mine = c.lock().map_err(|_| -5i64).and_then(|mut c| c.compose());
-                        let theirs = other.join().unwrap_or(Err(-5));
+                let traced = |mut c: Compositor| -> Traced {
+                    let mut t = libbreenix::compositor::Trace::default();
+                    (c.compose_traced(&mut t), t)
+                };
+                // The second caller's objects are made, and cleared, before either starts.
+                match (self.compositor(), Compositor::new()) {
+                    (Ok(mine), Ok(theirs)) => {
+                        let other = std::thread::spawn(move || traced(theirs));
+                        let first = std::thread::spawn(move || {
+                            let mut t = libbreenix::compositor::Trace::default();
+                            let r = mine.lock().map_err(|_| -5i64).and_then(|mut c| c.compose_traced(&mut t));
+                            (r, t)
+                        });
+                        let mine = first.join().unwrap_or((Err(-5), Default::default()));
+                        let theirs = other.join().unwrap_or((Err(-5), Default::default()));
                         say(&format!("{}, {}", word(mine), word(theirs)));
                     }
-                    Err(e) => say(&format!("err {}", -e)),
+                    (Err(e), _) | (_, Err(e)) => say(&format!("err {}", -e)),
                 }
             }
             Some("record") => match num(1) {

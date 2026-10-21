@@ -37,6 +37,26 @@ pub struct Frame {
     pub pixels: u64,
 }
 
+/// How one composite went through the kernel, on the monotonic clock: when its last
+/// COMPOSITE call began and returned, and how many snapshots, the first when, the kernel
+/// refused EBUSY because another composite was in flight.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Trace {
+    pub began_ns: i128,
+    pub returned_ns: i128,
+    pub refused: u32,
+    pub first_refused_ns: i128,
+}
+
+impl Trace {
+    fn refuse(&mut self, at: i128) {
+        if self.refused == 0 {
+            self.first_refused_ns = at;
+        }
+        self.refused += 1;
+    }
+}
+
 /// The cursor sprite of `shape` with its pointer at `(x, y)`: outline rectangles, then fill
 /// rectangles, each `(x0, y0, x1, y1)`, inside the cursor's footprint
 /// (`abi::Cursor::footprint`).
@@ -201,6 +221,12 @@ impl Compositor {
     /// Compose once. A snapshot that goes stale or is busy is retried, within 2 s; a render
     /// that failed leaves the scene target to be made again, since its contents are invalid.
     pub fn compose(&mut self) -> Result<Frame, i64> {
+        self.compose_traced(&mut Trace::default())
+    }
+
+    /// `compose`, recording in `trace` when its last COMPOSITE call began and returned and
+    /// each time the kernel refused a snapshot EBUSY because another composite was in flight.
+    pub fn compose_traced(&mut self, trace: &mut Trace) -> Result<Frame, i64> {
         const EAGAIN: i64 = -(abi::errno::EAGAIN as i64);
         const EBUSY: i64 = -(abi::errno::EBUSY as i64);
         const EINVAL: i64 = -(abi::errno::EINVAL as i64);
@@ -231,6 +257,9 @@ impl Compositor {
                 }
                 r = call(op::COMPOSITE_SNAPSHOT, &mut s);
             }
+            if r == EBUSY {
+                trace.refuse(now_ns());
+            }
             // Stale or busy metadata, or a count that grew since the sizing query.
             if matches!(r, EAGAIN | EBUSY | EINVAL) && now_ns() < deadline {
                 let _ = crate::time::sleep_ms(1);
@@ -249,7 +278,10 @@ impl Compositor {
             c.stream = words.as_ptr() as u64;
             c.length = (words.len() * 4) as u64;
             c.scene_target = self.scene;
-            match call(op::COMPOSITE, &mut c) {
+            trace.began_ns = now_ns();
+            let r = call(op::COMPOSITE, &mut c);
+            trace.returned_ns = now_ns();
+            match r {
                 0 => {
                     self.next ^= 1;
                     return Ok(Frame { serial: c.serial, pixels: c.pixels });
