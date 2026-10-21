@@ -45,28 +45,7 @@ fn spring_uses_fixed_millisecond_quanta() {
     assert!((a.value - 0.999973).abs() <= 0.0001);
     assert!((a.velocity - 0.000876).abs() <= 0.0001);
 }
-#[test]
-fn icon_pixels_are_identical_for_every_time_partition() {
-    let a = catalogue();
-    let b = catalogue();
-    let c = catalogue();
-    for ((mut a, mut b), mut c) in a.into_iter().zip(b).zip(c) {
-        let mut hover = IconMouse::none();
-        hover.hovering = true;
-        a.update(1_000_000, hover);
-        for _ in 0..1000 {
-            b.update(1_000, hover);
-        }
-        // Sub-quantum remainder must carry across call boundaries.
-        for _ in 0..1000 {
-            c.update(333, hover);
-            c.update(667, hover);
-        }
-        assert_eq!(a.state(), b.state(), "{} state", a.name());
-        assert_eq!(image(&*a), image(&*b), "{} 1s vs 1ms", a.name());
-        assert_eq!(image(&*a), image(&*c), "{} sub-quantum", a.name());
-    }
-}
+
 #[test]
 fn hover_reversal_is_continuous_and_all_effects_settle_after_exit() {
     for mut icon in catalogue() {

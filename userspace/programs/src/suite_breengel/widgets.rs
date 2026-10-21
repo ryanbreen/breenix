@@ -1,3 +1,4 @@
+#[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
 //! widgets, text-entry, icons and the `text/fontwatch-*` cases (contract sections 9 and
 //! 14 to 16).
 
@@ -1993,6 +1994,8 @@ fn same_pixels(a: &Guarded, b: &Guarded) -> Option<(usize, usize)> {
 }
 
 fn icons_step_invariance() -> CaseResult {
+    pixel_step_invariance_icon::run();
+
     for (name, make) in catalogue() {
         let schedules: [(&str, &[(u32, u32)]); 3] = [
             ("one 1,000 ms step", &[(1, 1_000_000)]),
