@@ -46,7 +46,7 @@ pub struct Texture {
 impl Texture {
     /// Upload only decoder-owned pixels through BGL's sanctioned image site.
     pub fn from_decoded(image: libimg::Decoded) -> Result<Texture, SurfaceError> {
-        let texture=device::with(|d| bgl::Texture::from_decoded(image, &d.context)).map_err(SurfaceError::Device)?;
+        let texture=device::with(|d| bgl::Texture::from_decoded(&d.context, image)).map_err(SurfaceError::Device)?;
         let (handle,width,height)=texture.into_resource();
         Ok(Texture {handle,width:width as usize,height:height as usize,owner:device::pid(),format:Format::BGRA_PREMULTIPLIED})
     }
