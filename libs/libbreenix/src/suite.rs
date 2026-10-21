@@ -537,7 +537,6 @@ impl Suite {
                     }
                 }
                 states[c][k] = State::Done(outcome);
-                diag_case(&name);
                 done += 1;
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -617,6 +616,7 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
     }
 }
 
+#[allow(dead_code)]
 fn diag_case(name: &str) {
     let status = std::fs::read_to_string("/proc/1/status").unwrap_or_default();
     let rss = status.lines().find(|l| l.starts_with("VmRSS")).unwrap_or("").replace('\t', " ");
