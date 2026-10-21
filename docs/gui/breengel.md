@@ -422,9 +422,8 @@ recently used entry when full. `CachedFont::with_default_cache(font)` uses the c
 bytes, hits, misses }` reports the cache. Under ruling B15 (#2205), the atlas uses
 B8G8R8A8 render targets: GPU draws write coverage into one channel, and no CPU-rasterized
 coverage is uploaded. R8 remains sample-only. `bytes` counts actual atlas storage,
-four bytes per atlas texel, including every allocated texel rather than only the
-logical coverage bytes. Thus `text/cache-hit` expects four times the glyph's coverage
-pixel count, and `text/cache-bound` requires actual storage above 3 MiB and at most
+four bytes per atlas texel, with rows padded to 256 bytes and the allocation
+rounded up to 4 KiB pages (B23). Thus `text/cache-hit` expects the kernel's real charge, and `text/cache-bound` requires actual storage above 3 MiB and at most
 4 MiB. Both the entry and actual-storage budgets hold after every insertion; unused
 atlas space is not hidden from accounting. A glyph served from the cache, or evicted
 and rasterized again, is identical to a fresh rasterization.

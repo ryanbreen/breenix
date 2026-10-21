@@ -2003,8 +2003,8 @@ fn text_cache_hit() -> CaseResult {
         format!("after the first 'Q' the cache reports {after_first:?}; a first use is one miss and one entry"))?;
     ensure((after_second.hits, after_second.misses, after_second.entries) == (1, 1, 1), "8.4",
         format!("after the second 'Q' the cache reports {after_second:?}; the second use is a hit"))?;
-    ensure(after_second.bytes == 4 * fresh.coverage.len(), "8.4",
-        format!("the cache reports {} bytes holding one {} x {} four-byte atlas glyph", after_second.bytes, fresh.width, fresh.height))
+    ensure(after_second.bytes == ((fresh.width * 4 + 255) / 256 * 256 * fresh.height + 4095) / 4096 * 4096, "8.4",
+        format!("the cache reports {} bytes holding one {} x {} four-byte atlas glyph with 256-byte rows and page-rounded storage", after_second.bytes, fresh.width, fresh.height))
 }
 
 fn text_cache_bound() -> CaseResult {
