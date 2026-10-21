@@ -54,12 +54,6 @@ fn sys(n: u64, a: [u64; 4]) -> i64 {
     unsafe { raw::syscall4(n, a[0], a[1], a[2], a[3]) as i64 }
 }
 
-/// A stat buffer large enough for either architecture's layout; the device number
-/// (`st_rdev`) is at byte 40 on x86-64 and 32 on AArch64.
-fn rdev(stat: &[u64; 16]) -> u64 {
-    if cfg!(target_arch = "x86_64") { stat[5] } else { stat[4] }
-}
-
 fn ids(n: u64) -> String {
     let mut v = [0u32; 3];
     let r = sys(n, [&mut v[0] as *mut u32 as u64, &mut v[1] as *mut u32 as u64, &mut v[2] as *mut u32 as u64, 0]);
@@ -72,17 +66,18 @@ fn report() -> String {
     let _ = writeln!(out, "resgid={}", ids(nr::GETRESGID));
     // SAFETY: getauxval reads the auxiliary vector the kernel placed on the stack.
     let _ = writeln!(out, "secure={}", unsafe { getauxval(AT_SECURE) });
-    let mut null = [0u64; 16];
-    let null_rdev = if sys(nr::NEWFSTATAT, [AT_FDCWD, c"/dev/null".as_ptr() as u64, null.as_mut_ptr() as u64, 0]) == 0 {
-        Some(rdev(&null))
+    // The architecture's own `struct stat`: 144 bytes on x86-64, 128 on AArch64.
+    let mut null = libbreenix::fs::Stat::default();
+    let null_rdev = if sys(nr::NEWFSTATAT, [AT_FDCWD, c"/dev/null".as_ptr() as u64, &mut null as *mut _ as u64, 0]) == 0 {
+        Some(null.st_rdev)
     } else {
         None
     };
     for fd in 0..3u64 {
-        let mut stat = [0u64; 16];
-        let state = if sys(nr::FSTAT, [fd, stat.as_mut_ptr() as u64, 0, 0]) < 0 {
+        let mut stat = libbreenix::fs::Stat::default();
+        let state = if sys(nr::FSTAT, [fd, &mut stat as *mut _ as u64, 0, 0]) < 0 {
             "closed"
-        } else if Some(rdev(&stat)) == null_rdev {
+        } else if Some(stat.st_rdev) == null_rdev {
             "null"
         } else {
             "open"
