@@ -140,6 +140,7 @@ fn main() {
     // Detach before starting daemons so the getty handoff cannot hang them up.
     #[cfg(target_arch = "x86_64")]
     detach_console();
+    reconcile_machine_state();
     start_bsshd();
     run_bssh_pubkey_oracle();
     run_boot_script();
@@ -789,46 +790,128 @@ fn run_fork_smoke() {
     }
 }
 
-// Run the actual CLI arms and require a dedicated USERAUTH_FAILURE status.
-fn run_bssh_pubkey_oracle() {
-    let _ = libbreenix::time::sleep_ms(1000);
-    fn arm(auth: &[u8]) -> i32 {
-        let argv = [
-            b"bssh\0".as_ptr(),
-            b"127.0.0.1\0".as_ptr(),
-            b"2222\0".as_ptr(),
-            b"root\0".as_ptr(),
-            auth.as_ptr(),
-            b"--smoke\0".as_ptr(),
-            core::ptr::null(),
-        ];
-        let pid = match spawnv(b"/bin/bssh\0", argv.as_ptr()) {
-            Ok(pid) => pid,
-            Err(_) => return -1,
-        };
-        let mut status = 0;
-        match waitpid(pid.raw() as i32, &mut status, 0) {
-            Ok(_) if libbreenix::process::wifexited(status) => {
-                libbreenix::process::wexitstatus(status)
-            }
-            _ => -1,
+/// The loopback SSH oracle's client key: a test-only key pair generated when the
+/// test image is built, authorized in that image only, for its test account and for
+/// root. The persistent install carries neither half.
+const TEST_IDENTITY: &str = "/etc/breenix/test-ssh/id_ed25519";
+/// The test image's SSH account (scripts/create_ext2_disk.sh) and the start of the
+/// `id` line its session prints.
+const TEST_ACCOUNT: &[u8] = b"sshtest\0";
+const TEST_ID: &str = "uid=2000(sshtest) gid=2000(sshtest)";
+
+/// Run bssh against the local bsshd as `user`. Returns its exit status and its
+/// standard output, which is also passed on to init's.
+fn bssh_arm(user: &[u8], extra: &[&[u8]]) -> (i32, String) {
+    use libbreenix::io;
+    use libbreenix::types::Fd;
+    let mut argv: Vec<*const u8> = vec![
+        b"bssh\0".as_ptr(),
+        b"127.0.0.1\0".as_ptr(),
+        b"2222\0".as_ptr(),
+        user.as_ptr(),
+        b"--identity\0".as_ptr(),
+        b"/etc/breenix/test-ssh/id_ed25519\0".as_ptr(),
+    ];
+    argv.extend(extra.iter().map(|arg| arg.as_ptr()));
+    argv.push(core::ptr::null());
+    let Ok((read_end, write_end)) = io::pipe() else { return (-1, String::new()) };
+    let pid = match libbreenix::process::fork() {
+        Ok(libbreenix::process::ForkResult::Child) => {
+            let _ = io::close(read_end);
+            let _ = io::dup2(write_end, Fd::STDOUT);
+            let _ = io::close(write_end);
+            let _ = libbreenix::process::execv(b"/bin/bssh\0", argv.as_ptr());
+            libbreenix::process::exit(127);
         }
+        Ok(libbreenix::process::ForkResult::Parent(pid)) => pid,
+        Err(_) => {
+            let _ = io::close(read_end);
+            let _ = io::close(write_end);
+            return (-1, String::new());
+        }
+    };
+    let _ = io::close(write_end);
+    let mut output = Vec::new();
+    let mut buffer = [0u8; 512];
+    while let Ok(n) = io::read(read_end, &mut buffer) {
+        if n == 0 || output.len() > 64 * 1024 {
+            break;
+        }
+        output.extend_from_slice(&buffer[..n]);
     }
-    let right = arm(b"--publickey\0");
-    let wrong = arm(b"--publickey-wrong\0");
+    let _ = io::close(read_end);
+    let _ = io::write(Fd::STDOUT, &output);
+    let mut status = 0;
+    let code = match waitpid(pid.raw() as i32, &mut status, 0) {
+        Ok(_) if libbreenix::process::wifexited(status) => libbreenix::process::wexitstatus(status),
+        _ => -1,
+    };
+    (code, String::from_utf8_lossy(&output).into_owned())
+}
+
+// Run the actual CLI arms and require a dedicated USERAUTH_FAILURE status (77)
+// for each refusal: a forged signature, and root, whose authorized keys list the
+// test key but whom bsshd refuses. The account arm's session prints `id`.
+fn run_bssh_pubkey_oracle() {
+    if !std::path::Path::new(TEST_IDENTITY).exists() {
+        print!("[BSSH_PUBKEY_ORACLE:not-run:no test identity]\n");
+        return;
+    }
+    let _ = libbreenix::time::sleep_ms(1000);
+    let (right, _) = bssh_arm(TEST_ACCOUNT, &[b"--smoke\0"]);
+    let (wrong, _) = bssh_arm(TEST_ACCOUNT, &[b"--publickey-wrong\0", b"--smoke\0"]);
+    let (root, _) = bssh_arm(b"root\0", &[b"--smoke\0"]);
+    let (id_status, id_output) = bssh_arm(TEST_ACCOUNT, &[b"--exec\0", b"id\0"]);
     let marker = if right == 0 && wrong == 77 {
         "[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]".to_string()
     } else {
         format!("[BSSH_PUBKEY_ORACLE:FAIL:right={}:wrong={}]", right, wrong)
     };
-    // The refused arm leaves bsshd reporting its handshake failure, which can
-    // reach the console as a partial line. Flush init's own output, then
-    // write the marker in one write that starts and ends a line, so it is a
-    // whole line whatever bsshd has written so far (#1849).
+    let id_matches = id_output.lines().any(|line| line.trim_start().starts_with(TEST_ID));
+    let account = if root == 77 && id_status == 0 && id_matches {
+        "[BSSH_ACCOUNT_ORACLE:root=refused:id=sshtest:PASS]".to_string()
+    } else {
+        format!("[BSSH_ACCOUNT_ORACLE:FAIL:root={}:id-status={}:id-matches={}]", root, id_status, id_matches)
+    };
+    // The refused arms leave bsshd reporting their handshake failures, which can
+    // interleave with ordinary stdout. Flush first, then write the markers with one
+    // system call each, so the serial transcript carries each whole line whatever
+    // bsshd has written so far (#1849).
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.flush();
     let _ = libbreenix::io::write(libbreenix::types::Fd::STDOUT, format!("\n{}\n", marker).as_bytes());
+    let _ = libbreenix::io::write(libbreenix::types::Fd::STDOUT, format!("\n{}\n", account).as_bytes());
+}
+
+/// On a persistent install, bring the machine state store (SSH host keys,
+/// account lines and staged authorized keys) into this generation's `/etc`
+/// before bsshd starts. Images without a store skip this.
+fn reconcile_machine_state() {
+    use std::os::unix::fs::MetadataExt;
+    use libbreenix::ssh::machine_state;
+    let root = std::path::Path::new("/");
+    let home_mounted = match (std::fs::metadata("/"), std::fs::metadata("/home")) {
+        (Ok(root), Ok(home)) => root.dev() != home.dev(),
+        _ => false,
+    };
+    match machine_state::reconcile(root, home_mounted) {
+        Ok(None) => {}
+        Ok(Some(report)) => {
+            print!(
+                "[init] machine state: accounts [{}], host key files [{}]\n",
+                report.accounts.join(", "),
+                report.host_keys.join(", ")
+            );
+            for (account, fingerprint) in &report.authorized {
+                print!("[init] machine state: staged key {} authorized for {}\n", fingerprint, account);
+            }
+            for problem in &report.problems {
+                print!("[init] machine state: {}\n", problem);
+            }
+        }
+        Err(why) => print!("[init] machine state refused: {}\n", why),
+    }
 }
 
 fn start_bsshd() {

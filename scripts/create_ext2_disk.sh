@@ -131,6 +131,31 @@ fi
 mkdir -p "$TARGET_DIR"
 mkdir -p "$PROJECT_ROOT/testdata"
 
+# A test-only SSH key pair for the loopback SSH oracle (init's run_bssh_pubkey_oracle):
+# made for each image build (or taken from BREENIX_TEST_SSH_KEY_DIR, so two builds that
+# must be byte-identical share one), authorized in this image only, for its test account
+# sshtest and for root (whose login bsshd refuses). It is not committed, and the
+# persistent install leaves the key, the account and root's authorized keys behind.
+TEST_SSH_DIR="${BREENIX_TEST_SSH_KEY_DIR:-}"
+TEST_SSH_TEMP=
+if [[ -z "$TEST_SSH_DIR" ]]; then
+    TEST_SSH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/breenix-test-ssh.XXXXXX")
+    TEST_SSH_TEMP=$TEST_SSH_DIR
+fi
+remove_test_ssh_temp() {
+    if [[ -n "$TEST_SSH_TEMP" ]]; then
+        rm -rf "$TEST_SSH_TEMP"
+    fi
+}
+trap remove_test_ssh_temp EXIT
+if [[ ! -f "$TEST_SSH_DIR/id_ed25519" ]]; then
+    if ! command -v ssh-keygen &> /dev/null; then
+        echo "Error: ssh-keygen (OpenSSH) is required to make the image's test-only SSH key"
+        exit 1
+    fi
+    ssh-keygen -q -t ed25519 -N '' -C breenix-test-image -f "$TEST_SSH_DIR/id_ed25519"
+fi
+
 # Check if we're on macOS or Linux
 if [[ "$(uname)" == "Darwin" ]]; then
     # macOS - use Docker
@@ -157,6 +182,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
         -v "$PROJECT_ROOT/vendor/busybox/required-applets:/required-applets:ro" \
+        -v "$TEST_SSH_DIR:/test-ssh:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         -e "BREENIX_WAIT_STRESS=${BREENIX_WAIT_STRESS:-0}" \
         -e "BREENIX_BSSH_AUTORUN=${BREENIX_BSSH_AUTORUN:-0}" \
@@ -233,11 +259,27 @@ if [[ "$(uname)" == "Darwin" ]]; then
             cat > /mnt/ext2/etc/passwd << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+sshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh
 PASSWD
             cat > /mnt/ext2/etc/group << GROUP
 root:x:0:
 nobody:x:65534:
+sshtest:x:2000:
 GROUP
+
+            # SSH: bsshd generates the host key into /etc/ssh on its first start. The
+            # test-only client key logs in as sshtest, whose home is beside the key (/home
+            # is a separate disk), and is listed for root so the oracle sees root refused.
+            T=/mnt/ext2/etc/breenix/test-ssh
+            mkdir -p /mnt/ext2/etc/ssh $T/home/.ssh /mnt/ext2/root/.ssh
+            cp /test-ssh/id_ed25519 $T/id_ed25519
+            cp /test-ssh/id_ed25519.pub $T/home/.ssh/authorized_keys
+            cp /test-ssh/id_ed25519.pub /mnt/ext2/root/.ssh/authorized_keys
+            chown -R 0:0 /mnt/ext2/etc/ssh $T /mnt/ext2/root
+            chown -R 2000:2000 $T/home
+            chmod 755 /mnt/ext2/etc/ssh $T
+            chmod 700 $T/home $T/home/.ssh /mnt/ext2/root /mnt/ext2/root/.ssh
+            chmod 600 $T/id_ed25519 $T/home/.ssh/authorized_keys /mnt/ext2/root/.ssh/authorized_keys
 
             # Create /etc/bshrc - startup config for the bsh ECMAScript shell
             cat > /mnt/ext2/etc/bshrc << 'BSHRC'
@@ -401,7 +443,7 @@ spawn("/bin/bcheck");
 spawn("/sbin/blogd");
 INITJS
             else
-                echo "spawn(\"/sbin/telnetd\");" > /mnt/ext2/etc/init.js
+                echo "// The x86 boot script starts no network service: telnetd is not run on x86." > /mnt/ext2/etc/init.js
             fi
             echo "  Created /etc/init.js"
 
@@ -449,6 +491,7 @@ else
     MOUNT_DIR=$(mktemp -d)
     MOUNTED=0
     cleanup_mount() {
+        remove_test_ssh_temp
         if [[ "$MOUNTED" == 1 ]]; then
             umount "$MOUNT_DIR" || return
         fi
@@ -518,11 +561,27 @@ else
     cat > "$MOUNT_DIR/etc/passwd" << PASSWD
 root:x:0:0:root:/root:/bin/bsh
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+sshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh
 PASSWD
     cat > "$MOUNT_DIR/etc/group" << GROUP
 root:x:0:
 nobody:x:65534:
+sshtest:x:2000:
 GROUP
+
+    # SSH: bsshd generates the host key into /etc/ssh on its first start. The
+    # test-only client key logs in as sshtest, whose home is beside the key (/home
+    # is a separate disk), and is listed for root so the oracle sees root refused.
+    TEST_SSH_ROOT="$MOUNT_DIR/etc/breenix/test-ssh"
+    mkdir -p "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT/home/.ssh" "$MOUNT_DIR/root/.ssh"
+    cp "$TEST_SSH_DIR/id_ed25519" "$TEST_SSH_ROOT/id_ed25519"
+    cp "$TEST_SSH_DIR/id_ed25519.pub" "$TEST_SSH_ROOT/home/.ssh/authorized_keys"
+    cp "$TEST_SSH_DIR/id_ed25519.pub" "$MOUNT_DIR/root/.ssh/authorized_keys"
+    chown -R 0:0 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT" "$MOUNT_DIR/root"
+    chown -R 2000:2000 "$TEST_SSH_ROOT/home"
+    chmod 755 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT"
+    chmod 700 "$TEST_SSH_ROOT/home" "$TEST_SSH_ROOT/home/.ssh" "$MOUNT_DIR/root" "$MOUNT_DIR/root/.ssh"
+    chmod 600 "$TEST_SSH_ROOT/id_ed25519" "$TEST_SSH_ROOT/home/.ssh/authorized_keys" "$MOUNT_DIR/root/.ssh/authorized_keys"
 
     # Create /etc/bshrc - startup config for the bsh ECMAScript shell
     cat > "$MOUNT_DIR/etc/bshrc" << 'BSHRC'
@@ -686,7 +745,7 @@ spawn("/bin/bcheck");
 spawn("/sbin/blogd");
 INITJS
     else
-        echo 'spawn("/sbin/telnetd");' > "$MOUNT_DIR/etc/init.js"
+        echo '// The x86 boot script starts no network service: telnetd is not run on x86.' > "$MOUNT_DIR/etc/init.js"
     fi
     echo "  Created /etc/init.js"
 
@@ -702,7 +761,7 @@ INITJS
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
         E2FSPROGS_FAKE_TIME=946684800 mke2fs -t ext2 -b "${BREENIX_EXT2_BLOCK_SIZE:-4096}" -U 7fabead6-ba12-4c3b-835b-e076230994d9 -E hash_seed=00000000-0000-0000-0000-000000000000 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
         rm -rf "$MOUNT_DIR"
-        trap - EXIT
+        trap remove_test_ssh_temp EXIT
     else
         umount "$MOUNT_DIR"
         MOUNTED=0
@@ -729,7 +788,8 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  /sbin/{true,false} - BusyBox hardlinks"
     echo "  /bin/* - Other userspace binaries (demos)"
     echo "  /usr/local/test/bin/* - Test binaries (*_test, test_*)"
-    echo "  /sbin/telnetd - telnet daemon"
+    echo "  /sbin/telnetd - telnet daemon (started on ARM64 only)"
+    echo "  /etc/breenix/test-ssh/id_ed25519 - this image's test-only SSH key"
     echo "  /hello.txt - test file (1 line)"
     echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"
     echo "  /test/nested.txt - nested test file"

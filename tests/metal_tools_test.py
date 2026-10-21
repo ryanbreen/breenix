@@ -852,6 +852,30 @@ class RootStagingTest(unittest.TestCase):
             metal_root.stage_root(image, 'suite', 'time', site)
             self.assertEqual(read('boot-target'), 'suite time hostkeys xhci-replay\n')
             self.assertEqual(read('suite-sequence'), '')
+            # install-persistent's userland carries the operator's account; ordinary staging removes it.
+            import base64
+            blob = struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) + bytes(range(32))
+            line = 'ssh-ed25519 ' + base64.b64encode(blob).decode() + ' operator@boot-host'
+            account = dict(site, OPERATOR_USER='operator', OPERATOR_SSH_PUBLIC_KEY=line)
+            operator = metal_root.operator_account(account)
+            self.assertEqual(operator, 'user operator\nkey ' + line + '\n')
+            facts = metal_root.stage_root(image, 'default', None, site, hasher=hasher, operator=operator)
+            self.assertEqual(read('operator-account'), operator)
+            self.assertEqual(facts['operatorAccountSha256'], hashlib.sha256(operator.encode()).hexdigest())
+            stat = subprocess.run([debugfs, '-R', 'stat /etc/breenix/operator-account', str(image)],
+                                  check=True, capture_output=True).stdout.decode()
+            self.assertIn('Mode:  0600', stat)
+            metal_root.stage_root(image, 'default', None, site, hasher=hasher)
+            self.assertEqual(read('operator-account'), '')
+            for bad in ['', '-----BEGIN OPENSSH PRIVATE KEY-----', 'command="true" ' + line,
+                        line.replace('ssh-ed25519 ', 'ssh-rsa ', 1), 'ssh-ed25519 !!notbase64']:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_SSH_PUBLIC_KEY=bad))
+            for bad in ['', 'root', 'Operator', 'a:b', 'x' * 33]:
+                with self.assertRaises(ValueError):
+                    metal_root.operator_account(dict(account, OPERATOR_USER=bad))
+            with self.assertRaises(ValueError):
+                metal_root.operator_account(site)
 
     def test_install_boot_stages_probe_and_the_install_record_and_names_what_will_be_written(self):
         import metal_root

@@ -1029,10 +1029,12 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u32) -> Result<Vec<Frame>,
         // root, but appear directly under the selected namespace's root.
         if mount == Mount::Root {
             let namespace = ext2::root_namespace();
-            if namespace.root != EXT2_ROOT_INO && (ino == namespace.etc || ino == namespace.data) {
+            let shared = namespace.shared != 0 && ino == namespace.shared;
+            if namespace.root != EXT2_ROOT_INO && (ino == namespace.etc || ino == namespace.data || shared) {
                 frames.try_reserve(1).map_err(|_| 12u64)?;
                 frames.push(Frame {
-                    name: copy_bytes(if ino == namespace.etc { b"etc" } else { b"root" })?,
+                    name: copy_bytes(if ino == namespace.etc { b"etc" }
+                        else if shared { ext2::generation::SHARED.as_bytes() } else { b"root" })?,
                     node: Node::Ext2(mount, ino),
                 });
                 break;

@@ -24,7 +24,10 @@ pub const KEX_ALGORITHMS: &str = "mlkem768x25519-sha256,curve25519-sha256,ext-in
 /// client currently implements Curve25519 only; advertising ML-KEM here causes
 /// OpenSSH servers to negotiate a hybrid exchange that the client cannot speak.
 pub const CLIENT_KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-c";
-pub const HOST_KEY_ALGORITHMS: &str = "rsa-sha2-256,ssh-rsa";
+/// The server's host key is Ed25519 (RFC 8709).
+pub const HOST_KEY_ALGORITHMS: &str = "ssh-ed25519";
+/// Host-key algorithms the client can verify.
+pub const CLIENT_HOST_KEY_ALGORITHMS: &str = "ssh-ed25519,rsa-sha2-256,rsa-sha2-512";
 pub const CIPHERS: &str = "aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";
 pub const COMPRESSION: &str = "none";
@@ -51,15 +54,15 @@ impl KexState {
 
 /// Build a KEXINIT message payload.
 pub fn build_kexinit(rng: &mut Csprng) -> Vec<u8> {
-    build_kexinit_with_algorithms(rng, KEX_ALGORITHMS)
+    build_kexinit_with_algorithms(rng, KEX_ALGORITHMS, HOST_KEY_ALGORITHMS)
 }
 
 /// Build a client-side KEXINIT message payload.
 pub fn build_client_kexinit(rng: &mut Csprng) -> Vec<u8> {
-    build_kexinit_with_algorithms(rng, CLIENT_KEX_ALGORITHMS)
+    build_kexinit_with_algorithms(rng, CLIENT_KEX_ALGORITHMS, CLIENT_HOST_KEY_ALGORITHMS)
 }
 
-fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str) -> Vec<u8> {
+fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str, host_key_algorithms: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(256);
 
     // Message type
@@ -72,7 +75,7 @@ fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str) -> Vec<
 
     // Algorithm name-lists (10 of them)
     SshBuf::put_string(&mut payload, kex_algorithms.as_bytes());
-    SshBuf::put_string(&mut payload, HOST_KEY_ALGORITHMS.as_bytes());
+    SshBuf::put_string(&mut payload, host_key_algorithms.as_bytes());
     SshBuf::put_string(&mut payload, CIPHERS.as_bytes()); // encryption C->S
     SshBuf::put_string(&mut payload, CIPHERS.as_bytes()); // encryption S->C
     SshBuf::put_string(&mut payload, MACS.as_bytes()); // MAC C->S
@@ -317,8 +320,9 @@ pub fn client_kex_ecdh(
         kex.session_id = Some(h.clone());
     }
 
-    // Verify the server's signature over the exchange hash
-    if !super::keys::verify_rsa_signature(&host_key_blob, signature, &h) {
+    // Verify the server's signature over the exchange hash, by the algorithm it names.
+    let algorithm = super::keys::signature_algorithm(signature).unwrap_or_default();
+    if !super::keys::verify_signature(algorithm.as_bytes(), &host_key_blob, signature, &h) {
         return Err(SshError::Protocol("host key signature verification failed"));
     }
 

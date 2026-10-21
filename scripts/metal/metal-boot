@@ -603,10 +603,12 @@ class Driver:
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
         manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
-        # The new userland, staged as a default boot's root (console account included), for the stub to write onto
-        # the test root once the request is done.
+        # The new userland, staged as a default boot's root (console account included) with the operator's account
+        # and SSH public key for the installer's machine state store, for the stub to write onto the test root once
+        # the request is done.
         facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
-                                              mode='default', the_layout=the_layout)
+                                              mode='default', the_layout=the_layout,
+                                              operator=metal_root.operator_account(self.site))
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)

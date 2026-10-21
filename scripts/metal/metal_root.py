@@ -3,9 +3,11 @@
 An install boot (docs/metal/README.md, "The disks") also gets the storage record `install-root <boot>` in the
 image's first sector, which ext2 leaves unused: it asks the kernel to copy the RAM disk onto the machine's disk.
 """
+import base64
 from pathlib import Path
 import re
 import hashlib
+import struct
 import hmac
 import time
 import os
@@ -93,6 +95,33 @@ def console_identity(site):
     return hmac.new(bytes.fromhex(key), (user + '\0' + password).encode(), hashlib.sha256).hexdigest()
 
 
+# The site fields naming the operator's account and SSH public key, staged by install-persistent only
+# (docs/metal/README.md, "Install and upgrade"): a public key line; a private key is refused.
+OPERATOR_USER_FIELD = 'OPERATOR_USER'
+OPERATOR_KEY_FIELD = 'OPERATOR_SSH_PUBLIC_KEY'
+OPERATOR_ACCOUNT = '/etc/breenix/operator-account'
+
+
+def operator_account(site):
+    """The installer's operator file: `user <name>` and `key <line>`, from the site's account name and one checked
+    ssh-ed25519 or ssh-rsa public key line."""
+    user = site.get(OPERATOR_USER_FIELD, '').strip()
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user) or user == 'root':
+        raise ValueError(f'install-persistent needs {OPERATOR_USER_FIELD}: a lowercase account name other than root')
+    line = site.get(OPERATOR_KEY_FIELD, '').strip()
+    match = re.fullmatch(r'(ssh-ed25519|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?: ([\x21-\x7e][\x20-\x7e]*))?', line)
+    if not match:
+        raise ValueError(f'install-persistent needs {OPERATOR_KEY_FIELD}: one ssh-ed25519 or ssh-rsa public key line')
+    try:
+        blob = base64.b64decode(match.group(2), validate=True)
+    except ValueError:
+        raise ValueError(f'{OPERATOR_KEY_FIELD} is not valid base64') from None
+    kind = match.group(1).encode()
+    if blob[:4] != struct.pack('>I', len(kind)) or blob[4:4 + len(kind)] != kind:
+        raise ValueError(f'{OPERATOR_KEY_FIELD} names {match.group(1)} but holds another key type')
+    return f'user {user}\nkey {line}\n'
+
+
 def console_shadow(site, hasher):
     console_identity(site)
     alphabet = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
@@ -109,7 +138,8 @@ def console_shadow(site, hasher):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None):
+               install_partition=None, operator=None):
+    """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
                                    or mode != 'console' or install or idle_minutes is not None or replug):
         raise ValueError('invalid xHCI fault-test target')
@@ -175,6 +205,13 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             source.write_text(text)
             commands.extend([f'rm /etc/breenix/{name}', f'write {source} /etc/breenix/{name}'])
         commands.extend(['rm /etc/resolv.conf', 'symlink /etc/resolv.conf /proc/net/pnp'])
+        commands.append('rm ' + OPERATOR_ACCOUNT)
+        if operator is not None:
+            source = scratch / 'operator-account'
+            source.touch(mode=0o600)
+            source.write_text(operator)
+            commands.extend([f'write {source} {OPERATOR_ACCOUNT}', f'set_inode_field {OPERATOR_ACCOUNT} mode 0100600',
+                             f'set_inode_field {OPERATOR_ACCOUNT} uid 0', f'set_inode_field {OPERATOR_ACCOUNT} gid 0'])
         if shadow is not None:
             source = scratch / 'shadow'
             source.touch(mode=0o600)
@@ -216,6 +253,13 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                 subprocess.run([debugfs, '-R', f'dump /bin/{program} {installed}', str(image)], check=True, capture_output=True)
                 if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
                     raise ValueError('console login program is missing')
+        staged = subprocess.run([debugfs, '-R', 'cat ' + OPERATOR_ACCOUNT, str(image)], check=True, capture_output=True).stdout
+        if staged != (operator or '').encode():
+            raise ValueError('staged operator account readback differs')
+        if operator is not None:
+            stat = subprocess.run([debugfs, '-R', 'stat ' + OPERATOR_ACCOUNT, str(image)], check=True, capture_output=True).stdout
+            if b'Mode:  0600' not in stat or not re.search(rb'User:\s+0\s+Group:\s+0', stat):
+                raise ValueError('staged operator account permissions differ')
         resolver = subprocess.run([debugfs, '-R', 'stat /etc/resolv.conf', str(image)],
                                   check=True, capture_output=True).stdout
         if b'Type: symlink' not in resolver or b'"/proc/net/pnp"' not in resolver:
@@ -230,6 +274,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
                 raise ValueError('RAM disk has no selected PID 1 ELF')
     facts = {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
+    if operator is not None:
+        facts['operatorAccountSha256'] = hashlib.sha256(operator.encode()).hexdigest()
     if mode == 'console':
         facts['consoleIdentity'] = console_identity(site)
     if install:

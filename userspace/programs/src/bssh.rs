@@ -2,15 +2,18 @@
 //!
 //! Connects to a remote SSH server and opens an interactive shell session.
 //!
-//! Usage: bssh [user@]<host> [port] [username] [password|--publickey|--publickey-wrong] [--smoke] [--exec command]
+//! Usage: bssh [user@]<host> [port] [username] [password|--publickey|--publickey-wrong] [--identity path] [--smoke] [--exec command]
 //!   Default port: 22
 //!   Default username: root
-//!   Default password: breenix
+//!   Default authentication: publickey with --identity, else ~/.ssh/id_ed25519
+//!   (an unencrypted OpenSSH Ed25519 key or a PKCS#1 PEM RSA key).
+//!   --publickey-wrong names the identity's public key but signs with a fresh
+//!   random key. A refusal by the server (USERAUTH_FAILURE) exits 77.
 
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::socket::{SockAddrIn, TcpStream};
-use libbreenix::ssh::keys::{RsaIdentity, ServerHostKeyInfo};
+use libbreenix::ssh::keys::{Identity, ServerHostKeyInfo};
 use libbreenix::ssh::transport::{ClientAuthMethod, ClientSession};
 use libbreenix::termios;
 use libbreenix::types::Fd;
@@ -80,19 +83,18 @@ fn main() {
     let known_host_id = known_host_id(&opts.host, opts.port, opts.host_key_alias.as_deref());
 
     // SSH handshake + auth
-    let identity = match opts.identity_path.as_deref() {
-        Some(path) => Some(load_identity(path)),
-        None => None,
+    let identity = match opts.auth_choice {
+        AuthChoice::PublicKey { .. } => Some(load_identity(&opts.identity_path.clone().unwrap_or_else(default_identity))),
+        AuthChoice::Password(_) => None,
     };
 
     let auth_method = match (&opts.auth_choice, identity.as_ref()) {
-        (AuthChoice::Password(password), _) => ClientAuthMethod::Password(password),
-        (AuthChoice::PublicKey { .. }, Some(identity)) => {
-            ClientAuthMethod::PublicKeyIdentity(identity)
-        }
-        (AuthChoice::PublicKey { wrong_key }, None) => ClientAuthMethod::PublicKey {
-            wrong_key: *wrong_key,
+        (AuthChoice::PublicKey { wrong_key }, Some(identity)) => ClientAuthMethod::PublicKey {
+            identity,
+            wrong_signer: *wrong_key,
         },
+        (AuthChoice::Password(password), _) => ClientAuthMethod::Password(password),
+        (AuthChoice::PublicKey { .. }, None) => unreachable!("publickey loads an identity"),
     };
     if let Err(e) =
         session.handshake_with_auth_and_host_key(&opts.username, auth_method, |host_key| {
@@ -101,10 +103,8 @@ fn main() {
     {
         if matches!(e, libbreenix::ssh::SshError::Auth) {
             eprintln!("bssh: authentication failed");
-            // Reserved for server USERAUTH_FAILURE in the Auth error arm.
-            if matches!(opts.auth_choice, AuthChoice::PublicKey { wrong_key: true }) {
-                std::process::exit(77);
-            }
+            // Reserved for the server's USERAUTH_FAILURE: a refused key, signature or account.
+            std::process::exit(77);
         } else {
             eprintln!("bssh: handshake failed: {:?}", e);
         }
@@ -263,7 +263,7 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
     };
 
     let mut username = username;
-    let mut auth_choice = AuthChoice::Password("breenix".to_string());
+    let mut auth_choice = AuthChoice::PublicKey { wrong_key: false };
     if let Some(arg) = args.get(idx) {
         if arg == "--publickey" || arg == "publickey" {
             auth_choice = AuthChoice::PublicKey { wrong_key: false };
@@ -302,7 +302,9 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
                     .get(idx + 1)
                     .ok_or_else(|| "bssh: --identity requires a path".to_string())?;
                 identity_path = Some(path.clone());
-                auth_choice = AuthChoice::PublicKey { wrong_key: false };
+                if matches!(auth_choice, AuthChoice::Password(_)) {
+                    auth_choice = AuthChoice::PublicKey { wrong_key: false };
+                }
                 idx += 2;
             }
             "--user" => {
@@ -360,7 +362,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
     })
 }
 
-fn load_identity(path: &str) -> RsaIdentity {
+/// `~/.ssh/id_ed25519`, as OpenSSH's default identity.
+fn default_identity() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    format!("{}/.ssh/id_ed25519", home.trim_end_matches('/'))
+}
+
+fn load_identity(path: &str) -> Identity {
     let pem = match read_file(path) {
         Some(pem) => pem,
         None => {
@@ -369,7 +377,7 @@ fn load_identity(path: &str) -> RsaIdentity {
         }
     };
 
-    match RsaIdentity::from_pkcs1_pem(&pem) {
+    match Identity::from_file_text(&pem) {
         Ok(identity) => identity,
         Err(e) => {
             eprintln!("bssh: failed to parse identity '{}': {}", path, e);

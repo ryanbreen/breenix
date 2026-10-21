@@ -48,7 +48,7 @@ def config_2(action, size, partition, expected, root, url=''):
 
 
 def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
-          the_layout=None):
+          the_layout=None, operator=None):
     """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
     install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
     the_layout = the_layout or metal_persist.layout()
@@ -66,7 +66,7 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     # A reused mutable root can preserve the exact bytes diskChecks must check
     # this boot wrote, as well as consume fixtures needed by other suites.
     metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
-                          idle_minutes=idle_minutes, replug=replug)
+                          idle_minutes=idle_minutes, replug=replug, operator=operator)
     facts = metal_root.write_install_record(image, boot_id)
     root = record(facts)
     with image.open('r+b') as handle:

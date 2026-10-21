@@ -11,7 +11,7 @@ use crate::types::Fd;
 use super::auth;
 use super::channel::{self, Channel};
 use super::kex::{self, KexState};
-use super::keys::{HostKey, RsaIdentity, ServerHostKeyInfo};
+use super::keys::{HostKey, Identity, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
@@ -22,38 +22,26 @@ use super::{
 };
 
 /// An SSH server session on an accepted TCP connection.
-pub struct ServerSession {
+pub struct ServerSession<'a> {
     io: PacketIo,
-    host_key: HostKey,
+    host_key: &'a HostKey,
+    authorizer: &'a mut dyn auth::Authorizer,
     kex: KexState,
     client_version: String,
     channel: Option<Channel>,
     username: String,
 }
 
-impl ServerSession {
-    /// Create a new server session from an accepted TCP connection fd.
-    pub fn new(fd: Fd) -> Self {
+impl<'a> ServerSession<'a> {
+    /// A server session on an accepted TCP connection, signing with
+    /// `host_key` and deciding publickey logins with `authorizer`.
+    pub fn new(fd: Fd, host_key: &'a HostKey, authorizer: &'a mut dyn auth::Authorizer) -> Self {
         Self {
             io: PacketIo::new(fd),
-            host_key: HostKey::load(),
+            host_key,
+            authorizer,
             kex: KexState::new(),
             client_version: String::new(),
-            channel: None,
-            username: String::new(),
-        }
-    }
-
-    /// Create a server session with the version exchange already done.
-    ///
-    /// Used when bsshd handles the version exchange manually (e.g. for
-    /// diagnostics) before creating the session.
-    pub fn new_after_version(fd: Fd, client_version: &str) -> Self {
-        Self {
-            io: PacketIo::new(fd),
-            host_key: HostKey::load(),
-            kex: KexState::new(),
-            client_version: client_version.to_string(),
             channel: None,
             username: String::new(),
         }
@@ -126,7 +114,7 @@ impl ServerSession {
             println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
             kex::server_kex_hybrid(
                 &mut self.io,
-                &self.host_key,
+                self.host_key,
                 &mut self.kex,
                 &self.client_version,
                 BSSH_VERSION,
@@ -136,7 +124,7 @@ impl ServerSession {
             println!("bsshd: KEX curve25519-sha256");
             kex::server_kex_ecdh(
                 &mut self.io,
-                &self.host_key,
+                self.host_key,
                 &mut self.kex,
                 &self.client_version,
                 BSSH_VERSION,
@@ -165,19 +153,19 @@ impl ServerSession {
         // Send EXT_INFO (RFC 8308) to advertise supported pubkey algorithms.
         // Without this, modern OpenSSH (which disables ssh-rsa SHA-1 by default)
         // won't offer RSA keys for publickey auth — it needs to know we support
-        // rsa-sha2-256 for signature verification.
+        // rsa-sha2-256 for signature verification. Ed25519 keys need no SHA-1.
         {
             let mut ext_info = Vec::with_capacity(64);
             ext_info.push(7); // SSH_MSG_EXT_INFO
             SshBuf::put_u32(&mut ext_info, 1); // nr-extensions = 1
             SshBuf::put_string(&mut ext_info, b"server-sig-algs");
-            SshBuf::put_string(&mut ext_info, b"rsa-sha2-256,rsa-sha2-512,ssh-rsa");
+            SshBuf::put_string(&mut ext_info, b"ssh-ed25519,rsa-sha2-256,rsa-sha2-512");
             self.io.send_packet(&ext_info).map_err(|_| SshError::Io)?;
         }
 
         // 3. Authentication
         auth::server_accept_service(&mut self.io)?;
-        self.username = auth::server_authenticate(&mut self.io, session_id)?;
+        self.username = auth::server_authenticate(&mut self.io, session_id, self.authorizer)?;
 
         Ok(self.username.clone())
     }
@@ -238,6 +226,11 @@ impl ServerSession {
         }
 
         Ok(pty_requested)
+    }
+
+    /// The terminal type the client's pty-req named, if any.
+    pub fn pty_term(&self) -> Option<String> {
+        self.channel.as_ref().and_then(|ch| ch.pty_term.clone())
     }
 
     /// Get the channel's PTY dimensions.
@@ -431,8 +424,8 @@ pub struct ClientSession {
 /// Authentication method for SSH client handshakes.
 pub enum ClientAuthMethod<'a> {
     Password(&'a str),
-    PublicKey { wrong_key: bool },
-    PublicKeyIdentity(&'a RsaIdentity),
+    /// Publickey with `identity`; `wrong_signer` signs with a fresh random key instead.
+    PublicKey { identity: &'a Identity, wrong_signer: bool },
 }
 
 impl ClientSession {
@@ -525,11 +518,8 @@ impl ClientSession {
             ClientAuthMethod::Password(password) => {
                 auth::client_auth_password(&mut self.io, username, password)?;
             }
-            ClientAuthMethod::PublicKey { wrong_key } => {
-                auth::client_auth_publickey(&mut self.io, username, session_id, wrong_key)?;
-            }
-            ClientAuthMethod::PublicKeyIdentity(identity) => {
-                auth::client_auth_publickey_identity(&mut self.io, username, session_id, identity)?;
+            ClientAuthMethod::PublicKey { identity, wrong_signer } => {
+                auth::client_auth_publickey(&mut self.io, username, session_id, identity, wrong_signer)?;
             }
         }
 
