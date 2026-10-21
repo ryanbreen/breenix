@@ -8,7 +8,8 @@ use alloc::sync::Weak;
 
 pub fn backend_code() -> u32 { with_core(|c| c.caps.backend).unwrap_or(0) }
 
-static CONTEXTS: spin::Mutex<BTreeMap<u64, Weak<Context>>> = spin::Mutex::new(BTreeMap::new());
+static CONTEXTS: crate::irq_safe_mutex::IrqSafeMutex<BTreeMap<u64, Weak<Context>>> =
+    crate::irq_safe_mutex::IrqSafeMutex::new(BTreeMap::new());
 
 struct Context {
     owner: u64,
