@@ -41,6 +41,12 @@ pub struct PollFd {
 pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
     let mut revents: i16 = 0;
 
+    // A terminal revoked from the description (`tty::revoke`) is hung up for
+    // it: readable (end of file) and writable (EIO), with POLLERR and POLLHUP.
+    if fd_entry.terminal_revoked() {
+        return (events & (events::POLLIN | events::POLLOUT)) | events::POLLERR | events::POLLHUP;
+    }
+
     match &fd_entry.kind {
         FdKind::Ipc(object) => {
             revents = object.poll_events() & (events | events::POLLERR | events::POLLHUP);

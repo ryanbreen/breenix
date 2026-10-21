@@ -13,6 +13,7 @@ use crate::ipc::fd::{FdKind, FdTable};
 /// POSIX error codes
 pub(crate) const EBADF: u64 = 9; // Bad file descriptor
 pub(crate) const ENOTTY: u64 = 25; // Inappropriate ioctl for device
+const EIO: u64 = super::errno::EIO as u64;
 
 /// sys_ioctl - Perform I/O control operation on a file descriptor
 ///
@@ -72,8 +73,8 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
 
     if fd > i32::MAX as u64 { return SyscallResult::Err(EBADF); }
 
-    let kind = match get_fd_kind(fd as i32) {
-        Some(kind) => kind, None => return SyscallResult::Err(EBADF),
+    let (kind, revoked) = match get_fd_state(fd as i32) {
+        Some(state) => state, None => return SyscallResult::Err(EBADF),
     };
     if matches!(request, 0x5450 | 0x5451 | 0x5421 | 0x5452) {
         let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(EBADF); };
@@ -81,6 +82,10 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         let Some(pm) = manager.as_mut() else { return SyscallResult::Err(EBADF); };
         let Some((_, process)) = pm.find_process_by_thread_mut(tid) else { return SyscallResult::Err(EBADF); };
         return descriptor_ioctl(&mut process.fd_table, fd as i32, request, arg);
+    }
+    // A terminal revoked from this description takes no more controls.
+    if revoked {
+        return SyscallResult::Err(EIO);
     }
     if request == 0x541b { // FIONREAD / TIOCINQ
         let count = match &kind {
@@ -180,9 +185,11 @@ fn descriptor_readable(fd: i32) -> bool {
         .and_then(|(_, p)| p.fd_table.get(fd)).is_some_and(|entry| entry.readable())
 }
 
-fn fd_kind(table: &crate::ipc::fd::FdTableInner, fd: u64) -> Option<FdKind> {
+/// The descriptor's kind, and whether it is a terminal revoked from it.
+fn fd_state(table: &crate::ipc::fd::FdTableInner, fd: u64) -> Option<(FdKind, bool)> {
     if fd > i32::MAX as u64 { return None; }
-    Some(table.get(fd as i32)?.kind.clone())
+    let entry = table.get(fd as i32)?;
+    Some((entry.kind.clone(), entry.terminal_revoked()))
 }
 
 /// The console terminal.
@@ -214,21 +221,22 @@ fn rtc_ioctl(request: u64, arg: u64) -> SyscallResult {
     }
 }
 
-/// The FdKind of the caller's file descriptor `fd`, or None if it is not open.
+/// The kind of the caller's descriptor `fd` and whether its terminal was
+/// revoked from it; empty for a descriptor that is not open.
 /// x86_64: from the table the caller's row publishes to it, without
 /// PROCESS_MANAGER (#1650), unless a hold of that lock is changing it.
-fn get_fd_kind(fd: i32) -> Option<FdKind> {
+fn get_fd_state(fd: i32) -> Option<(FdKind, bool)> {
     #[cfg(target_arch = "x86_64")]
-    if let Some(kind) = super::handlers::current_fd_table()
-        .and_then(|table| table.try_read_lockless(|inner| fd_kind(inner, fd as u64)))
+    if let Some(state) = super::handlers::current_fd_table()
+        .and_then(|table| table.try_read_lockless(|inner| fd_state(inner, fd as u64)))
     {
-        return kind;
+        return state;
     }
     let thread_id = crate::task::scheduler::current_thread_id()?;
     let manager_guard = crate::process::manager();
     let manager = manager_guard.as_ref()?;
     let (_, process) = manager.find_process_by_thread(thread_id)?;
-    fd_kind(&process.fd_table, fd as u64)
+    fd_state(&process.fd_table, fd as u64)
 }
 
 #[cfg(test)]
@@ -240,9 +248,9 @@ mod tests {
     fn closed_standard_descriptors_are_ebadf() {
         let mut table = FdTable::new();
         for fd in 0..=2 {
-            assert!(fd_kind(&table, fd).is_some());
+            assert!(fd_state(&table, fd).is_some());
             table.close(fd as i32).unwrap();
-            assert!(fd_kind(&table, fd).is_none());
+            assert!(fd_state(&table, fd).is_none());
             assert_eq!(descriptor_ioctl(&mut table, fd as i32, 0x5451, 0), SyscallResult::Err(EBADF));
         }
     }
@@ -251,13 +259,13 @@ mod tests {
     fn fd_lookup_distinguishes_open_nonterminal_from_closed_and_out_of_range() {
         let mut table = FdTable::empty();
         let fd = table.alloc(FdKind::Device(crate::fs::devfs::DeviceType::Null)).unwrap();
-        assert!(matches!(fd_kind(&table, fd as u64), Some(FdKind::Device(crate::fs::devfs::DeviceType::Null))));
-        assert!(matches!(resolve_terminal(fd_kind(&table, fd as u64).unwrap()),
+        assert!(matches!(fd_state(&table, fd as u64), Some((FdKind::Device(crate::fs::devfs::DeviceType::Null), false))));
+        assert!(matches!(resolve_terminal(fd_state(&table, fd as u64).unwrap().0),
             Err(SyscallResult::Err(ENOTTY))));
-        assert!(fd_kind(&table, i32::MAX as u64 + 1).is_none());
-        assert!(fd_kind(&table, u64::MAX).is_none());
+        assert!(fd_state(&table, i32::MAX as u64 + 1).is_none());
+        assert!(fd_state(&table, u64::MAX).is_none());
         table.close(fd).unwrap();
-        assert!(fd_kind(&table, fd as u64).is_none());
+        assert!(fd_state(&table, fd as u64).is_none());
     }
 
     #[test]

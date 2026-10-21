@@ -194,6 +194,10 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let entry = match descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
+    // A terminal revoked from this description changes through it no more.
+    if entry.terminal_revoked() {
+        return SyscallResult::Err(EIO as u64);
+    }
     if let Some(handle) = &entry.native_inode {
         let mut guard = match ext2::write_mount(handle.object.mount) { Ok(g) => g, Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)) };
         let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };

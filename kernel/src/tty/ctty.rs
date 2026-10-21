@@ -6,6 +6,7 @@ use super::ioctl::Side;
 use super::pty::PtyPair;
 use crate::process::{Process, ProcessId, ProcessManager};
 use crate::syscall::errno::{EFAULT, EIO, ENOTTY, EPERM, ESRCH};
+use crate::process::privilege::{self, Operation};
 use alloc::sync::Arc;
 
 /// A terminal a session can control: a virtual terminal (1-based; tty1 is
@@ -350,6 +351,31 @@ fn finish_session_exit(exit: SessionExit) {
             crate::syscall::signal::signal_pgrp_from_kernel(fg, crate::signal::constants::SIGCONT);
         }
     }
+}
+
+/// vhangup(2): revoke the caller's controlling terminal from the
+/// descriptions open on it now (`tty::revoke`), the caller's own included, and
+/// take the terminal from any other session that still names it, so their
+/// processes cannot reopen it through /dev/tty. Root only. getty calls this before each login
+/// prompt and then opens the line again.
+pub fn vhangup() -> Result<(), i32> {
+    privilege::require(Operation::TerminalHangup).map_err(|errno| errno as i32)?;
+    let tid = crate::task::scheduler::current_thread_id().ok_or(ESRCH)?;
+    let tty = {
+        let mut guard = crate::process::manager();
+        let pm = guard.as_mut().ok_or(ESRCH)?;
+        let (sid, ctty) = pm.find_process_by_thread(tid).map(|(_, row)| (row.sid, row.ctty)).ok_or(ESRCH)?;
+        let id = ctty.ok_or(ENOTTY)?;
+        let tty = TtyRef::resolve(id).ok_or(ENOTTY)?;
+        for (_, row) in pm.iter_processes_mut() {
+            if row.ctty == Some(id) && row.sid != sid {
+                row.ctty = None;
+            }
+        }
+        tty
+    };
+    super::revoke::revoke(&tty);
+    Ok(())
 }
 
 /// Called with neither PM nor a pair lock held, before removing the pair

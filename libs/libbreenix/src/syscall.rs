@@ -125,6 +125,7 @@ pub mod nr {
     pub const GETRESUID: u64 = 118;
     pub const SETRESGID: u64 = 119;
     pub const GETRESGID: u64 = 120;
+    pub const VHANGUP: u64 = 153;
     pub const SETPGID: u64 = 109;
     pub const GETPPID: u64 = 110;
     pub const SETSID: u64 = 112;
@@ -260,6 +261,7 @@ pub mod nr {
     pub const GETRESUID: u64 = 148;
     pub const SETRESGID: u64 = 149;
     pub const GETRESGID: u64 = 150;
+    pub const VHANGUP: u64 = 58;
     pub const CHDIR: u64 = 49;
     pub const FCHDIR: u64 = 50;
     pub const OPENAT: u64 = 56;

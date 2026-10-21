@@ -372,7 +372,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
         DeviceType::Tty0 | DeviceType::Vt(_) => match device_type.terminal() {
             Some(1) => crate::ipc::stdin::read_bytes(buf).map_err(|e| -e),
             Some(number) => match crate::ipc::stdin::vt_input(number - 1) {
-                Some(input) => input.read_or_prepare(buf, true).map_err(|_| -11),
+                Some(input) => input.read_or_prepare(buf, true, &|| true).map_err(|_| -11),
                 None => Err(-6),
             },
             None => Err(-6),

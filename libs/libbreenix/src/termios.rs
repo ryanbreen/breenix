@@ -297,6 +297,15 @@ pub fn set_controlling_terminal(fd: Fd) -> Result<(), Error> {
     Error::from_syscall(ret as i64).map(|_| ())
 }
 
+/// Revoke the controlling terminal from the open file descriptions on it,
+/// the caller's own included (vhangup): reads through them return end of
+/// file, and other operations fail with EIO. Root only. getty does this before
+/// each login prompt, then opens the line again.
+pub fn vhangup() -> Result<(), Error> {
+    let ret = unsafe { raw::syscall0(nr::VHANGUP) };
+    Error::from_syscall(ret as i64).map(|_| ())
+}
+
 /// Make raw mode termios settings
 pub fn cfmakeraw(termios: &mut Termios) {
     termios.c_iflag &= !(iflag::ICRNL | iflag::IXON);
