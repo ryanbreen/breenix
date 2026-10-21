@@ -122,6 +122,17 @@ fn main() {
         }
     }
 
+    if pid == 1 {
+        // Boot scripts may start blogd before the service supervisor exists.
+        // Publish once, after /run is cleared, for each init mode and architecture.
+        std::fs::create_dir_all("/run/breenix").expect("log state directory");
+        let stamp = libbreenix::time::now_realtime().expect("log boot clock");
+        let uptime = libbreenix::time::now_monotonic().expect("log boot uptime");
+        let boot_id = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, uptime.tv_nsec);
+        std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
+        print!("[init] log boot-id={}\n", boot_id);
+    }
+
     // Explicit shell, console and desktop modes bypass the full startup below.
     // No argument or `default` keeps the services and boot checks.
     match std::env::args().nth(1).as_deref() {

@@ -24,6 +24,7 @@ use libbreenix::process::{self, ForkResult};
 use libbreenix::types::{Fd, OwnedFd};
 use libbreenix::services::{self, AfterExit, Need, Service, Status};
 use libbreenix::signal;
+use libbreenix::service_logs::{Log, Lines};
 use libbreenix::ssh::account::{self, Account, Credentials};
 
 extern "C" {
@@ -165,6 +166,8 @@ struct Entry {
     killed: bool,
     after_stop: AfterStop,
     pending: Vec<Pending>,
+    log: Option<Log>,
+    outputs: Vec<Output>,
 }
 
 impl Entry {
@@ -186,6 +189,8 @@ impl Entry {
             killed: false,
             after_stop: AfterStop::Stay,
             pending: Vec::new(),
+            log: None,
+            outputs: Vec::new(),
         }
     }
 
@@ -224,6 +229,7 @@ pub struct Supervisor {
     connections: Vec<Connection>,
     network_checked_ms: u64,
     changed: bool,
+    boot_id: String,
 }
 
 fn exit_text(status: i32) -> String {
@@ -258,6 +264,7 @@ impl Supervisor {
             connections: Vec::new(),
             network_checked_ms: 0,
             changed: true,
+            boot_id: String::new(),
         };
         if publish {
             supervisor.listener = match open_control() {
@@ -267,6 +274,10 @@ impl Supervisor {
                     None
                 }
             };
+        }
+        if publish {
+            supervisor.boot_id = std::fs::read_to_string("/run/breenix/boot-id")
+                .expect("init log boot ID").trim().to_string();
         }
         supervisor
     }
@@ -280,6 +291,7 @@ impl Supervisor {
 
     /// One pass: reap, serve requests, update conditions, stop and start.
     pub fn tick(&mut self) {
+        self.drain_logs();
         self.reap();
         self.serve();
         let now = now_ms();
@@ -290,6 +302,30 @@ impl Supervisor {
         if self.changed {
             self.changed = false;
             self.write_state();
+        }
+    }
+
+    fn drain_logs(&mut self) {
+        for entry in &mut self.entries {
+            let Some(log) = &mut entry.log else { continue };
+            log.retry();
+            for output in &mut entry.outputs {
+                if output.ended { continue; }
+                let mut bytes = [0u8; 4096];
+                for _ in 0..16 {
+                    match output.reader.read(&mut bytes) {
+                        Ok(0) => { output.lines.finish(output.stream, log); output.ended = true; break; },
+                        Ok(n) => {
+                            output.lines.feed(&bytes[..n], output.stream, log);
+                            if output.console { let _ = std::io::stdout().write_all(&bytes[..n]); }
+                        },
+                        Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(_) => { log.record(b"[log] lost lines=unknown reason=pipe-read-error\n"); output.ended = true; break; },
+                    }
+                }
+            }
+            entry.outputs.retain(|o| !o.ended);
         }
     }
 
@@ -346,12 +382,20 @@ impl Supervisor {
         if let Some(def) = entry.replacement.take() {
             entry.def = def;
         }
+        if self.publish && entry.log.is_none() {
+            entry.log = Some(Log::new(Path::new("/var/log"), &entry.def.name, &self.boot_id)
+                .unwrap_or_else(|e| {
+                    println!("[init] {}: log unavailable; starting anyway: {}", entry.def.name, e);
+                    Log::deferred(Path::new("/var/log"), &entry.def.name, &self.boot_id)
+                }));
+        }
         let result = account::read_account(Path::new("/"), &entry.def.user)
             .map_err(|why| why.to_string())
-            .and_then(|account| launch(&entry.def, &account));
+            .and_then(|account| launch(&entry.def, &account, self.publish));
         self.changed = true;
         match result {
-            Ok(pid) => {
+            Ok((pid, outputs)) => {
+                entry.outputs.extend(outputs);
                 entry.pid = pid;
                 entry.starts += 1;
                 entry.started_ms = now;
@@ -791,10 +835,18 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     (ret == 0 && length == 12).then_some(credentials[1])
 }
 
-/// Fork, take on the account's credentials and run the command. The child's
-/// environment is the account's (HOME, USER, LOGNAME), a system PATH and
-/// init's TERM; its working directory is `/`.
-fn launch(def: &Service, account: &Account) -> Result<i32, String> {
+/// One captured service stream; retained across exits until its pipe reaches EOF.
+struct Output {
+    reader: std::fs::File,
+    stream: &'static str,
+    lines: Lines,
+    console: bool,
+    ended: bool,
+}
+
+/// Fork, take the account credentials and exec with a system PATH, HOME, USER,
+/// LOGNAME and init's TERM. The child's working directory is `/`.
+fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<Output>), String> {
     let words: Vec<CString> =
         def.command.iter().map(|w| CString::new(w.as_str())).collect::<Result<_, _>>().map_err(|_| "command contains NUL")?;
     let mut environment = vec![
@@ -803,6 +855,9 @@ fn launch(def: &Service, account: &Account) -> Result<i32, String> {
         format!("LOGNAME={}", account.name),
         "PATH=/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
     ];
+    if capture && login_terminal(def).is_some() {
+        environment.push("BREENIX_SERVICE_LOG=1".into());
+    }
     if let Ok(term) = std::env::var("TERM") {
         environment.push(format!("TERM={}", term));
     }
@@ -813,8 +868,18 @@ fn launch(def: &Service, account: &Account) -> Result<i32, String> {
     argv.push(core::ptr::null());
     let mut envp: Vec<*const u8> = environment.iter().map(|e| e.as_ptr().cast()).collect();
     envp.push(core::ptr::null());
-    if account.uid != 0 && login_terminal(def).is_none() {
-        std::fs::create_dir_all(services::RUN_DIR).map_err(|e| format!("service log directory: {}", e))?;
+    let mut outputs = Vec::new();
+    let mut writers = Vec::new();
+    if capture {
+        for stream in ["stdout", "stderr"] {
+            let (read, write) = libbreenix::io::pipe2(libbreenix::io::status_flags::O_CLOEXEC)
+                .map_err(|e| format!("log pipe: {}", e))?;
+            let reader = unsafe { std::fs::File::from_raw_fd(read.raw() as i32) };
+            libbreenix::io::fcntl(read, libbreenix::io::fcntl_cmd::F_SETFL,
+                libbreenix::io::status_flags::O_NONBLOCK as i64).map_err(|e| format!("log reader: {}", e))?;
+            outputs.push(Output { reader, stream, lines: Lines::new(), console: account.uid == 0 && login_terminal(def).is_none(), ended: false });
+            writers.push(OwnedFd::new(write));
+        }
     }
     // The writer closes on successful exec; setup and exec failures send an
     // error instead. Bound the wait so a stalled child cannot wedge init.
@@ -825,26 +890,22 @@ fn launch(def: &Service, account: &Account) -> Result<i32, String> {
     match process::fork().map_err(|e| format!("fork: {}", e))? {
         ForkResult::Child => {
             drop(reader);
+            drop(outputs);
             let fail = |why: String, code: i32| -> ! {
                 let _ = libbreenix::io::write(writer.fd(), why.as_bytes());
                 process::exit(code);
             };
-            // Login terminals deliberately inherit init's console. Other services
-            // get EOF on stdin; non-root services get a protected log file too.
+            for (output, target) in writers.iter().zip([Fd::STDOUT, Fd::STDERR]) {
+                if let Err(e) = libbreenix::io::dup2(output.fd(), target) { fail(format!("log output: {}", e), 126); }
+            }
+            drop(writers);
+            // Getty acquires its own terminal. Other services get EOF on
+            // stdin and write their output into the captured pipes.
             if login_terminal(def).is_none() {
                 let redirect = || -> Result<(), String> {
                     let input = OwnedFd::new(libbreenix::fs::open("/dev/null", libbreenix::fs::O_RDONLY)
                         .map_err(|e| format!("open service stdin: {}", e))?);
                     libbreenix::io::dup2(input.fd(), Fd::STDIN).map_err(|e| format!("service stdin: {}", e))?;
-                    if account.uid != 0 {
-                        let path = format!("/run/breenix/{}.log", def.name);
-                        let output = OwnedFd::new(libbreenix::fs::open_with_mode(&path,
-                            libbreenix::fs::O_WRONLY | libbreenix::fs::O_CREAT | libbreenix::fs::O_APPEND, 0o600)
-                            .map_err(|e| format!("open service log: {}", e))?);
-                        for target in [Fd::STDOUT, Fd::STDERR] {
-                            libbreenix::io::dup2(output.fd(), target).map_err(|e| format!("service output: {}", e))?;
-                        }
-                    }
                     Ok(())
                 };
                 if let Err(why) = redirect() {
@@ -862,11 +923,12 @@ fn launch(def: &Service, account: &Account) -> Result<i32, String> {
         }
         ForkResult::Parent(pid) => {
             drop(writer);
+            drop(writers);
             let deadline = now_ms() + REQUEST_MS;
             let mut buffer = [0u8; 512];
             loop {
                 match reader.read(&mut buffer) {
-                    Ok(0) => return Ok(pid.raw() as i32),
+                    Ok(0) => return Ok((pid.raw() as i32, outputs)),
                     Ok(n) => return Err(String::from_utf8_lossy(&buffer[..n]).into_owned()),
                     Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                     Err(e) if e.kind() == ErrorKind::WouldBlock && now_ms() < deadline => {
