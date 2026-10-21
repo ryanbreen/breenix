@@ -123,6 +123,39 @@ static SUITE: Suite = suite(
     ]),
     category("su", "su: passwords, wheel, login environment and the auth log", &[
         case("setuid-set", "Exactly su, passwd and sudo are installed set-user-ID root", admin_setuid_set),
+        case("su-wrong-password-refused", "su refuses a wrong target password and accepts the right one", su_wrong_password),
+        case("su-root-ok", "A wheel member becomes root with root's password", su_root_ok),
+        case("su-nonwheel-refused", "su refuses root to a caller outside wheel without asking for a password", su_nonwheel_refused),
+        case("su-dash-env", "su - gives the target's clean login environment and home; plain su keeps the caller's", su_dash_env),
+        case("su-logged", "su successes and refusals are recorded in the protected auth log without passwords", su_logged),
+        case("passwd-command", "The set-user-ID passwd command changes the caller's own password and no other account's", passwd_command),
+    ]),
+    category("sudo", "sudo-style administration: policy, password cache, environment and the auth log", &[
+        case("sudo-wheel-ok", "A wheel member runs a command as root with their own password", sudo_wheel_ok),
+        case("sudo-nonwheel-refused", "sudo refuses a caller no rule permits without asking for a password", sudo_nonwheel_refused),
+        case("sudo-wrong-password", "sudo refuses a wrong password", sudo_wrong_password),
+        case("sudo-env-reset", "The command gets a reset environment, the secure PATH and umask 022", sudo_env_reset),
+        case("sudo-bad-policy-mode-refused", "sudo refuses to run under a policy with the wrong mode or one that does not parse", sudo_bad_policy_mode),
+        case("sudo-cache-session", "An authentication is remembered for the session and terminal only", sudo_cache_session),
+        case("sudo-policy-rules", "A rule's target, command and nopass decide, first match wins", sudo_policy_rules),
+        case("sudo-logged", "sudo successes and refusals are recorded with the command and without passwords", sudo_logged),
+    ]),
+    category("login", "Console login as any account, tty ownership and umask", &[
+        case("login-user", "A fixture account logs in through getty and login with its IDs, groups, environment, home and login shell", login_user),
+        case("login-bad-password-refused", "A wrong password is refused with Login incorrect and the right one then logs in", login_bad_password),
+        case("login-root-refused", "login refuses root under ROOT_LOGIN no, and the same password logs in under ROOT_LOGIN yes", login_root_refused),
+        case("login-locked-refused", "A locked password is refused at login and the unlocked one logs in", login_locked_refused),
+        case("login-expired-refused", "An expired account is refused at login, and logs in once its expiry is cleared", login_expired_refused),
+        case("login-tty-owned", "The session's terminal belongs to the account, group tty, mode 0620", login_tty_owned),
+        case("login-umask", "A session starts with the umask from /etc/login.defs", login_umask),
+        case("logout-tty-restored", "After logout getty returns the terminal to root at 0620 and records the logout", logout_tty_restored),
+    ]),
+    category("ssh", "SSH sessions as the account: identity, groups, PTY owner and key-file modes", &[
+        case("ssh-identity", "An SSH command runs as the account with its IDs, groups, environment and home", ssh_identity),
+        case("ssh-root-refused", "bsshd refuses root's key, and the same key logs in as an ordinary account", ssh_root_refused),
+        case("ssh-groups", "An SSH session holds the account's supplementary groups", ssh_groups),
+        case("ssh-pty-owner", "An interactive SSH session's PTY belongs to the account, group tty, mode 0620", ssh_pty_owner),
+        case("ssh-bad-key-mode-refused", "A group-writable authorized_keys grants no login until its mode is 0600", ssh_bad_key_mode_refused),
     ]),
     ],
 );
@@ -1591,3 +1624,4 @@ fn umask_threads() -> CaseResult {
 }
 
 include!("suite_users_accounts.rs");
+include!("suite_users_login.rs");
