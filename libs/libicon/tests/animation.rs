@@ -46,30 +46,6 @@ fn spring_uses_fixed_millisecond_quanta() {
     assert!((a.velocity - 0.000876).abs() <= 0.0001);
 }
 
-#[test]
-fn hover_reversal_is_continuous_and_all_effects_settle_after_exit() {
-    for mut icon in catalogue() {
-        let mut m = IconMouse::none();
-        m.hovering = true;
-        icon.update(101_000, m);
-        let before = icon.hover_amount();
-        assert!(before > 0.0 && before < 1.0);
-        icon.update(0, IconMouse::none());
-        assert_eq!(before, icon.hover_amount());
-        icon.update(1_000, IconMouse::none());
-        assert!((before - icon.hover_amount()).abs() <= 0.0051);
-        icon.update(1_999_000, IconMouse::none());
-        assert!(icon.settled(), "{} did not settle", icon.name());
-        let old = image(&*icon);
-        icon.update(100_000, IconMouse::none());
-        assert_eq!(
-            old,
-            image(&*icon),
-            "{} kept drawing animation after settling",
-            icon.name()
-        );
-    }
-}
 
 #[test]
 fn hover_and_click_effects_settle_with_pointer_still_inside() {

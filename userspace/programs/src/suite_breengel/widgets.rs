@@ -1,3 +1,4 @@
+#[path="icon_pixels/hover_reversal_is_continuous_and_all_effects_settle_after_exit.rs"] mod pixel_reversal_hover;
 #[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
 //! widgets, text-entry, icons and the `text/fontwatch-*` cases (contract sections 9 and
 //! 14 to 16).
@@ -2134,6 +2135,8 @@ fn icons_interrupt() -> CaseResult {
 }
 
 fn icons_reversal() -> CaseResult {
+    pixel_reversal_hover::run();
+
     for (name, make) in catalogue() {
         let mut icon = make();
         icon.update(101_000, mouse(true, false, false, false));
