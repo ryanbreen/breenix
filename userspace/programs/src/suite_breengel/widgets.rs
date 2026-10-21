@@ -1282,6 +1282,7 @@ fn widgets_menu_keys() -> CaseResult {
 
 // gpu-text: R3 changes disabled label metrics and pixels; disabled activation remains forbidden.
 fn widgets_menu_disabled() -> CaseResult {
+    let scale=ui_scale();
     let (mut m, theme) = open_menu();
     // Save, the disabled second item, is the row at y = 27 + 22 .. 27 + 44.
     let mut got = Vec::new();
@@ -1292,16 +1293,16 @@ fn widgets_menu_disabled() -> CaseResult {
         }
     }
     ensure(got.is_empty(), "14.3", format!("clicking the disabled item reported {got:?}; the contract does not let a disabled item be chosen"))?;
-    let mut g = Drawn::bgrx(330, 140);
+    let mut g = ui_frame(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    let mut want = Guarded::bgrx(sans_width(b"Save") as usize, 16);
+    let mut want = Guarded::bgrx(sans_width(b"Save") as usize*scale, 16*scale);
     want.reset(theme.widget_bg);
     sans_draw(&mut want.fb(),b"Save",0,0,theme.text_secondary);
-    for y in 0..16 {
+    for y in 0..16*scale {
         for x in 0..want.width {
-            let got = g.color(28 + x, 27 + 22 + 3 + y);
+            let got = g.color(28*scale + x, (27 + 22 + 3)*scale + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
