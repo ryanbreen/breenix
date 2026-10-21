@@ -66,6 +66,7 @@ struct Resource {
     invalid: bool, lost: bool, backing: (), pitch: u32, epoch: u64, holds: u32,
 }
 struct Sub { published: bool, requests: u32, sent_ns: Option<u64>, written: Vec<u32>, ctx: u32 }
+struct Ctx { scratch: u32 }
 struct SyncReq {
     upload: Option<(u32,u64)>, ctx: u32, sent_ns: Option<u64>, holds: Vec<u32>, reading: Vec<u32>,
     abandoned: bool, failed: bool, why: u32, warm: Option<u64>,
@@ -75,6 +76,7 @@ struct Core {
     subs: BTreeMap<u64,Sub>, resources: BTreeMap<u32,Resource>, dev: Option<Device>,
     syncs: BTreeMap<u64,SyncReq>, done: BTreeMap<u64,()>, canvas: Vec<(u32,())>,
     epoch: u64, next: u64, next_fence: u64, flushes: u32,
+    contexts: BTreeMap<u32,Ctx>,
 }
 impl Core {
     // PRODUCTION
@@ -90,7 +92,8 @@ impl Core {
                 accepted: vec![Writer { ctx: 3, ended: false }], reading: false, progress_context: None,
                 invalid: false, lost: false, backing: (), pitch: 256, epoch: 1, holds: 1 })]),
             dev: Some(Device { room: 2 }), syncs: BTreeMap::new(), done: BTreeMap::new(), canvas: vec![],
-            epoch: 1, next: 0, next_fence: 0, flushes: 0 }
+            epoch: 1, next: 0, next_fence: 0, flushes: 0,
+            contexts: BTreeMap::from([(3,Ctx { scratch: 7 })]) }
     }
 }
 #[test]
@@ -163,6 +166,21 @@ fn progress_dma_allows_later_gpu_writers_but_cpu_reads_exclude_them() {
     c.resources.get_mut(&7).unwrap().progress_context = None;
     let id = 4;
     assert!({WRITE_BLOCKED}, "an ordinary CPU read still excludes GPU context {id}");
+}
+#[test]
+fn drain_uses_the_contexts_private_one_pixel_target() {
+    let mut c = Core::new();
+    c.contexts.get_mut(&3).unwrap().scratch = 9;
+    c.resources.insert(9,Resource { kind: kind::TARGET, writers: 0, accepted: vec![],
+        reading: false, progress_context: None, invalid: false, lost: false,
+        backing: (), pitch: 256, epoch: 1, holds: 1 });
+    c.progress_readback();
+    let Request::Virgl(read) = &c.backlog[0].1;
+    assert_eq!((read.ctx,read.id), (3,c.contexts[&3].scratch), "the drain must not download the drawn target");
+    assert_eq!(c.resources[&9].holds, 2);
+    assert!(c.resources[&9].reading);
+    assert_eq!(c.resources[&7].holds, 1);
+    assert!(!c.resources[&7].reading, "the source target remains available to GPU writers");
 }
 '''
         methods = "\n".join(method(name) for name in
