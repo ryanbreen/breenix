@@ -53,6 +53,19 @@ class HostServerScore(unittest.TestCase):
         self.serial = serial + 'KERNEL PANIC: example\n'
         with self.assertRaises(ValueError): score()
 
+    def test_logs_require_all_cases_and_prior_boot_at_same_commit(self):
+        records = dict(self.records, milestone='server/logs',
+                       cases=[dict(id='logs/' + name, result='PASS') for name, _ in host['LOGS']])
+        def score():
+            return host['score'](self.manifest, self.path, records, self.serial, self.boot, self.sha, [])
+        with self.assertRaises(ValueError): score()
+        records['previous'] = dict(commit='b' * 40)
+        with self.assertRaises(ValueError): score()
+        records['previous'] = dict(commit=self.sha)
+        self.assertTrue(score().startswith('PASS: server/logs'))
+        records['cases'][-1]['result'] = 'FAIL'
+        with self.assertRaises(ValueError): score()
+
     def test_cleanup_restores_exact_keys_without_guest_mktemp(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

@@ -49,9 +49,18 @@ SERVICES = (
     ('crash-loop', 'Five quick failures are reported as a crash loop on the console and in svc, and the next start follows 60 seconds later'),
 )
 
+LOGS = (
+    ('table', 'Every table service has a protected size-bounded log headed with this boot ID'),
+    ('streams', 'A supervised service records stdout and stderr in its own file'),
+    ('rotation', 'A service log rotates at its size bound and retains complete records'),
+    ('loss', 'An oversized line is counted as lost and the following line is retained'),
+    ('kernel', 'blogd records new kernel output and reports ring overruns'),
+    ('persistent', 'The previous persistent boot service log survives reboot with its original boot ID and bytes'),
+)
+
 # The populated categories in manifest order, and the milestone each one measures.
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES}
-MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services'}
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS}
+MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs'}
 # bsshd restarts 1 s after a run that lasted 10 s exits (libs/libbreenix/src/services.rs); the window
 # allows for the console's typing of the kill and for bsshd's start-up.
 RESTART_WINDOW_S = 10
@@ -102,6 +111,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         for line in ('[init] bsshd killed by signal 9', '[init] svc-suite-fail is crash-looping: 5 failures in a row'):
             if line not in serial:
                 raise ValueError('boot captured no line ' + line)
+    if category == 'logs' and (not records.get('previous') or records['previous'].get('commit') != sha):
+        raise ValueError('logs need prior persistent boot evidence at this commit')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
@@ -687,7 +698,7 @@ class Services:
         if not re.search(r'^Uid:\t1000\t1000\t1000\t1000$', status.stdout, re.M) or \
                 not re.search(r'^Gid:\t1000\t1000\t1000\t1000$', status.stdout, re.M):
             raise ValueError('the temporary service does not run as the operator account')
-        if 'service-io-ok' not in self.console.run('cat /run/breenix/svc-suite-sleep.log'):
+        if 'service-io-ok' not in self.console.run('cat /var/log/svc-suite-sleep.log'):
             raise ValueError('a service retained console input on a standard descriptor')
         for name in ('svc-suite-missing', 'svc-suite-noexec'):
             result = self.probe.ssh('svc start ' + name)
@@ -734,9 +745,131 @@ class Services:
         if errors: raise ValueError('; '.join(errors))
 
 
+class Logs:
+    """Actual service output and cross-boot files; root reads through the leased SOL console."""
+    def __init__(self, probe, console, previous):
+        self.probe, self.console, self.previous = probe, console, previous
+        self.fixtures = False
+        result = probe.ssh('cat /run/breenix/boot-id')
+        probe.require(result)
+        self.boot_id = result.stdout.strip()
+        if not re.fullmatch(r'[a-f0-9-]+', self.boot_id): raise ValueError('missing log boot ID')
+
+    def root_check(self, script):
+        text = self.console.run('sh -c ' + shlex.quote('set -e; ' + script + '; printf "\\nlogs-check-%s\\n" ok'), timeout=60)
+        if not re.search(r'^logs-check-ok\r?$', text, re.M):
+            raise ValueError('root log assertion failed: ' + script)
+        return text
+
+    def fixture(self, name, script):
+        self.fixtures = True
+        table = '[' + name + ']\ncommand = /bin/sh -c ' + shlex.quote(script) + '\nuser = ' + self.probe.user + '\nrestart = never\n'
+        literal = table.replace('\\', '\\\\').replace('\n', r'\n')
+        self.root_check('printf %b ' + shlex.quote(literal) + ' > /run/breenix/services.d/' + name)
+        self.console.run('svc reload')
+        deadline = time.monotonic() + 45
+        while True:
+            result = self.probe.ssh('cat /run/breenix/services')
+            self.probe.require(result)
+            service = parse_state(result.stdout)[1].get(name)
+            if service and service['state'] == 'done': break
+            if service and service['state'] == 'failed': raise ValueError(name + ' failed: ' + str(service))
+            if time.monotonic() >= deadline: raise ValueError(name + ' did not finish')
+            time.sleep(0.5)
+        # The final pipe bytes are consumed on the next supervisor pass.
+        time.sleep(0.2)
+
+    def prepare(self):
+        self.fixture('logs-retained', 'printf "retained-stdout\\n"; printf "retained-stderr\\n" >&2')
+        self.root_check('grep -Fx "[stdout] retained-stdout" /var/log/logs-retained.log; '
+                        'grep -Fx "[stderr] retained-stderr" /var/log/logs-retained.log')
+        text = self.console.run('sha256sum /var/log/logs-retained.log')
+        found = re.search(r'^([a-f0-9]{64}) +/var/log/logs-retained.log\r?$', text, re.M)
+        if not found: raise ValueError('no persisted service log checksum')
+        return dict(logBoot=self.boot_id, sha256=found[1])
+
+    def run_case(self, name):
+        getattr(self, 'case_' + name.replace('-', '_'))()
+
+    def case_table(self):
+        result = self.probe.ssh('cat /etc/breenix/services')
+        self.probe.require(result)
+        names = re.findall(r'^\[([a-z0-9-]+)\]', result.stdout, re.M)
+        for name in names:
+            header = f'BREENIX-LOG 1 boot={self.boot_id} source={name} limit=262144 archives=4'
+            self.root_check('test "$(head -n 1 /var/log/' + name + '.log)" = ' + shlex.quote(header))
+        text = self.console.run('ls -ln ' + ' '.join('/var/log/' + name + '.log' for name in names))
+        for name in names:
+            if not re.search(r'^-rw-r----- +\d+ +0 +4 +\d+ .* /var/log/' + re.escape(name) + r'\.log\r?$', text, re.M):
+                raise ValueError(name + ' log is not 0640 root:adm')
+        if self.probe.ssh('cat /var/log/bsshd.log').returncode == 0:
+            raise ValueError('an account outside adm can read a service log')
+
+    def case_streams(self):
+        self.fixture('logs-streams', 'printf "stdout-marker\\n"; printf "stderr-marker\\n" >&2')
+        self.root_check('grep -Fx "[stdout] stdout-marker" /var/log/logs-streams.log; '
+                        'grep -Fx "[stderr] stderr-marker" /var/log/logs-streams.log; '
+                        '! grep -F stdout-marker /var/log/bsshd.log')
+
+    def case_rotation(self):
+        # 600 complete 600-byte lines: the active file and .1 must both hold
+        # this boot's header, with the first/last lines on opposite sides.
+        script = 'i=0; while test "$i" -lt 600; do printf "row-%04d %0590d\\n" "$i" 0; i=$((i+1)); done'
+        self.fixture('logs-rotate', script)
+        self.root_check('grep -F "[stdout] row-0000 " /var/log/logs-rotate.log.1 >/dev/null; '
+                        'grep -F "[stdout] row-0599 " /var/log/logs-rotate.log >/dev/null; '
+                        'for p in /var/log/logs-rotate.log /var/log/logs-rotate.log.1; do '
+                        'test "$(wc -c < "$p")" -le 262144; '
+                        'head -n 1 "$p" | grep -F ' + shlex.quote('boot=' + self.boot_id + ' source=logs-rotate ') + ' >/dev/null; done')
+
+    def case_loss(self):
+        self.fixture('logs-loss', 'printf "%05000d\\nafter-loss\\n" 0')
+        self.root_check('grep -Fx "[log] lost lines=1 stream=stdout reason=line-too-long" /var/log/logs-loss.log; '
+                        'grep -Fx "[stdout] after-loss" /var/log/logs-loss.log')
+
+    def case_kernel(self):
+        # A real collector stop lets the real ring overflow; no injected counter.
+        self.console.run('svc stop blogd')
+        try:
+            self.root_check('i=0; while test "$i" -lt 400; do '
+                            'printf "kernel-gap-%04d %090d\\n" "$i" 0 > /dev/kmsg; i=$((i+1)); done')
+        finally:
+            self.console.run('svc start blogd')
+        self.root_check('printf "kernel-live-marker\\n" > /dev/kmsg; sleep 1; '
+                        'grep -F "kernel-live-marker" /var/log/kernel.log >/dev/null; '
+                        'grep -E "lost lines=unknown bytes=[1-9][0-9]* reason=ring-overrun" /var/log/kernel.log >/dev/null; '
+                        'head -n 1 /var/log/kernel.log | grep -F ' + shlex.quote('boot=' + self.boot_id + ' source=kernel ') + ' >/dev/null')
+
+    def case_persistent(self):
+        if not self.previous: raise ValueError('--previous-boot preparation required')
+        if self.previous['logBoot'] == self.boot_id: raise ValueError('boot ID did not change across reboot')
+        # Compare before starting that service again, then prove its new active
+        # header and its retained archive both identify the correct boots.
+        prior = self.previous
+        self.root_check('test "$(sha256sum < /var/log/logs-retained.log)" = ' + shlex.quote(prior['sha256'] + '  -'))
+        self.fixture('logs-retained', 'printf "current-stdout\\n"')
+        self.root_check('test "$(sha256sum < /var/log/logs-retained.log.1)" = ' + shlex.quote(prior['sha256'] + '  -') + '; '
+                        'head -n 1 /var/log/logs-retained.log.1 | grep -F ' + shlex.quote('boot=' + prior['logBoot'] + ' ') + ' >/dev/null; '
+                        'head -n 1 /var/log/logs-retained.log | grep -F ' + shlex.quote('boot=' + self.boot_id + ' ') + ' >/dev/null')
+
+    def cleanup(self):
+        try:
+            if self.fixtures:
+                self.console.run('sh -c ' + shlex.quote('rm -f /run/breenix/services.d/logs-*'))
+                self.console.run('svc reload')
+                result = self.probe.ssh('cat /run/breenix/services')
+                self.probe.require(result)
+                if any(name.startswith('logs-') for name in parse_state(result.stdout)[1]):
+                    raise ValueError('temporary log services remain')
+        finally:
+            self.console.logout()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-manifest', type=Path)
+    parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
+    parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
@@ -756,6 +889,18 @@ def main():
         result = remote('cat', directory + '/' + name)
         if result.returncode: raise ValueError('boot artifact unavailable: ' + name)
         return result.stdout
+    previous = None
+    if args.previous_boot:
+        if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.previous_boot): parser.error('invalid previous boot')
+        previous_dir = '/var/lib/breenix-metal/boots/' + args.previous_boot
+        result = remote('cat', previous_dir + '/server-logs-prepared.json')
+        if result.returncode: raise ValueError('previous boot has no log preparation record')
+        previous = json.loads(result.stdout)
+        ended = remote('test', '-e', previous_dir + '/ended')
+        prior = remote('cat', previous_dir + '/run.json')
+        prior = json.loads(prior.stdout) if prior.returncode == 0 else {}
+        if ended.returncode or previous.get('commit') != args.sha or prior.get('bootedCommit') != args.sha or prior.get('mode') != 'persistent':
+            raise ValueError('previous log preparation must be a completed persistent boot at this commit')
     boot = json.loads(read('run.json'))
     lease = remote('cat', '/var/lib/breenix-metal/lease.json')
     if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
@@ -765,7 +910,7 @@ def main():
     validate_manifest(manifest)
     effort = json.loads(read('definition/docs/efforts/path.json'))
     fields = ["SERVER_SSH_HOST", "OPERATOR_USER", "OPERATOR_SSH_PUBLIC_KEY"]
-    if category == 'services':
+    if category in ('services', 'logs'):
         fields += ["CONSOLE_USER", "CONSOLE_PASSWORD"]
     site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                   'import metal_lib;s=metal_lib.load_site();'
@@ -782,7 +927,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='server-' + category + '-') as scratch:
         probe = Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
         target = probe
-        if category == 'services':
+        if category in ('services', 'logs'):
             if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
                 raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
             def capture():
@@ -792,7 +937,19 @@ def main():
                               site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
             # The services cases need the strict known_hosts entry the host-key case writes.
             probe.run_case('host-key', serial)
-            target = Services(probe, console, capture)
+            target = Services(probe, console, capture) if category == 'services' else Logs(probe, console, previous)
+        if args.prepare_logs:
+            if category != 'logs': raise ValueError('--prepare-logs needs server/logs')
+            try:
+                prepared = target.prepare()
+                prepared.update(boot=args.boot, commit=args.sha)
+                result = runner['in_metal'](env, 'tee', directory + '/server-logs-prepared.json',
+                    stdin=None, input=json.dumps(prepared) + '\n', capture_output=True, text=True)
+                if result.returncode: raise ValueError('cannot save log preparation')
+                print('Prepared persistent log for the next boot', flush=True)
+            finally:
+                target.cleanup()
+            return 0
         try:
             print('SUITE server START cases=' + str(len(cases)), flush=True)
             for name, _ in cases:
@@ -825,10 +982,12 @@ def main():
         lease = remote('cat', '/var/lib/breenix-metal/lease.json')
         if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
             raise ValueError('boot lost the machine lease during the suite')
+        if category == 'logs': records['previous'] = previous
         verdict = score(manifest, effort, records, serial, boot, args.sha, fatal)
         status = 0
     except ValueError as error:
         verdict, status = 'FAIL: ' + str(error), 1
+    if category == 'logs': records['previous'] = previous
     records['verdict'] = verdict
     result = runner['in_metal'](env, 'tee', directory + '/server-' + category + '.json',
                                 stdin=None, input=json.dumps(records) + '\n', capture_output=True, text=True)

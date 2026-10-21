@@ -993,6 +993,30 @@ factory file: `etc-reconcile` installs it on persistent installs and keeps a loc
 `init console` supervises only the table's gettys. The [server suite](../suites/README.md#server-host-driven-persistent-categories)
 measures the services on a persistent boot.
 
+### Persistent logs
+
+init captures each table service's stdout and stderr through separate pipes,
+and writes records tagged `[stdout]` or `[stderr]` into `/var/log/NAME.log`.
+A service gets EOF on stdin; getty acquires its login terminal itself, so login
+terminal traffic stays on that terminal. Root service diagnostics also reach
+the console, preserving the boot's fingerprint and oracle records.
+
+Each file starts with `BREENIX-LOG 1 boot=ID source=NAME limit=262144 archives=4`.
+init publishes the ID in `/run/breenix/boot-id` and prints it on the console.
+Files are 0640 root:adm, synced after each batch, and rotated before a batch
+would exceed 256 KiB. The active file and four numbered archives are retained;
+a new boot archives the previous boot's active file before writing its header.
+`/var` is shared machine state, so the files survive a reboot and an upgrade.
+
+A stream line over 4096 bytes is discarded through its newline and records
+`lost lines=1` with the stream and reason. A failed file write is counted and
+reported on the next successful write. blogd uses `/proc/kmsg-sequence`, a
+root-only snapshot carrying absolute raw-byte offsets and a hex payload, to
+append new kernel records to `kernel.log` with the same format and rotation.
+When the ring has overwritten unread bytes it records the exact missing byte
+count and `lost lines=unknown`, because the overwritten newlines are unavailable.
+The existing `/proc/kmsg` text interface is retained.
+
 ### Persistent sessions
 
 `metal-run boot --persistent` takes the lease (test boots queue behind it), powers the machine on without the

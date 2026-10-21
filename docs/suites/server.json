@@ -117,7 +117,32 @@
     {
       "id": "logs",
       "title": "Per-service and kernel logs with boot IDs and size-bounded rotation",
-      "cases": []
+      "cases": [
+        {
+          "id": "table",
+          "title": "Every table service has a protected size-bounded log headed with this boot ID"
+        },
+        {
+          "id": "streams",
+          "title": "A supervised service records stdout and stderr in its own file"
+        },
+        {
+          "id": "rotation",
+          "title": "A service log rotates at its size bound and retains complete records"
+        },
+        {
+          "id": "loss",
+          "title": "An oversized line is counted as lost and the following line is retained"
+        },
+        {
+          "id": "kernel",
+          "title": "blogd records new kernel output and reports ring overruns"
+        },
+        {
+          "id": "persistent",
+          "title": "The previous persistent boot service log survives reboot with its original boot ID and bytes"
+        }
+      ]
     },
     {
       "id": "time",
