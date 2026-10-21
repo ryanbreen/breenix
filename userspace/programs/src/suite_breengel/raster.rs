@@ -1360,7 +1360,7 @@ fn glyph_gpu_bound(segments: &[libfont::outline::LineSegment], width: usize, hei
         for sub in 0..8 {
             let y = row as f32 + (sub as f32 + 0.5) / 8.0;
             crossing_rows += segments.iter().filter(|s|
-                (s.y0 <= y && y < s.y1) || (s.y1 <= y && y < s.y0)).count() as u64;
+                (s.y0 < y && y <= s.y1) || (s.y1 < y && y <= s.y0)).count() as u64;
         }
     }
     let area = width as u64 * height as u64;
