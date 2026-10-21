@@ -48,6 +48,20 @@ fn text(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,background:(u8,u8,u8)) -
     oracle_text(&mut reference,t.as_bytes(),x,y,Color::WHITE,scale);
     for py in y..y+h {for px in x..(x+w).min(1280) {expected_pixels(fb,&reference,px,py)?;}}Ok(())
 }
+/// `text`, for a label the stage draws clipped to its own box, whose bottom edge is logical row
+/// `bottom` (ruling B25): the oracle is drawn under the same clip and only the box's rows are compared.
+fn text_in_box(fb:&FrameBuf,x:usize,y:usize,t:&str,bottom:usize,background:(u8,u8,u8)) -> Result<(),String> {
+    let n=fb.width/1280;
+    let mut f=CachedFont::new(Font::parse(include_bytes!("../../../../fonts/DejaVuSans.ttf")).map_err(|e|e.to_string())?,256);
+    let size=(7*n) as f32;
+    let w=(libgfx_ref::ttf_font::text_width(&mut f,t,size) as usize).div_ceil(n);
+    let mut reference=surface();
+    for py in y..bottom {for px in x..(x+w).min(1280) {put(&mut reference,px,py,Color::rgb(background.0,background.1,background.2));}}
+    reference.push_clip(libgfx_ref::framebuf::Rect::new(0,(y*n) as i32,(1280*n) as i32,((bottom-y)*n) as i32));
+    oracle_text(&mut reference,t.as_bytes(),x,y,Color::WHITE,1);
+    reference.pop_clip();
+    for py in y..bottom {for px in x..(x+w).min(1280) {expected_pixels(fb,&reference,px,py)?;}}Ok(())
+}
 
 fn run<'a>(tiles:&'a [Tile<'a>],milestones:&'a [Milestone<'a>]) -> Run<'a> {
     Run { suite:"fixture",target:"qemu",case_number:3,ui_time_ms:250,fps:60,tiles,milestones,selected:1,
@@ -126,12 +140,12 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
         "tile-stamps" => {
             render(&mut fb,&model)?;
             // Literal slots: alpha heading 0..2, cases 2,3; slot 4 is a wrap gap;
-            // beta heading 5..7, cases 7,8,9. All tiles are 152x96 at this case count.
+            // beta heading 5..7, cases 7,8,9. The five tiles are 152x96 at this case count.
             for (x,y,key,color) in [(336,112,7,(26,112,77)),(496,112,9,(145,50,58)),(336,216,0,(57,67,80)),(656,216,12,(64,191,224))] {
                 rect(&fb,x,y,152,1,color)?;rect(&fb,x,y+95,152,1,color)?;
                 rect(&fb,x,y+1,1,94,color)?;rect(&fb,x+151,y+1,1,94,color)?;
                 let mut ef=surface();
-                for py in y+60..y+95 {for px in x+1..x+151 {ef.put_pixel(px,py,Color::rgb(color.0,color.1,color.2));}}
+                for py in y+60..y+95 {for px in x+1..x+151 {put(&mut ef,px,py,Color::rgb(color.0,color.1,color.2));}}
                 oracle_text(&mut ef,format!("{key}").as_bytes(),x+8,y+64,Color::WHITE,4);
                 for py in y+60..y+95 {for px in x+1..x+151 {expected_pixels(&fb,&ef,px,py)?;}}
             }
@@ -179,7 +193,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             Ok(())
         }
         "tile-thumbnail" => {
-            // Every 2x2 bin has four different pixels, so sampling cannot pass.
+            // Each of the 192 2x2 bins of this 32x24 image has four different pixels, so sampling cannot pass.
             let mut pixels=vec![0u8;32*24*4];
             for y in 0..24 { for x in 0..32 {
                 let o=(y*32+x)*4; pixels[o..o+4].copy_from_slice(&[x as u8,y as u8,(x+y) as u8,255]);
@@ -279,7 +293,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             rect(&fb,638,728,2,24,(12,19,31))?;
             rect(&fb,16,743,622,9,(26,112,77))?;
             rect(&fb,640,743,622,9,(48,67,96))?;
-            text(&fb,20,736,"alpha",1,(26,112,77))?;text(&fb,644,736,"beta",1,(48,67,96))
+            text_in_box(&fb,20,736,"alpha",743,(26,112,77))?;text_in_box(&fb,644,736,"beta",743,(48,67,96))
         }
         "finale" => {
             let finale=Finale{started_ms:250,slowest:"alpha/fail",slowest_ms:9};
