@@ -970,10 +970,17 @@ interface()?;
     ensure(mapped-before==294_912,"17.2","gpu-window: B12 charges 196608 tree bytes plus 98304 GPU backing bytes to VmSize")?;
     ensure(during.resources-gpu_before.resources==3 && during.resource_bytes-gpu_before.resource_bytes==3*128*64*4,
         "17.2","gpu-window: window GPU target charge is not exact")?;
-    let over=192*1024*1024-during.resource_bytes+4096;
-    let refused=libbreenix::gpu::buffer_create(over);
-    if let Ok(h)=refused {libbreenix::gpu::resource_destroy(h);}
-    ensure(refused==Err(-(ENOMEM as i64)),"17.2","gpu-window: window backing did not consume the process GPU quota")?;
+    // B16: the per-buffer cap is independent of address-space quota refusal.
+    let over_cap = libbreenix::gpu::buffer_create(128 * 1024 * 1024 + 1);
+    if let Ok(h) = over_cap { libbreenix::gpu::resource_destroy(h); }
+    ensure(over_cap == Err(-(EINVAL as i64)), "17.2", "a buffer above 128 MiB must be EINVAL")?;
+    let limit = vm_size().cite("17.2")? + 1024 * 1024;
+    want_ok(set_rlimit_as(limit), "17.2", "lower RLIMIT_AS for the within-cap probe")?;
+    let refused = libbreenix::gpu::buffer_create(2 * 1024 * 1024);
+    let restored = set_rlimit_as(u64::MAX);
+    if let Ok(h) = refused { libbreenix::gpu::resource_destroy(h); }
+    want_ok(restored, "17.2", "restore RLIMIT_AS")?;
+    ensure(refused == Err(-(ENOMEM as i64)), "17.2", "a within-cap buffer exceeding RLIMIT_AS must be ENOMEM")?;
     want_ok(w.destroy(),"17.2","DESTROY")?;
     let start=now_ms();loop {let after=crate::gpu_checks::counters().cite("17.2")?;
         if after.resource_bytes==gpu_before.resource_bytes && after.resources==gpu_before.resources {break;}
