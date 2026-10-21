@@ -2068,6 +2068,9 @@ fn scratch_after_device_reset() -> CaseResult {
         fn drop(&mut self) { let _ = gpu::tc_disarm_all(); gpu::resource_destroy(self.0); }
     }
     let _cleanup = Cleanup(target);
+    // Firing counts accumulate across the suites of one boot: compare with the count before arming.
+    let fired_before = gpu::tc_fired(ga::test_point::WITHHOLD_FENCE)
+        .map_err(|e| format!("reset control count before arming: {e}")).cite("8.4")?;
     ensure(gpu::tc_arm(ga::test_point::WITHHOLD_FENCE, 0, ga::test_point::WITHHOLD_ALL) == 0,
         "8.4", "could not arm the device-reset control")?;
     a.begin(target, 8, 8); a.clear(0xff112233);
@@ -2082,7 +2085,7 @@ fn scratch_after_device_reset() -> CaseResult {
         "8.4", format!("reset B: WAIT {r}, status {}", waited.status))?;
     let (r, state) = gpu::counters(b.handle());
     ensure(r == 0 && state.state == ga::context_state::RESET
-        && gpu::tc_fired(ga::test_point::WITHHOLD_FENCE) == Ok(1),
+        && gpu::tc_fired(ga::test_point::WITHHOLD_FENCE) == Ok(fired_before + 1),
         "8.4", "the device-reset control did not reset the context exactly once")?;
     ensure(gpu::tc_disarm_all() == 0, "8.4", "could not disarm reset control")?;
     ensure(matches!(font.rasterize_glyph(glyph, 18.0), Err(libfont::FontError::Device(e)) if e == -ga::errno::EIO),
