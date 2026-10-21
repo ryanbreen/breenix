@@ -29,13 +29,16 @@ const STORE: &str = ".breenix-shared";
 const OPERATOR: &str = "etc/breenix/operator-account";
 /// The operator account's uid and gid: the first ordinary account's.
 const OPERATOR_ID: u32 = 1000;
-/// The test image's accounts (scripts/create_ext2_disk.sh and scripts/install-layout.sh):
-/// the SSH oracle's account and the users suite's fixtures, with the fixtures' group.
-/// They are left out of each generation's account files, and out of other groups' member lists.
-const TEST_ACCOUNTS: [&str; 5] = ["sshtest", "ua", "ub", "uw", "ug"];
+/// The account records a test image's fixtures added (scripts/install-layout.sh):
+/// `passwd|group|shadow <record>` for each record, verbatim, and
+/// `member <group> <account>` for each fixture membership of a system group.
+/// The install leaves out exactly these records, and a membership only with
+/// its account's own record; an account is not left out because of its name.
+const FIXTURES: &str = "etc/breenix/test-fixtures";
 /// Source paths the copy leaves behind: the test image's SSH client key and
-/// test account home, the fixture accounts' homes, and the staged operator account.
-const LEFT_BEHIND: [&str; 3] = ["etc/breenix/test-ssh", "etc/breenix/test-users", OPERATOR];
+/// test account home, the fixture accounts' homes and records, and the staged
+/// operator account.
+const LEFT_BEHIND: [&str; 4] = ["etc/breenix/test-ssh", "etc/breenix/test-users", FIXTURES, OPERATOR];
 /// Inside a copied `/root`: a test image's authorized keys are not the install's.
 const ROOT_LEFT_BEHIND: &str = "root/.ssh";
 
@@ -313,9 +316,52 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
     Ok(())
 }
 
-/// Leave the test image's accounts out of a generation's account files: their
-/// own lines, and their names in other groups' member lists.
-fn drop_test_account(copier: &mut Copier, etc: &Path) -> Result<(), String> {
+/// The records a test image's fixtures added (`FIXTURES`); empty for an image
+/// without the file.
+#[derive(Default)]
+struct Fixtures {
+    /// (file, record)
+    records: Vec<(String, String)>,
+    /// (group, account)
+    members: Vec<(String, String)>,
+}
+
+fn read_fixtures(source: &Path) -> Result<Fixtures, String> {
+    let path = source.join(FIXTURES);
+    let mut fixtures = Fixtures::default();
+    if !present(&path)? {
+        return Ok(fixtures);
+    }
+    let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
+    for line in text.lines() {
+        match line.split_once(' ') {
+            Some((file @ ("passwd" | "group" | "shadow"), record)) if record.contains(':') => {
+                fixtures.records.push((file.to_string(), record.to_string()));
+            }
+            Some(("member", pair)) => match pair.split_once(' ') {
+                Some((group, account)) if !group.is_empty() && !account.is_empty() && !account.contains([' ', ',']) => {
+                    fixtures.members.push((group.to_string(), account.to_string()));
+                }
+                _ => return Err(format!("/{}: malformed membership {:?}", FIXTURES, line)),
+            },
+            _ => return Err(format!("/{}: malformed record {:?}", FIXTURES, line)),
+        }
+    }
+    Ok(fixtures)
+}
+
+/// Leave the test image's fixture records out of the account files in `etc`:
+/// each record that is exactly a fixture's, and a fixture membership of a
+/// system group where that account's own fixture record was there. A record the
+/// machine made or changed differs from the fixture's and stays, whatever its name.
+fn drop_test_account(copier: &mut Copier, etc: &Path, fixtures: &Fixtures) -> Result<(), String> {
+    let passwd = read_or_empty(&etc.join("passwd"))?;
+    let removed: Vec<&str> = fixtures
+        .records
+        .iter()
+        .filter(|(file, record)| file == "passwd" && passwd.lines().any(|line| line == record))
+        .filter_map(|(_, record)| record.split(':').next())
+        .collect();
     for file in ["passwd", "group", "shadow"] {
         let path = etc.join(file);
         if !present(&path)? {
@@ -324,27 +370,34 @@ fn drop_test_account(copier: &mut Copier, etc: &Path) -> Result<(), String> {
         let text = fs::read_to_string(&path).map_err(|error| fail("read", &path, error))?;
         let kept: Vec<String> = text
             .lines()
-            .filter(|line| !TEST_ACCOUNTS.contains(&line.split(':').next().unwrap_or("")))
-            .map(|line| without_test_members(file, line))
+            .filter(|line| !fixtures.records.iter().any(|(f, record)| f == file && record == line))
+            .map(|line| without_test_members(file, line, fixtures, &removed))
             .collect();
         if kept.iter().map(String::as_str).ne(text.lines()) {
             let mode = fs::symlink_metadata(&path).map_err(|error| fail("stat", &path, error))?.mode() & 0o7777;
             let mut kept = kept.join("\n");
             kept.push('\n');
             copier.write_file(&path, &kept, mode)?;
-            println!("[persistent] left out the test accounts from /etc/{}", file);
+            println!("[persistent] left out the test fixtures' records from /etc/{}", file);
         }
     }
     Ok(())
 }
 
-/// A group line without the test accounts among its members; other lines as they are.
-fn without_test_members(file: &str, line: &str) -> String {
+/// A group line without the fixture memberships of accounts in `removed`;
+/// other lines as they are.
+fn without_test_members(file: &str, line: &str, fixtures: &Fixtures, removed: &[&str]) -> String {
     let fields: Vec<&str> = line.split(':').collect();
     if file != "group" || fields.len() != 4 {
         return line.to_string();
     }
-    let members: Vec<&str> = fields[3].split(',').filter(|m| !m.is_empty() && !TEST_ACCOUNTS.contains(m)).collect();
+    let fixture = |member: &str| {
+        removed.contains(&member) && fixtures.members.iter().any(|(group, account)| group == fields[0] && account == member)
+    };
+    let members: Vec<&str> = fields[3].split(',').filter(|m| !m.is_empty() && !fixture(m)).collect();
+    if members.join(",") == fields[3] {
+        return line.to_string();
+    }
     format!("{}:{}:{}:{}", fields[0], fields[1], fields[2], members.join(","))
 }
 
@@ -370,7 +423,7 @@ fn seed_missing(copier: &mut Copier, source: &Path, target: &Path) -> Result<(),
     Ok(())
 }
 
-fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Option<&str>) -> Result<(), String> {
+fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Option<&str>, fixtures: &Fixtures) -> Result<(), String> {
     let store = target.join(STORE);
     copier.ensure_directory(&store, 0o700)?;
     let marker = store.join(".layout-v2");
@@ -415,7 +468,7 @@ fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Opti
         if present(&from)? { seed_missing(copier, &from, &to)?; }
         else { copier.ensure_directory(&to, if name == "tmp" { 0o1777 } else { 0o755 })?; }
     }
-    drop_test_account(copier, &store.join("etc"))?;
+    drop_test_account(copier, &store.join("etc"), fixtures)?;
     copier.write_file(&marker, "BREENIX-SHARED 2\n", 0o600)
 }
 
@@ -429,6 +482,7 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
     }
     require_directory(target)?;
     let operator = read_operator(source)?;
+    let fixtures = read_fixtures(source)?;
     let skip = LEFT_BEHIND.iter().chain([ROOT_LEFT_BEHIND].iter()).map(|path| source.join(path)).collect();
     let mut copier = Copier { totals: Totals::default(), skip, linked: HashMap::new(), buffer: vec![0u8; 64 * 1024], checkpoint };
     let generations = target.join(GENERATIONS);
@@ -453,7 +507,7 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
     // an interrupted install leaves the current generation as it was.
     // Check the account collision before publishing any layout state.
     stage_store(&mut copier, target, operator.as_ref())?;
-    seed_shared(&mut copier, source, target, previous)?;
+    seed_shared(&mut copier, source, target, previous, &fixtures)?;
     for name in KEPT {
         require_directory(&source.join(name))?;
         if present(&target.join(name))? { require_directory(&target.join(name))?; }
@@ -491,7 +545,7 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
     }
     // The generation keeps factory defaults; /etc is a shared mount point.
     let factory = staged.join("usr/share/factory/etc");
-    if present(&factory)? { drop_test_account(&mut copier, &factory)?; }
+    if present(&factory)? { drop_test_account(&mut copier, &factory, &fixtures)?; }
     if present(&staged.join("usr/share/factory"))? {
         copier.write_file(&staged.join("usr/share/factory/generation"), id, 0o644)?;
     }
@@ -811,6 +865,9 @@ mod tests {
         fs::create_dir_all(source.join("etc/breenix/test-users/ua")).unwrap();
         fs::write(source.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\nsshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh\nua:x:2001:2001:Users suite fixture:/etc/breenix/test-users/ua:/bin/bsh\n").unwrap();
         fs::write(source.join("etc/group"), "root:x:0:ua\nsshtest:x:2000:\nua:x:2001:\nug:x:2100:ua\n").unwrap();
+        fs::write(source.join(FIXTURES), "passwd sshtest:x:2000:2000:sshtest:/etc/breenix/test-ssh/home:/bin/sh\n\
+            passwd ua:x:2001:2001:Users suite fixture:/etc/breenix/test-users/ua:/bin/bsh\n\
+            group sshtest:x:2000:\ngroup ua:x:2001:\ngroup ug:x:2100:ua\nmember root ua\n").unwrap();
         fs::create_dir(source.join("root/.ssh")).unwrap();
         fs::write(source.join("root/.ssh/authorized_keys"), b"ssh-ed25519 AAAA test-image").unwrap();
         // A fresh system partition: /root is copied from the image, without its .ssh.
@@ -820,6 +877,7 @@ mod tests {
         let root = selected(&system, "first");
         assert!(!root.join("etc/breenix/test-ssh").exists());
         assert!(!root.join("etc/breenix/test-users").exists());
+        assert!(!root.join(FIXTURES).exists());
         assert!(!root.join(OPERATOR).exists());
         assert_eq!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/bsh\n");
         assert_eq!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");
@@ -855,6 +913,42 @@ mod tests {
             let namespace = generation::select(&tree, id).unwrap();
             assert_eq!(tree.path(namespace.shared(namespace.root, STORE.as_bytes()).unwrap()), store);
         }
+    }
+
+    #[test]
+    fn fixture_removal_keeps_machine_records_that_share_a_fixture_name() {
+        let fixture = Fixture::new();
+        let source = fixture.source("new");
+        fs::create_dir_all(source.join("etc/breenix")).unwrap();
+        let ua = "ua:x:2001:2001:Users suite fixture:/etc/breenix/test-users/ua:/bin/bsh";
+        let uw = "uw:x:2003:2003:Users suite fixture:/etc/breenix/test-users/uw:/bin/bsh";
+        fs::write(source.join("etc/passwd"), format!("root:x:0:0:root:/root:/bin/sh\n{ua}\n{uw}\n")).unwrap();
+        fs::write(source.join("etc/group"), "root:x:0:\nwheel:x:10:uw\nua:x:2001:\nuw:x:2003:\n").unwrap();
+        fs::write(source.join("etc/shadow"), "root:!:::::::\nua:!:::::::\nuw:!:::::::\n").unwrap();
+        fs::write(source.join(FIXTURES), format!("passwd {ua}\npasswd {uw}\ngroup ua:x:2001:\ngroup uw:x:2003:\n\
+            shadow ua:!:::::::\nshadow uw:!:::::::\nmember wheel uw\n")).unwrap();
+        let factory = source.join("usr/share/factory/etc");
+        fs::create_dir_all(&factory).unwrap();
+        for file in ["passwd", "group", "shadow"] {
+            fs::copy(source.join("etc").join(file), factory.join(file)).unwrap();
+        }
+        // The machine's own account named ua, in wheel, from before this install.
+        let system = fixture.0.join("fresh");
+        let store = system.join(STORE);
+        fs::create_dir_all(store.join("etc")).unwrap();
+        fs::write(store.join("etc/passwd"), "ua:x:1001:1001:machine account:/home/ua:/bin/bsh\n").unwrap();
+        fs::write(store.join("etc/group"), "ua:x:1001:\nwheel:x:10:ua\n").unwrap();
+        fs::write(store.join("etc/shadow"), "ua:$6$set-on-the-box:::::::\n").unwrap();
+        install_tree(&source, &system, "first", &mut || Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(),
+            "root:x:0:0:root:/root:/bin/sh\nua:x:1001:1001:machine account:/home/ua:/bin/bsh\n");
+        assert_eq!(fs::read_to_string(store.join("etc/group")).unwrap(), "root:x:0:\nwheel:x:10:ua\nua:x:1001:\n");
+        assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "root:!:::::::\nua:$6$set-on-the-box:::::::\n");
+        // The generation's factory defaults lose the fixtures, membership included.
+        let factory = selected(&system, "first").join("usr/share/factory/etc");
+        assert_eq!(fs::read_to_string(factory.join("passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\n");
+        assert_eq!(fs::read_to_string(factory.join("group")).unwrap(), "root:x:0:\nwheel:x:10:\n");
+        assert_eq!(fs::read_to_string(factory.join("shadow")).unwrap(), "root:!:::::::\n");
     }
 
     #[test]

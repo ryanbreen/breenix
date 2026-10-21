@@ -70,6 +70,16 @@ wheel:x:10:uw
 users:x:100:
 ug:x:2100:ua
 GROUPS
+# The account records the test fixtures added, verbatim, and their memberships of
+# system groups. persistent-install leaves out exactly these records, not an
+# account matched by its name.
+{
+    for file in passwd group shadow; do
+        grep -E '^(sshtest|ua|ub|uw|ug):' "$root/etc/$file" | sed "s/^/$file /"
+    done
+    printf 'member wheel uw\n'
+} > "$root/etc/breenix/test-fixtures"
+chmod 0644 "$root/etc/breenix/test-fixtures"
 while read -r kind path mode uid gid; do
     case "$kind" in
         file) [ -e "$root/$path" ] || : > "$root/$path"
