@@ -564,6 +564,9 @@ fn helper_report(
             if !failure.is_empty() {
                 return Err(CaseError::Fail(String::from_utf8_lossy(&failure).into_owned()));
             }
+            if out.is_empty() && args.contains(&"FD") {
+                return Err(CaseError::Fail(format!("{path} {} wrote no report and ended with {}", args[1], status_text(status))));
+            }
             let map = String::from_utf8_lossy(&out).lines()
                 .filter_map(|line| line.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
                 .collect();
@@ -1014,10 +1017,10 @@ fn at_secure() -> CaseResult {
     let dir = Dir::new("at-secure", 0o755, 0, 0)?;
     let setuid = helper_copy(&dir, "s", UB, UB, 0o4755)?;
     let plain = helper_copy(&dir, "p", UB, UB, 0o755)?;
-    let (report, _) = helper_report(&setuid, &["s", "ids", "FD"], || become_account(A))?;
-    report_is(&report, "secure", "1", "a set-user-ID program")?;
     let (report, _) = helper_report(&plain, &["p", "ids", "FD"], || become_account(A))?;
-    report_is(&report, "secure", "0", "an ordinary program").map_err(CaseError::from)
+    report_is(&report, "secure", "0", "an ordinary program")?;
+    let (report, _) = helper_report(&setuid, &["s", "ids", "FD"], || become_account(A))?;
+    report_is(&report, "secure", "1", "a set-user-ID program").map_err(CaseError::from)
 }
 
 fn closed_stdio() -> CaseResult {

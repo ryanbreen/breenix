@@ -92,10 +92,15 @@ fn report() -> String {
     out
 }
 
+/// Write `bytes` to `fd`: a failed write exits with 100 plus its errno, a write that
+/// takes no bytes with 3.
 fn write_all(fd: u64, mut bytes: &[u8]) -> Result<(), i32> {
     while !bytes.is_empty() {
         let n = sys(nr::WRITE, [fd, bytes.as_ptr() as u64, bytes.len() as u64, 0]);
-        if n <= 0 {
+        if n < 0 {
+            return Err(100 + (-n).min(100) as i32);
+        }
+        if n == 0 {
             return Err(3);
         }
         bytes = &bytes[n as usize..];
