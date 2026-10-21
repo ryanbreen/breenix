@@ -311,6 +311,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
         c.subs.insert(
             serial,
             Sub {
+                writer: None,
                 ctx: ctx_id,
                 n,
                 fence,

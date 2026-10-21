@@ -6,6 +6,52 @@
 use super::*;
 use alloc::sync::Weak;
 
+/// Identity assigned at admission, before translation or the first device send.
+/// Status publication and the end of DMA access are separate transitions.
+pub(super) struct Writer {
+    pub(super) ctx: u32,
+    pub(super) n: u32,
+    pub(super) serial: u64,
+    pub(super) fence: u64,
+    status: core::sync::atomic::AtomicU32,
+    ended: core::sync::atomic::AtomicBool,
+}
+impl Writer {
+    pub(super) fn new(ctx: u32, n: u32, serial: u64, fence: u64) -> Self {
+        Self { ctx, n, serial, fence, status: core::sync::atomic::AtomicU32::new(u32::MAX),
+            ended: core::sync::atomic::AtomicBool::new(false) }
+    }
+    pub(super) fn publish(&self, status: u32) { self.status.store(status, Ordering::Release); }
+    pub(super) fn end_access(&self) { self.ended.store(true, Ordering::Release); }
+    pub(super) fn ended(&self) -> bool { self.ended.load(Ordering::Acquire) }
+}
+
+#[derive(Clone)]
+pub struct Seal {
+    writers: Vec<Arc<Writer>>,
+    pub render_fence: u64,
+    pub render_context: u32,
+}
+impl Seal {
+    /// None means at least one admitted writer has not published its result.
+    pub fn outcome(&self) -> Option<Result<(), i32>> {
+        let mut pending = false;
+        for writer in &self.writers {
+            match writer.status.load(Ordering::Acquire) {
+                u32::MAX => pending = true,
+                fence_status::OK => pending |= !writer.ended(),
+                _ => return Some(Err(EIO as i32)),
+            }
+        }
+        (!pending).then_some(Ok(()))
+    }
+}
+
+pub fn backing_len(width:u32,height:u32)->u64 {
+    let pitch=if dev::is_svga() {width*4} else {(width*4).next_multiple_of(256)};
+    (pitch as u64*height as u64).div_ceil(PAGE as u64)*PAGE as u64
+}
+
 pub fn backend_code() -> u32 { with_core(|c| c.caps.backend).unwrap_or(0) }
 
 static CONTEXTS: crate::irq_safe_mutex::IrqSafeMutex<BTreeMap<u64, Weak<Context>>> =
@@ -19,8 +65,12 @@ struct Context {
 
 impl Context {
     fn get(owner: u64) -> Result<Arc<Self>, i64> {
-        if let Some(context) = CONTEXTS.lock().get(&owner).and_then(Weak::upgrade) {
-            return Ok(context);
+        let cached = CONTEXTS.lock().get(&owner).and_then(Weak::upgrade);
+        if let Some(context) = cached {
+            let live = with_core(|c| c.contexts.get(&context.id)
+                .is_some_and(|x| x.state == CtxState::Live && !x.dropped && x.device_alive)).unwrap_or(false);
+            if live { return Ok(context); }
+            CONTEXTS.lock().remove(&owner);
         }
         let (handle, _) = create_context(owner)?;
         let id = with_core(|c| c.ctx_of(owner, handle)).flatten().ok_or(EIO)?;
@@ -66,13 +116,12 @@ impl Target {
         if !with_core(|c| c.proc_mut(owner).resources.len() < RESOURCE_QUOTA).unwrap_or(false) {
             return Err(EAGAIN);
         }
-        let pitch = if dev::is_svga() { width * 4 } else { (width * 4).next_multiple_of(256) };
-        let bytes = (pitch as usize * height as usize).div_ceil(PAGE) * PAGE;
+        let bytes = backing_len(width,height) as usize;
         let pages = device_frames(owner, bytes)?;
         let id = console::resource_with(context.id, kind::TARGET, format::B8G8R8A8,
             width, height, false, pages)?;
         let handle = with_core(|c| {
-            let handle = c.handle(owner);
+            let handle = c.handle();
             let resource = c.resources.get_mut(&id).ok_or(EIO)?;
             resource.owner = owner;
             c.proc_mut(owner).resources.insert(handle, id);
@@ -93,13 +142,39 @@ impl Target {
     pub fn device_id(&self) -> u32 { self.id }
     pub fn len(&self) -> u64 { self.bytes }
 
-    /// Serialize sealing with SUBMIT admission. Already admitted writes keep their holds.
+    /// Seal and capture every accepted writer under the same lock as admission.
+    pub fn seal_writes(&self) -> Result<Seal, i32> {
+        with_core(|c| {
+            let r = c.resources.get_mut(&self.id).ok_or(EIO)?;
+            if r.lost || (r.invalid && r.writers == 0) { return Err(EIO); }
+            r.window_sealed = true;
+            Ok(Seal { writers: r.accepted.clone(), render_context: r.accepted.last().map_or(0, |w| w.ctx), render_fence: r.accepted.last()
+                .map_or_else(|| r.last.map_or(0, |l| l.fence), |w| w.fence) })
+        }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
+    }
+
     pub fn seal(&self, sealed: bool) -> Result<(), i32> {
         with_core(|c| {
             let r = c.resources.get_mut(&self.id).ok_or(EIO)?;
-            if r.lost || (sealed && r.invalid && r.writers == 0) { return Err(EIO); }
-            r.window_sealed = sealed;
+            if sealed { r.window_sealed = true; return Ok(()); }
+            if r.lost { return Err(EIO); }
+            if r.reading || r.accepted.iter().any(|w| !w.ended()) { return Err(breengel_abi::errno::EBUSY as i64); }
+            r.window_sealed = false;
             Ok(())
+        }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
+    }
+
+    /// Reuse requires real completion, including after watchdog failure publication.
+    pub fn idle(&self) -> bool {
+        with_core(|c| c.resources.get(&self.id).is_some_and(|r|
+            !r.reading && r.accepted.iter().all(|w| w.ended()))).unwrap_or(false)
+    }
+
+    pub fn identity(&self) -> Result<(u64, u64, u64), i32> {
+        with_core(|c| {
+            let r = c.resources.get(&self.id).ok_or(EIO)?;
+            if r.lost || r.invalid { return Err(EIO); }
+            Ok((r.epoch, r.generation, r.last.map_or(0, |w| w.fence)))
         }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
     }
 
@@ -108,7 +183,7 @@ impl Target {
         wait_for(None, true, |c| {
             let Some(r) = c.resources.get(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
-            if r.writers != 0 || r.reading { return None; }
+            if r.writers != 0 || r.reading || r.accepted.iter().any(|w| !w.ended()) { return None; }
             Some(if r.invalid { Err(EIO) } else { Ok(()) })
         }).map_err(|_| EINTR).and_then(|r| r).map_err(|e| e as i32)
     }
@@ -200,6 +275,7 @@ impl Target {
         }
         with_core(|c| if let Some(r) = c.resources.get_mut(&self.id) {
             r.last = last; r.generation += 1; r.invalid = false;
+            r.accepted.retain(|w| !w.ended());
         });
         Ok(())
     }
@@ -216,27 +292,34 @@ impl Target {
         let (last,backing,pitch) = wait_for(None,true,|c| {
             let Some(r) = c.resources.get_mut(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
-            if r.writers != 0 || r.reading { return None; }
+            if r.writers != 0 || r.reading || r.accepted.iter().any(|w| !w.ended()) { return None; }
             if r.invalid { return Some(Err(EIO)); }
             r.reading = true;
             Some(Ok((r.last,r.backing.clone(),r.pitch)))
         }).map_err(|_| EINTR)??;
         let result = (|| {
-            let bytes = self.width as usize * self.height as usize * 4;
-            let stage = Staging::new(owner,bytes)?;
-            let args = abi::Readback { target:self.handle,width:self.width,height:self.height,..abi::Readback::ZERO };
-            let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages)
-                .map_err(|(errno,_)| errno)?;
-            if seen.unwritten != 0 { return Err(EIO); }
-            let mut row = [0u8;512];
             let stride = self.width as usize * 4;
-            for y in 0..self.height as usize {
-                if pause_at == Some(y as u64) { pause(); }
-                for at in (0..stride).step_by(row.len()) {
-                    let n = row.len().min(stride-at);
-                    stage.pages.read(y*stride+at,&mut row[..n]);
-                    for pixel in row[..n].chunks_exact_mut(4) { pixel[3] = 255; }
-                    crate::syscall::userptr::write_user_bytes(dst+(y*stride+at) as u64,row.as_ptr(),n).map_err(|_| EFAULT)?;
+            // CAPTURE keeps one generation pinned, but needs only bounded transfer staging.
+            // In particular a diagnostic capture must fit the memory-limit probes' slack.
+            let rows = (16 * 1024 / stride).max(1).min(self.height as usize);
+            let stage = Staging::new(owner, stride * rows)?;
+            let mut row = [0u8; 512];
+            for first in (0..self.height as usize).step_by(rows) {
+                let count = rows.min(self.height as usize - first);
+                let args = abi::Readback { target:self.handle,y:first as u32,
+                    width:self.width,height:count as u32,..abi::Readback::ZERO };
+                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages)
+                    .map_err(|(errno,_)| errno)?;
+                if seen.unwritten != 0 { return Err(EIO); }
+                for local in 0..count {
+                    let y=first+local;
+                    if pause_at == Some(y as u64) { pause(); }
+                    for at in (0..stride).step_by(row.len()) {
+                        let n = row.len().min(stride-at);
+                        stage.pages.read(local*stride+at,&mut row[..n]);
+                        for pixel in row[..n].chunks_exact_mut(4) { pixel[3] = 255; }
+                        crate::syscall::userptr::write_user_bytes(dst+(y*stride+at) as u64,row.as_ptr(),n).map_err(|_| EFAULT)?;
+                    }
                 }
             }
             Ok(())
@@ -274,3 +357,37 @@ impl encode::Bindings for Bindings<'_> {
     fn buffer_rect(&self, _handle:u64, _offset:u64) -> [i32;4] { [0;4] }
     fn buffer_word(&self, _handle:u64, _offset:u64) -> u32 { 0 }
 }
+
+/// Charged private composition metadata; it never owns a client resource.
+pub struct MetadataCharge { _charge: Charge }
+impl MetadataCharge {
+    pub fn new(owner: u64, bytes: usize) -> Result<Self, i32> {
+        Charge::new(owner, bytes.div_ceil(PAGE) as u64 * PAGE as u64, true)
+            .map(|charge| Self { _charge: charge }).map_err(|e| e as i32)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneEpoch {
+    pub reset: u64,
+    pub owner_sequence: u64,
+    pub width: u32,
+    pub height: u32,
+    pub scale: u32,
+}
+pub fn scene_epoch(owner: u64, context: u64) -> Result<SceneEpoch, i32> {
+    with_core(|c| {
+        if !display::owner(owner) { return Err(breengel_abi::errno::EPERM as i64); }
+        let id = c.ctx_of(owner, context).ok_or(EINVAL)?;
+        let ctx = c.contexts.get(&id).ok_or(EINVAL)?;
+        if ctx.state != CtxState::Live || ctx.dropped { return Err(EIO); }
+        let mode = display::MODES[c.display.mode as usize];
+        Ok(SceneEpoch { reset: c.epoch, owner_sequence: c.display.owner_sequence,
+            width: mode.width, height: mode.height, scale: mode.scale })
+    }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
+}
+pub fn scene_handle(owner: u64) -> Result<u64, i32> {
+    with_core(|c| if display::owner(owner) { Ok(c.handle()) } else { Err(breengel_abi::errno::EPERM) }).unwrap_or(Err(ENODEV as i32))
+}
+
+pub fn display_owner(owner: u64) -> bool { display::owner(owner) }

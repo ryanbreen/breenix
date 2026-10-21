@@ -13,7 +13,7 @@ use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
     Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
-    Readback, RecordQuery, Resize, Title, WinId, WriteEvents, INTERFACE_VERSION,
+    Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
 /// Copy `value` to the user at `arg`: an op's output, written before its commit point.
@@ -149,13 +149,8 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op::MAP_TREE => committing::<MapTree>(arg, |m, out| ops::map_tree(&caller, m, out)),
         op::CLAIM_COMPOSITOR => committing::<Claim>(arg, |c, out| ops::claim(&caller, c, out)),
         op::RELEASE_COMPOSITOR => ops::release(&caller),
-        op::COMPOSITE => committing::<Composite>(arg, |c, out| {
-            if c.flags != 0 || c.reserved != 0 {
-                return Err(EINVAL);
-            }
-            present::composite(&caller, out)?;
-            Ok(0)
-        }),
+        op::COMPOSITE => committing::<Composite>(arg, |a,out| crate::window::scene::submit(&caller,a,out)),
+        op::COMPOSITE_SNAPSHOT => committing::<SceneSnapshot>(arg, |a,out| crate::window::scene::snapshot(&caller,a,out)),
         op::COMPOSITE_RECORD => composite_record(&caller, &input::<RecordQuery>(arg)?),
         op::MAP_COMPOSITOR_TEXTURE => Err(ENOSYS),
         op::SCANOUT_READBACK => inout::<Readback>(arg, |rb| readback(&caller, rb)),
@@ -165,7 +160,9 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
             if c.shape > breengel_abi::cursor_shape::HIDDEN || c.visible > 1 {
                 return Err(EINVAL);
             }
-            present::backend().ok_or(breengel_abi::errno::EIO)?.set_cursor(&caller, &c)?;
+            let mut reg = REGISTRY.lock();
+            reg.present.force_full |= reg.cursor != c;
+            reg.cursor = c;
             Ok(0)
         }
         op::HOLD_EVIDENCE => ops::hold_evidence(&caller, input::<WinId>(arg)?.id),
