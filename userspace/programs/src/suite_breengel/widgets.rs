@@ -1,3 +1,4 @@
+#[path="icon_pixels/particles_at_fractional_negative_edges_remain_visible_inside_the_box.rs"] mod pixel_particles_bounded_particles;
 #[path="icon_pixels/search_shimmer_restarts_on_each_hover.rs"] mod pixel_interrupt_search;
 #[path="icon_pixels/hover_and_click_effects_settle_with_pointer_still_inside.rs"] mod pixel_settles_hover;
 #[path="icon_pixels/hover_reversal_is_continuous_and_all_effects_settle_after_exit.rs"] mod pixel_reversal_hover;
@@ -2337,6 +2338,8 @@ fn icons_sin_approx() -> CaseResult {
 }
 
 fn icons_particles_bounded() -> CaseResult {
+    pixel_particles_bounded_particles::run();
+
     let mut pool = ParticlePool::with_bounds(8, -12.0, -10.0, 12.0, 10.0);
     for i in 0..20 {
         pool.emit(Particle {
