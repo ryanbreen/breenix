@@ -204,13 +204,19 @@ def files_under(directory):
 
 
 PATH_BYTES = frozenset(b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+@%=/-')
+HOME_ROOTS = {b'~', b'/root', b'/Users', b'/home'}
 
 
 def whole_paths(data, needle):
     """The whole path around each place the needle occurs in data."""
     paths = set()
+    home_path = re.compile(re.escape(needle.rstrip(b'/')) + rb'''/[^/\s\x00"'`<>:]''') if needle.rstrip(b'/') in HOME_ROOTS else None
     at = data.find(needle)
     while at >= 0:
+        # Match the packager: home roots need a path, not a bare guest /root or ~.
+        if home_path is not None and not home_path.match(data, at):
+            at = data.find(needle, at + 1)
+            continue
         start, end = at, at + len(needle)
         while start > 0 and data[start - 1] in PATH_BYTES:
             start -= 1
@@ -243,7 +249,7 @@ def scan(directory, needles, written=frozenset()):
         relative = str(path.relative_to(directory))
         allowed = written if STD_RLIB.fullmatch(relative) else frozenset()
         for needle in needles:
-            if needle and needle in data and (not allowed or whole_paths(data, needle) - allowed):
+            if needle and needle in data and whole_paths(data, needle) - allowed:
                 found.setdefault(needle, []).append(relative)
     return found
 

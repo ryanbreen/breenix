@@ -54,13 +54,6 @@ pub const CRED_ORPHAN: u32 = test_point::CRED_ORPHAN;
 
 const POINTS: usize = CRED_ORPHAN as usize + 1;
 
-/// Whether `point` is one this kernel defines: BreenGL's `irq-hold` and `emit-diagnostic`
-/// for the GPU core, the GPU effort's 19 to 31 and the users effort's `cred-orphan`.
-fn defined(point: u32) -> bool {
-    matches!(point, test_point::IRQ_HOLD | test_point::EMIT_DIAGNOSTIC | CRED_ORPHAN)
-        || (test_point::FIRST..=test_point::LAST).contains(&point)
-}
-
 mod point;
 use point::Point;
 pub use point::Reservation;
@@ -129,7 +122,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Ok(a) => a,
                 Err(e) => return err(e),
             };
-            if a.reserved != 0 || !defined(a.point) {
+            if a.reserved != 0 || !test_point::defined(a.point) {
                 return err(EINVAL);
             }
             let p = &POINT_TABLE[a.point as usize];
@@ -149,7 +142,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Ok(f) => f,
                 Err(e) => return err(e),
             };
-            if f.reserved != 0 || !defined(f.point) {
+            if f.reserved != 0 || !test_point::defined(f.point) {
                 return err(EINVAL);
             }
             f.count = POINT_TABLE[f.point as usize].fired();

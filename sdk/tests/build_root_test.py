@@ -119,6 +119,32 @@ class LocalPathScanTests(unittest.TestCase):
         self.assertNotEqual(self.build_sdk_scan(), 0)
         self.assertEqual(list(self.suite_scan()), [self.HOME.encode()])
 
+    def test_home_roots_and_bare_tildes_are_not_paths(self):
+        for home in ('~', '/root', '/Users/', '/home/'):
+            with self.subTest(home=home):
+                self.HOME = home
+                self.driver(b'// ~ ~100 ~/ /Users/ /home/ root:x:0:0:root:/root:/bin/bsh')
+                self.assertEqual(self.build_sdk_scan(), 0)
+                self.assertEqual(self.suite_scan(), {})
+
+    def test_real_home_paths_fail_in_sources_drivers_and_rlibs(self):
+        for home, path in (('~', b'~/.ssh/authorized_keys'),
+                           ('~', '~/\u00e9/project'.encode()),
+                           ('/root', b'/root/.cargo/registry/src'),
+                           ('/Users/', b'/Users/builder/project'),
+                           ('/home/', b'/home/builder/project')):
+            with self.subTest(home=home):
+                self.HOME = home
+                for relative in ('bin/driver', 'share/vendor/account.rs',
+                                 'lib/rust/lib/rustlib/x86_64-breenix/lib/libleak-0.rlib'):
+                    with self.subTest(file=relative):
+                        target = self.sdk / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(b'/// local path: ' + path)
+                        self.assertNotEqual(self.build_sdk_scan(), 0)
+                        self.assertEqual(self.suite_scan(), {home.encode(): [relative]})
+                        target.unlink()
+
 
 if __name__ == '__main__':
     unittest.main()

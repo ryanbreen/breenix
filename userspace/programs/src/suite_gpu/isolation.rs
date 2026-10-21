@@ -1389,7 +1389,7 @@ pub fn test_hooks_absent() -> CaseResult {
         let eperm = -abi::errno::EPERM;
         need(tc_raw(abi::test_control::STATE, core::ptr::null_mut(), 0) == eperm, || "STATE was not refused to a non-root process".to_string())?;
         need(tc_raw(abi::test_control::DISARM_ALL, core::ptr::null_mut(), 0) == eperm, || "DISARM_ALL was not refused".to_string())?;
-        for point in test_point::FIRST..=test_point::LAST {
+        for point in (0..=test_point::CRED_ORPHAN).filter(|&point| test_point::defined(point)) {
             let r = gpu::tc_arm(point, 0, 0);
             need(r == eperm, || format!("ARM of point {point} by a non-root process returned {}", errno(r)))?;
             let r = gpu::tc_fired(point);
@@ -1407,14 +1407,19 @@ pub fn test_hooks_absent() -> CaseResult {
         need(r == eperm, || format!("op 4 by a non-root process returned {}", errno(r)))
     })?;
     kid.done()?;
-    // The suite's root process may arm and read each point; 32 is not defined.
-    for point in test_point::FIRST..=test_point::LAST {
+    // Use the kernel's allocation table: another effort may allocate a point after
+    // the GPU range. Root may arm and read defined points only. Use an unused
+    // target so the access probe cannot inject a fault into concurrent work.
+    for point in (0..=test_point::CRED_ORPHAN).filter(|&point| test_point::defined(point)) {
         let before = fired(point);
         ensure(before != u64::MAX, || format!("FIRED of point {point} by root was refused"))?;
-        ensure(gpu::tc_arm(point, 0, 0) == 0, || format!("ARM of point {point} by root was refused"))?;
+        ensure(gpu::tc_arm(point, u64::MAX, 0) == 0, || format!("ARM of point {point} by root was refused"))?;
     }
     ensure(gpu::tc_disarm_all() == 0, || "DISARM_ALL by root".to_string())?;
-    ensure(gpu::tc_arm(test_point::LAST + 1, 0, 0) == -EINVAL, || "ARM of point 32 was accepted".to_string())?;
+    for point in (0..=test_point::CRED_ORPHAN + 1).chain([u32::MAX]).filter(|&point| !test_point::defined(point)) {
+        ensure(gpu::tc_arm(point, 0, 0) == -EINVAL, || format!("ARM of undefined point {point} was accepted"))?;
+        ensure(gpu::tc_fired(point) == Err(-EINVAL), || format!("FIRED of undefined point {point} was accepted"))?;
+    }
     pass()
 }
 
