@@ -109,25 +109,27 @@ fn render_lcd(segments: &[LineSegment], width: usize, height: usize,
     let (w, h) = (width as i32, height as i32);
     let at = |r: &Region| [r.x as i32, r.y as i32];
     let rect = |r: &Region, rw: i32| [r.x as i32, r.y as i32, r.x as i32 + rw, r.y as i32 + h];
-    packed.send(|c| c.solid(word(Color::BLACK), &[rect(&packed, w)]))?;
+    // Per-pixel weights in gpu-abi.md: solid and copy 1, nearest_scaled 8192, coverage 256
+    // plus its blend copy.
+    packed.banded(rect(&packed, w), 1, |c, r| c.solid(word(Color::BLACK), &[r]))?;
     let [px, py] = at(&padded);
     let [wx, wy] = at(&wide);
     // The copy writes wide's columns with output X forced opaque, as blit does.
-    padded.send(|c| c.draw(pipeline::COPY, 0, wide.target.handle(), 0, 0,
-        &[instance(rect(&padded, 3 * w), &[wx - px, wy - py, 1])]))?;
+    padded.banded(rect(&padded, 3 * w), 1, |c, r| c.draw(pipeline::COPY, 0, wide.target.handle(), 0, 0,
+        &[instance(r, &[wx - px, wy - py, 1])]))?;
     let mut fence = None;
     for channel in 0..3 {
         let [sx, sy] = at(&sample);
-        sample.send(|c| c.draw(pipeline::NEAREST_SCALED, 0, padded.target.handle(), 0, 0,
-            &[instance(rect(&sample, w), &[sx, sy, w, h, px + channel, py, 3 * w, h])]))?;
+        sample.banded(rect(&sample, w), 8192, |c, r| c.draw(pipeline::NEAREST_SCALED, 0, padded.target.handle(), 0, 0,
+            &[instance(r, &[sx, sy, w, h, px + channel, py, 3 * w, h])]))?;
         let colour = match channel { 0 => Color::rgb(0,255,255), 1 => Color::rgb(255,0,255), _ => Color::rgb(255,255,0) };
-        mask.send(|c| c.solid(word(colour), &[rect(&mask, w)]))?;
+        mask.banded(rect(&mask, w), 1, |c, r| c.solid(word(colour), &[r]))?;
         let [mx, my] = at(&mask);
-        sample.send(|c| c.draw(pipeline::COVERAGE, 0xff000000, mask.target.handle(), 0, 0,
-            &[instance(rect(&sample, w), &[sx, sy, mx, my, 1])]))?;
+        sample.banded(rect(&sample, w), 257, |c, r| c.draw(pipeline::COVERAGE, 0xff000000, mask.target.handle(), 0, 0,
+            &[instance(r, &[sx, sy, mx, my, 1])]))?;
         let [kx, ky] = at(&packed);
-        fence = Some(packed.send(|c| c.draw(pipeline::COVERAGE, 0xffffffff, sample.target.handle(), 0, 0,
-            &[instance(rect(&packed, w), &[kx, ky, sx, sy, 1])]))?);
+        fence = Some(packed.banded(rect(&packed, w), 257, |c, r| c.draw(pipeline::COVERAGE, 0xffffffff, sample.target.handle(), 0, 0,
+            &[instance(r, &[kx, ky, sx, sy, 1])]))?);
     }
     Ok(AtlasGlyph::at(packed, width, height, fence))
 }
@@ -147,6 +149,23 @@ impl Region {
             draw(&mut d.context);
             d.context.submit().inspect_err(|_| d.context.discard())
         }).map_err(Error::Device)
+    }
+    /// Draw `rect` in bands, each its own submission with an estimate of at most half the
+    /// work cap at `weight` steps per pixel. The instance parameters name origins, so each
+    /// band draws the pixels the whole rectangle would there. Returns the last fence.
+    fn banded(&self, rect: [i32; 4], weight: u64, mut draw: impl FnMut(&mut bgl::Context, [i32; 4])) -> Result<bgl::Fence, Error> {
+        let budget = abi::limits::WORK / 2;
+        let width = (rect[2] - rect[0]).max(1) as u64;
+        let columns = ((budget / weight) as i32).max(1).min(width as i32);
+        let rows = ((budget / (weight * width)) as i32).max(1);
+        let mut fence = None;
+        for y in (rect[1]..rect[3]).step_by(rows as usize) {
+            for x in (rect[0]..rect[2]).step_by(columns as usize) {
+                let band = [x, y, (x + columns).min(rect[2]), (y + rows).min(rect[3])];
+                fence = Some(self.send(|c| draw(c, band))?);
+            }
+        }
+        fence.ok_or(Error::Device(-abi::errno::EINVAL))
     }
 }
 
@@ -598,8 +617,15 @@ fn draw_atlas(fb: &mut Surface, image: &AtlasGlyph, x: i64, y: i64, fg: Color) {
     let visible = whole.intersect(&fb.clip_box());
     if visible.is_empty() { return; }
     work::add(1);
-    let i = instance(visible.corners(), &[visible.x0 as i32, visible.y0 as i32,
-        atlas.x as i32 + (visible.x0 - whole.x0) as i32, atlas.y as i32 + (visible.y0 - whole.y0) as i32, 1]);
-    fb.submit(|c| c.draw(pipeline::COVERAGE, word(fg), atlas.target.handle(), 0, 0, &[i]));
+    let params = [visible.x0 as i32, visible.y0 as i32,
+        atlas.x as i32 + (visible.x0 - whole.x0) as i32, atlas.y as i32 + (visible.y0 - whole.y0) as i32, 1];
+    // coverage costs 256 per pixel plus its blend copy: a glyph too large for half the work
+    // cap is drawn in row bands, the same pixels, since the parameters name origins.
+    let [x0, y0, x1, y1] = visible.corners();
+    let rows = ((abi::limits::WORK / 2 / (257 * (x1 - x0) as u64)) as i32).max(1);
+    for y in (y0..y1).step_by(rows as usize) {
+        let i = instance([x0, y, x1, (y + rows).min(y1)], &params);
+        fb.submit(|c| c.draw(pipeline::COVERAGE, word(fg), atlas.target.handle(), 0, 0, &[i]));
+    }
     fb.mark(whole);
 }
