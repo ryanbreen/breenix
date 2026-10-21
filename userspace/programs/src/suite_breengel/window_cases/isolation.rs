@@ -328,6 +328,19 @@ fn isolation_composite_denied() -> CaseResult {
     let mut snapshot = [0u64; 12];
     want_errno(super::handoff::wire(29, &mut snapshot), EPERM, "17.4", "gpu-window: B13 root without owner+claim snapshot")?;
     interface()?;
+    step("17.4", child("B13 claimant without display", 3_000, None, || {
+        claim().map_err(|r| format!("gpu-window: claim {}",outcome(r)))?;
+        let mut snapshot=[0u64;12];
+        let result=super::handoff::wire(29,&mut snapshot);
+        let submit=composite();
+        release();
+        errno_is(result,EPERM,"root claimant without display","gpu-window: COMPOSITE_SNAPSHOT")?;
+        errno_is(submit,EPERM,"root claimant without display","gpu-display: COMPOSITE")
+    }))?;
+    // SAFETY: TAKE has no argument; current-owner TAKE is idempotent.
+    want_ok(unsafe { raw::syscall0(431) as i64 },"18","gpu-display: display owner fixture")?;
+    let mut snapshot=[0u64;12];
+    want_errno(super::handoff::wire(29,&mut snapshot),EPERM,"17.4","gpu-window: display owner without claim snapshot")?;
     let _w = shown(16, 16, 12, b"composite-denied")?;
     let r = composite();
     ensure(r == -(EPERM as i64), "17.4", format!("COMPOSITE by root that is not the compositor {}; the contract gives EPERM", outcome(r)))?;
@@ -410,8 +423,7 @@ fn isolation_compositor_authorized() -> CaseResult {
     }
     let got = read_events(mine.id()).map_err(|r| format!("READ_EVENTS {}", outcome(r))).cite("19.2")?;
     ensure(got.iter().any(|e| e.kind == abi::event_kind::KEY_PRESS && e.keycode == 30), "17.4", "the event the compositor wrote did not reach the owner")?;
-    let composed = k.ask("composite").cite("24")?;
-    ensure(composed.starts_with("ok "), "17.4", format!("the compositor's COMPOSITE answered `{composed}`"))
+    super::composition::compose(&mut k).map(|_| ())
 }
 
 fn isolation_pid_reuse() -> CaseResult {
