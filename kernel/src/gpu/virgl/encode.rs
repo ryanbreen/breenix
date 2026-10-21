@@ -123,7 +123,7 @@ impl Enc {
 
     fn end_vertices(&mut self, resource: u32, offset: u32) {
         let Some(vertices) = self.vertices.take() else { return };
-        if self.oom { return; }
+        if self.oom || self.vertex_words == 0 { return; }
         let mut prefix = if self.sizing.is_some() { Enc::size_only() } else { Enc::new() };
         let mut first = 0;
         while first < self.vertex_words {
@@ -135,7 +135,19 @@ impl Enc {
         }
         self.oom |= prefix.oom;
         if self.sizing.is_some() {
-            self.prefix_bytes += prefix.backing_bytes().unwrap_or(0);
+            let (words, bytes) = self.sizing.unwrap();
+            let (prefix_words, prefix_bytes) = prefix.sizing.unwrap();
+            if bytes == 0 && prefix_bytes == 0 && words + prefix_words <= CHUNK_WORDS {
+                self.sizing = Some((words + prefix_words, 0));
+            } else {
+                self.prefix_bytes += prefix.backing_bytes().unwrap_or(0);
+            }
+        } else if self.chunks.is_empty() && prefix.chunks.is_empty()
+            && self.cur.len() + prefix.cur.len() <= CHUNK_WORDS {
+            for i in 0..self.cur.len() {
+                if !prefix.cur.push(self.cur.word(i)) { self.oom = true; break; }
+            }
+            self.cur = prefix.cur;
         } else if let Some(mut chunks) = prefix.finish() {
             chunks.append(&mut self.chunks);
             self.chunks = chunks;
