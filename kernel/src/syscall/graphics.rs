@@ -25,6 +25,9 @@
 
 extern crate alloc;
 
+#[cfg(target_arch = "aarch64")]
+mod input_ring;
+
 // Architecture-specific framebuffer imports
 #[cfg(target_arch = "aarch64")]
 use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
@@ -182,6 +185,12 @@ fn read_window_input_events(
         n += 1;
     }
 
+    let retry = n > 0 && core::mem::take(&mut buf.input_refused);
+    drop(reg);
+    if retry {
+        COMPOSITOR_DIRTY_WAKE.store(true, core::sync::atomic::Ordering::Release);
+        wake_compositor_if_waiting();
+    }
     Ok(n)
 }
 
@@ -416,6 +425,8 @@ struct WindowBuffer {
     input_head: usize,
     /// Read position in input ring (advanced by client)
     input_tail: usize,
+    /// A compositor write was refused; a client read must wake its retry.
+    input_refused: bool,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -525,6 +536,7 @@ impl WindowRegistry {
             input_ring: [WindowInputEvent::default(); INPUT_RING_SIZE],
             input_head: 0,
             input_tail: 0,
+            input_refused: false,
         });
         Some(id)
     }
@@ -1140,36 +1152,30 @@ fn handle_virgl_op(cmd: &FbDrawCmd, caller: WindowCaller) -> SyscallResult {
             let mut event: WindowInputEvent =
                 unsafe { core::ptr::read(event_ptr as *const WindowInputEvent) };
 
-            // Inject accumulated scroll wheel delta into mouse events.
-            // MOUSE_MOVE=3, MOUSE_SCROLL=9 (exclude MOUSE_BUTTON=4: scroll_y carries press state)
-            if event.event_type == 3 || event.event_type == 9 {
-                let wheel = crate::input::pointer::mouse_wheel_consume();
-                if wheel != 0 {
-                    event.scroll_y = event
-                        .scroll_y
-                        .saturating_add(wheel.clamp(-32768, 32767) as i16);
-                    // If this was a plain MOUSE_MOVE (3) with wheel data, upgrade to MOUSE_SCROLL (9)
-                    // so clients that filter on event type receive it correctly.
-                    if event.event_type == 3 && event.scroll_y != 0 {
-                        event.event_type = 9;
-                    }
-                }
-            }
-
             {
                 let mut reg = WINDOW_REGISTRY.lock();
-                match reg.find_for(buffer_id, caller) {
-                    Ok(buf) => {
-                        let next_head = (buf.input_head + 1) & (INPUT_RING_SIZE - 1);
-                        if next_head == buf.input_tail {
-                            // Ring full — drop oldest event by advancing tail
-                            buf.input_tail = (buf.input_tail + 1) & (INPUT_RING_SIZE - 1);
-                        }
-                        buf.input_ring[buf.input_head] = event;
-                        buf.input_head = next_head;
-                    }
+                let buf = match reg.find_for(buffer_id, caller) {
+                    Ok(buf) => buf,
                     Err(errno) => return SyscallResult::Err(errno),
+                };
+                let slot = buf.input_head;
+                if !input_ring::push(
+                    &mut buf.input_ring, &mut buf.input_head, buf.input_tail, event,
+                ) {
+                    buf.input_refused = true;
+                    return SyscallResult::Err(super::ErrorCode::TryAgain as u64);
                 }
+                // Consume wheel input only after admission: an EAGAIN retry must keep it.
+                if event.event_type == 3 || event.event_type == 9 {
+                    let wheel = crate::input::pointer::mouse_wheel_consume();
+                    if wheel != 0 {
+                        event.scroll_y = event.scroll_y.saturating_add(wheel.clamp(-32768, 32767) as i16);
+                        if event.event_type == 3 && event.scroll_y != 0 {
+                            event.event_type = 9;
+                        }
+                    }
+                }
+                buf.input_ring[slot] = event;
             }
 
             INPUT_EVENT_WQ.wake_up();
