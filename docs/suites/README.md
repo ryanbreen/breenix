@@ -208,11 +208,17 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   page tables, `page_cache` the file pages the per-inode cache holds (`memory::file_map`),
   `kernel_stacks` kernel and per-CPU stacks, `buffers` device, DMA and display buffers, and
   `other` the rest, the kernel heap's growth among it.
+- Boot's own work is not the suite's. On x86-64 the boot thread goes on after the first
+  program starts: it starts the console executor and, on bare metal, the tick census, which runs
+  a 0.5-second window on one CPU after another (5.6 seconds together for the R240's 4 CPUs in boot
+  20261021T024142Z-metal), so a suite that starts at once would count their kernel stacks. Each sample first waits, up to 30 seconds, until `/proc/breenix/frames`
+  reports `boot settled=1` (`kernel/src/boot/settled.rs`; ARM64's boot thread enters the first
+  program itself, so it reports 1 from the start).
 - Reclamation is deferred: an exited process's tables and the image an exec replaced go back
   through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
-  sample waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  sample then waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
   still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
-  `settle_ms` how long it waited.
+  `settle_ms` how long the sample waited, both waits together.
 - The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
   The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
   set from the measurement below; only the operator loosens it.

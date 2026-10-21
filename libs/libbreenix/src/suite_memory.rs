@@ -12,12 +12,15 @@
 //!   KernelHeapFree, and the owners `/proc/breenix/frames`' `owner` rows: the
 //!   allocated frames held as user stacks, other user pages, page tables, page
 //!   cache, kernel stacks, buffers and other.
+//! - Boot's own workers are not the suite's: each sample first waits, up to
+//!   [`BOOT_SETTLE_MS`], until `/proc/breenix/frames` reports `boot settled=1`
+//!   (on bare-metal x86-64, after the boot thread's tail and the tick census).
 //! - Reclamation is deferred: an exited process's tables, and the image an exec
 //!   replaced, go back through reclaim receipts, and exited threads' stacks from
-//!   an idle CPU. So each sample waits, up to [`SETTLE_MS`], until no receipt is
+//!   an idle CPU. So each sample then waits, up to [`SETTLE_MS`], until no receipt is
 //!   queued or parked and the free count has held still for [`SETTLE_STEP_MS`];
 //!   `receipts` is what was still queued when it stopped waiting, and `settle_ms`
-//!   how long it waited.
+//!   how long it waited, both waits together.
 //! - The suite's memory is reclaimed when `free_after` is at most
 //!   [`MEMORY_RECLAIM_ALLOWANCE_PAGES`] below `free_before`. `reclaimed=FAIL`
 //!   fails the suite like a failing case (`scripts/suite-verdict.py`).
@@ -42,6 +45,17 @@ pub const MEMORY_RECLAIM_ALLOWANCE_PAGES: u64 = 48;
 pub const SETTLE_MS: u64 = 5000;
 /// How long the free count must hold still, with no receipt queued, for a sample.
 pub const SETTLE_STEP_MS: u64 = 100;
+/// The longest a sample waits first for boot's own work to finish: the kernel's
+/// `boot settled=1` row, which on bare-metal x86-64 follows the tick census's
+/// per-CPU windows (0.5 s each).
+pub const BOOT_SETTLE_MS: u64 = 30_000;
+
+/// Whether `/proc/breenix/frames` says boot's own work is over. A kernel without
+/// the row reports no boot work to wait for.
+fn boot_settled() -> bool {
+    std::fs::read_to_string("/proc/breenix/frames")
+        .map_or(true, |text| !text.lines().any(|line| line.trim() == "boot settled=0"))
+}
 
 /// One reading of the kernel's memory figures.
 pub struct Sample {
@@ -83,14 +97,20 @@ fn read() -> Result<Sample, String> {
     Ok(Sample { free, heap_free_kb, owners, receipts, settle_ms: 0 })
 }
 
-/// A reading once reclamation has settled, or after [`SETTLE_MS`] of waiting.
+/// A reading once boot's own work is over (or after [`BOOT_SETTLE_MS`]) and
+/// reclamation has settled (or after a further [`SETTLE_MS`] of waiting).
+/// `settle_ms` counts both waits.
 pub fn settled() -> Result<Sample, String> {
+    let begun = monotonic_ms();
+    while !boot_settled() && monotonic_ms().saturating_sub(begun) < BOOT_SETTLE_MS {
+        let _ = time::sleep_ms(SETTLE_STEP_MS);
+    }
     let start = monotonic_ms();
     let mut last = read()?;
     loop {
         let waited = monotonic_ms().saturating_sub(start);
         if waited >= SETTLE_MS {
-            last.settle_ms = waited;
+            last.settle_ms = monotonic_ms().saturating_sub(begun);
             return Ok(last);
         }
         let _ = time::sleep_ms(SETTLE_STEP_MS);
@@ -98,7 +118,7 @@ pub fn settled() -> Result<Sample, String> {
         let still = now.receipts == 0 && last.receipts == 0 && now.free == last.free;
         last = now;
         if still {
-            last.settle_ms = monotonic_ms().saturating_sub(start);
+            last.settle_ms = monotonic_ms().saturating_sub(begun);
             return Ok(last);
         }
     }

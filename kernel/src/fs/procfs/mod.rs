@@ -909,7 +909,8 @@ fn generate_version() -> String {
 }
 
 /// Generate /proc/breenix/frames: the frame census, then what became of process
-/// page tables (`teardown` counters) and the reclaim receipts still queued.
+/// page tables (`teardown` counters), the reclaim receipts still queued, and
+/// whether boot's own work is over (`boot::settled`).
 fn generate_frames() -> Result<String, i32> {
     use crate::tracing::providers::teardown;
     use core::fmt::Write;
@@ -920,7 +921,8 @@ fn generate_frames() -> Result<String, i32> {
         text,
         "tables recorded={} returned={} lost={}\n\
          roots retired={} no_proof={} no_arch={} terminated={} undecided={} mid_retire={}\n\
-         receipts pending={} parked={}\n",
+         receipts pending={} parked={}\n\
+         boot settled={}\n",
         teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
         teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
         teardown::PT_RETIRE_FRAMES_LOST.aggregate(),
@@ -931,7 +933,8 @@ fn generate_frames() -> Result<String, i32> {
         teardown::PT_ROOT_DROPPED_UNDECIDED.aggregate(),
         teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
         pending,
-        parked
+        parked,
+        crate::boot::settled::settled() as u8
     );
     Ok(text)
 }

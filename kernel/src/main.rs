@@ -2835,6 +2835,8 @@ fn kernel_main_continue() -> ! {
         }
         // The screen console reads the screen back once boot is idle.
         kernel::console::request_idle_check();
+        // The last worker is started: suites may measure memory once the census reports.
+        kernel::boot::settled::tail_done();
 
         kernel::per_cpu::preempt_enable();
 
