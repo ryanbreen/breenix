@@ -1129,18 +1129,19 @@ fn widgets_scrollbar_wheel() -> CaseResult {
 }
 
 fn widgets_scrollbar_thumb() -> CaseResult {
+    let scale=ui_scale();
     scrollbar_pixels::run()?;
 
     for (content, view, thumb) in [(1000, 250, 50), (1000, 500, 100), (10_000, 100, 20)] {
         let s = ScrollBar::new(Rect::new(4, 0, 12, 200), content, view);
-        let mut g = Drawn::bgrx(20, 200);
+        let mut g = ui_frame(20, 200);
         g.reset(PAPER);
         s.draw(&mut g.fb(), &Theme::dark());
         snapshot(&g)?;
-        let rows = (0..200)
-            .filter(|&y| g.color(9, y) == Color::rgb(80, 85, 100))
+        let rows = (0..200*scale)
+            .filter(|&y| g.color(9*scale, y) == Color::rgb(80, 85, 100))
             .count();
-        ensure(rows == thumb - 2, "14.3", format!(
+        ensure(rows == (thumb - 2)*scale, "14.3", format!(
             "content {content} with view {view}: the thumb is drawn {rows} rows tall; a {thumb} px thumb draws {} rows", thumb - 2))?;
     }
     Ok(())
