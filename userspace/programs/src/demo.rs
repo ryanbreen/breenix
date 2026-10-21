@@ -9,10 +9,10 @@ use std::process;
 use libbreenix::graphics;
 use libbreenix::time;
 
-use libgfx::color::Color;
-use libgfx::font;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::font;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 /// Pre-computed sine table (0-359 degrees, scaled by 1000)
 const SIN_TABLE: [i32; 360] = [

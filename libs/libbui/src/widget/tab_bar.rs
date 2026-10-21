@@ -1,9 +1,9 @@
 //! Horizontal tab bar widget for multi-view applications.
 
 use alloc::vec::Vec;
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::input::{InputState, WidgetEvent};
 use crate::rect::Rect;
@@ -188,7 +188,7 @@ impl TabBar {
         let mut theme = *theme;
         theme.use_bitmap_font = self.bitmap_font;
         let theme = &theme;
-        fb.push_clip(libgfx::framebuf::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
+        fb.push_clip(libgfx_ref::framebuf::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
         // Background
         shapes::fill_rect(
             fb,

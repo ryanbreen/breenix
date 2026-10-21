@@ -30,10 +30,10 @@ use breengel::FontConfig;
 use libfont::CachedFont;
 #[cfg(not(target_arch = "aarch64"))]
 use libfont::Font;
-use libgfx::bitmap_font;
-use libgfx::ttf_font;
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::bitmap_font;
+use libgfx_ref::ttf_font;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 // Chrome sizes are logical units: `px` multiplies them by the UI scale. Client windows
@@ -902,7 +902,7 @@ impl Window {
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
 
 fn fill_rect(fb: &mut FrameBuf, x: i32, y: i32, w: usize, h: usize, color: Color) {
-    libgfx::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
+    libgfx_ref::shapes::fill_rect(fb, x, y, w as i32, h as i32, color);
 }
 
 fn draw_text_at(fb: &mut FrameBuf, text: &[u8], x: i32, y: i32, color: Color,

@@ -1,0 +1,10 @@
+[package]
+name = "libgfx-pixel"
+version = "0.1.0"
+edition = "2021"
+description = "BreenGL's colour type and section 2 alpha formulas, shared by libgfx and its CPU reference"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib"]

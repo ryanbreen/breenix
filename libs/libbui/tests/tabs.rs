@@ -1,5 +1,5 @@
 use libbui::{widget::tab_bar::TabBar, InputState, Rect, Theme, WidgetEvent};
-use libgfx::{color::Color, framebuf::{FrameBuf, Format}};
+use libgfx_ref::{color::Color, framebuf::{FrameBuf, Format}};
 #[test]
 fn partially_visible_tabs_are_clipped_and_use_the_drawn_font_width() {
     for bitmap in [false, true] {

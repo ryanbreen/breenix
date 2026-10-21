@@ -1,14 +1,14 @@
 //! Literal section 23 fixtures shared by the guest cases and the host developer loop.
 //! Expected bytes come only from contract rectangles, colours and formulas.
 use super::stage::{self, Finale, Image, Milestone, Run, Spotlight, Stamp, Tile};
-use libgfx::{color::Color, framebuf::FrameBuf};
+use libgfx_ref::{color::Color, framebuf::FrameBuf};
 use libfont::{CachedFont,Font};
 thread_local! {static DISPLAY_SCALE:std::cell::Cell<usize>=const{std::cell::Cell::new(1)};}
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 fn surface() -> FrameBuf {
     let n=DISPLAY_SCALE.with(|s|s.get());
-    FrameBuf::new(1280*n, 800*n, libgfx::framebuf::Format::BGRX).unwrap()
+    FrameBuf::new(1280*n, 800*n, libgfx_ref::framebuf::Format::BGRX).unwrap()
 }
 fn expect_pixel(fb:&FrameBuf,x:usize,y:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
     let n=fb.width/1280;
@@ -23,14 +23,14 @@ fn expected_pixels(fb:&FrameBuf,want:&FrameBuf,x:usize,y:usize)->Result<(),Strin
     }}Ok(())
 }
 fn put(fb:&mut FrameBuf,x:usize,y:usize,c:Color){let n=fb.width/1280;for dy in 0..n {for dx in 0..n {fb.put_pixel(x*n+dx,y*n+dy,c);}}}
-fn oracle_fill(fb:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color){let n=(fb.width/1280) as i32;libgfx::shapes::fill_rect(fb,x*n,y*n,w*n,h*n,c);}
+fn oracle_fill(fb:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color){let n=(fb.width/1280) as i32;libgfx_ref::shapes::fill_rect(fb,x*n,y*n,w*n,h*n,c);}
 /// Lower-layer §8.3 text oracle supplies the stage expectation independently.
 fn oracle_text(fb:&mut FrameBuf,t:&[u8],x:usize,y:usize,c:Color,legacy_scale:usize){
     let n=fb.width/1280;
-    if n==1 {libgfx::font::draw_text(fb,t,x,y,c,legacy_scale);return;}
+    if n==1 {libgfx_ref::font::draw_text(fb,t,x,y,c,legacy_scale);return;}
     let font=Font::parse(include_bytes!("../../../../fonts/DejaVuSans.ttf")).expect("pinned DejaVu Sans");
     let mut font=CachedFont::new(font,256);
-    libgfx::ttf_font::draw_text_bytes(fb,&mut font,t,(x*n) as i32,(y*n) as i32,(7*legacy_scale*n) as f32,c);
+    libgfx_ref::ttf_font::draw_text_bytes(fb,&mut font,t,(x*n) as i32,(y*n) as i32,(7*legacy_scale*n) as f32,c);
 }
 
 fn rect(fb:&FrameBuf,x:usize,y:usize,w:usize,h:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
@@ -38,10 +38,10 @@ fn rect(fb:&FrameBuf,x:usize,y:usize,w:usize,h:usize,rgb:(u8,u8,u8)) -> Result<(
 }
 fn text(fb:&FrameBuf,x:usize,y:usize,t:&str,scale:usize,background:(u8,u8,u8)) -> Result<(),String> {
     let n=fb.width/1280;
-    let (w,h)=if n==1 {(libgfx::font::text_width(t.as_bytes(),scale),7*scale)}else{
+    let (w,h)=if n==1 {(libgfx_ref::font::text_width(t.as_bytes(),scale),7*scale)}else{
         let mut f=CachedFont::new(Font::parse(include_bytes!("../../../../fonts/DejaVuSans.ttf")).map_err(|e|e.to_string())?,256);
         let size=(7*scale*n) as f32;let m=f.metrics(size);
-        ((libgfx::ttf_font::text_width(&mut f,t,size) as usize).div_ceil(n),((m.ascender-m.descender+m.line_gap).ceil() as usize).div_ceil(n))
+        ((libgfx_ref::ttf_font::text_width(&mut f,t,size) as usize).div_ceil(n),((m.ascender-m.descender+m.line_gap).ceil() as usize).div_ceil(n))
     };
     let mut reference=surface();
     for py in y..y+h {for px in x..(x+w).min(1280) {put(&mut reference,px,py,Color::rgb(background.0,background.1,background.2));}}
@@ -299,7 +299,7 @@ pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>
             text(&fb,840,132,"fail",1,(18,29,44))
         }
         "deterministic" => {
-            let mut other=FrameBuf::new_filled(1280,800,libgfx::framebuf::Format::BGRX,Color::rgb(53,53,53)).map_err(|e|e.to_string())?;
+            let mut other=FrameBuf::new_filled(1280,800,libgfx_ref::framebuf::Format::BGRX,Color::rgb(53,53,53)).map_err(|e|e.to_string())?;
             render(&mut fb,&model)?;
             std::thread::sleep(std::time::Duration::from_millis(20));
             render(&mut other,&model)?;

@@ -13,7 +13,7 @@ use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_DGRAM};
 use libbreenix::termios::{self, Termios};
 use libbreenix::time;
 use libbreenix::types::Fd;
-use libgfx::{diagnostics::{self, Check, CheckState, Group, Panel, Verdict}, framebuf::FrameBuf};
+use libgfx_ref::{diagnostics::{self, Check, CheckState, Group, Panel, Verdict}, framebuf::FrameBuf};
 
 const IDS: [&str; 16] = [
     "console", "getpid", "clock", "brk", "mmap", "fork-wait", "exec", "argv",
@@ -217,7 +217,7 @@ fn framebuffer_check(info: &graphics::FbInfo) -> Result<(), &'static str> {
             for col in 0..w {
                 let rgb = (0x0024_3046u32 + (row as u32 * 2 + col as u32) * 0x0011_2317) ^ mask;
                 fb.put_pixel(x + col, y + row,
-                    libgfx::color::Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+                    libgfx_ref::color::Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
             }
         }
         graphics::fb_flush_rect(x as i32, y as i32, w as i32, h as i32)

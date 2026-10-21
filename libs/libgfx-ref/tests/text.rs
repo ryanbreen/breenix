@@ -2,9 +2,9 @@
 //! The guest suite (/sbin/suite-breengel) gives the verdict.
 
 use libfont::{CachedFont, Font};
-use libgfx::color::Color;
-use libgfx::framebuf::{Format, FrameBuf};
-use libgfx::ttf_font;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::{Format, FrameBuf};
+use libgfx_ref::ttf_font;
 
 static MONO: &[u8] = include_bytes!("../../../fonts/DejaVuSansMono.ttf");
 const WHITE: Color = Color::rgb(255, 255, 255);

@@ -8,6 +8,6 @@ publish = false
 [workspace]
 
 [dependencies]
-libgfx = { path = "../../libs/libgfx" }
+libgfx-ref = { path = "../../libs/libgfx-ref" }
 libfont = { path = "../../libs/libfont" }
 libicon = { path = "../../libs/libicon" }

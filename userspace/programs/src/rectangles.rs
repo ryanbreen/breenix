@@ -13,10 +13,10 @@ use libbreenix::graphics::FlushRect;
 
 use libbreenix::time;
 
-use libgfx::color::Color;
-use libgfx::font;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::font;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 // ---------------------------------------------------------------------------
 // Helpers
