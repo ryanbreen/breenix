@@ -494,7 +494,7 @@ fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) -> Result<()
         loop {
             let capacity = session.send_capacity().min(4096);
             let mut fds = [
-                io::PollFd::new(output, if capacity > 0 { POLLIN } else { 0 }),
+                io::PollFd::new(if capacity > 0 { output } else { Fd::from_raw(u64::MAX) }, POLLIN),
                 io::PollFd::new(session.io().fd(), POLLIN),
                 io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
                                if pending.is_empty() { 0 } else { POLLOUT }),
@@ -585,7 +585,7 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
         // Keep processing window adjustments while peer output credit is exhausted.
         let capacity = session.send_capacity().min(4096);
         let mut fds = [
-            io::PollFd::new(master_fd, if capacity > 0 { io::poll_events::POLLIN } else { 0 }),
+            io::PollFd::new(if capacity > 0 { master_fd } else { Fd::from_raw(u64::MAX) }, io::poll_events::POLLIN),
             io::PollFd::new(ssh_fd, io::poll_events::POLLIN),
         ];
 
