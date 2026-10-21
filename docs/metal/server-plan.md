@@ -50,13 +50,15 @@ Coordinator rulings:
 - **S6:** the kernel may drive the BMC's IPMI watchdog over KCS (IPMI 2.0). It does not reset or write BCM5720 APE
   state, and Vigil still does not talk to the management controller.
 - **S7:** the private site file supplies the operator's account name, group and home; the account uses uid 1000
-  and login shell `sh`. Examples below use `operator` as a placeholder, not a fixed account name.
+  and login shell `/bin/bsh` (S12). Examples below use `operator` as a placeholder, not a fixed account name.
 - **S8 (7:45 PM):** machine state that must survive upgrades (SSH host keys, accounts, shadow entries, admin policy)
   lives in `/.breenix-shared` on the system partition, outside the generation trees, and is reconciled into `/etc`
   at boot; generations keep shipping `/etc` defaults.
 - **S9:** root gets its own password from a private site field (`ROOT_PASSWORD_HASH`, a hash kept out of the repository) for
   su and the console; root cannot log in over SSH (D4). A broken `operator` account is recovered by a test-root boot (the
   boot manager's test path), with no back door in the persistent install.
+- **S12:** the operator logs in to `/bin/bsh`; `bsh -c COMMAND` runs an SSH exec request and returns its command status.
+  POSIX scripts request `sh -c` explicitly. Upgrades change the operator shell while preserving passwords and authorized keys.
 - **S10:** a persistent VM install mirrors the R240's: a persistent disk image per VM (system and home partitions,
   the generation and shared-state layout, upgrade and rollback), booted by each launcher in a persistent mode that
   keeps the disk across boots, separate from the disposable test disks. It is part of the server effort's catch-up.

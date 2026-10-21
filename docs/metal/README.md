@@ -950,8 +950,11 @@ and leaves `/etc` as it was. init reports what it applied as `[init] machine sta
 account name, and `OPERATOR_SSH_PUBLIC_KEY`, one `ssh-ed25519` or `ssh-rsa` public key line (quoted in the site
 file; a private key is refused). It stages them as `/etc/breenix/operator-account` (root's, 0600) on the install boot's
 test root, and the installer writes the account into the store: uid and gid 1000, a group of the same name, home
-`/home/<name>`, shell `/bin/sh` and a locked password (a shadow line already in the store is kept), with the key as
-its pending authorized key. Each upgrade stages them again; a key already listed is not added twice.
+`/home/<name>`, shell `/bin/bsh` (S12) and a locked password (a shadow line already in the store is kept), with the key as
+its pending authorized key. Each upgrade stages them again, updates the operator shell and keeps its shadow line;
+a key already listed is not added twice and existing authorized_keys lines are retained.
+SSH exec requests run through `/bin/bsh -c COMMAND` and return the command status; POSIX scripts use explicit `sh -c`.
+Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3).
 
 Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
 account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback

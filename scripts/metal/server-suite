@@ -30,6 +30,8 @@ CASES = (
     ('root-refused', 'The authorized operator key cannot log in as root'),
     ('telnet-closed', 'Neither the standard nor the former development telnet port has a listener'),
     ('job-control', 'An interactive SSH PTY supports foreground jobs, terminal signals and owned slave'),
+    ('exec-status', 'SSH exec runs through bsh -c and returns the command exit status'),
+    ('exec-stdin', 'SSH exec delivers piped input byte for byte and closes stdin on channel EOF'),
     ('quoted-command', 'Quoted sh -c scripts retain spaces, quotes and backslashes through bsh'),
 )
 
@@ -97,11 +99,11 @@ class Probe:
             result = command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)])
             if result.returncode: raise ValueError('cannot generate temporary Ed25519 keys')
 
-    def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None):
+    def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None, posix=True):
         args = self.common + ['-i', str(identity or self.identity)]
         if cipher: args += ['-c', cipher]
         args += list(options) + [(user or self.user) + '@' + self.host]
-        if script is not None: args += [script]
+        if script is not None: args += ['sh -c ' + shlex.quote(script) if posix else script]
         result = command(args, input=input)
         self.transcript.append(dict(command=args, exit=result.returncode, stdout=result.stdout, stderr=result.stderr))
         return result
@@ -183,6 +185,20 @@ class Probe:
             # Shell request (no exec): a PTY must become the shell's controlling tty.
             # A foreground sleep, Ctrl-C, and another command prove terminal signal routing.
             self.interactive_job_control()
+        elif name == 'exec-status':
+            self.require(self.ssh('console.log(env("SHELL"));', posix=False), '/bin/bsh')
+            for script, status in [("sh -c 'exit 37'", 37), ('exit 23', 23), ('/bin/true', 0),
+                                   ('/bin/false', 1), ('/no-such-command', 127)]:
+                result = self.ssh(script, posix=False)
+                if result.returncode != status:
+                    raise ValueError('exec exit status differs: expected ' + str(status))
+        elif name == 'exec-stdin':
+            # More than one SSH packet and pipe capacity; exact output requires EOF.
+            payload = ''.join(f'{i:06d}: stdin data and spaces\n' for i in range(6000))
+            result = self.ssh('/bin/cat', input=payload, posix=False)
+            self.require(result)
+            if result.stdout != payload: raise ValueError('piped stdin differs or was truncated')
+            self.require(self.ssh('/bin/cat', input='', posix=False), '')
         elif name == 'quoted-command':
             self.interactive_job_control(quoted=True)
         else:
@@ -206,36 +222,36 @@ class Probe:
                     history.extend(data)
         def send(data):
             process.stdin.write(data); process.stdin.flush()
+        prompt = re.compile(rb'bsh [^>\r\n]*> ')
+        def at_prompt(marker):
+            until(re.compile(re.escape(marker) + rb'bsh [^>\r\n]*> '))
         try:
+            until(prompt)
+            if b'breenish v' not in seen: raise ValueError('login did not enter bsh')
+            seen = b''
             send(b"printf 'READY-%s\\n' tty\n")
-            until(b'READY-tty\r\n')
+            at_prompt(b'READY-tty\r\n')
             if b'job control turned off' in seen: raise ValueError('shell has no controlling terminal')
+            seen = b''
             if quoted:
-                send(b"/bin/bsh\n")
-                until(b'bsh ')
-                seen = b''
                 send(b"/bin/sh -c 'printf \"<%s>\\n\" \"$1\" \"$2\" \"$3\"' sh 'two words' '' 'a\\b'\n")
-                output = b'<two words>\r\n<>\r\n<a\\b>\r\n'
-                until(re.compile(re.escape(output) + rb'bsh [^>\r\n]*> '))
-                # bsh restores termios with TCSAFLUSH after a line. Wait for
-                # each shell's fresh prompt so queued logout input is not lost.
-                seen = b''
-                send(b'exit\n')
-                until(re.compile(rb'(?:^|\n)\$ '))
+                at_prompt(b'<two words>\r\n<>\r\n<a\\b>\r\n')
                 send(b'exit\n')
                 process.wait(timeout=10)
                 if process.returncode != 0: raise ValueError('quoted command session failed')
                 return
-            # The controlling device resolves through /dev/tty; actual slave ownership is checked by tty's path.
-            send(b"ls -ln $(tty); printf 'PTY-%s\\n' END\n")
-            until(b'PTY-END\r\n')
+            send(b"sh -c 'ls -ln $(tty); printf \"PTY-%s\\n\" END'\n")
+            at_prompt(b'PTY-END\r\n')
             if not re.search(rb'crw--w----\s+\d+\s+1000\s+1000\s+', seen):
                 raise ValueError('PTY slave owner, group or mode differs from the account and 0620')
+            seen = b''
             send(b"sleep 30\n")
             time.sleep(1)
             send(b'\x03')
+            until(prompt)
+            seen = b''
             send(b"printf 'AFTER-%s\\n' interrupt\n")
-            until(b'AFTER-interrupt\r\n')
+            at_prompt(b'AFTER-interrupt\r\n')
             send(b'exit\n')
             process.wait(timeout=10)
             if process.returncode != 0: raise ValueError('interactive shell exit failed')

@@ -54,6 +54,14 @@
           "title": "An interactive SSH PTY supports foreground jobs, terminal signals and owned slave"
         },
         {
+          "id": "exec-status",
+          "title": "SSH exec runs through bsh -c and returns the command exit status"
+        },
+        {
+          "id": "exec-stdin",
+          "title": "SSH exec delivers piped input byte for byte and closes stdin on channel EOF"
+        },
+        {
           "id": "quoted-command",
           "title": "Quoted sh -c scripts retain spaces, quotes and backslashes through bsh"
         }

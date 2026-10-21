@@ -408,9 +408,26 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         }
     };
 
+    let (input_read, input_write) = match io::pipe() {
+        Ok(pipe) => pipe,
+        Err(_) => {
+            let _ = io::close(read_fd);
+            let _ = io::close(write_fd);
+            return 1;
+        }
+    };
+    // Backpressure on command input must not prevent draining its output.
+    if io::fcntl_setfl(input_write, io::status_flags::O_NONBLOCK).is_err() {
+        for fd in [read_fd, write_fd, input_read, input_write] { let _ = io::close(fd); }
+        return 1;
+    }
+
     match process::fork() {
         Ok(process::ForkResult::Child) => {
             let _ = io::close(read_fd);
+            let _ = io::close(input_write);
+            let _ = io::dup2(input_read, Fd::from_raw(0));
+            if input_read.raw() > 2 { let _ = io::close(input_read); }
             let _ = io::dup2(write_fd, Fd::from_raw(1));
             let _ = io::dup2(write_fd, Fd::from_raw(2));
             if write_fd.raw() > 2 {
@@ -436,18 +453,8 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         }
         Ok(process::ForkResult::Parent(child_pid)) => {
             let _ = io::close(write_fd);
-            let mut buf = [0u8; 4096];
-            loop {
-                match io::read(read_fd, &mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if session.send_data(&buf[..n]).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
+            let _ = io::close(input_read);
+            exec_shuttle(session, read_fd, input_write);
             let _ = io::close(read_fd);
 
             let mut status = 0i32;
@@ -459,6 +466,8 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             }
         }
         Err(e) => {
+            let _ = io::close(input_read);
+            let _ = io::close(input_write);
             let _ = io::close(read_fd);
             let _ = io::close(write_fd);
             let msg = format!("bsshd: fork failed: {:?}\n", e);
@@ -466,6 +475,66 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             1
         }
     }
+}
+
+/// RFC 4254 section 5.3: input EOF closes only stdin; output keeps flowing.
+fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) {
+    use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLOUT};
+    let mut pending = Vec::new();
+    let mut offset = 0;
+    let mut input_open = true;
+    loop {
+        let mut fds = [
+            io::PollFd::new(output, POLLIN),
+            io::PollFd::new(session.io().fd(), if pending.is_empty() { POLLIN } else { 0 }),
+            io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
+                           if pending.is_empty() { 0 } else { POLLOUT }),
+        ];
+        if io::poll(&mut fds, 100).is_err() { break; }
+        if fds[0].revents & (POLLIN | POLLHUP) != 0 {
+            let mut buf = [0u8; 4096];
+            match io::read(output, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => if session.send_data(&buf[..n]).is_err() { break; },
+            }
+        }
+        if fds[2].revents & POLLOUT != 0 {
+            match io::write(input, &pending[offset..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    offset += n;
+                    if offset == pending.len() { pending.clear(); offset = 0; }
+                }
+                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {}
+                Err(_) => {
+                    let _ = io::close(input);
+                    input_open = false;
+                    pending.clear();
+                    offset = 0;
+                }
+            }
+        }
+        if fds[2].revents & (POLLERR | POLLHUP) != 0 && input_open {
+            let _ = io::close(input);
+            input_open = false;
+            pending.clear();
+            offset = 0;
+        }
+        if fds[1].revents & POLLIN != 0 {
+            match session.recv_data() {
+                Ok(Some(data)) if input_open => pending = data,
+                Ok(_) => {
+                    if session.input_eof() && input_open {
+                        let _ = io::close(input);
+                        input_open = false;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if fds[1].revents & (POLLERR | POLLHUP) != 0 { break; }
+    }
+    if input_open { let _ = io::close(input); }
 }
 
 fn c_string(value: &str) -> Vec<u8> {

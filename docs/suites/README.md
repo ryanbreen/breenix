@@ -1217,7 +1217,9 @@ fingerprint printed by that specific boot before strict host-key logins proceed.
 A deliberately wrong host key must fail strict checking. It forces both ciphers,
 stages a temporary Ed25519 authorized user key and restores the original file,
 checks authentication refusals, checks port 22 and both telnet ports, exercises PTY
-job control and executes a quoted script through bsh's interactive shorthand.
+job control and executes a quoted script through bsh's interactive shorthand. The login must enter bsh;
+exec cases require `/bin/bsh` in SHELL, exact command exit statuses, and piped input plus EOF.
+POSIX scripts use explicit `sh -c`; temporary-key cleanup requires a byte-for-byte match to the original authorized_keys file.
 
 The runner emits START, ordered CASE and DONE lines and stores
 `server-ssh-keys.json` in that boot's private store. After the boot ends, the metal scorer also includes its recorded case results in `milestone-verdict.json`, using the completed capture without executing the cases again. Its host verdict requires the

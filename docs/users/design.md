@@ -11,7 +11,7 @@ The program this belongs to is [the server plan](../metal/server-plan.md).
   su and a sudo-style admin path, the FHS layout with owners and modes, and the operator's own account on the
   console and over SSH.
 - **D4:** LAN only, keys only, an operator account for daily use, and root over SSH off once that account exists.
-- **S7:** the private site file supplies the operator's account name, group and home (uid 1000, login shell `sh`).
+- **S7:** the private site file supplies the operator's account name, group and home (uid 1000, login shell `/bin/bsh`, S12).
   Examples below use `operator` as a placeholder, not a fixed account name.
 - **S8** (7:45 PM): machine state that must survive upgrades (SSH host keys, accounts, shadow entries, admin policy)
   lives in `/.breenix-shared` on the system partition, outside the generation trees, and is reconciled into `/etc`
@@ -247,7 +247,7 @@ stated in its PR, and finish the layout milestone before any upgrade that relies
 
 ## 5. The operator account
 
-Example only: `operator:x:1000:1000:Operator:/home/operator:/bin/sh` (BusyBox ash), group `operator` 1000, a member of `wheel` (S7). Actual account values come from the private site file.
+Example only: `operator:x:1000:1000:Operator:/home/operator:/bin/bsh` (S12), group `operator` 1000, a member of `wheel` (S7). Actual account values come from the private site file.
 
 **Staging.**
 - `install-persistent` writes the account into `/.breenix-shared/etc` from site fields: `OPERATOR_USER`,

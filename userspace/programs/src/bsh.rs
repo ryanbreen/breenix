@@ -2475,6 +2475,32 @@ fn get_short_cwd() -> Option<String> {
     }
 }
 
+/// Run one line with the same builtins and shorthand as the interactive shell.
+/// Bare commands inherit stdin/stdout/stderr and return their actual exit status.
+fn run_command(line: &str) {
+    let mut ctx = prepare_shell_context();
+    let line = line.trim();
+    let code = if let Some(code) = builtin_wrap(line) {
+        code
+    } else if should_auto_exec(line) {
+        let parts = match bsh_words::words(line) {
+            Ok(parts) => parts,
+            Err(why) => {
+                eprintln!("bsh: {}", why);
+                std::process::exit(2);
+            }
+        };
+        let args = parts.iter().map(|word| bsh_words::js_string(word)).collect::<Vec<_>>().join(", ");
+        format!("exit(run({args}));")
+    } else {
+        line.to_string()
+    };
+    if let Err(error) = ctx.eval(&code) {
+        eprintln!("{}", error);
+        std::process::exit(1);
+    }
+}
+
 fn run_string(code: &str) {
     let mut ctx = create_shell_context();
 
@@ -2830,6 +2856,8 @@ fn main() {
     if args.len() == 1 {
         // No arguments: interactive REPL
         run_repl();
+    } else if args.len() == 3 && args[1] == "-c" {
+        run_command(&args[2]);
     } else if args.len() == 3 && args[1] == "-e" {
         // -e 'code': evaluate string
         run_string(&args[2]);
@@ -2841,7 +2869,7 @@ fn main() {
         // script file
         run_file(&args[1]);
     } else {
-        let _ = io::stderr().write_all(b"Usage: bsh [script.js | -e 'code']\n");
+        let _ = io::stderr().write_all(b"Usage: bsh [script.js | -e 'code' | -c 'command']\n");
         std::process::exit(1);
     }
 }
