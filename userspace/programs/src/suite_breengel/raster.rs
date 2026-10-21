@@ -2978,8 +2978,14 @@ fn text_hidpi_sizes() -> CaseResult {
     // logical 16 px size. The case must not perform the implementation's scaling.
     let g=white_on_black(192,128,|fb|{libbui::text::draw_text(fb,b"H",16,8,WHITE,&theme);});
     same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
-    let actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
-    ensure((0..128).any(|y|(0..192).any(|x|actual[(y*192+x)*4..(y*192+x+1)*4]!=low[((y/2)*96+x/2)*4..((y/2)*96+x/2+1)*4])),"8.3",
+    let mut actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
+    let mut replicated=Vec::with_capacity(192*128*4);
+    for y in 0..128 { for x in 0..192 {
+        let coverage=low[(y/2)*96+x/2];
+        replicated.extend_from_slice(&[coverage,coverage,coverage,0xff]);
+    }}
+    for pixel in actual.chunks_exact_mut(4) {pixel[3]=0xff;}
+    ensure(actual!=replicated,"8.3",
         "gpu-text: twice-size text is only replicated scale-1 coverage")?;
     let after=crate::gpu_checks::counters().cite("8.3")?;
     ensure(after.draws>before.draws && after.uploads_image==before.uploads_image,"8.3","gpu-text: HiDPI text did not execute GPU coverage draws")
