@@ -136,6 +136,8 @@ static SCREEN: AtomicBool = AtomicBool::new(false);
 static SPLASH_DRAWN: AtomicBool = AtomicBool::new(false);
 /// A process has the display.
 static DISPLAY_TAKEN: AtomicBool = AtomicBool::new(false);
+/// Read-backs of the GPU core's screen target in progress (`hold_canvas`).
+static CANVAS_HOLDS: AtomicU32 = AtomicU32::new(0);
 
 /// What `attach` set up: the shadow and the splash drawn in it, which the boot
 /// thread keeps up to date until the render thread takes them.
@@ -474,6 +476,29 @@ fn wait_until_not_presenting() {
     display::wait_until_idle();
 }
 
+/// A read-back of the GPU core's screen target transfers the device's pixels into the
+/// guest backing this console writes. Until the returned hold drops, the console writes no
+/// band; it returns once no pass is writing, by the protocol `take_display` uses.
+#[cfg(target_arch = "aarch64")]
+pub fn hold_canvas() -> CanvasHold {
+    CANVAS_HOLDS.fetch_add(1, Ordering::SeqCst);
+    wait_until_not_presenting();
+    CanvasHold
+}
+
+/// See `hold_canvas`. Dropping it repaints every row, since the read-back may have
+/// replaced rows the console wrote but had not yet uploaded.
+#[cfg(target_arch = "aarch64")]
+pub struct CanvasHold;
+
+#[cfg(target_arch = "aarch64")]
+impl Drop for CanvasHold {
+    fn drop(&mut self) {
+        REDRAW.store(true, Ordering::Release);
+        CANVAS_HOLDS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Return the display to the retained terminal, repainting even unchanged rows.
 pub fn give_back_display() {
     vt::give_back_display();
@@ -489,6 +514,9 @@ pub fn has_screen() -> bool {
 /// Asked with the screen held before each band is written.
 fn may_draw() -> bool {
     if DISPLAY_TAKEN.load(Ordering::Acquire) || vt::foreground_graphics() {
+        return false;
+    }
+    if CANVAS_HOLDS.load(Ordering::Acquire) != 0 {
         return false;
     }
     #[cfg(target_arch = "aarch64")]

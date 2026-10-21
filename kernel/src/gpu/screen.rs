@@ -465,6 +465,12 @@ pub(super) fn bind_saved(b: Binding) -> Result<(), i64> {
     lease.ensure()?.bind(b)
 }
 
+/// Whether core resource `id` is the kernel screen's target, whose backing the console
+/// writes.
+pub(super) fn is_target(id: u32) -> bool {
+    id != 0 && RESOURCE.load(Ordering::Acquire) == u64::from(id)
+}
+
 /// MODES' kernel screen fields: its resource and its completed presents.
 pub(super) fn describe() -> (u64, u64) {
     (dev::resource_id(RESOURCE.load(Ordering::Acquire) as u32).map_or(0, u64::from), PRESENTS.load(Ordering::Acquire))
