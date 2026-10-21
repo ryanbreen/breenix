@@ -1,5 +1,5 @@
 // Exercise DISPLAY's module before RASTER exports it from libgfx's shared root.
-use libgfx::{color,font,framebuf,shapes};
+use libgfx_ref::{color,font,framebuf,shapes};
 #[path="../src/stage.rs"]
 pub mod stage;
 #[path="../../../userspace/programs/src/suite_breengel/stage_fixtures.rs"]

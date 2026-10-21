@@ -9,9 +9,9 @@ use std::process;
 use libbreenix::graphics;
 use libbreenix::time;
 
-use libgfx::color::Color;
-use libgfx::font;
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::color::Color;
+use libgfx_ref::font;
+use libgfx_ref::framebuf::FrameBuf;
 
 /// Fixed-point scale factor (8 bits of fractional precision)
 const FP_SCALE: i32 = 256;

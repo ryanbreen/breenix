@@ -1,7 +1,15 @@
-//! 5x7 bitmap font rendering (rendered at 2x scale = 10x14 pixels per glyph).
+//! The 5×7 bitmap font (docs/gui/breengel.md section 8.1), drawn by `bitmap_text` from its
+//! whole byte-indexed table, uploaded once per context: glyph `c` is rows `7c` to `7c + 6` of
+//! a one-texel-wide R8 texture, bit `0x10 >> col` of each row byte (table format 0).
+
+use alloc::vec::Vec;
+
+use bgl::{pipeline, DeclaredFixture, Instance};
+use libbreenix::gpu::{self, abi};
 
 use crate::color::Color;
-use crate::framebuf::{Box64, FrameBuf};
+use crate::device::{self, Table};
+use crate::surface::{word, Box64, Surface};
 use crate::work;
 
 /// Character cell width at 1x scale.
@@ -127,47 +135,71 @@ pub static FONT_TABLE: [u8; 256 * 7] = {
     table
 };
 
+/// This table's texture in the process's context, uploaded whole the first time.
+fn texture() -> Result<Table, i64> {
+    device::with(|d| {
+        d.table(0, |context| {
+            let texture = gpu::texture_create(abi::format::R8, 1, FONT_TABLE.len() as u32)?;
+            let rect = [0, 0, 1, FONT_TABLE.len() as u32];
+            match bgl::fixture_upload(DeclaredFixture::table(&FONT_TABLE), context, texture, rect, 1, abi::upload_source::R8) {
+                Ok(()) => Ok(Table { texture, cell_w: GLYPH_W as u32, cell_h: GLYPH_H as u32 }),
+                Err(e) => {
+                    gpu::resource_destroy(texture);
+                    Err(e)
+                }
+            }
+        })
+    })
+}
+
+/// The glyph cell of byte `ch` at `(x, y)` and scale `s` as one `bitmap_text` instance over
+/// `visible`.
+fn glyph(ch: u8, x: i64, y: i64, s: i64, visible: Box64) -> Instance {
+    let mut params = [0u32; 16];
+    let values = [x, y, 0, ch as i64 * GLYPH_H as i64, GLYPH_W as i64, GLYPH_H as i64, s, 0];
+    for (slot, v) in params.iter_mut().zip(values) {
+        *slot = v as i32 as u32;
+    }
+    Instance { rect: visible.corners(), params }
+}
+
+/// Emit `glyphs` (visible cells) in one draw.
+fn draw(fb: &mut Surface, glyphs: &[Instance], color: Color) {
+    if glyphs.is_empty() {
+        return;
+    }
+    let table = match texture() {
+        Ok(t) => t,
+        Err(e) => return fb.fail(e),
+    };
+    fb.submit(|c| c.draw(pipeline::BITMAP_TEXT, word(color), table.texture, 0, 0, glyphs));
+}
+
 /// Draw a single character at (x0, y0) with the given color and scale factor
 /// (docs/gui/breengel.md section 8.1): pixel (col, row) of the glyph, when set, is the
 /// `scale × scale` square at `(x0 + col·scale, y0 + row·scale)`. Marks the glyph's
 /// `5·scale × 7·scale` rectangle.
-pub fn draw_char(fb: &mut FrameBuf, ch: u8, x0: usize, y0: usize, color: Color, scale: usize) {
-    if scale == 0 || x0 > i64::MAX as usize || y0 > i64::MAX as usize {
+pub fn draw_char(fb: &mut Surface, ch: u8, x0: usize, y0: usize, color: Color, scale: usize) {
+    if scale == 0 || x0 > i64::MAX as usize / 2 || y0 > i64::MAX as usize / 2 {
         return;
     }
     let s = scale.min(i32::MAX as usize) as i64;
     let (x0, y0) = (x0 as i64, y0 as i64);
-    let cell = Box64 { x0, y0, x1: x0.saturating_add(GLYPH_W as i64 * s), y1: y0.saturating_add(GLYPH_H as i64 * s) };
-    let clip = fb.clip_box();
-    if cell.intersect(&clip).is_empty() {
+    let cell = Box64::wide(x0, y0, GLYPH_W as i64 * s, GLYPH_H as i64 * s);
+    let visible = cell.intersect(&fb.clip_box());
+    if visible.is_empty() {
         return;
     }
-    let px = fb.opaque(color);
-    let glyph = glyph_for(ch);
-    work::add((GLYPH_W * GLYPH_H) as u64);
-    for (row, bits) in glyph.iter().enumerate() {
-        for col in 0..GLYPH_W {
-            if bits & (0x10 >> col) != 0 {
-                let x = x0 + col as i64 * s;
-                let y = y0 + row as i64 * s;
-                let b = Box64 { x0: x, y0: y, x1: x + s, y1: y + s }.intersect(&clip);
-                if !b.is_empty() {
-                    work::add(b.height() as u64);
-                    for yy in b.y0..b.y1 {
-                        fb.span(yy as usize, b.x0 as usize, b.x1 as usize, px);
-                    }
-                }
-            }
-        }
-    }
+    work::add(1);
+    draw(fb, &[glyph(ch, x0, y0, s, visible)], color);
     fb.mark(cell);
 }
 
-/// Draw a string of ASCII bytes at (x, y) with the given color and scale.
+/// Draw a string of bytes at (x, y) with the given color and scale.
 ///
 /// Characters are spaced `(GLYPH_W + 1) * scale` pixels apart. Only the glyphs whose cells
 /// meet the clip are visited, so the work is bounded by the visible text (section 7).
-pub fn draw_text(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, color: Color, scale: usize) {
+pub fn draw_text(fb: &mut Surface, text: &[u8], x: usize, y: usize, color: Color, scale: usize) {
     if scale == 0 || text.is_empty() || x > i64::MAX as usize / 2 || y > i64::MAX as usize / 2 {
         return;
     }
@@ -184,9 +216,18 @@ pub fn draw_text(fb: &mut FrameBuf, text: &[u8], x: usize, y: usize, color: Colo
         return;
     }
     work::add((last - first + 1) as u64);
+    let mut glyphs = Vec::with_capacity((last - first + 1) as usize);
+    let mut cells = Box64::EMPTY;
     for i in first..=last {
-        draw_char(fb, text[i as usize], (x + i * adv) as usize, y as usize, color, scale);
+        let cell = Box64::wide(x + i * adv, y, cell_w, GLYPH_H as i64 * s);
+        let visible = cell.intersect(&c);
+        if !visible.is_empty() {
+            glyphs.push(glyph(text[i as usize], x + i * adv, y, s, visible));
+            cells = if cells.is_empty() { cell } else { Box64 { x0: cells.x0, y0: cells.y0, x1: cell.x1, y1: cell.y1 } };
+        }
     }
+    draw(fb, &glyphs, color);
+    fb.mark(cells);
 }
 
 /// Measure the pixel width of a string at the given scale.

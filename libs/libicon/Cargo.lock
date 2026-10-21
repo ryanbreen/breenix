@@ -7,10 +7,15 @@ name = "libfont"
 version = "0.1.0"
 
 [[package]]
-name = "libgfx"
+name = "libgfx-pixel"
+version = "0.1.0"
+
+[[package]]
+name = "libgfx-ref"
 version = "0.1.0"
 dependencies = [
  "libfont",
+ "libgfx-pixel",
  "noto-sans-mono-bitmap",
 ]
 
@@ -18,7 +23,7 @@ dependencies = [
 name = "libicon"
 version = "0.1.0"
 dependencies = [
- "libgfx",
+ "libgfx-ref",
 ]
 
 [[package]]

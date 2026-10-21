@@ -1,5 +1,5 @@
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::input::{InputState, WidgetEvent};
 use crate::rect::Rect;

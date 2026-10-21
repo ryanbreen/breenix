@@ -40,3 +40,44 @@ B9 (2026-10-20, 9:10 PM ET; coordinator requests closure of #2177). cpu-pixels-z
    any other CPU-side pixel upload under any purpose fails the case. Per-run byte-count equality and the per-case byte
    allowances are removed. Clipping, culling and uploading a table once per context all pass; a CPU-rendered image
    cannot pass as a Fixture. This tightens the check.
+
+B10 (2026-10-20, 8:05 PM ET; coordinator requests closure of #2182). The bitmap font table layout is part of the BreenGL contract, so the <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+   identity check in B9 is spec-backed rather than an unpublished expectation: for each bitmap size libgfx uploads one
+   table holding the glyphs U+0020..U+007E in order, then U+FFFD, each glyph's coverage rows stacked vertically, whole,
+   once per context. docs/gui/gpu.md states it normatively. Any layout would prove the same property; the contract
+   fixes one so the suite can compare by identity. The upload rule's written scope is every raster case, which is what
+   the code checks. The three remaining Minors (buffer uploads not content-checked, 'static not enforced against
+   Vec::leak, a declared row matching a later CPU fill) are filed as one issue for the gpu-raster lane.
+B11 (2026-10-20, 8:20 PM ET). Window buffers are BGRX, and breengel.md's X-byte rule governs every check of them:
+   comparisons normalize X to 0xFF and compare the three colour bytes; only raster/x-byte checks X itself. So "a new
+   window's buffers are all zero" (17.2) means B, G and R are zero in every pixel. windows/create
+   (windows.rs:56-70), readable_window_targets (windows.rs:197-203, used by windows/destroy and fork-no-mapping) and
+   any other window readback check share one helper that normalizes X before comparing. This follows the written
+   contract; it neither loosens nor tightens what the colour bytes must be.
+B12 (2026-10-20, 9:05 PM ET; coordinator requests closure of #2188). VmSize keeps main's meaning: /proc/<pid>/status VmSize reports the bytes
+   charged to RLIMIT_AS (Process::mapped_bytes, which includes limits.gpu_bytes), and 17.2 charges a window's GPU
+   backing there. windows/rlimit-accounting therefore expects CREATE(128,64,3) to add the tree pages and the backing:
+   196,608 + 98,304 = 294,912 bytes, and DESTROY to return all of it. windows/churn keeps its exact baseline: after
+   the 100th DESTROY it waits (bounded, the case's own timeout) until the destroyed targets' device unrefs have
+   completed and only then compares VmSize; charges are released when the device unref completes, never earlier.
+   Both checks are as strict as before; the expected numbers now follow the written contract.
+B13 (2026-10-20, 9:50 PM ET; coordinator requests closure of #2187). Adopt metadata-only snapshots and admission-time source pinning, specified here in gpu.md section 2.8, breengel.md sections 17–20 and gpu-abi.md.
+   Frame-scoped, sample-only authority belongs to the process that is both display owner and compositor claimant, with no CPU copy and no kernel-generated composition.
+   Metadata-only reservations preserve 17.3's "no pins between system calls" without an expiry timer; the compositor samples only the last published, completed front:
+   - 414/29 COMPOSITE_SNAPSHOT reserves metadata (window incarnation, buffer UID, published generation, write
+     incarnation, epochs), never a buffer; 414/19 COMPOSITE submits the userspace-built BGL stream against it, resolving
+     and pinning the exact fronts atomically, or EAGAIN when a source went stale. Aliases appear only in source
+     positions; ordinary 416 SUBMIT refuses them (EINVAL, code 4). 414/22 grows to 48 bytes for EIO's reason.
+   - COMMIT seals the candidate and returns; it publishes when every accepted writer completed OK. A late render <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+     failure keeps the previous front and is delivered once as EIO on the next ACQUIRE. ACQUIRE never hands out a
+     buffer still sampled, replays on the GPU, and its errors are the existing set plus ENOMEM, ENODEV and EIO.
+   - GIVE_DISPLAY (414/27) on the core ownership stack; a delegated non-root owner may present its own resources but
+     never samples foreign fronts; no claim moves with GIVE_DISPLAY.
+   - Lanes as gpu.md section 2.8: gpu-window builds the registry, publication protocol, op 29 and the window half
+     of op 19, and migrates the window/event/raw-client kit off pointer buffers; gpu-display builds the core sample
+     binding, op 19's validation/present/provenance, record v2 and op 22, GIVE_DISPLAY, and the userspace scene
+     encoder that kiosk_test and the stage use; gpu-apps moves bwm onto it and only then retires op 14.
+   - The layouts, reason codes 11 and 12, the pending/published distinction and scene-work versus scanout-transport
+     counters land first as a contract PR into breengel/suite, with changed checks before implementation.
+   A slow client cannot stall the desktop under this model beyond its own window's publication; the existing
+   present-rate case measures the rest.

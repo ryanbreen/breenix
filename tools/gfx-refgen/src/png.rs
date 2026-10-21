@@ -2,7 +2,7 @@
 //! 11.2.1 and 11.2.2) and RFC 1950/1951: 8-bit RGB, filter 0 on every row, one IDAT of
 //! stored deflate blocks in a zlib stream. No compression is attempted.
 
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::framebuf::FrameBuf;
 
 /// CRC-32 over `parts` (PNG specification, annex D: polynomial 0xEDB88320, reflected,
 /// initial and final XOR 0xFFFFFFFF).

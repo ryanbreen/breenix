@@ -12,10 +12,10 @@ fn announcements_cannot_light_a_stage() {
         "FILE_READ_TEST_PASSED marker if successful",
     ] {
         assert_eq!(serial::reached(line, &marker), [false], "{line}");
-        assert!(!producer::matches(line.as_bytes(), marker[0]), "{line}");
+        assert!(!producer::matches(line.as_bytes(), marker[0], &marker), "{line}");
     }
     assert_eq!(serial::reached("FILE_READ_TEST_PASSED\n", &marker), [true]);
-    assert!(producer::matches(b"FILE_READ_TEST_PASSED", marker[0]));
+    assert!(producer::matches(b"FILE_READ_TEST_PASSED", marker[0], &marker));
     assert_eq!(serial::reached("OTHER_PASSED\n", &marker), [true]);
     assert_eq!(
         serial::reached("FILE_READ_TEST_\nPASSED\n", &marker),

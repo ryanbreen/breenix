@@ -3,9 +3,9 @@
 //! Tracks a scroll offset for content that exceeds the visible area.
 //! Renders a track with a draggable thumb.
 
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::input::InputState;
 use crate::rect::Rect;
@@ -20,7 +20,7 @@ use crate::theme::Theme;
 ///
 /// ```
 /// use libbui::{InputState, Rect, Theme, widget::scroll_bar::ScrollBar};
-/// use libgfx::framebuf::{Format, FrameBuf};
+/// use libgfx_ref::framebuf::{Format, FrameBuf};
 ///
 /// let (win_w, win_h) = (320, 240);
 /// let (content_height, visible_height) = (600, win_h);

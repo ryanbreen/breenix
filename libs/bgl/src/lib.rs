@@ -160,6 +160,10 @@ impl Context {
         if r != 0 { return Err(r); }
         Ok(Fence { context: self.handle, handle: a.fence })
     }
+    /// Drop commands encoded since the last successful `submit`, after a refused submission.
+    pub fn discard(&mut self) {
+        self.words.clear();
+    }
     pub fn encoded(&self) -> &[u32] {
         &self.words
     }
@@ -167,6 +171,60 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         let _ = gpu::context_destroy(self.handle);
+    }
+}
+/// A static source table: a built-in font table or a suite's declared fixture, stored whole
+/// or as separate static rows (docs/gui/gpu.md section 2.4). The only CPU bytes BGL uploads
+/// as `Fixture`; uploads verify both the bytes and row descriptors are read-only image data.
+pub struct DeclaredFixture {
+    rows: FixtureRows,
+}
+enum FixtureRows {
+    Table(&'static [u8]),
+    Rows(&'static [&'static [u8]]),
+}
+impl DeclaredFixture {
+    /// A table held in one static slice.
+    pub fn table(bytes: &'static [u8]) -> Self {
+        Self { rows: FixtureRows::Table(bytes) }
+    }
+    /// A table held as static rows, uploaded in order as one contiguous table.
+    pub fn rows(rows: &'static [&'static [u8]]) -> Self {
+        Self { rows: FixtureRows::Rows(rows) }
+    }
+    /// The table's size in bytes.
+    pub fn len(&self) -> usize {
+        match &self.rows {
+            FixtureRows::Table(bytes) => bytes.len(),
+            FixtureRows::Rows(rows) => rows.iter().map(|r| r.len()).sum(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+/// Upload a declared table whole into `resource` at `rect` as `Fixture`, rows `stride`
+/// bytes apart in `source` layout; one of section 2.4's two sanctioned upload sites.
+pub fn fixture_upload(
+    fixture: DeclaredFixture,
+    context: &Context,
+    resource: u64,
+    rect: [u32; 4],
+    stride: u32,
+    source: u32,
+) -> Result<(), i64> {
+    let joined;
+    let bytes: &[u8] = match fixture.rows {
+        FixtureRows::Table(bytes) if libbreenix::image::read_only(bytes) => bytes,
+        FixtureRows::Rows(rows) if libbreenix::image::static_rows(rows) => {
+            joined = rows.concat();
+            &joined
+        }
+        _ => return Err(-gpu::abi::errno::EINVAL),
+    };
+    match gpu::upload(context.handle, resource, rect, bytes, stride, source, gpu::abi::purpose::FIXTURE).0 {
+        0 => Ok(()),
+        e => Err(e),
     }
 }
 /// Display modes and their physical pixel scale.
@@ -188,6 +246,17 @@ fn intersect(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
 mod tests {
     use super::*;
     use core::mem::ManuallyDrop;
+    #[test]
+    fn leaked_cpu_image_and_selected_palette_rows_are_refused_before_upload() {
+        let context = ManuallyDrop::new(Context { handle: 0, words: Vec::new(), clips: Vec::new(), bounds: [0; 4] });
+        let rendered = alloc::vec![17, 34, 51, 255].leak();
+        assert_eq!(fixture_upload(DeclaredFixture::table(rendered), &context, 0, [0, 0, 1, 1], 4,
+            gpu::abi::upload_source::B8G8R8A8), Err(-gpu::abi::errno::EINVAL));
+        static PALETTE: [[u8; 4]; 2] = [[0, 0, 0, 255], [255; 4]];
+        let rows = alloc::vec![&PALETTE[1][..], &PALETTE[0][..]].leak();
+        assert_eq!(fixture_upload(DeclaredFixture::rows(rows), &context, 0, [0, 0, 1, 2], 4,
+            gpu::abi::upload_source::B8G8R8A8), Err(-gpu::abi::errno::EINVAL));
+    }
     #[test]
     fn split_preserves_overlap_order_and_half_open_edges() {
         let mut c=ManuallyDrop::new(Context { handle:0,words:Vec::new(),clips:Vec::new(),bounds:[0,0,16,16] });

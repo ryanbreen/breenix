@@ -27,7 +27,7 @@ fn image_check(name: &str) -> CaseResult {
 // with actual, reference and absolute difference rows for each fixture. No
 // source is redrawn or composited against a background that could hide alpha.
 fn handoff_images(images: Vec<checks::JudgedImage>) -> CaseResult {
-    use libgfx::framebuf::Format;
+    use libgfx_ref::framebuf::Format;
     if images.is_empty() { return Ok(()); }
     let mut placements = Vec::new();
     let width = images.iter().map(|i| i.actual.width.max(i.expected.width) as usize * 2)
@@ -634,7 +634,7 @@ fn png_decode_independent_fixtures() -> CaseResult {
     image_check("png_decode_independent_fixtures")
 }
 fn blit_decoded(image: &mut libimg::png::Image) -> Result<libimg::png::Image, String> {
-    use libgfx::framebuf::Format;
+    use libgfx_ref::framebuf::Format;
     // SAFETY: the caller checked this decoded fixture is exactly 1x1/4 bytes;
     // its vector remains exclusively borrowed until this raw surface is dropped.
     let source = unsafe {
@@ -649,7 +649,7 @@ fn blit_decoded(image: &mut libimg::png::Image) -> Result<libimg::png::Image, St
     .map_err(|e| format!("PNG blit source: {e:?}"))?;
     let mut dest = FrameBuf::new_filled(3, 1, Format::BGRX, Color::rgb(200, 200, 200))
         .map_err(|e| format!("PNG blit destination: {e:?}"))?;
-    libgfx::blit::blit_over(&mut dest, &source, 1, 0);
+    libgfx_ref::blit::blit_over(&mut dest, &source, 1, 0);
     // SAFETY: this owned 3x1 BGRX surface contains exactly twelve bytes;
     // blit has finished and no mutable access overlaps the snapshot.
     let pixels = unsafe { std::slice::from_raw_parts(dest.raw_ptr(), 12) }.to_vec();

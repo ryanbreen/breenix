@@ -394,6 +394,13 @@ fn sampled(pipe: u32) -> (String, u32) {
             s.div255("TEMP[10]", "TEMP[23]");
             s.mov("TEMP[10].w", &ff);
         } else {
+            if pipe == 5 {
+                // A BGRX source's X byte is not alpha.
+                s.op("AND", "TEMP[25].x", "CONST[5].x", &one);
+                s.emit("UIF TEMP[25].x");
+                s.mov("TEMP[10].w", &ff);
+                s.emit("ENDIF");
+            }
             if pipe == 6 {
                 s.op("UMUL", "TEMP[23].xyz", "TEMP[10]", "TEMP[10].wwww");
                 s.div255("TEMP[23]", "TEMP[23]");
@@ -404,6 +411,13 @@ fn sampled(pipe: u32) -> (String, u32) {
             s.div255("TEMP[23]", "TEMP[23]");
             s.op("UADD", "TEMP[10]", "TEMP[10]", "TEMP[23]");
         }
+    }
+    if matches!(pipe, 2 | 5 | 6) {
+        let mask = if pipe == 2 { one.clone() } else { s.k(2) };
+        s.op("AND", "TEMP[25].x", "CONST[5].x", &mask);
+        s.emit("UIF TEMP[25].x");
+        s.mov("TEMP[10].w", &ff);
+        s.emit("ENDIF");
     }
     s.output("TEMP[10]");
     s.finish()

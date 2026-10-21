@@ -20,8 +20,8 @@ use libbreenix::pty;
 use libbreenix::types::Fd;
 use libbreenix::time;
 
-use libgfx::bitmap_font;
-use libgfx::ttf_font;
+use libgfx_ref::bitmap_font;
+use libgfx_ref::ttf_font;
 
 use libbui::{InputState, WidgetEvent};
 

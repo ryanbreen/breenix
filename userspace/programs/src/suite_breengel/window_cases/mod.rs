@@ -1,7 +1,8 @@
 //! The window interface cases: windows, isolation and events, and the window cases of
 //! composition, scanout and panel.
 
-mod kit;
+pub(crate) mod kit;
+pub(crate) mod handoff;
 mod windows;
 mod isolation;
 pub(crate) mod composition;

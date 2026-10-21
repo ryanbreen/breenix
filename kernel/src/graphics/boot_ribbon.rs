@@ -79,7 +79,7 @@ pub fn records() -> alloc::string::String {
 // software compositor's; it moves onto `console::splash` and the GPU compositor's display.
 pub fn draw(pixels: &mut [u8]) {
     let Ok(mut fb) = (unsafe {
-        libgfx::framebuf::FrameBuf::from_raw(pixels.as_mut_ptr(), 1280, 800, 5120, 4, true)
+        libgfx_ref::framebuf::FrameBuf::from_raw(pixels.as_mut_ptr(), 1280, 800, 5120, 4, true)
     }) else {
         return;
     };
@@ -89,5 +89,5 @@ pub fn draw(pixels: &mut [u8]) {
             *s = false;
         }
     }
-    let _ = libgfx::stage::draw_boot_ribbon(&mut fb, &stages);
+    let _ = libgfx_ref::stage::draw_boot_ribbon(&mut fb, &stages);
 }

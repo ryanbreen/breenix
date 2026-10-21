@@ -4,7 +4,8 @@ use libbreenix::window as win;
 use win::abi::{self, op, Plain};
 
 pub fn many_windows() -> CaseResult {
-    win::claim_compositor()?;
+    let (mut compositor, _) = crate::window_cases::kit::kiosk()?;
+    ensure(compositor.ask("auto 0")? == "ok", "24", "gpu-apps: kiosk auto 0 failed")?;
     let (rd, wr) = io::pipe()?;
     let make = || -> Result<(), String> {
         for _ in 0..9 {
@@ -39,40 +40,21 @@ pub fn many_windows() -> CaseResult {
         "the per-process window limit was applied globally",
     )?;
     for (i, w) in windows[..count].iter().enumerate() {
-        win::call(
-            op::SET_GEOMETRY,
-            &mut abi::Geometry {
-                id: w.id,
-                x: i as i32,
-                y: 0,
-                z: i as u32,
-                flags: abi::geometry_flags::VISIBLE,
-            },
-        )?;
+        ensure(compositor.ask(&format!("place {} {} 0 {} 1", w.id, i, i))? == "ok",
+            "18", "gpu-window: compositor could not place regression window")?;
     }
-    let mut composite = abi::Composite::ZERO;
-    win::call(op::COMPOSITE, &mut composite)?;
-    let mut record = vec![0u64; 3 + 4 * 18];
-    let mut query = abi::RecordQuery {
-        serial: composite.serial,
-        ptr: record.as_mut_ptr() as u64,
-        len: (record.len() * 8) as u32,
-        reserved: 0,
-    };
-    win::call(op::COMPOSITE_RECORD, &mut query)?;
-    let header =
-        unsafe { core::ptr::read_unaligned(record.as_ptr().cast::<abi::CompositeRecordHeader>()) };
-    ensure(
-        header.count == 18 && header.flags == 0,
-        "18",
-        "composite did not record all 18 visible windows",
-    )?;
+    let (serial, _) = crate::window_cases::composition::compose(&mut compositor)?;
+    let record = compositor.ask(&format!("record {serial}"))?;
+    let fields: Vec<_> = record.split_whitespace().collect();
+    ensure(fields.len()==23 && fields[0]=="ok" && fields[1].parse::<u64>().ok()==Some(serial)
+        && fields[3]=="18" && fields[4]=="0", "18",
+        "gpu-display: composite record lost its serial, 18 entries or zero flags")?;
     // Record v2 still has sixteen entries; eighteen must fail without partial output.
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r)))?;
     let mode=modes.modes[modes.current as usize];
     let mut pixels = vec![0xA5u8; mode.width as usize * mode.height as usize * 4];
     let mut observation = [0xA5u8; 1024];
-    let mut rb = abi::Readback::ZERO;
+    let mut rb = crate::window_cases::handoff::Readback::ZERO;
     rb.dst = pixels.as_mut_ptr() as u64;
     rb.dst_len = pixels.len() as u64;
     rb.record = observation.as_mut_ptr() as u64;
@@ -80,14 +62,14 @@ pub fn many_windows() -> CaseResult {
     let result = unsafe {
         win::raw_call(
             op::SCANOUT_READBACK,
-            (&mut rb as *mut abi::Readback).cast(),
+            (&mut rb as *mut crate::window_cases::handoff::Readback).cast(),
             core::mem::size_of_val(&rb),
         )
     };
     ensure(
-        result == -5 && pixels.iter().all(|b| *b == 0xA5) && observation.iter().all(|b| *b == 0xA5),
+        result == -5 && rb.reason == 11 && rb.serial == 0 && pixels.iter().all(|b| *b == 0xA5) && observation.iter().all(|b| *b == 0xA5),
         "20.1",
-        "unrepresentable observation was accepted or partly copied",
+        "gpu-display: unrepresentable observation omitted reason 11 or partly copied outputs",
     )?;
     let _ = signal::kill(pid.raw() as i32, signal::SIGKILL);
     let mut status = 0;
@@ -95,9 +77,6 @@ pub fn many_windows() -> CaseResult {
     // Destroy every caller window regardless of registry order.
     for w in &windows[..count] {
         let _ = win::destroy(w.id);
-    }
-    unsafe {
-        win::raw_call(op::RELEASE_COMPOSITOR, core::ptr::null_mut(), 0);
     }
     Ok(())
 }

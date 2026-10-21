@@ -4,12 +4,12 @@
 
 use std::collections::HashSet;
 
-use libgfx::alpha;
-use libgfx::blit;
-use libgfx::color::Color;
-use libgfx::framebuf::{Format, FrameBuf, Rect, SurfaceError};
-use libgfx::shapes;
-use libgfx::work;
+use libgfx_ref::alpha;
+use libgfx_ref::blit;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::{Format, FrameBuf, Rect, SurfaceError};
+use libgfx_ref::shapes;
+use libgfx_ref::work;
 
 const INK: Color = Color::rgb(200, 30, 90);
 
@@ -354,11 +354,11 @@ fn blits_convert_blend_and_scale() {
 fn long_text_visits_only_its_visible_glyphs() {
     let mut fb = surface(32, 24);
     work::reset();
-    libgfx::font::draw_text(&mut fb, &[b'W'; 1_000], 0, 0, INK, 1);
+    libgfx_ref::font::draw_text(&mut fb, &[b'W'; 1_000], 0, 0, INK, 1);
     let steps = work::steps();
     assert!(steps <= bound(32 * 7, 7, 32), "{steps} steps");
     assert!(inked(&fb).iter().any(|&(x, _)| x >= 30), "the visible glyphs were drawn");
     work::reset();
-    libgfx::font::draw_text(&mut fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1);
+    libgfx_ref::font::draw_text(&mut fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1);
     assert!(work::steps() <= 64);
 }

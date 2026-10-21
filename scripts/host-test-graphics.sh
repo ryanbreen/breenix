@@ -1,10 +1,10 @@
 #!/bin/bash
 # Host tests of the BreenGL libraries: the development loop of the breengel lanes
 # (docs/gui/breengel.md). Each crate's own unit tests run on the host with warnings
-# denied, one test at a time (libgfx::work and libfont::work count every thread); the
+# denied, one test at a time (the libgfx, libgfx-ref and libfont work counters are shared across threads); the
 # guest suite (/sbin/suite-breengel) gives the verdict.
 #
-# Usage: scripts/host-test-graphics.sh [crate-dir ...]   (default: every crate below)
+# Usage: scripts/host-test-graphics.sh [crate-dir ...]   (default: the crates below)
 #
 # Each lane adds its own crates to CRATES.
 set -euo pipefail
@@ -12,6 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATES=(
     libs/libgfx
+    libs/libgfx-ref
     libs/libpixcheck
     libs/libfont
     libs/libimg

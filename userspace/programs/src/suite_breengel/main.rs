@@ -40,9 +40,9 @@ use libbui::widget::scroll_bar::ScrollBar;
 use libbui::widget::slider::Slider;
 use libbui::widget::tab_bar::TabBar;
 use libfont::{CachedFont, Font};
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::{bitmap_font, font as font5x7, shapes, ttf_font};
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::{bitmap_font, font as font5x7, shapes, ttf_font};
 use libicon::icon::{Icon, IconBase, IconMouse, IconState};
 use libicon::icons::{arrow::ArrowIcon, home::HomeIcon, save::SaveIcon, search::SearchIcon};
 use libicon::particles::{Particle, ParticlePool};
@@ -103,7 +103,7 @@ mod stage_fixtures;
 mod stage_serial;
 #[cfg(target_arch = "aarch64")]
 mod display_regressions;
-use libgfx::stage;
+use libgfx_ref::stage;
 mod widgets;
 mod window_cases;
 

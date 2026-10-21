@@ -18,10 +18,10 @@ use breengel::{CachedFont, Window, Event};
 use libbreenix::process::{fork, execv, ForkResult};
 use libbreenix::time;
 
-use libgfx::bitmap_font;
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::ttf_font;
+use libgfx_ref::bitmap_font;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::ttf_font;
 
 // ---------------------------------------------------------------------------
 // Constants
