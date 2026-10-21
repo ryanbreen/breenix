@@ -819,7 +819,7 @@ fn widgets_checkbox_toggle() -> CaseResult {
             c.checked
         ),
     )?;
-    let mut g = Drawn::bgrx(140, 40);
+    let mut g = ui_frame(140, 40);
     g.reset(PAPER);
     c.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
