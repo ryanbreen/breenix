@@ -608,6 +608,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
     crate::net::init_loopback_pump();
+    crate::net::tcp::init_timer_thread();
     // #775 round 4, R3-5/N14: the third census emission context, spawned
     // beside kloopbackd on the unconditional init path so it exists in the
     // zero-feature production profile. idle_loop and the pump both emit only
