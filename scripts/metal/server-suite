@@ -322,10 +322,10 @@ def main():
         verdict, status = 'FAIL: ' + str(error), 1
     records['verdict'] = verdict
     result = runner['in_metal'](env, 'tee', directory + '/server-ssh-keys.json',
-                                input=json.dumps(records) + '\n', capture_output=True, text=True)
+                                stdin=None, input=json.dumps(records) + '\n', capture_output=True, text=True)
     if result.returncode: raise ValueError('cannot save host suite evidence in the boot store')
     result = runner['in_metal'](env, 'tee', directory + '/server-ssh-keys-transcript.json',
-                                input=json.dumps(transcript) + '\n', capture_output=True, text=True)
+                                stdin=None, input=json.dumps(transcript) + '\n', capture_output=True, text=True)
     if result.returncode: raise ValueError('cannot save host transcript')
     print(verdict)
     return status
