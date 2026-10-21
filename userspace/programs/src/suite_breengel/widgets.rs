@@ -1777,12 +1777,14 @@ fn text_entry_filepicker_list() -> CaseResult {
         ],
         &theme,
     );
-    // The list area is (1, 25, 298, 182) with 11-pixel rows.
+    // The list area is (1, 25, 298, 182). Ruling B26: its rows are FilePicker's own row
+    // height, the current font's text height plus 4, and each click lands mid-row.
+    let row_height = libbui::text::text_height(&theme) + 4;
     for (row, want) in ["Alpha", "Beta", "alpha", "beta", "zeta"]
         .iter()
         .enumerate()
     {
-        let y = 25 + 11 * row as i32 + 5;
+        let y = 25 + row_height * row as i32 + row_height / 2;
         pointer_event("file picker", press(50, y), |i| p.update(i));
         pointer_event("file picker", release(50, y), |i| p.update(i));
         let got = p
