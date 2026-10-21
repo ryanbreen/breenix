@@ -807,7 +807,7 @@ fn bssh_arm(user: &[u8], extra: &[&[u8]]) -> (i32, String) {
     let mut argv: Vec<*const u8> = vec![
         b"bssh\0".as_ptr(),
         b"127.0.0.1\0".as_ptr(),
-        b"2222\0".as_ptr(),
+        b"22\0".as_ptr(),
         user.as_ptr(),
         b"--identity\0".as_ptr(),
         b"/etc/breenix/test-ssh/id_ed25519\0".as_ptr(),

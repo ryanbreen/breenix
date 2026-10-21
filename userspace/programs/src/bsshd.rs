@@ -1,6 +1,6 @@
 //! BSSHD — Breenix SSH server daemon
 //!
-//! Listens for SSH connections on port 2222 and runs each authenticated
+//! Listens for SSH connections on port 22 and runs each authenticated
 //! session, a shell (with a PTY when one is requested) or an exec request, as
 //! the account that logged in.
 //!
@@ -16,7 +16,7 @@
 //!   uid, home directory, shell and environment, as `login` does.
 //!
 //! Usage: bsshd [port]
-//!   Default port: 2222
+//!   Default port: 22
 
 use std::ffi::CString;
 use std::path::Path;
@@ -32,7 +32,7 @@ use libbreenix::ssh::keys::{fingerprint_text, HostKey};
 use libbreenix::ssh::transport::ServerSession;
 use libbreenix::types::Fd;
 
-const DEFAULT_PORT: u16 = 2222;
+const DEFAULT_PORT: u16 = 22;
 
 extern "C" {
     fn setgroups(count: usize, groups: *const u32) -> i32;
@@ -43,6 +43,8 @@ extern "C" {
     fn geteuid() -> u32;
     fn getgid() -> u32;
     fn getegid() -> u32;
+    fn fchown(fd: i32, uid: u32, gid: u32) -> i32;
+    fn fchmod(fd: i32, mode: u32) -> i32;
 }
 
 /// The process's own credentials, through the C library's system calls.
@@ -289,6 +291,8 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             }
 
             if pty_requested {
+                // A PTY login owns a new session and its controlling terminal.
+                if process::setsid().is_err() { process::exit(1); }
                 // Open the slave PTY
                 let path_bytes = pty::slave_path_bytes(&slave_path);
                 let path_str = core::str::from_utf8(path_bytes).unwrap_or("/dev/pts/0");
@@ -296,6 +300,12 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
                     Ok(fd) => fd,
                     Err(_) => process::exit(1),
                 };
+
+                if libbreenix::termios::set_controlling_terminal(slave_fd).is_err()
+                    || libbreenix::termios::tcsetpgrp(slave_fd, process::getpid().unwrap().raw() as i32).is_err()
+                    || unsafe { fchown(slave_fd.raw() as i32, account.uid, account.gid) } != 0
+                    || unsafe { fchmod(slave_fd.raw() as i32, 0o620) } != 0
+                { process::exit(1); }
 
                 // Set PTY to translate \n → \r\n (ONLCR) for SSH terminals
                 let mut tio: libbreenix::termios::Termios = unsafe { core::mem::zeroed() };
@@ -346,6 +356,15 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             let input_closed = data_shuttle(&mut session, master_fd, input_fd, pty_requested);
             println!("bsshd: session ended for user '{}'", username);
 
+            // Restore ownership while the master still keeps the slave alive.
+            if pty_requested {
+                let name = core::str::from_utf8(pty::slave_path_bytes(&slave_path)).unwrap();
+                if let Ok(slave) = libbreenix::fs::open(name, libbreenix::fs::O_RDWR | pty::O_NOCTTY as u32) {
+                    let restored = unsafe { fchown(slave.raw() as i32, 0, 0) == 0 && fchmod(slave.raw() as i32, 0o620) == 0 };
+                    if !restored { eprintln!("bsshd: cannot restore PTY ownership"); }
+                    let _ = io::close(slave);
+                }
+            }
             // Clean up
             let _ = io::close(master_fd);
             if input_fd != master_fd && !input_closed {

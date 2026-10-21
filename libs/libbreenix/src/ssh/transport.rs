@@ -53,10 +53,9 @@ impl<'a> ServerSession<'a> {
     /// Returns the authenticated username on success.
     pub fn handshake(&mut self) -> Result<String, SshError> {
         // 1. Version exchange
-        // Read client version FIRST — this blocks until the TCP 3-way handshake
-        // completes (the client's ACK + version string arrive together). Sending
-        // our version first would fail because the connection may still be in
-        // SynReceived state after accept().
+        // RFC 4253 section 4.2: send identification once TCP is established.
+        // sendmsg waits for the accepted connection to leave SynReceived.
+        self.io.write_line(BSSH_VERSION).map_err(|_| SshError::Io)?;
         self.client_version = match self.io.read_line() {
             Ok(v) => v,
             Err(e) => {
@@ -66,11 +65,6 @@ impl<'a> ServerSession<'a> {
             }
         };
         println!("bsshd: client version: '{}'", self.client_version);
-        if let Err(e) = self.io.write_line(BSSH_VERSION) {
-            println!("bsshd: write_line FAILED: {:?}", e);
-            return Err(SshError::Io);
-        }
-        println!("bsshd: server version sent");
 
         if !self.client_version.starts_with("SSH-2.0-") {
             return Err(SshError::Protocol("unsupported SSH version"));
@@ -140,12 +134,10 @@ impl<'a> ServerSession<'a> {
 
         // Derive and install session keys
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let is_hybrid = c_init_len == 1216;
-        let (cipher_c2s, cipher_s2c) = if is_hybrid {
-            kex::derive_keys_hybrid(&shared_secret, &exchange_hash, session_id)
-        } else {
-            kex::derive_keys(&shared_secret, &exchange_hash, session_id)
-        };
+        let (c2s, s2c) = kex::negotiate_ciphers(&self.kex.peer_kexinit, &self.kex.my_kexinit)?;
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
+            &shared_secret, &exchange_hash, session_id, c_init_len == 1216, c2s, s2c,
+        );
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
@@ -507,7 +499,11 @@ impl ClientSession {
 
         // Install cipher
         let session_id = self.kex.session_id.as_ref().unwrap();
-        let (cipher_c2s, cipher_s2c) = kex::derive_keys(&shared_secret, &exchange_hash, session_id);
+        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
+            &shared_secret, &exchange_hash, session_id, false,
+            kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?.0,
+            kex::negotiate_ciphers(&self.kex.my_kexinit, &self.kex.peer_kexinit)?.1,
+        );
 
         self.io.set_cipher_send(cipher_c2s); // client→server = our send
         self.io.set_cipher_recv(cipher_s2c); // server→client = our recv

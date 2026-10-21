@@ -146,9 +146,7 @@ pub struct PtyPair {
 
     /// The slave device's owner, group and permission bits: set from the
     /// opener of the master, changed by grantpt, checked by a slave open.
-    slave_uid: AtomicU32,
-    slave_gid: AtomicU32,
-    slave_mode: AtomicU32,
+    slave_metadata: spin::Mutex<(u32, u32, u32)>,
 
     /// The terminal's session and foreground process group.
     pub ctl: spin::Mutex<TermCtl>,
@@ -189,9 +187,7 @@ impl PtyPair {
             pending_echo: spin::Mutex::new(alloc::boxed::Box::try_new(PtyBuffer::new())
                 .map_err(|_| crate::syscall::errno::ENOMEM)?),
             master_output_stopped: AtomicBool::new(false),
-            slave_uid: AtomicU32::new(uid),
-            slave_gid: AtomicU32::new(gid),
-            slave_mode: AtomicU32::new(SLAVE_MODE),
+            slave_metadata: spin::Mutex::new((uid, gid, SLAVE_MODE)),
             ctl: spin::Mutex::new(TermCtl::new()),
             master_readers: WaitQueueHead::new(),
             slave_readers: WaitQueueHead::new(),
@@ -202,17 +198,40 @@ impl PtyPair {
 
     /// The slave device's (uid, gid, mode), mode without the file type.
     pub fn slave_owner(&self) -> (u32, u32, u32) {
-        (
-            self.slave_uid.load(Ordering::SeqCst),
-            self.slave_gid.load(Ordering::SeqCst),
-            self.slave_mode.load(Ordering::SeqCst),
-        )
+        *self.slave_metadata.lock()
     }
 
     /// grantpt: the slave belongs to `uid`, with mode 0620.
     pub fn grant(&self, uid: u32) {
-        self.slave_uid.store(uid, Ordering::SeqCst);
-        self.slave_mode.store(SLAVE_MODE, Ordering::SeqCst);
+        let mut metadata = self.slave_metadata.lock();
+        metadata.0 = uid;
+        metadata.2 = SLAVE_MODE;
+    }
+
+    /// Change slave metadata through an open slave descriptor. The permission
+    /// decision and publication share one guard, as an inode update does.
+    pub fn change_slave_metadata(
+        &self, mode: Option<u32>, owner: Option<(u32, u32)>,
+        cred: &crate::fs::permissions::Credentials,
+    ) -> Result<(), u64> {
+        use crate::syscall::errno::EPERM;
+        let mut metadata = self.slave_metadata.lock();
+        let (uid, gid, old_mode) = *metadata;
+        if cred.euid != 0 && cred.euid != uid { return Err(EPERM as u64); }
+        if let Some(mode) = mode {
+            let mut bits = mode & 0o7777;
+            if cred.euid != 0 && !cred.in_group(gid) { bits &= !0o2000; }
+            metadata.2 = bits;
+        }
+        if let Some((owner, group)) = owner {
+            if cred.euid != 0 && ((owner != u32::MAX && owner != uid)
+                || (group != u32::MAX && group != gid && !cred.in_group(group))) {
+                return Err(EPERM as u64);
+            }
+            *metadata = (if owner == u32::MAX { uid } else { owner },
+                if group == u32::MAX { gid } else { group }, old_mode & !0o6000);
+        }
+        Ok(())
     }
 
     /// The pair's termios (the line discipline's copy).

@@ -8,6 +8,8 @@
 //!   bsh script.js    # Execute a script file
 //!   bsh -e 'code'    # Evaluate a string
 
+mod bsh_words;
+
 use std::io::{self, Read, Write};
 
 use breenish_js::error::{JsError, JsResult};
@@ -2345,7 +2347,7 @@ fn should_auto_exec(line: &str) -> bool {
     }
 
     // Lines with assignment, arrow, or comparison syntax are JS
-    if line.contains("=>") || line.contains("= ") || line.contains("==") {
+    if line.split_once(char::is_whitespace).is_some_and(|(_, rest)| rest.trim_start().starts_with('=')) {
         return false;
     }
 
@@ -2385,42 +2387,13 @@ fn should_auto_exec(line: &str) -> bool {
 /// chain that exec() uses, which is essential for commands that produce
 /// large output (like burl).
 fn auto_exec_wrap(line: &str) -> String {
-    // Split the line into command and args by whitespace
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.is_empty() {
-        return line.to_string();
-    }
-
-    // Build run call: run("cmd", "arg1", "arg2")
-    let mut call = String::from("let __ec = run(");
-    for (i, part) in parts.iter().enumerate() {
-        if i > 0 {
-            call.push_str(", ");
-        }
-        call.push('"');
-        // Escape quotes in args
-        for c in part.chars() {
-            if c == '"' {
-                call.push_str("\\\"");
-            } else {
-                call.push(c);
-            }
-        }
-        call.push('"');
-    }
-    call.push_str("); if (__ec === 127) { console.error(\"");
-    // Escape the command name for the error message
-    for c in parts[0].chars() {
-        if c == '"' {
-            call.push_str("\\\"");
-        } else if c == '\\' {
-            call.push_str("\\\\");
-        } else {
-            call.push(c);
-        }
-    }
-    call.push_str(": command not found\"); }");
-    call
+    let parts = match bsh_words::words(line) {
+        Ok(parts) => parts,
+        Err(why) => return format!("throw new Error({});", bsh_words::js_string(why)),
+    };
+    if parts.is_empty() { return line.to_string(); }
+    let args = parts.iter().map(|word| bsh_words::js_string(word)).collect::<Vec<_>>().join(", ");
+    format!("let __ec = run({args}); if (__ec !== 0) {{ console.error(\"[bsh] command failed status=\" + __ec); }}")
 }
 
 /// Load and evaluate an RC (startup) file, silently ignoring missing files.

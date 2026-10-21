@@ -89,7 +89,8 @@ impl PacketIo {
 
         // Calculate padding: total of (4 + 1 + payload + padding) must be
         // a multiple of block_size, with padding >= MIN_PADDING.
-        let unpadded = 4 + 1 + payload.len();
+        let gcm = self.cipher_send.as_ref().is_some_and(SshCipher::is_gcm);
+        let unpadded = if gcm { 1 + payload.len() } else { 4 + 1 + payload.len() };
         let mut padding = block_size - (unpadded % block_size);
         if padding < MIN_PADDING {
             padding += block_size;
@@ -109,13 +110,7 @@ impl PacketIo {
         packet.extend_from_slice(&pad);
 
         if let Some(ref mut cipher) = self.cipher_send {
-            // Compute MAC over: sequence_number || unencrypted_packet
-            let mac = cipher.compute_mac(self.seq_send, &packet);
-
-            // Encrypt the packet (in place)
-            cipher.encrypt(&mut packet);
-
-            // Send encrypted packet + MAC
+            let mac = cipher.seal(self.seq_send, &mut packet)?;
             self.write_all(&packet)?;
             self.write_all(&mac)?;
         } else {
@@ -132,7 +127,8 @@ impl PacketIo {
     /// Reads the binary packet from the socket, optionally decrypts and
     /// verifies the MAC.
     pub fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
-        let block_size = if self.cipher_recv.is_some() { 16 } else { 8 };
+        let gcm = self.cipher_recv.as_ref().is_some_and(SshCipher::is_gcm);
+        let block_size = if gcm { 4 } else if self.cipher_recv.is_some() { 16 } else { 8 };
 
         // Read the first block to get packet_length
         let mut first_block = vec![0u8; block_size];
@@ -149,7 +145,9 @@ impl PacketIo {
             first_block[3],
         ]) as usize;
 
-        if packet_length > MAX_PACKET_SIZE {
+        if packet_length > MAX_PACKET_SIZE || packet_length < 1 + MIN_PADDING
+            || (packet_length + if gcm { 0 } else { 4 }) % if self.cipher_recv.is_some() { 16 } else { 8 } != 0
+        {
             return Err(Error::Os(Errno::EMSGSIZE));
         }
 
@@ -171,19 +169,19 @@ impl PacketIo {
 
         if self.cipher_recv.is_some() {
             // Read MAC first (before borrowing cipher mutably)
-            let mut mac_received = vec![0u8; 32]; // HMAC-SHA256 = 32 bytes
+            let mut mac_received = vec![0u8; if gcm { 16 } else { 32 }];
             self.read_exact(&mut mac_received)?;
 
             // Now verify MAC
             let cipher = self.cipher_recv.as_mut().unwrap();
-            let mac_computed = cipher.verify_mac(self.seq_recv, &full_packet);
-            if mac_received != mac_computed {
-                return Err(Error::Os(Errno::EBADMSG));
-            }
+            cipher.open(self.seq_recv, &mut full_packet, &mac_received)?;
         }
 
         // Extract payload
         let padding_length = full_packet[4] as usize;
+        if padding_length < MIN_PADDING || padding_length >= packet_length {
+            return Err(Error::Os(Errno::EBADMSG));
+        }
         let payload_length = packet_length - 1 - padding_length;
         let payload = full_packet[5..5 + payload_length].to_vec();
 

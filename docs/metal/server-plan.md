@@ -114,7 +114,7 @@ modes, so these milestones use suite measures instead.
 Each R240 acceptance is one metal-run sequence at the lane's final head, on the persistent install unless it says test
 root.
 
-1. **`ssh-keys` (`server/ssh-keys`), in progress on `metal-fix/ssh-doors`.** Remove the development password and
+1. **`ssh-keys` (`server/ssh-keys`), completion on `metal-fix/ssh-keys-finish`.** Remove the development password and
    telnetd; generate an Ed25519 host key (RFC 8032, RFC 8709) per install into `/etc/ssh`; read per-account
    `authorized_keys` staged by `install-persistent` from the site file instead of compiled-in keys; listen on port
    22; add aes256-gcm (RFC 5647) and Ed25519 user keys. Until the users effort's `layout` milestone moves `/etc/ssh`

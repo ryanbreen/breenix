@@ -906,7 +906,7 @@ generation protocol is pending review and a later hardware window (#2114).
 
 ### SSH and the machine state store
 
-The persistent install runs bsshd on port 2222 and no telnetd: x86 images start no telnet service.
+The persistent install runs bsshd on port 22 and no telnetd: x86 images start no telnet service.
 
 - **Logins** are publickey only (ssh-ed25519, rsa-sha2-256 and rsa-sha2-512 user keys), against the account's
   `~/.ssh/authorized_keys`. The file, `~/.ssh`, the home directory and each directory above it must be owned by root
@@ -921,6 +921,15 @@ The persistent install runs bsshd on port 2222 and no telnetd: x86 images start 
   start, on the console and the serial port; compare it with `ssh-keygen -lf` output before trusting the key. A key
   file that others can read, that is not root's, that is a symbolic link or that does not parse stops bsshd rather
   than being replaced.
+
+bsshd sends its SSH identification before reading the client's (RFC 4253 section
+4.2), including for `ssh-keyscan`. It offers `aes256-gcm@openssh.com` (RFC 5647's
+packet format with the negotiation in draft-miller-sshm-aes-gcm) and `aes128-ctr`
+with HMAC-SHA256. A PTY session creates a session, acquires the slave as its
+controlling terminal, sets its foreground group and gives the slave to the
+account with mode 0620; the server restores ownership when the session ends.
+The [server suite](../suites/README.md#server-host-driven-persistent-categories)
+measures these properties from the boot host on a persistent boot.
 
 **The machine state store.** An upgrade copies the new image's `/etc`, so the state the machine owns lives in
 `/.breenix-shared` on the system partition, outside the generations. The kernel binds it at `/.breenix-shared` in
@@ -1194,7 +1203,7 @@ The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USE
 `IDRAC_ACCOUNT_SLOT`, `INTERNAL_USB`, `USB_MANAGED_PORT` (fresh as-found BIOS values), `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`), `REDACT_IDENTIFIERS`, and for
 `install-persistent` `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"). It must also
-be valid `sh`, because `metal-sol` sources it.
+be valid `sh`, because `metal-sol` sources it. `SERVER_SSH_HOST` names the persistent server for host-driven server suite checks.
 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`
 (the published address and port), and the build container's `BUILD_INSTANCE`, `BUILD_REPO`, `BUILD_RUST_FORK`,
