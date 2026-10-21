@@ -1,6 +1,7 @@
 //! Clean-room RFC 1951 §§3.1–3.3 and RFC 1950 §2 decoder.
 //! The incremental parser retains a partial symbol, bounded canonical
 //! alphabets and the caller's output. Matches read the last 32 KiB of that output.
+use alloc::vec::Vec;
 use crate::work;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InflateError {

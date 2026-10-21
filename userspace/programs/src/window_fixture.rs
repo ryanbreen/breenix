@@ -24,64 +24,59 @@ impl Target {
         }
         Ok(pixels)
     }
-    /// Draw fixture geometry in batches, using the bottom row of a two-row gradient
-    /// to select each instance's own colour. This issues geometry, with no pixel upload.
+    /// Copy the declared section-24 input pattern into the acquired GPU target.
     pub fn paint(self, rect: [i32; 4], seed: u32) -> Result<(), String> {
         use std::cell::RefCell;
+        struct Renderer {
+            context: bgl::Context,
+            input: Option<(u8, bgl::Texture)>,
+        }
         thread_local! {
-            static RENDER: RefCell<(u64, Option<bgl::Context>)> = const { RefCell::new((0, None)) };
+            static RENDER: RefCell<(u64, Option<Renderer>)> = const { RefCell::new((0, None)) };
         }
         let pid = libbreenix::process::getpid().map_err(|e| format!("fixture pid: {e}"))?.raw();
         RENDER.with(|slot| {
             let mut slot = slot.borrow_mut();
-            if slot.0 != pid {
-                slot.1 = None;
-                slot.0 = pid;
-            }
+            if slot.0 != pid { slot.1 = None; slot.0 = pid; }
             if slot.1.is_none() {
-                slot.1 = Some(bgl::Context::new().map_err(|r| format!("gpu-window: fixture context returned {r}"))?);
+                slot.1 = Some(Renderer {
+                    context: bgl::Context::new().map_err(|r| format!("fixture context: {r}"))?,
+                    input: None,
+                });
             }
-            let result = self.paint_with(slot.1.as_mut().expect("fixture context created"), rect, seed);
-            if result.is_err() { slot.1 = None; }
-            result
-        })
-    }
-
-    fn paint_with(self, context: &mut bgl::Context, rect: [i32; 4], seed: u32) -> Result<(), String> {
-        const BATCH: usize = 8192;
-        let [x, y, w, h] = rect;
-        let (x0, y0) = (x.max(0), y.max(0));
-        let (x1, y1) = (
-            (x as i64 + w as i64).min(self.width as i64),
-            (y as i64 + h as i64).min(self.height as i64),
-        );
-        context.discard();
-        context.begin(self.handle, self.width, self.height);
-        let mut instances = Vec::with_capacity(BATCH);
-        let flush = |context: &mut bgl::Context, instances: &mut Vec<bgl::Instance>| -> Result<(), String> {
-            context.draw(bgl::pipeline::GRADIENT_V, 0xff000000, 0, 0, 0, instances);
-            context.submit().and_then(|f| f.wait(2_000_000_000))
-                .map_err(|r| format!("gpu-window: fixture render returned {r}"))?;
-            instances.clear();
-            Ok(())
-        };
-        for y in y0..y1 as i32 {
-            for x in x0..x1 as i32 {
-                let (ux, uy) = (x as u32, y as u32);
-                let b = (7 * ux + 13 * seed) & 255;
-                let g = (5 * uy + 29 * seed) & 255;
-                let r = (ux ^ uy ^ seed) & 255;
-                let mut params = [0; 16];
-                params[..3].copy_from_slice(&[(y - 1) as u32, 2, 0xff000000 | r << 16 | g << 8 | b]);
-                instances.push(bgl::Instance { rect: [x, y, x + 1, y + 1], params });
-                if instances.len() == BATCH {
-                    flush(context, &mut instances)?;
-                    context.begin(self.handle, self.width, self.height);
+            let renderer = slot.1.as_mut().expect("fixture renderer created");
+            let seed = seed as u8;
+            if renderer.input.as_ref().is_none_or(|(old, _)| *old != seed) {
+                renderer.input = None;
+                let bytes = std::fs::read(format!("/usr/local/test/share/breengel/window-patterns/{seed:02x}.png"))
+                    .map_err(|e| format!("read declared window input {seed}: {e}"))?;
+                let image = libimg::Decoded::png(&bytes).map_err(|e| format!("decode declared window input: {e:?}"))?;
+                let texture = bgl::Texture::from_decoded(&renderer.context, image)
+                    .map_err(|r| format!("upload declared window input: {r}"))?;
+                renderer.input = Some((seed, texture));
+            }
+            let texture = renderer.input.as_ref().expect("declared input loaded").1.handle();
+            let context = &mut renderer.context;
+            context.discard();
+            context.begin(self.handle, self.width, self.height);
+            let [x, y, w, h] = rect;
+            let (mut y, y1) = (y.max(0), (y as i64 + h as i64).min(self.height as i64) as i32);
+            let (x0, x1) = (x.max(0), (x as i64 + w as i64).min(self.width as i64) as i32);
+            let mut copies = Vec::new();
+            while y < y1 {
+                let bottom = y1.min((y / 256 + 1) * 256);
+                let mut x = x0;
+                while x < x1 {
+                    let right = x1.min((x / 256 + 1) * 256);
+                    copies.push([x, y, right, bottom, x % 256, y % 256]);
+                    x = right;
                 }
+                y = bottom;
             }
-        }
-        if !instances.is_empty() { flush(context, &mut instances)?; }
-        else { context.discard(); }
-        Ok(())
+            if copies.is_empty() { context.discard(); return Ok(()); }
+            context.copy(texture, &copies);
+            context.submit().and_then(|f| f.wait(2_000_000_000))
+                .map_err(|r| format!("gpu-window: fixture copy returned {r}"))
+        })
     }
 }

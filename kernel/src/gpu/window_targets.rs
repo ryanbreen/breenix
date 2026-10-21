@@ -203,7 +203,7 @@ impl Target {
         wait_for(None, true, |c| {
             let Some(r) = c.resources.get(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
-            if r.writers != 0 || r.reading || r.accepted.iter().any(|w| !w.ended()) { return None; }
+            if r.writers != 0 || r.accepted.iter().any(|w| !w.ended()) { return None; }
             Some(if r.invalid { Err(EIO) } else { Ok(()) })
         }).map_err(|_| EINTR).and_then(|r| r).map_err(|e| e as i32)
     }

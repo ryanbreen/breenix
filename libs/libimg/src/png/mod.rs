@@ -1,6 +1,7 @@
 //! Clean-room PNG (W3C Third Edition §§4–6, 9–11 and 13), static image path.
 //! Samples remain at file precision through tRNS comparison, then scale and
 //! premultiply exactly once. Colour-management and other ancillary chunks are ignored.
+use alloc::vec::Vec;
 use crate::{
     crc::crc32_parts,
     inflate::{zlib_decompress, InflateError},

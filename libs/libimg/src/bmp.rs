@@ -1,4 +1,5 @@
 //! BMP 24-bit uncompressed encoding and decoding.
+use alloc::vec::Vec;
 
 /// Encode a top-down RGB pixel buffer as a 24-bit uncompressed BMP file.
 ///
