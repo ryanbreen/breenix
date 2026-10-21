@@ -190,20 +190,19 @@ impl ParticlePool {
 
     /// Draw all live particles.
     pub fn draw(&self, fb: &mut FrameBuf, offset_x: i32, offset_y: i32) {
-        // One submission per frame (libgfx Surface::batch), the same pixels as one per shape.
-        fb.batch(|fb| {
-            if let Some((l,t,r,b)) = self.bounds {
-                let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
-                let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
-                let left = ceil(l).saturating_add(offset_x);
-                let top = ceil(t).saturating_add(offset_y);
-                let right = floor(r).saturating_add(offset_x);
-                let bottom = floor(b).saturating_add(offset_y);
-                fb.push_clip(libgfx::surface::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
-            }
-            for p in &self.particles { p.draw(fb, offset_x, offset_y); }
-            if self.bounds.is_some() { fb.pop_clip(); }
-        });
+        // Frames are drawn often: their shapes go to the GPU together (Surface::defer_shapes).
+        fb.defer_shapes();
+        if let Some((l,t,r,b)) = self.bounds {
+            let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
+            let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
+            let left = ceil(l).saturating_add(offset_x);
+            let top = ceil(t).saturating_add(offset_y);
+            let right = floor(r).saturating_add(offset_x);
+            let bottom = floor(b).saturating_add(offset_y);
+            fb.push_clip(libgfx::surface::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
+        }
+        for p in &self.particles { p.draw(fb, offset_x, offset_y); }
+        if self.bounds.is_some() { fb.pop_clip(); }
     }
 
     /// Kill all particles immediately.

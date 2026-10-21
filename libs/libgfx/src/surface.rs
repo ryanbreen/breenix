@@ -3,8 +3,8 @@
 //!
 //! A surface owns a target made by `RESOURCE_CREATE`; no pixel pointer is accepted and a
 //! handle is not an address. Drawing submits BGL commands to the process's context, each
-//! primitive at once, or the shapes drawn inside `batch` in one submission; `read` waits for
-//! them through `READBACK`.
+//! primitive at once, or a deferring surface's shapes together (`defer_shapes`); `read`
+//! waits for them through `READBACK`.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -152,9 +152,15 @@ impl Box64 {
 /// readback knows it is stale when this has moved.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// The number of drawing submissions this process has made so far.
+/// The number of drawing submissions this process has made so far, deferred shapes sent.
 pub fn generation() -> u64 {
+    device::flush();
     GENERATION.load(Relaxed)
+}
+
+/// Count a drawing submission made outside `Surface::submit`.
+pub(crate) fn count_submission() {
+    GENERATION.fetch_add(1, Relaxed);
 }
 
 /// The canonical BGRA colour word of an opaque colour (gpu-abi.md: B in bits 0 to 7).
@@ -176,12 +182,9 @@ pub struct Surface {
     error: Option<i64>,
     ui_scale: u32,
     render: Option<bgl::Fence>,
-    /// Inside `batch`: each deferred primitive's own `BEGIN`, scissor and draw commands.
-    batch: Option<Vec<Vec<u32>>>,
+    /// Whether shapes wait in the device to be sent together (`defer_shapes`).
+    deferring: bool,
 }
-
-/// The most primitives one batched submission carries, far below SUBMIT's draw cap.
-const BATCH_PRIMITIVES: usize = 64;
 
 impl Surface {
     /// Check a readback or conversion layout of `width × height` pixels at `stride` (section 3).
@@ -219,7 +222,7 @@ impl Surface {
         let ui_scale = Self::display_scale()?;
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
-        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale, batch: None })
+        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale, deferring: false })
     }
 
     /// A non-owning view of a target returned by window CREATE/RESIZE. The window
@@ -230,7 +233,7 @@ impl Surface {
         if target==0 { return Err(SurfaceError::Device(-abi::errno::EINVAL)); }
         Ok(Self { target,width,height,format:Format::BGRX,
             clip:Box64 {x0:0,y0:0,x1:width as i64,y1:height as i64},clips:Vec::new(),dirty:None,
-            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:Self::display_scale()?,batch:None })
+            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:Self::display_scale()?,deferring:false })
 
     }
 
@@ -263,7 +266,17 @@ impl Surface {
 
     /// The first error the core returned for a submission on this surface, if any.
     pub fn error(&self) -> Option<i64> {
-        self.error
+        self.error.or_else(|| self.settled().0)
+    }
+
+    /// Deferred shapes sent, what sending this surface's gave: the first error and last fence.
+    fn settled(&self) -> (Option<i64>, Option<bgl::Fence>) {
+        if self.deferring { device::settle(self.target) } else { (None, None) }
+    }
+
+    /// Whether this process made the target (a forked child holds none of its parent's).
+    pub(crate) fn owned_here(&self) -> bool {
+        self.owner == device::pid()
     }
 
     // ---- the clip stack (section 4): emitted as GPU scissors ------------------------
@@ -317,10 +330,9 @@ impl Surface {
 
     /// Encode `draw` for this target under the current clip and submit it. Callers pass only
     /// geometry already clipped to something visible: a primitive clipped to an empty box
-    /// submits no command (section 7). A batch drawn so far is submitted first, so this draw
-    /// follows it.
+    /// submits no command (section 7). Deferred shapes are sent first, so this draw follows
+    /// them.
     pub(crate) fn submit(&mut self, draw: impl FnOnce(&mut bgl::Context)) {
-        self.flush();
         let (target, w, h, clip) = (self.target, self.width as u32, self.height as u32, self.clip);
         let whole = clip == Box64 { x0: 0, y0: 0, x1: w as i64, y1: h as i64 };
         let result = device::with(|d| {
@@ -339,70 +351,24 @@ impl Surface {
         }
     }
 
-    /// As `submit`, for a draw that samples no texture or target: inside `batch` its commands
-    /// are kept, with their own `BEGIN` and scissor, and sent with the batch's others.
+    /// As `submit`, for a draw that samples no texture or target: on a deferring surface its
+    /// commands are kept, after a scissor of its own clip, and sent with the others.
     pub(crate) fn submit_shape(&mut self, draw: impl FnOnce(&mut bgl::Context)) {
-        if self.batch.is_none() { return self.submit(draw); }
+        if !self.deferring { return self.submit(draw); }
         let (target, w, h, clip) = (self.target, self.width as u32, self.height as u32, self.clip);
-        let whole = clip == Box64 { x0: 0, y0: 0, x1: w as i64, y1: h as i64 };
-        let words = device::with(|d| {
-            let context = &mut d.context;
-            context.begin(target, w, h);
-            if !whole {
-                context.set_clip(clip.corners());
-            }
-            draw(context);
-            let words = context.encoded().to_vec();
-            context.discard();
-            Ok(words)
-        });
-        match words {
-            Ok(words) => {
-                let batch = self.batch.as_mut().expect("batch checked above");
-                batch.push(words);
-                if batch.len() >= BATCH_PRIMITIVES { self.flush(); }
-            }
-            Err(e) => { self.error.get_or_insert(e); }
+        // The whole target's scissor too, so that each kept draw sets its own clip.
+        if let Err(e) = device::defer(target, w, h, |context| { context.set_clip(clip.corners()); draw(context); }) {
+            self.error.get_or_insert(e);
         }
     }
 
-    /// Draw `f`'s shapes into this surface in as few submissions as SUBMIT admits. The pixels
-    /// are the ones drawing each shape alone gives: the commands and their order are the
-    /// same, and a submission the core refuses is sent again in halves, down to a single
-    /// shape, which fails as it would alone. A sampling draw inside `f` first submits the
-    /// shapes before it. `read` and `wait` inside `f` return EAGAIN; errors appear once the
-    /// batch is sent, when `batch` returns.
-    pub fn batch<R>(&mut self, f: impl FnOnce(&mut Surface) -> R) -> R {
-        if self.batch.is_some() { return f(self); }
-        self.batch = Some(Vec::new());
-        let result = f(self);
-        self.flush();
-        self.batch = None;
-        result
-    }
-
-    /// Send the batched shapes drawn so far, keeping the batch open.
-    fn flush(&mut self) {
-        let Some(segments) = self.batch.as_mut().map(core::mem::take) else { return; };
-        if !segments.is_empty() { self.send(&segments); }
-    }
-
-    fn send(&mut self, segments: &[Vec<u32>]) {
-        let result = device::with(|d| {
-            let context = &mut d.context;
-            for words in segments { context.append(words); }
-            context.submit().inspect_err(|_| context.discard())
-        });
-        GENERATION.fetch_add(1, Relaxed);
-        match result {
-            Ok(fence) => self.render = Some(fence),
-            Err(e) if segments.len() == 1 => { self.error.get_or_insert(e); }
-            Err(_) => {
-                let (first, second) = segments.split_at(segments.len() / 2);
-                self.send(first);
-                self.send(second);
-            }
-        }
+    /// Keep this surface's shapes (`submit_shape`) from now on and send them together, in
+    /// order, when the process next uses its GPU context for anything else, when `read`,
+    /// `wait`, `error` or `generation` asks, or after 256 of them. The pixels are those of
+    /// drawing each shape alone, and a submission the core refuses is sent again in halves,
+    /// down to the single shape that fails as it would alone.
+    pub fn defer_shapes(&mut self) {
+        self.deferring = true;
     }
 
     /// Record a failure to prepare a draw (a table upload) as this surface's error.
@@ -413,9 +379,10 @@ impl Surface {
     /// Wait for the most recent draw on this surface. The process context orders the
     /// surface's draws; window COMMIT separately seals writers from other contexts.
     pub fn wait(&self) -> Result<(), i64> {
-        if self.batch.is_some() { return Err(-abi::errno::EAGAIN); }
-        if let Some(error) = self.error { return Err(error); }
-        self.render.map_or(Ok(()), |fence| fence.wait(u64::MAX))
+        let (error, deferred) = self.settled();
+        if let Some(error) = self.error.or(error) { return Err(error); }
+        self.render.map_or(Ok(()), |fence| fence.wait(u64::MAX))?;
+        deferred.map_or(Ok(()), |fence| fence.wait(u64::MAX))
     }
 
     // ---- pixels ---------------------------------------------------------------------
@@ -450,10 +417,17 @@ impl Surface {
     /// Read the whole surface back as canonical BGRA rows `stride` bytes apart, after the
     /// submissions that write it; the row padding is left as it was (section 3).
     pub fn read(&self, pixels: &mut [u8], stride: usize) -> Result<(), i64> {
-        if self.batch.is_some() { return Err(-abi::errno::EAGAIN); }
+        self.read_rect([0, 0, self.width, self.height], pixels, stride)
+    }
+
+    /// Read the rectangle `[x, y, width, height]` back as `read` does the whole surface.
+    pub fn read_rect(&self, rect: [usize; 4], pixels: &mut [u8], stride: usize) -> Result<(), i64> {
+        if self.deferring { device::settle(self.target); }
         let stride = u32::try_from(stride).map_err(|_| -abi::errno::EINVAL)?;
+        let mut r = [0u32; 4];
+        for (to, &v) in r.iter_mut().zip(&rect) { *to = u32::try_from(v).map_err(|_| -abi::errno::EINVAL)?; }
         let mut record = [0u8; abi::record::SIZE];
-        match gpu::readback(self.target, [0, 0, self.width as u32, self.height as u32], pixels, stride, &mut record) {
+        match gpu::readback(self.target, r, pixels, stride, &mut record) {
             0 => Ok(()),
             e => Err(e),
         }
@@ -463,8 +437,9 @@ impl Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         // A forked child holds no GPU handles of its parent's (section 17.2).
-        if self.owns_handle && self.owner == device::pid() {
-            gpu::resource_destroy(self.target);
+        if self.owner == device::pid() {
+            if self.deferring { device::forget(self.target); }
+            if self.owns_handle { gpu::resource_destroy(self.target); }
         }
     }
 }

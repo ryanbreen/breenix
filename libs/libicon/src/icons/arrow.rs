@@ -131,88 +131,87 @@ impl Icon for ArrowIcon {
     }
 
     fn draw(&self, fb: &mut FrameBuf, cx: i32, cy: i32, size: i32) {
-        // One submission per frame (libgfx Surface::batch), the same pixels as one per shape.
-        fb.batch(|fb| {
-            let sc = self.scale.value;
-            let s = (size as f32 * sc) as i32;
-            if s < 4 {
-                return;
-            }
+        // Frames are drawn often: their shapes go to the GPU together (Surface::defer_shapes).
+        fb.defer_shapes();
+        let sc = self.scale.value;
+        let s = (size as f32 * sc) as i32;
+        if s < 4 {
+            return;
+        }
 
-            // Stretch offset in pixels.
-            let ox = (self.stretch_x.value * size as f32) as i32;
-            let dir = if self.forward { 1 } else { -1 };
+        // Stretch offset in pixels.
+        let ox = (self.stretch_x.value * size as f32) as i32;
+        let dir = if self.forward { 1 } else { -1 };
 
-            // Arrow shaft: horizontal line from left edge to right edge, centred vertically.
-            let shaft_y = cy;
-            let left_x = cx - s * 45 / 100 + ox;
-            let right_x = cx + s * 45 / 100 + ox;
+        // Arrow shaft: horizontal line from left edge to right edge, centred vertically.
+        let shaft_y = cy;
+        let left_x = cx - s * 45 / 100 + ox;
+        let right_x = cx + s * 45 / 100 + ox;
 
-            // For motion blur on click: draw 3 fading ghost copies behind the arrow.
-            if self.base.state == IconState::Clicked || self.base.state == IconState::HoverOut {
-                let progress = self.base.state_time as f32 / 500_000.0;
-                if progress < 0.6 {
-                    for i in 1..=3_i32 {
-                        let trail_alpha = (1.0 - progress) * (1.0 - i as f32 / 4.0);
-                        let ta = (trail_alpha * 120.0) as u8;
-                        let trail_c = Color::rgb(ta / 2, ta, ta);
-                        let trail_ox = -dir * i * s / 8;
-                        shapes::draw_line(
-                            fb,
-                            left_x + trail_ox,
-                            shaft_y,
-                            right_x + trail_ox,
-                            shaft_y,
-                            trail_c,
-                        );
-                    }
+        // For motion blur on click: draw 3 fading ghost copies behind the arrow.
+        if self.base.state == IconState::Clicked || self.base.state == IconState::HoverOut {
+            let progress = self.base.state_time as f32 / 500_000.0;
+            if progress < 0.6 {
+                for i in 1..=3_i32 {
+                    let trail_alpha = (1.0 - progress) * (1.0 - i as f32 / 4.0);
+                    let ta = (trail_alpha * 120.0) as u8;
+                    let trail_c = Color::rgb(ta / 2, ta, ta);
+                    let trail_ox = -dir * i * s / 8;
+                    shapes::draw_line(
+                        fb,
+                        left_x + trail_ox,
+                        shaft_y,
+                        right_x + trail_ox,
+                        shaft_y,
+                        trail_c,
+                    );
                 }
             }
+        }
 
-            let arrow_color = Color::rgb(220, 220, 230);
+        let arrow_color = Color::rgb(220, 220, 230);
 
-            // Draw shaft (2px thick via two lines).
-            shapes::draw_line(fb, left_x, shaft_y, right_x, shaft_y, arrow_color);
-            shapes::draw_line(fb, left_x, shaft_y + 1, right_x, shaft_y + 1, arrow_color);
+        // Draw shaft (2px thick via two lines).
+        shapes::draw_line(fb, left_x, shaft_y, right_x, shaft_y, arrow_color);
+        shapes::draw_line(fb, left_x, shaft_y + 1, right_x, shaft_y + 1, arrow_color);
 
-            // Arrowhead: two angled lines forming a chevron at the tip.
-            let tip_x = if self.forward { right_x } else { left_x };
-            let head_len = s / 5;
-            // Upper arm of chevron.
-            shapes::draw_line(
-                fb,
-                tip_x,
-                shaft_y,
-                tip_x - dir * head_len,
-                shaft_y - head_len,
-                arrow_color,
-            );
-            // Lower arm of chevron.
-            shapes::draw_line(
-                fb,
-                tip_x,
-                shaft_y + 1,
-                tip_x - dir * head_len,
-                shaft_y + 1 + head_len,
-                arrow_color,
-            );
+        // Arrowhead: two angled lines forming a chevron at the tip.
+        let tip_x = if self.forward { right_x } else { left_x };
+        let head_len = s / 5;
+        // Upper arm of chevron.
+        shapes::draw_line(
+            fb,
+            tip_x,
+            shaft_y,
+            tip_x - dir * head_len,
+            shaft_y - head_len,
+            arrow_color,
+        );
+        // Lower arm of chevron.
+        shapes::draw_line(
+            fb,
+            tip_x,
+            shaft_y + 1,
+            tip_x - dir * head_len,
+            shaft_y + 1 + head_len,
+            arrow_color,
+        );
 
-            // Draw speed-line particles (unit-normalised coords → scale by size).
-            let scale = size as f32;
-            for p in self.particles.particles() {
-                if !p.alive() {
-                    continue;
-                }
-                let alpha = p.life;
-                let r = (p.color.r as f32 * alpha) as u8;
-                let g = (p.color.g as f32 * alpha) as u8;
-                let b = (p.color.b as f32 * alpha) as u8;
-                let pc = Color::rgb(r, g, b);
-                let px = (p.x * scale) as i32 + cx;
-                let py = (p.y * scale) as i32 + cy;
-                shapes::fill_rect(fb, px, py, 1, 1, pc);
+        // Draw speed-line particles (unit-normalised coords → scale by size).
+        let scale = size as f32;
+        for p in self.particles.particles() {
+            if !p.alive() {
+                continue;
             }
-        });
+            let alpha = p.life;
+            let r = (p.color.r as f32 * alpha) as u8;
+            let g = (p.color.g as f32 * alpha) as u8;
+            let b = (p.color.b as f32 * alpha) as u8;
+            let pc = Color::rgb(r, g, b);
+            let px = (p.x * scale) as i32 + cx;
+            let py = (p.y * scale) as i32 + cy;
+            shapes::fill_rect(fb, px, py, 1, 1, pc);
+        }
     }
 
     fn bounds_overflow(&self) -> i32 {
