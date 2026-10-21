@@ -190,3 +190,37 @@ fn cpu_glyph_rasterization_is_reference_only() {
     let watcher = fs::read_to_string(root.join("libs/breengel/src/font.rs")).unwrap();
     assert!(watcher.contains("libgfx::ttf_font::{CachedFont, Font}"), "gpu-text: FontWatcher needs the GPU cache");
 }
+
+fn encoder_reachable(manifest: &Path, visited: &mut HashSet<PathBuf>) -> bool {
+    let manifest = manifest.canonicalize().expect("local crate manifest");
+    if !visited.insert(manifest.clone()) { return false; }
+    let text = fs::read_to_string(&manifest).unwrap();
+    let doc: toml::Value = text.parse().unwrap();
+    if doc["package"]["name"].as_str() == Some("libimg-encode") { return true; }
+    fn dependencies(doc: &toml::Value, base: &Path, visited: &mut HashSet<PathBuf>) -> bool {
+        for kind in ["dependencies", "build-dependencies"] {
+            if let Some(deps) = doc.get(kind).and_then(toml::Value::as_table) {
+                for dep in deps.values() {
+                    if let Some(path) = dep.get("path").and_then(toml::Value::as_str) {
+                        if encoder_reachable(&base.join(path).join("Cargo.toml"), visited) { return true; }
+                    }
+                }
+            }
+        }
+        false
+    }
+    let base = manifest.parent().unwrap();
+    dependencies(&doc, base, visited) || doc.get("target").and_then(toml::Value::as_table)
+        .is_some_and(|targets| targets.values().any(|target| dependencies(target, base, visited)))
+}
+
+#[test]
+fn png_encoder_is_unreachable_from_upload_capable_crates() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let decoder = fs::read_to_string(root.join("libs/libimg/src/png/mod.rs")).unwrap();
+    assert!(!decoder.contains("fn encode("), "gpu-text: encoder remains in the upload decoder crate");
+    for krate in ["kernel", "libs/bgl", "libs/libgfx", "libs/libbui", "libs/libicon", "libs/breengel", "libs/libbreenix", "userspace/programs"] {
+        assert!(!encoder_reachable(&root.join(krate).join("Cargo.toml"), &mut HashSet::new()),
+            "{krate}: PNG encoder reachable through production dependencies");
+    }
+}
