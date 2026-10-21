@@ -52,6 +52,7 @@ fn frame_uploads_vertices_before_draws_in_one_bounded_batch_per_chunk() {
         let mut enc = encode::Enc::new();
         encode::translate_at(&mut enc, &mut encode::Objects::new(), words.as_slice(), &View, extras(), 96);
         let chunks = enc.finish().unwrap();
+        if count <= 40 { assert_eq!(chunks.len(), 1, "a small frame split its vertex upload from its draws"); }
         let allocated: usize = chunks.iter().map(|c| (c.len() * 4).div_ceil(PAGE) * PAGE).sum();
         assert_eq!(sizing.backing_bytes(), Some(allocated as u64));
         let (mut uploads, mut vertices, mut draws) = (0, 0, 0);
