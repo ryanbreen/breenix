@@ -319,7 +319,10 @@ mod tests {
 /// The table's private representation can only be produced by libfont's crossing builder.
 pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Context, buffer: u64) -> Result<(), i64> {
     let bytes = table.bytes();
-    match gpu::upload(context.handle(), buffer, [0; 4], bytes, 0, 0, gpu::abi::purpose::FIXTURE).0 {
+    // A buffer upload is one row of bytes: x the first byte, width the byte count, height 1, R8 source.
+    let len = u32::try_from(bytes.len()).map_err(|_| -gpu::abi::errno::EINVAL)?;
+    match gpu::upload(context.handle(), buffer, [0, 0, len, 1], bytes, len, gpu::abi::upload_source::R8,
+        gpu::abi::purpose::FIXTURE).0 {
         0 => Ok(()), e => Err(e),
     }
 }
