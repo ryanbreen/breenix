@@ -851,6 +851,9 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
         format!("LOGNAME={}", account.name),
         "PATH=/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
     ];
+    if capture && login_terminal(def).is_some() {
+        environment.push("BREENIX_SERVICE_LOG=1".into());
+    }
     if let Ok(term) = std::env::var("TERM") {
         environment.push(format!("TERM={}", term));
     }
@@ -870,7 +873,7 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
             let reader = unsafe { std::fs::File::from_raw_fd(read.raw() as i32) };
             libbreenix::io::fcntl(read, libbreenix::io::fcntl_cmd::F_SETFL,
                 libbreenix::io::status_flags::O_NONBLOCK as i64).map_err(|e| format!("log reader: {}", e))?;
-            outputs.push(Output { reader, stream, lines: Lines::new(), console: account.uid == 0, ended: false });
+            outputs.push(Output { reader, stream, lines: Lines::new(), console: account.uid == 0 && login_terminal(def).is_none(), ended: false });
             writers.push(OwnedFd::new(write));
         }
     }

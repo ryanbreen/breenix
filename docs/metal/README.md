@@ -997,8 +997,8 @@ measures the services on a persistent boot.
 
 init captures each table service's stdout and stderr through separate pipes,
 and writes records tagged `[stdout]` or `[stderr]` into `/var/log/NAME.log`.
-A service gets EOF on stdin; getty acquires its login terminal itself, so login
-terminal traffic stays on that terminal. Root service diagnostics also reach
+A service gets EOF on stdin; getty copies its own diagnostics to its log before
+execing login, whose terminal traffic stays on that terminal. Root daemon diagnostics also reach
 the console, preserving the boot's fingerprint and oracle records.
 
 Each file starts with `BREENIX-LOG 1 boot=ID source=NAME limit=262144 archives=4`.

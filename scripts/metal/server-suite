@@ -798,6 +798,8 @@ class Logs:
         for name in names:
             header = f'BREENIX-LOG 1 boot={self.boot_id} source={name} limit=262144 archives=4'
             self.root_check('test "$(head -n 1 /var/log/' + name + '.log)" = ' + shlex.quote(header))
+            if name.startswith('getty-'):
+                self.root_check('grep -Fx "[stdout] [getty] console acquired" /var/log/' + name + '.log')
         text = self.console.run('ls -ln ' + ' '.join('/var/log/' + name + '.log' for name in names))
         for name in names:
             if not re.search(r'^-rw-r----- +\d+ +0 +4 +\d+ .* /var/log/' + re.escape(name) + r'\.log\r?$', text, re.M):
