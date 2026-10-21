@@ -180,3 +180,13 @@ fn crossing_geometry_upload_is_narrowly_typed_and_bgl_owned() {
     assert!(!refuse("fn geometry_upload(pixels: &[u8]) { gpu::upload(pixels); }", true).is_empty());
     assert!(!refuse("fn other(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", true).is_empty());
 }
+
+#[test]
+fn cpu_glyph_rasterization_is_reference_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!root.join("libs/libfont/src/rasterizer.rs").exists(), "gpu-text: CPU rasterizer remains in libfont");
+    let font = fs::read_to_string(root.join("libs/libfont/src/lib.rs")).unwrap();
+    assert!(!font.contains("fn rasterize_glyph"), "gpu-text: CPU font raster entry point remains");
+    let watcher = fs::read_to_string(root.join("libs/breengel/src/font.rs")).unwrap();
+    assert!(watcher.contains("libgfx::ttf_font::{CachedFont, Font}"), "gpu-text: FontWatcher needs the GPU cache");
+}
