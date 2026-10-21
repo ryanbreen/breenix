@@ -816,7 +816,9 @@ fn suites_using_time_or_concurrency_require_timing_metadata() {
         let manifest: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         if is_skeleton_value(&manifest) { continue; }
         if manifest.get("hostRunner") == Some(&Value::Bool(true)) {
-            // Host timeouts bound external tools; no clock/concurrency assertions on the guest.
+            checked += 1;
+            assert_eq!(manifest.get("timingSensitive"), Some(&Value::Bool(true)),
+                "{}: host runner timeouts and concurrency require timingSensitive=true", path.display());
             continue;
         }
         let id = manifest["id"].as_str().unwrap();

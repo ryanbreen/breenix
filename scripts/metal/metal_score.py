@@ -116,7 +116,7 @@ def score(directory):
                                    (directory / 'serial.txt').read_text(), run, run.get('bootedCommit'), fatal)
             total = len(host['CASES'])
             results['server/ssh-keys'] = dict(reached=total, total=total, passed=True, reason=reason)
-        except (OSError, ValueError, KeyError, StopIteration) as error:
+        except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:
             results['server/ssh-keys'] = dict(reached=0, total=1, passed=False, reason=str(error))
     return {'bootShape': shape, 'milestones': results, 'captureComplete': 'console-gap' not in events}
 

@@ -108,5 +108,6 @@
       "cases": []
     }
   ],
+  "timingSensitive": true,
   "hostRunner": true
 }

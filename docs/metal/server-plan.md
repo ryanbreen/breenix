@@ -40,7 +40,7 @@ Operator decisions, 2026-10-20 (times ET):
 Coordinator rulings:
 
 - **S1 Security first:** the compiled-in SSH keys, the `breenix` password, sessions as root and telnetd are closed
-  before the box stays up. This is the `ssh-keys` milestone, in progress on branch `metal-fix/ssh-doors`.
+  before the box stays up. This is the `ssh-keys` milestone, under review in PR #2202.
 - **S2:** the efforts follow the existing ones. Filesystem and toolchain code is architecture-independent where
   possible; iteration runs on the host harness and ARM64 QEMU, and the R240 carries the acceptance proofs.
 - **S3:** the 24-hour uptime measurement is one measured session, recorded as milestone evidence, not a recurring soak.

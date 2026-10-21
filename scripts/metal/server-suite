@@ -58,7 +58,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         raise ValueError('milestone measure differs from the implemented category')
     if any(not c['cases'] for c in manifest['categories'] if c['id'] in categories):
         raise ValueError('measured category has no cases')
-    if boot.get('mode') != 'persistent' or boot.get('bootedCommit') != sha or not boot.get('evidenceEligible'):
+    if boot.get('mode') != 'persistent' or boot.get('bootedCommit') != sha or boot.get('toolsCommit') != sha or not boot.get('evidenceEligible'):
         raise ValueError('evidence needs this commit booted on the persistent install')
     if records['boot'] != boot['id'] or records['commit'] != sha or records['milestone'] != 'server/ssh-keys':
         raise ValueError('host evidence belongs to another boot, commit or milestone')
@@ -70,6 +70,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
         raise ValueError('temporary authorized key cleanup did not succeed')
     if not re.search(r'bsshd: host key ED25519 SHA256:[A-Za-z0-9+/]+', serial):
         raise ValueError('boot did not print its host-key fingerprint')
+    if "bsshd: refused method 'password'" not in serial:
+        raise ValueError('boot captured no actual password request refusal')
     if records.get('consoleGaps'):
         raise ValueError('console capture has a gap')
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
@@ -78,7 +80,8 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
 
 
 def command(args, **kwargs):
-    return subprocess.run(args, capture_output=True, text=True, timeout=45, **kwargs)
+    kwargs.setdefault('timeout', 45)
+    return subprocess.run(args, capture_output=True, text=True, **kwargs)
 
 
 class Probe:
@@ -99,12 +102,12 @@ class Probe:
             result = command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)])
             if result.returncode: raise ValueError('cannot generate temporary Ed25519 keys')
 
-    def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None, posix=True):
+    def ssh(self, script, cipher=None, user=None, identity=None, options=(), input=None, posix=True, env=None, timeout=45):
         args = self.common + ['-i', str(identity or self.identity)]
         if cipher: args += ['-c', cipher]
         args += list(options) + [(user or self.user) + '@' + self.host]
         if script is not None: args += ['sh -c ' + shlex.quote(script) if posix else script]
-        result = command(args, input=input)
+        result = command(args, input=input, env=env, timeout=timeout)
         self.transcript.append(dict(command=args, exit=result.returncode, stdout=result.stdout, stderr=result.stderr))
         return result
 
@@ -162,8 +165,25 @@ class Probe:
             self.require(self.ssh('printf "\\n%s\\n" ' + shlex.quote(public) + ' >> "$HOME/.ssh/authorized_keys"'))
             self.require(self.ssh('id -u', identity=self.edkey), '1000')
         elif name == 'password-refused':
-            self.refusal(self.ssh('true', options=('-o', 'PubkeyAuthentication=no',
-                          '-o', 'PreferredAuthentications=password', '-o', 'PasswordAuthentication=yes')))
+            askpass = self.directory / 'askpass'
+            askpass.write_text('#!/bin/sh\nprintf "%s\\n" synthetic-refused-password\n')
+            askpass.chmod(0o700)
+            env = dict(os.environ, SSH_ASKPASS=str(askpass), SSH_ASKPASS_REQUIRE='force', DISPLAY='probe')
+            # OpenSSH uses the first value of an option; replace BatchMode, do not append it.
+            original = self.common
+            self.common = [arg if arg != 'BatchMode=yes' else 'BatchMode=no' for arg in original]
+            try:
+                self.refusal(self.ssh('true', options=('-o', 'PubkeyAuthentication=no',
+                              '-o', 'PreferredAuthentications=password', '-o', 'PasswordAuthentication=yes',
+                              '-o', 'NumberOfPasswordPrompts=1'), env=env))
+            finally:
+                self.common = original
+            # OpenSSH will not try an unadvertised method. Our RFC 4252 client
+            # sends password directly, regardless of the server's method list.
+            result = self.ssh('/bin/bssh ' + shlex.quote(self.host) + ' 22 ' + shlex.quote(self.user)
+                              + ' synthetic-refused-password --smoke', posix=False)
+            if result.returncode != 77 or 'bssh: authentication failed' not in result.stdout:
+                raise ValueError('actual password request did not receive USERAUTH_FAILURE')
         elif name == 'wrong-key-refused':
             self.refusal(self.ssh('true', identity=self.wrong))
         elif name == 'root-refused':
@@ -192,10 +212,14 @@ class Probe:
                 result = self.ssh(script, posix=False)
                 if result.returncode != status:
                     raise ValueError('exec exit status differs: expected ' + str(status))
+            for script in ['/bin/echo ' + ' '.join(['arg'] * 64), '/bin/echo ' + 'x' * 4096]:
+                result = self.ssh(script, posix=False)
+                if result.returncode == 0 or 'argument list too long' not in result.stdout:
+                    raise ValueError('oversized argv was executed or not reported')
         elif name == 'exec-stdin':
             # More than one SSH packet and pipe capacity; exact output requires EOF.
-            payload = ''.join(f'{i:06d}: stdin data and spaces\n' for i in range(6000))
-            result = self.ssh('/bin/cat', input=payload, posix=False)
+            payload = ''.join(f'{i:06d}: stdin data and spaces\n' for i in range(360000))
+            result = self.ssh('/bin/cat', input=payload, posix=False, timeout=180)
             self.require(result)
             if result.stdout != payload: raise ValueError('piped stdin differs or was truncated')
             self.require(self.ssh('/bin/cat', input='', posix=False), '')
@@ -245,10 +269,13 @@ class Probe:
             if not re.search(rb'crw--w----\s+\d+\s+1000\s+1000\s+', seen):
                 raise ValueError('PTY slave owner, group or mode differs from the account and 0620')
             seen = b''
-            send(b"sleep 30\n")
+            started = time.monotonic()
+            send(b'console.log("INTERRUPT-" + run("sleep", "30"));\n')
             time.sleep(1)
             send(b'\x03')
-            until(prompt)
+            at_prompt(b'INTERRUPT-130\r\n')
+            if time.monotonic() - started >= 10:
+                raise ValueError('interrupt did not end the foreground job within 10 seconds')
             seen = b''
             send(b"printf 'AFTER-%s\\n' interrupt\n")
             at_prompt(b'AFTER-interrupt\r\n')
@@ -263,7 +290,9 @@ class Probe:
 
     def cleanup(self):
         if self.original is not None:
-            self.require(self.ssh('printf %s ' + shlex.quote(self.original) + ' > "$HOME/.ssh/authorized_keys"'))
+            self.require(self.ssh('umask 077; tmp=$(mktemp "$HOME/.ssh/authorized_keys.XXXXXX") && '
+                                  'printf %s ' + shlex.quote(self.original) + ' > "$tmp" && '
+                                  'mv "$tmp" "$HOME/.ssh/authorized_keys"'))
             result = self.ssh('cat "$HOME/.ssh/authorized_keys"')
             self.require(result)
             if result.stdout != self.original: raise ValueError('authorized_keys restoration differs')
