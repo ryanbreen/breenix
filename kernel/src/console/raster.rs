@@ -178,7 +178,7 @@ impl Layout {
         pixel[3..].fill(self.reserved);
     }
 
-    fn fill(&self, pixels: &mut [u8], colour: [u8; 3]) {
+    pub fn fill(&self, pixels: &mut [u8], colour: [u8; 3]) {
         for pixel in pixels.chunks_exact_mut(self.bytes_per_pixel) {
             self.put_pixel(pixel, colour);
         }
@@ -188,17 +188,6 @@ impl Layout {
         let [r, g, b] = rgb;
         pixel[..3] == if self.bgr { [b, g, r] } else { rgb }
             && pixel[3..].iter().all(|&byte| byte == self.reserved)
-    }
-}
-
-/// Fill columns `x` of pixel rows `y` with `colour`.
-#[cfg(target_arch = "aarch64")]
-pub fn fill_rect(frame: &mut [u8], layout: &Layout, x: core::ops::Range<usize>, y: core::ops::Range<usize>, colour: [u8; 3]) {
-    let bpp = layout.bytes_per_pixel;
-    let x = x.start.min(layout.width)..x.end.min(layout.width);
-    for row in y.start.min(layout.height)..y.end.min(layout.height) {
-        let line = layout.line(row);
-        layout.fill(&mut frame[line.start + x.start * bpp..line.start + x.end * bpp], colour);
     }
 }
 

@@ -5,7 +5,7 @@
 //! segment's last two pixels the stage background. The console's read-back expects the
 //! ribbon in that band (`colour`), computed apart from the painter (`paint`).
 
-use super::raster::{self, Layout};
+use super::raster::Layout;
 use core::ops::Range;
 
 const PASS: [u8; 3] = [26, 112, 77];
@@ -56,8 +56,8 @@ impl Ribbon {
         for (i, &lit) in self.lit.iter().enumerate() {
             let (a, b) = (16 + 1248 * i / m, 16 + 1248 * (i + 1) / m);
             let colour = if lit { PASS } else { PENDING };
-            raster::fill_rect(frame, layout, a * s..(b - 2) * s, rows.clone(), colour);
-            raster::fill_rect(frame, layout, (b - 2) * s..b * s, rows.clone(), BACKGROUND);
+            fill(frame, layout, a * s..(b - 2) * s, rows.clone(), colour);
+            fill(frame, layout, (b - 2) * s..b * s, rows.clone(), BACKGROUND);
         }
     }
 
@@ -87,5 +87,15 @@ impl Ribbon {
         } else {
             PENDING
         })
+    }
+}
+
+/// Fill columns `x` of pixel rows `y` with `colour`.
+fn fill(frame: &mut [u8], layout: &Layout, x: Range<usize>, y: Range<usize>, colour: [u8; 3]) {
+    let bpp = layout.bytes_per_pixel;
+    let x = x.start.min(layout.width)..x.end.min(layout.width);
+    for row in y.start.min(layout.height)..y.end.min(layout.height) {
+        let line = layout.line(row);
+        layout.fill(&mut frame[line.start + x.start * bpp..line.start + x.end * bpp], colour);
     }
 }
