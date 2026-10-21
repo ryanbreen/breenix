@@ -21,7 +21,6 @@
 use std::ffi::CString;
 use std::path::Path;
 
-use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::process;
 use libbreenix::pty;
@@ -381,34 +380,6 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
 fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
     println!("bsshd: exec request '{}'", command);
 
-    let mut last_status = 0;
-    for part in command.split("&&") {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-
-        last_status = run_single_exec_command(session, account, part);
-        if last_status != 0 {
-            break;
-        }
-    }
-
-    last_status
-}
-
-fn run_single_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
-    let args: Vec<&str> = command.split_whitespace().collect();
-    if args.is_empty() {
-        return 0;
-    }
-
-    let Some(path) = resolve_exec_path(args[0]) else {
-        let msg = format!("{}: command not found\n", args[0]);
-        let _ = session.send_data(msg.as_bytes());
-        return 127;
-    };
-
     let (read_fd, write_fd) = match io::pipe() {
         Ok(pipe) => pipe,
         Err(e) => {
@@ -436,8 +407,9 @@ fn run_single_exec_command(session: &mut ServerSession, account: &Account, comma
             };
             let mut envp: Vec<*const u8> = environment.iter().map(|entry| entry.as_ptr().cast()).collect();
             envp.push(core::ptr::null());
-            let path_c = c_string(&path);
-            let arg_storage: Vec<Vec<u8>> = args.iter().map(|arg| c_string(arg)).collect();
+            let path_c = c_string(&account.shell);
+            let shell_name = account.shell.rsplit('/').next().unwrap_or(&account.shell);
+            let arg_storage = [c_string(shell_name), c_string("-c"), c_string(command)];
             let mut argv: Vec<*const u8> = arg_storage.iter().map(|arg| arg.as_ptr()).collect();
             argv.push(core::ptr::null());
             let _ = process::execve(&path_c, argv.as_ptr(), envp.as_ptr());
@@ -475,26 +447,6 @@ fn run_single_exec_command(session: &mut ServerSession, account: &Account, comma
             1
         }
     }
-}
-
-fn resolve_exec_path(command: &str) -> Option<String> {
-    if command.contains('/') {
-        return executable_path(command);
-    }
-
-    let candidates = [
-        format!("/bin/{}", command),
-        format!("/sbin/{}", command),
-        format!("/usr/local/cbin/{}", command),
-    ];
-
-    candidates
-        .iter()
-        .find_map(|candidate| executable_path(candidate))
-}
-
-fn executable_path(path: &str) -> Option<String> {
-    fs::access(path, fs::X_OK).ok().map(|_| path.to_string())
 }
 
 fn c_string(value: &str) -> Vec<u8> {
