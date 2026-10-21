@@ -608,6 +608,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
     crate::net::init_loopback_pump();
+    crate::net::tcp::init_timer_thread();
     // #775 round 4, R3-5/N14: the third census emission context, spawned
     // beside kloopbackd on the unconditional init path so it exists in the
     // zero-feature production profile. idle_loop and the pump both emit only
@@ -620,6 +621,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     task::process_task::start_reclaim_daemon();
     // Terminal signals the input interrupt generates are sent from a thread.
     tty::driver::start_foreground_signal_thread();
+    tty::pty::init_hangup_daemon();
     // Queued COM1 output goes to the UART from its own kernel thread (#1415).
     serial::start_transmitter();
     #[cfg(feature = "btrt")]

@@ -8308,9 +8308,14 @@ pub fn spawn_front(thread: Box<Thread>) {
     });
 }
 
-/// x86_64: how many threads may be Terminated and not yet reclaimed. Raised
-/// when a thread terminates, and set to the exact count by each reclamation
-/// pass, so the idle loop reclaims only when there is something to reclaim.
+/// x86_64: how many threads may be Terminated and not yet reclaimed, so the
+/// idle loop reclaims only when there is something to reclaim. Raised when a
+/// thread terminates; a reclamation pass takes it before reading the thread
+/// index and adds back what it left (`rq::reclaim`). A pass that stored its
+/// own count instead overwrote a termination counted meanwhile whose thread
+/// its read of the index had missed, and the idle loop, which reclaims on a
+/// count, left that thread and its kernel stack until another thread
+/// terminated (#2233).
 #[cfg(target_arch = "x86_64")]
 static TERMINATED_UNRECLAIMED: AtomicU64 = AtomicU64::new(0);
 
@@ -8323,8 +8328,11 @@ static IDLE_RECLAIM_TICK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::M
 /// says it has terminated.
 #[cfg(target_arch = "x86_64")]
 pub fn note_thread_terminated(thread: &Thread) {
-    TERMINATED_UNRECLAIMED.fetch_add(1, Ordering::Release);
+    // Published before it is counted: a pass that takes the count after this
+    // finds the thread in the index, and one that took it before leaves the
+    // count it adds to.
     rq::publish_terminated(thread);
+    TERMINATED_UNRECLAIMED.fetch_add(1, Ordering::Release);
 }
 
 /// x86_64: reclaim under the scheduler-wide lock alone, which covers the

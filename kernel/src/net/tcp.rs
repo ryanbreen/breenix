@@ -239,6 +239,8 @@ static LAST_REAP_MS: AtomicU64 = AtomicU64::new(0);
 // Timers: one kernel thread, `ktcptimerd`, sleeps until the earliest deadline of
 // any connection (a retransmission timeout, a keepalive probe, the end of
 // TIME_WAIT, an orphan's FIN_WAIT_2 limit) and runs the timers that are due.
+// It lives for the rest of the boot, so boot starts it with the other network
+// threads; the first connection or listener starts it only if that failed.
 // ============================================================================
 
 /// `ktcptimerd`'s thread id, 0 until it runs.
@@ -249,6 +251,13 @@ static TIMER_STARTING: AtomicBool = AtomicBool::new(false);
 static TIMER_SLEEP_UNTIL_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Set when a deadline earlier than the one slept for was armed.
 static TIMER_KICK: AtomicBool = AtomicBool::new(false);
+
+/// Start `ktcptimerd` at boot, once kernel threads can be made.
+pub fn init_timer_thread() {
+    if ensure_timer_thread().is_err() {
+        log::error!("failed to start ktcptimerd; the first TCP socket retries");
+    }
+}
 
 /// Start `ktcptimerd` if it is not running. Thread context, no TCP lock held.
 /// ENOMEM when the thread cannot be made; the next caller tries again.
