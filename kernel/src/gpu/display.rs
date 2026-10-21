@@ -413,6 +413,12 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
     if input != abi::Modes::ZERO {
         return Err(EINVAL);
     }
+    // A display hand-back the render thread has yet to restore reports the restored binding,
+    // as an observation does; a restore still owed after 1 s reports the binding as it is.
+    let deadline = now_ns().saturating_add(1_000_000_000);
+    if let Err(Stop::Interrupted) = wait_for(Some(deadline), true, |c| (!super::console::restoring(c.display.owner_sequence)).then_some(())) {
+        return Err(EINTR);
+    }
     let mut a = with_core(|c| {
         let mut a = abi::Modes::ZERO;
         a.version = 1;
