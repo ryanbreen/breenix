@@ -1,5 +1,5 @@
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
+use libgfx::color::Color;
+use libgfx::surface::Surface as FrameBuf;
 
 use crate::rect::Rect;
 use crate::text;
@@ -33,17 +33,15 @@ impl Label {
     /// Draw the label text at the widget's position.
     pub fn draw(&self, fb: &mut FrameBuf, theme: &Theme) {
         let color = self.color.unwrap_or(theme.text_primary);
-        fb.push_clip(libgfx_ref::framebuf::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
+        crate::drawing::push_clip(fb, libgfx::surface::Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
         if text::text_width(self.text, theme) <= self.rect.w {
             text::draw_text(fb, self.text, self.rect.x, self.rect.y, color, theme);
         } else {
-            let dots = text::text_width(b"...", theme);
             let mut end = 0;
-            // Measure the prefix together with its ellipsis, including the inter-glyph gap.
             while end < self.text.len() {
-                let width = text::text_width(&self.text[..end + 1], theme)
-                    + if theme.use_bitmap_font { dots } else { dots + 1 };
-                if width > self.rect.w { break; }
+                let mut candidate = alloc::vec::Vec::from(&self.text[..end + 1]);
+                candidate.extend_from_slice(b"...");
+                if text::text_width(&candidate, theme) > self.rect.w { break; }
                 end += 1;
             }
             let mut clipped = alloc::vec::Vec::from(&self.text[..end]);

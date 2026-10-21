@@ -96,6 +96,7 @@ impl CrossingTable {
         let mut scratch = Crossings::new(segments.len());
         offsets.push(0u32);
         for row in first_row..first_row + rows {
+            work::add(1);
             for sub in 0..8 {
                 for c in scratch.scanline(segments, row, sub) {
                     entries.extend_from_slice(&c.x.to_bits().to_le_bytes());
@@ -106,6 +107,7 @@ impl CrossingTable {
         }
         let count = entries.len() / 8;
         let mut bytes = Vec::with_capacity(offsets.len() * 4 + entries.len());
+        work::add(offsets.len() as u64);
         for o in offsets { bytes.extend_from_slice(&o.to_le_bytes()); }
         bytes.extend_from_slice(&entries);
         Self { bytes, entries: count }

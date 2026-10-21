@@ -9,6 +9,7 @@ dependencies = [
  "gpu-abi",
  "libbreenix",
  "libfont",
+ "libimg",
 ]
 
 [[package]]
@@ -39,11 +40,16 @@ dependencies = [
  "libbreenix",
  "libfont",
  "libgfx-pixel",
+ "libimg",
  "noto-sans-mono-bitmap",
 ]
 
 [[package]]
 name = "libgfx-pixel"
+version = "0.1.0"
+
+[[package]]
+name = "libimg"
 version = "0.1.0"
 
 [[package]]

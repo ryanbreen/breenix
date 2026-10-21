@@ -3,10 +3,37 @@
 version = 4
 
 [[package]]
+name = "bgl"
+version = "0.1.0"
+dependencies = [
+ "gpu-abi",
+ "libbreenix",
+ "libfont",
+ "libimg",
+]
+
+[[package]]
+name = "breengel-abi"
+version = "0.1.0"
+
+[[package]]
+name = "gpu-abi"
+version = "0.1.0"
+
+[[package]]
+name = "libbreenix"
+version = "0.1.0"
+dependencies = [
+ "breengel-abi",
+ "gpu-abi",
+]
+
+[[package]]
 name = "libbui"
 version = "0.1.0"
 dependencies = [
- "libgfx-ref",
+ "libbreenix",
+ "libgfx",
 ]
 
 [[package]]
@@ -14,17 +41,24 @@ name = "libfont"
 version = "0.1.0"
 
 [[package]]
+name = "libgfx"
+version = "0.1.0"
+dependencies = [
+ "bgl",
+ "libbreenix",
+ "libfont",
+ "libgfx-pixel",
+ "libimg",
+ "noto-sans-mono-bitmap",
+]
+
+[[package]]
 name = "libgfx-pixel"
 version = "0.1.0"
 
 [[package]]
-name = "libgfx-ref"
+name = "libimg"
 version = "0.1.0"
-dependencies = [
- "libfont",
- "libgfx-pixel",
- "noto-sans-mono-bitmap",
-]
 
 [[package]]
 name = "noto-sans-mono-bitmap"

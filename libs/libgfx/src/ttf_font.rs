@@ -8,15 +8,7 @@ use libfont::{FontError, GlyphLayout, GlyphBitmap, SubpixelBitmap, CacheStats};
 use libfont::outline::LineSegment;
 use crate::{color::Color, device, surface::{Surface, Format, Box64, word}, work};
 
-#[derive(Debug)]
-pub enum Error { Font(FontError), Device(i64) }
-impl From<FontError> for Error { fn from(e: FontError) -> Self { Self::Font(e) } }
-impl From<i64> for Error { fn from(e: i64) -> Self { Self::Device(e) } }
-impl core::fmt::Display for Error {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self { Self::Font(e) => e.fmt(f), Self::Device(e) => write!(f, "GPU glyph error {e}") }
-    }
-}
+pub type Error = FontError;
 
 /// A parsed font whose raster entry points render GPU targets and return readback.
 /// Parsing, metrics, outline expansion and flattening remain in libfont.
@@ -102,7 +94,7 @@ fn render(segments: &[LineSegment], width: usize, height: usize) -> Result<Surfa
             if result.is_err() { d.context.discard(); }
             result
         });
-        result?;
+        result.map_err(Error::Device)?;
     }
     Ok(surface)
 }
@@ -141,7 +133,7 @@ impl AtlasGlyph {
     fn bytes(&self) -> usize { self.surface.as_ref().map_or(0, |_| self.width * self.height * 4) }
     fn pixels(&self) -> Result<Vec<u8>, Error> {
         let mut pixels = vec![0; self.width * self.height * 4];
-        if let Some(s) = &self.surface { s.read(&mut pixels, self.width * 4)?; }
+        if let Some(s) = &self.surface { s.read(&mut pixels, self.width * 4).map_err(Error::Device)?; }
         Ok(pixels)
     }
     fn read(&self) -> Result<GlyphBitmap, Error> {
@@ -313,7 +305,7 @@ fn draw_glyphs(fb: &mut Surface, font: &mut CachedFont, glyphs: alloc::vec::Vec<
         match font.glyph(g, size26) {
             Ok(bitmap) => draw_atlas(fb, &bitmap, x as i64 + dx, y as i64, fg),
             Err(Error::Device(e)) => fb.fail(e),
-            Err(Error::Font(_)) => {},
+            Err(_) => {},
         }
     })
 }
@@ -357,7 +349,7 @@ fn draw_glyphs_subpixel(fb: &mut Surface, font: &mut CachedFont, glyphs: alloc::
         match font.font().glyph(g, size26, true) {
             Ok(bitmap) => draw_atlas(fb, &bitmap, x as i64 + dx, y as i64, fg),
             Err(Error::Device(e)) => fb.fail(e),
-            Err(Error::Font(_)) => {},
+            Err(_) => {},
         }
     })
 }

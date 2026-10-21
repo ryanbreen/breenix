@@ -7,3 +7,4 @@ edition = "2021"
 libbreenix = { path = "../libbreenix" }
 gpu-abi = { path = "../gpu-abi", features = ["alloc"] }
 libfont = { path = "../libfont" }
+libimg = { path = "../libimg" }

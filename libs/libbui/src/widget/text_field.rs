@@ -3,7 +3,8 @@ use crate::input::{Key, KeyInput};
 use crate::{text, widget};
 use crate::{InputState, Rect, Theme, WidgetEvent};
 use alloc::string::String;
-use libgfx_ref::{framebuf::FrameBuf, shapes};
+use libgfx::surface::Surface as FrameBuf;
+use crate::drawing as shapes;
 
 pub struct TextField {
     pub rect: Rect,
@@ -43,7 +44,7 @@ impl TextField {
         self.scroll
     }
     pub fn cursor_x(&self) -> i32 {
-        self.rect.x + 4 + (self.cursor - self.scroll) as i32 * 6
+        self.rect.x + 4 + self.width_between(self.scroll, self.cursor)
     }
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
@@ -68,12 +69,12 @@ impl TextField {
         self.selection()
             .map_or("", |(a, b)| &self.text[self.byte(a)..self.byte(b)])
     }
+    fn width_between(&self, first:usize, end:usize)->i32 {
+        text::text_width(self.text[self.byte(first)..self.byte(end)].as_bytes(), &Theme::dark())
+    }
     fn reveal(&mut self) {
-        let cols = ((self.rect.w - 9).max(0) / 6) as usize;
         self.scroll = self.scroll.min(self.cursor);
-        if self.cursor > self.scroll + cols {
-            self.scroll = self.cursor - cols;
-        }
+        while self.scroll < self.cursor && self.width_between(self.scroll,self.cursor) >= (self.rect.w-8).max(0) {self.scroll+=1;}
     }
     /// Refuse the entire insertion if its resulting scalar count exceeds the limit.
     pub fn insert_str(&mut self, value: &str) -> bool {
@@ -154,7 +155,9 @@ impl TextField {
             self.redraw = focused != self.focused;
             self.focused = focused;
             if focused {
-                let col = ((input.mouse_x - self.rect.x - 4).max(0) / 6) as usize;
+                let mut col=0;
+                let local=(input.mouse_x-self.rect.x-4).max(0);
+                while self.scroll+col<self.text.chars().count() && self.width_between(self.scroll,self.scroll+col+1)<=local {col+=1;}
                 let cursor = (self.scroll + col).min(self.text.chars().count());
                 self.redraw |= self.cursor != cursor || self.anchor != cursor;
                 self.cursor = cursor;
@@ -181,35 +184,20 @@ impl TextField {
             self.rect.h,
             theme.border,
         );
-        // Draw complete scalar cells only; no partial glyph can cross the interior.
-        let cols = ((self.rect.w - 8).max(0) / 6) as usize;
-        let y = self.rect.y + (self.rect.h - 7) / 2;
-        for (i, ch) in self.text.chars().enumerate().skip(self.scroll).take(cols) {
-            let x = self.rect.x + 4 + ((i - self.scroll) * 6) as i32;
-            if self.selection().is_some_and(|(a, b)| i >= a && i < b) {
-                shapes::fill_rect(fb, x, y, 6, 7, theme.accent);
-            }
-            let mut buf = [0u8; 4];
-            let glyph = if ch.is_ascii() {
-                ch.encode_utf8(&mut buf).as_bytes()
-            } else {
-                b"?"
-            };
-            text::draw_text(
-                fb,
-                glyph,
-                x,
-                y,
-                if self.enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_secondary
-                },
-                theme,
-            );
+        let y = self.rect.y + (self.rect.h - 16) / 2;
+        crate::drawing::push_clip(fb, libgfx::surface::Rect::new(self.rect.x+4,self.rect.y+1,(self.rect.w-8).max(0),(self.rect.h-2).max(0)));
+        for (i,ch) in self.text.chars().enumerate().skip(self.scroll) {
+            let x = self.rect.x + 4 + self.width_between(self.scroll,i);
+            let width=self.width_between(self.scroll,i+1)-self.width_between(self.scroll,i);
+            if x+width>self.rect.x+self.rect.w-4 {break;}
+            if self.selection().is_some_and(|(a,b)|i>=a && i<b) { shapes::fill_rect(fb,x,y,width,16,theme.accent); }
+            let mut buf=[0;4];
+            text::draw_text(fb,ch.encode_utf8(&mut buf).as_bytes(),x,y,
+                if self.enabled {theme.text_primary}else{theme.text_secondary},theme);
         }
+        fb.pop_clip();
         if self.focused && self.enabled {
-            shapes::fill_rect(fb, self.cursor_x(), y, 1, 7, theme.text_primary);
+            shapes::fill_rect(fb, self.cursor_x(), y, 1, 16, theme.text_primary);
             widget::draw_focus_ring(fb, &self.rect, theme);
         }
     }

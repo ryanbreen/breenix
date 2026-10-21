@@ -2,9 +2,9 @@
 
 use alloc::vec::Vec;
 
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
-use libgfx_ref::shapes;
+use libgfx::color::Color;
+use libgfx::surface::Surface as FrameBuf;
+use libgfx::shapes;
 
 /// A single animated particle.
 #[derive(Clone, Copy)]
@@ -72,8 +72,8 @@ impl Particle {
         if sz <= 1 {
             if px >= 0
                 && py >= 0
-                && (px as usize) < fb.width
-                && (py as usize) < fb.height
+                && (px as usize) < fb.width()
+                && (py as usize) < fb.height()
             {
                 shapes::fill_rect(fb, px, py, 1, 1, c);
             }
@@ -197,7 +197,7 @@ impl ParticlePool {
             let top = ceil(t).saturating_add(offset_y);
             let right = floor(r).saturating_add(offset_x);
             let bottom = floor(b).saturating_add(offset_y);
-            fb.push_clip(libgfx_ref::framebuf::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
+            fb.push_clip(libgfx::surface::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
         }
         for p in &self.particles { p.draw(fb, offset_x, offset_y); }
         if self.bounds.is_some() { fb.pop_clip(); }

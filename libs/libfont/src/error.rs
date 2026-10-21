@@ -6,6 +6,8 @@ use core::fmt;
 /// ones from the calls that read one glyph, and leave every other glyph usable.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FontError {
+    /// A GPU raster operation failed with this negated errno.
+    Device(i64),
     /// A read past the end of the file or of a table.
     Truncated,
     /// A table record whose offset or length runs past the file, or a table whose fixed
@@ -58,6 +60,7 @@ fn tag(f: &mut fmt::Formatter<'_>, name: &str, t: &[u8; 4]) -> fmt::Result {
 impl fmt::Display for FontError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            FontError::Device(e) => write!(f, "GPU glyph error {e}"),
             FontError::BadTable(t) => tag(f, "BadTable", t),
             FontError::MissingTable(t) => tag(f, "MissingTable", t),
             other => f.write_str(match other {

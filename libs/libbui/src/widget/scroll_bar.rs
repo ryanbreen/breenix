@@ -3,9 +3,9 @@
 //! Tracks a scroll offset for content that exceeds the visible area.
 //! Renders a track with a draggable thumb.
 
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
-use libgfx_ref::shapes;
+use libgfx::color::Color;
+use libgfx::surface::Surface as FrameBuf;
+use crate::drawing as shapes;
 
 use crate::input::InputState;
 use crate::rect::Rect;

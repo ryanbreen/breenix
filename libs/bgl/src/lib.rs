@@ -288,3 +288,21 @@ pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Conte
         0 => Ok(()), e => Err(e),
     }
 }
+
+/// An owned decoder texture; arbitrary CPU pixels cannot enter this upload site.
+pub struct Texture { handle: u64, width: u32, height: u32 }
+impl Texture {
+    pub fn from_decoded(image: libimg::Decoded, context: &Context) -> Result<Self, i64> {
+        let (width,height) = (image.width(), image.height());
+        let handle = gpu::texture_create(gpu::abi::format::B8G8R8A8,width,height)?;
+        let result = gpu::upload(context.handle(),handle,[0,0,width,height],image.pixels(),width*4,
+            gpu::abi::upload_source::B8G8R8A8,gpu::abi::purpose::IMAGE).0;
+        if result != 0 {gpu::resource_destroy(handle);return Err(result);}
+        Ok(Self {handle,width,height})
+    }
+    /// Transfer resource ownership to the caller's surface/texture wrapper.
+    pub fn into_resource(self) -> (u64,u32,u32) {
+        let out=(self.handle,self.width,self.height);core::mem::forget(self);out
+    }
+}
+impl Drop for Texture {fn drop(&mut self){gpu::resource_destroy(self.handle);}}

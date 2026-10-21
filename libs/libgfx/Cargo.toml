@@ -11,8 +11,12 @@ crate-type = ["rlib"]
 
 [dependencies]
 libfont = { path = "../libfont" }
+libimg = { path = "../libimg" }
 bgl = { path = "../bgl" }
 libbreenix = { path = "../libbreenix" }
 libgfx-pixel = { path = "../libgfx-pixel" }
 # The 16 px and 32 px bitmap fonts whose tables libgfx uploads (docs/gui/breengel.md 8.2).
 noto-sans-mono-bitmap = { version = "0.3.2", default-features = false, features = ["size_16", "size_32", "regular", "unicode-basic-latin", "unicode-specials"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

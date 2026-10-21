@@ -172,6 +172,7 @@ pub struct Surface {
     dirty: Option<Box64>,
     owner: u64,
     error: Option<i64>,
+    ui_scale: u32,
 }
 
 impl Surface {
@@ -209,8 +210,13 @@ impl Surface {
         let device_format = if format.is_bgr { abi::format::B8G8R8A8 } else { abi::format::R8G8B8A8 };
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
-        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), error: None })
+        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), error: None, ui_scale: 1 })
     }
+
+    /// Physical surfaces default to scale 1. A logical UI view explicitly selects
+    /// its display scale; raster APIs continue to take physical pixel coordinates.
+    pub fn set_ui_scale(&mut self, scale: u32) { self.ui_scale = scale.clamp(1, 2); }
+    pub fn ui_scale(&self) -> u32 { self.ui_scale }
 
     pub fn width(&self) -> usize {
         self.width
