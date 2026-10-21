@@ -1,6 +1,8 @@
 //! TrueType geometry on the CPU, coverage and glyph storage on the GPU.
-//! Each atlas entry is an exact-size B8G8R8A8 target (B15/B19).
+//! Glyphs live in B8G8R8A8 targets (B15/B19): a cached glyph in a slot of an atlas page,
+//! an uncached one in a never-used region of a scratch target.
 use alloc::{rc::Rc, vec, vec::Vec};
+use core::cell::RefCell;
 use core::ops::Deref;
 use bgl::{Instance, pipeline};
 use libbreenix::gpu::{self, abi};
@@ -12,10 +14,12 @@ pub type Error = FontError;
 
 /// A parsed font whose raster entry points render GPU targets and return readback.
 /// Parsing, metrics, outline expansion and flattening remain in libfont.
-pub struct Font(libfont::Font);
-impl Deref for Font { type Target = libfont::Font; fn deref(&self) -> &Self::Target { &self.0 } }
+pub struct Font { font: libfont::Font, scratch: RefCell<[Option<Scratch>; 2]> }
+impl Deref for Font { type Target = libfont::Font; fn deref(&self) -> &Self::Target { &self.font } }
 impl Font {
-    pub fn parse(bytes: &[u8]) -> Result<Self, FontError> { libfont::Font::parse(bytes).map(Self) }
+    pub fn parse(bytes: &[u8]) -> Result<Self, FontError> {
+        libfont::Font::parse(bytes).map(|font| Self { font, scratch: RefCell::new([None, None]) })
+    }
     pub fn size26(size: f32) -> Result<i32, FontError> { libfont::Font::size26(size) }
     pub fn rasterize_glyph(&self, g: u16, size: f32) -> Result<GlyphBitmap, Error> {
         self.rasterize_glyph26(g, Self::size26(size)?)
@@ -24,26 +28,111 @@ impl Font {
         self.glyph(g, size26, false)?.read()
     }
     pub fn rasterize_glyph_subpixel(&self, g: u16, size: f32) -> Result<SubpixelBitmap, Error> {
-        let glyph = self.glyph(g, Self::size26(size)?, true)?;
-        let pixels = glyph.pixels()?;
-        let coverage = pixels.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
-        Ok(SubpixelBitmap { width: glyph.width, height: glyph.height, x_offset: glyph.x_offset, y_offset: glyph.y_offset, coverage })
+        self.glyph(g, Self::size26(size)?, true)?.subpixel()
     }
     fn glyph(&self, g: u16, size26: i32, lcd: bool) -> Result<AtlasGlyph, Error> {
-        let outline = self.0.glyph_outline(g)?;
-        match self.0.layout_glyph(&outline, g, size26)? {
-            GlyphLayout::Empty { advance } => Ok(AtlasGlyph { surface: None, width: advance, height: 0, x_offset: 0, y_offset: 0 }),
+        let outline = self.font.glyph_outline(g)?;
+        match self.font.layout_glyph(&outline, g, size26)? {
+            GlyphLayout::Empty { advance } => Ok(AtlasGlyph::empty(advance)),
             GlyphLayout::Outline { segments, width, height, x_offset, y_offset } => {
-                let surface = if lcd { render_lcd(&segments, width, height)? } else { render(&segments, width, height)? };
-                Ok(AtlasGlyph { surface: Some(surface), width, height, x_offset, y_offset })
+                let mut glyph = if lcd { self.render_lcd(&segments, width, height)? } else { self.render(&segments, width, height)? };
+                (glyph.x_offset, glyph.y_offset) = (x_offset, y_offset);
+                Ok(glyph)
             }
         }
+    }
+    /// A `width × height` region of scratch target `which` that nothing has drawn into.
+    fn region(&self, which: usize, width: usize, height: usize) -> Result<Region, Error> {
+        let mut scratch = self.scratch.borrow_mut();
+        let slot = &mut scratch[which];
+        let fits = slot.as_ref().is_some_and(|s| s.target.owned_here() && width <= s.target.width()
+            && s.next_row + height <= s.target.height());
+        if !fits {
+            *slot = Some(Scratch { target: Rc::new(target(width.max(SCRATCH), height.max(SCRATCH))?), next_row: 0 });
+        }
+        let s = slot.as_mut().expect("scratch made above");
+        let y = s.next_row;
+        s.next_row += height;
+        Ok(Region { target: s.target.clone(), x: 0, y })
+    }
+    fn render(&self, segments: &[LineSegment], width: usize, height: usize) -> Result<AtlasGlyph, Error> {
+        admit(segments, width, height)?;
+        let region = self.region(0, width, height)?;
+        let fence = render(segments, width, height, &region)?;
+        Ok(AtlasGlyph::at(region, width, height, fence))
+    }
+    fn render_lcd(&self, segments: &[LineSegment], width: usize, height: usize) -> Result<AtlasGlyph, Error> {
+        render_lcd(segments, width, height, &mut |which, w, h| self.region(which, w, h))
     }
 }
 
 /// The crossing wire layout, useful for independent host inspection.
 pub fn crossing_table(segments: &[LineSegment], first_row: usize, rows: usize) -> Vec<u8> {
     libfont::crossings::CrossingTable::new(segments, first_row, rows).bytes().to_vec()
+}
+
+/// LCD uses the exact same binary32 operation order at three columns per pixel.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
+/// Downsample each column class on the GPU, zero its other channels with a constant
+/// channel mask, then use it as an LCD coverage mask to assemble the packed glyph. Each
+/// stage is a fresh region from `region`, by scratch target 0 or 1; a stage samples only
+/// regions of the other target.
+fn render_lcd(segments: &[LineSegment], width: usize, height: usize,
+    region: &mut dyn FnMut(usize, usize, usize) -> Result<Region, Error>) -> Result<AtlasGlyph, Error> {
+    if libfont::bounds::raster_bound(segments.len(), height, width * 3) > libfont::bounds::MAX_RASTER_STEPS {
+        return Err(FontError::GlyphTooExpensive.into());
+    }
+    let scaled = libfont::crossings::lcd_segments(segments);
+    admit(&scaled, width * 3, height)?;
+    let wide = region(0, width * 3, height)?;
+    render(&scaled, width * 3, height, &wide)?;
+    let sample = region(0, width, height)?;
+    // Padding permits the last column-class sampling rectangle to remain in bounds.
+    let padded = region(1, width * 3 + 2, height)?;
+    let mask = region(1, width, height)?;
+    let packed = region(1, width, height)?;
+    let (w, h) = (width as i32, height as i32);
+    let at = |r: &Region| [r.x as i32, r.y as i32];
+    let rect = |r: &Region, rw: i32| [r.x as i32, r.y as i32, r.x as i32 + rw, r.y as i32 + h];
+    packed.send(|c| c.solid(word(Color::BLACK), &[rect(&packed, w)]))?;
+    let [px, py] = at(&padded);
+    let [wx, wy] = at(&wide);
+    // The copy writes wide's columns with output X forced opaque, as blit does.
+    padded.send(|c| c.draw(pipeline::COPY, 0, wide.target.handle(), 0, 0,
+        &[instance(rect(&padded, 3 * w), &[wx - px, wy - py, 1])]))?;
+    let mut fence = None;
+    for channel in 0..3 {
+        let [sx, sy] = at(&sample);
+        sample.send(|c| c.draw(pipeline::NEAREST_SCALED, 0, padded.target.handle(), 0, 0,
+            &[instance(rect(&sample, w), &[sx, sy, w, h, px + channel, py, 3 * w, h])]))?;
+        let colour = match channel { 0 => Color::rgb(0,255,255), 1 => Color::rgb(255,0,255), _ => Color::rgb(255,255,0) };
+        mask.send(|c| c.solid(word(colour), &[rect(&mask, w)]))?;
+        let [mx, my] = at(&mask);
+        sample.send(|c| c.draw(pipeline::COVERAGE, 0xff000000, mask.target.handle(), 0, 0,
+            &[instance(rect(&sample, w), &[sx, sy, mx, my, 1])]))?;
+        let [kx, ky] = at(&packed);
+        fence = Some(packed.send(|c| c.draw(pipeline::COVERAGE, 0xffffffff, sample.target.handle(), 0, 0,
+            &[instance(rect(&packed, w), &[kx, ky, sx, sy, 1])]))?);
+    }
+    Ok(AtlasGlyph::at(packed, width, height, fence))
+}
+
+/// A scratch target's side when no glyph needs more; its rows are handed out once each.
+const SCRATCH: usize = 256;
+struct Scratch { target: Rc<Surface>, next_row: usize }
+
+/// A glyph-sized rectangle of a target, at (x, y).
+struct Region { target: Rc<Surface>, x: usize, y: usize }
+impl Region {
+    /// Encode `draw` after a `BEGIN` of this region's target and submit it.
+    fn send(&self, draw: impl FnOnce(&mut bgl::Context)) -> Result<bgl::Fence, Error> {
+        let t = &self.target;
+        device::with(|d| {
+            d.context.begin(t.handle(), t.width() as u32, t.height() as u32);
+            draw(&mut d.context);
+            d.context.submit().inspect_err(|_| d.context.discard())
+        }).map_err(Error::Device)
+    }
 }
 
 fn target(width: usize, height: usize) -> Result<Surface, Error> {
@@ -56,101 +145,142 @@ fn instance(rect: [i32; 4], values: &[i32]) -> Instance {
     for (p, &v) in params.iter_mut().zip(values) { *p = v as u32; }
     Instance { rect, params }
 }
-fn finish(surface: &Surface) -> Result<(), Error> {
-    surface.error().map_or(Ok(()), |e| Err(Error::Device(e)))
-}
-
-/// Render batches admitted against the original total bound before any crossings or device work.
-/// Each batch stays below the unchanged submission work quota; no pixel values reach the CPU.
-fn render(segments: &[LineSegment], width: usize, height: usize) -> Result<Surface, Error> {
+/// The original total bound, admitted before any crossings or device work.
+fn admit(segments: &[LineSegment], width: usize, height: usize) -> Result<(), Error> {
     use libfont::bounds::{raster_bound, MAX_RASTER_STEPS};
     if raster_bound(segments.len(), height, width) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
-    let surface = target(width, height)?;
-    let row_bound = 8192u64 * width as u64 * (1 + 8 * segments.len() as u64) + width as u64;
-    // A row can itself exceed the quota: split its rectangle in x, retaining the original
-    // width in the pipeline parameters, so span accumulation and clipping stay exact.
-    let rows = ((abi::limits::WORK / row_bound.max(1)) as usize).max(1).min(height);
-    for row in (0..height).step_by(rows) {
-        let count = rows.min(height - row);
+    Ok(())
+}
+
+/// The bytes one crossing table may hold; a taller glyph's rows are split across tables.
+const TABLE_BYTES: usize = 8 << 20;
+
+/// Coverage of `segments` into the glyph-sized `region`, whose pixels are zero. Each table's
+/// rows are packed into submissions by their actual crossings, each submission's estimate at
+/// most half the work cap; no pixel values reach the CPU. Returns the last fence.
+fn render(segments: &[LineSegment], width: usize, height: usize, region: &Region) -> Result<Option<bgl::Fence>, Error> {
+    if width == 0 || height == 0 { return Ok(None); }
+    let budget = abi::limits::WORK / 2;
+    let rows_per_table = (TABLE_BYTES / (32 + 64 * segments.len().max(1))).max(1);
+    let (ox, oy) = (region.x as i32, region.y as i32);
+    let mut fence = None;
+    for row in (0..height).step_by(rows_per_table) {
+        let count = rows_per_table.min(height - row);
         let table = libfont::crossings::CrossingTable::new(segments, row, count);
         let bytes = table.bytes().len() as u32;
-        let entries = table.entries() as u64;
-        let cost_per_column = 8192 * (count as u64 + entries) + count as u64;
-        let columns = ((abi::limits::WORK / cost_per_column.max(1)) as usize).max(1).min(width);
+        // Crossings on each row: the difference of its first sub-scanline offsets.
+        let offset = |i: usize| u32::from_le_bytes(table.bytes()[4 * i..4 * i + 4].try_into().unwrap()) as u64;
+        let crossings: Vec<u64> = (0..count).map(|r| offset(8 * (r + 1)) - offset(8 * r)).collect();
+        // Each pixel costs 8192 per crossing on its row plus 8192 for accumulation, and the
+        // blend copies it once.
+        let pixel = |r: usize| 8192 * (1 + crossings[r]) + 1;
+        let t = &region.target;
         let result = device::with(|d| {
             let buffer = gpu::buffer_create(bytes as u64)?;
-            let result = (|| {
+            let sent = (|| {
                 bgl::geometry_upload(table, &d.context, buffer)?;
-                for x in (0..width).step_by(columns) {
-                    d.context.begin(surface.handle(), width as u32, height as u32);
-                    let i = instance([x as i32, row as i32, (x + columns).min(width) as i32, (row + count) as i32],
-                        &[0, row as i32, width as i32, count as i32, 0]);
-                    d.context.draw(pipeline::COVERAGE_SPANS, 0xffffffff, 0, buffer, bytes, &[i]);
-                    d.context.submit()?.wait(5_000_000_000)?;
+                let mut draw = |x0: usize, x1: usize, r0: usize, r1: usize| -> Result<(), i64> {
+                    d.context.begin(t.handle(), t.width() as u32, t.height() as u32);
+                    let rect = [ox + x0 as i32, oy + (row + r0) as i32, ox + x1 as i32, oy + (row + r1) as i32];
+                    d.context.draw(pipeline::COVERAGE_SPANS, 0xffffffff, 0, buffer, bytes,
+                        &[instance(rect, &[ox, oy + row as i32, width as i32, count as i32, 0])]);
+                    fence = Some(d.context.submit()?);
+                    Ok(())
+                };
+                let mut r0 = 0;
+                while r0 < count {
+                    let row_cost = width as u64 * pixel(r0);
+                    if row_cost > budget {
+                        // A row can itself exceed the budget: split its rectangle in x; the
+                        // parameters keep the glyph's width, so accumulation stays exact.
+                        let columns = ((budget / pixel(r0)) as usize).max(1);
+                        for x in (0..width).step_by(columns) { draw(x, (x + columns).min(width), r0, r0 + 1)?; }
+                        r0 += 1;
+                        continue;
+                    }
+                    let (mut r1, mut cost) = (r0, 0);
+                    while r1 < count && cost + width as u64 * pixel(r1) <= budget {
+                        cost += width as u64 * pixel(r1);
+                        r1 += 1;
+                    }
+                    draw(0, width, r0, r1)?;
+                    r0 = r1;
                 }
                 Ok(())
             })();
             gpu::resource_destroy(buffer);
-            if result.is_err() { d.context.discard(); }
-            result
+            if sent.is_err() { d.context.discard(); }
+            sent
         });
         result.map_err(Error::Device)?;
     }
-    Ok(surface)
+    Ok(fence)
 }
 
-/// LCD uses the exact same binary32 operation order at three columns per pixel.
-/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
-/// Downsample each column class on the GPU, zero its other channels with a constant
-/// channel mask, then use it as an LCD coverage mask to assemble the packed atlas.
-fn render_lcd(segments: &[LineSegment], width: usize, height: usize) -> Result<Surface, Error> {
-    if libfont::bounds::raster_bound(segments.len(), height, width * 3) > libfont::bounds::MAX_RASTER_STEPS {
-        return Err(FontError::GlyphTooExpensive.into());
-    }
-    let scaled = libfont::crossings::lcd_segments(segments);
-    let wide = render(&scaled, width * 3, height)?;
-    let mut packed = target(width, height)?;
-    packed.clear(Color::BLACK);
-    // Padding permits the last column-class sampling rectangle to remain in bounds.
-    let mut padded = target(width * 3 + 2, height)?;
-    crate::blit::blit(&mut padded, &wide, 0, 0);
-    let mut sample = target(width, height)?;
-    let mut mask = target(width, height)?;
-    let rect = [0, 0, width as i32, height as i32];
-    for channel in 0..3 {
-        sample.submit(|c| c.draw(pipeline::NEAREST_SCALED, 0, padded.handle(), 0, 0,
-            &[instance(rect, &[0, 0, width as i32, height as i32, channel, 0, (width * 3) as i32, height as i32])]));
-        let colour = match channel { 0 => Color::rgb(0,255,255), 1 => Color::rgb(255,0,255), _ => Color::rgb(255,255,0) };
-        mask.clear(colour);
-        sample.submit(|c| c.draw(pipeline::COVERAGE, 0xff000000, mask.handle(), 0, 0, &[instance(rect, &[0,0,0,0,1])]));
-        packed.submit(|c| c.draw(pipeline::COVERAGE, 0xffffffff, sample.handle(), 0, 0, &[instance(rect, &[0,0,0,0,1])]));
-        finish(&sample)?; finish(&mask)?; finish(&packed)?;
-    }
-    Ok(packed)
+/// A glyph's coverage: its `width × height` region of a target (none for an empty glyph)
+/// and the fence of the draw that wrote it.
+pub struct AtlasGlyph {
+    region: Option<Region>, fence: Option<bgl::Fence>,
+    pub width: usize, pub height: usize, pub x_offset: i32, pub y_offset: i32,
 }
-
-pub struct AtlasGlyph { surface: Option<Surface>, pub width: usize, pub height: usize, pub x_offset: i32, pub y_offset: i32 }
 impl AtlasGlyph {
-    fn bytes(&self) -> usize { self.surface.as_ref().map_or(0, |_| ((self.width * 4 + 255) / 256 * 256 * self.height + 4095) / 4096 * 4096) }
+    fn empty(advance: usize) -> Self {
+        AtlasGlyph { region: None, fence: None, width: advance, height: 0, x_offset: 0, y_offset: 0 }
+    }
+    fn at(region: Region, width: usize, height: usize, fence: Option<bgl::Fence>) -> Self {
+        AtlasGlyph { region: Some(region), fence, width, height, x_offset: 0, y_offset: 0 }
+    }
+    /// Wait for the draw that wrote this glyph: a device failure is an error here.
+    fn ready(&self) -> Result<(), Error> {
+        self.fence.map_or(Ok(()), |f| f.wait(u64::MAX)).map_err(Error::Device)
+    }
     fn pixels(&self) -> Result<Vec<u8>, Error> {
         let mut pixels = vec![0; self.width * self.height * 4];
-        if let Some(s) = &self.surface { s.read(&mut pixels, self.width * 4).map_err(Error::Device)?; }
+        if let Some(r) = &self.region {
+            self.ready()?;
+            r.target.read_rect([r.x, r.y, self.width, self.height], &mut pixels, self.width * 4).map_err(Error::Device)?;
+        }
         Ok(pixels)
     }
     fn read(&self) -> Result<GlyphBitmap, Error> {
         let coverage = self.pixels()?.chunks_exact(4).map(|p| p[0]).collect();
         Ok(GlyphBitmap { width: self.width, height: self.height, x_offset: self.x_offset, y_offset: self.y_offset, coverage })
     }
+    fn subpixel(&self) -> Result<SubpixelBitmap, Error> {
+        let coverage = self.pixels()?.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
+        Ok(SubpixelBitmap { width: self.width, height: self.height, x_offset: self.x_offset, y_offset: self.y_offset, coverage })
+    }
 }
-struct Entry { glyph: u16, size26: i32, image: Rc<AtlasGlyph>, used: u64 }
-/// Atlas targets charge padded rows and page-rounded backing, as the kernel does.
+
+/// The kernel's charge for a `width × height` four-byte target: rows padded to 256 bytes,
+/// the whole rounded up to 4 KiB pages (B23).
+fn charge(width: usize, height: usize) -> usize { ((width * 4 + 255) / 256 * 256 * height + 4095) / 4096 * 4096 }
+
+/// One atlas page: a target of equal slots stacked vertically, each `rows` tall at the
+/// page's row pitch. Its first page holds one slot, so a single cached glyph's storage is
+/// exactly its own target's charge; each new page of a class holds as many slots as the
+/// class has, so pages, and resource handles, grow with the log of the entries.
+struct Page { id: u64, pitch: usize, rows: usize, target: Rc<Surface>, used: Vec<bool>, drawn: Vec<bool> }
+impl Page {
+    fn bytes(&self) -> usize { charge(self.pitch / 4, self.rows * self.used.len()) }
+}
+/// A glyph's slot class: its row pitch, and its height rounded up to whole 4 KiB pages of
+/// that pitch when the pitch divides a page, so a one-slot page costs the glyph's charge.
+fn class(width: usize, height: usize) -> (usize, usize) {
+    let pitch = (width * 4 + 255) / 256 * 256;
+    let rows = if 4096 % pitch == 0 { let r = 4096 / pitch; height.div_ceil(r) * r } else { height };
+    (pitch, rows)
+}
+
+struct Entry { glyph: u16, size26: i32, image: Rc<AtlasGlyph>, used: u64, slot: Option<(u64, usize)> }
+/// `bytes` is the charge of every atlas page, unused slots included (B15, B23).
 pub struct CachedFont {
-    font: Font, entries: Vec<Entry>, capacity: usize, max_bytes: usize, clock: u64,
+    font: Font, entries: Vec<Entry>, pages: Vec<Page>, next_page: u64, capacity: usize, max_bytes: usize, clock: u64,
     stats: CacheStats, readback: Option<GlyphBitmap>, owner: u64,
 }
 impl CachedFont {
     pub fn new(font: Font, capacity: usize) -> Self {
-        Self { font, entries: Vec::new(), capacity: capacity.max(1), max_bytes: usize::MAX,
+        Self { font, entries: Vec::new(), pages: Vec::new(), next_page: 0, capacity: capacity.max(1), max_bytes: usize::MAX,
             clock: 0, stats: CacheStats::default(), readback: None, owner: device::pid() }
     }
     pub fn with_default_cache(font: Font) -> Self {
@@ -168,17 +298,84 @@ impl CachedFont {
             self.stats.hits += 1; e.used = self.clock; return Ok(e.image.clone());
         }
         self.stats.misses += 1;
-        let image = Rc::new(self.font.glyph(glyph, size26, false)?);
-        let bytes = image.bytes();
-        if bytes > self.max_bytes { return Ok(image); }
-        while !self.entries.is_empty() && (self.entries.len() >= self.capacity || self.stats.bytes + bytes > self.max_bytes) {
-            let oldest = self.entries.iter().enumerate().min_by_key(|(_,e)| e.used).map(|(i,_)|i).unwrap();
-            self.stats.bytes -= self.entries.swap_remove(oldest).image.bytes();
+        let outline = self.font.glyph_outline(glyph)?;
+        let (segments, width, height, x_offset, y_offset) = match self.font.layout_glyph(&outline, glyph, size26)? {
+            GlyphLayout::Empty { advance } => {
+                while self.entries.len() >= self.capacity { self.evict(); }
+                return Ok(self.insert(glyph, size26, AtlasGlyph::empty(advance), None));
+            }
+            GlyphLayout::Outline { segments, width, height, x_offset, y_offset } => (segments, width, height, x_offset, y_offset),
+        };
+        admit(&segments, width, height)?;
+        let (pitch, rows) = class(width, height);
+        if charge(pitch / 4, rows) > self.max_bytes {
+            // Larger than the whole budget: rasterized, not kept.
+            let mut image = self.font.render(&segments, width, height)?;
+            (image.x_offset, image.y_offset) = (x_offset, y_offset);
+            image.ready()?;
+            return Ok(Rc::new(image));
         }
-        self.stats.bytes += bytes;
-        self.entries.push(Entry { glyph, size26, image: image.clone(), used: self.clock });
+        while self.entries.len() >= self.capacity { self.evict(); }
+        let (page, slot) = self.slot(pitch, rows)?;
+        let p = self.pages.iter_mut().find(|p| p.id == page).expect("slot's page is live");
+        p.used[slot] = true;
+        let region = Region { target: p.target.clone(), x: 0, y: slot * rows };
+        let reused = core::mem::replace(&mut p.drawn[slot], true);
+        let drawn = (|| {
+            // A slot drawn before is zeroed again first, so it is as a new target is.
+            if reused { region.send(|c| c.solid(0, &[[0, region.y as i32, width as i32, (region.y + height) as i32]]))?; }
+            let fence = render(&segments, width, height, &region)?;
+            let mut image = AtlasGlyph::at(region, width, height, fence);
+            (image.x_offset, image.y_offset) = (x_offset, y_offset);
+            image.ready()?;
+            Ok(image)
+        })();
+        match drawn {
+            Ok(image) => Ok(self.insert(glyph, size26, image, Some((page, slot)))),
+            Err(e) => { self.free(page, slot); Err(e) }
+        }
+    }
+    fn insert(&mut self, glyph: u16, size26: i32, image: AtlasGlyph, slot: Option<(u64, usize)>) -> Rc<AtlasGlyph> {
+        let image = Rc::new(image);
+        self.entries.push(Entry { glyph, size26, image: image.clone(), used: self.clock, slot });
         self.stats.entries = self.entries.len();
-        Ok(image)
+        image
+    }
+    /// A free slot of class (pitch, rows), evicting least recently used entries until a
+    /// page with one fits the byte budget.
+    fn slot(&mut self, pitch: usize, rows: usize) -> Result<(u64, usize), Error> {
+        loop {
+            if let Some((id, slot)) = self.pages.iter().filter(|p| (p.pitch, p.rows) == (pitch, rows))
+                .find_map(|p| p.used.iter().position(|u| !u).map(|s| (p.id, s))) {
+                return Ok((id, slot));
+            }
+            let held: usize = self.pages.iter().filter(|p| (p.pitch, p.rows) == (pitch, rows)).map(|p| p.used.len()).sum();
+            let mut slots = held.max(1).min(MAX_PAGE_ROWS / rows).max(1);
+            while slots > 1 && self.stats.bytes + charge(pitch / 4, rows * slots) > self.max_bytes { slots /= 2; }
+            if self.stats.bytes + charge(pitch / 4, rows * slots) <= self.max_bytes {
+                let target = Rc::new(target(pitch / 4, rows * slots)?);
+                let page = Page { id: self.next_page, pitch, rows, target, used: vec![false; slots], drawn: vec![false; slots] };
+                self.next_page += 1;
+                self.stats.bytes += page.bytes();
+                self.pages.push(page);
+                continue;
+            }
+            if self.entries.is_empty() { return Err(Error::Device(-abi::errno::ENOMEM)); }
+            self.evict();
+        }
+    }
+    fn evict(&mut self) {
+        let oldest = self.entries.iter().enumerate().min_by_key(|(_, e)| e.used).map(|(i, _)| i).unwrap();
+        if let Some((page, slot)) = self.entries.swap_remove(oldest).slot { self.free(page, slot); }
+        self.stats.entries = self.entries.len();
+    }
+    /// Release a slot; a page with no glyph left is freed with its storage.
+    fn free(&mut self, page: u64, slot: usize) {
+        let Some(i) = self.pages.iter().position(|p| p.id == page) else { return };
+        self.pages[i].used[slot] = false;
+        if self.pages[i].used.iter().all(|u| !u) {
+            self.stats.bytes -= self.pages.swap_remove(i).bytes();
+        }
     }
     /// Explicit readback for checks and capture; drawing samples the atlas directly.
     pub fn rasterize_glyph(&mut self, glyph: u16, size: f32) -> Result<&GlyphBitmap, Error> {
@@ -186,9 +383,13 @@ impl CachedFont {
         self.readback = Some(image.read()?); Ok(self.readback.as_ref().unwrap())
     }
     pub fn cache_stats(&self) -> CacheStats { self.stats }
-    pub fn clear(&mut self) { self.entries.clear(); self.readback = None; self.stats.entries = 0; self.stats.bytes = 0; }
+    pub fn clear(&mut self) {
+        self.entries.clear(); self.pages.clear(); self.readback = None; self.stats.entries = 0; self.stats.bytes = 0;
+    }
     pub fn clear_cache(&mut self) { self.clear(); }
 }
+/// The tallest page a slot class may have: the profile's target dimension cap.
+const MAX_PAGE_ROWS: usize = crate::surface::MAX_DIMENSION;
 
 /// GPU raster entry points with the same readback shape as libfont's CPU reference.
 pub mod rasterizer {
@@ -196,15 +397,21 @@ pub mod rasterizer {
     pub use libfont::bounds::{raster_bound, MAX_RASTER_STEPS};
     pub fn rasterize(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<GlyphBitmap, Error> {
         if raster_bound(s.len(), h, w) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
-        let surface = if w == 0 || h == 0 { None } else { Some(render(s,w,h)?) };
-        AtlasGlyph { surface, width:w, height:h, x_offset:x, y_offset:y }.read()
+        let mut glyph = if w == 0 || h == 0 { AtlasGlyph::empty(0) } else {
+            let region = Region { target: Rc::new(target(w, h)?), x: 0, y: 0 };
+            let fence = render(s, w, h, &region)?;
+            AtlasGlyph::at(region, w, h, fence)
+        };
+        (glyph.width, glyph.height, glyph.x_offset, glyph.y_offset) = (w, h, x, y);
+        glyph.read()
     }
     pub fn rasterize_subpixel(s: &[LineSegment], w: usize, h: usize, x: i32, y: i32) -> Result<SubpixelBitmap, Error> {
         if raster_bound(s.len(), h, w*3) > MAX_RASTER_STEPS { return Err(FontError::GlyphTooExpensive.into()); }
-        let surface = if w == 0 || h == 0 { None } else { Some(render_lcd(s,w,h)?) };
-        let glyph = AtlasGlyph { surface, width:w, height:h, x_offset:x, y_offset:y };
-        let coverage = glyph.pixels()?.chunks_exact(4).flat_map(|p| [p[2],p[1],p[0]]).collect();
-        Ok(SubpixelBitmap { width:w, height:h, x_offset:x, y_offset:y, coverage })
+        let mut glyph = if w == 0 || h == 0 { AtlasGlyph::empty(0) } else {
+            render_lcd(s, w, h, &mut |_, rw, rh| Ok(Region { target: Rc::new(target(rw, rh)?), x: 0, y: 0 }))?
+        };
+        (glyph.width, glyph.height, glyph.x_offset, glyph.y_offset) = (w, h, x, y);
+        glyph.subpixel()
     }
 }
 /// U+FFFD REPLACEMENT CHARACTER.
@@ -371,13 +578,13 @@ pub fn draw_text_subpixel(fb: &mut Surface, font: &mut CachedFont, text: &str, x
 }
 
 fn draw_atlas(fb: &mut Surface, image: &AtlasGlyph, x: i64, y: i64, fg: Color) {
-    let Some(atlas) = &image.surface else { return };
+    let Some(atlas) = &image.region else { return };
     let whole = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64);
     let visible = whole.intersect(&fb.clip_box());
     if visible.is_empty() { return; }
     work::add(1);
     let i = instance(visible.corners(), &[visible.x0 as i32, visible.y0 as i32,
-        (visible.x0 - whole.x0) as i32, (visible.y0 - whole.y0) as i32, 1]);
-    fb.submit(|c| c.draw(pipeline::COVERAGE, word(fg), atlas.handle(), 0, 0, &[i]));
+        atlas.x as i32 + (visible.x0 - whole.x0) as i32, atlas.y as i32 + (visible.y0 - whole.y0) as i32, 1]);
+    fb.submit(|c| c.draw(pipeline::COVERAGE, word(fg), atlas.target.handle(), 0, 0, &[i]));
     fb.mark(whole);
 }
