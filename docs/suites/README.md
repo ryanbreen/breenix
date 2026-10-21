@@ -246,7 +246,10 @@ behind is 300 pages or more.
 
 Both workers now start with boot, beside the other kernel threads, so no suite counts their
 stacks (#2233). On the R240, `ktcptimerd`'s stack on top of the runner's own pages had put
-the sdk suite, whose C and Rust apps open TCP sockets, 63 pages short.
+the sdk suite, whose C and Rust apps open TCP sockets, 63 pages short. On x86-64 a thread that
+terminated while a reclaim pass was running could also lose its place in the count the idle
+loop reclaims by, and keep its 32-page kernel stack past the second sample; a pass now adds
+back what it leaves instead of overwriting the count.
 The runner's own pages are its allocation cache: Breenix's `malloc` maps each block and keeps
 up to 16 freed blocks of each size class up to 2 KiB, so they grow as the runner draws its
 panel and formats its records.
