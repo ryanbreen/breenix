@@ -16,11 +16,12 @@
 use std::ffi::CString;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
 use libbreenix::process::{self, ForkResult};
+use libbreenix::types::{Fd, OwnedFd};
 use libbreenix::services::{self, AfterExit, Need, Service, Status};
 use libbreenix::signal;
 use libbreenix::ssh::account::{self, Account, Credentials};
@@ -812,18 +813,86 @@ fn launch(def: &Service, account: &Account) -> Result<i32, String> {
     argv.push(core::ptr::null());
     let mut envp: Vec<*const u8> = environment.iter().map(|e| e.as_ptr().cast()).collect();
     envp.push(core::ptr::null());
+    if account.uid != 0 && login_terminal(def).is_none() {
+        std::fs::create_dir_all(services::RUN_DIR).map_err(|e| format!("service log directory: {}", e))?;
+    }
+    // The writer closes on successful exec; setup and exec failures send an
+    // error instead. Bound the wait so a stalled child cannot wedge init.
+    let (read, write) = libbreenix::io::pipe2(libbreenix::io::status_flags::O_CLOEXEC | libbreenix::io::status_flags::O_NONBLOCK)
+        .map_err(|e| format!("exec pipe: {}", e))?;
+    let mut reader = unsafe { std::fs::File::from_raw_fd(read.raw() as i32) };
+    let writer = OwnedFd::new(write);
     match process::fork().map_err(|e| format!("fork: {}", e))? {
         ForkResult::Child => {
-            let mut stderr = std::io::stderr();
-            if let Err(why) = account::become_account(account, &mut System) {
-                let _ = writeln!(stderr, "[init] {}: cannot become {}: {}", def.name, account.name, why);
-                process::exit(126);
+            drop(reader);
+            let fail = |why: String, code: i32| -> ! {
+                let _ = libbreenix::io::write(writer.fd(), why.as_bytes());
+                process::exit(code);
+            };
+            // Login terminals deliberately inherit init's console. Other services
+            // get EOF on stdin; non-root services get a protected log file too.
+            if login_terminal(def).is_none() {
+                let redirect = || -> Result<(), String> {
+                    let input = OwnedFd::new(libbreenix::fs::open("/dev/null", libbreenix::fs::O_RDONLY)
+                        .map_err(|e| format!("open service stdin: {}", e))?);
+                    libbreenix::io::dup2(input.fd(), Fd::STDIN).map_err(|e| format!("service stdin: {}", e))?;
+                    if account.uid != 0 {
+                        let path = format!("/run/breenix/{}.log", def.name);
+                        let output = OwnedFd::new(libbreenix::fs::open_with_mode(&path,
+                            libbreenix::fs::O_WRONLY | libbreenix::fs::O_CREAT | libbreenix::fs::O_APPEND, 0o600)
+                            .map_err(|e| format!("open service log: {}", e))?);
+                        for target in [Fd::STDOUT, Fd::STDERR] {
+                            libbreenix::io::dup2(output.fd(), target).map_err(|e| format!("service output: {}", e))?;
+                        }
+                    }
+                    Ok(())
+                };
+                if let Err(why) = redirect() {
+                    fail(why, 126);
+                }
             }
-            let _ = process::chdir(b"/\0");
+            if let Err(why) = account::become_account(account, &mut System) {
+                fail(format!("cannot become {}: {}", account.name, why), 126);
+            }
+            if let Err(why) = process::chdir(b"/\0") {
+                fail(format!("chdir: {}", why), 126);
+            }
             let error = process::execve(&path, argv.as_ptr(), envp.as_ptr());
-            let _ = writeln!(stderr, "[init] {}: exec {}: {:?}", def.name, def.command[0], error.err());
-            process::exit(127);
+            fail(format!("exec {}: {:?}", def.command[0], error.err()), 127);
         }
-        ForkResult::Parent(pid) => Ok(pid.raw() as i32),
+        ForkResult::Parent(pid) => {
+            drop(writer);
+            let deadline = now_ms() + REQUEST_MS;
+            let mut buffer = [0u8; 512];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => return Ok(pid.raw() as i32),
+                    Ok(n) => return Err(String::from_utf8_lossy(&buffer[..n]).into_owned()),
+                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock && now_ms() < deadline => {
+                        let _ = libbreenix::time::sleep_ms(1);
+                    }
+                    Err(why) => {
+                        let _ = signal::kill(pid.raw() as i32, signal::SIGKILL);
+                        return Err(format!("exec acknowledgement: {}", why));
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Run by the services suite as a non-root service with no terminal input.
+pub fn check_service_io() {
+    use libbreenix::io::{fcntl, fcntl_cmd, status_flags};
+    let mut byte = [0u8; 1];
+    for fd in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
+        let flags = fcntl(fd, fcntl_cmd::F_GETFL, 0).expect("service descriptor flags");
+        fcntl(fd, fcntl_cmd::F_SETFL, flags | status_flags::O_NONBLOCK as i64).expect("nonblocking service descriptor");
+        let result = unsafe {
+            libbreenix::syscall::raw::syscall3(libbreenix::syscall::nr::READ, fd.raw(), byte.as_mut_ptr() as u64, 1)
+        } as i64;
+        assert_eq!(result, if fd == Fd::STDIN { 0 } else { -9 }, "service console input on {:?}", fd);
+    }
+    println!("service-io-ok");
 }

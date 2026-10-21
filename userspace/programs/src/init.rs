@@ -98,6 +98,10 @@ fn run_init_group_refusal_probe(phase: &str) {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("service-io-check") {
+        init_services::check_service_io();
+        return;
+    }
     // The service table runs the loopback SSH check as `init bssh-oracle`, a child that
     // must not repeat PID 1's boot work or its start-up line.
     if std::env::args().nth(1).as_deref() == Some("bssh-oracle") {
