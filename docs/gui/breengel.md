@@ -1577,6 +1577,21 @@ Input and measurement spotlights independently detect point-13 substitution, as 
 a changed thumbnail cannot satisfy their detection checks. Live checks also inspect the picture input
 overlay, verdict, category headings and boot ribbon, with individual pixel substitutions in each region.
 
+### 23.9 Display custody during a run (B29)
+
+The stage holds the display from the first case to the last. It does not give the display
+back before a case: the case's own takeover nests above the stage on the ownership stack, so
+the stage's frame stays on the screen until the case presents, and when the case's process
+ends the stack restores the stage's frame. An owner that took the display without presenting
+was shown the frame below it, so that frame is what the restore binds. The console does not
+show between cases. Three cases start above the kernel's screen instead, and for them alone
+the stage gives the display back before the case: `composition/ownership-stack`, whose
+property is the stack's four-owner depth, and `panel/kernel-screens` and `panel/boot-ribbon`,
+whose property is the kernel's screen itself. A case that presents a full-screen scanout (the
+composition and scanout cases, whose readback judges the device pixels of the whole mode,
+section 20) shows it while it owns the display, and the stage's next frame follows when it
+ends.
+
 ## 24. Helpers and boots
 
 - `/usr/local/test/bin/kiosk_test` is a test compositor: it claims the compositor, places windows where its
