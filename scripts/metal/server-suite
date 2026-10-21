@@ -222,7 +222,7 @@ class Probe:
                     history.extend(data)
         def send(data):
             process.stdin.write(data); process.stdin.flush()
-        prompt = re.compile(rb'bsh [^>\r\n]*> ')
+        prompt = re.compile(rb'(?:^|\n)bsh [^>\r\n]*> ')
         def at_prompt(marker):
             until(re.compile(re.escape(marker) + rb'bsh [^>\r\n]*> '))
         try:
