@@ -158,6 +158,8 @@ impl Target {
     pub fn revoke(&self) { let _ = destroy_resource(self.context.owner,self.handle); }
 
     pub fn handle(&self) -> u64 { self.handle }
+    /// The core resource, for the composition path that samples this target (414 op 19).
+    pub(super) fn id(&self) -> u32 { self.id }
     pub fn len(&self) -> u64 { self.bytes }
 
     /// Seal writes and capture admitted dependencies under the admission lock.

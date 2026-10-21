@@ -534,6 +534,11 @@ pub mod readback_reason {
     pub const TARGET_DROPPED: u32 = 9;
     /// A `PRESENT` binding or replacing the target was sent and has not completed.
     pub const BINDING_UNKNOWN: u32 = 10;
+    /// A composed scanout observation whose composite sampled more than the record's 16
+    /// window entries (414 op 22, ruling B13).
+    pub const COMPOSITE_OVERFLOW: u32 = 11;
+    /// A composite's source render had not completed OK before its sampling was sent.
+    pub const WINDOW_RENDER_NOT_READY: u32 = 12;
 }
 
 /// One display mode (gpu-abi.md, G7 display interface).
