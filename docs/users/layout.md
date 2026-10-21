@@ -60,3 +60,9 @@ excluding virtual mounts, and refuses set-user-ID or set-group-ID inodes not
 listed with that mode in the design table. The installer applies the same
 check to the new and retained generations before reporting install completion and
 requesting slot promotion. No admin stub is installed.
+
+On the first v1-to-v2 boot, byte-identical v1 `bshrc` and `hotkeys.conf`
+defaults are recognized without a prior factory record and replaced with the
+new program locations. Locally edited files stay in place with `.factory`
+siblings: merge `/usr/bin` and `/usr/sbin` into a custom PATH and change custom
+launcher commands from `/bin/blauncher` and `/bin/bterm` to `/usr/bin`.

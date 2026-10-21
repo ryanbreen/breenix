@@ -10,7 +10,7 @@
  *     libc-<category>_test <case-id> <result-fd>
  *
  * in a fresh scratch directory, with stdin, stdout and stderr on /dev/null and the
- * environment PATH=/usr/local/libc/bin, HOME=/tmp, LIBC_SUITE=1. The harness writes one
+ * environment PATH=/usr/libexec/breenix/libc/bin, HOME=/tmp, LIBC_SUITE=1. The harness writes one
  * line to <result-fd>, "PASS", "FAIL <message>" or "SKIP <message>", and exits 0.
  *
  * A case returns PASS (a null pointer) or the text from one of the fail helpers below.

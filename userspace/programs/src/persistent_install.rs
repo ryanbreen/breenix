@@ -296,7 +296,7 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
     for (file, existing, entry, mode) in entries {
         let has_line = existing.lines().any(|line| line.split(':').next() == Some(name.as_str()));
         // Existing machine entries may have been edited since installation.
-        let merged = if has_line { existing.clone() } else { merge_line(&existing, &entry) };
+        let merged = if file == "shadow" && has_line { existing.clone() } else { merge_line(&existing, &entry) };
         if merged != existing {
             copier.write_file(&etc.join(file), &merged, mode)?;
         }
@@ -374,7 +374,12 @@ fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Opti
             return Err("first v2 seed requires a complete v1 current generation".into());
         }
         current
-    } else if present(&target.join("etc"))? { target.to_path_buf() } else { source.to_path_buf() };
+    } else if present(&target.join("etc"))? { target.to_path_buf() } else {
+        if present(&target.join(GENERATIONS))? {
+            return Err("first v2 seed requires the current userland generation".into());
+        }
+        source.to_path_buf()
+    };
     for name in layout::SHARED {
         let from = current.join(name);
         let to = store.join(name);
@@ -797,8 +802,8 @@ mod tests {
         let root = selected(&system, "first");
         assert!(!root.join("etc/breenix/test-ssh").exists());
         assert!(!root.join(OPERATOR).exists());
-        assert!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap().starts_with("root:x:0:0:root:/root:/bin/sh\n"));
-        assert!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap().starts_with("root:x:0:\n"));
+        assert_eq!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\noperator:x:1000:1000:operator:/home/operator:/bin/sh\n");
+        assert_eq!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap(), "root:x:0:\noperator:x:1000:\n");
         assert_eq!(fs::read(system.join("root/data")).unwrap(), b"source data");
         assert!(!system.join("root/.ssh").exists());
         let store = system.join(STORE);

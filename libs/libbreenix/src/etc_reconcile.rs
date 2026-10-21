@@ -31,6 +31,15 @@ fn regular(path: &Path) -> Result<Vec<u8>> {
     }
     io(fs::read(path), path)
 }
+// Exact v1 image defaults establish provenance before the first v2 record.
+// Unknown or locally edited bytes still receive a .factory sibling.
+fn legacy_default(name: &str) -> Option<&'static [u8]> {
+    match name {
+        "bshrc" => Some(include_bytes!("legacy_etc/bshrc")),
+        "hotkeys.conf" => Some(include_bytes!("legacy_etc/hotkeys.conf")),
+        _ => None,
+    }
+}
 fn machine_owned(name: &str) -> bool {
     matches!(name, "passwd" | "group" | "shadow" | "sudo.policy" | "login.defs") || name.starts_with("ssh/")
 }
@@ -141,7 +150,8 @@ pub fn reconcile(root: &Path, generation: &str, checkpoint: &mut dyn FnMut() -> 
         let existing = if io(fs::symlink_metadata(&path), &path)?.is_file() { Some(regular(&path)?) } else { None };
         let hash = existing.as_deref().map(digest);
         if hash.as_deref() == Some(digest(bytes).as_str()) { continue; }
-        if hash.as_ref().is_some_and(|h| previous.1.get(name) == Some(h)) {
+        if hash.as_ref().is_some_and(|h| previous.1.get(name) == Some(h))
+            || existing.as_deref().is_some_and(|b| legacy_default(name) == Some(b)) {
             writer.write(&path, bytes, *mode)?;
         } else {
             let sibling = path.with_file_name(format!("{}.factory", path.file_name().unwrap().to_string_lossy()));
@@ -263,6 +273,31 @@ mod tests {
         assert!(!tree.0.join("etc/gone").exists());
         assert_eq!(tree.read("etc/passwd"), b"root:x:0:0:local:/root:/bin/sh\noperator:x:1000:1000::/home/operator:/bin/sh\n");
         assert_eq!(parse_record(&tree.read("etc/.breenix-factory")).unwrap().0, "new");
+    }
+
+    #[test]
+    fn first_v2_boot_replaces_only_exact_legacy_defaults() {
+        let tree = Tree::new();
+        for name in ["bshrc", "hotkeys.conf"] {
+            tree.put(&format!("etc/{}", name), legacy_default(name).unwrap());
+            tree.factory(name, b"new locations");
+        }
+        tree.apply("v2");
+        for name in ["bshrc", "hotkeys.conf"] {
+            assert_eq!(tree.read(&format!("etc/{}", name)), b"new locations");
+            // An earlier v2 boot may have recorded new defaults but kept v1 bytes.
+            tree.put(&format!("etc/{}", name), legacy_default(name).unwrap());
+        }
+        tree.apply("v2-repair");
+        for name in ["bshrc", "hotkeys.conf"] {
+            assert_eq!(tree.read(&format!("etc/{}", name)), b"new locations");
+        }
+        let edited = Tree::new();
+        edited.put("etc/bshrc", b"local PATH settings");
+        edited.factory("bshrc", b"new locations");
+        edited.apply("v2");
+        assert_eq!(edited.read("etc/bshrc"), b"local PATH settings");
+        assert_eq!(edited.read("etc/bshrc.factory"), b"new locations");
     }
 
     #[test]
