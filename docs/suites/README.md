@@ -1285,6 +1285,26 @@ typing a few bytes at a time as `boot --persistent --run` does. Its cases:
 Its records are `server-services.json`, scored as above, and also need the temporary
 services removed and the console lines for bsshd's SIGKILL and the crash loop.
 
+For `server/logs`, prepare a small service log in one persistent boot at the
+commit under test, stop that boot with `metal-run stop ID`, and start another
+persistent boot at that same commit. Run the category once on the second boot:
+
+```sh
+server-suite --boot FIRST --sha SHA --milestone server/logs --prepare-logs
+# Stop FIRST through metal-run, follow it to completion, then boot persistent again.
+server-suite --boot SECOND --sha SHA --milestone server/logs --previous-boot FIRST
+```
+
+The preparation stores the service log's SHA-256 and guest boot ID in the first
+boot's private store. The runner refuses a previous boot that is still live or
+booted a different commit. Its six cases check the shipped table services' log headers
+and root:adm 0640 ownership, separate stdout/stderr records, rotation at 256 KiB,
+a counted oversized-line loss followed by intact output, blogd's live kernel
+records and ring-overrun report, and the previous boot's exact bytes before and
+after archive rotation. Temporary services run as the site account and are
+removed afterwards. Root reads protected logs on the leased SOL console.
+Results go to `server-logs.json`; preparation is not a passing category run.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

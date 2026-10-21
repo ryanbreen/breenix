@@ -21,6 +21,10 @@ static LOG_HEAD: AtomicUsize = AtomicUsize::new(0);
 /// Write index (producer).
 static LOG_TAIL: AtomicUsize = AtomicUsize::new(0);
 
+// Even values count completed bytes twice; odd means a byte is being changed.
+// The existing serial writers serialize capture_byte, so this needs no lock.
+static LOG_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
 /// Whether the buffer is initialized.
 static LOG_READY: AtomicBool = AtomicBool::new(false);
 
@@ -44,6 +48,8 @@ pub fn capture_byte(byte: u8) {
         return;
     }
 
+    let sequence = LOG_SEQUENCE.load(Ordering::Relaxed);
+    LOG_SEQUENCE.store(sequence.wrapping_add(1), Ordering::SeqCst);
     let tail = LOG_TAIL.load(Ordering::Relaxed);
     let next_tail = (tail + 1) % LOG_BUFFER_SIZE;
     let head = LOG_HEAD.load(Ordering::Acquire);
@@ -55,6 +61,7 @@ pub fn capture_byte(byte: u8) {
 
     LOG_BUFFER[tail].store(byte, Ordering::Relaxed);
     LOG_TAIL.store(next_tail, Ordering::Release);
+    LOG_SEQUENCE.store(sequence.wrapping_add(2), Ordering::Release);
 }
 
 /// Held by whoever captures through `capture_bytes` or `capture_fmt`: x86 has
@@ -153,4 +160,29 @@ pub fn copy_tail(buf: &mut [u8]) -> usize {
         *slot = LOG_BUFFER[(start + i) % LOG_BUFFER_SIZE].load(Ordering::Relaxed);
     }
     count
+}
+
+/// Root-only proc snapshot: absolute byte offsets let a reader distinguish new
+/// bytes in a full ring from an unchanged snapshot. Retry a concurrent capture;
+/// a busy ring returns no snapshot and the reader retries on its next pass.
+pub fn sequenced_snapshot() -> alloc::string::String {
+    use alloc::format;
+    for _ in 0..8 {
+        let sequence = LOG_SEQUENCE.load(Ordering::SeqCst);
+        if sequence & 1 != 0 { continue; }
+        let mut bytes = alloc::vec![0u8; LOG_BUFFER_SIZE - 1];
+        let count = copy_tail(&mut bytes);
+        bytes.truncate(count);
+        core::sync::atomic::fence(Ordering::SeqCst);
+        if LOG_SEQUENCE.load(Ordering::Acquire) == sequence {
+            let end = sequence / 2;
+            // Procfs serves text. Use an ASCII hex payload to preserve arbitrary
+            // bytes without changing the absolute byte offsets through UTF-8.
+            let mut out = format!("BREENIX-KMSG 1 start={} end={}\n", end - count, end);
+            for byte in bytes { use core::fmt::Write; let _ = write!(out, "{:02x}", byte); }
+            out.push('\n');
+            return out;
+        }
+    }
+    alloc::string::String::new()
 }

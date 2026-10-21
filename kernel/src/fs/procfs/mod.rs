@@ -99,6 +99,8 @@ pub enum ProcEntryType {
     Pids,
     /// /proc/kmsg - kernel log messages
     Kmsg,
+    /// /proc/kmsg-sequence - snapshot with absolute byte offsets
+    KmsgSequence,
     /// /proc/xhci - xHCI directory
     XhciDir,
     /// /proc/xhci/trace - xHCI trace buffer
@@ -176,6 +178,7 @@ impl ProcEntryType {
             ProcEntryType::Frames => "frames",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
+            ProcEntryType::KmsgSequence => "kmsg-sequence",
             ProcEntryType::XhciDir => "xhci",
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
@@ -229,6 +232,7 @@ impl ProcEntryType {
             ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
+            ProcEntryType::KmsgSequence => "/proc/kmsg-sequence",
             ProcEntryType::XhciDir => "/proc/xhci",
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
@@ -283,6 +287,7 @@ impl ProcEntryType {
             ProcEntryType::Frames => 203,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
+            ProcEntryType::KmsgSequence => 31,
             ProcEntryType::XhciDir => 300,
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
@@ -414,6 +419,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::KmsgSequence));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SelfLink));
 
     // Register /proc/xhci directory and entries
@@ -747,6 +753,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Stat => text(generate_stat()),
         ProcEntryType::CowInfo => text(generate_cowinfo()),
         ProcEntryType::Pids => text(generate_pids()),
+        ProcEntryType::KmsgSequence => {
+            require(Operation::KernelLog)?;
+            text(crate::log_buffer::sequenced_snapshot())
+        },
         ProcEntryType::Kmsg => {
             // The serial ring can contain privileged TTY output. Authorize
             // before generating the open-time snapshot, as for console/check.

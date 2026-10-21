@@ -6,6 +6,7 @@
 //! the authentication log (`docs/users/design.md`, section 3).
 use libbreenix::{io, process, signal, termios, types::Fd};
 use std::io::Write;
+use std::os::unix::io::FromRawFd;
 
 const O_NOCTTY: u32 = 0o400;
 
@@ -13,7 +14,7 @@ fn check<T, E: std::fmt::Display>(result: Result<T, E>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
 }
 
-fn run() -> Result<(), String> {
+fn run(log: &mut Option<std::fs::File>) -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let path = match args.as_slice() {
         [] => "/dev/console".to_string(),
@@ -45,7 +46,9 @@ fn run() -> Result<(), String> {
     check(termios::tcsetattr(Fd::STDIN, termios::TCSAFLUSH, &t))?;
     return_terminal()?;
     if console { check(termios::console_input_proof(Fd::STDIN, 0))?; }
-    check(std::io::stdout().write_all(b"[getty] console acquired\n\nBreenix login: "))?;
+    let prompt = b"[getty] console acquired\n\nBreenix login: ";
+    if let Some(log) = log { check(log.write_all(prompt))?; }
+    check(std::io::stdout().write_all(prompt))?;
     check(std::io::stdout().flush())?;
     // Unbuffered: no bytes that belong to login may be stranded in a getty buffer.
     let mut name = Vec::new();
@@ -80,5 +83,20 @@ fn return_terminal() -> Result<(), String> {
 }
 
 fn main() {
-    if let Err(e) = run() { eprintln!("getty: {}", e); std::process::exit(1); }
+    let captured = std::env::var_os("BREENIX_SERVICE_LOG").is_some();
+    std::env::remove_var("BREENIX_SERVICE_LOG");
+    let copy = |fd| -> Option<std::fs::File> {
+        if !captured { return None; }
+        let fd = io::fcntl(fd, io::fcntl_cmd::F_DUPFD_CLOEXEC, 3).expect("getty log descriptor");
+        Some(unsafe { std::fs::File::from_raw_fd(fd as i32) })
+    };
+    // Getty owns the terminal while asking for a login name. Keep a copy of
+    // its own output in the supervisor pipes; the copies close when login execs.
+    let mut output = copy(Fd::STDOUT);
+    let mut errors = copy(Fd::STDERR);
+    if let Err(e) = run(&mut output) {
+        if let Some(log) = &mut errors { let _ = writeln!(log, "getty: {}", e); }
+        eprintln!("getty: {}", e);
+        std::process::exit(1);
+    }
 }
