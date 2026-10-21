@@ -157,11 +157,7 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
             Ok(0)
         }),
         op::COMPOSITE_RECORD => composite_record(&caller, &input::<RecordQuery>(arg)?),
-        op::MAP_COMPOSITOR_TEXTURE => inout::<MapTree>(arg, |m| {
-            compositor_only(&caller)?;
-            present::backend().ok_or(breengel_abi::errno::EIO)?.map_texture(&caller, m)?;
-            Ok(0)
-        }),
+        op::MAP_COMPOSITOR_TEXTURE => Err(ENOSYS),
         op::SCANOUT_READBACK => inout::<Readback>(arg, |rb| readback(&caller, rb)),
         op::SET_CURSOR => {
             let c = input::<Cursor>(arg)?;
