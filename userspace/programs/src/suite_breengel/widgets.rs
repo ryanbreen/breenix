@@ -791,7 +791,7 @@ fn widgets_button_disabled() -> CaseResult {
         "14.2",
         "disabled button emitted an event",
     )?;
-    let mut g = Drawn::bgrx(100, 40);
+    let mut g = ui_frame(100, 40);
     g.reset(PAPER);
     b.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
