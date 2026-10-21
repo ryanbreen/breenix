@@ -111,15 +111,23 @@ impl Audit {
     }
 
     fn pixels(&mut self, purpose: u32, bytes: &[u8]) {
-        let legal = purpose == abi::purpose::FIXTURE
-            && self.tables.iter().any(|t| {
+        let table = if purpose == abi::purpose::FIXTURE {
+            self.tables.iter().position(|t| {
                 t.rows.iter().map(|r| r.len()).sum::<usize>() == bytes.len()
                     && t.rows.iter().flat_map(|r| r.iter()).eq(bytes.iter())
-            });
-        if !legal {
-            self.mark.refused += 1;
+            })
+        } else {
+            None
+        };
+        // A declaration licenses one upload: the upload consumes it, so a later identical
+        // upload (a row-at-a-time fill matching a declared row) needs a declaration of its own.
+        match table {
+            Some(i) => {
+                self.tables.remove(i);
+            }
+            None => self.mark.refused += 1,
         }
-        self.hashes.push((sha256(bytes), legal));
+        self.hashes.push((sha256(bytes), table.is_some()));
     }
 }
 /// Called only after a successful GPU syscall. Successful uploads have readable clipped
@@ -299,6 +307,22 @@ mod tests {
         a.declare(std::vec![FONT, leaked], image);
         assert_eq!(a.tables.len(), 1, "a table with a leaked row is not declared");
         assert_eq!(a.refusal(a.mark, 0, 0), Some("non-static-table"));
+    }
+    #[test]
+    fn declared_table_licenses_one_upload() {
+        let mut a = audit();
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
+        // The same bytes again, as a CPU fill repeating a declared row would upload them.
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), Some("passing-oracle"));
+        // A fresh declaration licenses a fresh upload.
+        a.tables.push(Table { rows: std::vec![FONT] });
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
     }
     #[test]
     fn once_per_context_table_upload_allows_later_runs_without_uploads() {
