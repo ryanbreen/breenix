@@ -1205,7 +1205,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     }
     if screen.gui {
         screen.stage_result(crate::suite_stage::begin());
-        screen.stage_result(crate::suite_stage::release());
+        screen.stage_result(crate::suite_stage::release_for(name));
     }
     let window = if suite == "gpu" && name == "textures/upload-visibility" {
         match io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK) {

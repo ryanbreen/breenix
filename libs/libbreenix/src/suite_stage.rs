@@ -645,10 +645,22 @@ pub(super) fn begin() -> Result<(), String> {
     if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some(serial); }
     Ok(())
 }
-/// Before a case runs: the case's own process takes the display, so the stage gives it back
-/// rather than holding a stack entry under the case. Its next draw takes it again; an
-/// EPERM means the stage does not hold it.
-pub(super) fn release() -> Result<(), String> {
+/// Before a case runs (ruling B29): the stage keeps the display, and the case's own
+/// takeover nests above it, so the matrix stays on screen until the case presents and is
+/// restored when it ends, without the console showing between cases. The cases whose property
+/// is the kernel's screen itself, or the depth of the ownership stack, start above the
+/// kernel's screen instead: the stage gives the display back for them.
+pub(super) fn release_for(name: &str) -> Result<(), String> {
+    if matches!(name, "composition/ownership-stack" | "panel/kernel-screens" | "panel/boot-ribbon") {
+        release()
+    } else {
+        Ok(())
+    }
+}
+
+/// The stage gives the display back. Its next draw takes it again; an EPERM means the stage
+/// does not hold it.
+fn release() -> Result<(), String> {
     match graphics::give_back_display() {
         Ok(()) | Err(crate::error::Error::Os(crate::errno::Errno::EPERM)) => Ok(()),
         Err(e) => Err(std::format!("stage display give-back: {e}")),
