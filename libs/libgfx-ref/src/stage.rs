@@ -243,6 +243,11 @@ impl Canvas<'_> {
     }
     /// Text with its pen at (x, y), clipped at the element's right edge, `width` from x.
     fn text(&mut self, bytes: &[u8], x: usize, y: usize, width: usize, scale: usize, color: Color) {
+        let height = self.fb.height / self.n;
+        self.text_in(bytes, x, y, width, height - y, scale, color);
+    }
+    /// `text`, also clipped at the element's bottom edge, `height` below y.
+    fn text_in(&mut self, bytes: &[u8], x: usize, y: usize, width: usize, height: usize, scale: usize, color: Color) {
         if width == 0 { return; }
         let n = self.n;
         let Some(font) = self.font.as_deref_mut() else {
@@ -254,8 +259,7 @@ impl Canvas<'_> {
             self.fb.pop_clip();
             return;
         };
-        let height = self.fb.height as i32;
-        self.fb.push_clip(crate::framebuf::Rect::new(0, 0, ((x + width) * n) as i32, height));
+        self.fb.push_clip(crate::framebuf::Rect::new(0, (y * n) as i32, ((x + width) * n) as i32, (height * n) as i32));
         ttf_font::draw_text_bytes(self.fb, font, bytes, (x * n) as i32, (y * n) as i32, (7 * scale * n) as f32, color);
         self.fb.pop_clip();
     }
@@ -454,13 +458,8 @@ pub fn draw_with(fb: &mut FrameBuf, run: &Run<'_>, font: &mut StageFont) -> Resu
             OUTLINE
         };
         cv.fill(left, 728, right - left - 2, 24, c);
-        cv.text(m.id.as_bytes(),
-            left + 4,
-            736,
-            right - left - 6,
-            1,
-            Color::WHITE,
-        );
+        // The label's own box, between the ribbon's top and bottom bands (ruling B25).
+        cv.text_in(m.id.as_bytes(), left + 4, 736, right - left - 6, 7, 1, Color::WHITE);
     }
     cv.text(run.boundary.notice()?.as_bytes(), 24, 776, 1256, 1, DIM);
     if let Some(finale) = run.finale {
