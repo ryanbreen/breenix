@@ -3739,15 +3739,18 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 }
             });
         }
-        for ((rid, f), [w, h]) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]).zip(plan.scratch) {
-            if rid != 0 && with_core(|c| c.resources.get(&rid).is_some_and(|r| r.lost)).unwrap_or(false) {
+        // A new scratch texture is made at its record's size, which may exceed this
+        // submission's request (`scratch_for` grows a class to its largest).
+        let unmade = |rid: u32| with_core(|c| c.resources.get(&rid).filter(|r| r.lost).map(|r| (r.width, r.height))).flatten();
+        for (rid, f) in copy_scratch.into_iter().zip([format::B8G8R8A8, format::R8G8B8A8]) {
+            if let Some((w, h)) = (rid != 0).then(|| unmade(rid)).flatten() {
                 create_private(id, rid, wire::target::TEXTURE_2D, virgl_format(f),
                     wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, w, h)?;
             }
         }
-        if data_texture != 0 && with_core(|c| c.resources.get(&data_texture).is_some_and(|r| r.lost)).unwrap_or(false) {
+        if let Some((w, h)) = (data_texture != 0).then(|| unmade(data_texture)).flatten() {
             create_private(id, data_texture, wire::target::TEXTURE_2D, wire::format::R8G8B8A8_UNORM,
-                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, data_width, (plan.data_bytes / 4).div_ceil(data_width))?;
+                wire::bind::RENDER_TARGET | wire::bind::SAMPLER_VIEW, w, h)?;
         }
         Ok::<(), i64>(())
     })();
@@ -4014,14 +4017,19 @@ fn scratch_for(tgid: u64, ctx: u32, class: u32, w: u32, h: u32) -> Result<u32, i
     }).flatten();
     if let Some(rid) = reused { return Ok(rid); }
     // Retire idle entries that cannot fit before growing the class. Busy entries keep
-    // their submission holds and remain in the cache until they become idle.
-    with_core(|c| {
-        let idle: Vec<u32> = c.contexts.get(&ctx).map(|context| context.private_scratch.iter()
-            .filter(|s| s.class == class && c.resources.get(&s.id).is_some_and(|r| r.holds == 1))
-            .map(|s| s.id).collect()).unwrap_or_default();
+    // their submission holds and remain in the cache until they become idle. The new
+    // entry takes the largest width and height the class has held, so requests whose
+    // sizes vary (a run of glyphs) fit it rather than each replacing the last.
+    let (w, h) = with_core(|c| {
+        let Some(context) = c.contexts.get(&ctx) else { return (w, h) };
+        let class_ids = || context.private_scratch.iter().filter(|s| s.class == class).map(|s| s.id);
+        let (w, h) = class_ids().filter_map(|id| c.resources.get(&id))
+            .fold((w, h), |(w, h), r| (w.max(r.width), h.max(r.height)));
+        let idle: Vec<u32> = class_ids().filter(|id| c.resources.get(id).is_some_and(|r| r.holds == 1)).collect();
         if let Some(context) = c.contexts.get_mut(&ctx) { context.private_scratch.retain(|s| !idle.contains(&s.id)); }
         for rid in idle { c.unhold(rid); }
-    });
+        (w, h)
+    }).unwrap_or((w, h));
     let bytes = (w as u64 * 4).next_multiple_of(256).checked_mul(h as u64).ok_or(ENOMEM)?;
     let charge = Charge::new(tgid, bytes.div_ceil(PAGE as u64) * PAGE as u64, true)?;
     let mut backing = Pages::none(); backing.charge_copy(charge);
