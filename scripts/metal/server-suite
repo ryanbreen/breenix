@@ -849,10 +849,10 @@ class Logs:
         marker = 'kernel-restart-' + self.boot_id
         self.root_check('printf "%s\\n" ' + shlex.quote(marker) + ' > /dev/kmsg; sleep 1')
         self.console.run('svc stop blogd')
-        before = self.root_check('grep -c ring-overrun /var/log/kernel.log || true')
+        before = self.root_check(r'grep -c "^\[log\] lost .* reason=ring-overrun" /var/log/kernel.log || true')
         self.console.run('svc start blogd')
-        self.root_check('sleep 1; test "$(grep -c ' + shlex.quote(marker) + ' /var/log/kernel.log)" = 1')
-        after = self.root_check('grep -c ring-overrun /var/log/kernel.log || true')
+        self.root_check('sleep 1; test "$(grep -Fxc ' + shlex.quote('[kernel] [ INFO] audit: ' + marker) + ' /var/log/kernel.log)" = 1')
+        after = self.root_check(r'grep -c "^\[log\] lost .* reason=ring-overrun" /var/log/kernel.log || true')
         count = lambda text: re.findall(r'^([0-9]+)\r?$', text, re.M)[-1]
         if count(before) != count(after): raise ValueError('restart invented a ring overrun')
         self.console.run('svc stop blogd')
