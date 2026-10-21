@@ -35,7 +35,7 @@
         },
         {
           "id": "password-refused",
-          "title": "OpenSSH password-only authentication is refused"
+          "title": "OpenSSH password-only login and a real bssh password request are refused, with serial evidence"
         },
         {
           "id": "wrong-key-refused",

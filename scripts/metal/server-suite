@@ -26,7 +26,7 @@ CASES = (
     ('aes256-gcm', 'OpenSSH authenticates and executes with aes256-gcm forced in both directions'),
     ('aes128-ctr', 'OpenSSH authenticates and executes with aes128-ctr forced in both directions'),
     ('ed25519-user', 'An authorized Ed25519 user key authenticates and executes'),
-    ('password-refused', 'OpenSSH password-only authentication is refused'),
+    ('password-refused', 'OpenSSH password-only login and a real bssh password request are refused, with serial evidence'),
     ('wrong-key-refused', 'An unauthorized Ed25519 key is refused by publickey authentication'),
     ('root-refused', 'The authorized operator key cannot log in as root'),
     ('telnet-closed', 'Neither the standard nor the former development telnet port has a listener'),
@@ -224,6 +224,17 @@ class Probe:
                 result = self.ssh(script, posix=False)
                 if result.returncode == 0 or 'argument list too long' not in result.stdout:
                     raise ValueError('oversized argv was executed or not reported')
+            for arguments, message in [
+                (["/bin/echo"] + ['arg'] * 64, 'argument list too long'),
+                (["/bin/echo", 'x' * 4096], 'argument list too long'),
+                (["/bin/echo", 'before\x00after'], 'argument contains NUL'),
+            ]:
+                script = 'exec(' + ','.join(json.dumps(arg) for arg in arguments) + ');'
+                result = self.ssh(script, posix=False)
+                if result.returncode == 0 or message not in result.stdout:
+                    raise ValueError('native exec accepted invalid argv or omitted its error')
+            script = 'let r = exec("/bin/echo", "native-argv-ok"); console.log(r.stdout); exit(r.exitCode);'
+            self.require(self.ssh(script, posix=False), 'native-argv-ok')
         elif name == 'exec-stdin':
             # Exhaust channel windows and pipe capacity; exact output requires EOF.
             payload = ''.join(f'{i:06d}: stdin data and spaces\n' for i in range(360000))

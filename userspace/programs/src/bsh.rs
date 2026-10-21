@@ -378,16 +378,6 @@ fn native_exec(
     let resolved = resolve_command(cmd);
     let exec_path = resolved.as_deref().unwrap_or(cmd.as_str());
 
-    // Create pipes for stdout and stderr capture
-    let (stdout_r, stdout_w) = match libbreenix::io::pipe() {
-        Ok(p) => p,
-        Err(_) => return Err(JsError::runtime("exec: pipe() failed")),
-    };
-    let (stderr_r, stderr_w) = match libbreenix::io::pipe() {
-        Ok(p) => p,
-        Err(_) => return Err(JsError::runtime("exec: pipe() failed")),
-    };
-
     // Pre-fork: copy exec path and argv to stack buffers.
     // After fork, heap pages may not be accessible due to a kernel CoW bug.
     let path_bytes_len = exec_path.len();
@@ -403,11 +393,17 @@ fn native_exec(
     let mut argv_data = [0u8; ARGV_BUF_SIZE];
     let mut argv_offsets = [0usize; MAX_ARGS];
     let mut argv_pos = 0usize;
-    let argc = cmd_args.len().min(MAX_ARGS - 1);
+    if cmd_args.len() >= MAX_ARGS {
+        return Err(JsError::runtime("exec: argument list too long"));
+    }
+    let argc = cmd_args.len();
     for i in 0..argc {
         let arg_bytes = cmd_args[i].as_bytes();
+        if arg_bytes.contains(&0) {
+            return Err(JsError::runtime("exec: argument contains NUL"));
+        }
         if argv_pos + arg_bytes.len() + 1 > ARGV_BUF_SIZE {
-            break;
+            return Err(JsError::runtime("exec: argument list too long"));
         }
         argv_offsets[i] = argv_pos;
         argv_data[argv_pos..argv_pos + arg_bytes.len()].copy_from_slice(arg_bytes);
@@ -415,6 +411,20 @@ fn native_exec(
         argv_data[argv_pos] = 0;
         argv_pos += 1;
     }
+
+    // Validate argv before allocating descriptors or creating a child.
+    let (stdout_r, stdout_w) = match libbreenix::io::pipe() {
+        Ok(p) => p,
+        Err(_) => return Err(JsError::runtime("exec: pipe() failed")),
+    };
+    let (stderr_r, stderr_w) = match libbreenix::io::pipe() {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = libbreenix::io::close(stdout_r);
+            let _ = libbreenix::io::close(stdout_w);
+            return Err(JsError::runtime("exec: pipe() failed"));
+        }
+    };
 
     // Save shell's process group for terminal reclaim after child exits
     let shell_pgid = libbreenix::process::getpgrp().map(|p| p.raw() as i32).unwrap_or(0);
