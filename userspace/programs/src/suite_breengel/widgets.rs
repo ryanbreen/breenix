@@ -1181,13 +1181,14 @@ fn open_menu() -> (MenuBar, Theme) {
 
 // gpu-text: R3 derives menu label and shortcut widths from certified 26.6 advances.
 fn widgets_menubar_open() -> CaseResult {
+    let scale=ui_scale();
     let (m, theme) = open_menu();
     ensure(
         m.is_open(),
         "14.3",
         "a press and release on the File title left its menu closed",
     )?;
-    let mut g = Drawn::bgrx(330, 140);
+    let mut g = ui_frame(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
@@ -1202,21 +1203,21 @@ fn widgets_menubar_open() -> CaseResult {
         (dx + 2, dy + dh, PAPER, "the pixel below it"),
     ] {
         ensure(
-            g.color(x, y) == want,
+            g.color(x*scale, y*scale) == want,
             "14.3",
             format!(
                 "{what} at ({x},{y}) is {}, the contract gives {}",
-                hex(g.color(x, y)),
+                hex(g.color(x*scale, y*scale)),
                 hex(want)
             ),
         )?;
     }
-    let mut want = Guarded::bgrx(sans_width(b"New") as usize, 16);
+    let mut want = Guarded::bgrx(sans_width(b"New") as usize*scale, 16*scale);
     want.reset(theme.widget_bg);
     sans_draw(&mut want.fb(),b"New",0,0,theme.text_primary);
-    for y in 0..16 {
+    for y in 0..16*scale {
         for x in 0..want.width {
-            let got = g.color(dx + 18 + x, dy + 3 + y);
+            let got = g.color((dx + 18)*scale + x, (dy + 3)*scale + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
