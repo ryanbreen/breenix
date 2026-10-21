@@ -97,6 +97,10 @@
           "title": "A user's write or truncate clears a file's set-user-ID and set-group-ID bits"
         },
         {
+          "id": "mmap-shared-clears-setid",
+          "title": "A user's shared writable mapping clears a file's set-ID bits, and its pending stores confer no identity at exec"
+        },
+        {
           "id": "utimes-explicit-nonowner-eperm",
           "title": "Explicit times need ownership (EPERM); setting both to now needs ownership or write (EACCES)"
         }
@@ -227,6 +231,14 @@
         {
           "id": "tcp-low-port-eacces",
           "title": "A user cannot bind a TCP port below 1024 (EACCES); root can"
+        },
+        {
+          "id": "home-nodev-device-eacces",
+          "title": "A device node under /home, mounted nodev, opens no device (EACCES), and only root may make one"
+        },
+        {
+          "id": "window-other-eperm",
+          "title": "A user cannot list, read, map or exchange input with another user's window (EPERM)"
         }
       ]
     },

@@ -108,15 +108,15 @@ operations below call it or the parent policy built on it:
 | unlink, rmdir, rename | Write and search on each parent, plus the sticky rule. Moving a directory to a new parent needs write on the directory itself. |
 | Symlinks in sticky world-writable directories | Followed only if the follower or the directory's owner owns the link; otherwise EACCES. |
 | chmod, chown | As today. |
-| write, truncate | A non-root caller's write or truncate clears S_ISUID and S_ISGID on a regular file (K4). |
+| write, truncate | A non-root caller's write or truncate clears S_ISUID and S_ISGID on a regular file (K4), and so does its shared writable mapping of one, when mmap or mprotect makes it. While stores through a mapping wait for writeback, exec of the file confers no identity. |
 | utimensat, futimens | Both times UTIME_NOW: owner, write permission, or root. Explicit times: owner or root, else EPERM. Both UTIME_OMIT: no check (K3). |
-| Mounts | The kernel's mount table carries `ro`, `nosuid`, `nodev` and `noexec`, shown in `/proc/mounts` and statvfs `f_flag` (K6). `/home` is nosuid,nodev. |
+| Mounts | The kernel's mount table carries `ro`, `nosuid`, `nodev` and `noexec`, shown in `/proc/mounts` and the `f_flag` of statvfs and of fstatvfs, which reports the mount the descriptor was opened through (K6). `/home` is nosuid,nodev. |
 | kill, priority, affinity | kill as today. Raising priority, real-time policies and changing another user's affinity need root. |
 | ptrace (K11) | The tracer's real uid and gid must equal each of the target's uids and gids, and the target must not have gained an identity at exec. Otherwise root. |
 | /proc | Pid directories stay listable. `exe`, `kernel_output` and any later `fd`, `environ` or `mem` use the ptrace-read rule (K9). `kmsg` and `trace/*` are root-only. Owners shown are the process's euid and egid. |
-| devfs | Real owners and modes, checked at open (K7). `null`, `zero` (device names in `kernel/src/fs/devfs/mod.rs`<!-- claim-lint:ok: kernel/src/fs/devfs/mod.rs -->), `tty` and `ptmx` 0666; `console` 0600 root; `tty1`–`tty6` 0620 root:tty, given to the user at login and returned at logout; `vcs*` 0600 root; `rtc0` 0444. ext2 device inodes open no device. |
+| devfs | Real owners and modes, checked at open (K7). `null`, `zero` (device names in `kernel/src/fs/devfs/mod.rs`<!-- claim-lint:ok: kernel/src/fs/devfs/mod.rs -->), `tty` and `ptmx` 0666; `console` 0600 root; `tty1`–`tty6` 0620 root:tty, given to the user at login and returned at logout; `vcs*` 0600 root; `rtc0` 0444. An ext2 device inode opens its device by its own owner and mode on a mount without `nodev`, and is refused (EACCES) on a `nodev` mount such as `/home`. Making one is device mknod, which only root may do, so an account cannot mint a device (ruling S13). |
 | fd passing | SCM_RIGHTS moves an open description with its access mode and no recheck, as POSIX intends. |
-| Privileged operations | One list in `kernel/src/process/privilege.rs`: clock_settime, sethostname, chroot, raising hard rlimits, TCP and UDP ports below 1024 (K8), device mknod, framebuffer, audio and GPU calls outside the session's devices, reboot, and the trace controls. Refusals are EPERM, or EACCES for ports. |
+| Privileged operations | One list in `kernel/src/process/privilege.rs`: clock_settime, sethostname, chroot, raising hard rlimits, TCP and UDP ports below 1024 (K8), device mknod, framebuffer, audio and GPU calls outside the session's devices (a window's operations are its owner's, and the display's holder or root may act on another process's window), reboot, and the trace controls. Refusals are EPERM, or EACCES for ports. |
 
 **Storage.** ext2 keeps its mode and split 32-bit owners, with no ACLs. The filesystem effort's `fs-interface` exposes
 `InodeAttrs { mode, uid, gid, nlink, times }` with the checks staying in the VFS; the CoW filesystem stores the same

@@ -1322,8 +1322,8 @@ scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 ## Users & permissions
 
 `users` measures the users effort in `docs/efforts/path.json` against `docs/users/design.md`.
-Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files` (14),
-`sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (6) and `umask` (4), 51 cases. The
+Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files` (15),
+`sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (8) and `umask` (4), 54 cases. The
 other categories are planned and arrive with their milestones (design section 7).
 
 The suite runs as root. A case that needs another identity forks a child that becomes a
@@ -1337,7 +1337,10 @@ search check in the path) also shows the operation succeeding for an identity th
 kernel's `cred-orphan` test point (32) for its own thread. `setid-exec/nosuid-home-ignored`
 writes under `/home`, which is the home filesystem where one is mounted and the root
 filesystem's directory otherwise; the kernel gives `/home` its `nosuid,nodev` options in both
-cases.
+cases, and `proc-dev/home-nodev-device-eacces` makes its device node there.
+`proc-dev/window-other-eperm` uses the window operations, which only ARM64 has; on x86-64 it
+shows a user's window operations refused (EINVAL): the x86-64 framebuffer call accepts only
+operations 6 and 32.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite users

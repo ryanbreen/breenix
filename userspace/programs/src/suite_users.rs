@@ -46,6 +46,7 @@ static SUITE: Suite = suite(
             case("chown-giveaway-eperm", "A user cannot give a file to another user (EPERM)", chown_giveaway),
             case("chgrp-nonmember-eperm", "The owner may change a file's group only to a group they belong to", chgrp_nonmember),
             case("write-clears-setid", "A user's write or truncate clears a file's set-user-ID and set-group-ID bits", write_clears_setid),
+            case("mmap-shared-clears-setid", "A user's shared writable mapping clears a file's set-ID bits, and its pending stores confer no identity at exec", mmap_clears_setid),
             case("utimes-explicit-nonowner-eperm", "Explicit times need ownership (EPERM); setting both to now needs ownership or write (EACCES)", utimes_nonowner),
         ]),
         category("sticky", "Sticky world-writable directories: removal, rename, symlinks and hard links", &[
@@ -81,6 +82,8 @@ static SUITE: Suite = suite(
             case("trace-user-eacces", "/proc/trace is root's alone (EACCES)", trace_user),
             case("vcs-user-eacces", "The console and the screen devices are root's 0600 nodes a user cannot open (EACCES)", vcs_user),
             case("tcp-low-port-eacces", "A user cannot bind a TCP port below 1024 (EACCES); root can", tcp_low_port),
+            case("home-nodev-device-eacces", "A device node under /home, mounted nodev, opens no device (EACCES), and only root may make one", home_nodev_device),
+            case("window-other-eperm", "A user cannot list, read, map or exchange input with another user's window (EPERM)", window_other),
         ]),
         category("umask", "File creation mask across files, directories, fork and threads", &[
             case("umask-file", "A new file's mode is the requested mode less the umask", umask_file),
@@ -116,6 +119,9 @@ const HELPER: &str = "/usr/local/test/bin/users-exec_test";
 mod nr {
     pub const WRITE: u64 = 1;
     pub const CLOSE: u64 = 3;
+    pub const MMAP: u64 = 9;
+    pub const MPROTECT: u64 = 10;
+    pub const FSYNC: u64 = 74;
     pub const GETPID: u64 = 39;
     pub const SOCKET: u64 = 41;
     pub const BIND: u64 = 49;
@@ -135,10 +141,12 @@ mod nr {
     pub const SETRESGID: u64 = 119;
     pub const GETRESGID: u64 = 120;
     pub const STATFS: u64 = 137;
+    pub const FSTATFS: u64 = 138;
     pub const SETPRIORITY: u64 = 141;
     pub const GETTID: u64 = 186;
     pub const OPENAT: u64 = 257;
     pub const MKDIRAT: u64 = 258;
+    pub const MKNODAT: u64 = 259;
     pub const FCHOWNAT: u64 = 260;
     pub const NEWFSTATAT: u64 = 262;
     pub const UNLINKAT: u64 = 263;
@@ -153,6 +161,9 @@ mod nr {
 mod nr {
     pub const WRITE: u64 = 64;
     pub const CLOSE: u64 = 57;
+    pub const MMAP: u64 = 222;
+    pub const MPROTECT: u64 = 226;
+    pub const FSYNC: u64 = 82;
     pub const GETPID: u64 = 172;
     pub const SOCKET: u64 = 198;
     pub const BIND: u64 = 200;
@@ -172,10 +183,12 @@ mod nr {
     pub const SETRESGID: u64 = 149;
     pub const GETRESGID: u64 = 150;
     pub const STATFS: u64 = 43;
+    pub const FSTATFS: u64 = 44;
     pub const SETPRIORITY: u64 = 140;
     pub const GETTID: u64 = 178;
     pub const OPENAT: u64 = 56;
     pub const MKDIRAT: u64 = 34;
+    pub const MKNODAT: u64 = 33;
     pub const FCHOWNAT: u64 = 54;
     pub const NEWFSTATAT: u64 = 79;
     pub const UNLINKAT: u64 = 35;
@@ -196,6 +209,8 @@ const CRED_ORPHAN: u32 = 32;
 const EPERM: i64 = 1;
 const ESRCH: i64 = 3;
 const EACCES: i64 = 13;
+#[cfg(target_arch = "x86_64")]
+const EINVAL: i64 = 22;
 
 const AT_FDCWD: u64 = (-100i64) as u64;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -205,6 +220,14 @@ const O_RDWR: u64 = 2;
 const O_CREAT: u64 = 0o100;
 const O_EXCL: u64 = 0o200;
 const O_CLOEXEC: u64 = 0x80000;
+const PROT_READ: u64 = 1;
+const PROT_WRITE: u64 = 2;
+const MAP_SHARED: u64 = 1;
+const S_IFCHR: u32 = 0o020000;
+/// /dev/null's device number, major 1 minor 3.
+const NULL_RDEV: u64 = 0x103;
+/// The framebuffer and window system call, the same number on both architectures.
+const FBDRAW: u64 = 411;
 const CLONE_FS: u64 = 0x200;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
@@ -324,6 +347,32 @@ fn statvfs_flags(path: &str) -> Result<u64, String> {
     let r = sc(nr::STATFS, &[c.as_ptr() as u64, buf.as_mut_ptr() as u64]);
     if r < 0 { Err(format!("statfs {path} failed with {}", errname(-r))) } else { Ok(buf[10]) }
 }
+/// The flags fstatvfs reports for the filesystem holding `path`, through a descriptor
+/// opened with `flags`.
+fn fstatvfs_flags(path: &str, flags: u64) -> Result<u64, String> {
+    let fd = ok(&format!("open {path}"), open(path, flags | O_CLOEXEC, 0))?;
+    let mut buf = [0u64; 16];
+    let r = sc(nr::FSTATFS, &[fd as u64, buf.as_mut_ptr() as u64]);
+    close(fd);
+    if r < 0 { Err(format!("fstatfs of {path} failed with {}", errname(-r))) } else { Ok(buf[10]) }
+}
+fn mknod(path: &str, mode: u32, dev: u64) -> i64 {
+    let c = cpath(path);
+    sc(nr::MKNODAT, &[AT_FDCWD, c.as_ptr() as u64, mode as u64, dev])
+}
+/// Map the first page of `path`, shared, through a descriptor opened with `flags`: the
+/// address. The mapping stays until the process ends.
+fn map_shared(path: &str, flags: u64, prot: u64) -> Result<u64, String> {
+    let fd = ok(&format!("open {path}"), open(path, flags | O_CLOEXEC, 0))?;
+    let addr = sc(nr::MMAP, &[0, 4096, prot, MAP_SHARED, fd as u64, 0]);
+    close(fd);
+    ok(&format!("mmap of {path}"), addr).map(|addr| addr as u64)
+}
+/// Store into the ELF identification's padding (byte 9), which a loader ignores.
+fn store_padding(addr: u64) {
+    // SAFETY: `addr` is a live, writable mapping of at least one page.
+    unsafe { core::ptr::write_volatile((addr as *mut u8).add(9), 0x5a) };
+}
 
 /// Become `who` for good: its supplementary groups, then its group IDs, then its user
 /// IDs, after which taking user ID 0 back must be refused.
@@ -392,13 +441,23 @@ struct Holder { pid: i32, hold: Fd }
 
 impl Holder {
     fn start(who: Account) -> Result<Holder, CaseError> {
+        Holder::start_with(who, || Ok(String::new())).map(|(holder, _)| holder)
+    }
+
+    /// `start`, with `setup` run as `who` before the holder waits; what it returns is
+    /// passed back, and its failure fails the case.
+    fn start_with(who: Account, setup: impl FnOnce() -> Result<String, String>) -> Result<(Holder, String), CaseError> {
         let (ready_r, ready_w) = io::pipe()?;
         let (hold_r, hold_w) = io::pipe()?;
         match process::fork()? {
             ForkResult::Child => {
                 let _ = io::close(ready_r);
                 let _ = io::close(hold_w);
-                if become_account(who).is_err() { process::exit(1); }
+                let report = match become_account(who).and_then(|()| setup()) {
+                    Ok(value) => format!("+{value}"),
+                    Err(msg) => format!("-{msg}"),
+                };
+                let _ = io::write(ready_w, report.as_bytes());
                 let _ = io::close(ready_w);
                 read_all(hold_r);
                 process::exit(0)
@@ -406,9 +465,17 @@ impl Holder {
             ForkResult::Parent(child) => {
                 let _ = io::close(ready_w);
                 let _ = io::close(hold_r);
-                read_all(ready_r);
+                let report = String::from_utf8_lossy(&read_all(ready_r)).into_owned();
                 let _ = io::close(ready_r);
-                Ok(Holder { pid: child.raw() as i32, hold: hold_w })
+                let holder = Holder { pid: child.raw() as i32, hold: hold_w };
+                match report.strip_prefix('+') {
+                    Some(value) => Ok((holder, value.to_string())),
+                    None => Err(CaseError::Fail(format!(
+                        "the holder as {}: {}",
+                        who.uid,
+                        report.strip_prefix('-').unwrap_or("ended before reporting")
+                    ))),
+                }
             }
         }
     }
@@ -837,6 +904,58 @@ fn write_clears_setid() -> CaseResult {
     Ok(())
 }
 
+fn mmap_clears_setid() -> CaseResult {
+    let dir = Dir::new("setid-mmap", 0o755, 0, 0)?;
+    // A root-owned set-ID program, mode 6777, that ua may write.
+    let program = helper_copy(&dir, "p", 0, 0, 0o6777)?;
+    let setid_mode = |what: &str| -> Checked {
+        let mode = mode_of(&program)? & 0o7777;
+        want(mode == 0o6777, format!("{what}: the mode is {mode:o}, expected 6777"))
+    };
+    let cleared = |what: &str| -> Checked {
+        let mode = mode_of(&program)? & 0o7777;
+        want(mode == 0o777, format!("{what}: the mode is {mode:o}, expected 777"))
+    };
+    // Root sets the bits again once earlier stores are on disk, whose writeback would
+    // otherwise clear them under the next check.
+    let reset = || -> Checked {
+        let fd = ok("open as root", open(&program, O_RDONLY | O_CLOEXEC, 0))?;
+        let synced = sc(nr::FSYNC, &[fd as u64]);
+        close(fd);
+        ok("fsync as root", synced)?;
+        ok("chmod 6777 as root", chmod(&program, 0o6777)).map(|_| ())
+    };
+    as_user(A, || {
+        map_shared(&program, O_RDONLY, PROT_READ)?;
+        setid_mode("after ua's read-only shared mapping")?;
+        let addr = map_shared(&program, O_RDONLY, PROT_READ)?;
+        refused("mprotect(PROT_WRITE) of a mapping opened read-only", sc(nr::MPROTECT, &[addr, 4096, PROT_READ | PROT_WRITE]), EACCES)?;
+        setid_mode("after ua's refused mprotect")?;
+        let addr = map_shared(&program, O_RDWR, PROT_WRITE | PROT_READ)?;
+        cleared("after ua's shared writable mapping")?;
+        store_padding(addr);
+        cleared("after ua's store through the mapping")
+    })?;
+    reset()?;
+    as_user(A, || {
+        let addr = map_shared(&program, O_RDWR, PROT_READ)?;
+        setid_mode("after ua's read-only mapping of a writable descriptor")?;
+        ok("mprotect(PROT_WRITE)", sc(nr::MPROTECT, &[addr, 4096, PROT_READ | PROT_WRITE]))?;
+        cleared("after ua's mprotect to PROT_WRITE")
+    })?;
+    reset()?;
+    // ua's stores wait for writeback while root sets the bits again: exec of the file
+    // must confer no identity, as the stores' writeback will clear the bits.
+    let (_writer, _) = Holder::start_with(A, || {
+        store_padding(map_shared(&program, O_RDWR, PROT_READ | PROT_WRITE)?);
+        Ok(String::new())
+    })?;
+    ok("chmod 6777 as root", chmod(&program, 0o6777))?;
+    let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
+    report_is(&report, "resuid", &ids([UB; 3]), "a set-user-ID program with mapped stores pending")?;
+    report_is(&report, "resgid", &ids([UB; 3]), "a set-group-ID program with mapped stores pending").map_err(CaseError::from)
+}
+
 fn utimes_nonowner() -> CaseResult {
     let dir = Dir::new("utimes", 0o755, 0, 0)?;
     let writable = dir.file("w", UB, UB, 0o666, b"x")?;
@@ -971,6 +1090,8 @@ fn nosuid_home() -> CaseResult {
     let flags = statvfs_flags("/home")?;
     check(flags & (ST_NOSUID | ST_NODEV) == ST_NOSUID | ST_NODEV,
         &format!("statvfs(/home) flags are {flags:#x}, without ST_NOSUID and ST_NODEV"))?;
+    let fd_flags = fstatvfs_flags("/home", O_RDONLY)?;
+    check(fd_flags == flags, &format!("fstatvfs of a descriptor for /home reports {fd_flags:#x}, statvfs {flags:#x}"))?;
     let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| format!("reading /proc/mounts: {e}"))?;
     let home = mounts.lines().find(|line| line.split_whitespace().nth(1) == Some("/home"));
     check(home.is_some_and(|line| {
@@ -979,6 +1100,8 @@ fn nosuid_home() -> CaseResult {
     }), &format!("/proc/mounts shows /home as {home:?}"))?;
     let dir = Dir::at(&format!("/home/users-{}", pid()), 0o755, 0, 0)?;
     let program = helper_copy(&dir, "p", UB, UB, 0o6755)?;
+    let file_flags = fstatvfs_flags(&program, O_RDONLY)?;
+    check(file_flags == flags, &format!("fstatvfs of a file under /home reports {file_flags:#x}, statvfs {flags:#x}"))?;
     let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(A))?;
     report_is(&report, "resuid", &ids([UA; 3]), "a set-user-ID program under /home")?;
     report_is(&report, "resgid", &ids([UA; 3]), "a set-group-ID program under /home")?;
@@ -1189,6 +1312,103 @@ fn tcp_low_port() -> CaseResult {
         ok("bind of TCP port 41013", bind_tcp(41013)).map(|_| ())
     })?;
     as_account(None, || ok("bind of TCP port 1013 as root", bind_tcp(1013)).map(|_| ()))
+}
+
+fn home_nodev_device() -> CaseResult {
+    let home = Dir::at(&format!("/home/users-{}-dev", pid()), 0o755, 0, 0)?;
+    let tmp = Dir::new("dev", 0o777, 0, 0)?;
+    let (on_home, on_tmp) = (home.path("null"), tmp.path("null"));
+    ok("mknod of a null device under /home as root", mknod(&on_home, S_IFCHR | 0o666, NULL_RDEV))?;
+    ok("mknod of a null device under /tmp as root", mknod(&on_tmp, S_IFCHR | 0o666, NULL_RDEV))?;
+    // The same node opens on the root filesystem: what refuses it under /home is nodev.
+    ok("open of the null device under /tmp", try_open(&on_tmp, O_RDWR))?;
+    refused("open of the null device under /home as root", try_open(&on_home, O_RDWR), EACCES)?;
+    as_user(A, || {
+        refused("open of the null device under /home", try_open(&on_home, O_RDWR), EACCES)?;
+        refused("mknod of a device", mknod(&tmp.path("mine"), S_IFCHR | 0o666, NULL_RDEV), EPERM)
+    })
+}
+
+/// An FBDRAW command: the raw return.
+fn fbdraw(op: u32, p: [u64; 4], color: u32) -> i64 {
+    let cmd = libbreenix::graphics::FbDrawCmd { op, p1: p[0] as i32, p2: p[1] as i32, p3: p[2] as i32, p4: p[3] as i32, color };
+    sc(FBDRAW, &[&cmd as *const _ as u64])
+}
+fn lo_hi(ptr: u64) -> [u64; 2] { [ptr & 0xffff_ffff, ptr >> 32] }
+
+/// Create and register a 4x4 window titled `title`: its buffer ID.
+#[cfg(target_arch = "aarch64")]
+fn make_window(title: &str) -> Result<u32, String> {
+    let mut addr = 0u64;
+    let [lo, hi] = lo_hi(&mut addr as *mut u64 as u64);
+    let id = ok("creating a window", fbdraw(11, [4, 4, lo, hi], 0))?;
+    let [lo, hi] = lo_hi(title.as_ptr() as u64);
+    ok("registering the window", fbdraw(12, [id as u64, lo, hi, title.len() as u64], 0))?;
+    Ok(id as u32)
+}
+
+/// The buffer IDs of the windows the caller may list.
+#[cfg(target_arch = "aarch64")]
+fn listed_windows() -> Result<Vec<u32>, String> {
+    let mut out = [libbreenix::graphics::WindowInfo::default(); 16];
+    let [lo, hi] = lo_hi(out.as_mut_ptr() as u64);
+    let n = ok("listing windows", fbdraw(13, [lo, hi, out.len() as u64, 0], 0))?;
+    Ok(out[..n as usize].iter().map(|w| w.buffer_id).collect())
+}
+
+/// Each window operation a process may perform only on its own windows, on `id`: what
+/// it is and the raw return.
+fn window_ops(id: u32) -> Vec<(&'static str, i64)> {
+    let id = id as u64;
+    let mut pixels = [0u8; 64];
+    let mut events = [libbreenix::graphics::WindowInputEvent::default(); 4];
+    let event = libbreenix::graphics::WindowInputEvent::default();
+    let mut mapped = 0u64;
+    let [plo, phi] = lo_hi(pixels.as_mut_ptr() as u64);
+    let [elo, ehi] = lo_hi(events.as_mut_ptr() as u64);
+    let [ilo, ihi] = lo_hi(&event as *const _ as u64);
+    let [mlo, mhi] = lo_hi(&mut mapped as *mut u64 as u64);
+    vec![
+        ("reading its pixels", fbdraw(14, [id, plo, phi, pixels.len() as u64], 0)),
+        ("reading its input", fbdraw(19, [id, elo, ehi, events.len() as u64], 1)),
+        ("writing its input", fbdraw(18, [id, ilo, ihi, 0], 0)),
+        ("mapping its pixels", fbdraw(21, [id, mlo, mhi, 0], 0)),
+        ("checking it for a new frame", fbdraw(22, [id, 0, 0, 0], 0)),
+        ("moving it", fbdraw(17, [id, 0, 0, 0], 0)),
+    ]
+}
+
+#[cfg(target_arch = "aarch64")]
+fn window_other() -> CaseResult {
+    let (_owner, id) = Holder::start_with(B, || make_window("ub's").map(|id| id.to_string()))?;
+    let id: u32 = id.parse().map_err(|_| format!("ub's window ID {id:?} is not a number"))?;
+    check(listed_windows()?.contains(&id), "root's window list does not show ub's window")?;
+    as_user(A, || {
+        let listed = listed_windows()?;
+        want(!listed.contains(&id), format!("ua's window list shows ub's window {id}: {listed:?}"))?;
+        for (what, ret) in window_ops(id) {
+            refused(&format!("{what} of ub's window"), ret, EPERM)?;
+        }
+        let mine = make_window("ua's")?;
+        want(listed_windows()? == [mine], "ua's window list does not show exactly ua's own window")?;
+        for (what, ret) in window_ops(mine) {
+            ok(&format!("{what} of ua's own window"), ret)?;
+        }
+        Ok(())
+    })
+}
+
+/// x86-64 has no window registry: its framebuffer call refuses the window operations (EINVAL).
+#[cfg(target_arch = "x86_64")]
+fn window_other() -> CaseResult {
+    as_user(A, || {
+        refused("creating a window", fbdraw(11, [4, 4, 0, 0], 0), EINVAL)?;
+        refused("listing windows", fbdraw(13, [0, 0, 0, 0], 0), EINVAL)?;
+        for (what, ret) in window_ops(1) {
+            refused(&format!("{what} of window 1"), ret, EINVAL)?;
+        }
+        Ok(())
+    })
 }
 
 // ---------------------------------------------------------------------------
