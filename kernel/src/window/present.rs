@@ -14,11 +14,11 @@ use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
 use breengel_abi::errno::{EBUSY, EIO, ENOENT, EPERM};
 use breengel_abi::{
-    backend, limits, CompositeEntry, CompositeRecordHeader, Cursor, MapTree, Plain, Readback,
+ limits, CompositeEntry, CompositeRecordHeader, Cursor, MapTree, Plain, Readback,
     Rect,
 };
 
-use super::mem::Mem;
+use crate::gpu::window_targets::Target;
 use super::{Caller, Damage, REGISTRY};
 
 /// A pinned front buffer: its memory stays readable, and the buffer cannot return to its
@@ -26,18 +26,18 @@ use super::{Caller, Damage, REGISTRY};
 pub struct Pin {
     window: u64,
     uid: u64,
-    mem: Arc<Mem>,
+    mem: Arc<Target>,
 }
 
 impl Pin {
     /// Pin buffer `uid` of window `window`, whose memory is `mem`. The caller holds the registry
     /// lock and has incremented the buffer's pin count.
-    pub(super) fn new(window: u64, uid: u64, mem: Arc<Mem>) -> Pin {
+    pub(super) fn new(window: u64, uid: u64, mem: Arc<Target>) -> Pin {
         Pin { window, uid, mem }
     }
 
     /// The buffer's memory: BGRX rows of the window's stride.
-    pub fn mem(&self) -> &Mem {
+    pub fn mem(&self) -> &Target {
         &self.mem
     }
 }
@@ -122,11 +122,6 @@ pub fn set_backend(backend: &'static dyn Backend) {
 
 pub fn backend() -> Option<&'static dyn Backend> {
     BACKEND.get().copied()
-}
-
-/// The code `WinInfo.backend` reports.
-pub fn backend_code() -> u32 {
-    backend().map_or(backend::NONE, |b| b.code())
 }
 
 /// A window's presentation state.

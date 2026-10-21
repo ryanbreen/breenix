@@ -20,6 +20,7 @@ use crate::task::waitqueue::WaitQueueHead;
 
 use super::events::{kernel_event, now_ns, writable, Ring};
 use super::mem::{self, Mem};
+use crate::gpu::window_targets::Target;
 use super::present::{Pin, WindowPresent};
 use super::{
     who, BufState, Buffer, Caller, Claim as Held, Damage, Remnant, Waits, Window, REGISTRY,
@@ -79,9 +80,10 @@ fn buffer_bytes(width: u32, height: u32) -> u64 {
 /// One buffer, allocated and mapped into the caller, read-write or read-only. ENOMEM when the
 /// mapping would pass `RLIMIT_AS` or memory runs out.
 fn new_buffer(reg_uid: u64, width: u32, height: u32, writable: bool) -> Result<Buffer, i32> {
-    room_for(buffer_bytes(width, height))?;
-    let mem = Mem::new(buffer_bytes(width, height))?;
-    let addr = mem::map(&mem, writable)?;
+    let owner = Caller::current()?.tgid;
+    let mem = Target::new(owner, width, height)?;
+    mem.seal(!writable)?;
+    let addr = mem.handle();
     crate::tracing::providers::window::count_buffer_alloc();
     Ok(Buffer {
         uid: reg_uid,
@@ -123,7 +125,7 @@ fn uids(n: usize) -> Vec<u64> {
 /// Undo mappings made for a window that will not exist.
 fn unmap_all(buffers: &[Buffer], tree: Option<(&Mem, u64)>) {
     for b in buffers {
-        mem::unmap(&b.mem, b.addr);
+        b.mem.revoke();
     }
     if let Some((t, addr)) = tree {
         mem::unmap(t, addr);
@@ -317,7 +319,7 @@ pub fn list(_caller: &Caller, l: &List) -> Result<u64, i32> {
     }
     mem::probe_writable(l.ptr, (l.capacity as u64).saturating_mul(core::mem::size_of::<WinInfo>() as u64))?;
     sweep_dead_owners();
-    let backend = super::present::backend_code();
+    let backend = crate::gpu::window_targets::backend_code();
     let entries: Vec<WinInfo> = {
         let reg = REGISTRY.lock();
         let mut v = Vec::new();
@@ -382,24 +384,17 @@ pub(super) fn stall() {
 
 /// Copy `rects` of a `stride`-byte-per-row image from `src` to `dst`, pausing half way when
 /// `acquire-stall` is armed for `window`.
-fn replay(window: u64, src: &Mem, dst: &Mem, stride: u32, rects: &[Rect]) {
-    use breengel_abi::tc_point::ACQUIRE_STALL;
-    let rows: u64 = rects.iter().map(|r| r.h.max(0) as u64).sum();
-    let pause_at = crate::test_control::take(ACQUIRE_STALL, window).map(|_| rows / 2);
-    let mut done = 0u64;
+fn replay(window: u64, src: &Target, dst: &Target, rects: &[Rect]) -> Result<(), i32> {
+    let pause = crate::test_control::take(breengel_abi::tc_point::ACQUIRE_STALL, window).is_some();
+    let mut first = true;
     for r in rects {
-        for y in r.y..r.y + r.h {
-            if pause_at == Some(done) {
-                stall();
-            }
-            let offset = y as u64 * stride as u64 + r.x as u64 * 4;
-            dst.copy_from(src, offset, r.w as usize * 4);
-            done += 1;
-        }
+        let half = r.h / 2;
+        dst.copy_from(src, &[Rect::new(r.x,r.y,r.w,half)])?;
+        if first && pause { stall(); }
+        first = false;
+        dst.copy_from(src, &[Rect::new(r.x,r.y+half,r.w,r.h-half)])?;
     }
-    if pause_at.is_some_and(|at| at >= done) {
-        stall();
-    }
+    Ok(())
 }
 
 /// `ACQUIRE`: hand out a free buffer, replayed in the kernel to the newest front. The buffer
@@ -411,12 +406,12 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
     }
     let until = deadline(a.timeout_ns);
     // Take a buffer, compute its replay set and pin the front it copies from.
-    let (index, uid, dst, addr, base, set, source, stride, width, height, tree, tree_addr, tree_len) = loop {
+    let (index, uid, dst, base, set, source, width, height, tree, tree_addr, tree_len) = loop {
         let waits = {
             let mut reg = REGISTRY.lock();
             let w = reg.window(a.id, caller, who::owner)?;
             if let Some(i) = pick_free(w) {
-                let (stride, width, height, front_commit) = (w.stride(), w.width, w.height, w.front_commit);
+                let (width, height, front_commit) = (w.width, w.height, w.front_commit);
                 let (tree, tree_addr, tree_len) = (w.tree.clone(), w.tree_addr, w.tree_len());
                 let set = match w.front {
                     Some(_) if w.buffers[i].base != front_commit => since(w, w.buffers[i].base),
@@ -433,7 +428,7 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
                 let b = &mut w.buffers[i];
                 b.replaying = true;
                 let base = if source.is_some() || w.front.is_some() { front_commit } else { b.base };
-                break (i, b.uid, b.mem.clone(), b.addr, base, set, source, stride, width, height, tree, tree_addr, tree_len);
+                break (i, b.uid, b.mem.clone(), base, set, source, width, height, tree, tree_addr, tree_len);
             }
             w.waits.clone()
         };
@@ -447,11 +442,12 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
         })?;
     };
     let rects = set.rects(width, height);
-    if let Some(src) = source.as_ref() {
-        replay(a.id, src.mem(), &dst, stride, &rects);
-    }
+    let replayed = match source.as_ref() {
+        Some(src) => replay(a.id, src.mem(), &dst, &rects),
+        None => Ok(()),
+    };
     drop(source);
-    let writable = mem::protect(&dst, addr, true)
+    let writable = replayed.and_then(|()| dst.seal(false))
         .and_then(|()| mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, true));
     // Hand the buffer out with its new base, unless the window or the buffer went away during
     // the copy.
@@ -463,7 +459,7 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
                 match w.buffer_mut(uid) {
                     Some(b) if b.replaying => {
                         b.replaying = false;
-                        b.base = base;
+                        b.base = if writable.is_ok() { base } else { 0 };
                         b.acquired = writable.is_ok();
                         (true, Some(waits))
                     }
@@ -504,13 +500,13 @@ pub fn unacquire_index(window: u64, index: u32) {
             let b = w.buffers.get_mut(index as usize).filter(|b| b.acquired && !b.committing)?;
             // Committing marks it busy while its protection changes back.
             b.committing = true;
-            Some((b.uid, b.mem.clone(), b.addr, tree, tree_addr, tree_len))
+            Some((b.uid, b.mem.clone(), tree, tree_addr, tree_len))
         })
     };
-    let Some((uid, buf, addr, tree, tree_addr, tree_len)) = taken else {
+    let Some((uid, buf, tree, tree_addr, tree_len)) = taken else {
         return;
     };
-    let _ = mem::protect(&buf, addr, false);
+    let _ = buf.seal(true);
     let _ = mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, false);
     let waits = {
         let mut reg = REGISTRY.lock();
@@ -590,7 +586,7 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
     let out_len = core::mem::size_of::<Commit>() as u64;
     let gate = Gate::enter(c.id, caller)?;
     // Check, claim the buffer for this commit, and settle what it publishes.
-    let (uid, buf_mem, addr, tree, tree_page, tree_len, damage) = {
+    let (uid, buf_mem, tree, tree_page, tree_len, damage) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(c.id, caller, who::owner)?;
         let (width, height) = (w.width, w.height);
@@ -603,7 +599,7 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
         if !b.acquired || b.committing {
             return Err(EBUSY);
         }
-        if overlaps(out, out_len, b.addr, b.mem.len()) || overlaps(out, out_len, tree_page, tree_len) {
+        if overlaps(out, out_len, tree_page, tree_len) {
             return Err(EFAULT);
         }
         let base = b.base;
@@ -622,7 +618,7 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
         c.pixel_gen = w.pixel_gen + u64::from(!damage.is_empty());
         let b = &mut w.buffers[c.buffer as usize];
         b.committing = true;
-        (b.uid, b.mem.clone(), b.addr, tree, tree_page, tree_len, damage)
+        (b.uid, b.mem.clone(), tree, tree_page, tree_len, damage)
     };
     let release = |uid: u64| {
         let mut reg = REGISTRY.lock();
@@ -637,10 +633,10 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
     // The buffer and its tree page are read-only to their owner before they become the front.
     let tree_addr = tree_page - c.buffer as u64 * tree_len;
     let offset = c.buffer as u64 * tree_len;
-    let sealed = mem::protect(&buf_mem, addr, false)
+    let sealed = buf_mem.seal(true)
         .and_then(|()| mem::protect_range(&tree, tree_addr, offset, tree_len, false));
     if let Err(e) = sealed {
-        let _ = mem::protect(&buf_mem, addr, true);
+        let _ = buf_mem.seal(false);
         let _ = mem::protect_range(&tree, tree_addr, offset, tree_len, true);
         release(uid);
         return Err(e);
@@ -709,24 +705,14 @@ pub fn no_change(caller: &Caller, n: &mut NoChange, meta: Meta, out: u64) -> Res
 
 /// Copy `height` rows of `width` BGRX pixels from `src` (`stride` bytes per row) to the user
 /// at `dst`, with every X byte 0xFF, pausing before row `pause_at` when it is given.
-fn pixels_out(src: Option<&Mem>, stride: u32, width: u32, height: u32, dst: u64, pause_at: Option<u64>) -> Result<(), i32> {
+fn pixels_out(src: Option<&Target>, width: u32, height: u32, dst: u64, pause_at: Option<u64>) -> Result<(), i32> {
+    if let Some(target) = src { return target.read_to(dst,pause_at,stall); }
     let row_len = width as usize * 4;
     let mut row = Vec::new();
     row.try_reserve_exact(row_len).map_err(|_| ENOMEM)?;
     row.resize(row_len, 0);
-    for y in 0..height as u64 {
-        if pause_at == Some(y) {
-            stall();
-        }
-        match src {
-            Some(m) => m.read(y * stride as u64, &mut row),
-            None => row.fill(0),
-        }
-        for px in row.chunks_exact_mut(4) {
-            px[3] = 0xFF;
-        }
-        mem::copy_out(dst + y * row_len as u64, &row)?;
-    }
+    for px in row.chunks_exact_mut(4) { px[3] = 255; }
+    for y in 0..height as u64 { mem::copy_out(dst+y*row_len as u64,&row)?; }
     Ok(())
 }
 
@@ -770,7 +756,7 @@ impl Drop for TreePin {
 /// front's buffer is pinned, and with a tree destination so is its index's tree page, until
 /// the copy ends; `capture-stall` pauses the copy half way.
 pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
-    let (pin, tree_pin, tree, tree_offset, tree_len, width, height, stride, commit_id) = {
+    let (pin, tree_pin, tree, tree_offset, tree_len, width, height, commit_id) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(c.id, caller, who::owner_compositor_or_root)?;
         let tree_len = w.tree_kib as u64 * 1024;
@@ -789,7 +775,7 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
             }
             None => (None, None, 0, 0),
         };
-        (pin, tree_pin, w.tree.clone(), tree_offset, tree_len, w.width, w.height, w.stride(), commit_id)
+        (pin, tree_pin, w.tree.clone(), tree_offset, tree_len, w.width, w.height, commit_id)
     };
     let need = buffer_bytes(width, height);
     mem::probe_writable(c.dst, need)?;
@@ -797,7 +783,7 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
         mem::probe_writable(c.tree_dst, tree_len)?;
     }
     let pause_at = crate::test_control::take(breengel_abi::tc_point::CAPTURE_STALL, c.id).map(|_| height as u64 / 2);
-    pixels_out(pin.as_ref().map(|p| p.mem()), stride, width, height, c.dst, pause_at)?;
+    pixels_out(pin.as_ref().map(|p| p.mem()), width, height, c.dst, pause_at)?;
     if c.tree_dst != 0 {
         bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
     }
@@ -818,13 +804,9 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
 /// before anything changes. The resize holds the window's commit gate, and copies its output
 /// to `out` before its commit point; when that copy fails nothing changes and no event is told.
 pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
-    let out_len = core::mem::size_of::<Resize>() as u64;
     let (old_w, old_h, count) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(r.id, caller, who::owner)?;
-        if w.buffers.iter().any(|b| overlaps(out, out_len, b.addr, b.mem.len())) {
-            return Err(EFAULT);
-        }
         (w.width, w.height, w.buffers.len())
     };
     let refuse = |e: i32| {
@@ -875,23 +857,12 @@ pub fn resize(caller: &Caller, r: &mut Resize, out: u64) -> Result<u64, i32> {
         };
         if copied {
             for b in buffers.iter() {
-                b.mem.zero();
+                b.mem.clear().map_err(|e| e as i32)?;
             }
         }
         if let Some(src) = source.as_ref() {
-            let cols = src_w.min(r.width) as usize * 4;
-            for y in 0..src_h.min(r.height) as u64 {
-                let mut row = [0u8; 512];
-                let mut done = 0usize;
-                while done < cols {
-                    let n = (cols - done).min(row.len());
-                    src.mem().read(y * src_w as u64 * 4 + done as u64, &mut row[..n]);
-                    for b in buffers.iter() {
-                        b.mem.write(y * r.width as u64 * 4 + done as u64, &row[..n]);
-                    }
-                    done += n;
-                }
-            }
+            let rect = Rect::new(0,0,src_w.min(r.width) as i32,src_h.min(r.height) as i32);
+            for b in buffers.iter() { b.mem.copy_from(src.mem(), &[rect])?; }
             copied = true;
         }
         drop(source);
@@ -1213,7 +1184,7 @@ pub fn read_remnant(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
     if c.tree_dst != 0 {
         mem::probe_writable(c.tree_dst, tree_len)?;
     }
-    pixels_out(pixels.as_deref(), width * 4, width, height, c.dst, None)?;
+    pixels_out(pixels.as_deref(), width, height, c.dst, None)?;
     if c.tree_dst != 0 {
         bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
     }

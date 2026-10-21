@@ -33,6 +33,7 @@
 //! while holding it, and the reset itself runs on `kgpu` outside it; no path here prints
 //! (section 1.4: no kernel output on any path).
 
+pub mod window_targets;
 mod completion;
 mod present_answers;
 mod display;
@@ -377,6 +378,7 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    window_sealed: bool,
 }
 
 struct Core {
@@ -2457,6 +2459,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        window_sealed: false,
     }
 }
 
@@ -3342,6 +3345,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         };
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
+        }
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
+            return Some(Err(breengel_abi::errno::EBUSY as i64));
         }
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading)) {
             return None;

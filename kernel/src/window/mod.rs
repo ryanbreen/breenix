@@ -23,6 +23,7 @@ use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::task::waitqueue::WaitQueueHead;
 
 use mem::Mem;
+use crate::gpu::window_targets::Target;
 
 /// The process making a call: the thread, its thread group (the owner identity a window
 /// records) and its effective uid.
@@ -67,8 +68,8 @@ pub enum BufState {
 pub struct Buffer {
     /// Never reused; pins name their buffer by it.
     pub uid: u64,
-    pub mem: Arc<Mem>,
-    /// Where the owner has it mapped.
+    pub mem: Arc<Target>,
+    /// The owner's GPU resource handle.
     pub addr: u64,
     pub state: BufState,
     /// Handed out by ACQUIRE and not committed since.
@@ -246,7 +247,7 @@ pub struct Remnant {
     pub width: u32,
     pub height: u32,
     pub commit_id: u64,
-    pub pixels: Option<Arc<Mem>>,
+    pub pixels: Option<Arc<Target>>,
     pub tree: Arc<Mem>,
     /// Where in `tree` the front buffer's tree page starts, and its length.
     pub tree_offset: u64,
@@ -380,10 +381,8 @@ pub fn exec_done_current() {
     }
 }
 
-/// Bytes the registry charges against `tgid`'s `RLIMIT_AS` beyond the mappings in `vmas` (its
-/// address space): the remnants it holds, and the part of its own windows' buffers and tree
-/// pages it has unmapped. Window memory counts while the registry holds it, so unmapping a
-/// buffer's view frees no room under the limit. PROCESS_MANAGER held.
+/// Registry charges beyond the caller's mapped tree pages: tree mapping holes and remnants.
+/// GPU target backing is reserved by the GPU core. PROCESS_MANAGER held.
 pub fn charged_bytes(tgid: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
     let reg = REGISTRY.lock();
     let remnants: u64 = reg.remnants.values().filter(|r| r.holder == tgid).map(|r| r.charge).sum();
@@ -391,10 +390,7 @@ pub fn charged_bytes(tgid: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
         .windows
         .values()
         .filter(|w| w.owner == tgid)
-        .map(|w| {
-            let buffers: u64 = w.buffers.iter().map(|b| mem::unmapped_len(&b.mem, b.addr, vmas)).sum();
-            buffers + mem::unmapped_len(&w.tree, w.tree_addr, vmas)
-        })
+        .map(|w| mem::unmapped_len(&w.tree, w.tree_addr, vmas))
         .sum();
     remnants + unmapped
 }

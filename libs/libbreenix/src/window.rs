@@ -37,7 +37,7 @@ pub fn version() -> Result<u64, Error> {
 
 /// `CREATE`: a `width` x `height` window with `buffers` buffers (2 or 3) and `tree_kib` KiB of
 /// tree page per buffer (0 for the default 64). The result holds its id, stride, buffer
-/// addresses and tree address.
+/// GPU target handles and the mapped tree address.
 pub fn create(width: u32, height: u32, buffers: u32, tree_kib: u32) -> Result<abi::Create, Error> {
     let mut c = abi::Create::ZERO;
     c.width = width;
