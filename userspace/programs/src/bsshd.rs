@@ -454,15 +454,22 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         Ok(process::ForkResult::Parent(child_pid)) => {
             let _ = io::close(write_fd);
             let _ = io::close(input_read);
-            exec_shuttle(session, read_fd, input_write);
+            let relay = exec_shuttle(session, read_fd, input_write);
             let _ = io::close(read_fd);
 
             let mut status = 0i32;
-            match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
+            let status = match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
                 Ok(_) if process::wifexited(status) => process::wexitstatus(status),
                 Ok(_) if process::wifsignaled(status) => 128 + process::wtermsig(status),
                 Ok(_) => 1,
                 Err(_) => 1,
+            };
+            match relay {
+                Ok(()) => status,
+                Err(why) => {
+                    eprintln!("bsshd: exec relay failed: {}", why);
+                    1
+                }
             }
         }
         Err(e) => {
@@ -478,71 +485,81 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
 }
 
 /// RFC 4254 section 5.3: input EOF closes only stdin; output keeps flowing.
-fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) {
+fn exec_shuttle(session: &mut ServerSession, output: Fd, input: Fd) -> Result<(), String> {
     use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLOUT};
     let mut pending = Vec::new();
     let mut offset = 0;
     let mut input_open = true;
-    loop {
-        let capacity = session.send_capacity().min(4096);
-        let mut fds = [
-            io::PollFd::new(output, if capacity > 0 { POLLIN } else { 0 }),
-            io::PollFd::new(session.io().fd(), POLLIN),
-            io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
-                           if pending.is_empty() { 0 } else { POLLOUT }),
-        ];
-        if io::poll(&mut fds, 100).is_err() { break; }
-        if capacity > 0 && fds[0].revents & (POLLIN | POLLHUP) != 0 {
-            let mut buf = [0u8; 4096];
-            match io::read(output, &mut buf[..capacity]) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => if session.send_data(&buf[..n]).is_err() { break; },
+    let result = (|| {
+        loop {
+            let capacity = session.send_capacity().min(4096);
+            let mut fds = [
+                io::PollFd::new(output, if capacity > 0 { POLLIN } else { 0 }),
+                io::PollFd::new(session.io().fd(), POLLIN),
+                io::PollFd::new(if input_open { input } else { Fd::from_raw(u64::MAX) },
+                               if pending.is_empty() { 0 } else { POLLOUT }),
+            ];
+            match io::poll(&mut fds, 100) {
+                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => continue,
+                Err(e) => return Err(format!("poll: {:?}", e)),
+                Ok(_) => {}
             }
-        }
-        if fds[2].revents & POLLOUT != 0 {
-            match io::write(input, &pending[offset..]) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if session.consume_input(n).is_err() { break; }
-                    offset += n;
-                    if offset == pending.len() { pending.clear(); offset = 0; }
-                }
-                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {}
-                Err(_) => {
-                    let _ = io::close(input);
-                    input_open = false;
-                    if session.consume_input(pending.len() - offset).is_err() { break; }
-                    pending.clear();
-                    offset = 0;
+            if capacity > 0 && fds[0].revents & (POLLIN | POLLHUP) != 0 {
+                let mut buf = [0u8; 4096];
+                match io::read(output, &mut buf[..capacity]) {
+                    Ok(0) => return Ok(()),
+                    Ok(n) => session.send_data(&buf[..n]).map_err(|e| format!("send output: {:?}", e))?,
+                    Err(e) => return Err(format!("read command output: {:?}", e)),
                 }
             }
-        }
-        if fds[2].revents & (POLLERR | POLLHUP) != 0 && input_open {
-            let _ = io::close(input);
-            input_open = false;
-            if session.consume_input(pending.len() - offset).is_err() { break; }
-            pending.clear();
-            offset = 0;
-        }
-        if fds[1].revents & POLLIN != 0 {
-            match session.recv_data_uncredited() {
-                Ok(Some(data)) if input_open => {
-                    pending.drain(..offset);
-                    offset = 0;
-                    pending.extend_from_slice(&data);
+            if fds[2].revents & POLLOUT != 0 {
+                match io::write(input, &pending[offset..]) {
+                    Ok(0) => return Err(String::from("zero-byte stdin write")),
+                    Ok(n) => {
+                        session.consume_input(n).map_err(|e| format!("return input credit: {:?}", e))?;
+                        offset += n;
+                        if offset == pending.len() { pending.clear(); offset = 0; }
+                    }
+                    Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {}
+                    Err(_) => {
+                        let _ = io::close(input);
+                        input_open = false;
+                        session.consume_input(pending.len() - offset).map_err(|e| format!("discard input: {:?}", e))?;
+                        pending.clear();
+                        offset = 0;
+                    }
                 }
-                Ok(Some(data)) => if session.consume_input(data.len()).is_err() { break; },
-                Ok(None) => {}
-                Err(_) => break,
+            }
+            if fds[2].revents & (POLLERR | POLLHUP) != 0 && input_open {
+                let _ = io::close(input);
+                input_open = false;
+                session.consume_input(pending.len() - offset).map_err(|e| format!("closed input: {:?}", e))?;
+                pending.clear();
+                offset = 0;
+            }
+            if fds[1].revents & POLLIN != 0 {
+                match session.recv_data_uncredited() {
+                    Ok(Some(data)) if input_open => {
+                        pending.drain(..offset);
+                        offset = 0;
+                        pending.extend_from_slice(&data);
+                    }
+                    Ok(Some(data)) => session.consume_input(data.len()).map_err(|e| format!("discard data: {:?}", e))?,
+                    Ok(None) => {}
+                    Err(e) => return Err(format!("receive channel: {:?}", e)),
+                }
+            }
+            if session.input_eof() && pending.is_empty() && input_open {
+                let _ = io::close(input);
+                input_open = false;
+            }
+            if fds[1].revents & (POLLERR | POLLHUP) != 0 {
+                return Err(String::from("SSH socket closed before command output EOF"));
             }
         }
-        if session.input_eof() && pending.is_empty() && input_open {
-            let _ = io::close(input);
-            input_open = false;
-        }
-        if fds[1].revents & (POLLERR | POLLHUP) != 0 { break; }
-    }
+    })();
     if input_open { let _ = io::close(input); }
+    result
 }
 
 fn c_string(value: &str) -> Vec<u8> {
