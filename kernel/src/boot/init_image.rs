@@ -53,11 +53,12 @@ pub fn read_program_image(
     // Taken before the filesystem lock: who may execute the file.
     let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
 
-    // The handle holds the inode until its content is read.
+    // Exclude new mapping bindings until the image and its identity are copied.
+    // Existing shared write authority is checked by exec_attrs.
     let (mount, inode_num, _held, resolved) =
         crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
-    let fs_guard = mount.read().map_err(|errno| errno as i32)?;
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
+    let mut fs_guard = mount.write().map_err(|errno| errno as i32)?;
+    let fs = fs_guard.as_mut().ok_or(EIO)?;
 
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 

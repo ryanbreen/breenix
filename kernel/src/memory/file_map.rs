@@ -612,6 +612,15 @@ impl MapState {
         !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
     }
 
+    /// Exec holds the mount write guard through its image copy. A shared
+    /// binding with write authority can fault or gain PROT_WRITE without that
+    /// guard, so even a clean/read-only binding must suppress set-ID identity.
+    pub(crate) fn may_change_exec_image(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.bindings.iter().any(|rec| rec.shared && rec.may_write)
+            || inner.pages.entries.iter().any(|(_, page)| page.dirty)
+    }
+
     pub(crate) fn has_dirty(&self) -> bool {
         self.dirty.load(Ordering::Acquire)
     }

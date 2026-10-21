@@ -697,12 +697,13 @@ impl Ext2Fs {
         self.write_inode(ino, &inode)
     }
 
-    /// The attributes exec checks for `inode`. While mapped stores newer than
-    /// the disk are pending, exec reads them but the set-ID bits confer
-    /// no identity: their writeback clears the bits (`write_mapped_range`).
-    pub fn exec_attrs(&self, ino: u32, inode: &Ext2Inode) -> crate::fs::attrs::InodeAttrs {
+    /// Exec must retain the mount write guard from this check through the
+    /// coherent image copy, excluding new bindings and filesystem mutations.
+    /// Existing shared bindings can write or gain write protection without it;
+    /// their authority, not just their dirty pages, suppresses set-ID identity.
+    pub fn exec_attrs(&mut self, ino: u32, inode: &Ext2Inode) -> crate::fs::attrs::InodeAttrs {
         let mut attrs = inode.attrs();
-        if self.live_inodes.get(ino).is_some_and(|object| object.map.has_dirty()) {
+        if self.live_inodes.get(ino).is_some_and(|object| object.map.may_change_exec_image()) {
             attrs.mode &= !(content_privilege(inode.i_mode) as u32);
         }
         attrs

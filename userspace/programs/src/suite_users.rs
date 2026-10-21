@@ -953,7 +953,28 @@ fn mmap_clears_setid() -> CaseResult {
     ok("chmod 6777 as root", chmod(&program, 0o6777))?;
     let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
     report_is(&report, "resuid", &ids([UB; 3]), "a set-user-ID program with mapped stores pending")?;
-    report_is(&report, "resgid", &ids([UB; 3]), "a set-group-ID program with mapped stores pending").map_err(CaseError::from)
+    report_is(&report, "resgid", &ids([UB; 3]), "a set-group-ID program with mapped stores pending")?;
+    drop(_writer);
+    // No first write fault has occurred when root restores the bits. Exec must
+    // already decline privilege: a first fault can change the ELF during its
+    // copy without taking the filesystem guard. Include a read-only binding
+    // that can gain PROT_WRITE by mprotect while exec holds that guard.
+    for prot in [PROT_READ | PROT_WRITE, PROT_READ] {
+        reset()?;
+        let (writer, _) = Holder::start_with(A, || {
+            map_shared(&program, O_RDWR, prot)?;
+            Ok(String::new())
+        })?;
+        ok("chmod 6777 over a clean mapping as root", chmod(&program, 0o6777))?;
+        let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
+        report_is(&report, "resuid", &ids([UB; 3]), "a set-ID program with a clean shared write-capable mapping")?;
+        report_is(&report, "resgid", &ids([UB; 3]), "a set-ID program with a clean shared write-capable mapping")?;
+        drop(writer);
+    }
+    reset()?;
+    let (report, _) = helper_report(&program, &["p", "ids", "FD"], || become_account(B))?;
+    report_is(&report, "resuid", &ids([UB, 0, 0]), "the program after the shared writer unmapped")?;
+    report_is(&report, "resgid", &ids([UB, 0, 0]), "the program after the shared writer unmapped").map_err(CaseError::from)
 }
 
 fn utimes_nonowner() -> CaseResult {
