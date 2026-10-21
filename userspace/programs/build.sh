@@ -447,6 +447,8 @@ STD_BINARIES=(
     "time-exec_test"
     "telnetd"
     "blogd"
+    "ntp_client"
+    "svc"
 
     # Diagnostics
     "btrace"
