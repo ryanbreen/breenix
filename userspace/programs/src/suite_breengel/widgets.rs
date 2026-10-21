@@ -1,3 +1,4 @@
+#[path="icon_pixels/search_shimmer_restarts_on_each_hover.rs"] mod pixel_interrupt_search;
 #[path="icon_pixels/hover_and_click_effects_settle_with_pointer_still_inside.rs"] mod pixel_settles_hover;
 #[path="icon_pixels/hover_reversal_is_continuous_and_all_effects_settle_after_exit.rs"] mod pixel_reversal_hover;
 #[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
@@ -2094,6 +2095,8 @@ fn icons_settles() -> CaseResult {
 }
 
 fn icons_interrupt() -> CaseResult {
+    pixel_interrupt_search::run();
+
     let mut b = IconBase::new();
     b.update(1_000, &mouse(true, false, false, false));
     b.update(100_000, &mouse(true, false, false, false));

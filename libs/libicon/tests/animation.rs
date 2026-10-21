@@ -48,17 +48,6 @@ fn spring_uses_fixed_millisecond_quanta() {
 
 
 
-#[test]
-fn search_shimmer_restarts_on_each_hover() {
-    let mut icon = SearchIcon::new();
-    let mut hover = IconMouse::none(); hover.hovering = true;
-    icon.update(2_000_000, hover);
-    icon.update(2_000_000, IconMouse::none());
-    icon.update(251_000, hover);
-    let before = image(&icon);
-    icon.update(100_000, hover);
-    assert!(before != image(&icon), "second hover lost its shimmer");
-}
 
 #[test]
 fn a_subpixel_particle_box_never_panics_or_draws_outside_it() {
