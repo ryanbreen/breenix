@@ -25,9 +25,9 @@ use libbreenix::types::Fd;
 
 #[cfg(not(target_arch = "aarch64"))]
 use breengel::FontConfig;
-use libfont::CachedFont;
+use libgfx_ref::ttf_font::CachedFont;
 #[cfg(not(target_arch = "aarch64"))]
-use libfont::Font;
+use libgfx_ref::ttf_font::Font;
 use libgfx_ref::bitmap_font;
 use libgfx_ref::ttf_font;
 use libgfx_ref::color::Color;

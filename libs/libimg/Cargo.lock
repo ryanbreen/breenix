@@ -5,3 +5,13 @@ version = 4
 [[package]]
 name = "libimg"
 version = "0.1.0"
+dependencies = [
+ "libimg-encode",
+]
+
+[[package]]
+name = "libimg-encode"
+version = "0.1.0"
+dependencies = [
+ "libimg",
+]
