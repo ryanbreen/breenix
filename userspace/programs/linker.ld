@@ -22,6 +22,9 @@ SECTIONS {
 
     .rodata : ALIGN(4K) {
         *(.rodata .rodata.*)
+        /* Static references have relocations resolved by this fixed-address link.
+         * Their descriptors must remain read-only, like the tables they name. */
+        *(.data.rel.ro .data.rel.ro.*)
     } :rodata
 
     .data : ALIGN(4K) {

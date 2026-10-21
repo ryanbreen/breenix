@@ -45,6 +45,7 @@ pub mod fs;
 pub mod gpu;
 pub mod graphics;
 pub mod http;
+pub mod image;
 pub mod io;
 pub mod memory;
 pub mod process;

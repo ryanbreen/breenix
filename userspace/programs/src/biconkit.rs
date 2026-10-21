@@ -18,9 +18,9 @@ use std::process;
 use breengel::{Window, Event};
 use libbreenix::time;
 
-use libgfx::color::Color;
-use libgfx::font;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::font;
+use libgfx_ref::shapes;
 
 use libicon::icon::{Icon, IconMouse, IconState};
 use libicon::icons::home::HomeIcon;

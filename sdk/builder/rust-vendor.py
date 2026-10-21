@@ -4,7 +4,7 @@
     rust-vendor.py SOURCE VENDOR
 
 Copies SOURCE (libs/libbreenix) to VENDOR/libbreenix-<version>/ with a normalized
-manifest: the `suite` feature, its optional `libgfx` path dependency and the module
+manifest: the `suite` feature, its optional `libgfx-ref` path dependency and the module
 behind it are dropped, and so is the crate's own `[workspace]` table, so the package
 resolves offline from the SDK alone. Every other dependency must be an in-tree path
 crate (gpu-abi, the syscall 416 layouts libbreenix shares with the kernel): each is
@@ -20,9 +20,9 @@ import re
 import shutil
 import sys
 
-# The suite feature is the in-tree effort runner; it needs std and libgfx by path.
+# The suite feature is the in-tree effort runner; it needs std and libgfx-ref by path.
 DROPPED_FEATURES = {'suite'}
-DROPPED_DEPENDENCIES = {'libgfx'}
+DROPPED_DEPENDENCIES = {'libgfx-ref'}
 DROPPED_FILES = {'src/suite.rs'}
 
 

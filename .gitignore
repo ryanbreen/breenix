@@ -34,6 +34,8 @@ libs/*
 !libs/bgl/**
 !libs/libgfx-ref/
 !libs/libgfx-ref/**
+!libs/libgfx-pixel/
+!libs/libgfx-pixel/**
 !libs/arm64-boot-contract/
 !libs/arm64-boot-contract/**
 !libs/breengel-abi/

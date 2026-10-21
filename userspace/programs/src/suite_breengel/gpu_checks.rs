@@ -100,14 +100,12 @@ pub(crate) fn bpp3_bpp4()->CaseResult {
     ensure(r==0,"2","gpu-raster: three-byte RGB upload failed")?;
     f.context.begin(f.target,14,18);f.context.copy(f.texture,&[[0,0,14,18,0,0]]);
     f.context.submit().and_then(|s|s.wait(2_000_000_000)).map_err(|e|format!("gpu-raster: conversion fence {}",outcome(e))).cite("2")?;
-    let mut bgra=f.pixels(14,18,56).cite("2")?;
+    let bgra=f.pixels(14,18,56).cite("2")?;
     ensure(bgra.chunks_exact(4).zip(rgb.chunks_exact(3)).all(|(b,r)|b==[r[2],r[1],r[0],255]),"2","gpu-raster: three-byte upload changed channel order or alpha")?;
     // Exercise the public pixel-format conversion on the device's actual readback, with
     // a three-byte destination and row sentinels, rather than drawing a three-byte target.
-    let source=unsafe{FrameBuf::from_raw(bgra.as_mut_ptr(),14,18,56,4,true)}.cite("2")?;
     let mut rgb_out=vec![0xA5;48*18];
-    let mut dest=unsafe{FrameBuf::from_raw(rgb_out.as_mut_ptr(),14,18,48,3,false)}.cite("2")?;
-    libgfx::blit::blit(&mut dest,&source,0,0);
+    libgfx::surface::convert(&bgra,56,14,18,&mut rgb_out,48,libgfx::surface::Format::RGB).cite("2")?;
     for (n,row) in rgb_out.chunks_exact(48).enumerate(){
         ensure(row[..42]==rgb[n*42..(n+1)*42] && row[42..].iter().all(|&b|b==0xA5),"2","gpu-raster: three-byte readback conversion changed a pixel or padding")?;
     }Ok(())
@@ -145,6 +143,15 @@ pub(crate) fn enforce_accounting(before:&ga::Counters,after:&ga::Counters,mark:u
 pub(crate) fn cpu_render_planted()->CaseResult {
     let mut f=Fixture::new(8,4).cite("7")?;
     let mut rendered=vec![0;128];for pixel in rendered.chunks_exact_mut(4){pixel.copy_from_slice(&[17,34,51,255]);}
+    let leaked = rendered.clone().leak();
+    ensure(bgl::fixture_upload(bgl::DeclaredFixture::table(leaked), &f.context, f.texture,
+        [0,0,8,4],32,ga::upload_source::B8G8R8A8) == Err(-ga::errno::EINVAL),
+        "7", "gpu-raster: leaked CPU image passed BGL fixture validation")?;
+    static PALETTE: [[u8;4];2] = [[17,34,51,255],[51,34,17,255]];
+    let selected: &'static [&'static [u8]] = vec![&PALETTE[1][..],&PALETTE[0][..]].leak();
+    ensure(bgl::fixture_upload(bgl::DeclaredFixture::rows(selected), &f.context, f.texture,
+        [0,0,1,2],4,ga::upload_source::B8G8R8A8) == Err(-ga::errno::EINVAL),
+        "7", "gpu-raster: CPU-selected palette rows passed BGL fixture validation")?;
     for (purpose,reason) in [(ga::purpose::IMAGE,"cpu-image"),(ga::purpose::FIXTURE,"passing-oracle")] {
         let before=counters().cite("7")?; let mark=uploads::mark();
         let (ret,_)=gpu::upload(f.context.handle(),f.texture,[0,0,8,4],&rendered,32,ga::upload_source::B8G8R8A8,purpose);
@@ -158,7 +165,10 @@ pub(crate) fn cpu_render_planted()->CaseResult {
     f.context.solid(0xff112233,&per_pixel);
     f.context.submit().and_then(|f|f.wait(2_000_000_000)).map_err(|e|format!("planted draw {}",outcome(e))).cite("7")?;
     let after=counters().cite("7")?;
-    ensure(accounting_refusal(&before,&after,mark,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")
+    ensure(accounting_refusal(&before,&after,mark,1)==Some("cpu-instances"),"7","gpu-raster: per-pixel instances escaped the runtime guard")?;
+    uploads::declare_rows(selected);
+    ensure(uploads::refusal(uploads::mark(),0,0)==Some("non-static-table"),"7",
+        "gpu-raster: CPU-selected palette rows passed the runtime audit")
 }
 
 // Static input tables for transfer tests, independent of the destination image.
@@ -176,16 +186,12 @@ pub(crate) fn audit_begin()->Option<(ga::Counters,uploads::Mark)>{
     let name=libbreenix::suite::running_case()?;
     if !name.starts_with("raster/"){return None;}
     uploads::start();
-    declare_fixture(&font5x7::FONT_TABLE);
+    declare_fixture(&libgfx::font::FONT_TABLE);
     // The dependency stores coverage cells as static rows. Declare each complete size
     // table, including replacement, before rendering.
-    use noto_sans_mono_bitmap::{get_raster,FontWeight,RasterHeight};
+    use noto_sans_mono_bitmap::RasterHeight;
     for height in [RasterHeight::Size16,RasterHeight::Size32] {
-        let mut rows=Vec::new();
-        for ch in (32u8..=126).map(char::from).chain(core::iter::once('\u{fffd}')) {
-            if let Some(r)=get_raster(ch,FontWeight::Regular,height){rows.extend_from_slice(r.raster());}
-        }
-        uploads::declare_rows(rows);
+        uploads::declare_rows(libgfx::bitmap_font::table_rows(height));
     }
     counters().ok().map(|c|(c,uploads::mark()))
 }

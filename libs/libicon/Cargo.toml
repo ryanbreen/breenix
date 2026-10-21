@@ -8,6 +8,6 @@ description = "Breenix animated icon library — physics-based interactive icons
 crate-type = ["rlib"]
 
 [dependencies]
-libgfx = { path = "../libgfx" }
+libgfx-ref = { path = "../libgfx-ref" }
 
 [workspace]

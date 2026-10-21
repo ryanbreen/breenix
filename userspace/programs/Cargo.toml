@@ -16,6 +16,7 @@ breengel = { path = "../../libs/breengel" }
 libcollab = { path = "../../libs/libcollab" }
 libfont = { path = "../../libs/libfont" }
 libgfx = { path = "../../libs/libgfx" }
+libgfx-ref = { path = "../../libs/libgfx-ref" }
 libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
 breenish-js = { path = "../../libs/breenish-js" }

@@ -3,8 +3,13 @@
 //! cases live in `widgets.rs`.
 
 use crate::*;
-use libgfx::framebuf::{Format, Rect};
-use libgfx::{alpha, blit, work};
+use std::cell::{Cell, RefCell, RefMut};
+use bgl::DeclaredFixture;
+// The raster cases draw through BGL on GPU targets; the text and font-parser cases below keep
+// the CPU path (`crate`'s `font5x7`, `bitmap_font` and `ttf_font`) until the text lane.
+use libgfx::blit::{self, Texture};
+use libgfx::surface::{Format, Rect, Surface, SurfaceError};
+use libgfx::{alpha, bitmap_font as gpu_bitmap_font, font as gpu_font5x7, shapes, work};
 
 pub(crate) const RASTER: &[Case] = &[
     pictured!("fill-rect", "fill_rect writes exactly the pixels of a half-open rectangle and no others", raster_fill_rect),
@@ -148,32 +153,34 @@ static TILE_STRAIGHT_BGR:[u8;80]=tile_table(4,true,false,true);
 static TILE_STRAIGHT_RGB:[u8;80]=tile_table(4,false,false,true);
 static COPY_ROW:[u8;64]=[0x5a;64];
 static INK_ROW:[u8;128]={let mut out=[0;128];let mut i=0;while i<128{out[i]=[INK.b,INK.g,INK.r,255][i%4];i+=1;}out};
+// alpha-extremes' premultiplied source: opaque INK, transparent, opaque WHITE, transparent.
+static OPAQUE_ZERO_X: [u8; 4] = [17, 34, 51, 0];
+static EXTREMES_SRC:[u8;16]=[INK.b,INK.g,INK.r,255,0,0,0,0,WHITE.b,WHITE.g,WHITE.r,255,0,0,0,0];
+// alpha-output's premultiplied destination and source, pixel (x, y) at (16y + x) × 4, BGRA.
+static OUTPUT_DST:[u8;1024]={let mut out=[0;1024];let mut n=0;while n<256{let (x,y)=(n%16,n/16);let a=(x*16+y) as u8;
+    out[n*4]=a/2;out[n*4+1]=a/3;out[n*4+2]=a;out[n*4+3]=a;n+=1;}out};
+static OUTPUT_SRC:[u8;1024]={let mut out=[0;1024];let mut n=0;while n<256{let (x,y)=(n%16,n/16);let a=(y*17) as u8;
+    out[n*4]=a/3;out[n*4+1]=a.saturating_sub(x as u8);out[n*4+2]=a/5;out[n*4+3]=a;n+=1;}out};
 
-/// A 5 × 4 owned source of `format` holding `tile_colour`.
-fn tile(format: Format) -> Result<FrameBuf, String> {
-    crate::gpu_checks::declare_fixture(match (format.bpp,format.is_bgr) {(4,true)=>&TILE_BGRX,(4,false)=>&TILE_RGBX,(3,true)=>&TILE_BGR,_=>&TILE_RGB});
-    let mut fb = FrameBuf::new(5, 4, format).map_err(|e| format!("FrameBuf::new(5, 4, {format:?}) failed: {e}"))?;
-    for j in 0..4 {
-        for i in 0..5 {
-            fb.put_pixel(i, j, tile_colour(i, j));
-        }
+/// A 5 × 4 texture of `format` holding `tile_colour`, uploaded from its declared static table.
+fn tile(format: Format) -> Result<Texture, String> {
+    let table: &'static [u8] = match (format.bpp, format.is_bgr) { (4, true) => &TILE_BGRX, (4, false) => &TILE_RGBX, (3, true) => &TILE_BGR, _ => &TILE_RGB };
+    fixture(table, 5, 4, format)
+}
+
+/// A texture of the declared static `table`, `width × height` pixels in `layout`.
+fn fixture(table: &'static [u8], width: usize, height: usize, layout: Format) -> Result<Texture, String> {
+    crate::gpu_checks::declare_fixture(table);
+    Texture::from_fixture(DeclaredFixture::table(table), width, height, layout)
+        .map_err(|e| format!("a {width} x {height} {layout:?} fixture texture failed: {e}"))
+}
+
+/// The uploaded-row replacement for `copy_row_from` (section 5.9): `table`'s whole BGRX
+/// pixels uploaded as one row and copied at (x, y) by the GPU, clipped to the row's end.
+fn row_copy(fb: &mut Surface, table: &'static [u8], x: i32, y: i32) {
+    if let Ok(t) = fixture(table, table.len() / 4, 1, Format::BGRX) {
+        blit::blit(fb, &t, x, y);
     }
-    Ok(fb)
-}
-
-/// Write `[b, g, r, a]` at (x, y) of a 4-byte surface in its own memory order, by hand.
-fn poke(fb: &FrameBuf, x: usize, y: usize, [b, g, r, a]: [u8; 4]) {
-    let bytes = if fb.is_bgr { [b, g, r, a] } else { [r, g, b, a] };
-    // SAFETY: (x, y) is inside the 4-byte surface.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), fb.raw_ptr().add(y * fb.stride + x * 4), 4) }
-}
-
-/// The four bytes at (x, y) of a 4-byte surface as `[b, g, r, a]`, by hand.
-fn peek(fb: &FrameBuf, x: usize, y: usize) -> [u8; 4] {
-    let mut p = [0u8; 4];
-    // SAFETY: (x, y) is inside the 4-byte surface.
-    unsafe { std::ptr::copy_nonoverlapping(fb.raw_ptr().add(y * fb.stride + x * 4), p.as_mut_ptr(), 4) }
-    if fb.is_bgr { p } else { [p[2], p[1], p[0], p[3]] }
 }
 
 /// A rectangle on a 32 × 24 surface, intersected with it.
@@ -183,7 +190,7 @@ fn on_surface(x: i64, y: i64, w: i64, h: i64) -> Option<(i32, i32, i32, i32)> {
 }
 
 /// Primitives that draw something inside (5, 4, 12, 9) on a 32 × 24 surface.
-fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
+fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut Surface)>)> {
     vec![
         ("fill_rect(0, 0, 32, 24)", Box::new(|fb| shapes::fill_rect(fb, 0, 0, 32, 24, INK))),
         ("fill_rect(10, 6, 20, 20)", Box::new(|fb| shapes::fill_rect(fb, 10, 6, 20, 20, INK))),
@@ -196,13 +203,9 @@ fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("gradient_v(0, 0, 32, 24)", Box::new(|fb| shapes::gradient_v(fb, 0, 0, 32, 24, INK, WHITE))),
         ("put_pixel(8, 6) and (2, 2)", Box::new(|fb| { fb.put_pixel(8, 6, INK); fb.put_pixel(2, 2, INK); })),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| { font5x7::draw_text(fb, b"A1", 4, 5, INK, 2); })),
-        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| { bitmap_font::draw_char(fb, 'A', 6, 3, INK); })),
-        ("copy_row_from(0, 7, 32 pixels)", Box::new(|fb| {
-            crate::gpu_checks::declare_fixture(&INK_ROW);
-            let row: Vec<u8> = (0..32).flat_map(|_| [INK.b, INK.g, INK.r, 0xFF]).collect();
-            fb.copy_row_from(0, 7, &row, row.len());
-        })),
+        ("font::draw_text(\"A1\", 4, 5, scale 2)", Box::new(|fb| { gpu_font5x7::draw_text(fb, b"A1", 4, 5, INK, 2); })),
+        ("bitmap_font::draw_char('A', 6, 3)", Box::new(|fb| { gpu_bitmap_font::draw_char(fb, 'A', 6, 3, INK); })),
+        ("uploaded row of 32 pixels at (0, 7)", Box::new(|fb| row_copy(fb, &INK_ROW, 0, 7))),
         ("blit(tile, 3, 3)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, 3, 3) })),
         ("blit_over(tile, 9, 8)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, 9, 8) })),
         ("blit_scaled(tile, 0, 0, 3)", Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_scaled(fb, &t, 0, 0, 3) })),
@@ -210,14 +213,143 @@ fn clip_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
 }
 
 /// A padded BGRX surface: stride 12 bytes past the pixels, so every row has a sentinel.
-fn padded(width: usize, height: usize) -> Guarded {
-    let mut g = Guarded::new(width, height, width * 4 + 12, 4, true);
+fn padded(width: usize, height: usize) -> Drawn {
+    let mut g = Drawn::new(width, height, width * 4 + 12, 4, true);
     g.reset(PAPER);
     g
 }
 
+/// A GPU target judged through a guarded readback (section 3): when this process has
+/// drawn since the last read, the target is read back into a `Guarded` mapping (a sentinel
+/// run before the first row, a sentinel in each row's padding and a guard page after the
+/// last row) in the mapping's channel order and bytes per pixel, and the checks read it
+/// there. A four-byte BGR mapping receives `READBACK` itself, so its sentinels check that the
+/// device left the row padding alone; other layouts go through `libgfx::surface::convert`.
+struct Drawn {
+    mem: Guarded,
+    surface: RefCell<Surface>,
+    target: u64,
+    read_at: Cell<Option<u64>>,
+    failure: RefCell<Option<String>>,
+}
+
+impl Drawn {
+    fn new(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool) -> Drawn {
+        Self::formatted(width, height, stride, bpp, bgr, if bgr { Format::BGRX } else { Format::RGBX })
+    }
+
+    fn formatted(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool, format: Format) -> Drawn {
+        let surface = Surface::new(width, height, format)
+            .unwrap_or_else(|e| panic!("gpu-raster: a {width} x {height} GPU target for a raster case: {e}"));
+        let target = surface.handle();
+        let mut d = Drawn { mem: Guarded::new(width, height, stride, bpp, bgr), surface: RefCell::new(surface), target,
+            read_at: Cell::new(None), failure: RefCell::new(None) };
+        d.reset(Color::rgb(0, 0, 0));
+        d
+    }
+
+    /// A 4-byte canonical BGRX surface with no padding.
+    fn bgrx(width: usize, height: usize) -> Drawn {
+        Drawn::new(width, height, width * 4, 4, true)
+    }
+
+    /// Clear the whole target to `c` on the GPU (marking no damage) and rewrite the sentinels.
+    fn reset(&mut self, c: Color) {
+        let s = self.surface.get_mut();
+        s.clear(c);
+        s.take_dirty();
+        self.mem.reset(c);
+        self.read_at.set(None);
+    }
+
+    /// The target, to draw on.
+    fn fb(&self) -> RefMut<'_, Surface> {
+        self.surface.borrow_mut()
+    }
+
+    /// Read the target back into the mapping if anything was drawn since the last read.
+    fn refresh(&self) {
+        let now = libgfx::surface::generation();
+        if self.read_at.get() == Some(now) {
+            return;
+        }
+        self.read_at.set(Some(now));
+        let g = &self.mem;
+        let mut record = [0u8; libbreenix::gpu::abi::record::SIZE];
+        let rect = [0, 0, g.width as u32, g.height as u32];
+        let result = if g.bpp == 4 && g.bgr {
+            // SAFETY: the mapping holds stride × height writable bytes from base.
+            let pixels = unsafe { std::slice::from_raw_parts_mut(g.base, g.stride * g.height) };
+            match libbreenix::gpu::readback(self.target, rect, pixels, g.stride as u32, &mut record) { 0 => Ok(()), e => Err(outcome(e)) }
+        } else {
+            let mut canonical = vec![0u8; g.width * 4 * g.height];
+            match libbreenix::gpu::readback(self.target, rect, &mut canonical, (g.width * 4) as u32, &mut record) {
+                0 => {
+                    let format = Format { bpp: g.bpp, is_bgr: g.bgr, premultiplied: false };
+                    // SAFETY: as above; `convert` writes only each row's pixel bytes.
+                    let dst = unsafe { std::slice::from_raw_parts_mut(g.base, g.stride * g.height) };
+                    libgfx::surface::convert(&canonical, g.width * 4, g.width, g.height, dst, g.stride, format).map_err(|e| e.to_string())
+                }
+                e => Err(outcome(e)),
+            }
+        };
+        let device = self.surface.try_borrow().ok().and_then(|s| s.error()).map(|e| format!("a draw on the target was refused: {}", outcome(e)));
+        if let Some(why) = result.err().map(|e| format!("READBACK of the target: {e}")).or(device) {
+            self.failure.borrow_mut().get_or_insert(format!("gpu-raster: {why}"));
+        }
+    }
+
+    /// The mapping as it is after the latest readback.
+    fn guarded(&self) -> &Guarded {
+        self.refresh();
+        &self.mem
+    }
+
+    fn color(&self, x: usize, y: usize) -> Color {
+        self.guarded().color(x, y)
+    }
+
+    fn x_byte(&self, x: usize, y: usize) -> u8 {
+        self.guarded().x_byte(x, y)
+    }
+
+    /// The pixel at (x, y) as `[b, g, r, a]`, alpha as the device stored it.
+    fn bgra(&self, x: usize, y: usize) -> [u8; 4] {
+        let [r, g, b] = self.guarded().rgb(x, y);
+        [b, g, r, self.mem.x_byte(x, y)]
+    }
+
+    fn failed(&self) -> Result<(), String> {
+        self.failure.borrow().clone().map_or(Ok(()), Err)
+    }
+
+    fn sentinels(&self) -> Result<(), String> {
+        self.guarded().sentinels()?;
+        self.failed()
+    }
+
+    fn judge(&self) {
+        self.guarded().judge();
+    }
+
+    fn compare(&self, what: &str, want: impl Fn(usize, usize) -> Color) -> Result<(), String> {
+        let g = self.guarded();
+        self.failed()?;
+        g.compare(what, want)
+    }
+}
+
+impl Drop for Drawn {
+    /// The mapping's own drop records a judged frame; give it the target's latest pixels.
+    fn drop(&mut self) {
+        if self.mem.read.get() {
+            self.refresh();
+        }
+    }
+}
+
 /// Draw `f` on a fresh padded surface and require exactly the pixels `inside` in INK.
-fn exact(section: &str, what: &str, width: usize, height: usize, f: impl Fn(&mut FrameBuf),
+fn exact(section: &str, what: &str, width: usize, height: usize, f: impl Fn(&mut Surface),
     inside: impl Fn(i64, i64) -> bool) -> CaseResult {
     let g = padded(width, height);
     f(&mut g.fb());
@@ -404,7 +536,7 @@ fn raster_circle_outline() -> CaseResult {
 }
 
 /// Each primitive at extreme coordinates, by name.
-fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
+fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut Surface)>)> {
     vec![
         ("fill_rect(MIN, MIN, MAX, MAX)", Box::new(|fb| shapes::fill_rect(fb, i32::MIN, i32::MIN, i32::MAX, i32::MAX, INK))),
         ("fill_rect(MAX, MAX, MAX, MAX)", Box::new(|fb| shapes::fill_rect(fb, i32::MAX, i32::MAX, i32::MAX, i32::MAX, INK))),
@@ -418,14 +550,13 @@ fn extreme_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>)> {
         ("draw_circle(5, 5, 1000000)", Box::new(|fb| shapes::draw_circle(fb, 5, 5, 1_000_000, INK))),
         ("draw_line(MIN/2, 3, MAX/2, 4)", Box::new(|fb| shapes::draw_line(fb, i32::MIN / 2, 3, i32::MAX / 2, 4, INK))),
         ("draw_line(5, MIN/2, 6, MAX/2)", Box::new(|fb| shapes::draw_line(fb, 5, i32::MIN / 2, 6, i32::MAX / 2, INK))),
-        ("copy_row_from(width - 1, height - 1, 64 bytes)", Box::new(|fb| {
-            let (w, h) = (fb.width, fb.height);
-            crate::gpu_checks::declare_fixture(&COPY_ROW);
-            fb.copy_row_from(w - 1, h - 1, &COPY_ROW, 64)
+        ("uploaded row of 16 pixels at (width - 1, height - 1)", Box::new(|fb| {
+            let (w, h) = (fb.width() as i32, fb.height() as i32);
+            row_copy(fb, &COPY_ROW, w - 1, h - 1)
         })),
         ("font::draw_text at (width - 3, height - 3)", Box::new(|fb| {
-            let (w, h) = (fb.width, fb.height);
-            font5x7::draw_text(fb, b"WWWW", w - 3, h - 3, INK, 3)
+            let (w, h) = (fb.width(), fb.height());
+            gpu_font5x7::draw_text(fb, b"WWWW", w - 3, h - 3, INK, 3)
         })),
     ]
 }
@@ -441,7 +572,7 @@ fn raster_extreme_work_bound() -> CaseResult {
     const MAX: i32 = i32::MAX;
     const MIN: i32 = i32::MIN;
     const HALF: i32 = 1 << 30;
-    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut FrameBuf)>, Option<(i64, i64, i64, i64)>, u64);
+    type Extreme = (&'static str, Option<Rect>, Box<dyn Fn(&mut Surface)>, Option<(i64, i64, i64, i64)>, u64);
     let small_clip = Some(Rect::new(10, 8, 4, 3));
     let pixel_clip = Some(Rect::new(10, 8, 1, 1));
     // Each call, an optional clip, and the clipped bounding rectangle the contract's damage
@@ -477,10 +608,10 @@ fn raster_extreme_work_bound() -> CaseResult {
         ("blit(5 x 4, MAX - 2, 0)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit(fb, &t, MAX - 2, 0) }), None, 64),
         ("blit_over(5 x 4, MIN, MIN)", None, Box::new(|fb| if let Ok(t) = tile(Format::BGRX) { blit::blit_over(fb, &t, MIN, MIN) }), None, 64),
         ("clear", None, Box::new(|fb| fb.clear(INK)), Some((0, 0, 32, 24)), 64),
-        ("copy_row_from(31, 23, 64 bytes)", None, Box::new(|fb| { crate::gpu_checks::declare_fixture(&COPY_ROW); fb.copy_row_from(31, 23, &COPY_ROW, 64); }), Some((31, 23, 1, 1)), 64),
-        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| { font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3); }), Some((29, 21, 3, 3)), 64),
-        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| { font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1); }), Some((0, 0, 32, 7)), 64000),
-        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| { font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1); }), None, 64000),
+        ("uploaded row of 16 pixels at (31, 23)", None, Box::new(|fb| row_copy(fb, &COPY_ROW, 31, 23)), Some((31, 23, 1, 1)), 64),
+        ("font::draw_text(\"WWWW\", 29, 21, scale 3)", None, Box::new(|fb| { gpu_font5x7::draw_text(fb, b"WWWW", 29, 21, INK, 3); }), Some((29, 21, 3, 3)), 64),
+        ("font::draw_text(1,000 bytes, 0, 0, scale 1)", None, Box::new(|fb| { gpu_font5x7::draw_text(fb, &[b'W'; 1_000], 0, 0, INK, 1); }), Some((0, 0, 32, 7)), 64000),
+        ("font::draw_text(1,000 bytes, 2^31, 3, scale 1)", None, Box::new(|fb| { gpu_font5x7::draw_text(fb, &[b'W'; 1_000], 1 << 31, 3, INK, 1); }), None, 64000),
     ];
     for (name, clip, call, rect, setup_bound) in calls {
         step("7", isolated(name, 2_000, || {
@@ -516,14 +647,14 @@ fn raster_extreme_work_bound() -> CaseResult {
 }
 
 /// A scene touching every primitive, in bounds.
-fn scene(fb: &mut FrameBuf) {
+fn scene(fb: &mut Surface) {
     shapes::fill_rect(fb, 2, 2, 9, 5, Color::rgb(250, 10, 20));
     shapes::draw_rect(fb, 1, 9, 12, 7, Color::rgb(10, 240, 30));
     shapes::draw_line(fb, 0, 0, 13, 17, Color::rgb(20, 30, 250));
     shapes::fill_circle(fb, 7, 12, 3, Color::rgb(200, 200, 10));
     shapes::draw_circle(fb, 6, 6, 4, Color::rgb(10, 200, 200));
     fb.put_pixel(13, 1, Color::rgb(123, 45, 67));
-    font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
+    gpu_font5x7::draw_text(fb, b"A1", 1, 11, Color::rgb(90, 80, 70), 1);
 }
 
 // gpu-raster: §2.2 keeps padding sentinels around UPLOAD and READBACK rows.
@@ -542,9 +673,8 @@ use libbreenix::gpu::{self, abi as ga};
         ensure(got==Err(-22),"3",format!("gpu-raster: target {width}x{height} format {format} returned {got:?}; Empty, TooLarge and Format are EINVAL"))?;
     }
     // Readback/conversion buffers retain their checked layout boundary (§3).
-    use libgfx::framebuf::SurfaceError;
     for (stride,want) in [(31,SurfaceError::StrideTooShort),(usize::MAX,SurfaceError::SizeOverflow)] {
-        ensure(FrameBuf::validate_layout(8,4,stride,Format::BGRX)==Err(want),"3",
+        ensure(Surface::validate_layout(8,4,stride,Format::BGRX)==Err(want),"3",
             format!("gpu-raster: conversion layout stride {stride} did not refuse {want:?}"))?;
     }
     for (width,height,format) in [(caps.max_width,1,0),(1,caps.max_height,1),(1,1,0)] {
@@ -559,16 +689,19 @@ crate::gpu_checks::bpp3_bpp4()
 }
 
 fn raster_bgr_order() -> CaseResult {
-    let bgr = Guarded::new(14, 18, 14 * 4, 4, true);
-    let rgb = Guarded::new(14, 18, 14 * 4, 4, false);
+    let bgr = Drawn::new(14, 18, 14 * 4, 4, true);
+    let rgb = Drawn::new(14, 18, 14 * 4, 4, false);
     scene(&mut bgr.fb());
     scene(&mut rgb.fb());
-    ensure(drawn_pixels(&bgr, Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the BGR surface")?;
-    *bgr.reference.borrow_mut() = Some(canonical_pixels(&rgb));
+    ensure(drawn_pixels(bgr.guarded(), Color::rgb(0, 0, 0)) > 0, "5", "the scene drew nothing on the BGR surface")?;
+    *bgr.mem.reference.borrow_mut() = Some(canonical_pixels(rgb.guarded()));
     bgr.judge();
+    bgr.failed()?;
+    rgb.failed()?;
+    let (bgr, rgb) = (&bgr.mem, &rgb.mem);
     for y in 0..18 {
         for x in 0..14 {
-            // SAFETY: (x, y) is inside both surfaces.
+            // SAFETY: (x, y) is inside both surfaces' readbacks.
             let (a, b) = unsafe {
                 let a = bgr.base.add(y * bgr.stride + x * 4);
                 let b = rgb.base.add(y * rgb.stride + x * 4);
@@ -583,7 +716,7 @@ fn raster_bgr_order() -> CaseResult {
 }
 
 fn raster_x_byte() -> CaseResult {
-    let calls: Vec<(&str, Box<dyn Fn(&mut FrameBuf)>)> = vec![
+    let calls: Vec<(&str, Box<dyn Fn(&mut Surface)>)> = vec![
         ("put_pixel", Box::new(|fb| fb.put_pixel(3, 3, INK))),
         ("fill_rect", Box::new(|fb| shapes::fill_rect(fb, 2, 2, 5, 4, INK))),
         ("draw_rect", Box::new(|fb| shapes::draw_rect(fb, 1, 1, 9, 7, INK))),
@@ -591,11 +724,11 @@ fn raster_x_byte() -> CaseResult {
         ("fill_circle", Box::new(|fb| shapes::fill_circle(fb, 6, 6, 3, INK))),
         ("draw_circle", Box::new(|fb| shapes::draw_circle(fb, 6, 6, 4, INK))),
         ("clear", Box::new(|fb| fb.clear(INK))),
-        ("font::draw_text", Box::new(|fb| { font5x7::draw_text(fb, b"A", 1, 1, INK, 1); })),
-        ("bitmap_font::draw_char", Box::new(|fb| { bitmap_font::draw_char(fb, 'A', 0, 0, INK); })),
+        ("font::draw_text", Box::new(|fb| { gpu_font5x7::draw_text(fb, b"A", 1, 1, INK, 1); })),
+        ("bitmap_font::draw_char", Box::new(|fb| { gpu_bitmap_font::draw_char(fb, 'A', 0, 0, INK); })),
     ];
     for (name, call) in calls {
-        let g = Guarded::bgrx(16, 16);
+        let g = Drawn::bgrx(16, 16);
         call(&mut g.fb());
         for y in 0..16 {
             for x in 0..16 {
@@ -671,9 +804,7 @@ fn raster_alpha_extremes() -> CaseResult {
         let got = alpha::over([0; 4], d);
         ensure(got == d, "2", format!("over([0, 0, 0, 0], {d:?}) is {got:?}; an alpha-0 source leaves it unchanged"))?;
     }
-    let src = FrameBuf::new(4, 1, Format::BGRA_PREMULTIPLIED).cite("3")?;
-    poke(&src, 0, 0, [INK.b, INK.g, INK.r, 255]);
-    poke(&src, 2, 0, [WHITE.b, WHITE.g, WHITE.r, 255]);
+    let src = fixture(&EXTREMES_SRC, 4, 1, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let g = padded(32, 24);
     blit::blit_over(&mut g.fb(), &src, 6, 9);
     step("2, 5.8", g.compare("blit_over of [opaque, transparent, opaque, transparent] at (6, 9)", |x, y| match (x, y) {
@@ -684,28 +815,23 @@ fn raster_alpha_extremes() -> CaseResult {
 }
 
 fn raster_alpha_output() -> CaseResult {
-    let dst = FrameBuf::new(16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?;
-    let src = FrameBuf::new(16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let d_of = |x: usize, y: usize| { let a = (x * 16 + y) as u8; [a / 2, a / 3, a, a] };
     let s_of = |x: usize, y: usize| { let a = (y * 17) as u8; [a / 3, a.saturating_sub(x as u8), a / 5, a] };
+    // The premultiplied destination is copied in from its table, then the source blended over it.
+    let dst = Drawn::formatted(16, 16, 16 * 4, 4, true, Format::BGRA_PREMULTIPLIED);
+    let (below, above) = (fixture(&OUTPUT_DST, 16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?, fixture(&OUTPUT_SRC, 16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?);
+    blit::blit(&mut dst.fb(), &below, 0, 0);
+    blit::blit_over(&mut dst.fb(), &above, 0, 0);
     for y in 0..16 {
         for x in 0..16 {
-            poke(&dst, x, y, d_of(x, y));
-            poke(&src, x, y, s_of(x, y));
-        }
-    }
-    let mut dst = dst;
-    blit::blit_over(&mut dst, &src, 0, 0);
-    for y in 0..16 {
-        for x in 0..16 {
-            let (got, want) = (peek(&dst, x, y), source_over(s_of(x, y), d_of(x, y)));
+            let (got, want) = (dst.bgra(x, y), source_over(s_of(x, y), d_of(x, y)));
             if got.map(|v| v as u32) != want {
                 return at("2, 3", format!("blit_over of {:?} onto the premultiplied pixel {:?} at ({x},{y}) stored {got:?}; section 2 gives {want:?}",
                     s_of(x, y), d_of(x, y)));
             }
         }
     }
-    Ok(())
+    step("2, 3", dst.failed())
 }
 
 fn raster_blit() -> CaseResult {
@@ -718,7 +844,7 @@ fn raster_blit() -> CaseResult {
         for (x, y) in [(7, 3), (11, 6)] {
             ensure(g.x_byte(x, y) == 0xFF, "2", format!("blit of a {format:?} source wrote X byte {:#04x} at ({x},{y})", g.x_byte(x, y)))?;
         }
-        let three = Guarded::new(32, 24, 32 * 3 + 6, 3, false);
+        let three = Drawn::new(32, 24, 32 * 3 + 6, 3, false);
         blit::blit(&mut three.fb(), &src, 20, 18);
         step("5.8", three.compare(&format!("blit of a {format:?} source onto a 3-byte RGB surface at (20, 18)"),
             |x, y| if in_rect(x as i64, y as i64, 20, 18, 5, 4) { tile_colour(x - 20, y - 18) } else { Color::rgb(0, 0, 0) }))?;
@@ -746,18 +872,31 @@ fn raster_blit_clip() -> CaseResult {
 }
 
 fn raster_blit_alpha() -> CaseResult {
-    crate::gpu_checks::declare_fixture(&TILE_ALPHA);
-    let src = FrameBuf::new(5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    // Opaque X=0 must replace the background, and copies to BGRX must write X=255.
+    let opaque = fixture(&OPAQUE_ZERO_X, 1, 1, Format::BGRX).cite("3")?;
+    let opaque_dst = padded(4, 4);
+    blit::blit_over(&mut opaque_dst.fb(), &opaque, 1, 1);
+    ensure(opaque_dst.bgra(1, 1) == [17, 34, 51, 255], "2, 5.8", "BGRX X=0 was treated as transparent")?;
+    let scaled = Drawn::formatted(4, 4, 16, 4, true, Format::BGRA_PREMULTIPLIED);
+    blit::blit_scaled(&mut scaled.fb(), &opaque, 0, 0, 2);
+    ensure(scaled.bgra(1, 1) == [17, 34, 51, 255], "2, 5.8", "scaled BGRX copy retained X=0 as alpha")?;
+    step("2, 5.8", scaled.failed())?;
+    let translucent = fixture(&OUTPUT_SRC, 16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    let copy_dst = Drawn::bgrx(16, 16);
+    blit::blit(&mut copy_dst.fb(), &translucent, 0, 0);
+    for y in 0..16 { for x in 0..16 {
+        let n = (16 * y + x) * 4;
+        ensure(copy_dst.bgra(x, y) == [OUTPUT_SRC[n], OUTPUT_SRC[n+1], OUTPUT_SRC[n+2], 255],
+            "2, 5.8", "copy into BGRX retained translucent alpha or changed colour")?;
+    }}
+    step("2, 5.8", opaque_dst.failed())?;
+    step("2, 5.8", copy_dst.failed())?;
+    let src = fixture(&TILE_ALPHA, 5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let s_of = |i: usize, j: usize| {
         let a = [0u32, 64, 128, 200, 255][i];
         let c = tile_colour(i, j);
         [nearest255(c.b as u32 * a) as u8, nearest255(c.g as u32 * a) as u8, nearest255(c.r as u32 * a) as u8, a as u8]
     };
-    for j in 0..4 {
-        for i in 0..5 {
-            poke(&src, i, j, s_of(i, j));
-        }
-    }
     let g = padded(32, 24);
     blit::blit_over(&mut g.fb(), &src, 6, 5);
     step("2, 5.8", g.compare("blit_over of a premultiplied 5 x 4 source at (6, 5)", |x, y| {
@@ -774,19 +913,9 @@ fn raster_blit_straight() -> CaseResult {
     let alphas = [0u32, 1, 128, 254, 255];
     let straight = |i: usize, j: usize| Color::rgb(200, (100 + 30 * j) as u8, (30 + 40 * i) as u8);
     for is_bgr in [false, true] {
-        crate::gpu_checks::declare_fixture(if is_bgr{&TILE_STRAIGHT_BGR}else{&TILE_STRAIGHT_RGB});
-        let mut mem = vec![0u32; 5 * 4];
-        let base = mem.as_mut_ptr() as *mut u8;
-        for j in 0..4 {
-            for i in 0..5 {
-                let (c, a) = (straight(i, j), alphas[i] as u8);
-                let bytes = if is_bgr { [c.b, c.g, c.r, a] } else { [c.r, c.g, c.b, a] };
-                // SAFETY: (i, j) is inside the 5 × 4, 20-byte-stride buffer.
-                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(j * 20 + i * 4), 4) };
-            }
-        }
-        // SAFETY: `mem` holds 5 × 4 four-byte pixels and outlives `src`.
-        let src = unsafe { FrameBuf::from_raw(base, 5, 4, 20, 4, is_bgr) }.cite("3")?;
+        // The straight source in its own byte order: straight(i, j) with alpha alphas[i].
+        let (table, layout): (&'static [u8], _) = if is_bgr { (&TILE_STRAIGHT_BGR, Format::BGRX) } else { (&TILE_STRAIGHT_RGB, Format::RGBX) };
+        let src = fixture(table, 5, 4, layout).cite("3")?;
         let g = padded(32, 24);
         blit::blit_straight(&mut g.fb(), &src, 20, 2);
         let order = if is_bgr { "B, G, R, A" } else { "R, G, B, A" };
@@ -800,8 +929,6 @@ fn raster_blit_straight() -> CaseResult {
                 PAPER
             }
         }))?;
-        drop(src);
-        drop(mem);
     }
     Ok(())
 }
@@ -857,7 +984,7 @@ fn raster_clip_stack() -> CaseResult {
     let (c1, c2, c3, c4) = (Color::rgb(250, 0, 0), Color::rgb(0, 250, 0), Color::rgb(0, 0, 250), Color::rgb(250, 250, 0));
     let g = padded(32, 24);
     let mut fb = g.fb();
-    let clip = |fb: &FrameBuf| { let c = fb.clip(); (c.x, c.y, c.w, c.h) };
+    let clip = |fb: &Surface| { let c = fb.clip(); (c.x, c.y, c.w, c.h) };
     ensure(clip(&fb) == (0, 0, 32, 24), "4", format!("with no clip pushed the clip is {:?}; the contract gives the whole surface", clip(&fb)))?;
     fb.push_clip(Rect::new(2, 2, 20, 15));
     fb.push_clip(Rect::new(10, -5, 30, 12));
@@ -950,7 +1077,7 @@ fn raster_gradient() -> CaseResult {
 }
 
 /// The damage a primitive must mark on a 32 × 24 surface with no clip (section 6).
-fn damage_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>, Option<(i32, i32, i32, i32)>)> {
+fn damage_calls() -> Vec<(&'static str, Box<dyn Fn(&mut Surface)>, Option<(i32, i32, i32, i32)>)> {
     vec![
         ("put_pixel(3, 4)", Box::new(|fb| fb.put_pixel(3, 4, INK)), Some((3, 4, 1, 1))),
         ("fill_rect(5, 3, 10, 7)", Box::new(|fb| shapes::fill_rect(fb, 5, 3, 10, 7, INK)), Some((5, 3, 10, 7))),
@@ -967,7 +1094,7 @@ fn damage_calls() -> Vec<(&'static str, Box<dyn Fn(&mut FrameBuf)>, Option<(i32,
     ]
 }
 
-fn dirty(fb: &mut FrameBuf) -> Option<(i32, i32, i32, i32)> {
+fn dirty(fb: &mut Surface) -> Option<(i32, i32, i32, i32)> {
     fb.take_dirty().map(|d| (d.x, d.y, d.w, d.h))
 }
 
@@ -989,7 +1116,7 @@ fn raster_damage_exact() -> CaseResult {
 }
 
 fn raster_damage_noop() -> CaseResult {
-    let nothing: Vec<(&str, Box<dyn Fn(&mut FrameBuf)>)> = vec![
+    let nothing: Vec<(&str, Box<dyn Fn(&mut Surface)>)> = vec![
         ("fill_rect(40, 2, 5, 5) right of the surface", Box::new(|fb| shapes::fill_rect(fb, 40, 2, 5, 5, INK))),
         ("fill_rect(3, 30, 5, 5) below the surface", Box::new(|fb| shapes::fill_rect(fb, 3, 30, 5, 5, INK))),
         ("fill_rect(3, 3, 0, 5)", Box::new(|fb| shapes::fill_rect(fb, 3, 3, 0, 5, INK))),
@@ -1411,18 +1538,18 @@ const GLYPH_BOX: [u8; 7] = [0x1F; 7];
 
 fn text_bitmap_glyph() -> CaseResult {
     exact("8.1", "font::draw_char('A', 2, 3, scale 1)", 12, 12,
-        |fb| font5x7::draw_char(fb, b'A', 2, 3, INK, 1), glyph5x7(GLYPH_A, 2, 3, 1))
+        |fb| gpu_font5x7::draw_char(fb, b'A', 2, 3, INK, 1), glyph5x7(GLYPH_A, 2, 3, 1))
 }
 
 fn text_bitmap_scale() -> CaseResult {
     exact("8.1", "font::draw_char('A', 1, 1, scale 3)", 20, 24,
-        |fb| font5x7::draw_char(fb, b'A', 1, 1, INK, 3), glyph5x7(GLYPH_A, 1, 1, 3))
+        |fb| gpu_font5x7::draw_char(fb, b'A', 1, 1, INK, 3), glyph5x7(GLYPH_A, 1, 1, 3))
 }
 
 fn text_bitmap_unknown() -> CaseResult {
     for byte in [0x7Fu8, 0xC8, 0x01] {
         exact("8.1", &format!("font::draw_char({byte:#04x})"), 10, 10,
-            |fb| font5x7::draw_char(fb, byte, 2, 1, INK, 1), glyph5x7(GLYPH_BOX, 2, 1, 1))?;
+            |fb| gpu_font5x7::draw_char(fb, byte, 2, 1, INK, 1), glyph5x7(GLYPH_BOX, 2, 1, 1))?;
     }
     let w = font5x7::text_width(b"A\x7f", 2);
     ensure(w == 22, "8.1", format!("text_width of two glyphs at scale 2 is {w}, the contract gives (2 - 1) x 12 + 10 = 22"))

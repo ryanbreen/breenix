@@ -1,80 +1,157 @@
-//! Blits between surfaces (docs/gui/breengel.md section 5.8).
-//!
-//! Each blit writes the destination pixels of its source rectangle that are inside the
-//! destination surface and clip, and marks `(x, y, w·n, h·n)`.
+//! Blits (docs/gui/breengel.md section 5.8): a GPU region copy (`copy`), source-over of a
+//! premultiplied source (`over`), of a straight-alpha source premultiplied once (`over_straight`),
+//! and integer scaling (`copy_scaled`). A source is a surface or a texture; each blit clips
+//! the destination rectangle in i64 and anchors the pipeline's origins at the visible box, so
+//! the parameters stay small whatever the coordinates.
 
-use crate::alpha::{over, premultiply};
-use crate::framebuf::{Box64, FrameBuf};
+use bgl::{pipeline, DeclaredFixture, Instance};
+use libbreenix::gpu::{self, abi};
+
+use crate::device;
+use crate::surface::{Box64, Format, Surface, SurfaceError};
 use crate::work;
 
-/// The destination box of a `w × h` source at (x, y) with scale `n`, and its visible part.
-fn target(dst: &FrameBuf, src: &FrameBuf, x: i32, y: i32, n: i64) -> (Box64, Box64) {
-    let (w, h) = src.dims();
-    let (x, y) = (x as i64, y as i64);
-    let b = Box64 { x0: x, y0: y, x1: x + w as i64 * n, y1: y + h as i64 * n };
-    (b, b.intersect(&dst.clip_box()))
+/// A resource a blit can sample.
+pub trait Source {
+    /// The resource handle.
+    fn resource(&self) -> u64;
+    fn width(&self) -> usize;
+    fn height(&self) -> usize;
+    fn format(&self) -> Format;
 }
 
-/// Run `f(src_x, src_y, dst_x, dst_y)` over every visible destination pixel.
-fn each(dst: &mut FrameBuf, src: &FrameBuf, x: i32, y: i32, n: i64, mut f: impl FnMut(&mut FrameBuf, usize, usize, usize, usize)) {
-    let (b, v) = target(dst, src, x, y, n);
+impl Source for Surface {
+    fn format(&self) -> Format { Surface::format(self) }
+    fn resource(&self) -> u64 {
+        self.handle()
+    }
+    fn width(&self) -> usize {
+        Surface::width(self)
+    }
+    fn height(&self) -> usize {
+        Surface::height(self)
+    }
+}
+
+/// A sampled image uploaded from a declared static table: the only CPU pixels a blit source
+/// is made from (docs/gui/gpu.md section 2.4).
+pub struct Texture {
+    handle: u64,
+    width: usize,
+    height: usize,
+    owner: u64,
+    format: Format,
+}
+
+impl Texture {
+    /// A `width × height` texture holding `table`, whose rows are `width × layout.bpp` bytes
+    /// in `layout` (straight or premultiplied as the blit that samples it expects).
+    pub fn from_fixture(table: DeclaredFixture, width: usize, height: usize, layout: Format) -> Result<Texture, SurfaceError> {
+        Surface::validate_layout(width, height, width * layout.bpp, layout)?;
+        if table.len() != width * height * layout.bpp {
+            return Err(SurfaceError::SizeOverflow);
+        }
+        let handle = gpu::texture_create(abi::format::B8G8R8A8, width as u32, height as u32).map_err(SurfaceError::Device)?;
+        let texture = Texture { handle, width, height, owner: device::pid(), format: layout };
+        let rect = [0, 0, width as u32, height as u32];
+        let stride = (width * layout.bpp) as u32;
+        device::with(|d| bgl::fixture_upload(table, &d.context, handle, rect, stride, layout.upload_source()))
+            .map_err(SurfaceError::Device)?;
+        Ok(texture)
+    }
+}
+
+impl Source for Texture {
+    fn format(&self) -> Format { self.format }
+    fn resource(&self) -> u64 {
+        self.handle
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+    fn height(&self) -> usize {
+        self.height
+    }
+}
+
+impl Drop for Texture {
+    fn drop(&mut self) {
+        if self.owner == device::pid() {
+            gpu::resource_destroy(self.handle);
+        }
+    }
+}
+
+/// The visible destination box of `src` placed at `(x, y)`, scaled by `n`, and that box.
+fn placed(dst: &Surface, src: &dyn Source, x: i32, y: i32, n: i64) -> (Box64, Box64) {
+    let whole = Box64::wide(x as i64, y as i64, src.width() as i64 * n, src.height() as i64 * n);
+    (whole, whole.intersect(&dst.clip_box()))
+}
+
+/// One instance of a sampling pipeline: `params` are its origins, already anchored.
+fn sampled(dst: &mut Surface, pipe: u32, texture: u64, visible: Box64, params: &[i64], flags: u32) {
+    let mut p = [0u32; 16];
+    for (slot, v) in p.iter_mut().zip(params) {
+        *slot = *v as i32 as u32;
+    }
+    dst.submit(|c| c.draw(pipe, flags, texture, 0, 0, &[Instance { rect: visible.corners(), params: p }]));
+}
+
+/// Destination pixel `(x + i, y + j)` becomes source pixel `(i, j)`, converted by channel,
+/// for each source pixel whose destination is visible: one `copy` instance.
+pub fn blit(dst: &mut Surface, src: &dyn Source, x: i32, y: i32) {
+    let (whole, v) = placed(dst, src, x, y, 1);
     if v.is_empty() {
         return;
     }
-    work::add(v.height() as u64);
-    for py in v.y0..v.y1 {
-        let sy = ((py - b.y0) / n) as usize;
-        work::add(v.width() as u64);
-        for px in v.x0..v.x1 {
-            let sx = ((px - b.x0) / n) as usize;
-            f(dst, sx, sy, px as usize, py as usize);
-        }
+    work::add(1);
+    let (sx, sy) = ((v.x0 - x as i64) as i32, (v.y0 - y as i64) as i32);
+    let [x0, y0, _, _] = v.corners();
+    let force_opaque = !(src.format().premultiplied && dst.format().premultiplied);
+    sampled(dst, pipeline::COPY, src.resource(), v,
+        &[(sx as i64) - x0 as i64, (sy as i64) - y0 as i64, i64::from(force_opaque)], 0);
+    dst.mark(whole);
+}
+
+/// Source-over of a premultiplied BGRA source (section 2): one `over` instance.
+pub fn blit_over(dst: &mut Surface, src: &dyn Source, x: i32, y: i32) {
+    blend(dst, src, x, y, pipeline::OVER);
+}
+
+/// Source-over of a straight-alpha source, each pixel premultiplied once: one `over_straight`
+/// instance.
+pub fn blit_straight(dst: &mut Surface, src: &dyn Source, x: i32, y: i32) {
+    blend(dst, src, x, y, pipeline::OVER_STRAIGHT);
+}
+
+fn blend(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, pipe: u32) {
+    let (whole, v) = placed(dst, src, x, y, 1);
+    if v.is_empty() {
+        return;
     }
-    dst.mark(b);
+    work::add(1);
+    let flags = if pipe == pipeline::OVER && !src.format().premultiplied { gpu::abi::draw::SOURCE_OPAQUE } else { 0 }
+        | if !dst.format().premultiplied { gpu::abi::draw::DESTINATION_OPAQUE } else { 0 };
+    sampled(dst, pipe, src.resource(), v, &[v.x0, v.y0, v.x0 - x as i64, v.y0 - y as i64], flags);
+    dst.mark(whole);
 }
 
-/// Copy `src` to (x, y): each destination pixel becomes the source pixel, converted between
-/// formats channel by channel (alpha copied between premultiplied surfaces, 0xFF otherwise).
-pub fn blit(dst: &mut FrameBuf, src: &FrameBuf, x: i32, y: i32) {
-    blit_scaled(dst, src, x, y, 1);
-}
-
-/// Source-over of a premultiplied BGRA `src` (an opaque source counts as alpha 255).
-pub fn blit_over(dst: &mut FrameBuf, src: &FrameBuf, x: i32, y: i32) {
-    each(dst, src, x, y, 1, |dst, sx, sy, dx, dy| {
-        let out = over(src.get_bgra(sx, sy), dst.get_bgra(dx, dy));
-        let px = dst.encode(out);
-        dst.write(dx, dy, px);
-    });
-}
-
-/// Source-over of a straight-alpha source (the fourth byte is straight alpha): each source
-/// pixel is premultiplied once, `div255(c × a)`, then blended with `over`.
-pub fn blit_straight(dst: &mut FrameBuf, src: &FrameBuf, x: i32, y: i32) {
-    each(dst, src, x, y, 1, |dst, sx, sy, dx, dy| {
-        let [b, g, r, a] = straight(src, sx, sy);
-        let s = [premultiply(b, a), premultiply(g, a), premultiply(r, a), a];
-        let out = over(s, dst.get_bgra(dx, dy));
-        let px = dst.encode(out);
-        dst.write(dx, dy, px);
-    });
-}
-
-/// A source pixel as straight `[b, g, r, a]`: alpha is the fourth byte of a 4-byte surface.
-fn straight(src: &FrameBuf, x: usize, y: usize) -> [u8; 4] {
-    let [b, g, r, _] = src.get_bgra(x, y);
-    let a = if src.format().bpp == 4 { src.read(x, y)[3] } else { 0xFF };
-    [b, g, r, a]
-}
-
-/// `blit` with each source pixel `(i, j)` filling the `n × n` square at
-/// `(x + i·n, y + j·n)`; nothing for `n < 1`.
-pub fn blit_scaled(dst: &mut FrameBuf, src: &FrameBuf, x: i32, y: i32, n: i32) {
+/// Source pixel `(i, j)` fills the `n × n` square at `(x + i·n, y + j·n)`, `n ≥ 1`: one
+/// `copy_scaled` instance, its destination origin moved by whole source pixels to the
+/// visible box's first covered pixel.
+pub fn blit_scaled(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, n: i32) {
     if n < 1 {
         return;
     }
-    each(dst, src, x, y, n as i64, |dst, sx, sy, dx, dy| {
-        let px = dst.encode(src.get_bgra(sx, sy));
-        dst.write(dx, dy, px);
-    });
+    let n64 = n as i64;
+    let (whole, v) = placed(dst, src, x, y, n64);
+    if v.is_empty() {
+        return;
+    }
+    work::add(1);
+    let (kx, ky) = ((v.x0 - x as i64) / n64, (v.y0 - y as i64) / n64);
+    let (ox, oy) = (x as i64 + kx * n64, y as i64 + ky * n64);
+    let flags = if src.format().premultiplied && dst.format().premultiplied { 0 } else { gpu::abi::draw::SOURCE_OPAQUE };
+    sampled(dst, pipeline::COPY_SCALED, src.resource(), v, &[ox, oy, kx, ky, n64], flags);
+    dst.mark(whole);
 }

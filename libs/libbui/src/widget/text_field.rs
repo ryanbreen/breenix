@@ -3,7 +3,7 @@ use crate::input::{Key, KeyInput};
 use crate::{text, widget};
 use crate::{InputState, Rect, Theme, WidgetEvent};
 use alloc::string::String;
-use libgfx::{framebuf::FrameBuf, shapes};
+use libgfx_ref::{framebuf::FrameBuf, shapes};
 
 pub struct TextField {
     pub rect: Rect,

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::input::InputState;
 use crate::rect::Rect;
@@ -369,7 +369,7 @@ impl FilePicker {
         // Clip entry ink and selection to the area beside the controls.
         let rail = self.scroll_rail();
         let entry_width = self.list_area.w - rail.w;
-        fb.push_clip(libgfx::framebuf::Rect::new(self.list_area.x, self.list_area.y, entry_width, self.list_area.h));
+        fb.push_clip(libgfx_ref::framebuf::Rect::new(self.list_area.x, self.list_area.y, entry_width, self.list_area.h));
         let end = (self.scroll_offset + self.visible_rows).min(self.entries.len());
         for i in self.scroll_offset..end {
             let row = (i - self.scroll_offset) as i32;
@@ -426,7 +426,7 @@ impl FilePicker {
 
         fb.pop_clip();
         // Scroll indicators in their dedicated rail.
-        fb.push_clip(libgfx::framebuf::Rect::new(rail.x, rail.y, rail.w, rail.h));
+        fb.push_clip(libgfx_ref::framebuf::Rect::new(rail.x, rail.y, rail.w, rail.h));
         if self.scroll_offset > 0 {
             let indicator = b"^ more ^";
             let iw = text::text_width(indicator, theme);

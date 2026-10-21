@@ -1,8 +1,8 @@
 //! Home icon — animated house with chimney smoke and glowing door.
 
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::easing::sin_approx;
 use crate::icon::{Icon, IconBase, IconMouse, IconState};

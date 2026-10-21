@@ -27,10 +27,10 @@ use libbreenix::io;
 use libbreenix::time;
 use libbreenix::types::Fd;
 
-use libgfx::bitmap_font;
-use libgfx::ttf_font;
-use libgfx::color::Color;
-use libgfx::shapes;
+use libgfx_ref::bitmap_font;
+use libgfx_ref::ttf_font;
+use libgfx_ref::color::Color;
+use libgfx_ref::shapes;
 
 
 // ---------------------------------------------------------------------------
