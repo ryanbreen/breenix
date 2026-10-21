@@ -13,9 +13,8 @@ use crate::*;
 #[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
 
 use crate::raster::Drawn;
-use libgfx::{shapes, font as font5x7, ttf_font};
-use libgfx::ttf_font::{Font,CachedFont};
-use libgfx::surface::Surface;
+use libgfx_ref::{shapes, font as font5x7, ttf_font};
+use libfont::{Font,CachedFont};
 use breengel::font::{FontChange, FontWatchError, FontWatcher};
 use libbui::focus::FocusChain;
 use libbui::widget::{file_picker::FilePickerResult, label::Label, text_field::TextField};
@@ -657,9 +656,9 @@ fn same_as(
     bg: Color,
     what: &str,
     section: &str,
-    expect: impl FnOnce(&mut Surface),
+    expect: impl FnOnce(&mut FrameBuf),
 ) -> CaseResult {
-    let mut want = Drawn::bgrx(got.width, got.height);
+    let mut want = Guarded::bgrx(got.width, got.height);
     want.reset(bg);
     expect(&mut want.fb());
     let reference=canonical(&want);
@@ -969,7 +968,7 @@ fn widgets_label_clip() -> CaseResult {
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
         let mut prefix=Vec::new();
         for c in b"ABCDEFGHIJKLM" {let mut next=prefix.clone();next.push(*c);next.extend_from_slice(b"...");if sans_width(&next)>35 {break;}prefix.push(*c);}
-        prefix.extend_from_slice(b"...");fb.push_clip(libgfx::surface::Rect::new(10,8,35,16));
+        prefix.extend_from_slice(b"...");fb.push_clip(libgfx_ref::framebuf::Rect::new(10,8,35,16));
         sans_draw(fb,&prefix,10,8,theme.text_primary);fb.pop_clip();
     })?;
     let mut narrow = Drawn::bgrx(80, 40);
@@ -994,7 +993,7 @@ fn widgets_label_clip() -> CaseResult {
     )?;
     // R3 uses the certified glyph pixels and clips the final dot at the physical bounds.
     same_as(&narrow, PAPER, "12x16 DejaVu ellipsis", "14.3", |fb| {
-        fb.push_clip(libgfx::surface::Rect::new(10,8,12,16));
+        fb.push_clip(libgfx_ref::framebuf::Rect::new(10,8,12,16));
         sans_draw(fb,b"...",10,8,theme.text_primary);fb.pop_clip();
     })?;
     narrow.reset(PAPER);
@@ -1209,7 +1208,7 @@ fn widgets_menubar_open() -> CaseResult {
             ),
         )?;
     }
-    let mut want = Drawn::bgrx(sans_width(b"New") as usize, 16);
+    let mut want = Guarded::bgrx(sans_width(b"New") as usize, 16);
     want.reset(theme.widget_bg);
     sans_draw(&mut want.fb(),b"New",0,0,theme.text_primary);
     for y in 0..16 {
@@ -1293,7 +1292,7 @@ fn widgets_menu_disabled() -> CaseResult {
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    let mut want = Drawn::bgrx(sans_width(b"Save") as usize, 16);
+    let mut want = Guarded::bgrx(sans_width(b"Save") as usize, 16);
     want.reset(theme.widget_bg);
     sans_draw(&mut want.fb(),b"Save",0,0,theme.text_secondary);
     for y in 0..16 {
@@ -1892,7 +1891,7 @@ fn text_entry_filepicker_errors() -> CaseResult {
     g.reset(PAPER);
     p.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    let mut expected = Drawn::bgrx(101, 7);
+    let mut expected = Guarded::bgrx(101, 7);
     expected.reset(Theme::dark().panel_bg);
     font5x7::draw_text(
         &mut expected.fb(),
@@ -2692,12 +2691,12 @@ fn sans_width(text:&[u8])->i32 {
     let pen:i32=glyphs.iter().enumerate().map(|(i,&g)|font.advance26(g,1024)+glyphs.get(i+1).map_or(0,|&next|font.kern26(g,next,1024))).sum();
     (pen+32)/64
 }
-fn sans_draw(fb:&mut Surface,text:&[u8],x:i32,y:i32,colour:Color) {
+fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
     let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
     let mut font=CachedFont::new(Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid"),256);
     ttf_font::draw_text_bytes(fb,&mut font,text,x,y,16.0,colour);
 }
-fn sans_center(fb:&mut Surface,text:&[u8],rect:Rect,colour:Color) {
+fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
     sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
 }
 

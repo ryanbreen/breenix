@@ -8,8 +8,8 @@ pub fn run() -> CaseResult {
     for height in [16,3] {
         let mut got=Drawn::bgrx(80,40);got.reset(paper);
         Label::new(Rect::new(10,8,12,height),b"ABCDEFGHIJKLM").draw(&mut got.fb(),&Theme::dark());
-        let mut expected=Drawn::bgrx(80,40);expected.reset(paper);
-        expected.fb().push_clip(libgfx::surface::Rect::new(10,8,12,height));
+        let mut expected=Guarded::bgrx(80,40);expected.reset(paper);
+        expected.fb().push_clip(libgfx_ref::framebuf::Rect::new(10,8,12,height));
         super::sans_draw(&mut expected.fb(),b"...",10,8,Color::WHITE);
         let mut ink=0;
         for y in 0..40 {for x in 0..80 {
