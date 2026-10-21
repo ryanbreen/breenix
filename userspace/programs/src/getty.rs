@@ -1,9 +1,11 @@
 //! A login session on the console, a numbered virtual terminal or a
 //! pseudo-terminal line (`pts/N`).
 //!
-//! A terminal that the last session left owned by its account is returned to
-//! root (mode 0620, group tty) before the prompt, and the logout is recorded in
-//! the authentication log (`docs/users/design.md`, section 3).
+//! Before the prompt the terminal is revoked from the descriptions still
+//! open on it (vhangup), so a process left from the last session cannot read
+//! the next login's input. A terminal that the last session left owned by its account is
+//! returned to root (mode 0620, group tty), and the logout is recorded in the
+//! authentication log (`docs/users/design.md`, section 3).
 use libbreenix::{io, process, signal, termios, types::Fd};
 use std::io::Write;
 use std::os::unix::io::FromRawFd;
@@ -28,6 +30,12 @@ fn run(log: &mut Option<std::fs::File>) -> Result<(), String> {
     let sid = check(process::setsid())?;
     let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | O_NOCTTY))?;
     check(termios::set_controlling_terminal(fd))?;
+    // Revoke the terminal from the descriptions still open on it, so a
+    // process left from the last session can neither read the next login's
+    // input nor write to its screen, then open it again for this session.
+    check(termios::vhangup().map_err(|e| format!("revoke {path}: {e}")))?;
+    check(io::close(fd))?;
+    let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | O_NOCTTY))?;
     for target in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] { check(io::dup2(fd, target))?; }
     if fd.raw() > 2 { check(io::close(fd))?; }
     check(termios::tcsetpgrp(Fd::STDIN, sid.raw() as i32))?;
