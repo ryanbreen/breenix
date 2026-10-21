@@ -9,6 +9,8 @@
 //! 14 to 16).
 
 use crate::*;
+#[path="widget_pixels/scrollbar.rs"] mod scrollbar_pixels;
+
 use breengel::font::{FontChange, FontWatchError, FontWatcher};
 use libbui::focus::FocusChain;
 use libbui::widget::{file_picker::FilePickerResult, label::Label, text_field::TextField};
@@ -1121,6 +1123,8 @@ fn widgets_scrollbar_wheel() -> CaseResult {
 }
 
 fn widgets_scrollbar_thumb() -> CaseResult {
+    scrollbar_pixels::run()?;
+
     for (content, view, thumb) in [(1000, 250, 50), (1000, 500, 100), (10_000, 100, 20)] {
         let s = ScrollBar::new(Rect::new(4, 0, 12, 200), content, view);
         let mut g = Guarded::bgrx(20, 200);
