@@ -257,17 +257,30 @@ impl Gpu {
         if r != 0 {
             return Err(std::format!("stage upload: errno {}", -r));
         }
-        let mut stream = Vec::new();
-        encode::begin(&mut stream, self.scanout);
+        // One submission may estimate at most the work cap, which copy_scaled's per-fragment
+        // weight reaches well inside a full display: enlarge the frame in row bands, each a
+        // submission of its own, in this context's order.
+        let steps = draw::steps(pipeline::COPY_SCALED).ok_or("copy_scaled has no work weight")?;
+        let rows = (gpu::abi::limits::WORK / steps / u64::from(self.width)).min(u64::from(self.height)) as u32;
+        if rows == 0 {
+            return Err(String::from("a row of the scanout exceeds the submission work cap"));
+        }
         let mut params = [0u32; 16];
         params[4] = self.scale;
-        draw::encode(&mut stream, pipeline::COPY_SCALED, draw::SOURCE_OPAQUE, self.texture, 0, 0,
-            &[draw::Instance { rect: [0, 0, self.width as i32, self.height as i32], params }]);
-        let (r, submitted) = gpu::submit(self.context, &stream);
-        if r != 0 {
-            return Err(std::format!("stage submit: errno {}", -r));
+        let mut fence = 0;
+        for top in (0..self.height).step_by(rows as usize) {
+            let bottom = (top + rows).min(self.height);
+            let mut stream = Vec::new();
+            encode::begin(&mut stream, self.scanout);
+            draw::encode(&mut stream, pipeline::COPY_SCALED, draw::SOURCE_OPAQUE, self.texture, 0, 0,
+                &[draw::Instance { rect: [0, top as i32, self.width as i32, bottom as i32], params }]);
+            let (r, submitted) = gpu::submit(self.context, &stream);
+            if r != 0 {
+                return Err(std::format!("stage submit of rows {top}..{bottom}: errno {}", -r));
+            }
+            fence = submitted.fence;
         }
-        let (r, waited) = gpu::wait(self.context, submitted.fence, 2_000_000_000);
+        let (r, waited) = gpu::wait(self.context, fence, 2_000_000_000);
         if r != 0 {
             return Err(std::format!("stage render: errno {}, status {}", -r, waited.status));
         }
