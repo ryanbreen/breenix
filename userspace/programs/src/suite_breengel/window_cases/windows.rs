@@ -1208,6 +1208,7 @@ fn windows_remnant_on_death() -> CaseResult {
 
 fn windows_churn() -> CaseResult {
     interface()?;
+    let gpu_baseline = crate::gpu_checks::counters().cite("17.2")?;
     // Cycles first, and every read below once, so page tables the mappings need, and the
     // blocks the reads allocate (libc keeps small ones mapped), exist before the baseline.
     let cycle = || -> CaseResult {
@@ -1218,6 +1219,16 @@ fn windows_churn() -> CaseResult {
     for _ in 0..10 {
         cycle()?;
     }
+    let drain = || -> CaseResult {
+        let start = now_ms();
+        loop {
+            let now = crate::gpu_checks::counters().cite("17.2")?;
+            if now.resource_bytes == gpu_baseline.resource_bytes && now.resources == gpu_baseline.resources { return Ok(()); }
+            ensure(since(start) < 1_000, "17.2", "gpu-window: B12 device unrefs did not finish in one second")?;
+            let _ = time::sleep_ms(5);
+        }
+    };
+    drain()?;
     let _ = (list(), counter("window_buffer_allocs"), vm_size(), mem_free_kb());
     let listed_before = list().cite("17.2")?.len();
     let allocs_before = counter("window_buffer_allocs").cite("18")?;
@@ -1226,6 +1237,7 @@ fn windows_churn() -> CaseResult {
     for _ in 0..100 {
         cycle()?;
     }
+    drain()?;
     let free_after = mem_free_kb().cite("17.2")?;
     let allocs = counter("window_buffer_allocs").cite("18")? - allocs_before;
     value("buffer-allocs", allocs as i64, "", Some((200, 200)));
