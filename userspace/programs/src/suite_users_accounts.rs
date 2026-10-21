@@ -1,4 +1,4 @@
-// Account cases run only on the disposable suite root, never the persistent store.
+// Account cases run on the disposable suite root rather than the persistent store.
 use libbreenix::accounts as ac;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;

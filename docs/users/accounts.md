@@ -6,7 +6,7 @@ and shadow parsers, shared with libc's getpw* and getgr* functions. Invalid
 lines do not invalidate their neighbours. Names follow
 `[a-z_][a-z0-9_-]{0,31}`, IDs are unsigned 32-bit values except the reserved
 all-ones value, and homes and shells are absolute paths without dot components.
-An empty password never authenticates, `!` locks password authentication,
+Authentication must refuse an empty password, `!` locks password authentication,
 `*` has no password, and account expiration is separate from password locking.
 The login milestone connects the login and SSH consumers to these policies.
 
@@ -25,17 +25,17 @@ same inode, with a bounded 15-second wait for lckpwdf. Closing the descriptor
 or exiting releases the lock; there is no stale lock-file removal protocol.
 
 Changed databases are published in shadow, group, passwd order. For each,
-the writer creates `<file>+` exclusively, sets the final owner and mode, writes
-all bytes, fsyncs the file, renames it over the database and fsyncs `/etc`.
+the writer creates `<file>+` with `create_new(true)`, sets the final owner and mode, writes
+the buffer with `write_all`, fsyncs the file, renames it over the database and fsyncs `/etc`.
 An abandoned scratch file is unlinked under the lock before the next attempt;
-it is never followed or truncated. Databases and the lock must have their
+the next attempt does not open it for writing. Databases and the lock must have their
 specified owner and mode and be regular files with one link. Each file is old
 or new after an interrupted operation; the three-file set is not one atomic
 transaction. In particular a new passwd entry cannot precede its shadow entry.
-This is an operation-boundary protocol, not a power-loss guarantee on ext2.
+This protocol addresses operation boundaries; torn writes on ext2 remain outside its model.
 
 The installed tools are `/usr/sbin/useradd`, `userdel`, `usermod`, `groupadd`
-and `groupdel`, all 0755 and root-only in operation. Without `-g`, useradd
+and `groupdel`, with mode 0755 and an effective-root requirement. Without `-g`, useradd
 creates a private group. The default UID is the first unused ID at or above
 1000, the home `/home/<name>` and the shell `/bin/bsh`. `-m` creates the home
 0700 and copies regular files and directories from `/etc/skel`, preserving
@@ -54,13 +54,27 @@ own password, and refuses changes to another account. New passwords contain
 milestone; this milestone adds no executable stub or set-ID program.
 Account tools and password changes append sanitized records to the 0640
 authentication log, fsync it, and send the record to the root-only `/dev/kmsg`
-audit sink. Passwords and hashes never enter those records.
+audit sink. Records contain action and result fields, omitting passwords and hashes.
 
 The users suite's accounts category exercises installed tool results, home
 metadata and skeleton bytes, refusal without database changes, deletion with
 live processes and with a foreign-owned home, supplementary groups, password
 locks and expiry, group operations, two concurrent useradds, libc lock
 interoperability, abrupt process exits at publication boundaries and recovery,
-passwd authorization and fresh hashes, libc identity output and audit records.
+passwd library authorization and fresh hashes, libc identity output and audit records.
+The password cases call the library in-process; malformed-line isolation parses
+strings in memory. The blocked-process observation in `lock-serializes` does not
+distinguish a record-lock wait from another kernel wait.
 The suite uses disposable roots. Persistent acceptance separately creates an
 account in a running install and verifies it after an install-persistent upgrade.
+
+R240 acceptance at runtime commit `b5be44d5` is retained in boot
+`20261021T154156Z-metal`: accounts 18/18, layout 5/5, kernel checks 54/54,
+and reclamation within the unchanged 48-page allowance. The later admin
+`su/setuid-set` case failed because its executable belongs to that milestone;
+this record is accounts acceptance rather than a complete users-suite result.
+Private boot records `20261021T160751Z-metal` and `20261021T161800Z-metal`
+contain the account-created and preservation markers. The intervening install
+reinstalled the same commit. The version change was the restoration to main
+`2af2ebe7`, followed by `20261021T162738Z-metal`, which retained the account
+and operator/key comparisons. Raw records remain in the private boot store.

@@ -110,7 +110,7 @@ impl<'a> Shadow<'a> {
         if !valid_name(f[0]) || !f[8].is_empty() {
             return None;
         }
-        // An empty hash is syntactically valid, but never authenticates.
+        // An empty hash is syntactically valid; authentication must refuse it.
         let hash = f[1].strip_prefix(b"!").unwrap_or(f[1]);
         if !hash.is_empty() && hash != b"*" && hash != b"!" && !valid_hash(hash) {
             return None;

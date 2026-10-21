@@ -1,4 +1,4 @@
-//! Rust account tool argument handling; all database work is in one library.
+//! Rust account tool argument handling; database operations call the accounts library.
 use libbreenix::accounts::{self, UserAdd, UserMod};
 use std::path::Path;
 

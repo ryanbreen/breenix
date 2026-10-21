@@ -1,5 +1,5 @@
 //! The live `/etc` is the v2 shared binding of `/.breenix-shared/etc`.
-//! Never keep a second account copy or write into a generation's factory tree.
+//! Keep account updates in that binding rather than a second copy or a generation factory tree.
 use super::parse;
 #[cfg(not(target_vendor = "apple"))]
 use super::PasswordLock;
@@ -26,7 +26,7 @@ fn io<T>(r: std::io::Result<T>) -> Result<T> {
 }
 fn owner() -> u32 {
     // Scratch-root host tests use their own identity; installed Breenix files
-    // always belong to root, regardless of the invoking real identity.
+    // belong to root, regardless of the invoking real identity.
     #[cfg(target_os = "breenix")]
     {
         0
@@ -99,7 +99,7 @@ fn sync_dir(path: &Path) -> Result<()> {
     io(io(File::open(path))?.sync_all())
 }
 
-/// Held across the initial read, all file publications and all home operations.
+/// Held across the initial read, database publication and home operations.
 /// POSIX locks are released by close or process exit; a crash leaves no stale lock.
 pub struct Lock {
     file: File,
@@ -358,8 +358,8 @@ pub fn replace(
         op()
     };
     if io(scratch.try_exists())? || fs::symlink_metadata(&scratch).is_ok() {
-        // Stale scratch belongs to the previous lock holder. Unlink it, never
-        // follow a link or truncate a possibly aliased inode.
+        // Stale scratch belongs to the previous lock holder. Unlink it rather than
+        // following a link or truncating a possibly aliased inode.
         step(checkpoint, &mut || io(fs::remove_file(&scratch)))?;
     }
     checkpoint()?;
@@ -680,7 +680,7 @@ fn home_path(root: &Path, home: &str) -> Result<PathBuf> {
         return Err("invalid home".into());
     }
     let path = root.join(home.trim_start_matches('/'));
-    // Every parent is a real, root-owned directory that the account cannot
+    // Require real, root-owned parent directories that the account cannot
     // rename or steer through a symlink. This permits -d /srv/name as well as
     // the default /home/name without handing recursive removal an alias.
     let parent = path.parent().ok_or("home has no parent")?;
@@ -706,7 +706,7 @@ fn make_home(root: &Path, a: &Account) -> Result<()> {
         fs::Permissions::from_mode(0o700),
     ))?;
     // Build while root owns the new 0700 directory. Ownership is handed over
-    // only after every skeleton file has been copied without following links.
+    // after the skeleton copy finishes without following links.
     copy_skel(&root.join("etc/skel"), &path, a.uid, a.gid)?;
     io(std::os::unix::fs::chown(&path, Some(a.uid), Some(a.gid)))?;
     sync_dir(&path)?;
@@ -774,7 +774,7 @@ fn remove_owned_home(root: &Path, a: &Account) -> Result<()> {
 }
 
 /// Set a password through the privileged side of passwd. Caller identity is
-/// read from the kernel, never supplied by the caller. The old password is
+/// read from the kernel rather than a caller argument. The old password is
 /// checked while the same lock protects the replacement.
 pub fn change_password(root: &Path, name: &str, old: &[u8], new: &[u8]) -> Result<()> {
     require_root()?;
@@ -843,7 +843,7 @@ fn random_bytes(bytes: &mut [u8]) -> Result<()> {
     }
 }
 
-/// Append a bounded audit record, never a password or hash. Site-specific
+/// Append a bounded audit record, omitting passwords and hashes. Site-specific
 /// target names are runtime data only. The file is created by layout at 0640.
 pub fn audit(root: &Path, program: &str, target: &str, success: bool) -> Result<()> {
     let path = root.join("var/log/auth.log");

@@ -13,7 +13,7 @@ pub struct PasswordLock {
     pub pid: i32,
 }
 impl PasswordLock {
-    /// A write lock from offset zero through EOF, including later extensions.
+    /// A write lock from the start of the file through EOF, including later extensions.
     pub const fn write() -> Self {
         Self {
             kind: 1,
