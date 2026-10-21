@@ -165,11 +165,12 @@ pub const COPY_VS: Program = Program {
 /// `DCL CONST[0]` (2); `DCL TEMP[0]` (2); `IMM[0] INT32 {0, 0, 0, 0}`, an immediate and four
 /// values (5); `MOV` with a destination and a source (3); `F2I` (3); `UADD` with two
 /// sources (4); `TXF`, an instruction, its texture token, a destination and two sources (5);
-/// `END` (1), plus the opaque-output immediate and conditional (11). 50 tokens.
+/// `END` (1), plus the opaque-output immediate (5), UIF with label (3), MOV (3),
+/// and ENDIF with label (2): 52 tokens.
 pub const COPY_FS: Program = Program {
     kind: pipe::SHADER_FRAGMENT,
     text: include_bytes!("pipelines/copy.frag.tgsi"),
-    tokens: 50,
+    tokens: 52,
 };
 
 /// The fixed rendering catalogue's pipelines, `solid` (0) to `triangle` (15); the
