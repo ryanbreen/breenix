@@ -2976,7 +2976,7 @@ fn text_hidpi_sizes() -> CaseResult {
     let before=crate::gpu_checks::counters().cite("8.3")?;
     // The production UI text entry point takes logical coordinates and the theme's
     // logical 16 px size. The case must not perform the implementation's scaling.
-    let g=white_on_black(192,128,|fb|{libbui::text::draw_text(fb,b"H",16,8,WHITE,&theme);});
+    let g=white_on_black(192,128,|fb|{fb.set_ui_scale(scale);libbui::text::draw_text(fb,b"H",16,8,WHITE,&theme);});
     same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
     let mut actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
     let mut replicated=Vec::with_capacity(192*128*4);
