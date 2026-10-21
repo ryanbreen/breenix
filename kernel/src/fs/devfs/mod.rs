@@ -41,6 +41,8 @@ use spin::Mutex;
 pub enum DeviceType {
     /// /dev/null - discards writes, reads return EOF
     Null,
+    /// /dev/kmsg - bounded, root-only audit messages to the kernel log
+    Kmsg,
     /// /dev/zero - discards writes, reads return zero bytes
     Zero,
     /// /dev/console - system console (serial port)
@@ -73,6 +75,7 @@ impl DeviceType {
     pub fn name(&self) -> &'static str {
         match self {
             DeviceType::Null => "null",
+            DeviceType::Kmsg => "kmsg",
             DeviceType::Zero => "zero",
             DeviceType::Console => "console",
             DeviceType::Tty => "tty",
@@ -90,6 +93,7 @@ impl DeviceType {
     pub fn inode(&self) -> u64 {
         match self {
             DeviceType::Null => 2,
+            DeviceType::Kmsg => 9,
             DeviceType::Zero => 3,
             DeviceType::Console => 4,
             DeviceType::Tty => 5,
@@ -123,6 +127,7 @@ impl DeviceType {
         let (permissions, gid) = match self {
             DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
             DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
+            DeviceType::Kmsg => (0o200, 0),
             DeviceType::Tty0 | DeviceType::Vt(_) => (0o620, TTY_GID),
             DeviceType::Rtc => (0o444, 0),
         };
@@ -131,7 +136,7 @@ impl DeviceType {
 
     /// Check if this device is readable
     pub fn is_readable(&self) -> bool {
-        true // All devices are readable
+        *self != DeviceType::Kmsg
     }
 
     /// Check if this device is writable
@@ -197,6 +202,7 @@ pub fn init() {
     // Register standard devices
     // Major 1 = memory devices (null, zero, etc.)
     devfs.devices.push(DeviceNode::new(DeviceType::Null, 1, 3)); // /dev/null
+    devfs.devices.push(DeviceNode::new(DeviceType::Kmsg, 1, 11));
     devfs.devices.push(DeviceNode::new(DeviceType::Zero, 1, 5)); // /dev/zero
 
     // Major 5 = TTY devices
@@ -295,6 +301,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Kmsg => Err(-13), // Audit sink is write-only.
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Ptmx => Err(-6), // Opening /dev/ptmx gives a master, never this device.
         DeviceType::Null => {
@@ -328,6 +335,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 /// Device file operations - write to device
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Kmsg => audit_write(buf),
         DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.
         DeviceType::Ptmx => Err(6), // ENXIO: opening /dev/ptmx gives a master.
         DeviceType::Null | DeviceType::Zero => {
@@ -348,4 +356,15 @@ pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
         },
         DeviceType::Vcs(_) | DeviceType::Vcsa(_) => Err(22),
     }
+}
+
+/// This is a user-requested log write, not syscall instrumentation. Bound one
+/// record and refuse controls that could forge additional kernel log records.
+pub fn audit_write(buf: &[u8]) -> Result<usize, i32> {
+    if buf.len() > 1024 { return Err(22); }
+    let text = core::str::from_utf8(buf).map_err(|_| 22)?;
+    let message = text.strip_suffix('\n').unwrap_or(text);
+    if message.bytes().any(|b| b.is_ascii_control()) { return Err(22); }
+    log::info!(target: "audit", "{}", message);
+    Ok(buf.len())
 }

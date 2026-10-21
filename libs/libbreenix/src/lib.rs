@@ -35,6 +35,7 @@ pub use errno::Errno;
 pub use syscall::raw;
 pub use types::*;
 
+pub mod accounts;
 pub mod argv;
 pub mod audio;
 pub mod crypto;

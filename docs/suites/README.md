@@ -1412,7 +1412,9 @@ scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --gate-timeout 900
 `users` measures the users effort in `docs/efforts/path.json` against `docs/users/design.md`.
 Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files` (15),
 `sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (8) and `umask` (4), 54 cases. The
-other categories are planned and arrive with their milestones (design section 7).
+layout category has 5 cases, and accounts has 18 cases covering the library and
+installed administration tools ([account protocol](../users/accounts.md)).
+The remaining categories arrive with their milestones (design section 7).
 
 The suite runs as root. A case that needs another identity forks a child that becomes a
 fixture account (its supplementary groups, then setresgid and setresuid, then a refused

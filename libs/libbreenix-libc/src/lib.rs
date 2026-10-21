@@ -36,6 +36,7 @@ mod setjmp;
 mod grp;
 mod libgen;
 mod pwd;
+mod pwd_lock;
 mod unistd;
 mod process;
 mod spawn;
