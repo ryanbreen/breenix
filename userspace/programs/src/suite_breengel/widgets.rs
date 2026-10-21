@@ -13,7 +13,7 @@ use crate::*;
 #[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
 
 use crate::raster::Drawn;
-use libgfx_ref::{shapes, font as font5x7, ttf_font};
+use libgfx_ref::{shapes, ttf_font};
 use libfont::{Font,CachedFont};
 use breengel::font::{FontChange, FontWatchError, FontWatcher};
 use libbui::focus::FocusChain;
@@ -1891,23 +1891,14 @@ fn text_entry_filepicker_errors() -> CaseResult {
     g.reset(PAPER);
     p.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    let mut expected = Guarded::bgrx(101, 7);
+    let width = sans_width(b"Permission denied") as usize;
+    let mut expected = Guarded::bgrx(width, 16);
     expected.reset(Theme::dark().panel_bg);
-    font5x7::draw_text(
-        &mut expected.fb(),
-        b"Permission denied",
-        0,
-        0,
-        Color::WHITE,
-        1,
-    );
-    for y in 0..7 {
-        for x in 0..101 {
-            ensure(
-                g.color(x + 5, y + 29) == expected.color(x, y),
-                "15",
-                format!("error text differs at {x},{y}"),
-            )?;
+    sans_draw(&mut expected.fb(), b"Permission denied", 0, 0, Theme::dark().text_primary);
+    for y in 0..16 {
+        for x in 0..width {
+            ensure(g.color(x + 5, y + 29) == expected.color(x, y), "15",
+                format!("error text differs at {x},{y}"))?;
         }
     }
     ensure(
