@@ -483,10 +483,9 @@ swift run breenix-runs run x86 --boots 1 --suite files-io --gate-timeout 1800 --
 ```
 
 Suite helpers are ordinary userspace binaries named with the `_test` suffix, built via
-`STD_BINARIES` and installed in `/usr/local/test/bin`. They ship alongside the suite in
-all images, including default boot images, so changing boot mode does not require a
-second userspace image; default boot does not execute them. Files & I/O uses
-`/usr/local/test/bin/files-io-exec_test` for descriptor lifetime across exec. Helpers
+`STD_BINARIES` and installed in `/usr/libexec/breenix`. Image creation installs them for default
+and suite boots, so changing boot mode does not require a second userspace image; default boot does not execute them. Files & I/O uses
+`/usr/libexec/breenix/files-io-exec_test` for descriptor lifetime across exec. Helpers
 must return their result to the case and must not print suite serial records.
 
 ## Directories & links
@@ -541,7 +540,7 @@ only be a live system process. The three `exec/script*` cases measure `#!` inter
 scripts, an extension every Unix system provides but POSIX execve does not require (it may
 fail with ENOEXEC); their titles say so.
 
-The exec cases run `/usr/local/test/bin/processes-exec_test`, which reports its argv,
+The exec cases run `/usr/libexec/breenix/processes-exec_test`, which reports its argv,
 environment and the process state exec kept (IDs, process group, signal dispositions,
 mask, pending set, descriptors, limits, nice value, working directory, umask, alarm)
 on a descriptor named on its command line. Set-ID cases run a copy of it chowned and
@@ -599,7 +598,7 @@ read, and emit a suite-rejecting SKIP below two (#1615). Before measuring, each 
 that its two workers run on different processors at once: a thousand handoffs through shared memory, which two that
 take turns on one processor cannot make in the time allowed. None assumes more than two.
 
-The exec cases run `/usr/local/test/bin/signals-exec_test`, which reports the mask,
+The exec cases run `/usr/libexec/breenix/signals-exec_test`, which reports the mask,
 pending set, ignored and caught signals and alternate stack exec kept on a descriptor named
 on its command line, or says there that it runs and then unblocks a signal.
 
@@ -673,7 +672,7 @@ bounded at 3 seconds (6 for an exec) and stop 1.5 seconds before the deadline. C
 that must be asleep before they are stopped or before the clock is set are observed through
 `/proc/<pid>/status`.
 
-The exec cases run `/usr/local/test/bin/time-exec_test`, which reports the interval
+The exec cases run `/usr/libexec/breenix/time-exec_test`, which reports the interval
 timers exec kept and whether a timer ID still names a timer, on a descriptor named on its
 command line, and can then stay alive a given time.
 
@@ -1093,12 +1092,12 @@ unlinkat. build.rs reports which the library has, so those cases start measuring
 gains them. Under the targets' panic=abort, a panic in a thread ends the process with
 SIGABRT; `thread-sync/panic-aborts` and `panic-hook` measure that in a child process.
 
-The cases that start programs run `/usr/local/test/bin/rust-std-child_test`, a std-only
+The cases that start programs run `/usr/libexec/breenix/rust-std-child_test`, a std-only
 helper that reports its arguments, environment, directory, IDs and executable path on
 stdout, copies stdin to stdout, exits with a given code, or aborts. Each case uses the
 runner's default 10-second deadline. Waits for another process or thread are bounded at 3
 seconds and say what was still running; socket reads time out after 2 seconds. Sleeps and
-timeouts may never end early and may end at most 30 ms late, two of x86-64's 5 ms ticks and
+timeouts must end at or after their deadlines and at most 30 ms late, two of x86-64's 5 ms ticks and
 20 ms. Files live in a directory of the case's own, `/tmp/rust-std-<pid>`; TCP and UDP use
 127.0.0.1 and ports 20000-29999 numbered from the case's process ID.
 
@@ -1119,13 +1118,13 @@ one per milestone: `stdio` (35), `string-stdlib` (33), `math` (35), `locale-wcha
 C17 and POSIX.1-2024, with Linux's ABI where POSIX leaves a choice open; each title names the
 rule its case checks, and titles that measure a Linux choice say so.
 
-Every case but the busybox ones is a C function in `userspace/libc-suite/<category>.c`.
+The non-BusyBox cases are C functions in `userspace/libc-suite/<category>.c`.
 Each category is one program, `harness.c` plus the category's file, compiled against
 Breenix's libc headers and `libc.a` with `-std=c17 -fno-builtin -frounding-math` (so calls
 reach the library rather than the compiler, and the floating-point environment is honoured)
-and installed as `/usr/local/test/bin/libc-<category>_test`. The suite runs it once per case
+and installed as `/usr/libexec/breenix/libc-<category>_test`. The suite runs it once per case
 as `libc-<category>_test <case> <fd>` in a scratch directory of its own under `/tmp`, with
-the environment `PATH=/usr/local/libc/bin`, `HOME=/tmp`, `LIBC_SUITE=1` and nothing else.
+an environment consisting of `PATH=/usr/libexec/breenix/libc/bin`, `HOME=/tmp` and `LIBC_SUITE=1`.
 The program writes `PASS`, `FAIL <message>` or `SKIP <message>` to descriptor `<fd>` and
 exits 0. Its harness builds that message with `write()` alone, so a broken stdio or
 `string.h` cannot garble the report of what broke; `userspace/libc-suite/case.h` gives the
@@ -1133,8 +1132,8 @@ contract. `tests/suite_manifests.rs` checks that each C file's `libc_cases[]` ta
 the manifest's cases in order.
 
 The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
-`/usr/local/libc/bin/busybox` with its applet links beside it, and compare what the applet
-prints and its exit status with the expected values. `PATH` names only `/usr/local/libc/bin`,
+`/usr/libexec/breenix/libc/bin/busybox` with its applet links beside it, and compare what the applet
+prints and its exit status with the expected values. `PATH` names only `/usr/libexec/breenix/libc/bin`,
 and `/bin` contains the same Breenix-libc BusyBox. Each applet has a case of its own
 (the shell has five), so one that does not behave is a recorded failure of its own. The
 builder records each configured applet's compile and link result in `applets.json` and

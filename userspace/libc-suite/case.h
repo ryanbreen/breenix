@@ -3,14 +3,14 @@
  *
  * Each category is one program: harness.c plus <category>.c, compiled against Breenix's
  * own C library (libs/libbreenix-libc) and installed as
- * /usr/local/test/bin/libc-<category>_test, with -std=c17 -fno-builtin -frounding-math so
+ * /usr/libexec/breenix/libc-<category>_test, with -std=c17 -fno-builtin -frounding-math so
  * every call reaches the library instead of being evaluated by the compiler, and with the
  * floating-point environment honoured. /sbin/suite-libc runs it once per case as
  *
  *     libc-<category>_test <case-id> <result-fd>
  *
  * in a fresh scratch directory, with stdin, stdout and stderr on /dev/null and the
- * environment PATH=/usr/local/libc/bin, HOME=/tmp, LIBC_SUITE=1. The harness writes one
+ * environment PATH=/usr/libexec/breenix/libc/bin, HOME=/tmp, LIBC_SUITE=1. The harness writes one
  * line to <result-fd>, "PASS", "FAIL <message>" or "SKIP <message>", and exits 0.
  *
  * A case returns PASS (a null pointer) or the text from one of the fail helpers below.

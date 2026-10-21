@@ -117,7 +117,7 @@ def manager_config(site, countdown=5):
     return ['BREENIX-MANAGER 1', 'query ' + query_url(site), f'countdown {countdown}', 'test-path load-file']
 
 
-def intent(target, root=None, home=None, tests=None, userland=None):
+def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None):
     """A format-2 boot intent (kernel/src/boot/intent.rs)."""
     lines = ['BREENIX-BOOT 2', 'target ' + target]
     for item, guid in (('root', root), ('home', home)):
@@ -129,6 +129,10 @@ def intent(target, root=None, home=None, tests=None, userland=None):
         if not re.fullmatch(r'[A-Za-z0-9-]{1,64}', userland):
             raise ValueError('invalid userland generation')
         lines.append('userland ' + userland)
+    if previous_userland is not None:
+        if not re.fullmatch(r'[A-Za-z0-9-]{1,64}', previous_userland):
+            raise ValueError('invalid previous userland generation')
+        lines.append('previous-userland ' + previous_userland)
     if tests is not None:
         lines.append(f'tests {tests[0]} {tests[1]}')
     return ('\n'.join(lines) + '\n').encode('ascii')

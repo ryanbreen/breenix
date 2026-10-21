@@ -21,7 +21,7 @@ fn main() {
 
             // Exec hello_time.elf in the child process
             println!("CHILD: Executing hello_time.elf...");
-            let path = b"/bin/hello_time\0";
+            let path = b"/usr/bin/hello_time\0";
             let argv: [*const u8; 1] = [std::ptr::null()];
             let _ = execv(path, argv.as_ptr());
 

@@ -314,7 +314,7 @@ fn exec_descriptor(fd: Fd, closed: bool) -> CaseResult {
                 state.as_ptr(),
                 std::ptr::null(),
             ];
-            let _ = process::execv(b"/usr/local/test/bin/files-io-exec_test\0", args.as_ptr());
+            let _ = process::execv(b"/usr/libexec/breenix/files-io-exec_test\0", args.as_ptr());
             process::exit(99);
         }
         process::ForkResult::Parent(pid) => child_ok(
@@ -2778,8 +2778,8 @@ fn prepare_large_truncate_fixture(path: &str) -> CaseResult {
 }
 
 fn metadata_ftruncate_large() -> CaseResult {
-    prepare_large_truncate_fixture("/test/files-io-large-shrink")?;
-    let fd = fs::open("/test/files-io-large-shrink", O_RDWR)?;
+    prepare_large_truncate_fixture("/usr/libexec/breenix/test/files-io-large-shrink")?;
+    let fd = fs::open("/usr/libexec/breenix/test/files-io-large-shrink", O_RDWR)?;
     let result = (|| -> CaseResult {
         let original = fstat(fd)?;
         let block_size = original.st_size as usize / 129;
@@ -2827,7 +2827,7 @@ fn metadata_ftruncate_large() -> CaseResult {
 }
 
 fn metadata_ftruncate_large_open() -> CaseResult {
-    let path = "/test/files-io-large-open";
+    let path = "/usr/libexec/breenix/test/files-io-large-open";
     prepare_large_truncate_fixture(path)?;
     let original = stat(path, false)?;
     let block_size = original.st_size as u64 / 129;
@@ -3683,7 +3683,7 @@ fn mmap_private_exec() -> CaseResult {
                     b"open\0".as_ptr(),
                     std::ptr::null(),
                 ];
-                let _ = process::execv(b"/usr/local/test/bin/files-io-exec_test\0", args.as_ptr());
+                let _ = process::execv(b"/usr/libexec/breenix/files-io-exec_test\0", args.as_ptr());
                 process::exit(99);
             }
             process::ForkResult::Parent(pid) => wait_child(pid.raw() as i32),

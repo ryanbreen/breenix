@@ -43,7 +43,7 @@ else
     cargo build --release --target aarch64-breenix-kernel.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
 fi
 
-# Prefer ext2 disk image (for /bin/init_shell); fall back to BXTEST disk
+# Prefer ext2 disk image (for /usr/bin/init_shell); fall back to BXTEST disk
 EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 TEST_DISK="$BREENIX_ROOT/target/aarch64_test_binaries.img"
 DISK_OPTS=""

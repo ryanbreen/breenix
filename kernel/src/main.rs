@@ -1219,10 +1219,15 @@ fn launch_x86_production_init(
             .ok_or("process manager not available")?;
 
         let path = alloc::format!("/sbin/{}", name);
-        let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+        let mut argv: alloc::vec::Vec<&[u8]> = if name == "suite-users" {
+            alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]
+        } else { alloc::vec![path.as_bytes()] };
         if name == "persistent-install" {
             let generation = kernel::boot::intent::userland().ok_or("install intent names no userland generation")?;
             argv.push(generation.as_bytes());
+            if let Some(previous) = kernel::boot::intent::previous_userland() {
+                argv.push(previous.as_bytes());
+            }
         }
         if let Some(mode) = console_mode {
             argv.push(mode.arg().as_bytes());
@@ -1238,7 +1243,8 @@ fn launch_x86_production_init(
         )?;
         let publication = manager.designate_init(ticket)?;
         // Decide suite controls after designation and before the init thread is published.
-        kernel::test_control::latch_init_program(exe_path);
+        let suite_path = if argv.get(1) == Some(&b"suite".as_slice()) { argv.get(2).copied() } else { None };
+        kernel::test_control::latch_init_program(suite_path.unwrap_or(exe_path));
         let designated_pid_raw = manager
             .designated_init()
             .ok_or("init designation missing after publication")?
@@ -1484,7 +1490,7 @@ fn read_x86_production_init(
     if let Some(suite) = suite {
         let id = suite.id;
         let path = target::suite_path(&id);
-        match read_init_from_ext2(&path)
+        match read_init_from_ext2(if id == "users" { "/sbin/init" } else { &path })
             .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
         {
             Ok((elf_data, exe_path)) => {

@@ -288,9 +288,9 @@ graphical login is later main-path work.
 | `signals` | `kill-other-eperm`, `kill-probe-eperm`, `kill-setuid-child`, `root-kills-any`, `renice-other-eperm` |
 | `proc-dev` | `proc-exe-other-eacces`, `kernel-output-other-eacces`, `kmsg-user-eacces`, `trace-user-eacces`, `vcs-user-eacces`, `tcp-low-port-eacces` |
 | `umask` | `umask-file`, `umask-dir`, `umask-fork`, `umask-threads` |
-| `layout` | `fhs-paths` (each table row's owner and mode), `shadow-0600`, `sudo-policy-0440`, `setuid-set` (exactly su, passwd and sudo), `run-cleared` |
+| `layout` | `fhs-paths` (each table row's owner and mode), `shadow-0600`, `sudo-policy-0440`, `setuid-set` (no set-ID inode outside the design table), `run-cleared` |
 | `accounts` | `useradd-entries`, `useradd-home-0700`, `useradd-duplicate-refused`, `userdel-removes`, `usermod-groups`, `lock-serializes` (two concurrent useradds keep both), `interrupted-write-intact`, `passwd-own`, `passwd-other-refused`, `id-output` |
-| `su` | `su-wrong-password-refused`, `su-root-ok`, `su-nonwheel-refused`, `su-dash-env`, `su-logged` |
+| `su` | `setuid-set` (exactly su, passwd and sudo set-user-ID root; S11), `su-wrong-password-refused`, `su-root-ok`, `su-nonwheel-refused`, `su-dash-env`, `su-logged` |
 | `sudo` | `sudo-wheel-ok`, `sudo-nonwheel-refused`, `sudo-wrong-password`, `sudo-env-reset`, `sudo-bad-policy-mode-refused`, `sudo-logged` |
 | `login` | `login-user` (IDs, groups, HOME, cwd, shell), `login-root-refused`, `login-locked-refused`, `login-expired-refused`, `login-tty-owned`, `login-umask`, `logout-tty-restored` |
 | `ssh` | `ssh-identity`, `ssh-root-refused`, `ssh-groups`, `ssh-pty-owner`, `ssh-bad-key-mode-refused` |

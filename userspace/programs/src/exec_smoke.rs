@@ -1,15 +1,14 @@
 //! Exec smoke launcher — the boot-path execve caller.
 //!
-//! aarch64 userland otherwise creates every process with sys_spawn, so without this program the
-//! aarch64 exec path (sys_exec_aarch64 -> ProcessManager::exec_process_with_argv -> ExecSchedCommit)
-//! has no runtime coverage on any gate. This process replaces itself with /bin/exec_smoke_target;
-//! the marker the gate asserts on is printed by the target, i.e. only a completed exec can produce it.
+//! This launcher exercises execve by replacing itself with /usr/bin/exec_smoke_target.
+//! The boot gate's marker is printed by the target after exec.
+
 
 use libbreenix::process::execv;
 
 fn main() {
     println!("[EXEC_SMOKE:LAUNCH]");
-    let path = b"/bin/exec_smoke_target\0";
+    let path = b"/usr/bin/exec_smoke_target\0";
     let arg0 = b"exec_smoke_target\0".as_ptr();
     let arg1 = b"smoke\0".as_ptr();
     let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];

@@ -1,0 +1,17 @@
+// Breenix Shell Configuration
+// This file is evaluated as ECMAScript by bsh on startup.
+
+// Global PATH - all standard binary directories
+env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
+
+// Home directory
+env("HOME", "/root");
+
+// Shell identification
+env("SHELL", "/bin/bsh");
+
+// Hostname
+env("HOSTNAME", "breenix");
+
+// Greeting
+console.log("Welcome to Breenix OS");

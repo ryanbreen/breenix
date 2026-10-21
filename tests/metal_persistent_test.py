@@ -106,6 +106,8 @@ class LayoutTest(existing.StateTest):
         self.assertEqual(metal_persist.intent('default', root=guid),
                          f'BREENIX-BOOT 2\ntarget default\nroot {guid}\n'.encode())
         self.assertIn(b'userland install-42\n', metal_persist.intent('persistent', root=guid, userland='install-42'))
+        self.assertIn(b'previous-userland install-41\n', metal_persist.intent('persistent-install', root=guid,
+                                                                          userland='install-42', previous_userland='install-41'))
         for invalid in ('', '../old', 'old.new', 'x' * 65):
             with self.assertRaises(ValueError):
                 metal_persist.intent('persistent', userland=invalid)

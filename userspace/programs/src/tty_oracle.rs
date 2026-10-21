@@ -806,7 +806,7 @@ fn arm_cloexec_exec() -> Result<(), Failure> {
             let _ = io::close(exec_done_r);
             let _ = io::close(release_w);
             let _ = io::close(master);
-            let path = b"/bin/tty_oracle\0";
+            let path = b"/usr/bin/tty_oracle\0";
             let arg0 = b"tty_oracle\0".as_ptr();
             let arg1 = b"--cloexec-child\0".as_ptr();
             let argv: [*const u8; 4] = [arg0, arg1, release_arg.as_ptr(), core::ptr::null()];

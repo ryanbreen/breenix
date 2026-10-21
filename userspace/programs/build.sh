@@ -417,6 +417,7 @@ STD_BINARIES=(
     "sync"
 
     # Effort suites, installed as /sbin/suite-<id>
+    "etc-reconcile"
     "suite-smoke"
     "suite-crypto"
     "suite-files-io"

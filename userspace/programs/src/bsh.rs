@@ -1040,15 +1040,15 @@ fn native_env(
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Return the default PATH, including /usr/local/test/bin if the kernel
+/// Return the default PATH, including /usr/libexec/breenix if the kernel
 /// is built with the `testing` feature (detected via /proc/breenix/testing).
 fn default_path() -> String {
     if let Ok(content) = std::fs::read_to_string("/proc/breenix/testing") {
         if content.trim() == "1" {
-            return String::from("/bin:/sbin:/usr/local/bin:/usr/local/cbin:/usr/local/test/bin");
+            return String::from("/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin:/usr/libexec/breenix");
         }
     }
-    String::from("/bin:/sbin:/usr/local/bin:/usr/local/cbin")
+    String::from("/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin")
 }
 
 /// Resolve a command name to a full path by searching PATH directories.

@@ -1068,12 +1068,12 @@ fn readdir_cookie_blocks() -> CaseResult {
     // Breenix directories do not grow past their first block, so the one
     // measured is a fixture the disk image builder fills past three blocks
     // (scripts/create_ext2_disk.sh, /test/dir-blocks).
-    let dir = Directory::open("/test/dir-blocks")?;
+    let dir = Directory::open("/usr/libexec/breenix/test/dir-blocks")?;
     let fd = dir.file.fd();
     let block = fs::fstatfs(fd)?.f_bsize as u64;
     check(
         fs::fstat(fd)?.st_size as u64 >= 2 * block,
-        "/test/dir-blocks does not span two blocks",
+        "/usr/libexec/breenix/test/dir-blocks does not span two blocks",
     )?;
     let mut records = Vec::new();
     loop {
@@ -1088,10 +1088,10 @@ fn readdir_cookie_blocks() -> CaseResult {
     // stays within three blocks, all linked to one file. Each of those
     // names, dot and dot-dot appears exactly once, with the inode stat gives it.
     let n = (3 * block / 208 + 1) as usize;
-    let file_ino = stat(&format!("/test/dir-blocks/{:0200}", 0), false)?.st_ino;
+    let file_ino = stat(&format!("/usr/libexec/breenix/test/dir-blocks/{:0200}", 0), false)?.st_ino;
     let mut expected: Vec<(String, u64)> = (0..n).map(|i| (format!("{i:0200}"), file_ino)).collect();
     expected.push((".".into(), fs::fstat(fd)?.st_ino));
-    expected.push(("..".into(), stat("/test", false)?.st_ino));
+    expected.push(("..".into(), stat("/usr/libexec/breenix/test", false)?.st_ino));
     expected.sort();
     let mut listed: Vec<(String, u64)> = records.iter().map(|(e, _)| (e.name.clone(), e.ino)).collect();
     listed.sort();
@@ -2002,7 +2002,7 @@ fn permissions_umask_return() -> CaseResult {
         process::ForkResult::Child => {
             if umask(0o007).ok() != Some(0o027) { process::exit(1); }
             if umask(0o027).ok() != Some(0o007) { process::exit(2); }
-            let path = b"/usr/local/test/bin/umask_exec_test\0";
+            let path = b"/usr/libexec/breenix/umask_exec_test\0";
             let argv = [path.as_ptr(), core::ptr::null()];
             let _ = process::execv(path, argv.as_ptr());
             process::exit(3);
@@ -2036,7 +2036,7 @@ fn permissions_umask_return() -> CaseResult {
         empty.as_ptr() as u64, u32::MAX as u64, 1001, 0x1000) } as i64)?;
     request(nr::FCHMOD, [cwd_fd.fd().raw(), 0o777, 0, 0])?;
     umask(0o027)?;
-    let path = b"/usr/local/test/bin/umask_exec_test\0";
+    let path = b"/usr/libexec/breenix/umask_exec_test\0";
     let arg = b"unprivileged\0";
     let argv = [path.as_ptr(), arg.as_ptr(), core::ptr::null()];
     let pid = process::spawnv(path, argv.as_ptr())?;

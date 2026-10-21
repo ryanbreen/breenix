@@ -46,6 +46,10 @@ pub mod gpu;
 pub mod graphics;
 pub mod http;
 pub mod io;
+#[cfg(feature = "std")]
+pub mod layout;
+#[cfg(feature = "std")]
+pub mod etc_reconcile;
 pub mod memory;
 pub mod process;
 pub mod pty;

@@ -185,8 +185,8 @@ fn init_launches_the_oracle_on_aarch64() {
          the production profile at all"
     );
     assert!(
-        init.contains("/bin/tty_oracle\\0"),
-        "init's launcher does not name /bin/tty_oracle"
+        init.contains("/usr/bin/tty_oracle\\0"),
+        "init's launcher does not name /usr/bin/tty_oracle"
     );
     let installed = read("userspace/programs/build.sh");
     assert!(

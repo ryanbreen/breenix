@@ -308,10 +308,13 @@ impl InitLaunch {
                         _ => None,
                     }
                 });
-                let mut argv: alloc::vec::Vec<&[u8]> = alloc::vec![path.as_bytes()];
+                let through_init = arg == Some("users");
+                let mut argv: alloc::vec::Vec<&[u8]> = if through_init {
+                    alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]
+                } else { alloc::vec![path.as_bytes()] };
                 if let Some(case) = only { argv.extend_from_slice(&[b"--case", case.as_bytes()]); }
                 if let Some(value) = &hostkeys { argv.extend_from_slice(&[b"--hostkeys", value.as_bytes()]); }
-                InitLaunch::new(&path, &argv)
+                InitLaunch::new(if through_init { "/sbin/init" } else { &path }, &argv)
             }
         }
     }
@@ -397,7 +400,8 @@ fn launch_init_from_elf(
                 manager.create_init_process_with_argv(String::from(proc_name), exe_path, &elf_data, argv)?;
             let publication = manager.designate_init(ticket)?;
             // Decide suite controls after designation and before the init thread is published.
-            kernel::test_control::latch_init_program(exe_path);
+            let suite_path = if argv.get(1) == Some(&b"suite".as_slice()) { argv.get(2).copied() } else { None };
+            kernel::test_control::latch_init_program(suite_path.unwrap_or(exe_path));
             let pid = publication.pid();
             let init_thread = manager.publish_init(publication);
             let designated_pid_raw = manager
@@ -2129,7 +2133,7 @@ fn load_test_binaries_from_ext2() {
     let mut process_context_pending = true;
 
     // Search paths for test binaries - try each in order
-    let search_dirs = ["/bin", "/usr/local/cbin", "/usr/local/test/bin", "/sbin"];
+    let search_dirs = ["/bin", "/usr/bin", "/usr/sbin", "/usr/libexec/breenix", "/sbin"];
 
     for (index, name) in test_binaries.iter().enumerate() {
         // Show which program is loading, so a hang names it on screen.

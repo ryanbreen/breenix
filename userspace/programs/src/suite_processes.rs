@@ -421,7 +421,7 @@ const CLEANUP_MS: u64 = 1500;
 /// What cleanup's own waits leave, for the case to report.
 const REPORT_MS: u64 = 300;
 /// The helper the exec cases run (`processes_exec.rs`).
-const HELPER: &str = "/usr/local/test/bin/processes-exec_test";
+const HELPER: &str = "/usr/libexec/breenix/processes-exec_test";
 /// In an exec case's argument list, replaced by the descriptor the program reports on.
 const FD_ARG: &str = "{fd}";
 
@@ -1766,7 +1766,7 @@ fn exec_e2big() -> CaseResult {
 }
 
 fn exec_enoent() -> CaseResult {
-    let errno = exec_errno("/usr/local/test/bin/no-such-program", &strings(&["x"]), || Ok(()))?;
+    let errno = exec_errno("/usr/libexec/breenix/no-such-program", &strings(&["x"]), || Ok(()))?;
     want_err("exec of a missing file", -errno, ENOENT)
 }
 
@@ -1845,14 +1845,14 @@ fn exec_script_noarg() -> CaseResult {
 
 fn exec_script_missing() -> CaseResult {
     let tmp = Tmp::new()?;
-    let script = tmp.file("script", b"#!/usr/local/test/bin/no-such-interpreter\n", 0o755)?;
+    let script = tmp.file("script", b"#!/usr/libexec/breenix/no-such-interpreter\n", 0o755)?;
     let errno = exec_errno(&script, &strings(&["x"]), || Ok(()))?;
     want_err("exec of a script whose interpreter is missing", -errno, ENOENT)
 }
 
 fn exec_relative() -> CaseResult {
     let out = exec_output("./processes-exec_test", &["relative", "report", FD_ARG], &[], || {
-        let r = chdir("/usr/local/test/bin");
+        let r = chdir("/usr/libexec/breenix");
         if r == 0 { Ok(()) } else { Err(format!("chdir failed with {}", shown(r))) }
     })?;
     let (argv, _) = split_report(&out)?;
