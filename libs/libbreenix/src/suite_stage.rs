@@ -219,8 +219,9 @@ impl Gpu {
                 return Err(std::format!("stage scanout target: errno {}", -e));
             }
         }
-        g.frame.reserve_exact(1280 * 800 * 4);
-        g.seen.reserve_exact(m.width as usize * m.height as usize * 4);
+        // Written now, so the memory record's first sample already counts their pages.
+        g.frame.resize(1280 * 800 * 4, 0);
+        g.seen.resize(m.width as usize * m.height as usize * 4, 0);
         // The device warms one context at a time, lowest handle first: a stage context
         // still warming would hold the next case's contexts behind it inside its limit.
         let start = time::now_monotonic().map_or(0, |t| t.as_nanos());
@@ -299,12 +300,20 @@ impl Gpu {
 }
 
 /// Create the stage's GPU objects before the memory record's first sample, as the first
-/// draw would, so both samples count them.
+/// draw would, so both samples count them, and read the scanout's record into the kept
+/// buffer, so the first frame's notice decodes a real record.
 pub(super) fn prepare() -> Result<(), String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
-    let mut guard = GPU.lock().unwrap();
-    if guard.as_ref().is_none_or(|g| g.pid != pid) {
-        *guard = Some(Gpu::new(pid)?);
+    let seen = {
+        let mut guard = GPU.lock().unwrap();
+        if guard.as_ref().is_none_or(|g| g.pid != pid) {
+            *guard = Some(Gpu::new(pid)?);
+        }
+        let g = guard.as_mut().ok_or("stage GPU objects missing")?;
+        observe(&mut g.seen)?
+    };
+    if let Some(s) = SHOW.lock().unwrap().as_mut() {
+        s.observation = Observation { backend: seen.backend, flags: seen.flags, boundary: seen.boundary };
     }
     Ok(())
 }
