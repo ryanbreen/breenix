@@ -19,7 +19,7 @@ use crate::theme::Theme;
 /// # Usage
 ///
 /// ```
-/// use libbui::{InputState, Rect, Theme, widget::scroll_bar::ScrollBar};
+/// use libbui::{InputState, Rect, widget::scroll_bar::ScrollBar};
 ///
 /// let (win_w, win_h) = (320, 240);
 /// let (content_height, visible_height) = (600, win_h);
