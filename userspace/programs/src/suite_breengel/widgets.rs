@@ -1,3 +1,4 @@
+#[path="widget_pixels/label.rs"] mod label_pixels;
 #[path="icon_pixels/particles_at_fractional_negative_edges_remain_visible_inside_the_box.rs"] mod pixel_particles_bounded_particles;
 #[path="icon_pixels/search_shimmer_restarts_on_each_hover.rs"] mod pixel_interrupt_search;
 #[path="icon_pixels/hover_and_click_effects_settle_with_pointer_still_inside.rs"] mod pixel_settles_hover;
@@ -950,6 +951,8 @@ fn widgets_slider_keys() -> CaseResult {
 
 // gpu-text: R3 derives ellipsis prefixes from 26.6 DejaVu advances; clipping and empty areas remain exact.
 fn widgets_label_clip() -> CaseResult {
+    label_pixels::run()?;
+
     let theme = Theme::dark();
     let mut g = Guarded::bgrx(80, 40);
     g.reset(PAPER);
