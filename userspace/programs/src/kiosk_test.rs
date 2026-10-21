@@ -16,23 +16,30 @@
 //!                                    unmapped page
 //!   badcomposite                     COMPOSITE with an unmapped descriptor, then with a read-only
 //!                                    one -> <first answer> <second answer>
-//!   composite                        COMPOSITE -> ok <serial> <pixels>
-//!   composite2                       two COMPOSITE calls at once, from two threads ->
+//!   composite                        one composition: a scene snapshot, the scene encoded in
+//!                                    userspace and COMPOSITE (ruling B13) -> ok <serial> <pixels>
+//!   composite2                       two compositions at once, from two threads ->
 //!                                    <first answer>, <second answer>
 //!   record <serial>                  COMPOSITE_RECORD -> ok <serial> <pixels> <count> <flags>
 //!                                    followed by <id>:<commit_id>:<pixel_gen>:<pixels> per entry
 //!   cursor <shape> <visible> <x> <y> SET_CURSOR
 //!   give <pid>                       GIVE_DISPLAY
-//!   auto <0|1>                       compose after every commit it sees (on at start)
+//!   auto <0|1>                       compose when the scene has damage (on at start)
 //!   release                          RELEASE_COMPOSITOR
 //!   quit                             exit 0
 //!
-//! Input serials (section 19.3) start at 1 and increase by one for every event it writes.
-//! With `auto` on it lists the windows every 2 ms and composes when any registered window's
-//! commit id has changed since its last composite.
+//! Input serials (section 19.3) start at 1 and increase by one for each event it writes.
+//! With `auto` on it checks at 2 ms intervals, by the snapshot's sizing query, whether a
+//! window's pixels, geometry or stacking, or the cursor, have damage since its last
+//! composite, and composes when they have. A metadata-only commit has no damage, so it
+//! causes no composite.
+//!
+//! It composes as the display owner: a process that gave it the display, or its own direct
+//! takeover the first time it composes or presents without one.
 
-use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
+use libbreenix::compositor::Compositor;
 use libbreenix::io::{self, poll_events::POLLIN, PollFd};
 use libbreenix::memory;
 use libbreenix::types::Fd;
@@ -112,6 +119,16 @@ struct Kiosk {
     gpu_fixtures: Vec<(bgl::Context,u64)>,
     /// The next input serial.
     serial: u64,
+    /// The userspace GPU compositor. Its context and its cleared scene and scanout targets
+    /// are made at startup, so that work completes before any measured composite.
+    compositor: Option<Arc<Mutex<Compositor>>>,
+    making: Option<std::thread::JoinHandle<Result<Compositor, i64>>>,
+}
+
+/// Display custody before composing or presenting: the current owner's takeover is
+/// idempotent; an owner below the top of the stack is refused, and composing then is EPERM.
+fn custody() {
+    let _ = libbreenix::graphics::take_over_display();
 }
 
 impl Drop for Kiosk {
@@ -119,6 +136,26 @@ impl Drop for Kiosk {
 }
 
 impl Kiosk {
+    fn compositor(&mut self) -> Result<Arc<Mutex<Compositor>>, i64> {
+        if let Some(c) = &self.compositor {
+            return Ok(c.clone());
+        }
+        let made = match self.making.take() {
+            Some(making) => making.join().unwrap_or(Err(-5)),
+            None => Compositor::new(),
+        };
+        let c = Arc::new(Mutex::new(made?));
+        self.compositor = Some(c.clone());
+        Ok(c)
+    }
+
+    fn compose(&mut self) -> Result<libbreenix::compositor::Frame, i64> {
+        custody();
+        let c = self.compositor()?;
+        let mut c = c.lock().map_err(|_| -5i64)?;
+        c.compose()
+    }
+
     /// Give `events` the next serials and write them to window `id` in one call.
     fn send(&mut self, id: u64, events: &mut [abi::WindowEvent]) {
         let first = self.serial;
@@ -199,6 +236,7 @@ impl Kiosk {
                 say(&format!("{} {}", answer(first), answer(second)));
             }
             Some("gpu-private-scanout") => {
+                custody();
                 let fixture=(||->Result<(bgl::Context,u64,u64),i64>{
                     let m=bgl::modes()?;let mode=m.modes[m.current as usize];let mut c=bgl::Context::new()?;
                     let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height)?;
@@ -209,6 +247,8 @@ impl Kiosk {
                 match fixture {Ok((context,target,resource))=>{self.gpu_fixtures.push((context,target));say(&format!("ok {target} {resource}"));},Err(e)=>say(&format!("err {}",-e))}
             }
             Some("gpu-counters") => {
+                // Counted after the compositor's own setup, which is not composition.
+                let _ = self.compositor();
                 let (ret,c)=libbreenix::gpu::counters(0);
                 if ret==0 {say(&format!("ok {} {} {} {} {} {}",c.draws,c.instances,c.uploads_image,c.uploads_fixture,c.resources,c.resource_bytes));}
                 else {say(&format!("err {}",-ret));}
@@ -229,16 +269,26 @@ impl Kiosk {
                 })();
                 match result{Ok(()) if observed.0==0=>say("ok"),Ok(())=>say(&format!("err {} reason {}",-observed.0,observed.1)),Err(e)=>say(&format!("gpu-display: {e}"))}
             }
-            Some("composite") => reply(window::composite(&mut { abi::Composite::ZERO }).map(|value| format!("{value}"))),
+            Some("composite") => match self.compose() {
+                Ok(f) => say(&format!("ok {} {}", f.serial, f.pixels)),
+                Err(e) => say(&format!("err {}", -e)),
+            },
             Some("composite2") => {
-                let other = std::thread::spawn(|| window::composite(&mut { abi::Composite::ZERO }));
-                let mine = window::composite(&mut { abi::Composite::ZERO });
-                let theirs = other.join().unwrap_or(Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EIO)));
-                let word = |r: Result<u64, libbreenix::error::Error>| match r {
-                    Ok(value) => format!("ok {value}"),
-                    Err(e) => format!("err {}", errno(e)),
+                custody();
+                let word = |r: Result<libbreenix::compositor::Frame, i64>| match r {
+                    Ok(f) => format!("ok {} {}", f.serial, f.pixels),
+                    Err(e) => format!("err {}", -e),
                 };
-                say(&format!("{}, {}", word(mine), word(theirs)));
+                match self.compositor() {
+                    Ok(c) => {
+                        let theirs = c.clone();
+                        let other = std::thread::spawn(move || theirs.lock().map_err(|_| -5i64).and_then(|mut c| c.compose()));
+                        let mine = c.lock().map_err(|_| -5i64).and_then(|mut c| c.compose());
+                        let theirs = other.join().unwrap_or(Err(-5));
+                        say(&format!("{}, {}", word(mine), word(theirs)));
+                    }
+                    Err(e) => say(&format!("err {}", -e)),
+                }
             }
             Some("record") => match num(1) {
                 Some(serial) => {
@@ -293,21 +343,28 @@ impl Kiosk {
     }
 }
 
-/// Compose when any registered window has a commit not yet composed.
-fn compose_new_commits(seen: &mut BTreeMap<u64, u64>) {
-    let mut infos = vec![abi::WinInfo::default(); 64];
-    let Ok(n) = window::list(&mut infos) else {
+/// Compose when the scene has damage: new pixels, geometry, stacking or registration, or
+/// the cursor. Composition starts once a window is visible with a commit.
+fn compose_damage(kiosk: &mut Kiosk) {
+    // Automatic composition waits for the compositor's setup, and takes display custody
+    // only once some window is visible with a commit.
+    if kiosk.making.as_ref().is_some_and(|m| !m.is_finished()) {
         return;
-    };
-    let mut changed = false;
-    for info in infos.iter().take(n.min(infos.len())) {
-        if seen.get(&info.id) != Some(&info.commit_id) {
-            seen.insert(info.id, info.commit_id);
-            changed = true;
+    }
+    if kiosk.compositor.is_none() {
+        let mut infos = vec![abi::WinInfo::default(); 64];
+        let shown = window::list(&mut infos).is_ok_and(|n| {
+            infos.iter().take(n.min(infos.len())).any(|i| i.flags & abi::win_flags::VISIBLE != 0 && i.commit_id != 0)
+        });
+        if !shown {
+            return;
         }
     }
-    if changed {
-        let _ = window::composite(&mut { abi::Composite::ZERO });
+    custody();
+    let Ok(c) = kiosk.compositor() else { return };
+    let Ok(mut c) = c.lock() else { return };
+    if c.pending() == Ok(true) {
+        let _ = c.compose();
     }
 }
 
@@ -319,8 +376,8 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new() };
-    let mut seen = BTreeMap::new();
+    let making = Some(std::thread::spawn(Compositor::new));
+    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new(), compositor: None, making };
     let mut pending = Vec::new();
     loop {
         let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 }];
@@ -340,7 +397,7 @@ fn main() {
             }
         }
         if kiosk.auto {
-            compose_new_commits(&mut seen);
+            compose_damage(&mut kiosk);
         }
     }
 }
