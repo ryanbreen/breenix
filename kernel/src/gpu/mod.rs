@@ -3906,59 +3906,39 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
 /// Reserve vertices in the context's arena. The context holds its resource until
 /// destruction/replacement; each submission adds a hold through genuine completion.
 /// A growth keeps the old arena charged and alive for its outstanding submissions.
-/// A submission the arena cannot serve without growing past [`vertex_arena::ARENA_MAX`],
-/// or while its ranges are held, gets exact storage of its own, freed when it retires.
 /// Return (resource, byte offset, capacity needing device creation, or 0 if ready).
 fn vertex_buffer_for(tgid: u64, ctx: u32, serial: u64, bytes: u64) -> Result<Option<(u32, u32, u32)>, i64> {
     if bytes == 0 { return Ok(None); }
     let requested = u32::try_from(bytes).map_err(|_| ENOMEM)?;
-    let (reused, current) = with_core(|c| {
-        let Some(arena) = c.contexts.get_mut(&ctx).and_then(|x| x.vertex_arena.as_mut()) else { return (None, 0) };
-        let current = arena.ranges.capacity;
-        let Some(offset) = arena.ranges.reserve(serial, requested) else { return (None, current) };
+    let reused = with_core(|c| {
+        let arena = c.contexts.get_mut(&ctx)?.vertex_arena.as_mut()?;
+        let offset = arena.ranges.reserve(serial, requested)?;
         let rid = arena.id;
-        let capacity = if arena.ready { 0 } else { current };
-        if let Some(r) = c.resources.get_mut(&rid) {
-            r.holds += 1;
-            return (Some((rid, offset, capacity)), current);
-        }
-        arena.ranges.release(serial);
-        (None, current)
-    }).unwrap_or((None, 0));
+        let capacity = if arena.ready { 0 } else { arena.ranges.capacity };
+        c.resources.get_mut(&rid)?.holds += 1;
+        Some((rid, offset, capacity))
+    }).flatten();
     if let Some(range) = reused { return Ok(Some(range)); }
-    // Grow only for a small frame the current arena is too small for.
-    if let Some(mut ranges) = vertex_arena::Ranges::new(bytes).filter(|r| r.capacity > current) {
-        let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
-        let capacity = ranges.capacity;
-        let rid = private_vertex_storage(tgid, ctx, capacity, 2, Some(ranges))?; // context ownership and this submission's access
-        return Ok(Some((rid, offset, capacity)));
-    }
-    let capacity = vertex_arena::exact(bytes).ok_or(ENOMEM)?;
-    let rid = private_vertex_storage(tgid, ctx, capacity, 1, None)?; // this submission's access only
-    Ok(Some((rid, 0, capacity)))
-}
-
-/// Charge and register `capacity` bytes of context-private vertex storage with `holds`.
-/// With `ranges` it becomes the context's arena, replacing (and unholding) the old one.
-fn private_vertex_storage(tgid: u64, ctx: u32, capacity: u32, holds: u32, ranges: Option<vertex_arena::Ranges>) -> Result<u32, i64> {
+    let mut ranges = vertex_arena::Ranges::new(bytes).ok_or(ENOMEM)?;
+    let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
+    let capacity = ranges.capacity;
     let charge = Charge::new(tgid, capacity as u64, true)?;
     let mut backing = Pages::none();
     backing.charge_copy(charge);
-    with_core(|c| {
+    let rid = with_core(|c| {
         if !c.contexts.get(&ctx).is_some_and(|x| x.state == CtxState::Live && !x.dropped) { return Err(EIO); }
         let rid = c.next_res;
         c.next_res += 1;
         let mut r = new_res(0, kind::BUFFER, format::B8G8R8A8, 0, 0, capacity as u64, 0, Arc::new(backing), c.epoch);
         r.dropped = true;
         r.lost = true;
-        r.holds = holds;
+        r.holds = 2; // context ownership and this submission's access
         c.insert_res(rid, r);
-        if let Some(ranges) = ranges {
-            let old = c.contexts.get_mut(&ctx).ok_or(EIO)?.vertex_arena.replace(VertexArena { id: rid, ready: false, accepted: false, ranges });
-            if let Some(old) = old { c.unhold(old.id); }
-        }
+        let old = c.contexts.get_mut(&ctx).ok_or(EIO)?.vertex_arena.replace(VertexArena { id: rid, ready: false, accepted: false, ranges });
+        if let Some(old) = old { c.unhold(old.id); }
         Ok(rid)
-    }).ok_or(ENODEV)?
+    }).ok_or(ENODEV)??;
+    Ok(Some((rid, offset, capacity)))
 }
 
 /// Reuse an idle context-private copy/data texture. At most four per class can be
