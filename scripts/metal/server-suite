@@ -229,8 +229,8 @@ class Probe:
             until(prompt)
             if b'breenish v' not in seen: raise ValueError('login did not enter bsh')
             seen = b''
-            send(b"printf 'READY-%s\\n' tty\n")
-            at_prompt(b'READY-tty\r\n')
+            send(b'console.log("READY-" + env("HOME"));\n')
+            at_prompt(("READY-/home/" + self.user + "\r\n").encode())
             if b'job control turned off' in seen: raise ValueError('shell has no controlling terminal')
             seen = b''
             if quoted:

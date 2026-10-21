@@ -287,10 +287,10 @@ GROUP
 // This file is evaluated as ECMAScript by bsh on startup.
 
 // Global PATH - all standard binary directories
-env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
+if (!env("PATH")) { env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin"); }
 
 // Home directory
-env("HOME", "/root");
+if (!env("HOME")) { env("HOME", "/root"); }
 
 // Shell identification
 env("SHELL", "/bin/bsh");
@@ -589,10 +589,10 @@ GROUP
 // This file is evaluated as ECMAScript by bsh on startup.
 
 // Global PATH - all standard binary directories
-env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin");
+if (!env("PATH")) { env("PATH", "/bin:/sbin:/usr/local/bin:/usr/local/cbin"); }
 
 // Home directory
-env("HOME", "/root");
+if (!env("HOME")) { env("HOME", "/root"); }
 
 // Shell identification
 env("SHELL", "/bin/bsh");

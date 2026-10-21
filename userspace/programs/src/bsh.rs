@@ -2478,7 +2478,8 @@ fn get_short_cwd() -> Option<String> {
 /// Run one line with the same builtins and shorthand as the interactive shell.
 /// Bare commands inherit stdin/stdout/stderr and return their actual exit status.
 fn run_command(line: &str) {
-    let mut ctx = prepare_shell_context();
+    // Noninteractive commands must not load a greeting or login configuration.
+    let mut ctx = create_shell_context();
     let line = line.trim();
     let code = if let Some(code) = builtin_wrap(line) {
         code
