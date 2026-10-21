@@ -397,6 +397,9 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    /// A progress transfer only excludes CPU access and other GPU contexts;
+    /// later draws of this context remain ordered behind its queued transfer.
+    progress_context: Option<u32>,
     window_sealed: bool,
     /// The kernel screen's context this resource is attached to for observing it as a
     /// retained binding (`screen::observation_context`), or 0.
@@ -991,6 +994,13 @@ impl Core {
     /// Register synchronous request `serial`, take its holds and queue it. A request of the
     /// warm-up step carries the step's fence in `warm`; nobody waits for it.
     fn start_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
+        self.queue_sync(serial, req, ctx, holds, reading, warm)?;
+        self.flush();
+        Ok(())
+    }
+
+    /// Enroll DMA holds without notifying the device from a waiting caller.
+    fn queue_sync(&mut self, serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32], warm: Option<u64>) -> Result<(), i64> {
         if !self.can_queue(&req) {
             return Err(EIO);
         }
@@ -1009,8 +1019,36 @@ impl Core {
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
-        self.flush();
         Ok(())
+    }
+
+    /// Drain queued QEMU rendering through a fenced one-pixel transfer. Native render
+    /// fences remain the publication proof. kgpu sends the transfer, keeping device
+    /// notification out of the waiter's CPU time; its own fence retains the DMA hold.
+    fn progress_readback(&mut self) {
+        let reaper = REAPER.load(Ordering::Acquire);
+        if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
+        if !crate::platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
+            || !self.backlog.is_empty() { return; }
+        let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
+            .find_map(|s| s.written.iter().find_map(|rid| {
+                let r = self.resources.get(rid)?;
+                let active = r.accepted.iter().filter(|w| !w.ended()).count();
+                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                    && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
+                    && !r.reading && !r.invalid && !r.lost)
+                    .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
+            }));
+        let Some((ctx, rid, backing, pitch)) = target else { return; };
+        let serial = self.serial();
+        let fence = self.device_fence();
+        let req = Request::Virgl(virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, rid, backing, 0, 0, 1, 1, 0, pitch));
+        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return; }
+        if let Some(r) = self.resources.get_mut(&rid) { r.reading = true; r.progress_context = Some(ctx); }
+        if self.queue_sync(serial, req, ctx, &[rid], &[rid], None).is_ok() {
+            self.abandon(serial);
+            notify();
+        } else { self.end_reading(rid); }
     }
 
     /// The waiter of `serial` left: drop its answer if it came, or when it comes.
@@ -1386,6 +1424,7 @@ impl Core {
         }
         if let Some(r) = self.resources.get_mut(&id) {
             r.reading = false;
+            r.progress_context = None;
         }
         self.canvas.retain(|(held, _)| *held != id);
         self.free_if_unused(id);
@@ -1831,7 +1870,9 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             c.poll();
             // The device's answers reach this waiter only when someone looks for them.
             let polled = dev::is_svga() && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
-            (f(c), polled)
+            let found = f(c);
+            if found.is_none() { c.progress_readback(); }
+            (found, polled)
         })
         .unwrap_or((None, false));
         if let Some(v) = found {
@@ -2511,6 +2552,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        progress_context: None,
         window_sealed: false,
         observed_in: 0,
     }
@@ -3405,7 +3447,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
             return Some(Err(breengel_abi::errno::EBUSY as i64));
         }
-        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading)) {
+        // Progress DMA is already queued in this context. Its later GPU writes are
+        // ordered after it; CPU readers and writers in other contexts still wait.
+        if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading && r.progress_context != Some(id))) {
             return None;
         }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
@@ -4194,6 +4238,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
             if !c.syncs.values().any(|s| s.reading.contains(&id)) {
                 if let Some(r) = c.resources.get_mut(&id) {
                     r.reading = false;
+                    r.progress_context = None;
                 }
                 c.free_if_unused(id);
             }
@@ -5017,6 +5062,7 @@ fn release_other(rid: Option<u32>) {
         if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
             if let Some(r) = c.resources.get_mut(&rid) {
                 r.reading = false;
+                r.progress_context = None;
             }
             c.free_if_unused(rid);
         }
