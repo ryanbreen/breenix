@@ -154,6 +154,7 @@ static TILE_STRAIGHT_RGB:[u8;80]=tile_table(4,false,false,true);
 static COPY_ROW:[u8;64]=[0x5a;64];
 static INK_ROW:[u8;128]={let mut out=[0;128];let mut i=0;while i<128{out[i]=[INK.b,INK.g,INK.r,255][i%4];i+=1;}out};
 // alpha-extremes' premultiplied source: opaque INK, transparent, opaque WHITE, transparent.
+static OPAQUE_ZERO_X: [u8; 4] = [17, 34, 51, 0];
 static EXTREMES_SRC:[u8;16]=[INK.b,INK.g,INK.r,255,0,0,0,0,WHITE.b,WHITE.g,WHITE.r,255,0,0,0,0];
 // alpha-output's premultiplied destination and source, pixel (x, y) at (16y + x) × 4, BGRA.
 static OUTPUT_DST:[u8;1024]={let mut out=[0;1024];let mut n=0;while n<256{let (x,y)=(n%16,n/16);let a=(x*16+y) as u8;
@@ -234,7 +235,11 @@ struct Drawn {
 
 impl Drawn {
     fn new(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool) -> Drawn {
-        let surface = Surface::new(width, height, if bgr { Format::BGRX } else { Format::RGBX })
+        Self::formatted(width, height, stride, bpp, bgr, if bgr { Format::BGRX } else { Format::RGBX })
+    }
+
+    fn formatted(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool, format: Format) -> Drawn {
+        let surface = Surface::new(width, height, format)
             .unwrap_or_else(|e| panic!("gpu-raster: a {width} x {height} GPU target for a raster case: {e}"));
         let target = surface.handle();
         let mut d = Drawn { mem: Guarded::new(width, height, stride, bpp, bgr), surface: RefCell::new(surface), target,
@@ -813,7 +818,7 @@ fn raster_alpha_output() -> CaseResult {
     let d_of = |x: usize, y: usize| { let a = (x * 16 + y) as u8; [a / 2, a / 3, a, a] };
     let s_of = |x: usize, y: usize| { let a = (y * 17) as u8; [a / 3, a.saturating_sub(x as u8), a / 5, a] };
     // The premultiplied destination is copied in from its table, then the source blended over it.
-    let dst = Drawn::bgrx(16, 16);
+    let dst = Drawn::formatted(16, 16, 16 * 4, 4, true, Format::BGRA_PREMULTIPLIED);
     let (below, above) = (fixture(&OUTPUT_DST, 16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?, fixture(&OUTPUT_SRC, 16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?);
     blit::blit(&mut dst.fb(), &below, 0, 0);
     blit::blit_over(&mut dst.fb(), &above, 0, 0);
@@ -867,6 +872,25 @@ fn raster_blit_clip() -> CaseResult {
 }
 
 fn raster_blit_alpha() -> CaseResult {
+    // Opaque X=0 must replace the background, and copies to BGRX must write X=255.
+    let opaque = fixture(&OPAQUE_ZERO_X, 1, 1, Format::BGRX).cite("3")?;
+    let opaque_dst = padded(4, 4);
+    blit::blit_over(&mut opaque_dst.fb(), &opaque, 1, 1);
+    ensure(opaque_dst.bgra(1, 1) == [17, 34, 51, 255], "2, 5.8", "BGRX X=0 was treated as transparent")?;
+    let scaled = Drawn::formatted(4, 4, 16, 4, true, Format::BGRA_PREMULTIPLIED);
+    blit::blit_scaled(&mut scaled.fb(), &opaque, 0, 0, 2);
+    ensure(scaled.bgra(1, 1) == [17, 34, 51, 255], "2, 5.8", "scaled BGRX copy retained X=0 as alpha")?;
+    step("2, 5.8", scaled.failed())?;
+    let translucent = fixture(&OUTPUT_SRC, 16, 16, Format::BGRA_PREMULTIPLIED).cite("3")?;
+    let copy_dst = Drawn::bgrx(16, 16);
+    blit::blit(&mut copy_dst.fb(), &translucent, 0, 0);
+    for y in 0..16 { for x in 0..16 {
+        let n = (16 * y + x) * 4;
+        ensure(copy_dst.bgra(x, y) == [OUTPUT_SRC[n], OUTPUT_SRC[n+1], OUTPUT_SRC[n+2], 255],
+            "2, 5.8", "copy into BGRX retained translucent alpha or changed colour")?;
+    }}
+    step("2, 5.8", opaque_dst.failed())?;
+    step("2, 5.8", copy_dst.failed())?;
     let src = fixture(&TILE_ALPHA, 5, 4, Format::BGRA_PREMULTIPLIED).cite("3")?;
     let s_of = |i: usize, j: usize| {
         let a = [0u32, 64, 128, 200, 255][i];

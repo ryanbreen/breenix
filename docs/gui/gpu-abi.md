@@ -515,11 +515,17 @@ Command 9, `DRAW_PIPELINE`, is
 then n instances of four signed rectangle corners followed by sixteen parameter words.
 The rectangle bounds fragment execution; the shader evaluates the named pipeline at each
 pixel. BEGIN and SCISSOR apply as for DRAW. Unused parameters and unused handles are zero.
-SOLID, COPY and PROBE retain their existing commands; command 9 serves pipelines 2–15.
+SOLID, COPY and PROBE retain their existing commands; command 9 also accepts COPY with
+source-offset and opaque-output metadata, alongside pipelines 2–15.
 All sampled fetches are integer-addressed and outside-source pixels are discarded.
+For over and over_straight, colour bit 0 treats source X as opaque (over only), and bit 1
+writes destination X as 255. For copy_scaled, colour bit 0 forces output X to 255.
+Zero flags retain premultiplied alpha. These flags change no colour byte or geometry.
+Parameterized COPY has the same per-fragment weight, 1, as the existing COPY command.
 
 | Pipeline | Parameters, starting at p0 |
 |---|---|
+| copy | signed source offset x,y added to destination coordinates; force opaque output 0 or 1 |
 | copy_scaled | destination origin x,y; source origin x,y; positive integer scale |
 | nearest_scaled, box_filter | destination origin x,y; destination width,height; source origin x,y; source width,height; box_filter requires source dimensions at least destination dimensions |
 | over, over_straight | destination origin x,y; source origin x,y |

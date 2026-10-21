@@ -165,11 +165,11 @@ pub const COPY_VS: Program = Program {
 /// `DCL CONST[0]` (2); `DCL TEMP[0]` (2); `IMM[0] INT32 {0, 0, 0, 0}`, an immediate and four
 /// values (5); `MOV` with a destination and a source (3); `F2I` (3); `UADD` with two
 /// sources (4); `TXF`, an instruction, its texture token, a destination and two sources (5);
-/// `END` (1). 39 tokens.
+/// `END` (1), plus the opaque-output immediate and conditional (11). 50 tokens.
 pub const COPY_FS: Program = Program {
     kind: pipe::SHADER_FRAGMENT,
     text: include_bytes!("pipelines/copy.frag.tgsi"),
-    tokens: 39,
+    tokens: 50,
 };
 
 /// The fixed rendering catalogue's pipelines, `solid` (0) to `triangle` (15); the
@@ -726,7 +726,7 @@ pub fn translate(enc: &mut Enc, o: &mut Objects, words: &(impl Words + ?Sized), 
                 let buffer = words.word(at+6) as u64 | (words.word(at+7) as u64)<<32;
                 let bytes = words.word(at+8);
                 let count = words.word(at+9) as usize;
-                bind_programs(enc,o,&mut programs,Bound::Catalogue(p));
+                bind_programs(enc,o,&mut programs,if p == gpu_abi::pipeline::COPY { Bound::Copy } else { Bound::Catalogue(p) });
                 let tex = b.source(texture);
                 if let Some(tex) = tex { bind_view_at(enc,o,&tex,0); }
                 if d::blended(p) {
