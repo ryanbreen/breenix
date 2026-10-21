@@ -107,8 +107,8 @@ use std::fmt::Write as _;
 use std::string::String;
 use std::vec::Vec;
 
-use libgfx::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Pulses, Reading, Verdict};
-use libgfx::framebuf::FrameBuf;
+use libgfx_ref::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Pulses, Reading, Verdict};
+use libgfx_ref::framebuf::FrameBuf;
 
 use crate::error::Error;
 pub use crate::suite_spawn::{spawn, Keep, Run};
@@ -307,7 +307,7 @@ fn collect_timing()->Result<Option<FrameTiming>,String> {
 
 /// Input evidence captured at the handler that the case actually exercises.
 #[derive(Clone, Default)]
-pub struct InputTrace { pub points: Vec<libgfx::stage::InputPoint>, pub hit: String }
+pub struct InputTrace { pub points: Vec<libgfx_ref::stage::InputPoint>, pub hit: String }
 static INPUT_TRACE: std::sync::Mutex<Option<InputTrace>> = std::sync::Mutex::new(None);
 fn input_label(hit:&str)->String {
     let mut label=hit.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -318,7 +318,7 @@ pub fn input_step(x:i32,y:i32,pressed:bool,hit:&str) {
     if !JUDGED_ENABLED.load(Ordering::Relaxed) {return;}
     let mut trace=INPUT_TRACE.lock().unwrap();
     let t=trace.get_or_insert_with(InputTrace::default);
-    if t.points.len()<256 {t.points.push(libgfx::stage::InputPoint{x,y,pressed});}
+    if t.points.len()<256 {t.points.push(libgfx_ref::stage::InputPoint{x,y,pressed});}
     if !hit.is_empty() {t.hit=input_label(hit);}
 }
 pub fn input_key(hit:&str) {
@@ -345,7 +345,7 @@ pub(super) fn collect_input()->Result<Option<InputTrace>,String> {
     for line in lines {
         let words=line.split_whitespace().map(str::parse).collect::<Result<Vec<i32>,_>>().map_err(|_|"invalid input point")?;
         if words.len()!=3 || !(0..=1).contains(&words[2]) || words[..2].iter().any(|v|v.abs_diff(0)>1_000_000) || points.len()==256 {return Err("invalid input point".into());}
-        points.push(libgfx::stage::InputPoint{x:words[0],y:words[1],pressed:words[2]==1});
+        points.push(libgfx_ref::stage::InputPoint{x:words[0],y:words[1],pressed:words[2]==1});
     }
     Ok(Some(InputTrace{points,hit}))
 }
@@ -1642,8 +1642,8 @@ mod judged_transport_tests {
         JUDGED_SEQUENCE.store(u64::MAX-1,Ordering::Relaxed);
         let _=std::fs::remove_file(judged_path());
         let _=CASE_NAME.set(String::from("transport/one"));
-        let actual=FrameBuf::new_filled(2,1,libgfx::framebuf::Format::BGRX,libgfx::color::Color::rgb(1,2,3)).unwrap();
-        let expected=FrameBuf::new_filled(2,1,libgfx::framebuf::Format::BGRX,libgfx::color::Color::BLACK).unwrap();
+        let actual=FrameBuf::new_filled(2,1,libgfx_ref::framebuf::Format::BGRX,libgfx_ref::color::Color::rgb(1,2,3)).unwrap();
+        let expected=FrameBuf::new_filled(2,1,libgfx_ref::framebuf::Format::BGRX,libgfx_ref::color::Color::BLACK).unwrap();
         judged_with_reference(&actual,Some(&expected)).unwrap();
         assert!(judged(&expected).is_err(),"a later handoff must not replace the first");
         publish_judged().unwrap();
@@ -1662,7 +1662,7 @@ mod judged_transport_tests {
         JUDGED_SEQUENCE.store(u64::MAX-2,Ordering::Relaxed);
         let _=std::fs::remove_file(judged_path());
         let _=CASE_NAME.set(String::from("transport/bound"));
-        let frame=FrameBuf::new(2,1,libgfx::framebuf::Format::BGRX).unwrap();
+        let frame=FrameBuf::new(2,1,libgfx_ref::framebuf::Format::BGRX).unwrap();
         judged_with_bound(&frame,Some(&frame),1).unwrap();
         assert!(!std::path::Path::new(&judged_path()).exists(),"snapshot hashing/publication must wait until the timer stops");
         publish_judged().unwrap();
@@ -1685,7 +1685,7 @@ mod judged_transport_tests {
         let mut bytes=std::fs::read(&path).unwrap();
         let trace=collect_input().unwrap().unwrap();
         assert_eq!(trace.hit,"button: Clicked");
-        assert_eq!(trace.points,[libgfx::stage::InputPoint{x:30,y:15,pressed:true},libgfx::stage::InputPoint{x:31,y:16,pressed:false}]);
+        assert_eq!(trace.points,[libgfx_ref::stage::InputPoint{x:30,y:15,pressed:true},libgfx_ref::stage::InputPoint{x:31,y:16,pressed:false}]);
         assert!(collect_input().unwrap().is_none());
         bytes[32]^=1;
         std::fs::write(&path,bytes).unwrap();
@@ -1759,6 +1759,6 @@ mod judged_transport_tests {
 pub fn showcase_check(name:&str)->CaseResult {crate::suite_stage::showcase_check(name)}
 
 /// Same UI-clock boundary used for a stage fixture and the live stage.
-pub fn render_stage_at_ui_time(fb: &mut FrameBuf, run: &mut libgfx::stage::Run<'_>) -> Result<(), libgfx::stage::StageError> {
+pub fn render_stage_at_ui_time(fb: &mut FrameBuf, run: &mut libgfx_ref::stage::Run<'_>) -> Result<(), libgfx_ref::stage::StageError> {
     crate::suite_stage::render_at_ui_time(fb, run, 0)
 }

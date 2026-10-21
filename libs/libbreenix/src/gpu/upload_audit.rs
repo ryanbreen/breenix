@@ -16,6 +16,8 @@ pub struct Mark {
 #[derive(Default)]
 struct Audit {
     active: bool,
+    /// Declarations refused since `start` because a row lies outside the program image.
+    nonstatic: u64,
     tables: Vec<Table>,
     resources: BTreeMap<u64, abi::ResourceCreate>,
     mark: Mark,
@@ -23,6 +25,7 @@ struct Audit {
 }
 static AUDIT: Mutex<Audit> = Mutex::new(Audit {
     active: false,
+    nonstatic: 0,
     tables: Vec::new(),
     resources: BTreeMap::new(),
     mark: Mark {
@@ -48,11 +51,19 @@ pub fn stop() {
     locked().active = false;
 }
 pub fn declare(bytes: &'static [u8]) {
-    declare_rows(std::vec![bytes]);
+    let mut a = locked();
+    if crate::image::read_only(bytes) {
+        a.declare(std::vec![bytes], crate::image::read_only);
+    } else { a.nonstatic += 1; }
 }
 /// A static table may be stored as separate static rows (the bitmap-font dependency).
-pub fn declare_rows(rows: Vec<&'static [u8]>) {
-    locked().tables.push(Table { rows });
+/// The rows must lie in the executable's read-only image: a leaked heap allocation or a
+/// writable static is refused, whatever its lifetime says.
+pub fn declare_rows(rows: &'static [&'static [u8]]) {
+    let mut a = locked();
+    if crate::image::static_rows(rows) {
+        a.declare(rows.to_vec(), crate::image::read_only);
+    } else { a.nonstatic += 1; }
 }
 pub fn mark() -> Mark {
     locked().mark
@@ -80,9 +91,20 @@ pub fn hashes() -> std::string::String {
     text
 }
 impl Audit {
+    fn declare(&mut self, rows: Vec<&'static [u8]>, read_only: impl Fn(&[u8]) -> bool) {
+        if rows.iter().all(|r| read_only(r)) {
+            self.tables.push(Table { rows });
+        } else {
+            self.nonstatic += 1;
+        }
+    }
+
     fn refusal(&self, before: Mark, image: u64, fixture: u64) -> Option<&'static str> {
         if image != 0 {
             Some("cpu-image")
+        } else if self.nonstatic != 0 {
+            // Sticky for the case: declarations precede the marks callers take.
+            Some("non-static-table")
         } else if self.mark.refused != before.refused {
             Some("passing-oracle")
         } else if self.mark.image - before.image != image
@@ -95,15 +117,23 @@ impl Audit {
     }
 
     fn pixels(&mut self, purpose: u32, bytes: &[u8]) {
-        let legal = purpose == abi::purpose::FIXTURE
-            && self.tables.iter().any(|t| {
+        let table = if purpose == abi::purpose::FIXTURE {
+            self.tables.iter().position(|t| {
                 t.rows.iter().map(|r| r.len()).sum::<usize>() == bytes.len()
                     && t.rows.iter().flat_map(|r| r.iter()).eq(bytes.iter())
-            });
-        if !legal {
-            self.mark.refused += 1;
+            })
+        } else {
+            None
+        };
+        // A declaration licenses one upload: the upload consumes it, so a later identical
+        // upload (a row-at-a-time fill matching a declared row) needs a declaration of its own.
+        match table {
+            Some(i) => {
+                self.tables.remove(i);
+            }
+            None => self.mark.refused += 1,
         }
-        self.hashes.push((sha256(bytes), legal));
+        self.hashes.push((sha256(bytes), table.is_some()));
     }
 }
 /// Called only after a successful GPU syscall. Successful uploads have readable clipped
@@ -143,10 +173,8 @@ unsafe fn observe_in(a: &mut Audit, op: u32, arg: *mut u8, len: usize) {
             } else {
                 a.mark.image += n;
             }
-            // Geometry buffers are not pixel uploads, but still reconcile their byte counters.
-            if r.kind == abi::kind::BUFFER {
-                return;
-            }
+            // Buffer bytes (crossing tables included) are content-checked like pixels: CPU
+            // results encoded as geometry are as much a CPU render as an uploaded image.
             let mut bytes = Vec::with_capacity(n as usize);
             for y in 0..ch {
                 bytes.extend_from_slice(core::slice::from_raw_parts(
@@ -168,7 +196,7 @@ unsafe fn observe_in(a: &mut Audit, op: u32, arg: *mut u8, len: usize) {
 mod tests {
     use super::*;
     use abi::Plain;
-    const FONT: &[u8] = &[14, 17, 17, 31, 17, 17, 17, 4, 12, 4, 4, 4, 4, 14];
+    static FONT: &[u8] = &[14, 17, 17, 31, 17, 17, 17, 4, 12, 4, 4, 4, 4, 14];
     fn audit() -> Audit {
         Audit {
             active: true,
@@ -271,6 +299,78 @@ mod tests {
         let before = a.mark;
         upload(&mut a, FONT, abi::purpose::FIXTURE, 7);
         assert_eq!(a.refusal(before, 0, 7), Some("passing-oracle"));
+    }
+    #[test]
+    fn table_outside_the_program_image_is_refused() {
+        let mut a = Audit { active: true, ..Audit::default() };
+        let leaked: &'static [u8] = std::vec![14, 17, 17, 31].leak();
+        // Only FONT is in the (simulated) read-only image; the leaked copy has its bytes.
+        let image = |r: &[u8]| core::ptr::eq(r, FONT);
+        a.declare(std::vec![FONT], image);
+        assert_eq!(a.refusal(a.mark, 0, 0), None);
+        a.declare(std::vec![FONT, leaked], image);
+        assert_eq!(a.tables.len(), 1, "a table with a leaked row is not declared");
+        assert_eq!(a.refusal(a.mark, 0, 0), Some("non-static-table"));
+    }
+    #[test]
+    fn dynamic_palette_order_is_not_a_static_table() {
+        static PALETTE: [[u8; 4]; 2] = [[0, 0, 0, 255], [255; 4]];
+        let selected: &'static [&'static [u8]] = std::vec![&PALETTE[1][..], &PALETTE[0][..]].leak();
+        assert!(!crate::image::static_rows(selected));
+        // The real declaration path refuses even though each palette entry is static.
+        start();
+        declare_rows(selected);
+        assert_eq!(refusal(mark(), 0, 0), Some("non-static-table"));
+        stop();
+    }
+    #[test]
+    fn declared_table_licenses_one_upload() {
+        let mut a = audit();
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
+        // The same bytes again, as a CPU fill repeating a declared row would upload them.
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), Some("passing-oracle"));
+        // A fresh declaration licenses a fresh upload.
+        a.tables.push(Table { rows: std::vec![FONT] });
+        let before = a.mark;
+        upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
+    }
+    #[test]
+    fn buffer_uploads_are_content_checked() {
+        let mut a = audit();
+        let mut r = abi::ResourceCreate {
+            handle: 2,
+            kind: abi::kind::BUFFER,
+            size: 64,
+            ..abi::ResourceCreate::ZERO
+        };
+        let crossings = |a: &mut Audit, bytes: &[u8]| {
+            let mut u = abi::Upload {
+                resource: 2,
+                width: bytes.len() as u32,
+                height: 1,
+                pixels: bytes.as_ptr() as u64,
+                pixels_len: bytes.len() as u64,
+                stride: bytes.len() as u32,
+                source: abi::upload_source::R8,
+                purpose: abi::purpose::FIXTURE,
+                ..abi::Upload::ZERO
+            };
+            unsafe { observe_in(a, abi::op::UPLOAD, &mut u as *mut _ as *mut u8, core::mem::size_of_val(&u)) }
+        };
+        unsafe { observe_in(&mut a, abi::op::RESOURCE_CREATE, &mut r as *mut _ as *mut u8, core::mem::size_of_val(&r)) };
+        // Words a CPU computed (here, per-pixel coverage spans) are not a declared table.
+        let computed = [0u8, 0, 0, 0, 0, 0, 128, 63, 1, 0, 0, 0];
+        let before = a.mark;
+        crossings(&mut a, &computed);
+        assert_eq!(a.refusal(before, 0, computed.len() as u64), Some("passing-oracle"));
+        let before = a.mark;
+        crossings(&mut a, FONT);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None, "a declared static table may fill a buffer");
     }
     #[test]
     fn once_per_context_table_upload_allows_later_runs_without_uploads() {

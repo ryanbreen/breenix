@@ -5,9 +5,9 @@
 //! sparkles fire from the slot edges, then the spring ejects the disk back out.
 //! The disk is drawn as a single solid shape — no tilt, no shear, no splitting.
 
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::easing::sin_approx;
 use crate::icon::{Icon, IconBase, IconMouse, IconState};

@@ -68,8 +68,8 @@ fn panel_deterministic() -> CaseResult {
         let tiles=[Tile{id:"clock/running",stamp:Stamp::Running,key:0,thumbnail:None}];
         let groups=[Milestone{id:"clock",first:0,end:1}];
         let mut run=Run{suite:"clock",target:"ARM64 QEMU",case_number:1,ui_time_ms:0,fps:0,tiles:&tiles,milestones:&groups,selected:0,input:None,spotlight:Spotlight::None,finale:None,boundary:Observation{backend:1,flags:1,boundary:1}};
-        let mut a=FrameBuf::new(1280,800,libgfx::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
-        let mut b=FrameBuf::new(1280,800,libgfx::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
+        let mut a=FrameBuf::new(1280,800,libgfx_ref::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
+        let mut b=FrameBuf::new(1280,800,libgfx_ref::framebuf::Format::BGRX).map_err(|e|e.to_string())?;
         for fb in [&mut a,&mut b] {
             libbreenix::suite::render_stage_at_ui_time(fb,&mut run).map_err(|e|format!("{e:?}"))?;
             if run.ui_time_ms!=250 {return Err("stage ignored the shared UI page".into());}

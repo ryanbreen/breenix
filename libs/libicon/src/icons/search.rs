@@ -1,8 +1,8 @@
 //! Search icon — magnifying glass with shimmer and sonar-ring click effect.
 
-use libgfx::color::Color;
-use libgfx::framebuf::FrameBuf;
-use libgfx::shapes;
+use libgfx_ref::color::Color;
+use libgfx_ref::framebuf::FrameBuf;
+use libgfx_ref::shapes;
 
 use crate::easing::{cos_approx, sin_approx};
 use crate::icon::{Icon, IconBase, IconMouse, IconState};

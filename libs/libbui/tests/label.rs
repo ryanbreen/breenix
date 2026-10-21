@@ -1,7 +1,7 @@
 //! §14.3 and the 2026-10-15 fixture ruling: test clipping both through and above dot rows.
 use libbui::widget::label::Label;
 use libbui::{Rect, Theme};
-use libgfx::{color::Color, framebuf::FrameBuf};
+use libgfx_ref::{color::Color, framebuf::FrameBuf};
 #[test]
 fn narrow_ellipsis_keeps_ink_only_when_dot_rows_are_inside() {
     let paper = Color::rgb(13, 27, 41);

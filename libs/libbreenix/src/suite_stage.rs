@@ -5,7 +5,7 @@ use crate::{
     window::{self as win, abi},
 };
 use abi::{op, Plain};
-use libgfx::{
+use libgfx_ref::{
     framebuf::{Format, FrameBuf},
     stage::{self, Finale, Image, Milestone, Observation, Spotlight, Stamp, Tile},
 };

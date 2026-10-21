@@ -529,7 +529,7 @@ fn windows_acquire_full_copy() -> CaseResult {
         for y in 0..12u32 {
             for x in 0..48u32 {
                 let p = pattern(55, x, y);
-                fb.put_pixel(x as usize, y as usize, libgfx::color::Color::rgb(p[2], p[1], p[0]));
+                fb.put_pixel(x as usize, y as usize, libgfx_ref::color::Color::rgb(p[2], p[1], p[0]));
             }
         }
     }
