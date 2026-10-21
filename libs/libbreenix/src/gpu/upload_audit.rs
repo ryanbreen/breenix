@@ -167,10 +167,8 @@ unsafe fn observe_in(a: &mut Audit, op: u32, arg: *mut u8, len: usize) {
             } else {
                 a.mark.image += n;
             }
-            // Geometry buffers are not pixel uploads, but still reconcile their byte counters.
-            if r.kind == abi::kind::BUFFER {
-                return;
-            }
+            // Buffer bytes (crossing tables included) are content-checked like pixels: CPU
+            // results encoded as geometry are as much a CPU render as an uploaded image.
             let mut bytes = Vec::with_capacity(n as usize);
             for y in 0..ch {
                 bytes.extend_from_slice(core::slice::from_raw_parts(
@@ -323,6 +321,39 @@ mod tests {
         let before = a.mark;
         upload(&mut a, FONT, abi::purpose::FIXTURE, FONT.len() as u32);
         assert_eq!(a.refusal(before, 0, FONT.len() as u64), None);
+    }
+    #[test]
+    fn buffer_uploads_are_content_checked() {
+        let mut a = audit();
+        let mut r = abi::ResourceCreate {
+            handle: 2,
+            kind: abi::kind::BUFFER,
+            size: 64,
+            ..abi::ResourceCreate::ZERO
+        };
+        let crossings = |a: &mut Audit, bytes: &[u8]| {
+            let mut u = abi::Upload {
+                resource: 2,
+                width: bytes.len() as u32,
+                height: 1,
+                pixels: bytes.as_ptr() as u64,
+                pixels_len: bytes.len() as u64,
+                stride: bytes.len() as u32,
+                source: abi::upload_source::R8,
+                purpose: abi::purpose::FIXTURE,
+                ..abi::Upload::ZERO
+            };
+            unsafe { observe_in(a, abi::op::UPLOAD, &mut u as *mut _ as *mut u8, core::mem::size_of_val(&u)) }
+        };
+        unsafe { observe_in(&mut a, abi::op::RESOURCE_CREATE, &mut r as *mut _ as *mut u8, core::mem::size_of_val(&r)) };
+        // Words a CPU computed (here, per-pixel coverage spans) are not a declared table.
+        let computed = [0u8, 0, 0, 0, 0, 0, 128, 63, 1, 0, 0, 0];
+        let before = a.mark;
+        crossings(&mut a, &computed);
+        assert_eq!(a.refusal(before, 0, computed.len() as u64), Some("passing-oracle"));
+        let before = a.mark;
+        crossings(&mut a, FONT);
+        assert_eq!(a.refusal(before, 0, FONT.len() as u64), None, "a declared static table may fill a buffer");
     }
     #[test]
     fn once_per_context_table_upload_allows_later_runs_without_uploads() {
