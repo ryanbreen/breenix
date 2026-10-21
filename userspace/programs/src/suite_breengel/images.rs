@@ -15,7 +15,6 @@ fn picture_case(run: impl FnOnce() -> CaseResult) -> CaseResult {
     }
 }
 fn image_check(name: &str) -> CaseResult {
-    if name.starts_with("png_encode_") {return encoder_check(name);}
     picture_case(|| {
         let run = checks::CHECKS.iter().find(|(id, _)| *id == name)
             .map(|(_, run)| *run).ok_or_else(|| format!("unknown image check {name}"))?;
@@ -693,40 +692,20 @@ fn png_encode_zlib_adler() -> CaseResult {
 fn png_encode_sizes() -> CaseResult {
     image_check("png_encode_sizes")
 }
-fn png_encode_limits() -> CaseResult { image_check("png_encode_limits") }
-
-fn encoder_check(name:&str)->CaseResult {
-    let path=format!("/tmp/breengel-encoder-{}",std::process::id());
-    let program=b"/usr/local/test/bin/image-encode-check\0";
-    let name_z=format!("{name}\0");let path_z=format!("{path}\0");
-    let pid=libbreenix::suite::spawn(&[],libbreenix::suite::Run::Exec(program,&[program,name_z.as_bytes(),path_z.as_bytes()]))
-        .map_err(|e|format!("encoder helper spawn: {e:?}"))?;
-    let mut status=0;
-    process::waitpid(pid.raw() as i32,&mut status,0).map_err(|e|format!("encoder helper wait: {e:?}"))?;
-    let data=std::fs::read(&path).map_err(|e|format!("encoder helper result (status {status}): {e}"))?;
-    let _=std::fs::remove_file(path);
-    let mut at=0;
-    fn number(data:&[u8],at:&mut usize)->Result<usize,String> {
-        let b=data.get(*at..*at+8).ok_or("truncated encoder result")?;*at+=8;
-        usize::try_from(u64::from_le_bytes(b.try_into().unwrap())).map_err(|e|e.to_string())
-    }
-    fn bytes<'a>(data:&'a [u8],at:&mut usize)->Result<&'a [u8],String> {
-        let n=number(data,at)?;let end=at.checked_add(n).ok_or("encoder result overflow")?;
-        let b=data.get(*at..end).ok_or("truncated encoder result")?;*at=end;Ok(b)
-    }
-    let error=String::from_utf8(bytes(&data,&mut at)?.to_vec()).map_err(|e|e.to_string())?;
-    let n=number(&data,&mut at)?;let mut images=Vec::new();
-    for _ in 0..n {
-        let label=String::from_utf8(bytes(&data,&mut at)?.to_vec()).map_err(|e|e.to_string())?;
-        let mut image=||->Result<libimg::png::Image,String> {
-            let width=number(&data,&mut at)?;let height=number(&data,&mut at)?;
-            let pixels=bytes(&data,&mut at)?.to_vec();
-            if width.checked_mul(height).and_then(|n|n.checked_mul(4))!=Some(pixels.len()) {return Err("bad encoder picture extent".into());}
-            Ok(libimg::png::Image {width:width.try_into().map_err(|_|"image width")?,height:height.try_into().map_err(|_|"image height")?,pixels})
+fn png_encode_limits() -> CaseResult {
+    image_check("png_encode_limits")?;
+    for (w, h) in [(16385, 1), (1, 16385), (4097, 4097)] {
+        let image = libimg::png::Image {
+            width: w,
+            height: h,
+            pixels: Vec::new(),
         };
-        images.push(checks::JudgedImage {label,actual:image()?,expected:image()?});
+        let before = ALLOC_CALLS.load(Relaxed);
+        let result = libimg_encode::encode(&image);
+        let allocations = ALLOC_CALLS.load(Relaxed) - before;
+        if result != Err(libimg::png::PngError::TooLarge) || allocations != 0 {
+            return at("7,13",format!("oversized encode {w}x{h}: result {:?}, {allocations} allocations before refusal",result.map(|b|b.len())));
+        }
     }
-    ensure(at==data.len(),"13","trailing encoder result bytes")?;
-    handoff_images(images)?;
-    ensure(status==0 && error.is_empty(),"7,13",format!("encoder check {name}: status {status}: {error}"))
+    Ok(())
 }

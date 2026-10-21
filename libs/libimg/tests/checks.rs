@@ -1017,7 +1017,6 @@ pub fn png_decode_truncated() -> Check {
 pub fn png_decode_signature() -> Check {
     eq(png::decode(b"not a PNG"), Err(PE::BadSignature))
 }
-#[cfg(any(test, feature="encode-checks"))]
 mod encoder {
 use super::*;
 fn image(w: u32, h: u32) -> Image {
@@ -1155,7 +1154,6 @@ pub fn png_encode_limits() -> Check {
 }
 
 }
-#[cfg(any(test, feature="encode-checks"))]
 use encoder::*;
 
 pub const CHECKS: &[(&str, fn() -> Check)] = &[
@@ -1215,19 +1213,12 @@ pub const CHECKS: &[(&str, fn() -> Check)] = &[
     ("png_decode_bomb", png_decode_bomb),
     ("png_decode_truncated", png_decode_truncated),
     ("png_decode_signature", png_decode_signature),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_decodes", png_encode_decodes),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_stable", png_encode_stable),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_format", png_encode_format),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_chunk_crc", png_encode_chunk_crc),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_zlib_adler", png_encode_zlib_adler),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_sizes", png_encode_sizes),
-    #[cfg(any(test, feature="encode-checks"))]
     ("png_encode_limits", png_encode_limits),
 ];
 

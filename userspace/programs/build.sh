@@ -232,16 +232,6 @@ if ! (
     exit 1
 fi
 
-# The PNG encoder is built in a separate package with no graphics dependency.
-(
-    cd "$PROJECT_ROOT/userspace/image-encode"
-    unset CARGO_ENCODED_RUSTFLAGS
-    export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
-    export RUSTFLAGS="$STD_RUSTFLAGS"
-    cargo build --release --target "$PROJECT_ROOT/${ARCH}-breenix.json" -Z build-std=std,panic_abort -Z build-std-features=compiler-builtins-mem
-)
-cp "$PROJECT_ROOT/userspace/image-encode/target/$TARGET_DIR/release/image-encode-check" "$TESTS_DIR/image-encode-check.elf"
-
 echo "  Userspace build successful"
 # And refuse a C symbol that libc.a and another input of the std link both define:
 # the std programs would link whichever came first.
@@ -531,7 +521,7 @@ if missing:
 ' "$SCRIPT_DIR/Cargo.toml" "${STD_BINARIES[@]}"
 
 # Check producer names before copying outputs into the shared ELF directory.
-SEEN_NAMES="$UTILITY_NAMES libc-busybox image-encode-check "
+SEEN_NAMES="$UTILITY_NAMES libc-busybox "
 while read -r category _; do
     case "$category" in ''|'#'*) continue ;; esac
     SEEN_NAMES+="libc-${category}_test "
@@ -557,7 +547,7 @@ FAILED=0
 mkdir -p "$TESTS_DIR"
 
 # Remove stale ELFs absent from the current producer list before image packing.
-INSTALL_NAMES="$UTILITY_NAMES image-encode-check "
+INSTALL_NAMES="$UTILITY_NAMES"
 for entry in "${STD_BINARIES[@]}"; do
     INSTALL_NAMES+="${entry##*:} "
 done
