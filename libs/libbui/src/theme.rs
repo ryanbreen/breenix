@@ -1,4 +1,4 @@
-use libgfx_ref::color::Color;
+use libgfx::color::Color;
 
 /// Visual theme for widget rendering.
 #[derive(Clone, Copy, Debug)]

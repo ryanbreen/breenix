@@ -1,7 +1,7 @@
 //! Host checks of libgfx's TrueType text against docs/gui/breengel.md sections 7 and 8.3.
 //! The guest suite (/sbin/suite-breengel) gives the verdict.
 
-use libfont::{CachedFont, Font};
+use libgfx_ref::ttf_font::{CachedFont, Font};
 use libgfx_ref::color::Color;
 use libgfx_ref::framebuf::{Format, FrameBuf};
 use libgfx_ref::ttf_font;

@@ -44,6 +44,13 @@ pub struct Texture {
 }
 
 impl Texture {
+    /// Upload only decoder-owned pixels through BGL's sanctioned image site.
+    pub fn from_decoded(image: libimg::Decoded) -> Result<Texture, SurfaceError> {
+        let texture=device::with(|d| bgl::Texture::from_decoded(&d.context, image)).map_err(SurfaceError::Device)?;
+        let (handle,width,height)=texture.into_resource();
+        Ok(Texture {handle,width:width as usize,height:height as usize,owner:device::pid(),format:Format::BGRA_PREMULTIPLIED})
+    }
+
     /// A `width × height` texture holding `table`, whose rows are `width × layout.bpp` bytes
     /// in `layout` (straight or premultiplied as the blit that samples it expects).
     pub fn from_fixture(table: DeclaredFixture, width: usize, height: usize, layout: Format) -> Result<Texture, SurfaceError> {

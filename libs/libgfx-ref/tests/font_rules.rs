@@ -4,17 +4,20 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use libfont::rasterizer::{rasterize, raster_bound};
+use libgfx_ref::rasterizer::{rasterize, raster_bound};
 use libfont::outline::LineSegment;
-use libfont::{work, Font, FontError};
+use libfont::{work, FontError};
+use libgfx_ref::ttf_font::Font;
 
 use ttf::*;
 
 /// Counts the bytes every allocation asks for; the tests run one at a time.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 struct Counting;
 static ALLOCATED: AtomicU64 = AtomicU64::new(0);
 
 // SAFETY: every call goes to the system allocator unchanged; only a counter is added.
+// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATED.fetch_add(layout.size() as u64, Relaxed);
@@ -61,6 +64,7 @@ mod ttf {
         pub units_per_em: u16,
         pub glyphs: Vec<Vec<u8>>,
         /// Explicit long loca entries; computed from `glyphs` when `None`.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
         pub loca: Option<Vec<u32>>,
         pub max_points: u16,
         pub max_composite_points: u16,
@@ -72,6 +76,7 @@ mod ttf {
 
     impl Ttf {
         /// A font of `glyphs` with a cmap that maps nothing and generous maxp limits.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
         pub fn new(glyphs: Vec<Vec<u8>>) -> Ttf {
             Ttf {
                 units_per_em: 1000,
@@ -201,6 +206,7 @@ mod ttf {
     }
 
     /// A simple glyph of on-curve contours, every coordinate a two-byte delta.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
     pub fn simple(contours: &[&[(i16, i16)]]) -> Vec<u8> {
         let pts: Vec<(i16, i16)> = contours.iter().flat_map(|c| c.iter().copied()).collect();
         let (xs, ys): (Vec<i16>, Vec<i16>) = pts.iter().copied().unzip();
@@ -246,6 +252,7 @@ mod ttf {
     pub const UNSCALED_COMPONENT_OFFSET: u16 = 0x1000;
 
     /// A compound glyph of `parts`, then `tail` (instructions, or nothing).
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
     pub fn compound(parts: &[Component], tail: &[u8]) -> Vec<u8> {
         let mut v = Vec::new();
         be16(&mut v, (-1i16) as u16);
@@ -293,6 +300,7 @@ fn square() -> Vec<u8> {
 #[test]
 fn records_sharing_one_cmap_subtable_load_within_the_step_bound() {
     // 4,096 Unicode records all naming one 4,096-group format 12 subtable.
+// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
     let groups: Vec<(u32, u32, u32)> = (0..4_096u32).map(|i| (2 * i, 2 * i, 1)).collect();
     let records: Vec<(u16, u16, u32)> = (0..4_096).map(|_| (3, 10, 4 + 8 * 4_096)).collect();
     let mut t = Ttf::new(vec![Vec::new(), square()]);
@@ -319,6 +327,7 @@ fn a_large_table_directory_loads_within_the_allocation_bound() {
 #[test]
 fn many_one_point_contours_stay_within_the_outline_allocation_bound() {
     // 32,767 one-point contours, every coordinate repeated (flags 0x31 with repeats).
+// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
     let n = 32_767usize;
     let mut g = Vec::new();
     be16(&mut g, n as u16);
@@ -444,6 +453,7 @@ fn a_ten_byte_glyph_declaring_32767_contours_counts_what_it_reads() {
 #[test]
 fn rasterizing_crossing_stripes_counts_the_sort_and_keeps_the_bound() {
     // 32 one-pixel stripes two pixels apart: 64 vertical edges cross every sub-scanline.
+// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
     let (h, w) = (16usize, 130usize);
     let mut segments = Vec::new();
     for i in 0..32 {

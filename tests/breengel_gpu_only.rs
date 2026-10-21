@@ -13,7 +13,7 @@ impl Uploads {
     fn function(&mut self,name:&str,signature:&syn::Signature,body:&syn::Block){
         let (old,old_excepted)=(self.permitted,self.excepted);
         let typed=|wanted:&str|signature.inputs.iter().any(|arg|matches!(arg,syn::FnArg::Typed(t) if matches!(&*t.ty,syn::Type::Path(p) if p.path.segments.last().is_some_and(|s|s.ident==wanted))));
-        self.permitted=self.bgl && ((self.texture && name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")));
+        self.permitted=self.bgl && ((self.texture && name=="from_decoded" && typed("Decoded")) || (name=="fixture_upload" && typed("DeclaredFixture")) || (name=="geometry_upload" && typed("CrossingTable")));
         self.excepted=self.exception==Some(name);
         visit::visit_block(self,body);self.permitted=old;self.excepted=old_excepted;
     }
@@ -21,6 +21,7 @@ impl Uploads {
         if !matches!(name,"upload"|"upload_raw") || self.permitted {return;}
         if self.excepted && self.used==0 {self.used=1;return;}
         self.violations.push(format!("{name}: outside Texture::from_decoded(Decoded), fixture_upload(DeclaredFixture) or a listed exception"));
+
     }
 }
 impl<'ast> Visit<'ast> for Uploads {
@@ -85,22 +86,24 @@ fn planted_raw_pixel_library_and_renamed_upload_are_refused(){
 }
 /// Production reference dependencies and their local crate names. Installed programs
 /// share a manifest with the suites, so their source inspection uses these names too.
-fn reference_names(manifest: &str) -> Vec<String> {
+fn reference_names(manifest: &str) -> Vec<String> { package_names(manifest, "libgfx-ref") }
+/// The local crate names under which a manifest's production dependencies name `wanted`.
+fn package_names(manifest: &str, wanted: &str) -> Vec<String> {
     let doc: toml::Value = manifest.parse().expect("valid Cargo manifest");
-    fn collect(doc: &toml::Value, out: &mut Vec<String>) {
+    fn collect(doc: &toml::Value, wanted: &str, out: &mut Vec<String>) {
         for kind in ["dependencies", "build-dependencies"] {
             if let Some(deps) = doc.get(kind).and_then(toml::Value::as_table) {
                 for (key, value) in deps {
                     let package = value.get("package").and_then(toml::Value::as_str).unwrap_or(key);
-                    if package.replace('_', "-") == "libgfx-ref" { out.push(key.replace('-', "_")); }
+                    if package.replace('_', "-") == wanted { out.push(key.replace('-', "_")); }
                 }
             }
         }
     }
     let mut out = Vec::new();
-    collect(&doc, &mut out);
+    collect(&doc, wanted, &mut out);
     if let Some(targets) = doc.get("target").and_then(toml::Value::as_table) {
-        for target in targets.values() { collect(target, &mut out); }
+        for target in targets.values() { collect(target, wanted, &mut out); }
     }
     out
 }
@@ -170,4 +173,97 @@ fn installed_program_cannot_hide_reference_behind_a_package_alias() {
     assert!(reference_uses("fn main() { cpu::shapes::fill_rect(); }", &names));
     assert!(reference_uses("use cpu as raster; fn main() { raster::shapes::fill_rect(); }", &names));
     assert!(!reference_uses("fn main() { libgfx::shapes::fill_rect(); }", &names));
+}
+
+#[test]
+fn crossing_geometry_upload_is_narrowly_typed_and_bgl_owned() {
+    assert!(refuse("fn geometry_upload(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", true).is_empty());
+    assert!(!refuse("fn geometry_upload(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", false).is_empty());
+    assert!(!refuse("fn geometry_upload(pixels: &[u8]) { gpu::upload(pixels); }", true).is_empty());
+    assert!(!refuse("fn other(table: libfont::crossings::CrossingTable) { gpu::upload(table.bytes()); }", true).is_empty());
+}
+
+#[test]
+fn cpu_glyph_rasterization_is_reference_only() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!root.join("libs/libfont/src/rasterizer.rs").exists(), "gpu-text: CPU rasterizer remains in libfont");
+    let font = fs::read_to_string(root.join("libs/libfont/src/lib.rs")).unwrap();
+    assert!(!font.contains("fn rasterize_glyph"), "gpu-text: CPU font raster entry point remains");
+    let watcher = fs::read_to_string(root.join("libs/breengel/src/font.rs")).unwrap();
+    assert!(watcher.contains("libgfx::ttf_font::{CachedFont, Font}"), "gpu-text: FontWatcher needs the GPU cache");
+}
+
+fn encoder_reachable(manifest: &Path, visited: &mut HashSet<PathBuf>) -> bool {
+    let manifest = manifest.canonicalize().expect("local crate manifest");
+    if !visited.insert(manifest.clone()) { return false; }
+    let text = fs::read_to_string(&manifest).unwrap();
+    let doc: toml::Value = text.parse().unwrap();
+    if doc["package"]["name"].as_str() == Some("libimg-encode") { return true; }
+    fn dependencies(doc: &toml::Value, base: &Path, visited: &mut HashSet<PathBuf>) -> bool {
+        for kind in ["dependencies", "build-dependencies"] {
+            if let Some(deps) = doc.get(kind).and_then(toml::Value::as_table) {
+                for dep in deps.values() {
+                    if let Some(path) = dep.get("path").and_then(toml::Value::as_str) {
+                        if encoder_reachable(&base.join(path).join("Cargo.toml"), visited) { return true; }
+                    }
+                }
+            }
+        }
+        false
+    }
+    let base = manifest.parent().unwrap();
+    dependencies(&doc, base, visited) || doc.get("target").and_then(toml::Value::as_table)
+        .is_some_and(|targets| targets.values().any(|target| dependencies(target, base, visited)))
+}
+/// The path dependencies of a manifest other than those naming `except`, by manifest path.
+fn path_dependencies_except(manifest: &Path, except: &str) -> Vec<PathBuf> {
+    let doc: toml::Value = fs::read_to_string(manifest).unwrap().parse().unwrap();
+    let base = manifest.parent().unwrap();
+    let mut out = Vec::new();
+    let mut collect = |doc: &toml::Value| for kind in ["dependencies", "build-dependencies"] {
+        for (key, dep) in doc.get(kind).and_then(toml::Value::as_table).into_iter().flatten() {
+            let package = dep.get("package").and_then(toml::Value::as_str).unwrap_or(key);
+            if package.replace('_', "-") == except { continue; }
+            if let Some(path) = dep.get("path").and_then(toml::Value::as_str) { out.push(base.join(path).join("Cargo.toml")); }
+        }
+    };
+    collect(&doc);
+    for target in doc.get("target").and_then(toml::Value::as_table).into_iter().flat_map(|t| t.values()) { collect(target); }
+    out
+}
+
+#[test]
+fn png_encoder_is_unreachable_from_upload_capable_crates() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let decoder = fs::read_to_string(root.join("libs/libimg/src/png/mod.rs")).unwrap();
+    assert!(!decoder.contains("fn encode("), "gpu-text: encoder remains in the upload decoder crate");
+    for krate in ["kernel", "libs/bgl", "libs/libgfx", "libs/libbui", "libs/libicon", "libs/breengel", "libs/libbreenix"] {
+        assert!(!encoder_reachable(&root.join(krate).join("Cargo.toml"), &mut HashSet::new()),
+            "{krate}: PNG encoder reachable through production dependencies");
+    }
+    // Ruling B26: the suites share userspace/programs' manifest with the installed programs, so
+    // its direct encoder dependency is the suites' expectation allowance, as libgfx-ref's is.
+    // No other dependency may reach the encoder, and no source outside a suite may name it.
+    let programs = root.join("userspace/programs/Cargo.toml");
+    for dependency in path_dependencies_except(&programs, "libimg-encode") {
+        assert!(!encoder_reachable(&dependency, &mut HashSet::new()),
+            "userspace/programs: PNG encoder reachable through {}", dependency.display());
+    }
+    let names = package_names(&fs::read_to_string(&programs).unwrap(), "libimg-encode");
+    let mut paths = Vec::new(); files(&root.join("userspace/programs/src"), &mut paths);
+    for path in paths {
+        let relative = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+        if relative.contains("/suite_") { continue; }
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(!source.contains("libimg_encode") && !reference_uses(&source, &names),
+            "{relative}: names the PNG encoder outside a suite");
+    }
+}
+
+#[test]
+fn installed_program_cannot_hide_the_encoder_behind_a_package_alias() {
+    let names = package_names("[dependencies]\nenc = { package = \"libimg-encode\", path = \"../e\" }\n", "libimg-encode");
+    assert!(reference_uses("fn main() { enc::encode(&i); }", &names));
+    assert!(reference_uses("use enc as quiet; fn main() { quiet::encode(&i); }", &names));
+    assert!(!reference_uses("fn main() { libimg::png::decode(&b); }", &names));
 }

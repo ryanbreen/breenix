@@ -19,6 +19,8 @@ libgfx = { path = "../../libs/libgfx" }
 libgfx-ref = { path = "../../libs/libgfx-ref" }
 libbui = { path = "../../libs/libbui" }
 libimg = { path = "../../libs/libimg" }
+# The PNG encoder, for the png-encode cases' expectation code only (ruling B26).
+libimg-encode = { path = "../../libs/libimg-encode" }
 breenish-js = { path = "../../libs/breenish-js" }
 libicon = { path = "../../libs/libicon" }
 

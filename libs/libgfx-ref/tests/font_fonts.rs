@@ -3,8 +3,9 @@
 //! development loop.
 
 use libfont::outline::LineSegment;
-use libfont::rasterizer::{rasterize, raster_bound};
-use libfont::{work, CachedFont, Font, FontError};
+use libgfx_ref::rasterizer::{rasterize, raster_bound};
+use libfont::{work, FontError};
+use libgfx_ref::ttf_font::{CachedFont, Font};
 
 static MONO: &[u8] = include_bytes!("../../../fonts/DejaVuSansMono.ttf");
 static SANS: &[u8] = include_bytes!("../../../fonts/DejaVuSans.ttf");

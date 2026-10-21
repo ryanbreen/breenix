@@ -167,6 +167,11 @@ impl Context {
     pub fn encoded(&self) -> &[u32] {
         &self.words
     }
+    /// Append commands this context encoded earlier (taken from `encoded`), to send them
+    /// in the next `submit`.
+    pub fn append(&mut self, words: &[u32]) {
+        self.words.extend_from_slice(words);
+    }
 }
 impl Drop for Context {
     fn drop(&mut self) {
@@ -177,6 +182,8 @@ impl Drop for Context {
 pub struct Texture {
     handle: u64,
     owner: u64,
+    width: u32,
+    height: u32,
 }
 impl Texture {
     /// The Image upload boundary in gpu.md section 2.4: the image library constructs Decoded.
@@ -185,7 +192,7 @@ impl Texture {
             libbreenix::error::Error::Os(errno) => -(errno as i64),
         })?.raw();
         let handle = gpu::texture_create(gpu::abi::format::B8G8R8A8, image.width(), image.height())?;
-        let texture = Self { handle, owner };
+        let texture = Self { handle, owner, width: image.width(), height: image.height() };
         let (result, _) = gpu::upload(context.handle, handle,
             [0, 0, image.width(), image.height()], image.pixels(), image.width() * 4,
             gpu::abi::upload_source::B8G8R8A8, gpu::abi::purpose::IMAGE);
@@ -193,6 +200,9 @@ impl Texture {
         Ok(texture)
     }
     pub fn handle(&self) -> u64 { self.handle }
+    pub fn into_resource(self) -> (u64,u32,u32) {
+        let out=(self.handle,self.width,self.height);core::mem::forget(self);out
+    }
 }
 impl Drop for Texture {
     fn drop(&mut self) {
@@ -306,5 +316,18 @@ mod tests {
         c.draw(pipeline::OVER,0,1,0,0,&instances);
         assert_eq!(c.words[9],65536);
         assert_eq!(c.words.len(),c.words[1] as usize);
+    }
+}
+
+/// Upload generated crossing geometry into a Buffer, never CPU pixels (ruling B21).
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
+/// The table's private representation can only be produced by libfont's crossing builder.
+pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Context, buffer: u64) -> Result<(), i64> {
+    let bytes = table.bytes();
+    // A buffer upload is one row of bytes: x the first byte, width the byte count, height 1, R8 source.
+    let len = u32::try_from(bytes.len()).map_err(|_| -gpu::abi::errno::EINVAL)?;
+    match gpu::upload(context.handle(), buffer, [0, 0, len, 1], bytes, len, gpu::abi::upload_source::R8,
+        gpu::abi::purpose::FIXTURE).0 {
+        0 => Ok(()), e => Err(e),
     }
 }

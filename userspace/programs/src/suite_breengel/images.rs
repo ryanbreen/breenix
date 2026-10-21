@@ -633,43 +633,29 @@ fn png_decode_signature() -> CaseResult {
 fn png_decode_independent_fixtures() -> CaseResult {
     image_check("png_decode_independent_fixtures")
 }
-fn blit_decoded(image: &mut libimg::png::Image) -> Result<libimg::png::Image, String> {
-    use libgfx_ref::framebuf::Format;
-    // SAFETY: the caller checked this decoded fixture is exactly 1x1/4 bytes;
-    // its vector remains exclusively borrowed until this raw surface is dropped.
-    let source = unsafe {
-        FrameBuf::from_raw_format(
-            image.pixels.as_mut_ptr(),
-            1,
-            1,
-            4,
-            Format::BGRA_PREMULTIPLIED,
-        )
-    }
-    .map_err(|e| format!("PNG blit source: {e:?}"))?;
-    let mut dest = FrameBuf::new_filled(3, 1, Format::BGRX, Color::rgb(200, 200, 200))
-        .map_err(|e| format!("PNG blit destination: {e:?}"))?;
-    libgfx_ref::blit::blit_over(&mut dest, &source, 1, 0);
-    // SAFETY: this owned 3x1 BGRX surface contains exactly twelve bytes;
-    // blit has finished and no mutable access overlaps the snapshot.
-    let pixels = unsafe { std::slice::from_raw_parts(dest.raw_ptr(), 12) }.to_vec();
-    Ok(libimg::png::Image {
-        width: 3,
-        height: 1,
-        pixels,
-    })
+fn blit_decoded(bytes: &[u8]) -> Result<libimg::png::Image, String> {
+    use libgfx::{blit::{Texture,blit_over},surface::{Surface,Format}};
+    let decoded=libimg::Decoded::png(bytes).map_err(|e|format!("PNG decoder texture: {e:?}"))?;
+    let source=Texture::from_decoded(decoded).map_err(|e|format!("PNG texture: {e}"))?;
+    let mut dest=Surface::new(3,1,Format::BGRX).map_err(|e|format!("PNG target: {e}"))?;
+    dest.clear(Color::rgb(200,200,200));
+    blit_over(&mut dest,&source,1,0);
+    if let Some(e)=dest.error(){return Err(format!("PNG GPU draw: {}",outcome(e)));}
+    let mut pixels=vec![0;12];
+    dest.read(&mut pixels,12).map_err(|e|format!("PNG readback: {}",outcome(e)))?;
+    Ok(libimg::png::Image {width:3,height:1,pixels})
 }
 fn png_decode_blit() -> CaseResult { picture_case(png_decode_blit_checks) }
 fn png_decode_blit_checks() -> CaseResult {
     let bytes = checks::pngfile(&checks::ihdr(1, 1, 8, 6, 0), &[], &[0, 128, 0, 0, 128]);
-    let mut image = libimg::png::decode(&bytes).map_err(|e| format!("PNG blend fixture: {e:?}"))?;
+    let image = libimg::png::decode(&bytes).map_err(|e| format!("PNG blend fixture: {e:?}"))?;
     if (image.width, image.height) != (1, 1) || image.pixels != [0, 0, 64, 128] {
         return at(
             "2,13",
             "decoded red-128 at alpha-128 must be premultiplied BGRA [0,0,64,128]",
         );
     }
-    let actual = blit_decoded(&mut image)?;
+    let actual = blit_decoded(&bytes)?;
     // §2 literal: source channel 64 at alpha 128 over channel 200 gives 164;
     // the two zero source channels give 100, and the opaque background stays opaque.
     let expected = [200, 200, 200, 255, 100, 100, 164, 255, 200, 200, 200, 255];
@@ -715,7 +701,7 @@ fn png_encode_limits() -> CaseResult {
             pixels: Vec::new(),
         };
         let before = ALLOC_CALLS.load(Relaxed);
-        let result = libimg::png::encode(&image);
+        let result = libimg_encode::encode(&image);
         let allocations = ALLOC_CALLS.load(Relaxed) - before;
         if result != Err(libimg::png::PngError::TooLarge) || allocations != 0 {
             return at("7,13",format!("oversized encode {w}x{h}: result {:?}, {allocations} allocations before refusal",result.map(|b|b.len())));

@@ -2,6 +2,19 @@
 //! 14 to 16).
 
 use crate::*;
+#[path="widget_pixels/scrollbar.rs"] mod scrollbar_pixels;
+
+#[path="widget_pixels/tabs.rs"] mod tab_pixels;
+#[path="widget_pixels/label.rs"] mod label_pixels;
+#[path="icon_pixels/particles_at_fractional_negative_edges_remain_visible_inside_the_box.rs"] mod pixel_particles_bounded_particles;
+#[path="icon_pixels/search_shimmer_restarts_on_each_hover.rs"] mod pixel_interrupt_search;
+#[path="icon_pixels/hover_and_click_effects_settle_with_pointer_still_inside.rs"] mod pixel_settles_hover;
+#[path="icon_pixels/hover_reversal_is_continuous_and_all_effects_settle_after_exit.rs"] mod pixel_reversal_hover;
+#[path="icon_pixels/icon_pixels_are_identical_for_every_time_partition.rs"] mod pixel_step_invariance_icon;
+
+use crate::raster::Drawn;
+use libgfx_ref::ttf_font;
+use libgfx_ref::ttf_font::{Font,CachedFont};
 use breengel::font::{FontChange, FontWatchError, FontWatcher};
 use libbui::focus::FocusChain;
 use libbui::widget::{file_picker::FilePickerResult, label::Label, text_field::TextField};
@@ -525,13 +538,11 @@ fn text_fontwatch_idle() -> CaseResult {
         }).map_err(|e| format!("idle dispatch: {e:?}")).cite("9.3")?;
         ensure(input_events == 0 && font_events == usize::from(changed), "9.3",
             format!("idle epoch {ns}: font events={font_events}, input events={input_events}"))?;
-        let font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
-        let surface = win.surface().map_err(|e| format!("idle surface: {e:?}")).cite("9.3")?;
-        surface.clear(libgfx::color::Color::rgb(PAPER.r, PAPER.g, PAPER.b));
-        // gpu-text owns the GPU TrueType draw and this case's remaining migration.
-        // Keep the first-commit capture, independent pixel oracle and clock checks below.
-        Err::<(), _>("gpu-text: text/fontwatch-idle needs GPU TrueType drawing on Window::surface")
-            .cite("9.3")?;
+        let mut font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
+        let size = win.mono_size();
+        let fb = win.surface().map_err(|e| format!("idle surface: {e:?}")).cite("9.3")?;
+        fb.clear(PAPER);
+        libgfx::ttf_font::draw_text(fb, &mut font, "Wi é A", 8, 40, size, Color::WHITE);
         win.put_mono_font(Some(font));
         let commit = win.commit(&[libbreenix::window::abi::Rect::new(0, 0, 200, 70)])
             .map_err(|e| format!("idle commit: {e:?}")).cite("9.3")?;
@@ -539,7 +550,7 @@ fn text_fontwatch_idle() -> CaseResult {
         let capture = libbreenix::window::capture(win.id(), &mut pixels, None)
             .map_err(|e| format!("capture idle commit: {e:?}")).cite("9.3")?;
         ensure(capture.commit_id == commit.commit_id, "9.3", "capture is not the first idle epoch commit")?;
-        let got = Guarded::bgrx(200, 70);
+        let got = crate::Guarded::bgrx(200, 70);
         // CAPTURE supplied exactly the checked frame's extent.
         unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), got.base, pixels.len()); }
         f.assert_frame(&got, expected_font, 16.0)?;
@@ -673,7 +684,7 @@ fn same_as(
 // gpu-text: R3 centers the certified DejaVu Sans 16 px label using 26.6 advances.
 fn widgets_button_draw() -> CaseResult {
     let theme = Theme::dark();
-    let mut g = Guarded::bgrx(100, 40);
+    let mut g = ui_frame(100, 40);
     g.reset(PAPER);
     Button::new(Rect::new(10, 8, 60, 20), b"OK").draw(&mut g.fb(), &theme);
     snapshot(&g)?;
@@ -780,7 +791,7 @@ fn widgets_button_disabled() -> CaseResult {
         "14.2",
         "disabled button emitted an event",
     )?;
-    let mut g = Guarded::bgrx(100, 40);
+    let mut g = ui_frame(100, 40);
     g.reset(PAPER);
     b.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
@@ -808,7 +819,7 @@ fn widgets_checkbox_toggle() -> CaseResult {
             c.checked
         ),
     )?;
-    let mut g = Guarded::bgrx(140, 40);
+    let mut g = ui_frame(140, 40);
     g.reset(PAPER);
     c.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
@@ -947,24 +958,27 @@ fn widgets_slider_keys() -> CaseResult {
 
 // gpu-text: R3 derives ellipsis prefixes from 26.6 DejaVu advances; clipping and empty areas remain exact.
 fn widgets_label_clip() -> CaseResult {
+    let scale=ui_scale();
+    label_pixels::run()?;
+
     let theme = Theme::dark();
-    let mut g = Guarded::bgrx(80, 40);
+    let mut g = ui_frame(80, 40);
     g.reset(PAPER);
     Label::new(Rect::new(10, 8, 35, 16), b"ABCDEFGHIJKLM").draw(&mut g.fb(), &theme);
     snapshot(&g)?;
     same_as(&g, PAPER, "35-pixel clipped label", "14.3", |fb| {
         let mut prefix=Vec::new();
         for c in b"ABCDEFGHIJKLM" {let mut next=prefix.clone();next.push(*c);next.extend_from_slice(b"...");if sans_width(&next)>35 {break;}prefix.push(*c);}
-        prefix.extend_from_slice(b"...");fb.push_clip(libgfx_ref::framebuf::Rect::new(10,8,35,16));
+        prefix.extend_from_slice(b"...");fb.push_clip(ui_rect(10,8,35,16));
         sans_draw(fb,&prefix,10,8,theme.text_primary);fb.pop_clip();
     })?;
-    let mut narrow = Guarded::bgrx(80, 40);
+    let mut narrow = ui_frame(80, 40);
     narrow.reset(PAPER);
     Label::new(Rect::new(10, 8, 12, 16), b"ABCDEFGHIJKLM").draw(&mut narrow.fb(), &theme);
     snapshot(&narrow)?;
-    for y in 0..40 {
-        for x in 0..80 {
-            if !in_rect(x as i64, y as i64, 10, 8, 12, 16) {
+    for y in 0..40*scale {
+        for x in 0..80*scale {
+            if !in_rect(x as i64, y as i64, 10*scale as i64, 8*scale as i64, 12*scale as i64, 16*scale as i64) {
                 ensure(
                     narrow.color(x, y) == PAPER,
                     "14.3",
@@ -980,7 +994,7 @@ fn widgets_label_clip() -> CaseResult {
     )?;
     // R3 uses the certified glyph pixels and clips the final dot at the physical bounds.
     same_as(&narrow, PAPER, "12x16 DejaVu ellipsis", "14.3", |fb| {
-        fb.push_clip(libgfx_ref::framebuf::Rect::new(10,8,12,16));
+        fb.push_clip(ui_rect(10,8,12,16));
         sans_draw(fb,b"...",10,8,theme.text_primary);fb.pop_clip();
     })?;
     narrow.reset(PAPER);
@@ -1022,6 +1036,9 @@ fn widgets_tabbar_select() -> CaseResult {
 }
 
 fn widgets_tabbar_overflow() -> CaseResult {
+    let scale=ui_scale();
+    tab_pixels::run();
+
     let mut tabs = TabBar::new(
         Rect::new(10, 8, 70, 24),
         vec![b"First", b"Second", b"Third", b"Fourth", b"Fifth"], &Theme::dark());
@@ -1051,15 +1068,15 @@ fn widgets_tabbar_overflow() -> CaseResult {
         "14.3",
         "scrolling back did not reach first tab",
     )?;
-    let mut g = Guarded::bgrx(100, 50);
+    let mut g = ui_frame(100, 50);
     g.reset(PAPER);
     tabs.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    ensure(g.color(12, 10) == Theme::dark().widget_bg_active
-        && g.color(12, 30) == Theme::dark().accent, "14.3", "tab fill or selected highlight missing")?;
-    for y in 0..50 {
-        for x in 0..100 {
-            if !in_rect(x as i64, y as i64, 10, 8, 70, 24) {
+    ensure(g.color(12*scale, 10*scale) == Theme::dark().widget_bg_active
+        && g.color(12*scale, 30*scale) == Theme::dark().accent, "14.3", "tab fill or selected highlight missing")?;
+    for y in 0..50*scale {
+        for x in 0..100*scale {
+            if !in_rect(x as i64, y as i64, 10*scale as i64, 8*scale as i64, 70*scale as i64, 24*scale as i64) {
                 ensure(
                     g.color(x, y) == PAPER,
                     "14.3",
@@ -1112,16 +1129,19 @@ fn widgets_scrollbar_wheel() -> CaseResult {
 }
 
 fn widgets_scrollbar_thumb() -> CaseResult {
+    let scale=ui_scale();
+    scrollbar_pixels::run()?;
+
     for (content, view, thumb) in [(1000, 250, 50), (1000, 500, 100), (10_000, 100, 20)] {
         let s = ScrollBar::new(Rect::new(4, 0, 12, 200), content, view);
-        let mut g = Guarded::bgrx(20, 200);
+        let mut g = ui_frame(20, 200);
         g.reset(PAPER);
         s.draw(&mut g.fb(), &Theme::dark());
         snapshot(&g)?;
-        let rows = (0..200)
-            .filter(|&y| g.color(9, y) == Color::rgb(80, 85, 100))
+        let rows = (0..200*scale)
+            .filter(|&y| g.color(9*scale, y) == Color::rgb(80, 85, 100))
             .count();
-        ensure(rows == thumb - 2, "14.3", format!(
+        ensure(rows == (thumb - 2)*scale, "14.3", format!(
             "content {content} with view {view}: the thumb is drawn {rows} rows tall; a {thumb} px thumb draws {} rows", thumb - 2))?;
     }
     Ok(())
@@ -1161,13 +1181,14 @@ fn open_menu() -> (MenuBar, Theme) {
 
 // gpu-text: R3 derives menu label and shortcut widths from certified 26.6 advances.
 fn widgets_menubar_open() -> CaseResult {
+    let scale=ui_scale();
     let (m, theme) = open_menu();
     ensure(
         m.is_open(),
         "14.3",
         "a press and release on the File title left its menu closed",
     )?;
-    let mut g = Guarded::bgrx(330, 140);
+    let mut g = ui_frame(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
@@ -1182,21 +1203,21 @@ fn widgets_menubar_open() -> CaseResult {
         (dx + 2, dy + dh, PAPER, "the pixel below it"),
     ] {
         ensure(
-            g.color(x, y) == want,
+            g.color(x*scale, y*scale) == want,
             "14.3",
             format!(
                 "{what} at ({x},{y}) is {}, the contract gives {}",
-                hex(g.color(x, y)),
+                hex(g.color(x*scale, y*scale)),
                 hex(want)
             ),
         )?;
     }
-    let mut want = Guarded::bgrx(sans_width(b"New") as usize, 16);
+    let mut want = Guarded::bgrx(sans_width(b"New") as usize*scale, 16*scale);
     want.reset(theme.widget_bg);
     sans_draw(&mut want.fb(),b"New",0,0,theme.text_primary);
-    for y in 0..16 {
+    for y in 0..16*scale {
         for x in 0..want.width {
-            let got = g.color(dx + 18 + x, dy + 3 + y);
+            let got = g.color((dx + 18)*scale + x, (dy + 3)*scale + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
@@ -1261,6 +1282,7 @@ fn widgets_menu_keys() -> CaseResult {
 
 // gpu-text: R3 changes disabled label metrics and pixels; disabled activation remains forbidden.
 fn widgets_menu_disabled() -> CaseResult {
+    let scale=ui_scale();
     let (mut m, theme) = open_menu();
     // Save, the disabled second item, is the row at y = 27 + 22 .. 27 + 44.
     let mut got = Vec::new();
@@ -1271,16 +1293,16 @@ fn widgets_menu_disabled() -> CaseResult {
         }
     }
     ensure(got.is_empty(), "14.3", format!("clicking the disabled item reported {got:?}; the contract does not let a disabled item be chosen"))?;
-    let mut g = Guarded::bgrx(330, 140);
+    let mut g = ui_frame(330, 140);
     g.reset(PAPER);
     m.draw(&mut g.fb(), &theme);
     snapshot(&g)?;
-    let mut want = Guarded::bgrx(sans_width(b"Save") as usize, 16);
+    let mut want = Guarded::bgrx(sans_width(b"Save") as usize*scale, 16*scale);
     want.reset(theme.widget_bg);
     sans_draw(&mut want.fb(),b"Save",0,0,theme.text_secondary);
-    for y in 0..16 {
+    for y in 0..16*scale {
         for x in 0..want.width {
-            let got = g.color(28 + x, 27 + 22 + 3 + y);
+            let got = g.color(28*scale + x, (27 + 22 + 3)*scale + y);
             ensure(
                 got == want.color(x, y),
                 "14.3",
@@ -1331,6 +1353,7 @@ fn widgets_layout_stack() -> CaseResult {
 
 // gpu-text: R3 adds certified DejaVu label pixels to the unchanged five-widget focus ring checks.
 fn widgets_focus_ring() -> CaseResult {
+    let scale=ui_scale();
     let rect = Rect::new(20, 20, 100, 24);
     let theme = Theme::dark();
     ensure(
@@ -1343,7 +1366,7 @@ fn widgets_focus_ring() -> CaseResult {
     let mut slider = Slider::new(rect, 0.0, 1.0);
     let mut tabs = TabBar::new(rect, vec![b"One", b"Two"], &Theme::dark());
     let mut field = TextField::new(rect, 30);
-    let mut g = Guarded::bgrx(150, 70);
+    let mut g = ui_frame(150, 70);
     for focused in [false, true] {
         b.set_focused(focused);
         c.set_focused(focused);
@@ -1360,9 +1383,9 @@ fn widgets_focus_ring() -> CaseResult {
                 _ => field.draw(&mut g.fb(), &theme),
             };
     snapshot(&g)?;
-            for y in 18..46 {
-                for x in 18..122 {
-                    if x == 18 || x == 121 || y == 18 || y == 45 {
+            for y in 18*scale..46*scale {
+                for x in 18*scale..122*scale {
+                    if x < 19*scale || x >= 121*scale || y < 19*scale || y >= 45*scale {
                         let want = if focused { theme.focus_ring } else { PAPER };
                         ensure(
                             g.color(x, y) == want,
@@ -1607,6 +1630,7 @@ fn text_entry_maxlen() -> CaseResult {
 }
 // gpu-text: R3 derives visible cursor position from DejaVu Sans advances, preserving Home and clipping checks.
 fn text_entry_scroll_to_cursor() -> CaseResult {
+    let scale=ui_scale();
     let mut f = entry_field(100);
     f.insert_str("abcdefghijklmnopqrstuvwxyz");
     let visible:String=f.text().chars().enumerate().filter_map(|(i,c)| (i>=f.scroll_offset()).then_some(c)).collect();
@@ -1622,16 +1646,16 @@ fn text_entry_scroll_to_cursor() -> CaseResult {
         "15",
         "Home did not reveal the first column",
     )?;
-    let mut g = Guarded::bgrx(100, 50);
+    let mut g = ui_frame(100, 50);
     g.reset(PAPER);
     f.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    ensure(g.color(10, 10) == Theme::dark().border
-        && g.color(14, 16) == Color::WHITE
-        && g.color(65, 12) == Theme::dark().widget_bg, "15", "focused field border or interior drawing missing")?;
-    for y in 0..50 {
-        for x in 0..100 {
-            if !in_rect(x as i64, y as i64, 8, 8, 64, 24) {
+    ensure(g.color(10*scale, 10*scale) == Theme::dark().border
+        && g.color(14*scale, 16*scale) == Color::WHITE
+        && g.color(65*scale, 12*scale) == Theme::dark().widget_bg, "15", "focused field border or interior drawing missing")?;
+    for y in 0..50*scale {
+        for x in 0..100*scale {
+            if !in_rect(x as i64, y as i64, 8*scale as i64, 8*scale as i64, 64*scale as i64, 24*scale as i64) {
                 ensure(
                     g.color(x, y) == PAPER,
                     "15",
@@ -1753,12 +1777,14 @@ fn text_entry_filepicker_list() -> CaseResult {
         ],
         &theme,
     );
-    // The list area is (1, 25, 298, 182) with 11-pixel rows.
+    // The list area is (1, 25, 298, 182). Ruling B26: its rows are FilePicker's own row
+    // height, the current font's text height plus 4, and each click lands mid-row.
+    let row_height = libbui::text::text_height(&theme) + 4;
     for (row, want) in ["Alpha", "Beta", "alpha", "beta", "zeta"]
         .iter()
         .enumerate()
     {
-        let y = 25 + 11 * row as i32 + 5;
+        let y = 25 + row_height * row as i32 + row_height / 2;
         pointer_event("file picker", press(50, y), |i| p.update(i));
         pointer_event("file picker", release(50, y), |i| p.update(i));
         let got = p
@@ -1863,6 +1889,7 @@ fn text_entry_filepicker_scroll() -> CaseResult {
 }
 
 fn text_entry_filepicker_errors() -> CaseResult {
+    let scale=ui_scale();
     let mut p = picker_fixture(5);
     p.show_error(b"Permission denied");
     ensure(
@@ -1870,27 +1897,18 @@ fn text_entry_filepicker_errors() -> CaseResult {
         "15",
         "picker did not retain error and remove entries",
     )?;
-    let mut g = Guarded::bgrx(320, 250);
+    let mut g = ui_frame(320, 250);
     g.reset(PAPER);
     p.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    let mut expected = Guarded::bgrx(101, 7);
+    let width = sans_width(b"Permission denied") as usize;
+    let mut expected = Guarded::bgrx(width*scale, 16*scale);
     expected.reset(Theme::dark().panel_bg);
-    font5x7::draw_text(
-        &mut expected.fb(),
-        b"Permission denied",
-        0,
-        0,
-        Color::WHITE,
-        1,
-    );
-    for y in 0..7 {
-        for x in 0..101 {
-            ensure(
-                g.color(x + 5, y + 29) == expected.color(x, y),
-                "15",
-                format!("error text differs at {x},{y}"),
-            )?;
+    sans_draw(&mut expected.fb(), b"Permission denied", 0, 0, Theme::dark().text_primary);
+    for y in 0..16*scale {
+        for x in 0..width*scale {
+            ensure(g.color(x + 5*scale, y + 29*scale) == expected.color(x, y), "15",
+                format!("error text differs at {x},{y}"))?;
         }
     }
     ensure(
@@ -1981,8 +1999,8 @@ fn catalogue() -> Vec<(&'static str, fn() -> Box<dyn Icon>)> {
     ]
 }
 
-fn drawn(icon: &dyn Icon, size: i32) -> Guarded {
-    let mut g = Guarded::bgrx(256, 256);
+fn drawn(icon: &dyn Icon, size: i32) -> Drawn {
+    let mut g = Drawn::bgrx(256, 256);
     g.reset(PAPER);
     icon.draw(&mut g.fb(), 128, 128, size);
     g
@@ -1995,6 +2013,8 @@ fn same_pixels(a: &Guarded, b: &Guarded) -> Option<(usize, usize)> {
 }
 
 fn icons_step_invariance() -> CaseResult {
+    pixel_step_invariance_icon::run();
+
     for (name, make) in catalogue() {
         let schedules: [(&str, &[(u32, u32)]); 3] = [
             ("one 1,000 ms step", &[(1, 1_000_000)]),
@@ -2041,6 +2061,8 @@ fn icons_step_invariance() -> CaseResult {
 }
 
 fn icons_settles() -> CaseResult {
+    pixel_settles_hover::run();
+
     for hovering in [false, true] {
         for (name, make) in catalogue() {
             let mut icon = make();
@@ -2089,6 +2111,8 @@ fn icons_settles() -> CaseResult {
 }
 
 fn icons_interrupt() -> CaseResult {
+    pixel_interrupt_search::run();
+
     let mut b = IconBase::new();
     b.update(1_000, &mouse(true, false, false, false));
     b.update(100_000, &mouse(true, false, false, false));
@@ -2133,6 +2157,8 @@ fn icons_interrupt() -> CaseResult {
 }
 
 fn icons_reversal() -> CaseResult {
+    pixel_reversal_hover::run();
+
     for (name, make) in catalogue() {
         let mut icon = make();
         icon.update(101_000, mouse(true, false, false, false));
@@ -2207,7 +2233,7 @@ fn icons_bounded() -> CaseResult {
                 || {
                     let mut icon = make();
                     let size = 32;
-                    let mut g = Guarded::bgrx(256, 256);
+                    let mut g = Drawn::bgrx(256, 256);
                     g.reset(PAPER);
                     let mut rng = Seeded(0x1C0_5EED ^ name.len() as u64);
                     let mut held = false;
@@ -2327,6 +2353,8 @@ fn icons_sin_approx() -> CaseResult {
 }
 
 fn icons_particles_bounded() -> CaseResult {
+    pixel_particles_bounded_particles::run();
+
     let mut pool = ParticlePool::with_bounds(8, -12.0, -10.0, 12.0, 10.0);
     for i in 0..20 {
         pool.emit(Particle {
@@ -2347,7 +2375,7 @@ fn icons_particles_bounded() -> CaseResult {
             "particle count exceeded capacity",
         )?;
     }
-    let mut g = Guarded::bgrx(80, 80);
+    let mut g = Drawn::bgrx(80, 80);
     g.reset(PAPER);
     for _ in 0..1000 {
         pool.update(0.001);
@@ -2388,7 +2416,7 @@ fn icons_particles_bounded() -> CaseResult {
         let mut negative = ParticlePool::with_bounds(1, edge - 4.0, edge - 4.0, edge, edge);
         negative.emit(Particle { x: edge, y: edge, vx: 0.0, vy: 0.0, life: 1.0,
             max_life: 1.0, size: 1.0, color: Color::WHITE, gravity: 0.0, friction: 0.0 });
-        let mut frame = Guarded::bgrx(20, 20);
+        let mut frame = Drawn::bgrx(20, 20);
         frame.reset(PAPER);
         negative.draw(&mut frame.fb(), 10, 10);
         snapshot(&frame)?;
@@ -2416,7 +2444,7 @@ fn icons_assets() -> CaseResult {
         "8.6,16",
         "reviewed icon scene is not 640x512",
     )?;
-    let mut g = Guarded::bgrx(640, 512);
+    let mut g = Drawn::bgrx(640, 512);
     g.reset(Color::rgb(12, 19, 31));
     // Drive the contract's schedules here, independently of the authoring tool.
     let schedules: &[&[(u32, bool, bool)]] = &[
@@ -2638,8 +2666,8 @@ impl Drop for FontFixture {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
-fn watch_frame(w: &mut FontWatcher, mono: bool) -> Guarded {
-    let mut g = Guarded::bgrx(200, 70);
+fn watch_frame(w: &mut FontWatcher, mono: bool) -> Drawn {
+    let mut g = Drawn::bgrx(200, 70);
     g.reset(PAPER);
     let size = if mono {
         w.mono_size()
@@ -2652,7 +2680,7 @@ fn watch_frame(w: &mut FontWatcher, mono: bool) -> Guarded {
         w.display_font()
     }
     .expect("loaded watcher font");
-    ttf_font::draw_text(&mut g.fb(), font, "Wi é A", 8, 40, size, Color::WHITE);
+    libgfx::ttf_font::draw_text(&mut g.fb(), font, "Wi é A", 8, 40, size, Color::WHITE);
     g
 }
 
@@ -2664,13 +2692,33 @@ fn sans_width(text:&[u8])->i32 {
     let pen:i32=glyphs.iter().enumerate().map(|(i,&g)|font.advance26(g,1024)+glyphs.get(i+1).map_or(0,|&next|font.kern26(g,next,1024))).sum();
     (pen+32)/64
 }
+fn ui_scale() -> usize {
+    let modes = bgl::modes().expect("widget fixture display mode");
+    modes.modes[modes.current as usize].scale as usize
+}
+fn ui_frame(w:usize,h:usize)->Drawn { let s=ui_scale(); Drawn::bgrx(w*s,h*s) }
+fn ui_rect(x:i32,y:i32,w:i32,h:i32)->libgfx_ref::framebuf::Rect {
+    let s=ui_scale() as i32;libgfx_ref::framebuf::Rect::new(x*s,y*s,w*s,h*s)
+}
+mod shapes {
+    use super::*;
+    pub fn fill_rect(f:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color) {let s=ui_scale() as i32;libgfx_ref::shapes::fill_rect(f,x*s,y*s,w*s,h*s,c);}
+    pub fn draw_rect(f:&mut FrameBuf,x:i32,y:i32,w:i32,h:i32,c:Color) {let s=ui_scale() as i32;for i in 0..s {libgfx_ref::shapes::draw_rect(f,x*s+i,y*s+i,w*s-2*i,h*s-2*i,c);}}
+    pub fn draw_line(f:&mut FrameBuf,x:i32,y:i32,xx:i32,yy:i32,c:Color) {let s=ui_scale() as i32;libgfx_ref::shapes::draw_line(f,x*s,y*s,xx*s,yy*s,c);}
+}
 fn sans_draw(fb:&mut FrameBuf,text:&[u8],x:i32,y:i32,colour:Color) {
-    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("gpu-text: pinned DejaVu Sans is missing");
-    let mut font=CachedFont::new(Font::parse(&bytes).expect("gpu-text: pinned DejaVu Sans is invalid"),256);
-    ttf_font::draw_text_bytes(fb,&mut font,text,x,y,16.0,colour);
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("pinned DejaVu Sans is missing");
+    let mut font=CachedFont::new(Font::parse(&bytes).expect("pinned DejaVu Sans is invalid"),256);
+    let s=ui_scale() as i32;
+    ttf_font::draw_text_bytes(fb,&mut font,text,x*s,y*s,16.0*s as f32,colour);
 }
 fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
-    sans_draw(fb,text,rect.x+(rect.w-sans_width(text))/2,rect.y+(rect.h-16)/2,colour)
+    let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").expect("pinned Sans");
+    let mut font=CachedFont::new(Font::parse(&bytes).expect("pinned Sans"),256);
+    let s=ui_scale() as i32;
+    let width=ttf_font::text_width_bytes(&mut font,text,16.0*s as f32);
+    ttf_font::draw_text_bytes(fb,&mut font,text,rect.x*s+(rect.w*s-width)/2,
+        rect.y*s+(rect.h*s-16*s)/2,16.0*s as f32,colour);
 }
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
@@ -2678,14 +2726,14 @@ fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
 fn widgets_scale_2()->CaseResult {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("14")?;
     ensure(modes.modes[modes.current as usize].scale==2,"14","gpu-display: widget case is not in scale-2 mode")?;
-    let theme=Theme::dark();let mut g=Guarded::bgrx(400,160);g.reset(PAPER);
+    let theme=Theme::dark();let mut g=Drawn::bgrx(400,160);g.reset(PAPER);
     Button::new(Rect::new(20,16,120,40),b"OK").draw(&mut g.fb(),&theme);
     let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").map_err(|e|e.to_string())?;
     let mut font=CachedFont::new(Font::parse(&bytes).cite("14")?,256);
     let width=ttf_font::text_width(&mut font,"OK",32.0);
     same_as(&g,PAPER,"scale-2 TrueType button","14",|fb|{
-        shapes::fill_rect(fb,40,32,240,80,theme.widget_bg);
-        for inset in 0..2 {shapes::draw_rect(fb,40+inset,32+inset,240-2*inset,80-2*inset,theme.border);}
+        libgfx_ref::shapes::fill_rect(fb,40,32,240,80,theme.widget_bg);
+        for inset in 0..2 {libgfx_ref::shapes::draw_rect(fb,40+inset,32+inset,240-2*inset,80-2*inset,theme.border);}
         ttf_font::draw_text(fb,&mut font,"OK",40+(240-width)/2,56,32.0,theme.text_primary);
     })
 }

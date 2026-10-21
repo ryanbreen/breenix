@@ -10,7 +10,7 @@
 use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::window::{self, abi};
-use libfont::CachedFont;
+use libgfx::ttf_font::CachedFont;
 use libgfx::surface::{Format, Surface};
 
 use crate::event::{Delivered, Event};

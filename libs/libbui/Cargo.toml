@@ -8,6 +8,11 @@ description = "Breenix UI Widget Toolkit"
 crate-type = ["rlib"]
 
 [dependencies]
-libgfx-ref = { path = "../libgfx-ref" }
+libgfx = { path = "../libgfx" }
+
+libbreenix = { path = "../libbreenix" }
 
 [workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

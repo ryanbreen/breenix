@@ -7,6 +7,7 @@
 use bgl::Context;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "breenix")]
 use libbreenix::process;
 
 pub(crate) struct Device {
@@ -36,7 +37,10 @@ static SLOT: Slot = Slot { owner: AtomicU64::new(0), device: UnsafeCell::new(Non
 
 /// The calling process's id, or 0 when it cannot be read.
 pub(crate) fn pid() -> u64 {
-    process::getpid().map(|p| p.raw()).unwrap_or(0)
+    #[cfg(target_os = "breenix")]
+    { process::getpid().map(|p| p.raw()).unwrap_or(0) }
+    #[cfg(not(target_os = "breenix"))]
+    { unsafe extern "C" { fn getpid() -> i32; } unsafe { getpid() as u64 } }
 }
 
 /// Run `f` with this process's device, creating its context on first use (or first use
@@ -86,7 +90,9 @@ impl Device {
 
 /// Keep the process id even while unlocked, so a child discards inherited state
 /// before touching it. A lock owned by a different process cannot have a live owner here.
-fn acquire(owner: &AtomicU64, pid: u64) -> bool {
+/// Returns whether the state was inherited from another process. Release by storing
+/// `pid << 1`.
+pub(crate) fn acquire(owner: &AtomicU64, pid: u64) -> bool {
     let mut seen = owner.load(Ordering::Relaxed);
     loop {
         let inherited = seen >> 1 != 0 && seen >> 1 != pid;

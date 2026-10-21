@@ -8,6 +8,8 @@ version = "0.1.0"
 dependencies = [
  "gpu-abi",
  "libbreenix",
+ "libfont",
+ "libimg",
 ]
 
 [[package]]
@@ -27,17 +29,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "libfont"
+version = "0.1.0"
+
+[[package]]
 name = "libgfx"
 version = "0.1.0"
 dependencies = [
  "bgl",
  "libbreenix",
+ "libfont",
  "libgfx-pixel",
+ "libimg",
  "noto-sans-mono-bitmap",
 ]
 
 [[package]]
 name = "libgfx-pixel"
+version = "0.1.0"
+
+[[package]]
+name = "libimg"
 version = "0.1.0"
 
 [[package]]

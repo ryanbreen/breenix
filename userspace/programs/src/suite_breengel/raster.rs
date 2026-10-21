@@ -10,6 +10,8 @@ use bgl::DeclaredFixture;
 use libgfx::blit::{self, Texture};
 use libgfx::surface::{Format, Rect, Surface, SurfaceError};
 use libgfx::{alpha, bitmap_font as gpu_bitmap_font, font as gpu_font5x7, shapes, work};
+use libgfx::{bitmap_font, font as font5x7, ttf_font};
+use libgfx::ttf_font::{Font, CachedFont};
 
 pub(crate) const RASTER: &[Case] = &[
     pictured!("fill-rect", "fill_rect writes exactly the pixels of a half-open rectangle and no others", raster_fill_rect),
@@ -225,7 +227,7 @@ fn padded(width: usize, height: usize) -> Drawn {
 /// last row) in the mapping's channel order and bytes per pixel, and the checks read it
 /// there. A four-byte BGR mapping receives `READBACK` itself, so its sentinels check that the
 /// device left the row padding alone; other layouts go through `libgfx::surface::convert`.
-struct Drawn {
+pub(crate) struct Drawn {
     mem: Guarded,
     surface: RefCell<Surface>,
     target: u64,
@@ -234,11 +236,11 @@ struct Drawn {
 }
 
 impl Drawn {
-    fn new(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool) -> Drawn {
+    pub(crate) fn new(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool) -> Drawn {
         Self::formatted(width, height, stride, bpp, bgr, if bgr { Format::BGRX } else { Format::RGBX })
     }
 
-    fn formatted(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool, format: Format) -> Drawn {
+    pub(crate) fn formatted(width: usize, height: usize, stride: usize, bpp: usize, bgr: bool, format: Format) -> Drawn {
         let surface = Surface::new(width, height, format)
             .unwrap_or_else(|e| panic!("gpu-raster: a {width} x {height} GPU target for a raster case: {e}"));
         let target = surface.handle();
@@ -249,12 +251,12 @@ impl Drawn {
     }
 
     /// A 4-byte canonical BGRX surface with no padding.
-    fn bgrx(width: usize, height: usize) -> Drawn {
+    pub(crate) fn bgrx(width: usize, height: usize) -> Drawn {
         Drawn::new(width, height, width * 4, 4, true)
     }
 
     /// Clear the whole target to `c` on the GPU (marking no damage) and rewrite the sentinels.
-    fn reset(&mut self, c: Color) {
+    pub(crate) fn reset(&mut self, c: Color) {
         let s = self.surface.get_mut();
         s.clear(c);
         s.take_dirty();
@@ -263,12 +265,12 @@ impl Drawn {
     }
 
     /// The target, to draw on.
-    fn fb(&self) -> RefMut<'_, Surface> {
+    pub(crate) fn fb(&self) -> RefMut<'_, Surface> {
         self.surface.borrow_mut()
     }
 
     /// Read the target back into the mapping if anything was drawn since the last read.
-    fn refresh(&self) {
+    pub(crate) fn refresh(&self) {
         let now = libgfx::surface::generation();
         if self.read_at.get() == Some(now) {
             return;
@@ -300,43 +302,48 @@ impl Drawn {
     }
 
     /// The mapping as it is after the latest readback.
-    fn guarded(&self) -> &Guarded {
+    pub(crate) fn guarded(&self) -> &Guarded {
         self.refresh();
         &self.mem
     }
 
-    fn color(&self, x: usize, y: usize) -> Color {
+    pub(crate) fn color(&self, x: usize, y: usize) -> Color {
         self.guarded().color(x, y)
     }
 
-    fn x_byte(&self, x: usize, y: usize) -> u8 {
+    pub(crate) fn x_byte(&self, x: usize, y: usize) -> u8 {
         self.guarded().x_byte(x, y)
     }
 
     /// The pixel at (x, y) as `[b, g, r, a]`, alpha as the device stored it.
-    fn bgra(&self, x: usize, y: usize) -> [u8; 4] {
+    pub(crate) fn bgra(&self, x: usize, y: usize) -> [u8; 4] {
         let [r, g, b] = self.guarded().rgb(x, y);
         [b, g, r, self.mem.x_byte(x, y)]
     }
 
-    fn failed(&self) -> Result<(), String> {
+    pub(crate) fn failed(&self) -> Result<(), String> {
         self.failure.borrow().clone().map_or(Ok(()), Err)
     }
 
-    fn sentinels(&self) -> Result<(), String> {
+    pub(crate) fn sentinels(&self) -> Result<(), String> {
         self.guarded().sentinels()?;
         self.failed()
     }
 
-    fn judge(&self) {
+    pub(crate) fn judge(&self) {
         self.guarded().judge();
     }
 
-    fn compare(&self, what: &str, want: impl Fn(usize, usize) -> Color) -> Result<(), String> {
+    pub(crate) fn compare(&self, what: &str, want: impl Fn(usize, usize) -> Color) -> Result<(), String> {
         let g = self.guarded();
         self.failed()?;
         g.compare(what, want)
     }
+}
+
+impl core::ops::Deref for Drawn {
+    type Target = Guarded;
+    fn deref(&self) -> &Guarded { self.refresh(); &self.mem }
 }
 
 impl Drop for Drawn {
@@ -1393,7 +1400,7 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
     let GlyphLayout::Outline { segments, width, height, x_offset, y_offset } = layout else { return Ok(()) };
     let e = segments.len() as u64;
     fwork::reset();
-    let gray = libfont::rasterizer::rasterize(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
+    let gray = ttf_font::rasterizer::rasterize(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: {e}"))?;
     let steps = fwork::steps();
     let bound = raster_steps_bound(e, height as u64, 0);
     if steps > bound {
@@ -1410,7 +1417,7 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
         return Err(format!("{what}: rasterize_glyph differs from its outline, layout and raster stages run one by one"));
     }
     fwork::reset();
-    libfont::rasterizer::rasterize_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
+    ttf_font::rasterizer::rasterize_subpixel(&segments, width, height, x_offset, y_offset).map_err(|e| format!("{what}: LCD: {e}"))?;
     let steps = fwork::steps();
     let bound = e + raster_steps_bound(e, height as u64, 0);
     if steps > bound {
@@ -1421,8 +1428,8 @@ fn staged_within_bounds(font: &Font, file: &[u8], glyph: u16, size: f32, what: &
 
 /// Draw `text` with `draw` on a black 96 × 48 surface in white, so the coverage blend is
 /// the coverage itself under any rounding.
-fn white_on_black(width: usize, height: usize, draw: impl FnOnce(&mut FrameBuf)) -> Guarded {
-    let g = Guarded::bgrx(width, height);
+fn white_on_black(width: usize, height: usize, draw: impl FnOnce(&mut Surface)) -> Drawn {
+    let g = Drawn::bgrx(width, height);
     draw(&mut g.fb());
     g
 }
@@ -1584,7 +1591,7 @@ fn text_noto_coverage() -> CaseResult {
     let (fg, bg) = (Color::rgb(200, 100, 50), Color::rgb(20, 40, 60));
     for ch in ['@', 'g', 'W', '%', '&'] {
         let raster = get_raster(ch, FontWeight::Regular, RasterHeight::Size16).unwrap();
-        let mut g = Guarded::bgrx(16, 16);
+        let mut g = Drawn::bgrx(16, 16);
         g.reset(bg);
         bitmap_font::draw_char(&mut g.fb(), ch, 0, 0, fg);
         for (y, row) in raster.raster().iter().enumerate().take(16) {
@@ -1621,7 +1628,7 @@ fn text_ttf_sizes() -> CaseResult {
 fn text_ttf_advance() -> CaseResult {
     let mut font = cached(MONO_PATH).cite("8.5")?;
     let line: String = "The quick brown fox jumps over the lazy dog 0123456789 ".chars().cycle().take(200).collect();
-    let g = Guarded::bgrx(64, 24);
+    let g = Drawn::bgrx(64, 24);
     let drawn = ttf_font::draw_text(&mut g.fb(), &mut font, &line, 0, 0, 16.0, WHITE);
     let width = ttf_font::text_width(&mut font, &line, 16.0);
     value("advance", drawn as i64, "px", Some((1928, 1928)));
@@ -1675,7 +1682,7 @@ fn kern_table(subtables: &[(u16, i16)]) -> Vec<u8> {
 fn text_ttf_width() -> CaseResult {
     for (path, text, size, want) in [(MONO_PATH, "Hg", 16.0f32, 19), (SANS_PATH, "AV", 32.0, 42), (MONO_PATH, "", 16.0, 0)] {
         let mut font = cached(path).cite("8.5")?;
-        let g = Guarded::bgrx(64, 48);
+        let g = Drawn::bgrx(64, 48);
         let drawn = ttf_font::draw_text(&mut g.fb(), &mut font, text, 0, 0, size, WHITE);
         let width = ttf_font::text_width(&mut font, text, size);
         ensure(drawn == want && width == want, "8.3", format!(
@@ -1797,7 +1804,7 @@ fn text_utf8_invalid() -> CaseResult {
         }
     }
     step("8.3", isolated("draw_text_bytes over every byte value and 1,000 seeded byte strings", 8_000, move || {
-        let g = Guarded::bgrx(64, 24);
+        let g = Drawn::bgrx(64, 24);
         let mut rng = Seeded(0x0BAD_0B17E5);
         for b in 0..=255u8 {
             ttf_font::draw_text_bytes(&mut g.fb(), &mut font, &[b, b, 0x80, b], 0, 0, 10.0, WHITE);
@@ -1952,7 +1959,7 @@ fn text_size_range() -> CaseResult {
 /// Ten or more arguments with trailing f32 and 26.6 values, as the text entry points take.
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-fn text_with_many(fb: &mut FrameBuf, font: &mut CachedFont, text: &str, x: i32, y: i32, r: u8, g: u8, b: u8,
+fn text_with_many(fb: &mut Surface, font: &mut CachedFont, text: &str, x: i32, y: i32, r: u8, g: u8, b: u8,
     pad: i32, size26: i32, size: f32, scale: f32) -> i32 {
     let size = if size26 > 0 { size26 as f32 / 64.0 } else { size * scale };
     ttf_font::draw_text(fb, font, text, x + pad, y, size, Color::rgb(r, g, b))
@@ -1964,7 +1971,7 @@ fn text_many_args_abi() -> CaseResult {
     ensure(drawn_pixels(&reference, Color::rgb(0, 0, 0)) > 0, "8.3", "the direct call drew nothing")?;
     fn bb<T>(t: T) -> T { std::hint::black_box(t) }
     for (size26, size, scale) in [(0, 11.25f32, 2.0f32), (1440, 0.0, 0.0)] {
-        let g = Guarded::bgrx(96, 40);
+        let g = Drawn::bgrx(96, 40);
         let ret = text_with_many(&mut g.fb(), &mut font, bb("Ag"), bb(4), bb(4), bb(255), bb(255), bb(255), bb(2), bb(size26), bb(size), bb(scale));
         *g.reference.borrow_mut() = Some(canonical_pixels(&reference));
         g.judge();
@@ -1983,7 +1990,9 @@ fn text_many_args_abi() -> CaseResult {
 fn text_cache_hit() -> CaseResult {
     let mut font = cached(MONO_PATH).cite("8.5")?;
     let g = font.glyph_index('Q');
-    let fresh = font.font().rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?;
+    let source = read_file(MONO_PATH).cite("8.5")?;
+    let reference = libgfx_ref::ttf_font::Font::parse(&source).cite("8.5")?;
+    let fresh = reference.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?;
     let first = font.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?.clone();
     let after_first = font.cache_stats();
     let second = font.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?.clone();
@@ -1996,8 +2005,8 @@ fn text_cache_hit() -> CaseResult {
         format!("after the first 'Q' the cache reports {after_first:?}; a first use is one miss and one entry"))?;
     ensure((after_second.hits, after_second.misses, after_second.entries) == (1, 1, 1), "8.4",
         format!("after the second 'Q' the cache reports {after_second:?}; the second use is a hit"))?;
-    ensure(after_second.bytes == fresh.coverage.len(), "8.4",
-        format!("the cache reports {} bytes holding one {} x {} glyph", after_second.bytes, fresh.width, fresh.height))
+    ensure(after_second.bytes == ((fresh.width * 4 + 255) / 256 * 256 * fresh.height + 4095) / 4096 * 4096, "8.4",
+        format!("the cache reports {} bytes holding one {} x {} four-byte atlas glyph with 256-byte rows and page-rounded storage", after_second.bytes, fresh.width, fresh.height))
 }
 
 fn text_cache_bound() -> CaseResult {
@@ -2728,7 +2737,7 @@ fn font_parser_coords_extreme() -> CaseResult {
                 };
                 let before=crate::gpu_checks::counters()?;
                 libfont::work::reset();
-                let raster = libfont::rasterizer::rasterize(&segments, width, height, 0, 0);
+                let raster = ttf_font::rasterizer::rasterize(&segments, width, height, 0, 0);
                 let steps = libfont::work::steps();
                 match raster {
                     Err(FontError::GlyphTooExpensive) if steps == 0 => Ok(()),
@@ -2766,7 +2775,7 @@ fn font_parser_work_bound() -> CaseResult {
     ensure(raster_steps_bound(4,1_024,0)==214_084,"7","the CPU crossing formula is not 214,084")?;
     let gpu_before=crate::gpu_checks::counters().cite("7")?;
     libfont::work::reset();
-    let bitmap = libfont::rasterizer::rasterize(&square, 1_024, 1_024, 0, 0).cite("7")?;
+    let bitmap = ttf_font::rasterizer::rasterize(&square, 1_024, 1_024, 0, 0).cite("7")?;
     let steps = libfont::work::steps();
     value("square-steps", steps as i64, "steps", Some((8_192, 214_084)));
     ensure(bitmap.coverage[512 * 1_024 + 512] == 255 && bitmap.coverage[0] == 0, "7", "the square rasterized to the wrong coverage")?;
@@ -2968,19 +2977,29 @@ fn text_hidpi_sizes() -> CaseResult {
     let modes=bgl::modes().map_err(|e|format!("gpu-display: MODES {}",outcome(e))).cite("8.3")?;
     let scale=modes.modes[modes.current as usize].scale;
     ensure(scale==2,"8.3","gpu-display: HiDPI text requires scale 2")?;
-    let file=read_file(SANS_PATH).cite("8.3")?;let font=Font::parse(&file).cite("8.3")?;
+    let file=read_file(SANS_PATH).cite("8.3")?;let font=libgfx_ref::ttf_font::Font::parse(&file).cite("8.3")?;
     let glyph=font.glyph_index('H');
-    let large=font.rasterize_glyph(glyph,32.0).cite("8.3")?;
-    let small=font.rasterize_glyph(glyph,16.0).cite("8.3")?;
+    let large=reference_bitmap(font.rasterize_glyph(glyph,32.0).cite("8.3")?);
+    let small=reference_bitmap(font.rasterize_glyph(glyph,16.0).cite("8.3")?);
     let theme=Theme::dark();
     let before=crate::gpu_checks::counters().cite("8.3")?;
     // The production UI text entry point takes logical coordinates and the theme's
     // logical 16 px size. The case must not perform the implementation's scaling.
     let g=white_on_black(192,128,|fb|{libbui::text::draw_text(fb,b"H",16,8,WHITE,&theme);});
     same_as_glyph(&g,&glyph_pixels(&large,32,16,192,128),"scale-2 H","8.3")?;
-    let actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
-    ensure((0..128).any(|y|(0..192).any(|x|actual[(y*192+x)*4..(y*192+x+1)*4]!=low[((y/2)*96+x/2)*4..((y/2)*96+x/2+1)*4])),"8.3",
+    let mut actual=canonical_pixels(&g);let low=glyph_pixels(&small,16,8,96,64);
+    let mut replicated=Vec::with_capacity(192*128*4);
+    for y in 0..128 { for x in 0..192 {
+        let coverage=low[(y/2)*96+x/2];
+        replicated.extend_from_slice(&[coverage,coverage,coverage,0xff]);
+    }}
+    for pixel in actual.chunks_exact_mut(4) {pixel[3]=0xff;}
+    ensure(actual!=replicated,"8.3",
         "gpu-text: twice-size text is only replicated scale-1 coverage")?;
     let after=crate::gpu_checks::counters().cite("8.3")?;
     ensure(after.draws>before.draws && after.uploads_image==before.uploads_image,"8.3","gpu-text: HiDPI text did not execute GPU coverage draws")
+}
+
+fn reference_bitmap(b:libgfx_ref::rasterizer::GlyphBitmap)->libfont::Bitmap {
+    libfont::Bitmap {width:b.width,height:b.height,x_offset:b.x_offset,y_offset:b.y_offset,coverage:b.coverage}
 }

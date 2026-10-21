@@ -1017,6 +1017,8 @@ pub fn png_decode_truncated() -> Check {
 pub fn png_decode_signature() -> Check {
     eq(png::decode(b"not a PNG"), Err(PE::BadSignature))
 }
+mod encoder {
+use super::*;
 fn image(w: u32, h: u32) -> Image {
     Image {
         width: w,
@@ -1034,7 +1036,7 @@ pub fn png_encode_decodes() -> Check {
             height: 1,
             pixels,
         };
-        let bytes = png::encode(&i).map_err(|e| format!("encode {e:?}"))?;
+        let bytes = libimg_encode::encode(&i).map_err(|e| format!("encode {e:?}"))?;
         let actual = png::decode(&bytes);
         if let Ok(ref picture) = actual {
             record_image(format!("{}x{}", i.width, i.height), picture.clone(), i.clone());
@@ -1045,8 +1047,8 @@ pub fn png_encode_decodes() -> Check {
 }
 pub fn png_encode_stable() -> Check {
     let i = image(13, 7);
-    let first = png::encode(&i).map_err(|e| format!("first stable encode: {e:?}"))?;
-    let second = png::encode(&i).map_err(|e| format!("second stable encode: {e:?}"))?;
+    let first = libimg_encode::encode(&i).map_err(|e| format!("first stable encode: {e:?}"))?;
+    let second = libimg_encode::encode(&i).map_err(|e| format!("second stable encode: {e:?}"))?;
     decoded(&first, i.width, i.height, &i.pixels)?;
     eq(first, second)
 }
@@ -1080,7 +1082,7 @@ pub fn png_encode_format() -> Check {
             height: 1,
             pixels: vec![0, 0, alpha, alpha],
         };
-        let v = png::encode(&i).map_err(|e| format!("encode {e:?}"))?;
+        let v = libimg_encode::encode(&i).map_err(|e| format!("encode {e:?}"))?;
         let c = encoded_chunks(&v)?;
         eq(
             c.iter().map(|x| x.0).collect::<Vec<_>>(),
@@ -1106,7 +1108,7 @@ pub fn png_encode_format() -> Check {
 }
 pub fn png_encode_chunk_crc() -> Check {
     eq(crc(b"123456789"), 0xcbf4_3926)?;
-    let v = png::encode(&image(3, 2)).map_err(|e| format!("encode {e:?}"))?;
+    let v = libimg_encode::encode(&image(3, 2)).map_err(|e| format!("encode {e:?}"))?;
     for (n, d, c) in encoded_chunks(&v)? {
         let mut b = n.to_vec();
         b.extend(d);
@@ -1116,7 +1118,7 @@ pub fn png_encode_chunk_crc() -> Check {
 }
 pub fn png_encode_zlib_adler() -> Check {
     eq(adler(b"Wikipedia"), 0x11e6_0398)?;
-    let v = png::encode(&image(3, 2)).map_err(|e| format!("encode {e:?}"))?;
+    let v = libimg_encode::encode(&image(3, 2)).map_err(|e| format!("encode {e:?}"))?;
     let c = encoded_chunks(&v)?;
     let z = &c[1].1;
     let raw = zlib_decompress(z, 100).map_err(|e| format!("zlib {e:?}"))?;
@@ -1128,7 +1130,7 @@ pub fn png_encode_zlib_adler() -> Check {
 pub fn png_encode_sizes() -> Check {
     for (w, h) in [(1, 1), (3, 7), (17, 9), (1280, 800)] {
         let i = image(w, h);
-        let v = png::encode(&i).map_err(|e| format!("encode {e:?}"))?;
+        let v = libimg_encode::encode(&i).map_err(|e| format!("encode {e:?}"))?;
         let actual = png::decode(&v);
         if let Ok(ref picture) = actual {
             record_image(format!("{}x{}", i.width, i.height), picture.clone(), i.clone());
@@ -1140,7 +1142,7 @@ pub fn png_encode_sizes() -> Check {
 pub fn png_encode_limits() -> Check {
     for (w, h) in [(16385, 1), (1, 16385), (4097, 4097)] {
         eq(
-            png::encode(&Image {
+            libimg_encode::encode(&Image {
                 width: w,
                 height: h,
                 pixels: vec![],
@@ -1150,6 +1152,9 @@ pub fn png_encode_limits() -> Check {
     }
     Ok(())
 }
+
+}
+use encoder::*;
 
 pub const CHECKS: &[(&str, fn() -> Check)] = &[
     ("bmp_truncated_claim", bmp_truncated_claim),

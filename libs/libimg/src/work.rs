@@ -7,6 +7,6 @@ pub fn reset() {
 pub fn steps() -> u64 {
     STEPS.load(Ordering::Relaxed)
 }
-pub(crate) fn step() {
+pub fn step() {
     STEPS.fetch_add(1, Ordering::Relaxed);
 }

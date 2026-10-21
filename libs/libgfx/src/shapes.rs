@@ -17,7 +17,7 @@ fn shape(fb: &mut Surface, pipe: u32, colour: u32, visible: Box64, params: &[i32
     for (slot, v) in p.iter_mut().zip(params) {
         *slot = *v as u32;
     }
-    fb.submit(|c| c.draw(pipe, colour, 0, 0, 0, &[Instance { rect: visible.corners(), params: p }]));
+    fb.submit_shape(|c| c.draw(pipe, colour, 0, 0, 0, &[Instance { rect: visible.corners(), params: p }]));
 }
 
 /// The pixels of the half-open rectangle `(x, y, w, h)` (section 5.1): one `solid` instance.
@@ -27,7 +27,7 @@ pub fn fill_rect(fb: &mut Surface, x: i32, y: i32, w: i32, h: i32, color: Color)
         return;
     }
     work::add(1);
-    fb.submit(|c| c.solid(word(color), &[r.corners()]));
+    fb.submit_shape(|c| c.solid(word(color), &[r.corners()]));
     fb.mark(r);
 }
 
@@ -59,7 +59,7 @@ pub fn draw_rect(fb: &mut Surface, x: i32, y: i32, w: i32, h: i32, color: Color)
         }
     }
     if n > 0 {
-        fb.submit(|c| c.solid(word(color), &visible[..n]));
+        fb.submit_shape(|c| c.solid(word(color), &visible[..n]));
     }
     fb.mark(r);
 }

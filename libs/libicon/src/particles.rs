@@ -2,9 +2,9 @@
 
 use alloc::vec::Vec;
 
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
-use libgfx_ref::shapes;
+use libgfx::color::Color;
+use libgfx::surface::Surface as FrameBuf;
+use libgfx::shapes;
 
 /// A single animated particle.
 #[derive(Clone, Copy)]
@@ -72,8 +72,8 @@ impl Particle {
         if sz <= 1 {
             if px >= 0
                 && py >= 0
-                && (px as usize) < fb.width
-                && (py as usize) < fb.height
+                && (px as usize) < fb.width()
+                && (py as usize) < fb.height()
             {
                 shapes::fill_rect(fb, px, py, 1, 1, c);
             }
@@ -190,17 +190,20 @@ impl ParticlePool {
 
     /// Draw all live particles.
     pub fn draw(&self, fb: &mut FrameBuf, offset_x: i32, offset_y: i32) {
-        if let Some((l,t,r,b)) = self.bounds {
-            let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
-            let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
-            let left = ceil(l).saturating_add(offset_x);
-            let top = ceil(t).saturating_add(offset_y);
-            let right = floor(r).saturating_add(offset_x);
-            let bottom = floor(b).saturating_add(offset_y);
-            fb.push_clip(libgfx_ref::framebuf::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
-        }
-        for p in &self.particles { p.draw(fb, offset_x, offset_y); }
-        if self.bounds.is_some() { fb.pop_clip(); }
+        // One submission per frame (libgfx Surface::batch), the same pixels as one per shape.
+        fb.batch(|fb| {
+            if let Some((l,t,r,b)) = self.bounds {
+                let ceil = |v: f32| { let i = v as i32; if v > i as f32 { i.saturating_add(1) } else { i } };
+                let floor = |v: f32| { let i = v as i32; if v < i as f32 { i.saturating_sub(1) } else { i } };
+                let left = ceil(l).saturating_add(offset_x);
+                let top = ceil(t).saturating_add(offset_y);
+                let right = floor(r).saturating_add(offset_x);
+                let bottom = floor(b).saturating_add(offset_y);
+                fb.push_clip(libgfx::surface::Rect::new(left, top, right.saturating_sub(left).max(0), bottom.saturating_sub(top).max(0)));
+            }
+            for p in &self.particles { p.draw(fb, offset_x, offset_y); }
+            if self.bounds.is_some() { fb.pop_clip(); }
+        });
     }
 
     /// Kill all particles immediately.

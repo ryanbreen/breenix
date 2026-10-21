@@ -3,7 +3,8 @@
 //!
 //! A surface owns a target made by `RESOURCE_CREATE`; no pixel pointer is accepted and a
 //! handle is not an address. Drawing submits BGL commands to the process's context, each
-//! primitive at once; `read` waits for them through `READBACK`.
+//! primitive at once, or the shapes drawn inside `batch` in one submission; `read` waits for
+//! them through `READBACK`.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -173,8 +174,16 @@ pub struct Surface {
     owner: u64,
     owns_handle: bool,
     error: Option<i64>,
+    ui_scale: u32,
     render: Option<bgl::Fence>,
+    /// Inside `batch`: each kept shape's scissor and draw commands, sent after one `BEGIN`
+    /// of this target; an adjacent shape with the same scissor, pipeline and colour joins
+    /// the one before it.
+    batch: Option<Vec<Vec<u32>>>,
 }
+
+/// The most primitives one batched submission carries, far below SUBMIT's draw cap.
+const BATCH_PRIMITIVES: usize = 64;
 
 impl Surface {
     /// Check a readback or conversion layout of `width × height` pixels at `stride` (section 3).
@@ -209,9 +218,10 @@ impl Surface {
             return Err(SurfaceError::Format);
         }
         let device_format = if format.is_bgr { abi::format::B8G8R8A8 } else { abi::format::R8G8B8A8 };
+        let ui_scale = Self::display_scale()?;
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
-        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None })
+        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None, render: None, ui_scale, batch: None })
     }
 
     /// A non-owning view of a target returned by window CREATE/RESIZE. The window
@@ -222,8 +232,19 @@ impl Surface {
         if target==0 { return Err(SurfaceError::Device(-abi::errno::EINVAL)); }
         Ok(Self { target,width,height,format:Format::BGRX,
             clip:Box64 {x0:0,y0:0,x1:width as i64,y1:height as i64},clips:Vec::new(),dirty:None,
-            owner:device::pid(),owns_handle:false,error:None,render:None })
+            owner:device::pid(),owns_handle:false,error:None,render:None,ui_scale:Self::display_scale()?,batch:None })
+
     }
+
+    fn display_scale() -> Result<u32, SurfaceError> {
+        let modes = bgl::modes().map_err(SurfaceError::Device)?;
+        modes.modes.get(modes.current as usize).map(|mode| mode.scale)
+            .filter(|scale| (1..=2).contains(scale))
+            .ok_or(SurfaceError::Device(-abi::errno::EINVAL))
+    }
+
+    /// UI coordinates use the scale of the display this target was created for.
+    pub fn ui_scale(&self) -> u32 { self.ui_scale }
 
     pub fn width(&self) -> usize {
         self.width
@@ -245,6 +266,11 @@ impl Surface {
     /// The first error the core returned for a submission on this surface, if any.
     pub fn error(&self) -> Option<i64> {
         self.error
+    }
+
+    /// Whether this process made the target; a forked child cannot use its parent's handles.
+    pub(crate) fn owned_here(&self) -> bool {
+        self.owner == device::pid()
     }
 
     // ---- the clip stack (section 4): emitted as GPU scissors ------------------------
@@ -298,8 +324,10 @@ impl Surface {
 
     /// Encode `draw` for this target under the current clip and submit it. Callers pass only
     /// geometry already clipped to something visible: a primitive clipped to an empty box
-    /// submits no command (section 7).
+    /// submits no command (section 7). A batch drawn so far is submitted first, so this draw
+    /// follows it.
     pub(crate) fn submit(&mut self, draw: impl FnOnce(&mut bgl::Context)) {
+        self.flush();
         let (target, w, h, clip) = (self.target, self.width as u32, self.height as u32, self.clip);
         let whole = clip == Box64 { x0: 0, y0: 0, x1: w as i64, y1: h as i64 };
         let result = device::with(|d| {
@@ -318,6 +346,68 @@ impl Surface {
         }
     }
 
+    /// As `submit`, for a draw that samples no texture or target: inside `batch` its commands
+    /// are kept, after a scissor of its own clip, and sent with the batch's others.
+    pub(crate) fn submit_shape(&mut self, draw: impl FnOnce(&mut bgl::Context)) {
+        if self.batch.is_none() { return self.submit(draw); }
+        let (target, w, h, clip) = (self.target, self.width as u32, self.height as u32, self.clip);
+        let words = device::with(|d| {
+            let context = &mut d.context;
+            context.begin(target, w, h);
+            let start = context.encoded().len();
+            // The whole target's scissor too, so that each kept shape sets its own clip.
+            context.set_clip(clip.corners());
+            draw(context);
+            let words = context.encoded()[start..].to_vec();
+            context.discard();
+            Ok(words)
+        });
+        match words {
+            Ok(words) => {
+                let batch = self.batch.as_mut().expect("batch checked above");
+                batch.push(words);
+                if batch.len() >= BATCH_PRIMITIVES { self.flush(); }
+            }
+            Err(e) => { self.error.get_or_insert(e); }
+        }
+    }
+
+    /// Draw `f`'s shapes into this surface in one submission. The pixels are the ones drawing
+    /// each shape alone gives: the commands keep their order, adjacent opaque shapes of one
+    /// pipeline, colour and scissor share a draw, and a submission the core refuses is sent
+    /// again in halves, down to a single shape, which fails as it would alone. A sampling draw inside `f` first submits the
+    /// shapes before it. `read` and `wait` inside `f` return EAGAIN; errors appear once the
+    /// batch is sent, when `batch` returns.
+    pub fn batch<R>(&mut self, f: impl FnOnce(&mut Surface) -> R) -> R {
+        if self.batch.is_some() { return f(self); }
+        self.batch = Some(Vec::new());
+        let result = f(self);
+        self.flush();
+        self.batch = None;
+        result
+    }
+
+    /// Send the batched shapes drawn so far, keeping the batch open.
+    fn flush(&mut self) {
+        let Some(segments) = self.batch.as_mut().map(core::mem::take) else { return; };
+        if !segments.is_empty() { self.send(&segments); }
+    }
+
+    fn send(&mut self, segments: &[Vec<u32>]) {
+        let (target, w, h) = (self.target, self.width as u32, self.height as u32);
+        let result = send_batch(segments, &mut |words| {
+            let result = device::with(|d| {
+                let context = &mut d.context;
+                context.begin(target, w, h);
+                context.append(words);
+                context.submit().inspect_err(|_| context.discard())
+            });
+            GENERATION.fetch_add(1, Relaxed);
+            result.map(|fence| self.render = Some(fence))
+        });
+        if let Err(e) = result { self.error.get_or_insert(e); }
+    }
+
     /// Record a failure to prepare a draw (a table upload) as this surface's error.
     pub(crate) fn fail(&mut self, e: i64) {
         self.error.get_or_insert(e);
@@ -326,6 +416,7 @@ impl Surface {
     /// Wait for the most recent draw on this surface. The process context orders the
     /// surface's draws; window COMMIT separately seals writers from other contexts.
     pub fn wait(&self) -> Result<(), i64> {
+        if self.batch.is_some() { return Err(-abi::errno::EAGAIN); }
         if let Some(error) = self.error { return Err(error); }
         self.render.map_or(Ok(()), |fence| fence.wait(u64::MAX))
     }
@@ -342,7 +433,7 @@ impl Surface {
             return;
         }
         crate::work::add(1);
-        self.submit(|c| c.solid(word(color), &[b.corners()]));
+        self.submit_shape(|c| c.solid(word(color), &[b.corners()]));
         self.mark(b);
     }
 
@@ -355,16 +446,24 @@ impl Surface {
         }
         crate::work::add(1);
         let whole = c == Box64 { x0: 0, y0: 0, x1: self.width as i64, y1: self.height as i64 };
-        self.submit(|ctx| if whole { ctx.clear(word(color)) } else { ctx.solid(word(color), &[c.corners()]) });
+        self.submit_shape(|ctx| if whole { ctx.clear(word(color)) } else { ctx.solid(word(color), &[c.corners()]) });
         self.mark(c);
     }
 
     /// Read the whole surface back as canonical BGRA rows `stride` bytes apart, after the
     /// submissions that write it; the row padding is left as it was (section 3).
     pub fn read(&self, pixels: &mut [u8], stride: usize) -> Result<(), i64> {
+        self.read_rect([0, 0, self.width, self.height], pixels, stride)
+    }
+
+    /// Read the rectangle `[x, y, width, height]` back as `read` does the whole surface.
+    pub fn read_rect(&self, rect: [usize; 4], pixels: &mut [u8], stride: usize) -> Result<(), i64> {
+        if self.batch.is_some() { return Err(-abi::errno::EAGAIN); }
         let stride = u32::try_from(stride).map_err(|_| -abi::errno::EINVAL)?;
+        let mut r = [0u32; 4];
+        for (to, &v) in r.iter_mut().zip(&rect) { *to = u32::try_from(v).map_err(|_| -abi::errno::EINVAL)?; }
         let mut record = [0u8; abi::record::SIZE];
-        match gpu::readback(self.target, [0, 0, self.width as u32, self.height as u32], pixels, stride, &mut record) {
+        match gpu::readback(self.target, r, pixels, stride, &mut record) {
             0 => Ok(()),
             e => Err(e),
         }
@@ -378,6 +477,57 @@ impl Drop for Surface {
             gpu::resource_destroy(self.target);
         }
     }
+}
+
+/// Join only the submitted copy; quota retries retain the original shape boundaries.
+fn send_batch(segments: &[Vec<u32>], submit: &mut impl FnMut(&[u32]) -> Result<(), i64>) -> Result<(), i64> {
+    let mut words = Vec::new();
+    let mut pending = Vec::new();
+    for segment in segments {
+        if !join(&mut pending, segment) {
+            words.extend_from_slice(&pending);
+            pending.clear();
+            pending.extend_from_slice(segment);
+        }
+    }
+    words.extend_from_slice(&pending);
+    match submit(&words) {
+        Ok(()) => Ok(()),
+        Err(e) if segments.len() <= 1 => Err(e),
+        Err(_) => {
+            let (first, second) = segments.split_at(segments.len() / 2);
+            let first = send_batch(first, submit);
+            let second = send_batch(second, submit);
+            first.and(second)
+        }
+    }
+}
+
+/// Append `next`'s instances to `last` when both are a scissor and one draw of the same
+/// opaque, non-sampling pipeline, colour and scissor: one draw of both instance lists draws
+/// the same pixels in the same order. Returns whether it joined.
+fn join(last: &mut Vec<u32>, next: &[u32]) -> bool {
+    use abi::{draw, stream::cmd};
+    const SCISSOR: usize = 6;
+    let single = |w: &[u32]| w.len() > SCISSOR + 1 && w[SCISSOR + 1] as usize == w.len() - SCISSOR;
+    if !single(last) || !single(next) || last[..SCISSOR + 1] != next[..SCISSOR + 1] {
+        return false;
+    }
+    // The header up to the instance count, and where the count and instances are.
+    let (header, count) = match next[SCISSOR] {
+        cmd::DRAW => (SCISSOR + 4, SCISSOR + 4),
+        draw::COMMAND => (SCISSOR + 9, SCISSOR + 9),
+        _ => return false,
+    };
+    let pipe = next[SCISSOR + 2];
+    let opaque = next[SCISSOR] == cmd::DRAW || (!draw::blended(pipe) && !draw::sampled(pipe));
+    if !opaque || last[SCISSOR + 2..header] != next[SCISSOR + 2..header] {
+        return false;
+    }
+    last[count] += next[count];
+    last[SCISSOR + 1] += (next.len() - count - 1) as u32;
+    last.extend_from_slice(&next[count + 1..]);
+    true
 }
 
 /// Convert canonical BGRA rows (a completed readback) into `format`'s layout: the channel
@@ -410,4 +560,79 @@ pub fn convert(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join;
+    use bgl::Instance;
+    use libbreenix::gpu::abi::{pipeline, stream::encode};
+
+    fn segment(encode_draw: impl FnOnce(&mut alloc::vec::Vec<u32>)) -> alloc::vec::Vec<u32> {
+        let mut words = alloc::vec![8, 6, 0, 0, 64, 64];
+        encode_draw(&mut words);
+        words
+    }
+
+    #[test]
+    fn quota_retry_splits_joined_gradients_at_original_shape_boundaries() {
+        use libbreenix::gpu::abi::{self, stream::{self, Resolver, TargetInfo, SourceInfo}};
+        struct Resources;
+        impl Resolver for Resources {
+            fn target(&self, handle: u64) -> Option<TargetInfo> {
+                (handle == 1).then_some(TargetInfo { width: 256, height: 128, invalid: false, format: abi::format::B8G8R8A8 })
+            }
+            fn source(&self, _: u64) -> Option<SourceInfo> { None }
+            fn buffer_size(&self, _: u64) -> Option<u64> { None }
+            fn buffer_rect(&self, _: u64, _: u64) -> [i32; 4] { unreachable!() }
+        }
+        let mut params = [0; 16];
+        params[1] = 128;
+        params[2] = 0xffffffff;
+        let mut shape = alloc::vec![8, 6, 0, 0, 256, 128];
+        abi::draw::encode(&mut shape, pipeline::GRADIENT_V, 0xff000000, 0, 0, 0,
+            &[Instance { rect: [0, 0, 256, 128], params }]);
+        let segments = alloc::vec![shape.clone(), shape.clone(), shape];
+        let mut accepted = 0;
+        let mut refused = 0;
+        super::send_batch(&segments, &mut |commands| {
+            let mut words = alloc::vec::Vec::new();
+            encode::begin(&mut words, 1);
+            words.extend_from_slice(commands);
+            match stream::validate(words.as_slice(), &Resources) {
+                Ok(plan) => { accepted += plan.instances; Ok(()) }
+                Err(e) => {
+                    assert_eq!(e.error, stream::error::WORK_LIMIT);
+                    refused += 1;
+                    Err(-abi::errno::EDQUOT)
+                }
+            }
+        }).unwrap();
+        assert_eq!(refused, 1);
+        assert_eq!(accepted, 3);
+        assert_eq!(segments.len(), 3);
+    }
+
+    #[test]
+    fn adjacent_opaque_shapes_join_into_one_draw_of_both() {
+        let mut last = segment(|w| encode::draw(w, pipeline::SOLID, 7, &[[0, 0, 2, 2]]));
+        assert!(join(&mut last, &segment(|w| encode::draw(w, pipeline::SOLID, 7, &[[4, 4, 6, 6], [8, 8, 9, 9]]))));
+        assert_eq!(last, segment(|w| encode::draw(w, pipeline::SOLID, 7, &[[0, 0, 2, 2], [4, 4, 6, 6], [8, 8, 9, 9]])));
+        let line = |rect| Instance { rect, params: [1; 16] };
+        let mut last = segment(|w| libbreenix::gpu::abi::draw::encode(w, pipeline::LINE, 7, 0, 0, 0, &[line([0, 0, 4, 4])]));
+        assert!(join(&mut last, &segment(|w| libbreenix::gpu::abi::draw::encode(w, pipeline::LINE, 7, 0, 0, 0, &[line([2, 2, 6, 6])]))));
+        assert_eq!(last, segment(|w| libbreenix::gpu::abi::draw::encode(w, pipeline::LINE, 7, 0, 0, 0, &[line([0, 0, 4, 4]), line([2, 2, 6, 6])])));
+    }
+
+    #[test]
+    fn other_colours_scissors_and_blended_draws_stay_apart() {
+        let mut last = segment(|w| encode::draw(w, pipeline::SOLID, 7, &[[0, 0, 2, 2]]));
+        assert!(!join(&mut last, &segment(|w| encode::draw(w, pipeline::SOLID, 8, &[[0, 0, 2, 2]]))));
+        let mut other = alloc::vec![8, 6, 0, 0, 32, 32];
+        encode::draw(&mut other, pipeline::SOLID, 7, &[[0, 0, 2, 2]]);
+        assert!(!join(&mut last, &other));
+        let over = |rect| Instance { rect, params: [0; 16] };
+        let mut last = segment(|w| libbreenix::gpu::abi::draw::encode(w, pipeline::OVER, 7, 5, 0, 0, &[over([0, 0, 2, 2])]));
+        assert!(!join(&mut last, &segment(|w| libbreenix::gpu::abi::draw::encode(w, pipeline::OVER, 7, 5, 0, 0, &[over([4, 4, 6, 6])]))));
+    }
 }

@@ -2,7 +2,7 @@
 //! Expected bytes come only from contract rectangles, colours and formulas.
 use super::stage::{self, Finale, Image, Milestone, Run, Spotlight, Stamp, Tile};
 use libgfx_ref::{color::Color, framebuf::FrameBuf};
-use libfont::{CachedFont,Font};
+use libgfx_ref::ttf_font::{CachedFont,Font};
 thread_local! {static DISPLAY_SCALE:std::cell::Cell<usize>=const{std::cell::Cell::new(1)};}
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.

@@ -9,9 +9,9 @@ pub mod slider;
 pub mod tab_bar;
 pub mod text_field;
 
-use libgfx_ref::color::Color;
-use libgfx_ref::framebuf::FrameBuf;
-use libgfx_ref::shapes;
+use libgfx::color::Color;
+use libgfx::surface::Surface as FrameBuf;
+use crate::drawing as shapes;
 
 use crate::input::{InputState, WidgetEvent};
 use crate::rect::Rect;

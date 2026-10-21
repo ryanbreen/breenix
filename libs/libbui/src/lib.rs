@@ -20,3 +20,5 @@ pub mod widget;
 pub use input::{InputState, Key, KeyInput, WidgetEvent};
 pub use rect::Rect;
 pub use theme::Theme;
+
+mod drawing;

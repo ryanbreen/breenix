@@ -1,5 +1,5 @@
 //! Atomic font configuration reloads, paced by the UI clock (BreenGL §9).
-use libfont::{CachedFont, Font};
+use libgfx::ttf_font::{CachedFont, Font};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 
