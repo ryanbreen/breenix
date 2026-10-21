@@ -284,8 +284,8 @@ impl Gpu {
         if r != 0 {
             return Err(std::format!("stage render: errno {}, status {}", -r, waited.status));
         }
-        // The runner keeps the display through the run; this is idempotent while it does,
-        // and the stack has restored its frame after any case that took the display.
+        // The stage holds the display between cases (idempotent while it does) and gives
+        // it back while a case runs (`release`).
         graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
         let (r, presented) = gpu::present(self.context, self.scanout);
         // The device's native success answer (gpu.md section 1.8, ruling 47).
@@ -299,7 +299,7 @@ impl Gpu {
 }
 
 /// Create the stage's GPU objects before the memory record's first sample, as the first
-/// draw would, so both samples count them. The runner keeps the display from here on.
+/// draw would, so both samples count them.
 pub(super) fn prepare() -> Result<(), String> {
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     let mut guard = GPU.lock().unwrap();
@@ -643,6 +643,15 @@ pub(super) fn begin() -> Result<(), String> {
     let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;
     if let Some(s) = SHOW.lock().unwrap().as_mut() { s.measured = Some(serial); }
     Ok(())
+}
+/// Before a case runs: the case's own process takes the display, so the stage gives it back
+/// rather than holding a stack entry under the case. Its next draw takes it again; an
+/// EPERM means the stage does not hold it.
+pub(super) fn release() -> Result<(), String> {
+    match graphics::give_back_display() {
+        Ok(()) | Err(crate::error::Error::Os(crate::errno::Errno::EPERM)) => Ok(()),
+        Err(e) => Err(std::format!("stage display give-back: {e}")),
+    }
 }
 pub(super) fn end() -> Result<(), String> {
     let serial = kernel_serial(process::getpid().map_err(|e| e.to_string())?.raw() as u64)?;

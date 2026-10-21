@@ -1205,6 +1205,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     }
     if screen.gui {
         screen.stage_result(crate::suite_stage::begin());
+        screen.stage_result(crate::suite_stage::release());
     }
     let window = if suite == "gpu" && name == "textures/upload-visibility" {
         match io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK) {
@@ -1492,8 +1493,8 @@ impl Screen {
     /// runs and prints its serial lines; on a small one the panel draws what fits.
     fn open(gui: bool, gpu: bool) -> Screen {
         if gui {
-            // The run stage owns the display for the whole run and presents on the GPU core;
-            // a case that takes the display is pushed above it and restores it on exit.
+            // The run stage presents on the GPU core and holds the display between cases;
+            // each case's own process takes it while the case runs.
             let stage_error = graphics::take_over_display().err().map(|e| std::format!("initialize GUI display: {e}"));
             return Screen { gui, stage_error, ..Screen::empty() };
         }
