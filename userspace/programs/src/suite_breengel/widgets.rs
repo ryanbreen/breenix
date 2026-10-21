@@ -1887,6 +1887,7 @@ fn text_entry_filepicker_scroll() -> CaseResult {
 }
 
 fn text_entry_filepicker_errors() -> CaseResult {
+    let scale=ui_scale();
     let mut p = picker_fixture(5);
     p.show_error(b"Permission denied");
     ensure(
@@ -1894,17 +1895,17 @@ fn text_entry_filepicker_errors() -> CaseResult {
         "15",
         "picker did not retain error and remove entries",
     )?;
-    let mut g = Drawn::bgrx(320, 250);
+    let mut g = ui_frame(320, 250);
     g.reset(PAPER);
     p.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
     let width = sans_width(b"Permission denied") as usize;
-    let mut expected = Guarded::bgrx(width, 16);
+    let mut expected = Guarded::bgrx(width*scale, 16*scale);
     expected.reset(Theme::dark().panel_bg);
     sans_draw(&mut expected.fb(), b"Permission denied", 0, 0, Theme::dark().text_primary);
-    for y in 0..16 {
-        for x in 0..width {
-            ensure(g.color(x + 5, y + 29) == expected.color(x, y), "15",
+    for y in 0..16*scale {
+        for x in 0..width*scale {
+            ensure(g.color(x + 5*scale, y + 29*scale) == expected.color(x, y), "15",
                 format!("error text differs at {x},{y}"))?;
         }
     }
