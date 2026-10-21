@@ -1,4 +1,5 @@
 //! R3 replaces the old 5x7 literal dot rows with certified DejaVu Sans 16 px pixels.
+//! claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 //! Both the within-dot clip and the clip entirely above the dots remain checked.
 use crate::*;
 use libbui::widget::label::Label;

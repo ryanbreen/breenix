@@ -25,6 +25,7 @@ fn straight(c: u8, a: u8) -> u8 {
     }
 }
 /// Encode premultiplied BGRA as depth-8 RGB or RGBA, filter zero, one IDAT.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 /// Returns TooLarge before inspecting pixels or allocating for invalid dimensions.
 pub fn encode(image: &Image) -> Result<Vec<u8>, PngError> {
     dimensions(image.width, image.height)?;

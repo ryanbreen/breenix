@@ -49,5 +49,14 @@ pub fn draw_text(fb:&mut Surface,text:&[u8],x:i32,y:i32,c:Color,theme:&Theme) {
     }
 }
 pub fn draw_text_centered(fb:&mut Surface,text:&[u8],rect:&Rect,c:Color,theme:&Theme) {
-    draw_text(fb,text,rect.x+(rect.w-text_width(text,theme))/2,rect.y+(rect.h-16)/2,c,theme);
+    if theme.use_bitmap_font {
+        draw_text(fb,text,rect.x+(rect.w-text_width(text,theme))/2,rect.y+(rect.h-16)/2,c,theme);
+    } else {
+        let s=fb.ui_scale() as i32;
+        with_font(|font| {
+            let width=ttf_font::text_width_bytes(font,text,16.0*s as f32);
+            ttf_font::draw_text_bytes(fb,font,text,rect.x.saturating_mul(s)+(rect.w.saturating_mul(s)-width)/2,
+                rect.y.saturating_mul(s)+(rect.h.saturating_mul(s)-16*s)/2,16.0*s as f32,c);
+        });
+    }
 }

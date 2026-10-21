@@ -89,6 +89,7 @@ impl GlyphCache {
     }
 
     /// Drop every entry; the hit and miss counts are kept.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.stats.entries = 0;

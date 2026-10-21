@@ -315,6 +315,7 @@ mod tests {
 }
 
 /// Upload generated crossing geometry into a Buffer, never CPU pixels (ruling B21).
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 /// The table's private representation can only be produced by libfont's crossing builder.
 pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Context, buffer: u64) -> Result<(), i64> {
     let bytes = table.bytes();

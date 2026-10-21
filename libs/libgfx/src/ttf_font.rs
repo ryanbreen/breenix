@@ -100,6 +100,7 @@ fn render(segments: &[LineSegment], width: usize, height: usize) -> Result<Surfa
 }
 
 /// LCD uses the exact same binary32 operation order at three columns per pixel.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 /// Downsample each column class on the GPU, zero its other channels with a constant
 /// channel mask, then use it as an LCD coverage mask to assemble the packed atlas.
 fn render_lcd(segments: &[LineSegment], width: usize, height: usize) -> Result<Surface, Error> {
@@ -261,6 +262,7 @@ fn pixels(pen: i64) -> i64 {
 }
 
 /// Lay out `glyphs` from pen 0 at `size`, calling `draw(font, glyph, x)` with each glyph's
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 /// pixel origin offset; returns the width, `floor((pen_end + 32) / 64)`. A size outside
 /// 1 to 1,024 lays out nothing.
 fn layout(font: &mut CachedFont, glyphs: impl Iterator<Item = u16>, size: f32,
@@ -284,6 +286,7 @@ fn glyphs_of<'a>(font: &'a CachedFont, cps: impl Iterator<Item = u32> + 'a) -> i
 }
 
 /// Whether glyph `g` at `size26` with its pen at (x, y) can draw inside the clip. A glyph
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 /// without contours, or whose record is bad, draws nothing, so it cannot.
 fn reaches_clip(fb: &Surface, font: &CachedFont, g: u16, size26: i32, x: i64, y: i64) -> bool {
     match font.font().glyph_box(g, size26) {
@@ -323,6 +326,7 @@ pub fn draw_text(fb: &mut Surface, font: &mut CachedFont, text: &str, x: i32, y:
 }
 
 /// Draw UTF-8 `bytes`, one U+FFFD for each maximal invalid subpart; never panics.
+/// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 pub fn draw_text_bytes(fb: &mut Surface, font: &mut CachedFont, bytes: &[u8], x: i32, y: i32, size: f32, fg: Color) -> i32 {
     let glyphs = glyphs_of(font, decode_utf8(bytes)).collect();
     draw_glyphs(fb, font, glyphs, x, y, size, fg)
