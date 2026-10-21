@@ -1,11 +1,11 @@
 //! A login session on the console, a numbered virtual terminal or a
 //! pseudo-terminal line (`pts/N`).
 //!
-//! Before the prompt the terminal is revoked from the descriptions still
-//! open on it (vhangup), so a process left from the last session cannot read
-//! the next login's input. A terminal that the last session left owned by its account is
-//! returned to root (mode 0620, group tty), and the logout is recorded in the
-//! authentication log (`docs/users/design.md`, section 3).
+//! Before the prompt a terminal that the last session left owned by its
+//! account is returned to root (mode 0620, group tty) and the logout is
+//! recorded in the authentication log (`docs/users/design.md`, section 3); then
+//! the terminal is revoked from the descriptions still open on it (vhangup), so
+//! a process left from the last session cannot read the next login's input.
 use libbreenix::{io, process, signal, termios, types::Fd};
 use std::io::Write;
 use std::os::unix::io::FromRawFd;
@@ -30,9 +30,11 @@ fn run(log: &mut Option<std::fs::File>) -> Result<(), String> {
     let sid = check(process::setsid())?;
     let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | O_NOCTTY))?;
     check(termios::set_controlling_terminal(fd))?;
-    // Revoke the terminal from the descriptions still open on it, so a
-    // process left from the last session can neither read the next login's
-    // input nor write to its screen, then open it again for this session.
+    // Give the line back to root first, so the last session's account cannot
+    // open it again, then revoke it from the descriptions still open on it, so
+    // a process left from that session can neither read the next login's input
+    // nor write to its screen, and open it again for this session.
+    return_terminal(fd.raw() as i32)?;
     check(termios::vhangup().map_err(|e| format!("revoke {path}: {e}")))?;
     check(io::close(fd))?;
     let fd = check(libbreenix::fs::open(&path, libbreenix::fs::O_RDWR | O_NOCTTY))?;
@@ -52,7 +54,6 @@ fn run(log: &mut Option<std::fs::File>) -> Result<(), String> {
     t.c_cc[0] = 3; t.c_cc[1] = 28; t.c_cc[2] = 127; t.c_cc[3] = 21;
     t.c_cc[4] = 4; t.c_cc[10] = 26;
     check(termios::tcsetattr(Fd::STDIN, termios::TCSAFLUSH, &t))?;
-    return_terminal()?;
     if console { check(termios::console_input_proof(Fd::STDIN, 0))?; }
     let prompt = b"[getty] console acquired\n\nBreenix login: ";
     if let Some(log) = log { check(log.write_all(prompt))?; }
@@ -78,13 +79,13 @@ fn run(log: &mut Option<std::fs::File>) -> Result<(), String> {
 
 /// The previous session's account still owns the terminal: give it back to
 /// root and record the logout.
-fn return_terminal() -> Result<(), String> {
+fn return_terminal(fd: i32) -> Result<(), String> {
     use libbreenix::accounts::{self, session};
-    let Some(owner) = session::terminal_owner(0).filter(|uid| *uid != 0) else { return Ok(()); };
-    session::return_terminal(0)?;
+    let Some(owner) = session::terminal_owner(fd).filter(|uid| *uid != 0) else { return Ok(()); };
+    session::return_terminal(fd)?;
     let root = std::path::Path::new("/");
     let name = session::account_by_uid(root, owner).map(|a| a.name).unwrap_or_else(|| owner.to_string());
-    let tty = session::terminal_name(0).unwrap_or_else(|| "-".into());
+    let tty = session::terminal_name(fd).unwrap_or_else(|| "-".into());
     let record = session::Record { program: "getty", user: &name, target: &name, tty: &tty, refused: None, cmd: "logout" };
     if let Err(why) = accounts::log(root, &record) { eprintln!("getty: auth log: {why}"); }
     Ok(())
