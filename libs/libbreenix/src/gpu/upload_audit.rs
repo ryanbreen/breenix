@@ -16,6 +16,8 @@ pub struct Mark {
 #[derive(Default)]
 struct Audit {
     active: bool,
+    /// Declarations refused since `start` because a row lies outside the program image.
+    nonstatic: u64,
     tables: Vec<Table>,
     resources: BTreeMap<u64, abi::ResourceCreate>,
     mark: Mark,
@@ -23,6 +25,7 @@ struct Audit {
 }
 static AUDIT: Mutex<Audit> = Mutex::new(Audit {
     active: false,
+    nonstatic: 0,
     tables: Vec::new(),
     resources: BTreeMap::new(),
     mark: Mark {
@@ -51,8 +54,10 @@ pub fn declare(bytes: &'static [u8]) {
     declare_rows(std::vec![bytes]);
 }
 /// A static table may be stored as separate static rows (the bitmap-font dependency).
+/// The rows must lie in the executable's read-only image: a leaked heap allocation or a
+/// writable static is refused, whatever its lifetime says.
 pub fn declare_rows(rows: Vec<&'static [u8]>) {
-    locked().tables.push(Table { rows });
+    locked().declare(rows, crate::image::read_only);
 }
 pub fn mark() -> Mark {
     locked().mark
@@ -80,9 +85,20 @@ pub fn hashes() -> std::string::String {
     text
 }
 impl Audit {
+    fn declare(&mut self, rows: Vec<&'static [u8]>, read_only: impl Fn(&[u8]) -> bool) {
+        if rows.iter().all(|r| read_only(r)) {
+            self.tables.push(Table { rows });
+        } else {
+            self.nonstatic += 1;
+        }
+    }
+
     fn refusal(&self, before: Mark, image: u64, fixture: u64) -> Option<&'static str> {
         if image != 0 {
             Some("cpu-image")
+        } else if self.nonstatic != 0 {
+            // Sticky for the case: declarations precede the marks callers take.
+            Some("non-static-table")
         } else if self.mark.refused != before.refused {
             Some("passing-oracle")
         } else if self.mark.image - before.image != image
@@ -168,7 +184,7 @@ unsafe fn observe_in(a: &mut Audit, op: u32, arg: *mut u8, len: usize) {
 mod tests {
     use super::*;
     use abi::Plain;
-    const FONT: &[u8] = &[14, 17, 17, 31, 17, 17, 17, 4, 12, 4, 4, 4, 4, 14];
+    static FONT: &[u8] = &[14, 17, 17, 31, 17, 17, 17, 4, 12, 4, 4, 4, 4, 14];
     fn audit() -> Audit {
         Audit {
             active: true,
@@ -271,6 +287,18 @@ mod tests {
         let before = a.mark;
         upload(&mut a, FONT, abi::purpose::FIXTURE, 7);
         assert_eq!(a.refusal(before, 0, 7), Some("passing-oracle"));
+    }
+    #[test]
+    fn table_outside_the_program_image_is_refused() {
+        let mut a = Audit { active: true, ..Audit::default() };
+        let leaked: &'static [u8] = std::vec![14, 17, 17, 31].leak();
+        // Only FONT is in the (simulated) read-only image; the leaked copy has its bytes.
+        let image = |r: &[u8]| core::ptr::eq(r, FONT);
+        a.declare(std::vec![FONT], image);
+        assert_eq!(a.refusal(a.mark, 0, 0), None);
+        a.declare(std::vec![FONT, leaked], image);
+        assert_eq!(a.tables.len(), 1, "a table with a leaked row is not declared");
+        assert_eq!(a.refusal(a.mark, 0, 0), Some("non-static-table"));
     }
     #[test]
     fn once_per_context_table_upload_allows_later_runs_without_uploads() {
