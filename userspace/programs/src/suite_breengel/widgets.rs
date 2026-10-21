@@ -525,11 +525,13 @@ fn text_fontwatch_idle() -> CaseResult {
         }).map_err(|e| format!("idle dispatch: {e:?}")).cite("9.3")?;
         ensure(input_events == 0 && font_events == usize::from(changed), "9.3",
             format!("idle epoch {ns}: font events={font_events}, input events={input_events}"))?;
-        let mut font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
-        let size = win.mono_size();
-        let fb = win.framebuf();
-        fb.clear(PAPER);
-        ttf_font::draw_text(fb, &mut font, "Wi é A", 8, 40, size, Color::WHITE);
+        let font = win.take_mono_font().ok_or("idle window lost mono font").cite("9.3")?;
+        let surface = win.surface().map_err(|e| format!("idle surface: {e:?}")).cite("9.3")?;
+        surface.clear(libgfx::color::Color::rgb(PAPER.r, PAPER.g, PAPER.b));
+        // gpu-text owns the GPU TrueType draw and this case's remaining migration.
+        // Keep the first-commit capture, independent pixel oracle and clock checks below.
+        Err::<(), _>("gpu-text: text/fontwatch-idle needs GPU TrueType drawing on Window::surface")
+            .cite("9.3")?;
         win.put_mono_font(Some(font));
         let commit = win.commit(&[libbreenix::window::abi::Rect::new(0, 0, 200, 70)])
             .map_err(|e| format!("idle commit: {e:?}")).cite("9.3")?;

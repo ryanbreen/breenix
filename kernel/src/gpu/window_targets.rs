@@ -14,14 +14,20 @@ pub(super) struct Writer {
     pub(super) fence: u64,
     status: core::sync::atomic::AtomicU32,
     ended: core::sync::atomic::AtomicBool,
+    cancelled: core::sync::atomic::AtomicBool,
 }
 impl Writer {
     pub(super) fn new(ctx: u32, n: u32, serial: u64, fence: u64) -> Self {
         Self { ctx, n, serial, fence, status: core::sync::atomic::AtomicU32::new(u32::MAX),
-            ended: core::sync::atomic::AtomicBool::new(false) }
+            ended: core::sync::atomic::AtomicBool::new(false),
+            cancelled: core::sync::atomic::AtomicBool::new(false) }
     }
     pub(super) fn publish(&self, status: u32) { self.status.store(status, Ordering::Release); }
     pub(super) fn end_access(&self) { self.ended.store(true, Ordering::Release); }
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.end_access();
+    }
     pub(super) fn ended(&self) -> bool { self.ended.load(Ordering::Acquire) }
 }
 
@@ -36,6 +42,7 @@ impl Seal {
     pub fn outcome(&self) -> Option<Result<(), i32>> {
         let mut pending = false;
         for writer in &self.writers {
+            if writer.cancelled.load(Ordering::Acquire) { continue; }
             match writer.status.load(Ordering::Acquire) {
                 u32::MAX => pending = true,
                 fence_status::OK => pending |= !writer.ended(),

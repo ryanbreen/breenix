@@ -11,7 +11,7 @@ use libbreenix::errno::Errno;
 use libbreenix::error::Error;
 use libbreenix::window::{self, abi};
 use libfont::CachedFont;
-use libgfx_ref::framebuf::{Format, FrameBuf};
+use libgfx::surface::{Format, Surface};
 
 use crate::event::{Delivered, Event};
 use crate::font::FontWatcher;
@@ -57,10 +57,7 @@ pub struct Window {
     height: u32,
     buffers: [u64; 3],
     held: Option<Held>,
-    fb: Option<FrameBuf>,
     gpu: Option<libgfx::surface::Surface>,
-    /// Pixels drawn when no buffer could be acquired (the window was destroyed under us).
-    scratch_fb: Option<FrameBuf>,
     font_watcher: FontWatcher,
     /// The highest serial whose handler has returned.
     handled: u64,
@@ -99,9 +96,7 @@ impl Window {
             height,
             buffers: c.buffer,
             held: None,
-            fb: None,
             gpu: None,
-            scratch_fb: None,
             font_watcher,
             handled: 0,
             since_pixel: Vec::new(),
@@ -112,27 +107,10 @@ impl Window {
         })
     }
 
-    /// Refuse a size no `FrameBuf` can describe before the kernel makes buffers of it, so a
-    /// buffer `ACQUIRE` hands out can always be drawn into.
+    /// Validate the GPU surface layout before allocating the window targets.
     fn validate_size(width: u32, height: u32) -> Result<(), Error> {
-        FrameBuf::validate_layout(width as usize, height as usize, width as usize * 4, Format::BGRX)
+        Surface::validate_layout(width as usize, height as usize, width as usize * 4, Format::BGRX)
             .map_err(|_| Error::Os(Errno::EINVAL))
-    }
-
-    fn frame_over(&self, buffer: u32) -> Result<FrameBuf, Error> {
-        let stride = self.width as usize * 4;
-        // SAFETY: ACQUIRE made this buffer, `height` rows of `stride` bytes, writable by this
-        // process until it is committed; the FrameBuf is dropped at the commit.
-        unsafe {
-            FrameBuf::from_raw_format(
-                self.buffers[buffer as usize] as *mut u8,
-                self.width as usize,
-                self.height as usize,
-                stride,
-                Format::BGRX,
-            )
-        }
-        .map_err(|_| Error::Os(Errno::EINVAL))
     }
 
     /// Take a buffer to draw the next frame into, waiting up to `timeout_ns` (`u64::MAX`
@@ -178,24 +156,6 @@ impl Window {
         Ok(self.gpu.as_mut().expect("GPU view accompanies acquisition"))
     }
 
-    /// The frame being drawn: the acquired buffer, acquired now if none is held. When no buffer
-    /// can be acquired (the window is gone), drawing goes to a scratch frame nobody sees.
-    pub fn framebuf(&mut self) -> &mut FrameBuf {
-        if self.held.is_none() && self.acquire(u64::MAX).is_err() {
-            if self.scratch_fb.is_none() {
-                self.scratch_fb = Some(
-                    FrameBuf::new(self.width as usize, self.height as usize, Format::BGRX)
-                        .expect("Breengel: no memory for a scratch frame"),
-                );
-            }
-            return self.scratch_fb.as_mut().unwrap();
-        }
-        if self.fb.is_none() {
-            self.fb=Some(self.frame_over(self.held.as_ref().unwrap().info.buffer).expect("window frame layout"));
-        }
-        self.fb.as_mut().unwrap()
-    }
-
     /// A commit's metadata (section 17.1): the processed watermark, the compositor epoch the
     /// window last heard of, and the time on the UI clock with its real-clock read count.
     fn meta(&self, processed_serial: u64) -> abi::Meta {
@@ -230,7 +190,6 @@ impl Window {
         };
         let processed = h.handled_at_acquire;
         let meta = self.meta(processed);
-        self.fb = None;
         let surface = self.gpu.take();
         let c = match window::commit(self.id, h.info.buffer, damage, Some(&meta)) {
             Ok(c) => c,
@@ -269,8 +228,8 @@ impl Window {
         Ok(())
     }
 
-    /// Commit the frame drawn into `framebuf` with whole-window damage, or new metadata alone
-    /// when nothing was acquired.
+    /// Commit the frame drawn into `surface` with whole-window damage, or new metadata alone
+    /// when no buffer was acquired.
     pub fn present(&mut self) -> Result<(), Error> {
         let whole = abi::Rect::new(0, 0, self.width as i32, self.height as i32);
         self.commit(&[whole]).map(|_| ())
@@ -447,8 +406,6 @@ impl Window {
         Self::validate_size(new_width, new_height)?;
         let r = window::resize(self.id, new_width, new_height)?;
         self.held = None;
-        self.fb = None;
-        self.scratch_fb = None;
         self.gpu = None;
         self.buffers = r.buffer;
         self.width = new_width;
@@ -459,7 +416,6 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        self.fb = None;
         let _ = window::destroy(self.id);
     }
 }

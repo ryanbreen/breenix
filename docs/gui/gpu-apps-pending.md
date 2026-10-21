@@ -19,6 +19,9 @@ main; gpu.md section 2.7 requires gpu-apps completion first.
 | `biconkit` | [#2207](https://github.com/ryanbreen/breenix/issues/2207) | Window icons; planned demo retirement |
 | `guskit` | [#2207](https://github.com/ryanbreen/breenix/issues/2207) | Window canvas; planned demo retirement |
 
-The retained `text/fontwatch-idle` suite case is outside this application list. Its
-GPU TrueType renderer and its migration from `Window::framebuf` are still required
-from gpu-text before the window library can remove that API. The case is preserved.
+The retained `text/fontwatch-idle` suite case is outside this application list.
+It acquires a GPU Surface and explicitly fails naming gpu-text until that lane adds
+GPU TrueType drawing. Its first-commit capture, independent pixel comparison and
+clock assertions remain in place. It does not dereference a target handle or upload
+CPU-rendered text. The GPU text work is tracked by
+[#2206](https://github.com/ryanbreen/breenix/pull/2206).

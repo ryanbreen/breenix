@@ -3422,8 +3422,9 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
     let release_slot = |accepted: bool| {
         with_core(|c| {
             if !accepted {
-                writer.publish(fence_status::DEVICE_ERROR);
-                writer.end_access();
+                // This admission sent no device work: a seal that already captured it must
+                // treat it as cancelled, rather than as a failed accepted GPU write.
+                writer.cancel();
                 if let Some(ctx) = c.contexts.get_mut(&id) {
                     ctx.outcomes.insert(writer.n, (fence_status::DEVICE_ERROR, 0));
                     ctx.early.insert(writer.n);
@@ -3432,6 +3433,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                 for rid in &written {
                     if let Some(r) = c.resources.get_mut(rid) {
                         r.writers = r.writers.saturating_sub(1);
+                        r.accepted.retain(|w| !Arc::ptr_eq(w, &writer));
                     }
                     c.free_if_unused(*rid);
                 }
