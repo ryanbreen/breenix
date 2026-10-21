@@ -1036,6 +1036,7 @@ fn widgets_tabbar_select() -> CaseResult {
 }
 
 fn widgets_tabbar_overflow() -> CaseResult {
+    let scale=ui_scale();
     tab_pixels::run();
 
     let mut tabs = TabBar::new(
@@ -1067,15 +1068,15 @@ fn widgets_tabbar_overflow() -> CaseResult {
         "14.3",
         "scrolling back did not reach first tab",
     )?;
-    let mut g = Drawn::bgrx(100, 50);
+    let mut g = ui_frame(100, 50);
     g.reset(PAPER);
     tabs.draw(&mut g.fb(), &Theme::dark());
     snapshot(&g)?;
-    ensure(g.color(12, 10) == Theme::dark().widget_bg_active
-        && g.color(12, 30) == Theme::dark().accent, "14.3", "tab fill or selected highlight missing")?;
-    for y in 0..50 {
-        for x in 0..100 {
-            if !in_rect(x as i64, y as i64, 10, 8, 70, 24) {
+    ensure(g.color(12*scale, 10*scale) == Theme::dark().widget_bg_active
+        && g.color(12*scale, 30*scale) == Theme::dark().accent, "14.3", "tab fill or selected highlight missing")?;
+    for y in 0..50*scale {
+        for x in 0..100*scale {
+            if !in_rect(x as i64, y as i64, 10*scale as i64, 8*scale as i64, 70*scale as i64, 24*scale as i64) {
                 ensure(
                     g.color(x, y) == PAPER,
                     "14.3",
