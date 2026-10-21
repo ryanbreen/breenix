@@ -575,6 +575,45 @@ mod tests {
     }
 
     #[test]
+    fn quota_retry_splits_joined_gradients_at_original_shape_boundaries() {
+        use libbreenix::gpu::abi::{self, stream::{self, Resolver, TargetInfo, SourceInfo}};
+        struct Resources;
+        impl Resolver for Resources {
+            fn target(&self, handle: u64) -> Option<TargetInfo> {
+                (handle == 1).then_some(TargetInfo { width: 256, height: 128, invalid: false, format: abi::format::B8G8R8A8 })
+            }
+            fn source(&self, _: u64) -> Option<SourceInfo> { None }
+            fn buffer_size(&self, _: u64) -> Option<u64> { None }
+            fn buffer_rect(&self, _: u64, _: u64) -> [i32; 4] { unreachable!() }
+        }
+        let mut params = [0; 16];
+        params[1] = 128;
+        params[2] = 0xffffffff;
+        let mut shape = alloc::vec![8, 6, 0, 0, 256, 128];
+        abi::draw::encode(&mut shape, pipeline::GRADIENT_V, 0xff000000, 0, 0, 0,
+            &[Instance { rect: [0, 0, 256, 128], params }]);
+        let segments = alloc::vec![shape.clone(), shape.clone(), shape];
+        let mut accepted = 0;
+        let mut refused = 0;
+        super::send_batch(&segments, &mut |commands| {
+            let mut words = alloc::vec::Vec::new();
+            encode::begin(&mut words, 1);
+            words.extend_from_slice(commands);
+            match stream::validate(words.as_slice(), &Resources) {
+                Ok(plan) => { accepted += plan.instances; Ok(()) }
+                Err(e) => {
+                    assert_eq!(e.error, stream::error::WORK_LIMIT);
+                    refused += 1;
+                    Err(-abi::errno::EDQUOT)
+                }
+            }
+        }).unwrap();
+        assert_eq!(refused, 1);
+        assert_eq!(accepted, 3);
+        assert_eq!(segments.len(), 3);
+    }
+
+    #[test]
     fn adjacent_opaque_shapes_join_into_one_draw_of_both() {
         let mut last = segment(|w| encode::draw(w, pipeline::SOLID, 7, &[[0, 0, 2, 2]]));
         assert!(join(&mut last, &segment(|w| encode::draw(w, pipeline::SOLID, 7, &[[4, 4, 6, 6], [8, 8, 9, 9]]))));
