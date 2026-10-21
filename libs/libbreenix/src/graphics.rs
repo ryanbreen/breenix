@@ -781,6 +781,9 @@ pub mod input_event_type {
 ///
 /// Called by BWM to route keyboard/mouse events to the focused window.
 /// If the client is blocked on `read_window_input`, it will be woken.
+/// Returns `EAGAIN` when the ring is full; nothing is queued in that case.
+/// Retain the event and retry after the client reads to avoid losing input.
+/// claim-lint:ok: kernel/src/syscall/graphics/input_ring.rs refuses admission before mutating a full ring (#2163).
 pub fn write_window_input(buffer_id: u32, event: &WindowInputEvent) -> Result<(), Error> {
     let event_ptr = event as *const WindowInputEvent as u64;
     let cmd = FbDrawCmd {
