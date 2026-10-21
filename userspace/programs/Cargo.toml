@@ -815,3 +815,6 @@ path = "src/console_login_shell.rs"
 [[bin]]
 name = "gpu_fault_acceptance"
 path = "src/gpu_fault_acceptance.rs"
+
+[features]
+encode-checks = []
