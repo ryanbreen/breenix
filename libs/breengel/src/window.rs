@@ -58,6 +58,7 @@ pub struct Window {
     buffers: [u64; 3],
     held: Option<Held>,
     fb: Option<FrameBuf>,
+    gpu: Option<libgfx::surface::Surface>,
     /// Pixels drawn when no buffer could be acquired (the window was destroyed under us).
     scratch_fb: Option<FrameBuf>,
     font_watcher: FontWatcher,
@@ -98,6 +99,7 @@ impl Window {
             buffers: c.buffer,
             held: None,
             fb: None,
+            gpu: None,
             scratch_fb: None,
             font_watcher,
             handled: 0,
@@ -145,9 +147,24 @@ impl Window {
             replay_full: a.replay_full != 0,
             replay: a.replay[..(a.replay_count as usize).min(16)].to_vec(),
         };
-        self.fb = Some(self.frame_over(a.buffer)?);
+        self.gpu = Some(self.surface_over(a.buffer)?);
         self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled });
         Ok(info)
+    }
+
+    fn surface_over(&self, buffer:u32) -> Result<libgfx::surface::Surface,Error> {
+        libgfx::surface::Surface::from_window_target(self.buffers[buffer as usize],self.width as usize,self.height as usize)
+            .map_err(|e| match e {
+                libgfx::surface::SurfaceError::Device(r)=>Error::Os(Errno::from_raw(-r)),
+                _=>Error::Os(Errno::EINVAL),
+            })
+    }
+
+    /// The acquired GPU target. Errors preserve ACQUIRE's semantics; no scratch image
+    /// hides destruction, render failure or memory pressure.
+    pub fn surface(&mut self) -> Result<&mut libgfx::surface::Surface, Error> {
+        if self.held.is_none() { self.acquire(u64::MAX)?; }
+        Ok(self.gpu.as_mut().expect("GPU view accompanies acquisition"))
     }
 
     /// The frame being drawn: the acquired buffer, acquired now if none is held. When no buffer
@@ -161,6 +178,9 @@ impl Window {
                 );
             }
             return self.scratch_fb.as_mut().unwrap();
+        }
+        if self.fb.is_none() {
+            self.fb=Some(self.frame_over(self.held.as_ref().unwrap().info.buffer).expect("window frame layout"));
         }
         self.fb.as_mut().unwrap()
     }
@@ -182,20 +202,24 @@ impl Window {
     /// by a later frame, never by this one. A commit the kernel refuses while the buffer stays
     /// acquired (bad damage, say) keeps it held, so drawing can go on and commit again.
     pub fn commit(&mut self, damage: &[abi::Rect]) -> Result<Committed, Error> {
+        if let Some(e)=self.gpu.as_ref().and_then(|s|s.error()) {
+            return Err(Error::Os(Errno::from_raw(-e)));
+        }
         let Some(h) = self.held.take() else {
             return self.no_change();
         };
         let processed = h.handled_at_acquire;
         let meta = self.meta(processed);
         self.fb = None;
+        self.gpu = None;
         let c = match window::commit(self.id, h.info.buffer, damage, Some(&meta)) {
             Ok(c) => c,
             Err(e) => {
                 // ENOENT: the window is gone; EBUSY and EPERM: the buffer is not this
                 // window's acquisition any more. Anything else left it acquired.
                 if !matches!(e, Error::Os(Errno::ENOENT | Errno::EBUSY | Errno::EPERM)) {
-                    if let Ok(fb) = self.frame_over(h.info.buffer) {
-                        self.fb = Some(fb);
+                    if let Ok(surface) = self.surface_over(h.info.buffer) {
+                        self.gpu = Some(surface);
                         self.held = Some(h);
                     }
                 }
@@ -388,6 +412,7 @@ impl Window {
         self.held = None;
         self.fb = None;
         self.scratch_fb = None;
+        self.gpu = None;
         self.buffers = r.buffer;
         self.width = new_width;
         self.height = new_height;
