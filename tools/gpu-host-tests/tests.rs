@@ -6,6 +6,8 @@ const POISON: u32 = 0x3C5A_A5C3;
 mod gpu {
     pub mod dma {
         thread_local! { static FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+        thread_local! { static PAGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+        pub fn take_pages() -> usize { PAGES.with(|pages| pages.replace(0)) }
         pub fn fail_allocations(fail: bool) { FAIL.with(|flag| flag.set(fail)); }
         #[derive(Default)]
         pub struct WordBuf(Vec<u32>);
@@ -14,6 +16,7 @@ mod gpu {
             pub fn len(&self) -> usize { self.0.len() }
             pub fn push(&mut self, word: u32) -> bool {
                 if FAIL.with(|flag| flag.get()) { return false; }
+                if self.0.len() % 1024 == 0 { PAGES.with(|pages| pages.set(pages.get() + 1)); }
                 self.0.push(word); true
             }
             pub fn word(&self, index: usize) -> u32 { self.0[index] }
@@ -95,4 +98,19 @@ fn failed_vertex_storage_returns_no_command_stream() {
     encode::translate_at(&mut enc, &mut encode::Objects::new(), words.as_slice(), &View, extras(), 0);
     gpu::dma::fail_allocations(false);
     assert!(enc.finish().is_none());
+}
+
+#[test]
+fn clear_only_stream_preserves_its_command_storage() {
+    gpu::dma::take_pages();
+    let mut words = Vec::new();
+    gpu_abi::stream::encode::begin(&mut words, 1);
+    gpu_abi::stream::encode::clear(&mut words, 0xff112233);
+    let mut enc = encode::Enc::new();
+    encode::translate(&mut enc, &mut encode::Objects::new(), words.as_slice(), &View, extras());
+    let chunks = enc.finish().unwrap();
+    assert_eq!(chunks.len(), 1);
+    let first = chunks[0].word(0) & 255;
+    assert_ne!(first, wire::ccmd::RESOURCE_INLINE_WRITE);
+    assert_eq!(gpu::dma::take_pages(), 1, "clear-only translation allocated extra command storage");
 }
