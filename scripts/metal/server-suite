@@ -689,10 +689,16 @@ class Services:
             raise ValueError('the temporary service does not run as the operator account')
         if 'service-io-ok' not in self.console.run('cat /run/breenix/svc-suite-sleep.log'):
             raise ValueError('a service retained console input on a standard descriptor')
-        for name in ('svc-suite-missing', 'svc-suite-noexec', 'svc-suite-nobody'):
+        for name in ('svc-suite-missing', 'svc-suite-noexec'):
             result = self.probe.ssh('svc start ' + name)
             if result.returncode != 1 or 'did not start' not in result.stdout + result.stderr:
                 raise ValueError(name + ' reported success without executing')
+        # An unknown account has no owner who can authorize this request. Root
+        # must make it so the failed account lookup, rather than access control, is tested.
+        script = "svc start svc-suite-nobody; result=$?; printf 'svc-start-status=%s\\n' \"$result\""
+        failed = self.console.run('sh -c ' + shlex.quote(script))
+        if 'did not start' not in failed or 'svc-start-status=1' not in failed:
+            raise ValueError('an unknown service account did not fail its start request')
         bsshd = services['bsshd']['pid']
         for request in ('svc stop bsshd', 'svc reload'):
             result = self.probe.ssh(request)
