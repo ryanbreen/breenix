@@ -35,6 +35,7 @@ def key(repo):
     paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
         'userspace', 'libs', 'fonts', 'vendor/busybox', 'xtask',
         'rust-fork.toml', 'scripts/rust-fork.sh', 'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-libc-busybox.sh',
+        'scripts/install-layout.sh', 'scripts/check-layout.py',
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
         'x86_64-breenix-c.json', 'scripts/breenix-cc', 'scripts/libc-symbol-audit.py',
         'scripts/libc-clean-archive.py',

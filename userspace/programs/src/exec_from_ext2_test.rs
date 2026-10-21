@@ -122,7 +122,7 @@ fn main() {
         }
     }
 
-    // Test 4: exec("/test", ...) should return ENOTDIR/EACCES for directory
+    // Test 4: exec("/usr/libexec/breenix/test", ...) should return ENOTDIR/EACCES for directory
     println!("Test 4: exec directory");
     match fork() {
         Ok(ForkResult::Child) => {

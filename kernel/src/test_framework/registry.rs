@@ -8661,7 +8661,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     // Test 2: Read /test/nested.txt and verify content
     // Expected content: "Nested file content\n" (20 bytes)
     // -------------------------------------------------------------------------
-    const NESTED_PATH: &str = "/test/nested.txt";
+    const NESTED_PATH: &str = "/usr/libexec/breenix/test/nested.txt";
     const NESTED_EXPECTED: &[u8] = b"Nested file content\n";
 
     // Step 2a: Resolve the path
@@ -8693,18 +8693,18 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
 
     if nested_content.as_slice() != NESTED_EXPECTED {
         log::error!(
-            "/test/nested.txt content mismatch: expected {:?}, got {:?}",
+            "/usr/libexec/breenix/test/nested.txt content mismatch: expected {:?}, got {:?}",
             core::str::from_utf8(NESTED_EXPECTED),
             core::str::from_utf8(&nested_content)
         );
-        return TestResult::Fail("/test/nested.txt content mismatch");
+        return TestResult::Fail("/usr/libexec/breenix/test/nested.txt content mismatch");
     }
 
     // -------------------------------------------------------------------------
     // Test 3: Read a deeply nested file to test multi-level path resolution
     // Expected content: "Deep nested content\n" (20 bytes)
     // -------------------------------------------------------------------------
-    const DEEP_PATH: &str = "/deep/path/to/file/data.txt";
+    const DEEP_PATH: &str = "/usr/libexec/breenix/deep/path/to/file/data.txt";
     const DEEP_EXPECTED: &[u8] = b"Deep nested content\n";
 
     let deep_inode_num = match fs.resolve_path(DEEP_PATH) {

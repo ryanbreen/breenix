@@ -15,7 +15,7 @@ spec.loader.exec_module(check)
 class CheckTestBinariesTest(unittest.TestCase):
     def test_lists_come_from_the_kernel_sources(self):
         self.assertIn('fifo_fs_test', check.required_binaries())
-        self.assertIn('/usr/local/test/bin', check.search_dirs())
+        self.assertIn('/usr/libexec/breenix', check.search_dirs())
 
     def test_follows_symlinks_and_refuses_what_the_loader_cannot_load(self):
         debugfs = check.debugfs_path()
@@ -44,7 +44,7 @@ class CheckTestBinariesTest(unittest.TestCase):
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), str(disk), '4M'], check=True)
             names = ['in_bin', 'in_test_bin', 'relative', 'absolute', 'slow', 'empty', 'directory',
                      'empty_link', 'dangling', 'loop', 'missing_parent', 'file_parent', 'absent']
-            dirs = ['/bin', '/usr/local/cbin', '/usr/local/test/bin']
+            dirs = ['/bin', '/usr/local/cbin', '/usr/libexec/breenix']
             self.assertEqual(check.missing_binaries(disk, names, dirs, debugfs),
                              ['empty', 'directory', 'empty_link', 'missing_parent', 'file_parent', 'absent'])
 

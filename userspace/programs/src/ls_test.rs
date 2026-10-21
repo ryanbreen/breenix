@@ -179,7 +179,7 @@ fn main() {
     {
         let program = b"/bin/ls\0";
         let arg0 = b"ls\0".as_ptr();
-        let arg1 = b"/deep/path/to/file\0".as_ptr();
+        let arg1 = b"/usr/libexec/breenix/deep/path/to/file\0".as_ptr();
         let argv: [*const u8; 3] = [arg0, arg1, std::ptr::null()];
 
         let (exit_code, output) = run_and_capture(program, &argv);

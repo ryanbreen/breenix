@@ -68,14 +68,14 @@ struct AppEntry {
 }
 
 const APPS: &[AppEntry] = &[
-    AppEntry { name: "Terminal",     description: "Terminal emulator",     binary: b"/bin/bterm\0",       is_gui: true },
-    AppEntry { name: "System Check", description: "System health",        binary: b"/bin/bcheck\0",      is_gui: true },
-    AppEntry { name: "Log Viewer",   description: "View system logs",     binary: b"/bin/bless\0",       is_gui: true },
-    AppEntry { name: "Bounce",       description: "Physics demo",         binary: b"/bin/bounce\0",      is_gui: true },
-    AppEntry { name: "Gus Kit",      description: "Drawing app",          binary: b"/bin/guskit\0",      is_gui: true },
-    AppEntry { name: "Breenix Log",  description: "System log viewer",    binary: b"/bin/blog\0",        is_gui: true },
-    AppEntry { name: "Font Picker",  description: "Configure fonts",      binary: b"/bin/bfontpicker\0", is_gui: true },
-    AppEntry { name: "Icon Kit",     description: "Animated icon showcase", binary: b"/bin/biconkit\0", is_gui: true },
+    AppEntry { name: "Terminal",     description: "Terminal emulator",     binary: b"/usr/bin/bterm\0",       is_gui: true },
+    AppEntry { name: "System Check", description: "System health",        binary: b"/usr/bin/bcheck\0",      is_gui: true },
+    AppEntry { name: "Log Viewer",   description: "View system logs",     binary: b"/usr/bin/bless\0",       is_gui: true },
+    AppEntry { name: "Bounce",       description: "Physics demo",         binary: b"/usr/bin/bounce\0",      is_gui: true },
+    AppEntry { name: "Gus Kit",      description: "Drawing app",          binary: b"/usr/bin/guskit\0",      is_gui: true },
+    AppEntry { name: "Breenix Log",  description: "System log viewer",    binary: b"/usr/bin/blog\0",        is_gui: true },
+    AppEntry { name: "Font Picker",  description: "Configure fonts",      binary: b"/usr/bin/bfontpicker\0", is_gui: true },
+    AppEntry { name: "Icon Kit",     description: "Animated icon showcase", binary: b"/usr/bin/biconkit\0", is_gui: true },
     AppEntry { name: "Shell",        description: "Breenix shell",        binary: b"bsh\0",              is_gui: false },
     AppEntry { name: "URL Fetch",    description: "Fetch URLs",           binary: b"burl\0",             is_gui: false },
     AppEntry { name: "cat",          description: "Display file contents", binary: b"cat\0",             is_gui: false },
@@ -641,7 +641,7 @@ fn launch_app(app: &AppEntry) {
         // CLI app: just launch bterm
         match fork() {
             Ok(ForkResult::Child) => {
-                let path = b"/bin/bterm\0";
+                let path = b"/usr/bin/bterm\0";
                 let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
                 let _ = execv(path, argv.as_ptr());
                 libbreenix::process::exit(1);

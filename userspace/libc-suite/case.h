@@ -3,7 +3,7 @@
  *
  * Each category is one program: harness.c plus <category>.c, compiled against Breenix's
  * own C library (libs/libbreenix-libc) and installed as
- * /usr/local/test/bin/libc-<category>_test, with -std=c17 -fno-builtin -frounding-math so
+ * /usr/libexec/breenix/libc-<category>_test, with -std=c17 -fno-builtin -frounding-math so
  * every call reaches the library instead of being evaluated by the compiler, and with the
  * floating-point environment honoured. /sbin/suite-libc runs it once per case as
  *

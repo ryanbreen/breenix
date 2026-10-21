@@ -1,4 +1,4 @@
-//! Exec smoke target — the image /bin/exec_smoke execs into.
+//! Exec smoke target — the image /usr/bin/exec_smoke execs into.
 //!
 //! Sleeps and yields BEFORE printing its marker so the post-exec thread is descheduled and
 //! redispatched at least once. That round trip is what the exec receipt (ExecSchedCommit) exists to

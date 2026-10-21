@@ -1,9 +1,9 @@
 //! Stage a userland beside the running install, then publish it with one rename.
 //! The kernel slot embeds the generation ID, so no independently mutable current
-//! pointer can pair a kernel with the wrong userland. `/etc` belongs to the
-//! generation; `/root` stays shared, and so does `/.breenix-shared`, the machine
-//! state store that init reconciles into `/etc` at boot (SSH host keys, the
-//! operator's account lines and a staged authorized key). The operator account
+//! pointer can pair a kernel with the wrong userland. v2 binds `/etc`, `/var`,
+//! `/opt`, `/srv`, `/tmp` and `/run` from `/.breenix-shared`; `/root` stays at the
+//! partition root. The first v2 install seeds from the previous slot's v1 tree.
+//! The operator account
 //! `metal-run install-persistent` stages on the test root goes into the store,
 //! not into the generation. A test image's SSH credentials (its test-only
 //! client key, its test account and `/root/.ssh`) stay behind. This
@@ -14,6 +14,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+#[path = "../../../libs/libbreenix/src/layout.rs"]
+mod layout;
 
 const TARGET: &str = "/home";
 const KEPT: [&str; 1] = ["root"];
@@ -293,8 +295,8 @@ fn stage_store(copier: &mut Copier, target: &Path, operator: Option<&Operator>) 
     ];
     for (file, existing, entry, mode) in entries {
         let has_line = existing.lines().any(|line| line.split(':').next() == Some(name.as_str()));
-        // A shadow line the machine already holds may carry a password set since; keep it.
-        let merged = if file == "shadow" && has_line { existing.clone() } else { merge_line(&existing, &entry) };
+        // Existing machine entries may have been edited since installation.
+        let merged = if has_line { existing.clone() } else { merge_line(&existing, &entry) };
         if merged != existing {
             copier.write_file(&etc.join(file), &merged, mode)?;
         }
@@ -329,7 +331,77 @@ fn drop_test_account(copier: &mut Copier, etc: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Seed missing names through flushed scratch files and rename. Existing names
+/// keep the machine state published by an earlier attempt.
+fn seed_missing(copier: &mut Copier, source: &Path, target: &Path) -> Result<(), String> {
+    if copier.skip.contains(&source.to_path_buf()) { return Ok(()); }
+    let meta = fs::symlink_metadata(source).map_err(|e| fail("stat seed", source, e))?;
+    if meta.is_dir() {
+        copier.ensure_directory(target, meta.mode() & 0o7777)?;
+        for entry in fs::read_dir(source).map_err(|e| fail("read seed", source, e))? {
+            let entry = entry.map_err(|e| fail("read seed", source, e))?;
+            seed_missing(copier, &entry.path(), &target.join(entry.file_name()))?;
+        }
+    } else if !present(target)? {
+        let scratch = target.with_file_name(format!(".{}.seed-new", target.file_name().unwrap().to_string_lossy()));
+        if present(&scratch)? { copier.change("remove seed scratch", &scratch, || fs::remove_file(&scratch))?; }
+        copier.linked.clear();
+        copier.copy_tree(source, &scratch)?;
+        copier.change("publish seed", target, || fs::rename(&scratch, target))?;
+        copier.sync(target.parent().unwrap())?;
+    }
+    Ok(())
+}
+
+fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Option<&str>) -> Result<(), String> {
+    let store = target.join(STORE);
+    copier.ensure_directory(&store, 0o700)?;
+    let marker = store.join(".layout-v2");
+    if present(&marker)? {
+        if fs::read(&marker).map_err(|e| fail("read layout", &marker, e))? != b"BREENIX-SHARED 2\n" {
+            return Err("invalid shared layout record".into());
+        }
+        for name in layout::SHARED { require_directory(&store.join(name))?; }
+        return Ok(());
+    }
+    let current = if let Some(id) = previous {
+        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err("invalid previous userland generation".into());
+        }
+        let current = target.join(GENERATIONS).join(id);
+        let record = fs::read(current.join(READY)).map_err(|e| fail("read previous generation", &current, e))?;
+        if record != format!("BREENIX-USERLAND 1\n{}\n", id).as_bytes() {
+            return Err("first v2 seed requires a complete v1 current generation".into());
+        }
+        current
+    } else if present(&target.join("etc"))? { target.to_path_buf() } else { source.to_path_buf() };
+    for name in layout::SHARED {
+        let from = current.join(name);
+        let to = store.join(name);
+        // Existing ssh-doors databases contain only the machine's account lines.
+        // Merge them over the running generation's full databases before binding /etc.
+        if name == "etc" {
+            copier.ensure_directory(&to, 0o755)?;
+            for (file, mode) in [("passwd", 0o644), ("group", 0o644), ("shadow", 0o600)] {
+                let baseline = read_or_empty(&from.join(file))?;
+                let existing = read_or_empty(&to.join(file))?;
+                let mut merged = baseline;
+                for line in existing.lines() { merged = merge_line(&merged, line); }
+                if merged != existing { copier.write_file(&to.join(file), &merged, mode)?; }
+            }
+        }
+        if present(&from)? { seed_missing(copier, &from, &to)?; }
+        else { copier.ensure_directory(&to, if name == "tmp" { 0o1777 } else { 0o755 })?; }
+    }
+    drop_test_account(copier, &store.join("etc"))?;
+    copier.write_file(&marker, "BREENIX-SHARED 2\n", 0o600)
+}
+
 fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
+    install_tree_from(source, target, id, None, checkpoint)
+}
+
+fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&str>, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
     if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(String::from("invalid userland generation"));
     }
@@ -342,13 +414,14 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     let published = generations.join(id);
     if present(&published)? {
         require_directory(&published)?;
-        let expected = format!("BREENIX-USERLAND 1\n{}\n", id);
+        let expected = layout::record(id);
         let ready = published.join(READY);
         if fs::symlink_metadata(&ready).map_err(|error| fail("stat", &ready, error))?.is_file()
             && fs::read(&ready).map_err(|error| fail("read", &ready, error))? == expected.as_bytes() {
-            for name in ["etc", "root", "home", "dev", "proc", "sys"] {
+            for name in ["root", "home", "dev", "proc", "sys"].into_iter().chain(layout::SHARED) {
                 require_directory(&published.join(name))?;
             }
+            for name in layout::SHARED { require_directory(&target.join(STORE).join(name))?; }
             require_directory(&target.join("root"))?;
             return Ok(Totals::default());
         }
@@ -356,7 +429,9 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     }
     // The store is outside the generations: a retry stages the account again, and
     // an interrupted install leaves the current generation as it was.
+    // Check the account collision before publishing any layout state.
     stage_store(&mut copier, target, operator.as_ref())?;
+    seed_shared(&mut copier, source, target, previous)?;
     for name in KEPT {
         require_directory(&source.join(name))?;
         if present(&target.join(name))? { require_directory(&target.join(name))?; }
@@ -389,11 +464,14 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
         }
     }
     names.sort();
-    for name in names.iter().filter(|name| !UNTOUCHED.contains(&name.as_str()) && !KEPT.contains(&name.as_str())) {
+    for name in names.iter().filter(|name| !UNTOUCHED.contains(&name.as_str()) && !KEPT.contains(&name.as_str()) && !layout::SHARED.contains(&name.as_str())) {
         copier.copy_tree(&source.join(name), &staged.join(name))?;
     }
-    if present(&staged.join("etc"))? {
-        drop_test_account(&mut copier, &staged.join("etc"))?;
+    // The generation keeps factory defaults; /etc is a shared mount point.
+    let factory = staged.join("usr/share/factory/etc");
+    if present(&factory)? { drop_test_account(&mut copier, &factory)?; }
+    if present(&staged.join("usr/share/factory"))? {
+        copier.write_file(&staged.join("usr/share/factory/generation"), id, 0o644)?;
     }
     // Shared directories are copied privately when absent, then renamed into
     // place only after the copy is durable. Existing directories are kept
@@ -418,12 +496,23 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
             copier.sync(&generations)?;
         }
     }
-    for name in ["root", "home", "dev", "proc", "sys"] {
+    for name in ["root", "home", "dev", "proc", "sys"].into_iter().chain(layout::SHARED) {
         let mount = staged.join(name);
         copier.change("mkdir mount", &mount, || fs::create_dir(&mount))?;
     }
+    // The same table used by the image builder supplies the mount-point modes.
+    for line in layout::TABLE.lines() {
+        let row: Vec<_> = line.split_whitespace().collect();
+        if row.len() == 5 && row[0] == "dir" && !row[1].contains('/') {
+            let path = staged.join(row[1]);
+            if present(&path)? {
+                let mode = u32::from_str_radix(row[2], 8).map_err(|_| "invalid layout mode")?;
+                copier.change("chmod layout", &path, || fs::set_permissions(&path, fs::Permissions::from_mode(mode)))?;
+            }
+        }
+    }
     let ready = staged.join(READY);
-    let record = format!("BREENIX-USERLAND 1\n{}\n", id);
+    let record = layout::record(id);
     let mut file = copier.change("create completion record", &ready, || File::create(&ready))?;
     copier.change("write completion record", &ready, || file.write_all(record.as_bytes()))?;
     copier.change("sync completion record", &ready, || file.sync_all())?;
@@ -443,7 +532,9 @@ fn install() -> Result<Totals, String> {
     let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
     if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
     let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
-    install_tree(source, target, &id, &mut || Ok(()))
+    if let Some(previous) = std::env::args().nth(2) {
+        install_tree_from(source, target, &id, Some(&previous), &mut || Ok(()))
+    } else { install_tree(source, target, &id, &mut || Ok(())) }
 }
 
 fn main() {
@@ -566,11 +657,51 @@ mod tests {
         let tree = Tree::new(system);
         let namespace = generation::select(&tree, id).unwrap();
         assert!(namespace.is_mount(namespace.root));
-        assert_eq!(tree.path(namespace.shared(namespace.root, b"etc").unwrap()), system.join(GENERATIONS).join(id).join("etc"));
+        assert_eq!(tree.path(namespace.shared(namespace.root, b"etc").unwrap()), system.join(STORE).join("etc"));
+        for name in layout::SHARED {
+            let bound = namespace.shared(namespace.root, name.as_bytes()).unwrap();
+            assert_eq!(tree.path(bound), system.join(STORE).join(name));
+            assert_eq!(namespace.entry(bound, b"..", 2), Some(namespace.root));
+            assert_eq!(namespace.mount_name(bound), Some(name.as_bytes()));
+            assert!(namespace.mount_entry(namespace.root, name.as_bytes()));
+        }
         assert_eq!(tree.path(namespace.shared(namespace.root, b"root").unwrap()), system.join("root"));
         assert_eq!(namespace.shared(namespace.root, b"home"), None);
         assert!(namespace.is_mount(namespace.etc));
         tree.path(namespace.root)
+    }
+
+    #[test]
+    fn v2_seeds_the_named_v1_generation_and_keeps_v1_frozen() {
+        let fixture = Fixture::new();
+        let system = fixture.system();
+        let old = system.join(GENERATIONS).join("old");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::rename(fixture.source("old"), &old).unwrap();
+        fs::write(old.join(READY), b"BREENIX-USERLAND 1\nold\n").unwrap();
+        fs::write(old.join("etc/config"), b"live v1 edit").unwrap();
+        fs::create_dir(old.join("var")).unwrap();
+        fs::write(old.join("var/log-sentinel"), b"v1 log").unwrap();
+        fs::create_dir_all(system.join(STORE).join("etc/ssh")).unwrap();
+        fs::write(system.join(STORE).join("etc/ssh/ssh_host_ed25519_key"), b"host key").unwrap();
+        fs::write(system.join(STORE).join("etc/passwd"), b"operator:x:1000:1000::/home/operator:/bin/sh\n").unwrap();
+        let frozen = snapshot(&old);
+        let source = fixture.source("new");
+        install_tree_from(&source, &system, "new", Some("old"), &mut || Ok(())).unwrap();
+        assert_eq!(fs::read(system.join(STORE).join("etc/config")).unwrap(), b"live v1 edit");
+        assert_eq!(fs::read(system.join(STORE).join("var/log-sentinel")).unwrap(), b"v1 log");
+        assert_eq!(fs::read(system.join(STORE).join("etc/ssh/ssh_host_ed25519_key")).unwrap(), b"host key");
+        let tree = Tree::new(&system);
+        let v1 = generation::select(&tree, "old").unwrap();
+        assert_eq!(tree.path(v1.etc), old.join("etc"));
+        assert_eq!(v1.mutable, [0; 6]);
+        let v2 = generation::select(&tree, "new").unwrap();
+        assert_eq!(tree.path(v2.etc), system.join(STORE).join("etc"));
+        assert_eq!(snapshot(&old), frozen);
+        fs::write(system.join(STORE).join("etc/config"), b"v2 edit").unwrap();
+        install_tree_from(&fixture.source("again"), &system, "again", Some("new"), &mut || Ok(())).unwrap();
+        assert_eq!(fs::read(system.join(STORE).join("etc/config")).unwrap(), b"v2 edit");
+        assert_eq!(snapshot(&old), frozen);
     }
 
     #[test]
@@ -658,15 +789,15 @@ mod tests {
         let root = selected(&system, "first");
         assert!(!root.join("etc/breenix/test-ssh").exists());
         assert!(!root.join(OPERATOR).exists());
-        assert_eq!(fs::read_to_string(root.join("etc/passwd")).unwrap(), "root:x:0:0:root:/root:/bin/sh\n");
-        assert_eq!(fs::read_to_string(root.join("etc/group")).unwrap(), "root:x:0:\n");
+        assert!(fs::read_to_string(system.join(STORE).join("etc/passwd")).unwrap().starts_with("root:x:0:0:root:/root:/bin/sh\n"));
+        assert!(fs::read_to_string(system.join(STORE).join("etc/group")).unwrap().starts_with("root:x:0:\n"));
         assert_eq!(fs::read(system.join("root/data")).unwrap(), b"source data");
         assert!(!system.join("root/.ssh").exists());
         let store = system.join(STORE);
         let mode = |path: &Path| fs::metadata(path).unwrap().mode() & 0o7777;
         assert_eq!(mode(&store), 0o700);
-        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "operator:x:1000:1000:operator:/home/operator:/bin/sh\n");
-        assert_eq!(fs::read_to_string(store.join("etc/group")).unwrap(), "operator:x:1000:\n");
+        assert!(fs::read_to_string(store.join("etc/passwd")).unwrap().contains("operator:x:1000:1000:operator:/home/operator:/bin/sh\n"));
+        assert!(fs::read_to_string(store.join("etc/group")).unwrap().contains("operator:x:1000:\n"));
         assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:!:::::::\n");
         assert_eq!(mode(&store.join("etc/shadow")), 0o600);
         let pending = store.join("var/lib/accounts/pending/operator");
@@ -681,7 +812,7 @@ mod tests {
         fs::create_dir(second.join("etc/breenix")).unwrap();
         fs::write(second.join(OPERATOR), format!("user operator\nkey {}\n", KEY)).unwrap();
         install_tree(&second, &system, "second", &mut || Ok(())).unwrap();
-        assert_eq!(fs::read_to_string(store.join("etc/passwd")).unwrap(), "operator:x:1000:1000:operator:/home/operator:/bin/sh\n");
+        assert!(fs::read_to_string(store.join("etc/passwd")).unwrap().contains("operator:x:1000:1000:operator:/home/operator:/bin/sh\n"));
         assert_eq!(fs::read_to_string(store.join("etc/shadow")).unwrap(), "operator:$6$set-on-the-box:::::::\n");
         assert_eq!(fs::read(store.join("etc/ssh/ssh_host_ed25519_key")).unwrap(), b"host key");
         assert!(pending.exists());
@@ -732,8 +863,9 @@ mod tests {
         assert!(!generations.join("failed.new").exists());
         assert!(generations.join("old.shared-root").exists());
         assert!(generations.join("old.new").exists());
-        assert_eq!(fs::read(selected(&system, "old").join("etc/config")).unwrap(), b"old");
-        assert_eq!(fs::read(selected(&system, "new").join("etc/config")).unwrap(), b"new");
+        assert!(selected(&system, "old").join("etc").is_dir());
+        assert!(selected(&system, "new").join("etc").is_dir());
+        assert_eq!(fs::read(system.join(STORE).join("etc/config")).unwrap(), b"operator config");
         assert_eq!(fs::read(system.join("root/data")).unwrap(), b"operator data\0\xff");
     }
 
@@ -817,7 +949,7 @@ mod tests {
             let actual = snapshot(root);
             let contents = |tree: &BTreeMap<PathBuf, (u32, u32, u32, Vec<u8>, Option<u64>)>| {
                 tree.iter().filter(|(path, _)| {
-                    !["root", "home", "dev", "proc", "sys", READY].iter().any(|name| path.starts_with(name))
+                    !["root", "home", "dev", "proc", "sys", "etc", "var", "run", "tmp", "opt", "srv", READY].iter().any(|name| path.starts_with(name))
                 }).map(|(path, (mode, uid, gid, bytes, _))| {
                     (path.clone(), (*mode, *uid, *gid, bytes.clone()))
                 }).collect::<BTreeMap<_, _>>()
@@ -843,7 +975,7 @@ mod tests {
                     let id = disk.id("CURRENT");
                     let selected_root = selected(&system, &id);
                     assert_eq!(fs::read(selected_root.join("bin/payload")).unwrap(), id.as_bytes());
-                    assert_eq!(fs::read(selected_root.join("etc/config")).unwrap(), id.as_bytes());
+                    assert_eq!(fs::read(system.join(STORE).join("etc/config")).unwrap(), b"operator config");
                     let expected = if id == "old" { old } else { assert_eq!(id, "new"); new };
                     assert_contents(&selected_root, expected);
                     // Slot recovery must leave both complete trees unchanged,

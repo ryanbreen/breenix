@@ -1222,6 +1222,9 @@ fn launch_x86_production_init(
         if name == "persistent-install" {
             let generation = kernel::boot::intent::userland().ok_or("install intent names no userland generation")?;
             argv.push(generation.as_bytes());
+            if let Some(previous) = kernel::boot::intent::previous_userland() {
+                argv.push(previous.as_bytes());
+            }
         }
         if let Some(mode) = console_mode {
             argv.push(mode.arg().as_bytes());

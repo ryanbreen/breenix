@@ -615,7 +615,8 @@ class Driver:
         parts = the_layout['partitions']
         intent = self.stage / 'boot-intent'
         intent.write_bytes(metal_persist.intent('persistent-install', root=parts['test']['guid'],
-                                                home=parts['system']['guid'], userland=self.id))
+                                                home=parts['system']['guid'], userland=self.id,
+                                                previous_userland=(metal_persist.read_disk().get('slots', {}).get('current') or {}).get('installedBy')))
         files['ramdisk'] = intent
         if action == 'install':
             config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,

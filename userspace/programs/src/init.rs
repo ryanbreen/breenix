@@ -97,6 +97,12 @@ fn run_init_group_refusal_probe(phase: &str) {
 fn main() {
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
+    match libbreenix::etc_reconcile::prepare(std::path::Path::new("/")) {
+        Ok(conflicts) => for name in conflicts {
+            println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
+        },
+        Err(why) => panic!("[init] layout refused: {}", why),
+    }
 
     // Explicit shell, console and desktop modes bypass the full startup below.
     // No argument or `default` keeps the services and boot checks.
@@ -309,7 +315,7 @@ fn run_desktop_mode() -> ! {
 #[cfg(target_arch = "aarch64")]
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
-    const DESKTOP: &[&[u8]] = &[b"/bin/bwm\0", b"/bin/bterm\0"];
+    const DESKTOP: &[&[u8]] = &[b"/usr/bin/bwm\0", b"/usr/bin/bterm\0"];
     let mut started = 0;
     for path in DESKTOP {
         match spawn(path) {
@@ -331,7 +337,7 @@ fn run_desktop_mode() -> ! {
 /// already-filed may preempt it.
 #[cfg(target_arch = "aarch64")]
 fn run_block_eintr_oracle() {
-    match spawn(b"/bin/block_eintr_oracle\0") {
+    match spawn(b"/usr/bin/block_eintr_oracle\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -357,7 +363,7 @@ fn run_block_eintr_oracle() {
 /// verdict marker; this launcher records the exit for boot-log debuggability.
 #[cfg(target_arch = "aarch64")]
 fn run_poll_tcp_oracle() {
-    match spawn(b"/bin/poll_tcp_oracle\0") {
+    match spawn(b"/usr/bin/poll_tcp_oracle\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -389,7 +395,7 @@ fn run_poll_tcp_oracle() {
 /// finding B3: this launcher used to discard the `Result` with `let _ =`).
 #[cfg(target_arch = "aarch64")]
 fn run_tty_oracle() {
-    match spawn(b"/bin/tty_oracle\0") {
+    match spawn(b"/usr/bin/tty_oracle\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
             match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -416,7 +422,7 @@ fn run_tty_oracle() {
 /// this launcher only records the child exit for boot-log debuggability.
 #[cfg(target_arch = "aarch64")]
 fn run_futex_handoff_oracle() {
-    match spawn(b"/bin/futex_handoff_oracle\0") {
+    match spawn(b"/usr/bin/futex_handoff_oracle\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -442,7 +448,7 @@ fn run_futex_handoff_oracle() {
 /// commit marker; the x86_64 prod-profile gate asserts the same four userspace markers plus
 /// the kernel-side EXEC_LOCK_ORDER receipt oracles (#721 K7).
 fn run_exec_smoke() {
-    match spawn(b"/bin/exec_smoke\0") {
+    match spawn(b"/usr/bin/exec_smoke\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -461,7 +467,7 @@ fn run_exec_smoke() {
 /// `CLONEVM_EXEC_TEST: PASS` marker.
 #[cfg(target_arch = "aarch64")]
 fn run_clonevm_exec_test() {
-    match spawn(b"/usr/local/test/bin/clonevm_exec_test\0") {
+    match spawn(b"/usr/libexec/breenix/clonevm_exec_test\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -488,7 +494,7 @@ fn run_trace_diag_probe_if_enabled() {
     }
 
     print!("[init] trace diag early probe enabled; running btrace\n");
-    let path = b"/bin/btrace\0";
+    let path = b"/usr/bin/btrace\0";
     let arg0 = b"btrace\0";
     let argv = [arg0.as_ptr(), core::ptr::null()];
 
@@ -516,7 +522,7 @@ fn run_wait_stress_if_enabled() {
     }
 
     print!("[init] wait_stress enabled; starting 60s waitqueue stress\n");
-    let path = b"/bin/wait_stress\0";
+    let path = b"/usr/bin/wait_stress\0";
     let arg0 = b"wait_stress\0";
     let arg1 = b"60\0";
     let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
@@ -559,7 +565,7 @@ fn run_bssh_autorun_if_enabled() {
 
 #[cfg(target_arch = "aarch64")]
 fn run_bssh_exec_autorun(host: &str) {
-    let path = b"/bin/bssh\0";
+    let path = b"/usr/bin/bssh\0";
     let arg0 = b"bssh\0";
     let port = b"22\0";
     let user = b"wrb\0";
@@ -616,7 +622,7 @@ fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
         // Start background services before handing the splash to the console.
-        const SERVICES: &[&[u8]] = &[b"/bin/xhci_counters\0", b"/sbin/telnetd\0"];
+        const SERVICES: &[&[u8]] = &[b"/usr/bin/xhci_counters\0", b"/usr/sbin/telnetd\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
@@ -626,7 +632,7 @@ fn run_boot_script() {
         // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
         // A graphical child may take the display after init's text-mode request.
-        if let Err(e) = spawn(b"/bin/bwm\0") {
+        if let Err(e) = spawn(b"/usr/bin/bwm\0") {
             print!("[init] Warning: failed to spawn service: {}\n", e);
         }
         return;
@@ -665,7 +671,7 @@ fn run_boot_script() {
 
 #[cfg(target_arch = "aarch64")]
 fn start_bounce() {
-    match spawn(b"/bin/bounce\0") {
+    match spawn(b"/usr/bin/bounce\0") {
         Ok(child_pid) => {
             print!("[init] bounce started (PID {})\n", child_pid.raw());
         }
@@ -676,7 +682,7 @@ fn start_bounce() {
 }
 
 /// #713: exercise x86 spawn, execution, exit and reap before the boot-script chain.
-/// The dedicated /bin/spawn_smoke_target exits 0; it does not depend on BusyBox.
+/// The dedicated /usr/bin/spawn_smoke_target exits 0; it does not depend on BusyBox.
 /// Wait for this child directly: the default x86 boot script enters the getty
 /// supervisor, so it does not return to main's general reap loop.
 ///
@@ -690,7 +696,7 @@ fn start_bounce() {
 /// pre-zeroed `status` to fabricate "exited (code 0)".
 #[cfg(target_arch = "x86_64")]
 fn run_spawn_smoke() {
-    match spawn(b"/bin/spawn_smoke_target\0") {
+    match spawn(b"/usr/bin/spawn_smoke_target\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
             match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -741,7 +747,7 @@ fn run_spawn_smoke() {
 /// `code=0` (review finding B3).
 #[cfg(target_arch = "x86_64")]
 fn run_tty_oracle() {
-    match spawn(b"/bin/tty_oracle\0") {
+    match spawn(b"/usr/bin/tty_oracle\0") {
         Ok(child_pid) => {
             let mut status: i32 = 0;
             match waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -777,7 +783,7 @@ fn run_tty_oracle() {
 /// chain completes, #722).
 #[cfg(target_arch = "x86_64")]
 fn run_fork_smoke() {
-    match spawn(b"/bin/fork_smoke\0") {
+    match spawn(b"/usr/bin/fork_smoke\0") {
         Ok(child_pid) => {
             let mut status = 0i32;
             let _ = waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0);
@@ -820,7 +826,7 @@ fn bssh_arm(user: &[u8], extra: &[&[u8]]) -> (i32, String) {
             let _ = io::close(read_end);
             let _ = io::dup2(write_end, Fd::STDOUT);
             let _ = io::close(write_end);
-            let _ = libbreenix::process::execv(b"/bin/bssh\0", argv.as_ptr());
+            let _ = libbreenix::process::execv(b"/usr/bin/bssh\0", argv.as_ptr());
             libbreenix::process::exit(127);
         }
         Ok(libbreenix::process::ForkResult::Parent(pid)) => pid,
@@ -915,7 +921,7 @@ fn reconcile_machine_state() {
 }
 
 fn start_bsshd() {
-    match spawn(b"/bin/bsshd\0") {
+    match spawn(b"/usr/sbin/bsshd\0") {
         Ok(child_pid) => {
             print!("[init] bsshd started (PID {})\n", child_pid.raw());
         }
@@ -927,7 +933,7 @@ fn start_bsshd() {
 
 #[cfg(target_arch = "aarch64")]
 fn start_liveness_service() {
-    match spawn(b"/bin/heartbeat\0") {
+    match spawn(b"/usr/bin/heartbeat\0") {
         Ok(child_pid) => {
             print!("[init] heartbeat started (PID {})\n", child_pid.raw());
         }

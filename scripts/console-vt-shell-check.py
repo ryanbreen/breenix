@@ -56,7 +56,7 @@ def check(args):
                 statements = []
                 if number == 3:
                     statements.append('writeFile("/dev/tty3", "\\u001bcserial-vt3\\r\\n");')
-                statements.append(f'if (exec("/bin/chvt", "{number}").exitCode === 0) {{ '
+                statements.append(f'if (exec("/usr/bin/chvt", "{number}").exitCode === 0) {{ '
                                   f'print("\\n{begin}\\n"); print(readFile("/proc/console/check")); '
                                   f'print("\\n{end}\\n"); }}')
                 process.stdin.write((" ".join(statements) + "\n").encode())

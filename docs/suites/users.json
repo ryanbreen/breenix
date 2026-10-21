@@ -43,7 +43,28 @@
     {
       "id": "layout",
       "title": "The standard filesystem layout with its owners and modes",
-      "cases": []
+      "cases": [
+        {
+          "id": "fhs-paths",
+          "title": "Standard layout paths have their specified owners and modes"
+        },
+        {
+          "id": "shadow-0600",
+          "title": "The shadow database is a root-owned regular file at mode 0600"
+        },
+        {
+          "id": "sudo-policy-0440",
+          "title": "The admin policy is a root-owned regular file at mode 0440"
+        },
+        {
+          "id": "setuid-set",
+          "title": "Exactly su, passwd and sudo are installed set-user-ID root"
+        },
+        {
+          "id": "run-cleared",
+          "title": "Startup removes stale runtime and temporary state"
+        }
+      ]
     },
     {
       "id": "accounts",

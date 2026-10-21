@@ -2,8 +2,8 @@
 //! C programs compiled against it, as ISO C17 and POSIX.1-2024 specify it, with Linux's
 //! ABI where POSIX leaves a choice open.
 //!
-//! Every case but the busybox ones is a C function in userspace/libc-suite/<category>.c.
-//! Each category builds into one program, /usr/local/test/bin/libc-<category>_test, that
+//! A non-BusyBox case is a C function in userspace/libc-suite/<category>.c.
+//! Each category builds into one program, /usr/libexec/breenix/libc-<category>_test, that
 //! this suite runs once per case as `libc-<category>_test <case> <fd>` in a scratch
 //! directory of its own, with the environment PATH=/usr/local/libc/bin, HOME=/tmp,
 //! LIBC_SUITE=1. The program writes `PASS`, `FAIL <why>` or `SKIP <why>` to descriptor
@@ -31,7 +31,7 @@ use libbreenix::Errno;
 use std::ffi::CString;
 
 /// Where the C case programs are installed.
-const CASE_DIR: &str = "/usr/local/test/bin";
+const CASE_DIR: &str = "/usr/libexec/breenix";
 /// BusyBox built against Breenix's libc.
 const BUSYBOX: &str = "/usr/local/libc/bin/busybox";
 /// The whole environment every program the suite starts receives.

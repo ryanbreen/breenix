@@ -437,11 +437,11 @@ impl HotkeyManager {
         self.bindings.clear();
         self.bindings.push(Hotkey {
             modifiers: modifier::SUPER, key: 0, taps: 2,
-            action: HotkeyAction::Exec(b"/bin/blauncher".to_vec()),
+            action: HotkeyAction::Exec(b"/usr/bin/blauncher".to_vec()),
         });
         self.bindings.push(Hotkey {
             modifiers: modifier::SUPER, key: b'\r', taps: 1,
-            action: HotkeyAction::Exec(b"/bin/bterm".to_vec()),
+            action: HotkeyAction::Exec(b"/usr/bin/bterm".to_vec()),
         });
         self.bindings.push(Hotkey {
             modifiers: modifier::ALT, key: b'q', taps: 1,
@@ -1530,7 +1530,7 @@ fn execute_hotkey_action(action: &HotkeyAction, windows: &mut Vec<Window>, focus
     match action {
         HotkeyAction::Exec(path) => {
             // For blauncher, toggle: if already open, close it; otherwise spawn
-            if path == b"/bin/blauncher" {
+            if path == b"/usr/bin/blauncher" {
                 let launcher_idx = windows.iter().position(|w|
                     w.chromeless && w.title_len > 1 && w.title[0] == 1
                 );

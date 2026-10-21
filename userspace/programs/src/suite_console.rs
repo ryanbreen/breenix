@@ -874,7 +874,7 @@ fn chvt_chvt_switches() -> CaseResult {
                     #[cfg(target_arch = "aarch64")]
                     const SETUID: u64 = 146;
                     require(unsafe { raw::syscall1(SETUID, 1000) } as i64 == 0, "setuid(1000)")?;
-                    let mut command = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+                    let mut command = VtChild::spawn("/usr/bin/chvt", &["chvt", "3"])?;
                     require(command.wait()? == 0, "non-root chvt 3 failed")
                 })();
                 if let Err(reason) = &result { eprintln!("chvt credential probe: {reason}"); }
@@ -897,7 +897,7 @@ fn chvt_chvt_bad_number() -> CaseResult {
     measured(|| {
         let before = foreground()?;
         for number in ["0", "7", "18446744073709551615", "abc"] {
-            let mut child = VtChild::spawn("/bin/chvt", &["chvt", number])?;
+            let mut child = VtChild::spawn("/usr/bin/chvt", &["chvt", number])?;
             require(child.wait()? == 256, "invalid chvt did not exit 1")?;
             require(foreground()? == before, "invalid chvt changed the foreground")?;
         }
@@ -938,7 +938,7 @@ fn chvt_chvt_waits() -> CaseResult {
         io::close(release_r).map_err(|e| e.to_string())?;
         let mut byte = [0];
         require(io::read(ready_r, &mut byte).map_err(|e| e.to_string())? == 1 && byte == *b"R", "VT owner failed")?;
-        let mut child = VtChild::spawn("/bin/chvt", &["chvt", "3"])?;
+        let mut child = VtChild::spawn("/usr/bin/chvt", &["chvt", "3"])?;
         pause()?;
         require(child.poll()?.is_none(), "chvt returned before VT_PROCESS released")?;
         require(foreground()? == 2, "VT_PROCESS did not hold tty2")?;
@@ -1003,7 +1003,7 @@ impl LoginAccount {
             Err(error) => return Err(format!("read shadow: {error}")),
         };
         let account = Self { passwd, shadow, password: credentials.password.clone() };
-        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/bin/console-login-shell\n").map_err(|e| e.to_string())?;
+        std::fs::write("/etc/passwd", b"root:x:0:0:Console suite:/:/usr/bin/console-login-shell\n").map_err(|e| e.to_string())?;
         std::fs::write("/etc/shadow", format!("root:{}:0:0:99999:7:::\n", credentials.hash))
             .map_err(|e| e.to_string())?;
         Ok(account)

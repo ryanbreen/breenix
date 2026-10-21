@@ -801,3 +801,11 @@ path = "src/console_login_shell.rs"
 [[bin]]
 name = "gpu_fault_acceptance"
 path = "src/gpu_fault_acceptance.rs"
+
+[[bin]]
+name = "etc-reconcile"
+path = "src/etc_reconcile.rs"
+
+[[bin]]
+name = "suite-users"
+path = "src/suite_users.rs"
