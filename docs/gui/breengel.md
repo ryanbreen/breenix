@@ -415,6 +415,7 @@ The fixture never multiplies the size or position passed to the text stack.
 
 ### 8.4 The glyph cache
 
+<!-- claim-lint:ok: Normative atlas accounting fixed by coordinator ruling B15, issue #2205. -->
 `CachedFont::new(font, capacity)` caches GPU-atlas glyphs keyed by `(glyph, size26)` and evicts the least
 recently used entry when full. `CachedFont::with_default_cache(font)` uses the contract's capacity: at most
 256 entries and at most 4 MiB of atlas storage, evicting until both hold. `cache_stats() -> CacheStats { entries,
