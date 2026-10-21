@@ -107,31 +107,35 @@ fn render_lcd(segments: &[LineSegment], width: usize, height: usize,
     let padded = region(1, width * 3 + 2, height)?;
     let mask = region(1, width, height)?;
     let packed = region(1, width, height)?;
-    let (w, h) = (width as i32, height as i32);
-    let at = |r: &Region| [r.x as i32, r.y as i32];
-    let rect = |r: &Region, rw: i32| [r.x as i32, r.y as i32, r.x as i32 + rw, r.y as i32 + h];
-    // Per-pixel weights in gpu-abi.md: solid and copy 1, nearest_scaled 8192, coverage 256
-    // plus its blend copy.
-    packed.banded(rect(&packed, w), 1, |c, r| c.solid(word(Color::BLACK), &[r]))?;
-    let [px, py] = at(&padded);
-    let [wx, wy] = at(&wide);
-    // The copy writes wide's columns with output X forced opaque, as blit does.
-    padded.banded(rect(&padded, 3 * w), 1, |c, r| c.draw(pipeline::COPY, 0, wide.target.handle(), 0, 0,
-        &[instance(r, &[wx - px, wy - py, 1])]))?;
-    let mut fence = None;
-    for channel in 0..3 {
-        let [sx, sy] = at(&sample);
-        sample.banded(rect(&sample, w), 8192, |c, r| c.draw(pipeline::NEAREST_SCALED, 0, padded.target.handle(), 0, 0,
-            &[instance(r, &[sx, sy, w, h, px + channel, py, 3 * w, h])]))?;
-        let colour = match channel { 0 => Color::rgb(0,255,255), 1 => Color::rgb(255,0,255), _ => Color::rgb(255,255,0) };
-        mask.banded(rect(&mask, w), 1, |c, r| c.solid(word(colour), &[r]))?;
-        let [mx, my] = at(&mask);
-        sample.banded(rect(&sample, w), 257, |c, r| c.draw(pipeline::COVERAGE, 0xff000000, mask.target.handle(), 0, 0,
-            &[instance(r, &[sx, sy, mx, my, 1])]))?;
-        let [kx, ky] = at(&packed);
-        fence = Some(packed.banded(rect(&packed, w), 257, |c, r| c.draw(pipeline::COVERAGE, 0xffffffff, sample.target.handle(), 0, 0,
-            &[instance(r, &[kx, ky, sx, sy, 1])]))?);
-    }
+    let fence = device::with(|d| {
+        let mut batch = GlyphBatch { context: &mut d.context, work: 0, fence: None };
+        let (w, h) = (width as i32, height as i32);
+        let at = |r: &Region| [r.x as i32, r.y as i32];
+        let rect = |r: &Region, rw: i32| [r.x as i32, r.y as i32, r.x as i32 + rw, r.y as i32 + h];
+        // Per-pixel weights in gpu-abi.md: solid and copy 1, nearest_scaled 8192, coverage 256
+        // plus its blend copy.
+        packed.banded(&mut batch, rect(&packed, w), 1, |c, r| c.solid(word(Color::BLACK), &[r]))?;
+        let [px, py] = at(&padded);
+        let [wx, wy] = at(&wide);
+        // The copy writes wide's columns with output X forced opaque, as blit does.
+        padded.banded(&mut batch, rect(&padded, 3 * w), 1, |c, r| c.draw(pipeline::COPY, 0, wide.target.handle(), 0, 0,
+            &[instance(r, &[wx - px, wy - py, 1])]))?;
+        for channel in 0..3 {
+            let [sx, sy] = at(&sample);
+            sample.banded(&mut batch, rect(&sample, w), 8192, |c, r| c.draw(pipeline::NEAREST_SCALED, 0, padded.target.handle(), 0, 0,
+                &[instance(r, &[sx, sy, w, h, px + channel, py, 3 * w, h])]))?;
+            let colour = match channel { 0 => Color::rgb(0,255,255), 1 => Color::rgb(255,0,255), _ => Color::rgb(255,255,0) };
+            mask.banded(&mut batch, rect(&mask, w), 1, |c, r| c.solid(word(colour), &[r]))?;
+            let [mx, my] = at(&mask);
+            sample.banded(&mut batch, rect(&sample, w), 257, |c, r| c.draw(pipeline::COVERAGE, 0xff000000, mask.target.handle(), 0, 0,
+                &[instance(r, &[sx, sy, mx, my, 1])]))?;
+            let [kx, ky] = at(&packed);
+            packed.banded(&mut batch, rect(&packed, w), 257, |c, r| c.draw(pipeline::COVERAGE, 0xffffffff, sample.target.handle(), 0, 0,
+                &[instance(r, &[kx, ky, sx, sy, 1])]))?;
+        }
+        batch.flush()?;
+        Ok(batch.fence)
+    }).map_err(Error::Device)?;
     Ok(AtlasGlyph::at(packed, width, height, fence))
 }
 
@@ -152,22 +156,38 @@ impl Region {
             d.context.submit().inspect_err(|_| d.context.discard())
         }).map_err(Error::Device)
     }
-    /// Draw `rect` in bands, each its own submission with an estimate of at most half the
-    /// work cap at `weight` steps per pixel. The instance parameters name origins, so each
-    /// band draws the pixels the whole rectangle would there. Returns the last fence.
-    fn banded(&self, rect: [i32; 4], weight: u64, mut draw: impl FnMut(&mut bgl::Context, [i32; 4])) -> Result<bgl::Fence, Error> {
+    /// Draw `rect` in bands with an estimate of at most half the work cap at `weight`
+    /// steps per pixel. The instance parameters name origins, so each
+    /// band draws the pixels the whole rectangle would there. Adjacent stages share a
+    /// submission while their summed work fits that same budget.
+    fn banded(&self, batch: &mut GlyphBatch<'_>, rect: [i32; 4], weight: u64, mut draw: impl FnMut(&mut bgl::Context, [i32; 4])) -> Result<(), i64> {
         let budget = abi::limits::WORK / 2;
         let width = (rect[2] - rect[0]).max(1) as u64;
         let columns = ((budget / weight) as i32).max(1).min(width as i32);
         let rows = ((budget / (weight * width)) as i32).max(1);
-        let mut fence = None;
         for y in (rect[1]..rect[3]).step_by(rows as usize) {
             for x in (rect[0]..rect[2]).step_by(columns as usize) {
                 let band = [x, y, (x + columns).min(rect[2]), (y + rows).min(rect[3])];
-                fence = Some(self.send(|c| draw(c, band))?);
+                let cost = (band[2] - band[0]) as u64 * (band[3] - band[1]) as u64 * weight;
+                if batch.work + cost > budget { batch.flush()?; }
+                batch.context.begin(self.target.handle(), self.target.width() as u32, self.target.height() as u32);
+                draw(batch.context, band);
+                batch.work += cost;
             }
         }
-        fence.ok_or(Error::Device(-abi::errno::EINVAL))
+        Ok(())
+    }
+}
+
+/// LCD's ordered packing stages, sharing command admission up to the original half-cap.
+struct GlyphBatch<'a> { context: &'a mut bgl::Context, work: u64, fence: Option<bgl::Fence> }
+impl GlyphBatch<'_> {
+    fn flush(&mut self) -> Result<(), i64> {
+        if self.work != 0 {
+            self.fence = Some(self.context.submit().inspect_err(|_| self.context.discard())?);
+            self.work = 0;
+        }
+        Ok(())
     }
 }
 
