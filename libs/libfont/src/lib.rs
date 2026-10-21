@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod cache;
+pub mod crossings;
 pub mod error;
 mod float;
 pub mod outline;

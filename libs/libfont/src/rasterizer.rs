@@ -47,56 +47,11 @@ pub fn raster_bound(e: usize, h: usize, c: usize) -> u128 {
 /// Glyphs whose bound exceeds this are refused before any raster loop.
 pub const MAX_RASTER_STEPS: u128 = 1 << 28;
 
-#[derive(Clone, Copy)]
-struct Crossing {
-    x: f32,
-    dir: i32,
-}
-
-/// Sort `v` by x with a stable bottom-up merge sort that alternates between `v` and `tmp`,
-/// and return the buffer holding the result. Each pass is one loop over the `n` output
-/// slots, moving to the next pair of runs at each run boundary, so a pass counts `1 + n`
-/// steps.
-fn merge_sort<'a>(v: &'a mut [Crossing], tmp: &'a mut Vec<Crossing>) -> &'a [Crossing] {
-    let n = v.len();
-    if n < 2 {
-        return v;
-    }
-    tmp.clear();
-    tmp.extend_from_slice(v);
-    let (mut width, mut in_v) = (1, true);
-    while width < n {
-        work::add(1 + n as u64);
-        let (src, dst): (&[Crossing], &mut [Crossing]) = if in_v { (&*v, &mut tmp[..]) } else { (&tmp[..], &mut *v) };
-        // The runs src[lo..mid] and src[mid..hi] merge into dst[lo..hi].
-        let (mut mid, mut hi) = (width.min(n), (2 * width).min(n));
-        let (mut i, mut j) = (0, mid);
-        for (k, slot) in dst.iter_mut().enumerate() {
-            if k == hi {
-                mid = (hi + width).min(n);
-                (i, j) = (hi, mid);
-                hi = (hi + 2 * width).min(n);
-            }
-            if j >= hi || (i < mid && src[i].x <= src[j].x) {
-                *slot = src[i];
-                i += 1;
-            } else {
-                *slot = src[j];
-                j += 1;
-            }
-        }
-        in_v = !in_v;
-        width *= 2;
-    }
-    if in_v { v } else { tmp }
-}
-
 /// Coverage sums for `columns` columns, `rows` rows of the segments (already in bitmap
 /// coordinates). Each value is the covered fraction of the pixel summed over the 8
 /// sub-scanlines.
 fn accumulate(segments: &[LineSegment], columns: usize, rows: usize, mut emit: impl FnMut(usize, &[f32])) {
-    let mut crossings: Vec<Crossing> = Vec::with_capacity(segments.len());
-    let mut scratch: Vec<Crossing> = Vec::with_capacity(segments.len());
+    let mut crossings = crate::crossings::Crossings::new(segments.len());
     let mut cov = vec![0.0f32; columns];
     let width_f = columns as f32;
     for row in 0..rows {
@@ -105,29 +60,11 @@ fn accumulate(segments: &[LineSegment], columns: usize, rows: usize, mut emit: i
             *v = 0.0;
         }
         for sub in 0..SUB_SCANLINES {
-            work::add(1 + segments.len() as u64);
-            let y = row as f32 + (sub as f32 + 0.5) * INV_SUB;
-            crossings.clear();
-            for s in segments {
-                if (s.y0 < y && s.y1 < y) || (s.y0 >= y && s.y1 >= y) {
-                    continue;
-                }
-                let dy = s.y1 - s.y0;
-                if dy == 0.0 {
-                    continue;
-                }
-                let t = (y - s.y0) / dy;
-                crossings.push(Crossing { x: s.x0 + t * (s.x1 - s.x0), dir: if s.y1 > s.y0 { 1 } else { -1 } });
-            }
-            if crossings.is_empty() {
-                continue;
-            }
-            let sorted = merge_sort(&mut crossings, &mut scratch);
-            work::add(sorted.len() as u64);
+            let sorted = crossings.scanline(segments, row, sub);
             let (mut winding, mut fill_start) = (0i32, 0.0f32);
             for c in sorted {
                 let before = winding;
-                winding += c.dir;
+                winding += c.direction;
                 if before == 0 && winding != 0 {
                     fill_start = c.x;
                 } else if before != 0 && winding == 0 {
