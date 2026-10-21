@@ -379,6 +379,9 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
+    /// The kernel screen's context this resource is attached to for observing it as a
+    /// retained binding (`screen::observation_context`), 0 for none.
+    observed_in: u32,
 }
 
 struct Core {
@@ -2473,6 +2476,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         holds: 0,
         lost: false,
         reading: false,
+        observed_in: 0,
     }
 }
 
@@ -4577,12 +4581,15 @@ fn observe(
     staging: &Pages,
 ) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
+        // The scanout's writer may belong to any process, but not to a context being destroyed.
         let live = |cid: &u32| {
             c.contexts.get(cid).is_some_and(|x| {
-                (a.target == 0 || x.owner == tgid) && x.state == CtxState::Live && x.device_alive
+                (if a.target == 0 { !x.dropped } else { x.owner == tgid })
+                    && x.state == CtxState::Live
+                    && x.device_alive
             })
         };
-        last.map(|l| l.ctx).filter(live).or_else(|| {
+        let found = last.map(|l| l.ctx).filter(live).or_else(|| {
             if a.target == 0 {
                 None
             } else {
@@ -4590,14 +4597,24 @@ fn observe(
                     .get(&tgid)
                     .and_then(|p| p.contexts.values().copied().find(live))
             }
-        })
+        });
+        // A target of this epoch outlives the contexts that wrote it while the binding
+        // retains it; one from before a reset is lost.
+        let current = !c.resetting && c.resources.get(&id).is_some_and(|r| !r.lost && r.epoch == c.epoch);
+        (found, current)
     })
-    .flatten()
-    .ok_or(if a.target == 0 {
-        (EIO, readback_reason::TARGET_LOST)
-    } else {
-        (EINVAL, readback_reason::NONE)
-    })?;
+    .ok_or((ENODEV, readback_reason::NONE))?;
+    let ctx = match ctx {
+        (Some(ctx), _) => ctx,
+        // The scanout's binding retains the target after the context that last wrote it
+        // ended, and it stays observable (gpu-abi.md, op 22): the transfer runs in the
+        // kernel screen's context.
+        (None, true) if a.target == 0 => screen::observation_context(id).map_err(|e| {
+            (e, if e == EIO { readback_reason::DEVICE_ERROR } else { readback_reason::NONE })
+        })?,
+        (None, _) if a.target == 0 => return Err((EIO, readback_reason::TARGET_LOST)),
+        (None, _) => return Err((EINVAL, readback_reason::NONE)),
+    };
     let px = format::bytes(fmt) as usize;
     let row = a.width as usize * px;
     let height = a.height as usize;

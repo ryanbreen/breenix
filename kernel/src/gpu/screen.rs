@@ -465,6 +465,23 @@ pub(super) fn bind_saved(b: Binding) -> Result<(), i64> {
     lease.ensure()?.bind(b)
 }
 
+/// The context to observe retained scanout target `id` in once the context that last wrote
+/// it has ended: the kernel screen's, with `id` attached to it the first time, inside the
+/// observation's display transition.
+pub(super) fn observation_context(id: u32) -> Result<u32, i64> {
+    let mut lease = Lease::take();
+    let context = lease.ensure()?.context;
+    if with_core(|c| c.resources.get(&id).map(|r| r.observed_in)).flatten().ok_or(EIO)? != context {
+        exec_ok(|t| Some(dev::ctx_attach(t, context, id)), context, &[id])?;
+        with_core(|c| {
+            if let Some(r) = c.resources.get_mut(&id) {
+                r.observed_in = context;
+            }
+        });
+    }
+    Ok(context)
+}
+
 /// Whether core resource `id` is the kernel screen's target, whose backing the console
 /// writes.
 pub(super) fn is_target(id: u32) -> bool {
