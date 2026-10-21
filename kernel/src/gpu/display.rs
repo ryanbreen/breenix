@@ -663,9 +663,11 @@ pub(super) fn ended(c: &mut Core, group: u64) {
 }
 
 pub(super) fn restore() -> Result<(), i64> {
+    // An owner that has not presented yet was shown what was on the screen when it took
+    // custody: the frame of the nearest owner below it that presented.
     let (saved, current, owned) = with_core(|c| {
         let current = c.display.binding.filter(|_| c.display.known);
-        (c.display.stack.last().and_then(|o| o.last), current, !c.display.stack.is_empty())
+        (c.display.stack.iter().rev().find_map(|o| o.last), current, !c.display.stack.is_empty())
     })
     .unwrap_or((None, None, false));
     match saved {
@@ -674,7 +676,7 @@ pub(super) fn restore() -> Result<(), i64> {
         // binding unknown meanwhile, refusing the owner's readbacks with reason 10.
         Some(b) if current.is_some_and(|c| c.id == b.id) => Ok(()),
         Some(b) => super::screen::bind_saved(b),
-        // An owner that has not presented yet sees the kernel's screen as it was left.
+        // No owner on the stack has presented: the kernel's screen as it was left.
         None if owned => super::screen::show(),
         // No owner: the screen console has the display again (ruling F25).
         None => super::screen::restore(),
