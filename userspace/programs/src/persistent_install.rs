@@ -114,10 +114,12 @@ impl Copier<'_> {
     fn ensure_directory(&mut self, path: &Path, mode: u32) -> Result<(), String> {
         if !present(path)? {
             self.change("mkdir", path, || fs::create_dir(path))?;
-            self.change("chmod", path, || fs::set_permissions(path, fs::Permissions::from_mode(mode)))?;
-            self.sync(path.parent().unwrap_or(Path::new("/")))?;
         }
-        require_directory(path)
+        require_directory(path)?;
+        // Retry the mode and durability steps even if mkdir completed before a reset.
+        self.change("chmod", path, || fs::set_permissions(path, fs::Permissions::from_mode(mode)))?;
+        self.sync(path)?;
+        self.sync(path.parent().unwrap_or(Path::new("/")))
     }
 
     fn copy_tree(&mut self, source: &Path, target: &Path) -> Result<(), String> {
@@ -335,9 +337,6 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     let operator = read_operator(source)?;
     let skip = LEFT_BEHIND.iter().chain([ROOT_LEFT_BEHIND].iter()).map(|path| source.join(path)).collect();
     let mut copier = Copier { totals: Totals::default(), skip, linked: HashMap::new(), buffer: vec![0u8; 64 * 1024], checkpoint };
-    // The store is outside the generations: a retry stages the account again, and
-    // an interrupted install leaves the current generation as it was.
-    stage_store(&mut copier, target, operator.as_ref())?;
     let generations = target.join(GENERATIONS);
     let staged = generations.join(format!("{}.new", id));
     let published = generations.join(id);
@@ -355,6 +354,9 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
         }
         return Err(String::from("incomplete published userland generation"));
     }
+    // The store is outside the generations: a retry stages the account again, and
+    // an interrupted install leaves the current generation as it was.
+    stage_store(&mut copier, target, operator.as_ref())?;
     for name in KEPT {
         require_directory(&source.join(name))?;
         if present(&target.join(name))? { require_directory(&target.join(name))?; }
@@ -619,6 +621,24 @@ mod tests {
     }
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOperatorPublicKeyBytesForTheHostTestOnly0 operator@boot-host";
+
+    #[test]
+    fn retry_repairs_store_mode_after_interrupted_mkdir() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join(STORE);
+        let mut checkpoint = || Ok(());
+        let mut copier = Copier {
+            totals: Totals::default(), skip: Vec::new(), linked: HashMap::new(),
+            buffer: Vec::new(), checkpoint: &mut checkpoint,
+        };
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        copier.ensure_directory(&path, 0o700).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o700);
+        fs::remove_dir(&path).unwrap();
+        std::os::unix::fs::symlink(&fixture.0, &path).unwrap();
+        assert!(copier.ensure_directory(&path, 0o700).is_err());
+    }
 
     #[test]
     fn operator_and_host_keys_live_in_the_store_and_test_credentials_stay_behind() {
