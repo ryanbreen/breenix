@@ -10,3 +10,9 @@ description = "Image format encoding for Breenix userspace"
 crate-type = ["rlib"]
 
 [dependencies]
+
+[dev-dependencies]
+libimg-encode = { path = "../libimg-encode" }
+
+[features]
+encode-checks = []

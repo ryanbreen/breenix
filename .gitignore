@@ -32,6 +32,8 @@ libs/*
 !libs/breenix-logo/
 !libs/bgl/
 !libs/bgl/**
+!libs/libimg-encode/
+!libs/libimg-encode/**
 !libs/libgfx-ref/
 !libs/libgfx-ref/**
 !libs/libgfx-pixel/
