@@ -1312,7 +1312,8 @@ fn validate_exec_smoke_is_wired(
     {
         return Err("init must run both arches' exec smoke before the remaining boot services".to_owned());
     }
-    let reap_loops = code_offsets(main, &main_mask, "loop {");
+    // The service supervisor's loop reaps init's children; it replaced main's reap loop.
+    let reap_loops = code_offsets(main, &main_mask, "supervisor.run()");
     if reap_loops.len() != 1 || aarch64_smoke >= reap_loops[0] || x86_smoke >= reap_loops[0] {
         return Err("init must run both arches' exec smoke before the reap loop".to_owned());
     }

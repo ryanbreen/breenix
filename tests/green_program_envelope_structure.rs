@@ -84,16 +84,17 @@ const AARCH64_GATE_SCRIPTS: &[&str] = &[
 /// The `#[cfg(target_arch = "...")]`-gated call sequence inside `fn main() { ... }`,
 /// in source order, as `(gate_arch, fn_name)` pairs. `gate_arch` is `None` for a
 /// call with no `#[cfg(target_arch = ...)]` immediately above it. Only direct
-/// `ident(...);` statement lines are recorded; truncates at the reap-loop comment
-/// so the zombie-reap `loop { waitpid(-1, ...) }` below it (which is not part of
-/// the launch sequence) is never walked.
+/// `ident(...);` statement lines are recorded; truncates where main hands over to
+/// the service supervisor, which starts the table's services and reaps init's
+/// children from then on (it replaced main's zombie-reap loop), so its loop is not walked.
+/// claim-lint:ok: `None` is a Rust source token; main_call_sequence in tests/green_program_envelope_structure.rs.
 fn main_call_sequence(source: &str) -> Vec<(Option<String>, String)> {
     let start = source.find("fn main() {").expect("init.rs declares fn main()");
     let after_header = start + "fn main() {".len();
-    let reap_marker = "// Reap zombies forever";
+    let reap_marker = "init_services::Supervisor::load(";
     let reap_idx = source[after_header..]
         .find(reap_marker)
-        .expect("init.rs main() reaches the reap-loop comment");
+        .expect("init.rs main() reaches the service supervisor");
     let body = &source[after_header..after_header + reap_idx];
 
     let mut calls = Vec::new();

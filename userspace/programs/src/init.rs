@@ -1,8 +1,11 @@
 //! Breenix init process (/sbin/init) - std version
 //!
-//! PID 1 - starts services and boot checks, then the desktop on ARM64 or gettys on x86.
+//! PID 1 - runs the boot checks and the boot script, then supervises the services in
+//! `/etc/breenix/services` (`init_services.rs`): bsshd, the gettys on x86 and the rest.
 //! Init confers the init-shell role by passing `--init-shell`; no PID value is part of that
 //! contract.
+
+mod init_services;
 
 #[cfg(target_arch = "aarch64")]
 use libbreenix::fs;
@@ -95,6 +98,12 @@ fn run_init_group_refusal_probe(phase: &str) {
 }
 
 fn main() {
+    // The service table runs the loopback SSH check as `init bssh-oracle`, a child that
+    // must not repeat PID 1's boot work or its start-up line.
+    if std::env::args().nth(1).as_deref() == Some("bssh-oracle") {
+        run_bssh_pubkey_oracle();
+        return;
+    }
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
     // Emptying /tmp and /run and reconciling /etc is boot work, done by the system's init
@@ -159,38 +168,18 @@ fn main() {
     #[cfg(target_arch = "x86_64")]
     detach_console();
     reconcile_machine_state();
-    start_bsshd();
-    run_bssh_pubkey_oracle();
     run_boot_script();
+    // The services start on the supervisor's first pass; the rest of the ARM64 start-up
+    // follows it and does not wait on a service.
+    let mut supervisor = init_services::Supervisor::load(init_services::Scope::All, pid == 1);
+    supervisor.tick();
     #[cfg(target_arch = "aarch64")]
     start_bounce();
     #[cfg(target_arch = "aarch64")]
     run_bssh_autorun_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_init_group_refusal_probe("quiesce");
-
-    // Reap zombies forever
-    let mut status: i32 = 0;
-    loop {
-        match waitpid(-1, &mut status as *mut i32, 0) {
-            Ok(pid) => {
-                let sig = status & 0x7F;
-                let exit_code = (status >> 8) & 0xFF;
-                if sig != 0 {
-                    print!("[init] Process {} killed by signal {}\n", pid.raw(), sig);
-                } else {
-                    print!("[init] Process {} exited (code {})\n", pid.raw(), exit_code);
-                }
-            }
-            Err(_) => {
-                let ts = libbreenix::types::Timespec {
-                    tv_sec: 1,
-                    tv_nsec: 0,
-                };
-                let _ = libbreenix::time::nanosleep(&ts);
-            }
-        }
-    }
+    supervisor.run()
 }
 
 /// Boot modes (`init shell`, `init desktop`): reap one child, blocking. Returns its PID,
@@ -250,11 +239,14 @@ fn run_shell_mode() -> ! {
     }
 }
 
-/// Explicit console mode skips the default boot script and boot checks.
+/// Explicit console mode skips the default boot script and boot checks, and supervises
+/// only the table's login terminals.
 fn run_console_mode() -> ! {
     #[cfg(target_arch = "x86_64")]
     console_text_mode();
-    run_console_gettys()
+    detach_console();
+    let pid = getpid().map(|p| p.raw()).unwrap_or(0);
+    init_services::Supervisor::load(init_services::Scope::Logins, pid == 1).run()
 }
 
 /// Release init's terminal before starting daemons or independent login sessions.
@@ -269,50 +261,6 @@ fn detach_console() {
     if unsafe { ioctl(0, 0x5422, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() != Some(25) {
         print!("[init] console detach failed\n");
         reap_forever();
-    }
-}
-
-fn run_console_gettys() -> ! {
-    detach_console();
-    let mut children = [None; 6];
-    let mut retry_at = [0i128; 6];
-    loop {
-        let now = libbreenix::time::now_monotonic().expect("console clock").as_nanos();
-        // Start tty1 last so launch messages precede its login prompt.
-        for index in (1..6).chain(0..1) {
-            if children[index].is_some() || now < retry_at[index] { continue; }
-            let tty = format!("tty{}\0", index + 1);
-            let argv = [b"getty\0".as_ptr(), tty.as_ptr(), core::ptr::null()];
-            // tty1 retains getty's default /dev/console path.
-            if index == 0 { print!("[init] getty on the console\n"); }
-            else { print!("[init] getty on tty{}\n", index + 1); }
-            let result = if index == 0 { spawn(b"/bin/getty\0") }
-                else { spawnv(b"/bin/getty\0", argv.as_ptr()) };
-            match result {
-                Ok(child) => {
-                    children[index] = Some(child.raw() as i32);
-                }
-                Err(error) => print!("[init] getty tty{}: {}\n", index + 1, error),
-            }
-            retry_at[index] = now + 1_000_000_000;
-        }
-        // Reap without waiting on one particular VT: another session may exit
-        // while a fast-failing getty is rate limited.
-        loop {
-            let mut status = 0;
-            match waitpid(-1, &mut status, libbreenix::process::WNOHANG) {
-                Ok(pid) if pid.raw() != 0 => {
-                    if let Some(index) = children.iter().position(|p| *p == Some(pid.raw() as i32)) {
-                        children[index] = None;
-                        retry_at[index] = libbreenix::time::now_monotonic().expect("console clock").as_nanos() + 1_000_000_000;
-                        if index == 0 { print!("[init] console session ended; restarting getty\n"); }
-                        else { print!("[init] tty{} session ended\n", index + 1); }
-                    }
-                }
-                _ => break,
-            }
-        }
-        let _ = libbreenix::time::sleep_ms(50);
     }
 }
 
@@ -677,8 +625,6 @@ fn run_boot_script() {
             print!("[init] Failed to spawn boot script: {}\n", e);
         }
     }
-    #[cfg(target_arch = "x86_64")]
-    run_console_gettys();
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -929,17 +875,6 @@ fn reconcile_machine_state() {
             }
         }
         Err(why) => print!("[init] machine state refused: {}\n", why),
-    }
-}
-
-fn start_bsshd() {
-    match spawn(b"/usr/sbin/bsshd\0") {
-        Ok(child_pid) => {
-            print!("[init] bsshd started (PID {})\n", child_pid.raw());
-        }
-        Err(_) => {
-            print!("[init] Warning: failed to start bsshd\n");
-        }
     }
 }
 
