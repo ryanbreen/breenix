@@ -298,7 +298,10 @@ pub fn authorize_key(root: &Path, account: &Account, blob: &[u8], line: &str) ->
             .or_else(|e| refuse(format!("chown {}: {}", path.display(), e)))?;
         file
     };
-    file.write_all(format!("{}\n", line).as_bytes())
+    // An existing final key or comment need not have a trailing newline.
+    // A blank separator is harmless when it already has one.
+    let separator = if present { "\n" } else { "" };
+    file.write_all(format!("{}{}\n", separator, line).as_bytes())
         .and_then(|_| file.sync_all())
         .or_else(|e| refuse(format!("write {}: {}", path.display(), e)))?;
     sync_directory(&ssh)?;
@@ -528,6 +531,21 @@ mod tests {
         fs::set_permissions(tree.root.join("home"), fs::Permissions::from_mode(0o777)).unwrap();
         assert!(authorize_key(&tree.root, &tree.account, &operator_key.public_key_blob(), &line).is_err());
         assert!(!tree.home().exists());
+    }
+
+    #[test]
+    fn staged_key_follows_an_unterminated_authorized_key() {
+        let tree = Tree::new("unterminated");
+        let old = key(7);
+        let new = key(8);
+        tree.authorize(&old.public_line(""));
+        let path = tree.home().join(".ssh/authorized_keys");
+        fs::write(&path, old.public_line("")).unwrap();
+        assert!(authorize_key(&tree.root, &tree.account, &new.public_key_blob(), &new.public_line("")).unwrap());
+        let authorized = authorized_keys(&tree.root, &tree.account).unwrap();
+        assert!(authorized.contains(&old.public_key_blob()));
+        assert!(authorized.contains(&new.public_key_blob()));
+        assert!(!authorize_key(&tree.root, &tree.account, &new.public_key_blob(), &new.public_line("")).unwrap());
     }
 
     /// Credentials that apply the POSIX rules: a privileged caller sets any
