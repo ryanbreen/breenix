@@ -4,7 +4,6 @@
 //! retain the core's DMA holds; dropping a window revokes the handle, then drops its hold.
 
 use super::*;
-use alloc::sync::Weak;
 
 /// Identity assigned at admission, before translation or the first device send.
 /// Status publication and the end of DMA access are separate transitions.
@@ -54,7 +53,7 @@ pub fn backing_len(width:u32,height:u32)->u64 {
 
 pub fn backend_code() -> u32 { with_core(|c| c.caps.backend).unwrap_or(0) }
 
-static CONTEXTS: crate::irq_safe_mutex::IrqSafeMutex<BTreeMap<u64, Weak<Context>>> =
+static CONTEXTS: crate::irq_safe_mutex::IrqSafeMutex<BTreeMap<u64, Arc<Context>>> =
     crate::irq_safe_mutex::IrqSafeMutex::new(BTreeMap::new());
 
 struct Context {
@@ -65,22 +64,23 @@ struct Context {
 
 impl Context {
     fn get(owner: u64) -> Result<Arc<Self>, i64> {
-        let cached = CONTEXTS.lock().get(&owner).and_then(Weak::upgrade);
+        let cached = CONTEXTS.lock().get(&owner).cloned();
         if let Some(context) = cached {
             let live = with_core(|c| c.contexts.get(&context.id)
                 .is_some_and(|x| x.state == CtxState::Live && !x.dropped && x.device_alive)).unwrap_or(false);
             if live { return Ok(context); }
-            CONTEXTS.lock().remove(&owner);
+            let old = CONTEXTS.lock().remove(&owner);
+            drop(old);
         }
         let (handle, _) = create_context(owner)?;
         let id = with_core(|c| c.ctx_of(owner, handle)).flatten().ok_or(EIO)?;
         let made = Arc::new(Self { owner, handle, id });
         let mut contexts = CONTEXTS.lock();
-        if let Some(context) = contexts.get(&owner).and_then(Weak::upgrade) {
+        if let Some(context) = contexts.get(&owner).cloned() {
             drop(contexts);
             return Ok(context);
         }
-        contexts.insert(owner, Arc::downgrade(&made));
+        contexts.insert(owner, made.clone());
         Ok(made)
     }
 }
@@ -88,11 +88,13 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         destroy_context(self.owner, self.handle);
-        let mut contexts = CONTEXTS.lock();
-        if contexts.get(&self.owner).is_some_and(|entry| entry.strong_count() == 0) {
-            contexts.remove(&self.owner);
-        }
     }
+}
+
+/// End the process's private context cache. Buffer/capture references drain independently.
+pub fn release_context(owner: u64) {
+    let old = CONTEXTS.lock().remove(&owner);
+    drop(old);
 }
 
 /// A window buffer. Handles are process-local; `id` is only for the compositor's core path.
@@ -326,7 +328,7 @@ impl Target {
                 let count = rows.min(self.height as usize - first);
                 let args = abi::Readback { target:self.handle,y:first as u32,
                     width:self.width,height:count as u32,..abi::Readback::ZERO };
-                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages)
+                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages,Some(context.id))
                     .map_err(|(errno,_)| errno)?;
                 if seen.unwritten != 0 { return Err(EIO); }
                 for local in 0..count {

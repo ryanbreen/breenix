@@ -1378,6 +1378,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         w.waits.events.wake_up();
     }
     claim_ended(readers);
+    crate::gpu::window_targets::release_context(tgid);
     drop(gone);
     drop(freed);
     // TODO(gpu-display): the retired software compositor restored the display here when its

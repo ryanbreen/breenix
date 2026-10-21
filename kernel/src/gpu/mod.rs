@@ -4255,7 +4255,7 @@ fn op_readback(arg: u64, len: u64) -> Result<u64, i64> {
         release();
         return refuse(&mut a, readback_reason::TARGET_INVALID, invalidated_by);
     }
-    let observation = match observe(tgid, id, last, &backing, pitch, fmt, a, &staging.pages) {
+    let observation = match observe(tgid, id, last, &backing, pitch, fmt, a, &staging.pages, None) {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
@@ -4510,13 +4510,17 @@ fn observe(
     fmt: u32,
     a: abi::Readback,
     staging: &Pages,
+    preferred_ctx: Option<u32>,
 ) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
         let live = |cid: &u32| {
             c.contexts.get(cid).is_some_and(|x| {
-                (a.target == 0 || x.owner == tgid) && x.state == CtxState::Live && x.device_alive
+                (a.target == 0 || x.owner == tgid) && x.state == CtxState::Live && x.device_alive && !x.dropped
             })
         };
+        // Window CAPTURE holds its private context across both poison transfers; the
+        // completed writer's context may already be retiring independently of the target.
+        if let Some(ctx) = preferred_ctx { return live(&ctx).then_some(ctx); }
         last.map(|l| l.ctx).filter(live).or_else(|| {
             if a.target == 0 {
                 None
@@ -4528,7 +4532,7 @@ fn observe(
         })
     })
     .flatten()
-    .ok_or(if a.target == 0 {
+    .ok_or(if a.target == 0 || preferred_ctx.is_some() {
         (EIO, readback_reason::TARGET_LOST)
     } else {
         (EINVAL, readback_reason::NONE)
