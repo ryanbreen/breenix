@@ -304,7 +304,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     // undefined command, which the device can only refuse.
     let forced = crate::test_control::reserve(breengel_abi::tc_point::BACKEND_ERROR, 0);
     let mut submit = abi::Submit { context, stream: a.stream, length: a.length, ..abi::Submit::ZERO };
-    let extra = Extra { aliases: &aliases, check: &mut check, device_error: forced.is_some() };
+    let extra = Extra { aliases: &aliases, check: &mut check, device_error: forced.is_some(), destination: target_id };
     let submitted = submit_stream(tgid, &mut submit, Some(extra), &|_| Ok(()));
     a.error_index = submit.error_index;
     a.error = submit.error;

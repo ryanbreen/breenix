@@ -3427,12 +3427,14 @@ struct Alias {
 }
 
 /// What window composition adds to a submission: its source aliases, a check of the
-/// validated stream that runs before anything is admitted or sent, and whether the
-/// submission carries test point 27's undefined command (`backend-error`'s device failure).
+/// validated stream that runs before anything is admitted or sent, whether the submission
+/// carries test point 27's undefined command (`backend-error`'s device failure), and its
+/// displayed destination, the target test point 22 plants on when armed for any target.
 struct Extra<'a> {
     aliases: &'a [Alias],
     check: &'a mut dyn FnMut(&WordBuf, &View) -> Result<(), i64>,
     device_error: bool,
+    destination: u32,
 }
 
 /// `SUBMIT` of the stream `a` names for `tgid`: validate, translate and queue it. `out`
@@ -3598,10 +3600,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     // Each submission reserves a distinct range in the context's reusable vertex arena.
     // The batched upload precedes drawing; completion and fence publication release ranges.
     // Test point 22, `corrupt-pixel`, armed for one of the targets this submission writes
-    // (or for any): that target gets one extra draw.
+    // (or for any): that target gets one extra draw. A window composition's is its displayed
+    // destination, not the persistent scene the next frames copy from.
     let mut corruption = None;
+    let destination = extra.as_ref().map(|e| e.destination);
     let corrupt = view.entries.iter()
-        .filter(|e| written.contains(&e.id))
+        .filter(|e| written.contains(&e.id) && destination.is_none_or(|d| d == e.id))
         .map(|e| e.handle)
         .find(|&handle| {
             corruption = crate::test_control::reserve(test_point::CORRUPT_PIXEL, handle);
