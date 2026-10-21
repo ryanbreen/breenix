@@ -158,6 +158,12 @@ fn scanout_completion() -> CaseResult {
     };
     ensure(quad(&rec,176)==serial && quad(&rec,104)!=0 && quad(&rec,120)!=0 && quad(&rec,184)!=0,
         "20.1", "gpu-display: render/readback/present completions do not identify this composite")?;
+    let fences = [quad(&rec,104), quad(&rec,120), quad(&rec,184)];
+    ensure(fences[0] != fences[1] && fences[0] != fences[2] && fences[1] != fences[2],
+        "20.1", "gpu-display: render/readback/present native fences are not distinct")?;
+    let (_, next) = screen()?;
+    ensure(quad(&rec,8) != 0 && quad(&next,8) > quad(&rec,8) && quad(&next,176) == serial,
+        "20.1", "gpu-display: observation serial did not advance independently of the unchanged composite serial")?;
     ensure(word(&rec,112)==status && word(&rec,116)==render && word(&rec,128)==status && word(&rec,132)==readback && word(&rec,192)==status,
         "20.2", "gpu-display: B13 requires genuine native completion statuses, not legacy per-damage 2D transfers")?;
     Ok(())

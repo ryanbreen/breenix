@@ -1256,15 +1256,15 @@ fn windows_distinct_content() -> CaseResult {
 pub(crate) fn readback() -> Result<Vec<u8>, String> {
     let (width,height)=super::composition::screen_size().map_err(|e|format!("{e:?}"))?;
     let mut px = vec![0u8; width * height * 4];
-    let mut rec = abi::ObservationRecord::ZERO;
-    let mut rb = abi::Readback::ZERO;
+    let mut rec = [0u8; 1024];
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
     rb.dst_len = px.len() as u64;
-    rb.record = &mut rec as *mut abi::ObservationRecord as u64;
-    rb.record_len = core::mem::size_of::<abi::ObservationRecord>() as u32;
+    rb.record = rec.as_mut_ptr() as u64;
+    rb.record_len = 1024;
     let r = call(op::SCANOUT_READBACK, &mut rb);
     if r < 0 {
-        return Err(format!("SCANOUT_READBACK {}", outcome(r)));
+        return Err(format!("gpu-display: B13 SCANOUT_READBACK {} reason {}", outcome(r), rb.reason));
     }
     Ok(px)
 }

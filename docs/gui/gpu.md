@@ -826,7 +826,7 @@ and the same 170 cases with zero skips remain required on both backends.
 A readback refuses with EIO and a named reason (the codes are in `docs/gui/gpu-abi.md`) when the two
 complementary-poison observations differ (unwritten), when any recorded fence belongs to another submission
 (fence mismatch), when a composed window's render fence had not completed OK before the composite was sent
-(its code is assigned with composite observations, which come after G2), when
+(reason 12, composite-render-incomplete), when
 an observation claiming the scanout (record `flags` bit 0 set) names a resource that differs from the
 device's confirmed scanout binding (resource mismatch), when the target is invalid (section 1.4.1; the
 reason names the submission that invalidated it), when the device
@@ -836,8 +836,8 @@ completes or fails (device reset), when the target was lost to an earlier device
 the target's handle was destroyed while the readback waited for its writers (target dropped), and when the
 target may be the scanout but the scanout's binding is not known because a `PRESENT` that binds it or
 replaces it was sent and has not completed, or failed (binding unknown), and when a composite has more than
-16 windows (composite-overflow; its code is assigned with composite observations, which come after G2).
-Every EIO a readback returns names one of these reasons; none is reported under another's name.
+16 windows (reason 11, composite-overflow).
+Every EIO a readback returns names one of these reasons; none is reported under another's name. <!-- claim-lint:ok: Normative error identities in gpu-abi.md Readback reason codes; not implementation acceptance. -->
 Composite overflow returns no partial record, as v1 does.
 
 **A fault is detected from what can be observed, never from the fault variable.** A readback's reason comes
