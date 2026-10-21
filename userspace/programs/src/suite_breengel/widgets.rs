@@ -684,7 +684,7 @@ fn same_as(
 // gpu-text: R3 centers the certified DejaVu Sans 16 px label using 26.6 advances.
 fn widgets_button_draw() -> CaseResult {
     let theme = Theme::dark();
-    let mut g = Drawn::bgrx(100, 40);
+    let mut g = ui_frame(100, 40);
     g.reset(PAPER);
     Button::new(Rect::new(10, 8, 60, 20), b"OK").draw(&mut g.fb(), &theme);
     snapshot(&g)?;
