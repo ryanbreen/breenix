@@ -2439,6 +2439,15 @@ pub(super) fn reclaim(scheduler: &mut Scheduler) -> alloc::vec::Vec<Box<Thread>>
             });
         }
     }
+    // Scratch forcing: widen the window between reading the index and
+    // updating the count (diagnostic, not for merge).
+    let spin_start = crate::time::get_monotonic_time_ns();
+    while {
+        let now = crate::time::get_monotonic_time_ns();
+        (now.0 - spin_start.0) * 1_000_000_000 + now.1 < spin_start.1 + 2_000_000
+    } {
+        core::hint::spin_loop();
+    }
     let me = super::current_cpu_id_raw();
     let mut reclaimed = alloc::vec::Vec::with_capacity(RECLAIM_BATCH);
     for &tid in dead.iter() {
