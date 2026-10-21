@@ -397,8 +397,8 @@ struct Res {
     holds: u32,
     lost: bool,
     reading: bool,
-    /// A progress transfer only excludes CPU access and other GPU contexts;
-    /// later draws of this context remain ordered behind its queued transfer.
+    /// The context of a queued progress transfer reading this target. It excludes CPU
+    /// access only; GPU writes of any context may follow it.
     progress_context: Option<u32>,
     window_sealed: bool,
     /// The kernel screen's context this resource is attached to for observing it as a
@@ -1022,9 +1022,9 @@ impl Core {
         Ok(())
     }
 
-    /// Drain queued QEMU rendering through its context's private one-pixel target. Native render
-    /// fences remain the publication proof. kgpu sends the transfer, keeping device
-    /// notification out of the waiter's CPU time; its own fence retains the DMA hold.
+    /// Drain queued QEMU rendering through a fenced one-pixel transfer of the drawn target.
+    /// Publication still waits for the native render fences. kgpu sends the transfer, keeping
+    /// device notification out of the waiter's CPU time; its own fence retains the DMA hold.
     fn progress_readback(&mut self) {
         let reaper = REAPER.load(Ordering::Acquire);
         if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
@@ -1034,13 +1034,10 @@ impl Core {
             .find_map(|s| s.written.iter().find_map(|rid| {
                 let r = self.resources.get(rid)?;
                 let active = r.accepted.iter().filter(|w| !w.ended()).count();
-                if !(r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
                     && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
-                    && !r.reading && !r.invalid && !r.lost) { return None; }
-                let scratch = self.contexts.get(&s.ctx)?.scratch;
-                let r = self.resources.get(&scratch)?;
-                (!r.reading && !r.invalid && !r.lost)
-                    .then(|| (s.ctx, scratch, r.backing.clone(), r.pitch))
+                    && !r.reading && !r.invalid && !r.lost)
+                    .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
             }));
         let Some((ctx, rid, backing, pitch)) = target else { return; };
         let serial = self.serial();
