@@ -46,6 +46,15 @@ class ManifestTests(unittest.TestCase):
         self.source.write_text('fn main() { loop {} }\n')
         self.assert_refused('sources changed')
 
+    def test_pending_gpu_apps_list_is_a_build_input(self):
+        pending = self.repo / 'docs/gui/gpu-apps-pending.md'
+        pending.parent.mkdir(parents=True)
+        pending.write_text('| bterm | #2207 | GPU port pending |\n')
+        self.assert_refused('sources changed')
+        self.assertEqual(self.run_tool('write').returncode, 0)
+        pending.write_text('| blog | #2207 | GPU port pending |\n')
+        self.assert_refused('sources changed')
+
     def test_archive_cleaning_script_is_a_build_input(self):
         cleaner = self.repo / 'scripts/libc-clean-archive.py'
         cleaner.write_text('clean archive version 1')
