@@ -2,8 +2,8 @@
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
 This is the normative DISPLAY-owned reconciliation for `gpu.md` section 2.7 step 5, from `f0ed099e`.
-The 393-case baseline becomes 399: **310 kept, 78 changed, 5 removed, 11 added**.
-The changed cases comprise 63 GPU-only and 15 R3/R4 changes; the table below assigns their lanes.
+The 393-case baseline becomes 399: **306 kept, 82 changed, 5 removed, 11 added**.
+The changed cases comprise 67 GPU-only and 15 R3/R4 changes; the table below assigns their lanes.
 No row asserts GPU acceptance; lane implementations and final proof are recorded by the contract PR.
 
 B1 keeps the merge-forward route; B2 selects userspace GPU composition; B3 keeps the core and pure libraries; B4 excludes the obsolete x86 lane; B5 limits this effort to ARM64 QEMU with `--gpu-gl`. B6 and B7 reclassify mechanisms; B8 also reclassifies retired screen dimensions.
@@ -136,6 +136,36 @@ commit-immutable; baseline kept-case boot comparison. These do not close a lane'
 acceptance and remain review follow-up work.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
+## B13 check changes and failure ownership
+
+B13 preserves the 399 manifest identities. The following four previously kept cases
+become changed; their checks precede implementation in the handoff-contract commits:
+
+| Case | Lane | Named missing path / retained check |
+|---|---|---|
+| `isolation/composite-denied` | gpu-window / gpu-display | B13: 96-byte snapshot and 112-byte submission require both current display ownership and claim; claim-only and owner-only callers are EPERM. |
+| `isolation/compositor-authorized` | gpu-display | B13: authorized helper uses metadata snapshot and userspace stream submission, retaining position/event/capture checks. |
+| `isolation/efault-composite` | gpu-display | B13: preflight the new 112-byte descriptor; unmapped/read-only descriptors still EFAULT with no work or consumed frame. |
+| `isolation/unknown-op` | gpu-window | B13: op 29 is allocated; first unknown op becomes 30, while 0xFFFF and u32::MAX remain EINVAL. |
+
+The already changed/added cases also tighten their B13 path, without another identity:
+
+| Cases / shared check | Lane | Check-first expectation |
+|---|---|---|
+| `windows/commit-waits-render` | gpu-window | Keep depth-four release and already-failed refusal; add pending LIST watermark and late-failure one-shot ACQUIRE EIO, previous CAPTURE intact, safe retry based on the previous published commit |
+| `isolation/other-map` | gpu-window / gpu-display | Sample alias is non-address-shaped; ordinary 416 SUBMIT is EINVAL/code 4, RESOURCE_DESTROY and READBACK refuse it without changed output |
+| `composition/target-lifetime` | gpu-window / gpu-display | Metadata reservation cannot exhaust two buffers; cancellation creates no fence/serial, consumes token once; recycled source op 19 is EAGAIN with no record/work |
+| `composition/compose-many` | gpu-display | Keep exact sixteen-window formula, then compose seventeen windows across clients; COMPOSITE_RECORD lists seventeen, op 22 is EIO/reason 11 with serial/pixels/record untouched |
+| `scanout/completion`, `atomic-record`, `window-commits`, `format-canonical`, `root-only` | gpu-display | Decode core v2 native fences and sampled target generations, not the legacy completion array; observation serial differs from composite serial; core format 0 BGR / 1 RGB |
+| `screen()` and window-observation EFAULT callers | gpu-display | Send 48-byte op 22, require the complete mode, record v2 size 1,024, and report its reason; `isolation/efault-readback` retains both inaccessible destination and record checks |
+| Shared `compose()` callers | gpu-display | Kiosk must build the snapshot/stream path; failure names gpu-display and B13. Existing whole-device pixels, damage unions, faults and timing bounds remain |
+
+The test-local wire fixture in `window_cases/handoff.rs` declares requests independently
+of the production ABI wrappers, so absent lane work fails at the actual syscall or
+assertion with the lane name. It supplies no production handoff, fallback compositor,
+passing sentinel or skipped case. Host type checking and manifest/harness tests certify
+source/runner integrity only; this contract-only PR has no boot or GPU acceptance claim.
+
 ## Every case
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-cases.md case table and docs/suites/breengel.json identities. -->
@@ -416,11 +446,11 @@ acceptance and remain review follow-up work.
 | `isolation/other-destroy` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/other-tree` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/texture-map` | changed | gpu-window | gpu.md 2.2 isolation GPU-only row |
-| `isolation/composite-denied` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/composite-denied` | changed | gpu-window / gpu-display | B13: 96-byte snapshot and 112-byte submission require both current display ownership and claim; claim-only and owner-only callers are EPERM. |
 | `isolation/claim-unprivileged` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/claim-twice` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/claim-after-death` | kept | unchanged | gpu.md 2.2 isolation Keep row |
-| `isolation/compositor-authorized` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/compositor-authorized` | changed | gpu-display | B13: authorized helper uses metadata snapshot and userspace stream submission, retaining position/event/capture checks. |
 | `isolation/pid-reuse` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-create` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-register` | kept | unchanged | gpu.md 2.2 isolation Keep row |
@@ -428,7 +458,7 @@ acceptance and remain review follow-up work.
 | `isolation/efault-capture` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-events` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-inject` | kept | unchanged | gpu.md 2.2 isolation Keep row |
-| `isolation/efault-composite` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/efault-composite` | changed | gpu-display | B13: preflight the new 112-byte descriptor; unmapped/read-only descriptors still EFAULT with no work or consumed frame. |
 | `isolation/efault-mouse` | changed | gpu-display | gpu.md 2.2; B7 mechanism migration above. |
 | `isolation/efault-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/efault-readback` | changed | gpu-display | B8: reported-mode allocation, indexing and full destination comparison; retain the case property. |
@@ -440,7 +470,7 @@ acceptance and remain review follow-up work.
 | `isolation/destroy-during-commit` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/test-hooks-absent` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/retired-ops` | changed | gpu-apps | gpu.md 2.2 isolation GPU-only row |
-| `isolation/unknown-op` | kept | unchanged | gpu.md 2.2 isolation Keep row |
+| `isolation/unknown-op` | changed | gpu-window | B13: op 29 is allocated; first unknown op becomes 30, while 0xFFFF and u32::MAX remain EINVAL. |
 | `isolation/killable` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/quiet-errors` | kept | unchanged | gpu.md 2.2 isolation Keep row |
 | `isolation/controls-latched` | kept | unchanged | gpu.md 2.2 isolation Keep row |

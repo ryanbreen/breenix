@@ -17,6 +17,9 @@ op acts, and the kernel cannot hold the caller's pages against the caller's own 
 writing them reports that the results were not delivered, not that nothing happened: `CONTEXT_CREATE` and
 `RESOURCE_CREATE` destroy the handle they made; a `SUBMIT` whose results cannot be written back has been sent
 and completes like any other, and its fence is lost to the caller; `READBACK` is below.
+This post-send exception also applies to window 414/19 COMPOSITE: output ranges are
+preflighted, but a later concurrent unmap cannot undo GPU work. No successful composition
+acknowledgement is delivered; DMA holds remain and the next frame repairs in full.
 
 ## Admission
 
@@ -234,10 +237,12 @@ and only that reason:
 
 `failed_submission` is zero for every other reason. Both output fields are zero on input.
 
-Composite observations come after G2. A composite with more than 16 windows returns EIO with reason
-`composite-overflow` and no partial record. Its distinct numeric code is assigned with that extension,
-alongside the code for a composed window's render fence not having completed OK before the composite was
-sent (`docs/gui/gpu.md` section 1.8); neither failure reuses reasons 1 to 10.
+B13 assigns the composite extensions without changing reasons 1–10:
+
+| `reason` | Name | Meaning |
+|---|---|---|
+| 11 | composite-overflow | More than 16 windows in the observed composite: EIO, no partial pixels or record; composition and COMPOSITE_RECORD have no such limit |
+| 12 | window-render-not-ready | A provenance entry's render was not complete OK before sampling was sent; retrospective EIO, prevented by correct admission. Pending admission is EAGAIN; an already-failed source at admission is EIO/12 with genuine status/answer |
 
 EFAULT is atomic only as far as the kernel can guarantee it. Before sending any device work, `READBACK`
 checks that every page of its argument, of its record and of its pixel rows at `stride` is mapped and
@@ -358,8 +363,7 @@ state 88 (a context's: 0 live with catalogue warm-up complete, 1 quarantined, 2 
 device contexts 104 (the process's device contexts not yet destroyed, including destroyed handles whose
 work is outstanding), resources 112, resource bytes 120 (`resource_bytes`: guest backing held,
 including temporary `UPLOAD` and `READBACK` staging charged to the process), warmed 128, copy bytes 136
-(`copy_bytes`: `SUBMIT`'s private copies and device vertex storage charged to the process while they are
-held; the GPU memory quota limits `resource_bytes` and `copy_bytes` together); reserved to 256.
+(`copy_bytes`: `SUBMIT`'s private copies, device vertex storage charged to the process while held, plus B13 scene-snapshot metadata charged to the compositor; the GPU memory quota limits `resource_bytes` and `copy_bytes` together); reserved to 256.
 For a context, `warmed` counts programs whose warm-up completed, including each `probe_int` routine after its first
 PROBE; it is not the completion signal for the rendering catalogue. A query with a nonzero context handle
 reports that context's warm-up state without waiting for warm-up. State 0 is reported only once its
@@ -634,3 +638,129 @@ section 2.1's binary32 to_byte order, are:
 ```
 
 `pipelines/coverage-spans-square` compares the coverage blend of these literal bytes.
+
+## Window front handoff (B13, syscall 414 version 2)
+
+<!-- claim-lint:ok: Normative B13 contract adopted from the coordinator design, not implementation acceptance; see docs/gui/breengel-gpu-rulings.md B13. -->
+All records below are `repr(C)`, little-endian, 8-byte aligned, with no implicit padding. Every reserved field and every output field is zero on input; invalid length/flags/zeros are EINVAL. Array-size multiplication and address arithmetic are checked. A field described as a handle is opaque, not a device ID or address.
+
+### Operation allocation
+
+| Namespace | Allocation |
+|---|---|
+| 414/window | 0–28 retain their numbers; **29 COMPOSITE_SNAPSHOT** is new; numbers above 29 remain EINVAL |
+| 414/window 19 | COMPOSITE retains its number but changes from the old 24-byte kernel-composition request to the 112-byte stream request below |
+| 414/window 22 | SCANOUT_READBACK retains its number; argument grows from 40 to 48 bytes to report EIO's reason without modifying the record |
+| 414/window 14, 21 | Remain retired ENOSYS after argument-size validation; never reused | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| 416/gpu | Ops 0–13, VERSION 1 and all argument layouts remain unchanged; 14 and above remain EINVAL | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| 415/test controls | Existing point numbers are unchanged; they are a separate namespace from 414 ops |
+
+Window VERSION remains 2: this is a coordinated change to the unlanded v2 effort, whose production predecessor is v1. All v2 consumers change together in the contract/display integration; old op-19 length 24 is EINVAL, never guessed as a new request. There is no compatibility shim. If v2 is deployed independently before this change, this argument-size change must instead be versioned before shipping. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+### 414/29 COMPOSITE_SNAPSHOT: `SceneSnapshot`, 96 bytes
+
+| Offset | Field |
+|---|---|
+| 0 | in `context: u64`, caller's live BGL context |
+| 8 | in `windows: u64`, output array of `SceneWindow` |
+| 16 | in `window_capacity: u32`; out `window_count: u32 @20` |
+| 24 | in `damage: u64`, output array of existing 16-byte Rect |
+| 32 | in `damage_capacity: u32`; out `damage_count: u32 @36` |
+| 40 | out `snapshot: u64`, nonzero on an actual reservation |
+| 48 | out `width: u32`, `height: u32 @52`, physical mode dimensions |
+| 56 | out `scale: u32`; out `flags: u32 @60`, bit 0 full initial/recovery scene, all other bits zero | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| 64 | out existing 16-byte `Cursor` (shape, visible, x, y) |
+| 80 | out `claim_epoch: u64` |
+| 88 | out `owner_sequence: u64` |
+
+`SceneWindow`, 80 bytes:
+
+| Offset | Field |
+|---|---|
+| 0 | `id: u64` |
+| 8 | `sample: u64`, source alias; 0 means the window has never published pixels and is opaque black | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| 16 | `commit_id: u64` |
+| 24 | `pixel_gen: u64`, window pixel generation |
+| 32 | `render_fence: u64`, the native render fence carried by this commit, not a WAIT capability |
+| 40 | `target_generation: u64`, the core resource's generation; distinct from window pixel_gen |
+| 48 | `x: i32`, `y: i32 @52` |
+| 56 | `width: u32`, `height: u32 @60` |
+| 64 | `z: u32`, `stride: u32 @68` (client's logical BGRX row size) |
+| 72 | `format: u32` (0 B8G8R8A8), reserved u32 @76 |
+
+Return 0. With both capacities zero and both array pointers zero, this is a sizing query: return the required counts/mode/cursor/epochs, snapshot 0, allocate nothing. Otherwise capacities must suffice, or EINVAL with no array or state changes. There is no 16-window limit. Count and pointer ranges must fit; metadata allocation can fail ENOMEM. The caller can retry a sizing race. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+The actual operation snapshots scene metadata, the exact normalized damage union, geometry/cursor revisions, source write incarnations and publication watermarks under the registry protocol. It creates at most one outstanding metadata reservation per owner; another is EBUSY. It does not remove pending damage, advance composite serials, attach sources, pin target/tree backing, or prevent ACQUIRE. Copy results out before publishing the reservation; a failed copy discards it. Metadata memory is charged to the compositor's GPU quota/RLIMIT_AS and reported with private composition storage in COUNTERS.copy_bytes, not charged to clients; cancellation, replacement of the process image, or claim/ownership loss frees it. This extends copy_bytes without changing its wire layout. Snapshot reservations do not consume client resource handles or impose a new global window count.
+
+Errors: **EPERM** missing either authority; **EINVAL** layout, capacities, invalid/foreign context; **EFAULT** descriptor/arrays inaccessible; **EBUSY** reservation/composite already active; **EAGAIN** a presentation-required commit is still rendering; **ENOMEM** metadata allocation/accounting; **ENODEV** core not admitted; **EIO** failed/lost context/device. No serial, buffer or binding is published on failure.
+
+### 414/19 COMPOSITE: `CompositeSubmit`, 112 bytes
+
+| Offset | Field |
+|---|---|
+| 0 | in `snapshot: u64` |
+| 8 | in `target: u64`, caller's display-sized, non-current scanout target |
+| 16 | in `stream: u64`, BGL command bytes |
+| 24 | in `length: u64`, same 4-byte alignment and 80 MiB cap as SUBMIT |
+| 32 | in `flags: u32`: 0 submit, 1 cancel; reserved u32 @36 |
+| 40 | out `serial: u64`, composite serial |
+| 48 | out `pixels: u64`, actual scene damage pixels processed |
+| 56 | out `render_fence: u64`, context fence of the composition submission |
+| 64 | out `present_fence: u64`, context fence of the final PRESENT |
+| 72 | out `estimate: u64`, ordinary GPU work estimate, including presentation copies |
+| 80 | out `error_index: u32`, `error: u32 @84`, ordinary stream validation diagnostics |
+| 88 | out `reason: u32`, reason table below |
+| 92 | out `fence_status: u32`, existing WAIT status 0–4 |
+| 96 | out `answer: u32`, actual native device answer; out `phase: u32 @100`: 0 admission, 1 render, 2 present |
+| 104 | in `scene_target: u64`, caller's persistent mode-sized composition target |
+
+Return 0 after successful render and completed present. The context is the one reserved by the snapshot. The render and present fence values at 56/64 are context fences accepted by existing WAIT. They are different from native per-window render fences in SceneWindow/record v2.
+
+Cancel requires flags 1, a live snapshot, and all other inputs zero. It drops metadata and aliases, returns 0, issues no GPU work, creates no serial and releases no nonexistent buffer pin. Cancel after consumption is ENOENT. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Submit consumes the reservation on every attempt after valid argument copy-in, including a retryable stale-generation result. A fresh op 29 is required after EAGAIN. A failure before decoding a valid request leaves it cancellable. RAII in the userspace composition library cancels a reservation abandoned by its builder. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Admission copies the stream and parameter buffers once, applies existing validation/work/memory caps, resolves source aliases, and takes pins only after confirming the snapshot still names sealed, unchanged buffers. It then attaches the actual sources to this context, submits the **caller's** stream, waits for its render, and calls the core's existing present machinery. It never calls the old `Backend::composite`, constructs window quads or substitutes a CPU image. This is one synchronous, killable composition syscall, with asynchronous DMA lifetimes underneath it. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Preallocate record/translation/request storage before the first device effect. Reserve the next never-reused composite serial after successful scene admission and before attachment/submission. A subsequent backend failure retains that serial and a COMPOSITE_RECORD with pixels 0, count 0, FAILED bit 0 and reason in bits 8–15; it does not acknowledge damage. Validation/refusal/EAGAIN before admission creates no composite record. A successful record comes from the admitted manifest and actual validated scene work, not caller-supplied commit/fence/count values. Its provenance is attached to the exact rendered target generation and survives after the client source pins have ended.
+
+Errors, exhaustively for the new path:
+
+| Error | Meaning and effects |
+|---|---|
+| EPERM 1 | Caller lacks the claim or current display ownership, including losing either before admission. No new bind is sent after ownership loss. |
+| ENOENT 2 | Unknown/consumed snapshot, or a referenced window destroyed before admission. No work sent. |
+| EINTR 4 | Signal interrupts a slot/warm-up/render/present wait. Before send: release pins. After send: retain device holds; mark frame unsuccessful and force repair. |
+| EIO 5 | Source render failed, context quarantined/reset, target lost/invalid, attach/device/render/present failure. Fill reason, phase and genuine fence status/answer as available. Issued work retains holds. |
+| EAGAIN 11 | Source became writable/recycled, pixel/geometry/cursor/mode revision changed since snapshot, or a required render remains pending. No GPU composition or bind sent. Retry a new snapshot. |
+| ENOMEM 12 | Stream/snapshot/translation/staging allocation or quota/RLIMIT_AS charge cannot be made. Nothing is sent if encountered before send. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| EFAULT 14 | Inaccessible descriptor/stream/parameter ranges or output. Preflight failure sends nothing. Post-send copyout race follows the explicit GPU exception below. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+| EBUSY 16 | Another composite is already admitted; scene/destination is being read or used by a conflicting composition/ownership transition. Caller may wait in the library, killably. A target that is the current or saved scanout cannot be overwritten through this call. |
+| ENODEV 19 | GPU is not admitted. No resource work sent. |
+| EINVAL 22 | Bad layout/flags, wrong context/handle/kind/format/size, bad stream, attempted write through an alias, or illegal scene-to-scanout relation. Ordinary stream codes/index remain those in gpu-abi.md. |
+| EDQUOT 122 | Existing submission work cap, validation code 12. Nothing sent; this errno is included in the window contract's errno list. | <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+There is no ETIMEDOUT for this synchronous operation: its device waits use the core watchdog; hangs yield EIO, and signals EINTR. The existing 250 ms kill/wakeup, 2 s watchdog, 100 ms reset budget and 500 µs IRQ-masking limits bind. None of these waits holds the registry or core lock with IRQs masked. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Op 19 preflights output ranges before effects, as the old bad-descriptor checks require. It cannot promise to undo a device submission if another thread unmaps the result afterward. The post-send EFAULT rule applies to this window op: the call may have sent work; no successful composition acknowledgement is published to the caller; all DMA holds remain; the next frame repairs in full. The existing unmapped/read-only preflight cases still require no work and no consumed frame. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+### Error reasons and observation layouts
+
+Use existing core observation reasons **1–10** unchanged: unwritten, fence-mismatch, resource-mismatch, target-invalid, device-error, device-hung, device-reset, target-lost, target-dropped, binding-unknown. The extension codes are:
+
+* **11 composite-overflow**: more than 16 windows in an observation's composite; EIO, no partial record/pixels. Composition itself and COMPOSITE_RECORD remain unrestricted by 16.
+* **12 window-render-not-ready**: a composite provenance entry's render did not complete OK before the sampling submission was sent. EIO on observation; a correct admission path prevents it. Normal pending admission is EAGAIN, not this retrospective EIO. A failed source render at composition admission uses EIO/reason 12 with its actual status/answer.
+
+Op-19 admission errors other than EIO leave reason 0; a render/present device failure uses the matching native reason 2, 5, 6, 7, 8 or 10, rather than replacing all failures with “backend error.” No new fault-point numbers are required. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+**414/22 Readback becomes 48 bytes:** existing `dst:u64 @0, dst_len:u64 @8, record:u64 @16, record_len:u32 @24, reserved:u32 @28, out serial:u64 @32`, plus `out reason:u32 @40, reserved:u32 @44`. `record_len` must be 1,024; destination must fit `MODES.width × MODES.height × 4`. The serial is the observation serial, not the composite serial.
+
+Permission remains root or current claimant (§17.4). This is a privileged **observation** service over the actual binding produced by the userspace compositor; it imports no client handle into the root caller. Internally the window wrapper uses the core's pinned-binding readback service, with authority supplied by the window observer check. Ordinary 416 READBACK(0) remains current-display-owner-only. Window §20.1 observes that compositor's published binding through the core; it does not require a new userspace request/response syscall. An authorized root need not wait for a daemon to marshal bytes, and a daemon never dereferences another process's user pointers. The existing helper's `gpu-scanout` pipe command remains another way to transport an owner's genuine 416 observation. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+Op 22 errors: EPERM for an unauthorized observer; EINVAL for layout/reserved/length/short destination; EFAULT for inaccessible outputs; ENOMEM for charged readback staging; ENODEV if no admitted core; EINTR on interruption; EAGAIN while a composition is pending; EIO with exactly reason 1–12 as applicable. If no composition is pending but the binding is unknown, use EIO/10. On EIO only `reason` is written; descriptor serial, record and pixels remain untouched. Preflight and concurrent-unmap guarantees match core READBACK. No ENOENT is synthesized for a destroyed client when a retained composed destination is still observable. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+**COMPOSITE_RECORD, op 20 stays unchanged.** Its header is **24 bytes**, not 16: `serial:u64 @0, pixels:u64 @8, count:u32 @16, flags:u32 @20`; each 32-byte entry is `id:u64 @0, commit_id:u64 @8, pixel_gen:u64 @16, pixels:u64 @24`. Preserve the 64-record retention and ENOENT for an expired serial, EINVAL short length, EPERM authority, EFAULT copies; make fallible record allocation ENOMEM before admission, not a silently incomplete success.
+
+**ObservationRecord stays exactly core v2, 1,024 bytes.** In particular: version/size 0/4; observation serial 8; backend/boundary 16/20; flags/format 24/28; rectangle 32; target size 48; stride/canonical 56/60; device context 64; target handle 72; actual device resource 80; target generation 88; render serial/fence 96/104 and native status/kind 112/116; readback fence/status/kind 120/128/132; VMware surface/MOB 136/144 and copy kind/status 152/156; poison/unwritten 160/164; commit/composite serial 168/176; present context fence/status/count 184/192/196; sixteen 32-byte window entries at 200 (`window, commit, native render fence, sampled target generation`); renderer bytes at 712; reserved 776–1023 zero. Unused window entries are zero. For privileged scanout observation target is 0, never a foreign handle. Window pixel_gen remains in COMPOSITE_RECORD, not substituted for the core's sampled resource generation.
+
+Flags are exactly 3 for a composed scanout. Backend 4 requires native draw/readback kinds 0x207/0x206 and success 0x1100, VMware-only fields zero. Backend 5 requires draw 1152, readback 1104, copy 1042 and success 1, with dedicated nonzero readback surface/MOB distinct from the judged resource. Boundary is 4; unwritten is zero; render/readback/present fences are genuine and nonzero for a rendered composite. No legacy 512-byte record is accepted. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
