@@ -303,7 +303,10 @@ class Probe:
 
     def cleanup(self):
         if self.original is not None:
-            self.require(self.ssh('umask 077; tmp=$(mktemp "$HOME/.ssh/authorized_keys.XXXXXX") && '
+            # POSIX noclobber creates the staging file exclusively; the guest
+            # needs only sh, printf and mv, not an optional mktemp executable.
+            name = os.urandom(16).hex()
+            self.require(self.ssh('umask 077; set -C; tmp="$HOME/.ssh/authorized_keys.' + name + '"; '
                                   'printf %s ' + shlex.quote(self.original) + ' > "$tmp" && '
                                   'mv "$tmp" "$HOME/.ssh/authorized_keys"'))
             result = self.ssh('cat "$HOME/.ssh/authorized_keys"')

@@ -3,6 +3,9 @@ import copy
 import json
 from pathlib import Path
 import runpy
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -47,6 +50,28 @@ class HostServerScore(unittest.TestCase):
         with self.assertRaises(ValueError): score()
         self.serial = serial + 'KERNEL PANIC: example\n'
         with self.assertRaises(ValueError): score()
+
+    def test_cleanup_restores_exact_keys_without_guest_mktemp(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            ssh = root / '.ssh'
+            ssh.mkdir()
+            target = ssh / 'authorized_keys'
+            original = '# retained comment\nprimary key\nsecond key without final newline'
+            target.write_text(original + '\ntemporary probe key\n')
+            binaries = root / 'bin'
+            binaries.mkdir()
+            for name in ('cat', 'mv'):
+                (binaries / name).symlink_to(shutil.which(name))
+            probe = object.__new__(host['Probe'])
+            probe.original = original
+            probe.ssh = lambda script: subprocess.run(
+                ['/bin/sh', '-c', script], capture_output=True, text=True,
+                env=dict(os.environ, HOME=str(root), PATH=str(binaries)))
+            probe.cleanup()
+            self.assertEqual(target.read_text(), original)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(ssh.iterdir()), [target])
 
     def test_malformed_records_fail_this_milestone_without_crashing_the_boot_scorer(self):
         sys.path.insert(0, str(ROOT / 'scripts/metal'))
