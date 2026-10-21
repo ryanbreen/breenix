@@ -41,9 +41,9 @@
 //!             _ => {}
 //!         }
 //!     }
-//!     // Draw into the pixel buffer
-//!     let fb = win.framebuf();
-//!     // ... render with libgfx ...
+//!     // Draw into the acquired GPU target
+//!     let surface = win.surface().unwrap();
+//!     surface.clear(libgfx::color::Color::BLACK);
 //!     win.present().unwrap();
 //! }
 //! ```

@@ -551,8 +551,7 @@ struct Gate {
 
 impl Gate {
     /// Take window `id`'s commit gate for its owner, waiting while another commit or resize
-    /// holds it. The gate is held only across one commit's or resize's own work, so a signal
-    /// does not end the wait: the call it would interrupt is not a blocking one.
+    /// holds it or an accepted frame awaits publication. A signal ends the wait with EINTR.
     fn enter(id: u64, caller: &Caller) -> Result<Gate, i32> {
         loop {
             pending_decision(id, caller, who::owner, false)?;
