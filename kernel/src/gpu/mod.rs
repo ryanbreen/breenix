@@ -227,6 +227,8 @@ struct Proc {
     /// staging, and `SUBMIT`'s copies and vertex storage while they are held.
     quota: Quota,
     creating: bool,
+    /// `PRESENT`s whose flush completed OK (`/proc/breenix/stage-composites`).
+    presents: u64,
 }
 
 struct Ctx {
@@ -852,6 +854,7 @@ impl Core {
             totals: Totals::default(),
             quota: Quota::default(),
             creating: false,
+            presents: 0,
         })
     }
 
@@ -4857,13 +4860,13 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
     }
 }
 
-/// Each display owner's completed presents, one `<tgid> <count>` line per owner on the
-/// stack (`/proc/breenix/stage-composites`): the kernel's record of when the suite's run
+/// Each process's completed presents, one `<tgid> <count>` line per process that has
+/// presented (`/proc/breenix/stage-composites`): the kernel's record of when the suite's run
 /// stage changed the screen, independent of the runner's own timestamps.
 pub fn present_records() -> alloc::string::String {
     use core::fmt::Write;
     let owners: Vec<(u64, u64)> = with_core(|c| {
-        c.display.stack.iter().map(|o| (o.group, o.presents)).collect()
+        c.procs.iter().filter(|(_, p)| p.presents > 0).map(|(&tgid, p)| (tgid, p.presents)).collect()
     })
     .unwrap_or_default();
     let mut out = alloc::string::String::new();
