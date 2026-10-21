@@ -1990,7 +1990,9 @@ fn text_many_args_abi() -> CaseResult {
 fn text_cache_hit() -> CaseResult {
     let mut font = cached(MONO_PATH).cite("8.5")?;
     let g = font.glyph_index('Q');
-    let fresh = font.font().rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?;
+    let source = read_file(MONO_PATH).cite("8.5")?;
+    let reference = libgfx_ref::ttf_font::Font::parse(&source).cite("8.5")?;
+    let fresh = reference.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?;
     let first = font.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?.clone();
     let after_first = font.cache_stats();
     let second = font.rasterize_glyph(g, 20.0).map_err(|e| e.to_string())?.clone();
