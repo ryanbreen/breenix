@@ -122,10 +122,9 @@ struct Kiosk {
     gpu_fixtures: Vec<(bgl::Context,u64)>,
     /// The next input serial.
     serial: u64,
-    /// The userspace GPU compositor. Its context and its cleared scene and scanout targets
-    /// are made at startup, so that work completes before any measured composite.
+    /// The userspace GPU compositor, made with its cleared scene and scanout targets when it
+    /// first composes or reports its counters, so that setup precedes any measured composite.
     compositor: Option<Arc<Mutex<Compositor>>>,
-    making: Option<std::thread::JoinHandle<Result<Compositor, i64>>>,
 }
 
 /// Display custody before composing or presenting: the current owner's takeover is
@@ -143,11 +142,7 @@ impl Kiosk {
         if let Some(c) = &self.compositor {
             return Ok(c.clone());
         }
-        let made = match self.making.take() {
-            Some(making) => making.join().unwrap_or(Err(-5)),
-            None => Compositor::new(),
-        };
-        let c = Arc::new(Mutex::new(made?));
+        let c = Arc::new(Mutex::new(Compositor::new()?));
         self.compositor = Some(c.clone());
         Ok(c)
     }
@@ -355,11 +350,7 @@ impl Kiosk {
 /// Compose when the scene has damage: new pixels, geometry, stacking or registration, or
 /// the cursor. Composition starts once a window is visible with a commit.
 fn compose_damage(kiosk: &mut Kiosk) {
-    // Automatic composition waits for the compositor's setup, and takes display custody
-    // only once some window is visible with a commit.
-    if kiosk.making.as_ref().is_some_and(|m| !m.is_finished()) {
-        return;
-    }
+    // Automatic composition takes display custody once some window is visible with a commit.
     if kiosk.compositor.is_none() {
         let mut infos = vec![abi::WinInfo::default(); 64];
         let shown = window::list(&mut infos).is_ok_and(|n| {
@@ -385,8 +376,7 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let making = Some(std::thread::spawn(Compositor::new));
-    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new(), compositor: None, making };
+    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new(), compositor: None };
     let mut pending = Vec::new();
     loop {
         let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 }];
