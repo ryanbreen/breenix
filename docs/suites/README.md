@@ -236,13 +236,20 @@ suite alone (2026-10-19):
 |---|---|---|
 | ARM64 QEMU, 4 CPUs, 512 MiB, fifteen suites | 15 of 15 by 5 to 7 pages | The runner's own pages: its heap, and copies of its pages that a forked case wrote |
 | R240 (a diagnostic build of this branch), fifteen suites | 12 of 15 by 5 to 7 pages | As above |
-| | terminals and networking by 37 pages | Each starts a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
+| | terminals and networking by 37 pages | Each started a kernel worker on first use (`kptyhup` for PTY hangups, `ktcptimerd` for TCP timers), whose 32-page stack stays for the rest of the boot |
 | | console 42 pages over | Kernel stacks freed during it came back |
 | ARM64 QEMU, memory suite alone | 38 pages | The runner's own pages: booted alone it draws its live panel, and its heap grows with it |
 
 ARM64's kernel stacks are not taken from the frame ledger, so its workers do not show. The
 allowance, 48 pages, is the largest deficit, 38 pages, with headroom; a process image left
 behind is 300 pages or more.
+
+Both workers now start with boot, beside the other kernel threads, so no suite counts their
+stacks (#2233). On the R240, `ktcptimerd`'s stack on top of the runner's own pages had put
+the sdk suite, whose C and Rust apps open TCP sockets, 63 pages short.
+The runner's own pages are its allocation cache: Breenix's `malloc` maps each block and keeps
+up to 16 freed blocks of each size class up to 2 KiB, so they grow as the runner draws its
+panel and formats its records.
 
 ## Writing a suite
 
