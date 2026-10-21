@@ -67,6 +67,11 @@ done < "$table"
 cp -a "$root/etc/." "$root/usr/share/factory/etc/"
 rm -rf "$root/usr/share/factory/etc/breenix" "$root/usr/share/factory/etc/ssh"
 mkdir "$root/usr/share/factory/etc/ssh"
+# The service table is a factory default that reconciliation installs and updates.
+if [ -f "$root/etc/breenix/services" ]; then
+    mkdir "$root/usr/share/factory/etc/breenix"
+    cp -p "$root/etc/breenix/services" "$root/usr/share/factory/etc/breenix/services"
+fi
 # Init clears both fixtures before the suite measures their absence.
 for volatile in run tmp; do
     printf 'stale\n' > "$root/$volatile/layout-stale"

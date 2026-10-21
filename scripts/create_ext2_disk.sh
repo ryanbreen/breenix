@@ -183,6 +183,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
         -v "$SCRIPT_DIR/install-layout.sh:/install-layout.sh:ro" \
         -v "$PROJECT_ROOT/libs/libbreenix/src/layout.tsv:/layout.tsv:ro" \
+        -v "$PROJECT_ROOT/libs/libbreenix/src/service-tables:/service-tables:ro" \
         -v "$PROJECT_ROOT/vendor/busybox/required-applets:/required-applets:ro" \
         -v "$TEST_SSH_DIR:/test-ssh:ro" \
         -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
@@ -409,6 +410,12 @@ INITJS
                 echo "// The x86 boot script starts no network service: telnetd is not run on x86." > /mnt/ext2/etc/init.js
             fi
             echo "  Created /etc/init.js"
+
+            # The service table init supervises (libs/libbreenix/src/services.rs).
+            mkdir -p /mnt/ext2/etc/breenix
+            cp "/service-tables/$BREENIX_ARCH" /mnt/ext2/etc/breenix/services
+            chmod 0644 /mnt/ext2/etc/breenix/services
+            echo "  Created /etc/breenix/services"
 
             sh /install-layout.sh /mnt/ext2 /binaries /layout.tsv
 
@@ -674,6 +681,12 @@ INITJS
         echo '// The x86 boot script starts no network service: telnetd is not run on x86.' > "$MOUNT_DIR/etc/init.js"
     fi
     echo "  Created /etc/init.js"
+
+    # The service table init supervises (libs/libbreenix/src/services.rs).
+    mkdir -p "$MOUNT_DIR/etc/breenix"
+    cp "$PROJECT_ROOT/libs/libbreenix/src/service-tables/$ARCH" "$MOUNT_DIR/etc/breenix/services"
+    chmod 0644 "$MOUNT_DIR/etc/breenix/services"
+    echo "  Created /etc/breenix/services"
 
     sh "$SCRIPT_DIR/install-layout.sh" "$MOUNT_DIR" "$USERSPACE_DIR" "$PROJECT_ROOT/libs/libbreenix/src/layout.tsv"
 
