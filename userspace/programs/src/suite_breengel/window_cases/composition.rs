@@ -362,7 +362,7 @@ fn composition_compositor_dies() -> CaseResult {
     value("acquire-after-death-ms", gap as i64, "ms", Some((0, 250)));
     ensure(gap <= 250, "17.5", format!(
         "after the compositor was reaped the blocked ACQUIRE returned {gap} ms later; it returns within 250 ms of the compositor's death"))?;
-    fill(w.buf(a.buffer), 256, 256, 77);
+    fill(w.target(a.buffer), 256, 256, 77)?;
     w.commit(a.buffer, &[abi::Rect::new(0, 0, 256, 256)]).map_err(|r| format!("COMMIT after the compositor died {}", outcome(r))).cite("17.3")?;
     Ok(())
 }
@@ -403,7 +403,7 @@ fn composition_damage_metadata() -> CaseResult {
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
     let rects = [abi::Rect::new(3, 5, 10, 7), abi::Rect::new(40, 0, 20, 64), abi::Rect::new(90, 60, 6, 4)];
     for (i, r) in rects.iter().enumerate() {
-        fill_rect(w.buf(a.buffer), 96, *r, 50 + i as u32);
+        fill_rect(w.target(a.buffer), 96, *r, 50 + i as u32)?;
     }
     w.commit(a.buffer, &rects).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
     // The other buffer that held the first commit replays exactly that commit's damage.
@@ -430,7 +430,7 @@ fn composition_damage_work() -> CaseResult {
     ensure(first == (width*height) as u64, "18", format!("the claim's first composite processed {first} pixels; it must cover the reported mode"))?;
     let damaged = |w: &W, seed: u32| -> CaseResult {
         let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-        fill_rect(w.buf(a.buffer), 200, abi::Rect::new(20, 30, 10, 10), seed);
+        fill_rect(w.target(a.buffer), 200, abi::Rect::new(20, 30, 10, 10), seed)?;
         w.commit(a.buffer, &[abi::Rect::new(20, 30, 10, 10)]).map_err(|r| format!("COMMIT {}", outcome(r))).cite("17.3")?;
         Ok(())
     };
@@ -468,7 +468,7 @@ fn composition_damage_screen() -> CaseResult {
     // A partial update of the lower window, half covered by the upper one.
     let a = wins[0].acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
     let r = abi::Rect::new(150, 50, 140, 140);
-    fill_rect(wins[0].buf(a.buffer), 300, r, 33);
+    fill_rect(wins[0].target(a.buffer), 300, r, 33)?;
     wins[0].commit(a.buffer, &[r]).map_err(|e| format!("COMMIT {}", outcome(e))).cite("17.3")?;
     compose(&mut k)?;
     let (partial, _) = screen()?;
@@ -1008,7 +1008,7 @@ fn composition_target_lifetime()->CaseResult {
     let front=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
     // The latest commit's index is returned by ACQUIRE/COMMIT; make one known front.
     let a=w.acquire(1_000_000_000).map_err(|r|format!("ACQUIRE {}",outcome(r))).cite("17.3")?;
-    fill(w.buf(a.buffer),64,48,17);
+    fill(w.target(a.buffer),64,48,17)?;
     let commit=w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("COMMIT {}",outcome(r))).cite("17.3")?;
     let held=crate::gpu_checks::counters().cite("18")?;
     want_ok(libbreenix::gpu::resource_destroy(w.c.buffer[a.buffer as usize]),"18","gpu-display: drop committed target handle")?;

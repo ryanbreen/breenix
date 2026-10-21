@@ -171,6 +171,7 @@ pub struct Surface {
     clips: Vec<Box64>,
     dirty: Option<Box64>,
     owner: u64,
+    owns_handle: bool,
     error: Option<i64>,
 }
 
@@ -209,7 +210,18 @@ impl Surface {
         let device_format = if format.is_bgr { abi::format::B8G8R8A8 } else { abi::format::R8G8B8A8 };
         let target = gpu::target_create(device_format, width as u32, height as u32).map_err(SurfaceError::Device)?;
         let whole = Box64 { x0: 0, y0: 0, x1: width as i64, y1: height as i64 };
-        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), error: None })
+        Ok(Surface { target, width, height, format, clip: whole, clips: Vec::new(), dirty: None, owner: device::pid(), owns_handle: true, error: None })
+    }
+
+    /// A non-owning view of a target returned by window CREATE/RESIZE. The window
+    /// revokes the handle; dropping a view must never destroy one of its pool buffers.
+    /// Core admission still enforces ownership, target dimensions and sealing.
+    pub fn from_window_target(target: u64, width: usize, height: usize) -> Result<Self, SurfaceError> {
+        Self::validate_layout(width,height,width.checked_mul(4).ok_or(SurfaceError::SizeOverflow)?,Format::BGRX)?;
+        if target==0 { return Err(SurfaceError::Device(-abi::errno::EINVAL)); }
+        Ok(Self { target,width,height,format:Format::BGRX,
+            clip:Box64 {x0:0,y0:0,x1:width as i64,y1:height as i64},clips:Vec::new(),dirty:None,
+            owner:device::pid(),owns_handle:false,error:None })
     }
 
     pub fn width(&self) -> usize {
@@ -353,7 +365,7 @@ impl Surface {
 impl Drop for Surface {
     fn drop(&mut self) {
         // A forked child holds no GPU handles of its parent's (section 17.2).
-        if self.owner == device::pid() {
+        if self.owns_handle && self.owner == device::pid() {
             gpu::resource_destroy(self.target);
         }
     }

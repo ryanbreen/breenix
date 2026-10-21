@@ -63,3 +63,6 @@ pub use libgfx_ref::framebuf::FrameBuf;
 pub use libgfx_ref::color::Color;
 pub use libbui::widget::tab_bar::TabBar;
 pub use libbui::{InputState, Rect, Theme};
+
+/// GPU window drawing; CPU frame consumers migrate in gpu-apps.
+pub use libgfx::surface::Surface;

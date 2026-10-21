@@ -3,6 +3,9 @@
 //! all of them created through `suite::spawn`.
 
 use crate::*;
+#[path="../../window_fixture.rs"]
+mod fixture;
+pub(crate) use fixture::Target as FixtureTarget;
 
 use libbreenix::suite::{spawn, Run};
 pub(crate) use libbreenix::types::Fd;
@@ -84,11 +87,11 @@ impl W {
         (self.c.width * self.c.height * 4) as usize
     }
 
-    /// Buffer `i` as the owner maps it.
-    pub(crate) fn buf(&self, i: u32) -> &mut [u8] {
-        // SAFETY: CREATE mapped `len` bytes at this address into this process.
-        unsafe { core::slice::from_raw_parts_mut(self.c.buffer[i as usize] as *mut u8, self.len()) }
+    pub(crate) fn target(&self, i: u32) -> fixture::Target {
+        fixture::Target {handle:self.c.buffer[i as usize],width:self.c.width,height:self.c.height}
     }
+
+    pub(crate) fn pixels(&self, i: u32) -> Result<Vec<u8>, String> { self.target(i).read() }
 
     pub(crate) fn tree(&self, i: u32) -> &mut [u8] {
         let kib = (self.c.tree_kib as usize) * 1024;
@@ -111,7 +114,7 @@ impl W {
     /// Acquire a buffer, fill it with pattern `seed` and commit it with whole-window damage.
     pub(crate) fn frame(&self, seed: u32) -> Result<abi::Commit, String> {
         let a = self.acquire(2_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r)))?;
-        fill(self.buf(a.buffer), self.c.width, self.c.height, seed);
+        fill(self.target(a.buffer), self.c.width, self.c.height, seed)?;
         self.commit(a.buffer, &[full(&self.c)]).map_err(|r| format!("COMMIT {}", outcome(r)))
     }
 
@@ -208,18 +211,12 @@ pub(crate) fn pattern(seed: u32, x: u32, y: u32) -> [u8; 4] {
     [((7 * x + 13 * seed) & 0xFF) as u8, ((5 * y + 29 * seed) & 0xFF) as u8, ((x ^ y ^ seed) & 0xFF) as u8, 0]
 }
 
-pub(crate) fn fill(buf: &mut [u8], w: u32, h: u32, seed: u32) {
-    fill_rect(buf, w, abi::Rect::new(0, 0, w as i32, h as i32), seed);
+pub(crate) fn fill(target: FixtureTarget, w: u32, h: u32, seed: u32) -> Result<(), String> {
+    fill_rect(target,w,abi::Rect::new(0,0,w as i32,h as i32),seed)
 }
 
-/// Pattern `seed` over `r` of a `w`-pixel-wide buffer.
-pub(crate) fn fill_rect(buf: &mut [u8], w: u32, r: abi::Rect, seed: u32) {
-    for y in r.y..r.y + r.h {
-        for x in r.x..r.x + r.w {
-            let at = ((y as u32 * w + x as u32) * 4) as usize;
-            buf[at..at + 4].copy_from_slice(&pattern(seed, x as u32, y as u32));
-        }
-    }
+pub(crate) fn fill_rect(target: FixtureTarget, _width: u32, r: abi::Rect, seed: u32) -> Result<(), String> {
+    target.paint([r.x,r.y,r.w,r.h],seed)
 }
 
 /// The first pixel of a `w`-wide image whose colour differs from `want(x, y)`, comparing B, G and

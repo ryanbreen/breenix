@@ -634,7 +634,7 @@ fn isolation_efault_commit() -> CaseResult {
     let w = shown(16, 16, 20, b"efault-commit")?;
     let before = info(w.id())?.commit_id;
     let a = w.acquire(1_000_000_000).map_err(|r| format!("ACQUIRE {}", outcome(r))).cite("17.3")?;
-    fill(w.buf(a.buffer), 16, 16, 21);
+    fill(w.target(a.buffer), 16, 16, 21)?;
     let mut c = abi::Commit::ZERO;
     c.id = w.id();
     c.buffer = a.buffer;
