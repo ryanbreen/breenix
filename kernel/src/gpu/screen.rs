@@ -85,7 +85,7 @@ impl Target {
     fn fenced(&self, build: impl FnOnce(Tag, u64) -> Option<Request>) -> Result<Done, i64> {
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let d = exec_ok(|t| build(t, fence), self.context, &[self.id])?;
-        if d.echoed != fence || !d.fenced {
+        if !d.matches_fence(fence) {
             return Err(EIO);
         }
         Ok(d)
@@ -115,7 +115,7 @@ impl Target {
             PITCH as u32,
         ).ok_or(EIO)?;
         let d = exec_req(serial, req, self.context, &[self.id], &[])?;
-        if !dev::ok(d.answer) || d.echoed != fence || !d.fenced {
+        if !dev::ok(d.answer) || !d.matches_fence(fence) {
             return Err(EIO);
         }
         with_core(|c| {
@@ -123,7 +123,7 @@ impl Target {
                 r.last = Some(LastWrite {
                     ctx: self.context,
                     device_ctx: dev::context_id(self.context),
-                    fence,
+                    fence: d.echoed,
                     serial,
                     answer: d.answer,
                     kind: dev::upload_kind(),
@@ -161,7 +161,7 @@ impl Target {
         exec_ok(|t| dev::set_scanout(t, self.context, b.id, w, h), self.context, &[b.id])?;
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let d = exec_ok(|t| dev::flush_resource(t, self.context, fence, b.id, w, h), self.context, &[b.id])?;
-        if d.echoed != fence || !d.fenced {
+        if !d.matches_fence(fence) {
             return Err(EIO);
         }
         b.answer = d.answer;

@@ -323,6 +323,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
                 ctx: ctx_id,
                 n,
                 fence,
+                native_fence: 0,
                 sent_ns: None,
                 error: None,
                 mismatch: false,

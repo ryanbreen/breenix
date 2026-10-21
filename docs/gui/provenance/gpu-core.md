@@ -300,7 +300,7 @@ vertex baseline unless it says otherwise; the vertex baseline is `VERT`, `DCL IN
 | Guest backing counted against RLIMIT_AS with the process's mappings | O: `docs/gui/gpu.md` section 1.4 (RESOURCE_CREATE) and Breenix's resource limits |
 | Poison 0x3C5AA5C3 and its complement; `unwritten` at record offset 164 | O: `docs/gui/gpu.md` section 1.8 |
 | Handle mixing constants 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB | A: [SplitMix64](https://prng.di.unimi.it/splitmix64.c), published increment and finalizer constants; Breenix applies that arithmetic to its handle key, process id and sequence |
-| First resource id 0x100; first context, serial, fence, namespace and observation 1 | O: bookkeeping choices of the core |
+| First resource id 0x100; first context, serial, admission fence identity, namespace and observation 1. A native VirtIO fence is the request's ordinal in control-queue publication order, including unfenced requests; it remains increasing across resets. Response validation checks the admission identity and the unmodified native fence echo separately; observations retain the native echo. | O: bookkeeping choices of the core; #2250's reordered-fence reproduction requires native numbering in queue order, independently of preparation order |
 | The context's debug name `breenix` | O: CTX_CREATE's free-form debug name (V §5.7.6.9) |
 | Capability set preference: VIRGL2, then VIRGL; each listed id kept once | O: `docs/gui/gpu.md` section 1.12 |
 | Viewport half-size 8,192 (shift 13): pixel p maps to clip coordinate (p − 8192) / 8192, exact in binary32 across the 16,384 domain; scale and translate z 0.5 | O: geometry of the core; A: IEEE 754 binary32 |

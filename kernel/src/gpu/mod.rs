@@ -314,6 +314,8 @@ struct Sub {
     ctx: u32,
     n: u32,
     fence: u64,
+    /// Actual native fence, set by its verified completion before publication.
+    native_fence: u64,
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: Option<u64>,
     error: Option<u32>,
@@ -833,6 +835,8 @@ impl Core {
         s
     }
 
+    /// Reserve a completion identity before preparation. VirGL assigns its native
+    /// wire fence separately when the request enters the device queue.
     fn device_fence(&mut self) -> u64 {
         let f = self.next_fence;
         self.next_fence += 1;
@@ -1131,7 +1135,7 @@ impl Core {
         }
         match d.tag {
             Tag::Sync(serial) => self.sync_ended(serial, Some(d)),
-            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d.answer, d.echoed),
+            Tag::Submit { serial, last, .. } => self.submit_returned(serial, last, d),
             Tag::Background => {
                 if !dev::ok(d.answer) {
                     self.fault();
@@ -1165,12 +1169,12 @@ impl Core {
             self.fault();
         }
         if let Some(fence) = s.warm {
-            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.echoed == fence));
+            self.warm_returned(d.as_ref().map(|d| dev::ok(d.answer) && d.matches_fence(fence)));
         }
         if let Some((id, fence)) = s.upload {
             if let Some(d) = &d {
                 let device_error = !dev::ok(d.answer);
-                let ok = !device_error && d.echoed == fence && d.fenced;
+                let ok = !device_error && d.matches_fence(fence);
                 if !ok {
                     if let Some(r) = self.resources.get_mut(&id) {
                         completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, false, false);
@@ -1210,25 +1214,26 @@ impl Core {
     }
 
     /// One SUBMIT_3D of submission `serial` came back.
-    fn submit_returned(&mut self, serial: u64, last: bool, answer: u32, echoed: u64) {
+    fn submit_returned(&mut self, serial: u64, last: bool, mut done: Done) {
+        let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
         if !dev::ok(answer) {
             sub.error.get_or_insert(answer);
         }
         if last {
-            let mut echoed = echoed;
             let submitted = sub.present.is_none();
             // Test point 20, `stale-fence`: the answer claims another submission's fence.
             if submitted && crate::test_control::take(test_point::STALE_FENCE, 0).is_some() {
-                echoed = sub.fence + 1;
+                done.echoed = done.native_fence.unwrap_or(0).wrapping_add(1);
             }
-            if sub.error.is_none() && echoed != sub.fence {
+            if sub.error.is_none() && !done.matches_fence(sub.fence) {
                 sub.mismatch = true;
             }
+            sub.native_fence = done.native_fence.unwrap_or(0);
             let result = match (sub.error, sub.mismatch) {
                 (Some(a), _) => (fence_status::DEVICE_ERROR, a),
-                (None, true) => (fence_status::FENCE_MISMATCH, echoed as u32),
+                (None, true) => (fence_status::FENCE_MISMATCH, done.echoed as u32),
                 (None, false) => (fence_status::OK, answer),
             };
             let ctx = sub.ctx;
@@ -1277,7 +1282,7 @@ impl Core {
         }
         sub.published = true;
         if let Some(writer) = &sub.writer { writer.publish(status); }
-        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.fence, sub.present);
+        let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.native_fence, sub.present);
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -2761,7 +2766,7 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
             return Err(EIO);
         }
         let d = exec_req(serial, req, id, &[vb, scratch, scratch_texture], &[])?;
-        if !dev::ok(d.answer) || Some(d.echoed) != fence {
+        if !dev::ok(d.answer) || !fence.is_some_and(|f| d.matches_fence(f)) {
             return Err(EIO);
         }
     }
@@ -3693,7 +3698,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
                         let req = virgl::submit(Tag::Sync(serial), id, Some(fence), chunk);
                         warm_sent = true;
                         let done = exec_req(serial, Request::Virgl(req), id, &[default_vb, scratch, scratch_texture], &[])?;
-                        if !virgl::ok(done.answer) || done.echoed != fence {
+                        if !virgl::ok(done.answer) || !done.matches_fence(fence) {
                             return Err(EIO);
                         }
                     }
@@ -3870,6 +3875,7 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
             ctx: id,
             n,
             fence,
+            native_fence: 0,
             sent_ns: None,
             error: None,
             mismatch: false,
@@ -4245,8 +4251,8 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
                 match dev::transfer_to_host(Tag::Sync(serial), ctx, fence, id, backing.clone(), x as u32, y as u32, cw as u32, ch as u32, offset, pitch as u32) {
                     None => Err((EIO, 0)),
                     Some(req) => match exec_req_why(serial, req, ctx, &[id], &[id]) {
-                        Ok(d) if dev::ok(d.answer) && d.echoed == fence && d.fenced => {
-                            Ok((serial, fence, d.answer))
+                        Ok(d) if dev::ok(d.answer) && d.matches_fence(fence) => {
+                            Ok((serial, d.echoed, d.answer))
                         }
                         Ok(_) => Err((EIO, serial)),
                         Err((e @ (EIO | EINTR), _)) => Err((e, serial)),
@@ -4892,11 +4898,11 @@ fn observe(
         if !dev::ok(d.answer) {
             return Err((EIO, readback_reason::DEVICE_ERROR));
         }
-        if d.echoed != s.fence || !d.fenced {
+        if !d.matches_fence(s.fence) {
             return Err((EIO, readback_reason::FENCE_MISMATCH));
         }
         if first.is_none_or(|(order, _, _)| s.order < order) {
-            first = Some((s.order, s.fence, d.answer));
+            first = Some((s.order, d.echoed, d.answer));
         }
         Ok(())
     };

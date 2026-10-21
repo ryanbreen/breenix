@@ -73,16 +73,23 @@ pub enum Request {
 /// answer carries a fence at all.
 pub struct Done {
     pub tag: Tag,
+    /// Admission identity, independent of native queue order.
     pub fence: Option<u64>,
+    pub native_fence: Option<u64>,
     pub answer: u32,
     pub echoed: u64,
     pub fenced: bool,
 }
 
 impl Done {
+    /// Check both the request identity and the device's unmodified native echo.
+    pub fn matches_fence(&self, fence: u64) -> bool {
+        self.fence == Some(fence) && self.fenced && self.native_fence == Some(self.echoed)
+    }
+
     /// The answer of a request a confirmed reset ended.
     pub fn none(tag: Tag) -> Done {
-        Done { tag, fence: None, answer: 0, echoed: 0, fenced: false }
+        Done { tag, fence: None, native_fence: None, answer: 0, echoed: 0, fenced: false }
     }
 }
 
@@ -142,13 +149,13 @@ impl Device {
                 virgl::Reap::Fault => Reap::Fault,
                 virgl::Reap::Done(x) => {
                     let fenced = x.resp.u32_at(virgl::wire::HDR_FLAGS) & virgl::wire::FLAG_FENCE != 0;
-                    Reap::Done(Done { tag: x.tag, fence: x.fence, answer: x.answer, echoed: x.echoed, fenced })
+                    Reap::Done(Done { tag: x.tag, fence: x.fence, native_fence: x.native_fence, answer: x.answer, echoed: x.echoed, fenced })
                 }
             },
             Device::Svga(d) => match d.reap() {
                 svga::Reap::Empty => Reap::Empty,
                 svga::Reap::Fault => Reap::Fault,
-                svga::Reap::Done(x) => Reap::Done(Done { tag: x.tag, fence: x.fence, answer: x.answer, echoed: x.echoed, fenced: x.fenced }),
+                svga::Reap::Done(x) => Reap::Done(Done { tag: x.tag, fence: x.fence, native_fence: x.fence, answer: x.answer, echoed: x.echoed, fenced: x.fenced }),
             },
         }
     }

@@ -34,7 +34,6 @@ impl Writer {
 #[derive(Clone)]
 pub struct Seal {
     writers: Vec<Arc<Writer>>,
-    pub render_fence: u64,
     pub render_context: u32,
 }
 impl Seal {
@@ -167,8 +166,7 @@ impl Target {
             let r = c.resources.get_mut(&self.id).ok_or(EIO)?;
             if r.lost || (r.invalid && r.writers == 0) { return Err(EIO); }
             r.window_sealed = true;
-            Ok(Seal { writers: r.accepted.clone(), render_context: r.accepted.last().map_or(0, |w| w.ctx), render_fence: r.accepted.last()
-                .map_or_else(|| r.last.map_or(0, |l| l.fence), |w| w.fence) })
+            Ok(Seal { writers: r.accepted.clone(), render_context: r.accepted.last().map_or(0, |w| w.ctx) })
         }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
     }
 
@@ -286,8 +284,8 @@ impl Target {
         let mut last = None;
         let mut send = |request: Request, serial: u64, fence: u64| -> Result<(), i64> {
             let answer = exec_req(serial,request,ctx,&ids,&[self.id])?;
-            if !dev::ok(answer.answer) || !answer.fenced || answer.echoed != fence { return Err(EIO); }
-            last = Some(LastWrite { ctx,device_ctx:dev::context_id(ctx),fence,serial,answer:answer.answer,kind:dev::draw_kind() });
+            if !dev::ok(answer.answer) || !answer.matches_fence(fence) { return Err(EIO); }
+            last = Some(LastWrite { ctx,device_ctx:dev::context_id(ctx),fence:answer.echoed,serial,answer:answer.answer,kind:dev::draw_kind() });
             Ok(())
         };
         match chunks {
