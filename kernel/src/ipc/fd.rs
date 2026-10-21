@@ -185,6 +185,9 @@ impl core::fmt::Debug for FdKind {
     }
 }
 
+/// A device node's inode and the options of the mount it was opened through.
+pub type NativeInode = (crate::fs::ext2::live_inode::FileHandle, crate::fs::attrs::MountFlags);
+
 /// A file descriptor entry in the per-process table
 #[derive(Clone)]
 pub struct FileDescriptor {
@@ -199,6 +202,8 @@ pub struct FileDescriptor {
     description: Arc<AtomicU32>,
     /// Mounted inode metadata retained when the stream is served by a driver.
     pub(crate) native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    /// The options of the mount the file was opened through (fstatvfs `f_flag`).
+    pub(crate) mount_flags: crate::fs::attrs::MountFlags,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -248,6 +253,7 @@ impl FileDescriptor {
             flags,
             description: Arc::new(AtomicU32::new(word)),
             native_inode: None,
+            mount_flags: Default::default(),
         }
     }
 
@@ -260,6 +266,7 @@ impl FileDescriptor {
             flags,
             description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12)?,
             native_inode: None,
+            mount_flags: Default::default(),
         })
     }
 
@@ -281,12 +288,21 @@ impl FileDescriptor {
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None })
+        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, native_inode: None, mount_flags: Default::default() })
+    }
+
+    /// Record the options of the mount the file was opened through.
+    pub fn on_mount(mut self, mount_flags: crate::fs::attrs::MountFlags) -> Self {
+        self.mount_flags = mount_flags;
+        self
     }
 
     /// Attach the native namespace inode without changing driver operations.
-    pub fn with_inode(mut self, inode: Option<crate::fs::ext2::live_inode::FileHandle>) -> Self {
-        self.native_inode = inode;
+    pub fn with_inode(mut self, inode: Option<NativeInode>) -> Self {
+        if let Some((handle, mount_flags)) = inode {
+            self.native_inode = Some(handle);
+            self.mount_flags = mount_flags;
+        }
         self
     }
 

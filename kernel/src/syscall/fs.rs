@@ -622,6 +622,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         Err(e) => return SyscallResult::Err(e),
     };
     let path = resolved.virtual_path().unwrap_or("");
+    let mount_flags = crate::fs::vfs::mount::flags_at(&resolved.path);
 
     log::debug!(
         "sys_open: path={:?}, flags={:#x}, mode={:#o}",
@@ -682,7 +683,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             Ok(entry) => entry,
             Err(e) => return SyscallResult::Err(e as u64),
         };
-        return handle_fifo_open(path, flags, entry);
+        return handle_fifo_open(path, flags, entry, mount_flags);
     }
 
     let mount = match resolved.target {
@@ -815,7 +816,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
                 Err(_) => return SyscallResult::Err(12),
             };
             let fd_entry = match FileDescriptor::try_opened(FdKind::Directory(file), flags) {
-                Ok(entry) => entry,
+                Ok(entry) => entry.on_mount(mount_flags),
                 Err(_) => return SyscallResult::Err(12),
             };
             match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
@@ -864,14 +865,14 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             return SyscallResult::Err(6);
         }
         // A device node on a nodev mount opens no device.
-        if crate::fs::vfs::mount::flags_at(&resolved.path).nodev {
+        if mount_flags.nodev {
             return SyscallResult::Err(EACCES as u64);
         }
         let rdev = crate::fs::ext2::create_node::node_device(&inode);
         let device = crate::fs::devfs::lookup_by_rdev(rdev).map(|device| device.device_type.name());
         drop(guard);
         match device {
-            Some(name) => handle_devfs_open(name, flags, resolved.handle().cloned(), reserved),
+            Some(name) => handle_devfs_open(name, flags, resolved.handle().cloned().map(|h| (h, mount_flags)), reserved),
             None => SyscallResult::Err(6),
         }
     } else if !matches!(file_type, Ext2FileType::Regular) {
@@ -917,7 +918,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             Err(_) => return SyscallResult::Err(12),
         };
         let fd_entry = match FileDescriptor::try_opened(FdKind::RegularFile(file), flags) {
-            Ok(entry) => entry,
+            Ok(entry) => entry.on_mount(mount_flags),
             Err(_) => return SyscallResult::Err(12),
         };
         match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
@@ -2892,7 +2893,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
 fn handle_devfs_open(
     device_name: &str,
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
@@ -3176,7 +3177,7 @@ impl Slot {
 /// /dev/ptmx.
 fn open_ptmx(
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     let (pair, entry) = match crate::tty::pty::new_master(flags) {
@@ -3213,7 +3214,7 @@ fn open_vcs(
     vt: usize,
     attributes: bool,
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::EACCES;
@@ -3247,7 +3248,7 @@ fn open_vcs(
 fn open_tty_slave(
     pair: &alloc::sync::Arc<crate::tty::pty::PtyPair>,
     flags: u32,
-    native_inode: Option<crate::fs::ext2::live_inode::FileHandle>,
+    native_inode: Option<crate::ipc::fd::NativeInode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::EMFILE;
@@ -3897,6 +3898,7 @@ fn handle_fifo_open(
     path: &str,
     flags: u32,
     entry: alloc::sync::Arc<spin::Mutex<crate::ipc::fifo::FifoEntry>>,
+    mount_flags: crate::fs::attrs::MountFlags,
 ) -> SyscallResult {
     use super::errno::EINTR;
     use crate::ipc::fd::status_flags;
@@ -3951,7 +3953,7 @@ fn handle_fifo_open(
                 entry,
                 for_write,
             };
-            let result = install_fifo_descriptor(path, flags, open, buffer, false);
+            let result = install_fifo_descriptor(path, flags, open, buffer, false, mount_flags);
             drop(custody);
             result
         }
@@ -4122,7 +4124,7 @@ fn handle_fifo_open(
                 entry,
                 for_write,
             };
-            install_fifo_descriptor(path, flags, open, buffer, true)
+            install_fifo_descriptor(path, flags, open, buffer, true, mount_flags)
         }
         FifoOpenResult::Error(errno) => {
             // Refused before taking a reference.
@@ -4184,6 +4186,7 @@ fn install_fifo_descriptor(
     open: crate::ipc::fifo::PendingFifoOpen,
     buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>,
     recorded: bool,
+    mount_flags: crate::fs::attrs::MountFlags,
 ) -> SyscallResult {
     use super::errno::EINTR;
     use crate::ipc::fd::{FdKind, FileDescriptor};
@@ -4217,7 +4220,7 @@ fn install_fifo_descriptor(
         FdKind::FifoRead(String::new(), buffer, open.entry.clone())
     };
     let fd_entry = match FileDescriptor::try_opened(kind, flags) {
-        Ok(entry) => entry,
+        Ok(entry) => entry.on_mount(mount_flags),
         Err(e) => {
             if recorded {
                 return fail_pending_fifo_open(open.tid, &open.entry, e);
@@ -4893,7 +4896,7 @@ pub fn sys_statfs(pathname: u64, buf: u64) -> SyscallResult {
 
 pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
     // Validate and snapshot before filesystem I/O, even for a non-file fd.
-    let (native, kind) = {
+    let (native, kind, mount_flags) = {
         let tid = match crate::task::scheduler::current_thread_id() {
             Some(t) => t,
             None => return SyscallResult::Err(9),
@@ -4904,28 +4907,35 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             .and_then(|m| m.find_process_by_thread(tid))
             .and_then(|(_, p)| p.fd_table.get(fd));
         match entry {
-            Some(e) => (e.native_inode.clone(), e.kind.clone()),
+            Some(e) => (e.native_inode.clone(), e.kind.clone(), e.mount_flags),
             None => return SyscallResult::Err(9),
         }
     };
+    // A mounted file's statistics carry its mount's options, as statvfs's do.
+    let mounted = |pin: &crate::fs::ext2::live_inode::FileHandle| {
+        statfs_pin(pin).map(|mut stat| {
+            stat.flags |= mount_flags.statvfs_bits();
+            stat
+        })
+    };
     let stat = if let Some(handle) = native {
-        statfs_pin(&handle)
+        mounted(&handle)
     } else {
         match kind {
             FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
             FdKind::RegularFile(file) => {
                 let pin = file.lock().handle.clone();
-                statfs_pin(&pin)
+                mounted(&pin)
             }
             FdKind::Directory(dir) => {
                 let pin = dir.lock().handle.clone();
-                statfs_pin(&pin)
+                mounted(&pin)
             }
             FdKind::FifoRead(_, _, entry)
             | FdKind::FifoWrite(_, _, entry)
             | FdKind::FifoReadWrite(_, _, entry) => {
                 let pin = entry.lock().handle.clone();
-                pin.as_ref().ok_or(5u64).and_then(statfs_pin)
+                pin.as_ref().ok_or(5u64).and_then(mounted)
             }
             FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => {
                 Ok(virtual_statfs(0x9fa0))
