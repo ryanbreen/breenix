@@ -431,6 +431,10 @@ struct Core {
     /// many found no room.
     hung: [Option<Hung>; HUNG_KEPT],
     hung_dropped: u32,
+    /// The console's holds off the kernel screen's backing that interrupted observations
+    /// left, each with its resource, kept until no transfer reads that resource: the device
+    /// answered each, or a confirmed reset ended them (`end_reading`).
+    canvas: Vec<(u32, crate::console::CanvasHold)>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -593,6 +597,7 @@ impl Core {
             warm_held: None,
             hung: [None; HUNG_KEPT],
             hung_dropped: 0,
+            canvas: Vec::new(),
         }
     }
 
@@ -1169,12 +1174,7 @@ impl Core {
         }
         if s.abandoned {
             for id in s.reading {
-                if !self.syncs.values().any(|o| o.reading.contains(&id)) {
-                    if let Some(r) = self.resources.get_mut(&id) {
-                        r.reading = false;
-                    }
-                    self.free_if_unused(id);
-                }
+                self.end_reading(id);
             }
         } else {
             let d = d.unwrap_or_else(|| Done::none(Tag::Sync(serial)));
@@ -1342,6 +1342,19 @@ impl Core {
         if let Some(r) = self.resources.get_mut(&id) {
             r.holds = r.holds.saturating_sub(1);
         }
+        self.free_if_unused(id);
+    }
+
+    /// Once no request reads resource `id`, clear its `reading` mark, end the console hold
+    /// an interrupted observation of it left, and free it if nothing else holds it.
+    fn end_reading(&mut self, id: u32) {
+        if self.syncs.values().any(|s| s.reading.contains(&id)) {
+            return;
+        }
+        if let Some(r) = self.resources.get_mut(&id) {
+            r.reading = false;
+        }
+        self.canvas.retain(|(held, _)| *held != id);
         self.free_if_unused(id);
     }
 
@@ -4200,7 +4213,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     // The console writes the kernel screen's backing, which a VirGL observation poisons and
     // transfers into. READBACK's display owner does not meet the console there: the console
     // stops drawing while a process holds the display.
-    let _canvas = (window && screen::is_target(id)).then(crate::console::hold_canvas);
+    let canvas = core::cell::Cell::new((window && screen::is_target(id)).then(crate::console::hold_canvas));
     if window {
         // The whole bound target, in canonical rows.
         a.x = 0;
@@ -4285,15 +4298,16 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         Err(_) => return Err(Refused::Errno(EINTR)),
     };
     // The target is ours to poison and read until every transfer into it has ended; a
-    // transfer whose waiter left keeps the mark until the device returns it.
+    // transfer whose waiter left keeps the mark until the device returns it, and with it the
+    // console's hold, since the device may still write the backing the console draws in.
     let release = || {
         with_core(|c| {
-            if !c.syncs.values().any(|s| s.reading.contains(&id)) {
-                if let Some(r) = c.resources.get_mut(&id) {
-                    r.reading = false;
+            if let Some(hold) = canvas.take() {
+                if c.syncs.values().any(|s| s.reading.contains(&id)) {
+                    c.canvas.push((id, hold));
                 }
-                c.free_if_unused(id);
             }
+            c.end_reading(id);
         });
         notify();
     };
