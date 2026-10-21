@@ -1,16 +1,17 @@
 use libbui::{widget::tab_bar::TabBar, InputState, Rect, Theme, WidgetEvent};
 use libgfx::color::Color;
 pub fn run() {
+    let scale=super::ui_scale();
     for bitmap in [false, true] {
         let mut theme = Theme::dark();
         theme.use_bitmap_font = bitmap;
         let paper = Color::rgb(13, 27, 41);
-        let mut fb=crate::raster::Drawn::bgrx(160,60);fb.reset(paper);
+        let mut fb=super::ui_frame(160,60);fb.reset(paper);
         let width = libbui::text::text_width(b"WWWW", &theme) + 16;
         let mut bar = TabBar::new(Rect::new(10, 10, width + 1, 24), vec![b"WWWW", b"Tab2"], &theme);
         bar.draw(&mut fb.fb(), &theme);
-        for y in 0..60 { for x in 0..160 {
-            if !(10..11+width as usize).contains(&x) || !(10..34).contains(&y) {
+        for y in 0..60*scale { for x in 0..160*scale {
+            if !(10*scale..(11+width as usize)*scale).contains(&x) || !(10*scale..34*scale).contains(&y) {
                 assert_eq!(fb.color(x,y), paper, "bitmap={bitmap} at {x},{y}");
             }
         }}
