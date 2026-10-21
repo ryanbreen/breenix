@@ -61,11 +61,9 @@ B12 (2026-10-20, 9:05 PM ET; coordinator requests closure of #2188). VmSize keep
    the 100th DESTROY it waits (bounded, the case's own timeout) until the destroyed targets' device unrefs have
    completed and only then compares VmSize; charges are released when the device unref completes, never earlier.
    Both checks are as strict as before; the expected numbers now follow the written contract.
-B13 (2026-10-20, 9:50 PM ET; coordinator requests closure of #2187). The front handoff adopts the sol design, specified here in gpu.md section 2.8, breengel.md sections 17–20 and gpu-abi.md (both independent designs
-   agreed on frame-scoped, sample-only authority held by the process that is both display owner and compositor
-   claimant, with no CPU copy and no kernel-generated composition; the opus design was the alternative considered).
-   Taken from the sol design because it keeps 17.3's "no pins between system calls" without an expiry timer, and the
-   compositor only ever samples the last published, completed front:
+B13 (2026-10-20, 9:50 PM ET; coordinator requests closure of #2187). Adopt metadata-only snapshots and admission-time source pinning, specified here in gpu.md section 2.8, breengel.md sections 17–20 and gpu-abi.md.
+   Frame-scoped, sample-only authority belongs to the process that is both display owner and compositor claimant, with no CPU copy and no kernel-generated composition.
+   Metadata-only reservations preserve 17.3's "no pins between system calls" without an expiry timer; the compositor samples only the last published, completed front:
    - 414/29 COMPOSITE_SNAPSHOT reserves metadata (window incarnation, buffer UID, published generation, write
      incarnation, epochs), never a buffer; 414/19 COMPOSITE submits the userspace-built BGL stream against it, resolving
      and pinning the exact fronts atomically, or EAGAIN when a source went stale. Aliases appear only in source

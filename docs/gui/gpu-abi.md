@@ -698,6 +698,8 @@ Return 0. With both capacities zero and both array pointers zero, this is a sizi
 
 The actual operation snapshots scene metadata, the exact normalized damage union, geometry/cursor revisions, source write incarnations and publication watermarks under the registry protocol. It creates at most one outstanding metadata reservation per owner; another is EBUSY. It does not remove pending damage, advance composite serials, attach sources, pin target/tree backing, or prevent ACQUIRE. Copy results out before publishing the reservation; a failed copy discards it. Metadata memory is charged to the compositor's GPU quota/RLIMIT_AS and reported with private composition storage in COUNTERS.copy_bytes, not charged to clients; cancellation, replacement of the process image, or claim/ownership loss frees it. This extends copy_bytes without changing its wire layout. Snapshot reservations do not consume client resource handles or impose a new global window count.
 
+For ops 19 and 29, after descriptor size/access checks, check current display ownership and compositor claim before resolving contexts, snapshots or aliases. A copied snapshot token in another process gives EPERM, including for a delegated owner without the claim.
+
 Errors: **EPERM** missing either authority; **EINVAL** layout, capacities, invalid/foreign context; **EFAULT** descriptor/arrays inaccessible; **EBUSY** reservation/composite already active; **EAGAIN** a presentation-required commit is still rendering; **ENOMEM** metadata allocation/accounting; **ENODEV** core not admitted; **EIO** failed/lost context/device. No serial, buffer or binding is published on failure.
 
 ### 414/19 COMPOSITE: `CompositeSubmit`, 112 bytes
