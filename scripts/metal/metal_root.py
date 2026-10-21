@@ -123,7 +123,8 @@ def operator_account(site):
 
 
 # The users suite's wheel fixture account (scripts/install-layout.sh), which a console boot logs in as once the image
-# carries it: login refuses root (ROOT_LOGIN no), and the account reaches root through sudo or su.
+# carries it, so the challenge exercises an ordinary account's console login; the account reaches root through sudo or su.
+# Root keeps its own console login (ruling S14) with the same staged password.
 CONSOLE_FIXTURE = 'uw'
 CONSOLE_FIXTURE_HOME = '/etc/breenix/test-users/uw'
 

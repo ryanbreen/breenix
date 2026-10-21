@@ -30,8 +30,10 @@ pub const SECURE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
 pub struct LoginDefs {
     /// The file creation mask a session starts with (`UMASK`, octal; default 022).
     pub umask: u32,
-    /// Whether login accepts uid 0 (`ROOT_LOGIN yes`; default no). bsshd
-    /// refuses uid 0 whatever this says (D4).
+    /// Whether login accepts uid 0 on a remote line, a pseudo-terminal
+    /// (`ROOT_LOGIN yes`; default no). Root logs in on the local console and
+    /// virtual terminals with its own password whatever this says, and bsshd
+    /// refuses uid 0 whatever it says (D4, ruling S14; `root_may_log_in`).
     pub root_login: bool,
     /// Seconds a refused authentication waits before it answers (`FAIL_DELAY`; default 2).
     pub fail_delay: u32,
@@ -167,6 +169,15 @@ fn checked(what: &str, ret: i64) -> Result<i64> {
     } else {
         Ok(ret)
     }
+}
+
+/// Whether login may start a root session on the terminal named `tty`
+/// (`terminal_name`): on the local console and virtual terminals whatever
+/// `ROOT_LOGIN` says, on another line only under `ROOT_LOGIN yes` (ruling S14).
+pub fn root_may_log_in(defs: &LoginDefs, tty: &str) -> bool {
+    let local = tty == "console"
+        || tty.strip_prefix("tty").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6"));
+    local || defs.root_login
 }
 
 /// The session's terminal by name: `console`, `tty1`..`tty6` or `pts/N`;
@@ -443,6 +454,18 @@ mod tests {
         // Malformed values and anything but an exact `yes` keep the defaults.
         let defs = LoginDefs::parse("UMASK 99\nROOT_LOGIN Yes\nFAIL_DELAY -1\nROOT_LOGIN yes extra\n");
         assert_eq!(defs, LoginDefs::default());
+    }
+
+    #[test]
+    fn root_logs_in_locally_and_remotely_only_when_permitted() {
+        let shipped = LoginDefs::parse("ROOT_LOGIN no\n");
+        for tty in ["console", "tty1", "tty6"] {
+            assert!(root_may_log_in(&shipped, tty), "{tty}");
+        }
+        for tty in ["pts/0", "tty7", "tty", "ttyS0", "-"] {
+            assert!(!root_may_log_in(&shipped, tty), "{tty}");
+        }
+        assert!(root_may_log_in(&LoginDefs::parse("ROOT_LOGIN yes\n"), "pts/3"));
     }
 
     #[test]

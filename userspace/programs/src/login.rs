@@ -3,8 +3,10 @@
 //! getty passes the login name. login reads the password with echo off, then
 //! checks the account through the accounts library: a strict passwd entry, a
 //! shadow line that is not expired and whose SHA-512-crypt hash matches, and
-//! a shell listed in `/etc/shells`. uid 0 is refused unless `/etc/login.defs`
-//! says `ROOT_LOGIN yes`. A refusal waits `FAIL_DELAY` seconds and prints
+//! a shell listed in `/etc/shells`. Root logs in with its own password on the
+//! local console and virtual terminals; on any other line (a pseudo-terminal)
+//! uid 0 is refused unless `/etc/login.defs` says `ROOT_LOGIN yes` (ruling
+//! S14). A refusal waits `FAIL_DELAY` seconds and prints
 //! `Login incorrect` whatever the reason. A session gets the terminal (mode
 //! 0620, group tty; the system console stays root's), the account's groups
 //! and IDs, the umask from login.defs, a clean environment and its home, then
@@ -49,7 +51,7 @@ fn run() -> Result<(), String> {
     let refusal = match &entry {
         Err(why) => Some(why.clone()),
         Ok(entry) if !entry.password_matches(&secret.0) => Some("password".into()),
-        Ok(entry) if entry.account.uid == 0 && !defs.root_login => Some("root-login".into()),
+        Ok(entry) if entry.account.uid == 0 && !session::root_may_log_in(&defs, &tty) => Some("root-login".into()),
         Ok(_) => None,
     };
     drop(secret);
