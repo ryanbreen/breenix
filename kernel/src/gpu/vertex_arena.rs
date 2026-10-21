@@ -1,7 +1,10 @@
 //! Nonoverlapping vertex ranges retained until actual completion and fence publication.
 //! Four admissions are possible per context; no range is reused while one still owns it.
-//! An arena holds twice the context's largest recent submission, page-rounded, so a large
-//! frame keeps at most twice its size charged, and the arena shrinks after a run of small frames.
+//! An arena holds [`limits::IN_FLIGHT`] times the context's largest recent submission,
+//! page-rounded, so the four frames libgfx keeps in flight fit (ruling B32), and the arena
+//! shrinks after a run of small frames.
+
+use gpu_abi::limits;
 
 pub(super) const MAX_BYTES: u32 = 128 << 20;
 const MIN_BYTES: u32 = 64 << 10;
@@ -13,7 +16,7 @@ struct Range { serial: u64, start: u32, end: u32 }
 
 pub(super) struct Ranges {
     pub(super) capacity: u32,
-    held: [Option<Range>; 4],
+    held: [Option<Range>; limits::IN_FLIGHT],
     /// The largest submission since this arena was sized.
     largest: u32,
     /// Consecutive submissions under a quarter of `capacity`, and the largest of them.
@@ -21,9 +24,10 @@ pub(super) struct Ranges {
     small_largest: u32,
 }
 
-/// The capacity of an arena for `largest`: twice it, page-rounded, within 64 KiB..=[`MAX_BYTES`].
+/// The capacity of an arena for `largest`: [`limits::IN_FLIGHT`] times it, page-rounded,
+/// within 64 KiB..=[`MAX_BYTES`].
 pub(super) fn capacity_for(largest: u32) -> u32 {
-    largest.saturating_mul(2).min(MAX_BYTES).max(MIN_BYTES).next_multiple_of(4096)
+    largest.saturating_mul(limits::IN_FLIGHT as u32).min(MAX_BYTES).max(MIN_BYTES).next_multiple_of(4096)
 }
 
 /// Page-rounded storage for one submission of `bytes`, held by that submission alone.
@@ -38,7 +42,7 @@ impl Ranges {
     pub(super) fn new(largest: u64) -> Option<Self> {
         let largest = u32::try_from(largest).ok()?;
         if largest == 0 || largest > MAX_BYTES { return None; }
-        Some(Self { capacity: capacity_for(largest), held: [None; 4], largest, small_run: 0, small_largest: 0 })
+        Some(Self { capacity: capacity_for(largest), held: [None; limits::IN_FLIGHT], largest, small_run: 0, small_largest: 0 })
     }
 
     /// Record a submission of `bytes`; return the largest recent submission the arena
@@ -108,10 +112,11 @@ mod tests {
         assert_eq!(exact(1), Some(4096));
     }
     #[test]
-    fn a_large_frame_grows_the_arena_to_twice_itself_page_rounded() {
+    fn a_large_frame_grows_the_arena_to_four_frames_page_rounded() {
         let requested = 17_616_077; // 16.8 MiB, formerly a 128 MiB arena.
-        let a = Ranges::new(requested).unwrap();
-        assert_eq!(a.capacity, (2 * requested as u32).next_multiple_of(4096));
+        let mut a = Ranges::new(requested).unwrap();
+        assert_eq!(a.capacity, (4 * requested as u32).next_multiple_of(4096));
+        for serial in 0..4 { assert!(a.reserve(serial, requested as u32).is_some(), "frame {serial} of four in flight"); }
         // The arena, the frame's staging and a 32 MiB window leave room for commands.
         assert!(u64::from(a.capacity) + requested + (32 << 20) < (192 << 20));
         assert_eq!(Ranges::new(1).unwrap().capacity, MIN_BYTES);
@@ -124,7 +129,7 @@ mod tests {
         assert_eq!(capacity_for(1000), MIN_BYTES);
         let mut b = Ranges::new(1 << 20).unwrap();
         for _ in 1..SHRINK_AFTER { b.note(1000); }
-        b.note(1 << 19); // a quarter or more ends the run
+        b.note(b.capacity / 4); // a quarter or more ends the run
         assert_eq!(b.note(1000), 1 << 20);
         let mut floor = Ranges::new(1).unwrap();
         for _ in 0..SHRINK_AFTER { floor.note(1); }

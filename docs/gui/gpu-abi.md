@@ -173,11 +173,12 @@ vertex storage it creates are charged to the process's 192 MiB GPU memory quota 
 are held; `COUNTERS.copy_bytes` reports them. The stream copy and the snapshot are released when the
 call returns; the chunks are released when the device has returned the submission's requests or a
 confirmed reset has ended them. A VirGL context keeps one reusable vertex arena, retained until
-replacement or destruction, with submission holds through completion. It is replaced at twice the
-largest recent submission, page-rounded with a 64 KiB minimum, when a submission does not fit or after
-16 consecutive submissions that each use under a quarter of it. A submission gets page-rounded vertex
-storage of its own, released when it retires, when the arena is large enough but its free space is held
-or when charging a replacement would exceed the quota. SVGA vertex storage is per submission. A charge
+replacement or destruction, with submission holds through completion. It holds four submissions (the
+in-flight limit) of the largest recent size, page-rounded with a 64 KiB minimum, and is replaced when a
+larger submission arrives or after 16 consecutive submissions that each use under a quarter of it. When
+in-flight submissions hold its space, `SUBMIT` waits for one to retire (EINTR on a signal). A submission
+gets page-rounded vertex storage of its own, released when it retires, only when growing the arena would
+exceed the quota. SVGA vertex storage is per submission. A charge
 that cannot be made returns ENOMEM with error code 22 at index 0
 before anything is sent. A context that is not
 live (quarantined or reset) returns EIO. With four submissions in flight the call waits for one to

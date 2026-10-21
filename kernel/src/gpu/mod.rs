@@ -3905,44 +3905,58 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// Reserve vertices in the context's arena. The context holds its resource until
 /// destruction/replacement; each submission adds a hold through genuine completion.
-/// The arena is replaced at twice the largest recent submission when it is too small or
-/// a run of small submissions shrinks it (ruling B31); a replacement keeps the old arena
-/// charged and alive for its outstanding submissions. A submission gets exact storage of
-/// its own, freed when it retires, when the arena is large enough but its free space is
-/// held, or when charging a replacement would exceed the owner's quota.
+/// The arena is replaced at [`limits::IN_FLIGHT`] times the largest recent submission when
+/// that size changes: it is too small, or a run of small submissions shrinks it (ruling B32);
+/// a replacement keeps the old arena charged and alive for its outstanding submissions.
+/// A submission gets exact storage of its own, freed when it retires, only when growing
+/// would pass the owner's quota. When the arena is large enough but in-flight submissions
+/// hold its space, the submission waits for one to retire (EINTR on a signal).
 /// Return (resource, byte offset, capacity needing device creation, or 0 if ready).
 fn vertex_buffer_for(tgid: u64, ctx: u32, serial: u64, bytes: u64) -> Result<Option<(u32, u32, u32)>, i64> {
     if bytes == 0 { return Ok(None); }
     let requested = u32::try_from(bytes).map_err(|_| ENOMEM)?;
-    let (reused, recent, current) = with_core(|c| {
-        let Some(arena) = c.contexts.get_mut(&ctx).and_then(|x| x.vertex_arena.as_mut()) else { return (None, requested, 0) };
-        let recent = arena.ranges.note(requested);
-        let current = arena.ranges.capacity;
-        if vertex_arena::capacity_for(recent) < current { return (None, recent, current) }
-        let Some(offset) = arena.ranges.reserve(serial, requested) else { return (None, recent, current) };
-        let rid = arena.id;
-        let capacity = if arena.ready { 0 } else { current };
-        if let Some(r) = c.resources.get_mut(&rid) {
-            r.holds += 1;
-            return (Some((rid, offset, capacity)), recent, current);
-        }
-        arena.ranges.release(serial);
-        (None, recent, current)
-    }).unwrap_or((None, requested, 0));
-    if let Some(range) = reused { return Ok(Some(range)); }
-    if vertex_arena::capacity_for(recent) != current {
+    let (recent, current) = with_core(|c| {
+        let Some(arena) = c.contexts.get_mut(&ctx).and_then(|x| x.vertex_arena.as_mut()) else { return (requested, 0) };
+        (arena.ranges.note(requested), arena.ranges.capacity)
+    }).unwrap_or((requested, 0));
+    let wanted = vertex_arena::capacity_for(recent);
+    if wanted != current {
         let mut ranges = vertex_arena::Ranges::new(recent.into()).ok_or(ENOMEM)?;
         let offset = ranges.reserve(serial, requested).ok_or(ENOMEM)?;
         let capacity = ranges.capacity;
         match private_vertex_storage(tgid, ctx, capacity, 2, Some(ranges)) { // context ownership and this submission's access
             Ok(rid) => return Ok(Some((rid, offset, capacity))),
             Err(e) if e != ENOMEM => return Err(e),
+            Err(_) if wanted > current => {
+                let capacity = vertex_arena::exact(bytes).ok_or(ENOMEM)?;
+                let rid = private_vertex_storage(tgid, ctx, capacity, 1, None)?; // this submission's access only
+                return Ok(Some((rid, 0, capacity)));
+            }
+            // A smaller arena the quota cannot hold beside the current one: keep the current.
             Err(_) => {}
         }
     }
-    let capacity = vertex_arena::exact(bytes).ok_or(ENOMEM)?;
-    let rid = private_vertex_storage(tgid, ctx, capacity, 1, None)?; // this submission's access only
-    Ok(Some((rid, 0, capacity)))
+    let reserved = wait_for(None, true, |c| {
+        let context = c.contexts.get_mut(&ctx)?;
+        if context.state != CtxState::Live || context.dropped { return Some(Err(EIO)); }
+        let Some(arena) = context.vertex_arena.as_mut() else { return Some(Err(EIO)) };
+        let Some(offset) = arena.ranges.reserve(serial, requested) else {
+            // Test point 31's kept answers would hold their ranges for good.
+            if context.depth.is_some() { c.release_depth(ctx); }
+            return None;
+        };
+        let (rid, capacity) = (arena.id, if arena.ready { 0 } else { arena.ranges.capacity });
+        let Some(r) = c.resources.get_mut(&rid) else {
+            arena.ranges.release(serial);
+            return Some(Err(EIO));
+        };
+        r.holds += 1;
+        Some(Ok((rid, offset, capacity)))
+    });
+    match reserved {
+        Ok(range) => range.map(Some),
+        Err(_) => Err(EINTR),
+    }
 }
 
 /// Charge and register `capacity` bytes of context-private vertex storage with `holds`.
