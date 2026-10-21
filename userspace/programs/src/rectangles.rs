@@ -214,6 +214,15 @@ fn run_window_loop(win: &graphics::WindowBuffer, rects: &mut [AnimRect; NUM_RECT
     const TARGET_DT_NS: u64 = 16_666_667; // 1/60th second in nanoseconds
 
     loop {
+        let mut events = [graphics::WindowInputEvent::default(); 64];
+        while let Ok(count) = graphics::read_window_input(win.id, &mut events, false) {
+            if count == 0 { break; }
+            if events[..count].iter().any(|event|
+                event.event_type == graphics::input_event_type::CLOSE_REQUESTED)
+            {
+                return;
+            }
+        }
         let now = clock_monotonic_ns();
         let elapsed_ns = now.saturating_sub(last_ns);
         last_ns = now;
