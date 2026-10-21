@@ -28,7 +28,8 @@ pub(crate) const SCANOUT: &[Case] = &[
 
 use super::composition::{screen_size, compose, compositor, formula, place, screen, screen_is, show, Placed};
 use super::kit::*;
-use abi::{backend, op, Plain};
+use abi::{op, Plain};
+use super::handoff::{word, quad, entries};
 
 /// A one-window scene, composed: the compositor, the window and its composite serial.
 fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), libbreenix::suite::CaseError> {
@@ -40,15 +41,15 @@ fn one_window(seed: u32) -> Result<(Helper, W, Placed, u64), libbreenix::suite::
     Ok((k, w, p, serial))
 }
 
-fn readback_raw() -> Result<(i64, Vec<u8>, abi::ObservationRecord),String> {
+fn readback_raw() -> Result<(i64, Vec<u8>, [u8; 1024]),String> {
     let (width,height)=screen_size().map_err(|e|format!("{e:?}"))?;
     let mut px = vec![0u8; width * height * 4];
-    let mut rec = abi::ObservationRecord::ZERO;
-    let mut rb = abi::Readback::ZERO;
+    let mut rec = [0u8; 1024];
+    let mut rb = super::handoff::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
     rb.dst_len = px.len() as u64;
-    rb.record = &mut rec as *mut abi::ObservationRecord as u64;
-    rb.record_len = core::mem::size_of::<abi::ObservationRecord>() as u32;
+    rb.record = rec.as_mut_ptr() as u64;
+    rb.record_len = 1024;
     let r = call(op::SCANOUT_READBACK, &mut rb);
     Ok((r, px, rec))
 }
@@ -151,29 +152,14 @@ fn scanout_completion() -> CaseResult {
     wb.frame(8).cite("17.3")?;
     let (serial, _) = compose(&mut k)?;
     let (_, rec) = screen()?;
-    let done = &rec.completions[..(rec.completion_count as usize).min(12)];
-    ensure(rec.serial == serial && !done.is_empty() && done.iter().all(|c| c.fence != 0), "20.1", format!(
-        "the record of composite {serial} (serial {}) carries completions {done:?}; each answered completion names its fence", rec.serial))?;
-    let fences: std::collections::BTreeSet<u64> = done.iter().map(|c| c.fence).collect();
-    ensure(fences.len() == done.len(), "20.1", format!("the record's completions repeat a fence: {done:?}"))?;
-    ensure(done.iter().all(|c| c.kind != 0 && c.status != 0), "20.1", format!(
-        "the record's completions {done:?} include one that names no command or no answer"))?;
-    if rec.backend == backend::VIRTIO_GPU_2D {
-        use abi::completion::{RESOURCE_FLUSH, RESP_OK_NODATA, TRANSFER_TO_HOST_2D};
-        let kinds: Vec<u32> = done.iter().map(|c| c.kind).collect();
-        ensure(kinds == [TRANSFER_TO_HOST_2D, TRANSFER_TO_HOST_2D, RESOURCE_FLUSH], "20.2", format!(
-            "virtio-gpu 2D answered commands {kinds:#06x?} for a composite of two damaged rectangles; it answers a TRANSFER_TO_HOST_2D (0x0105) per rectangle, then one RESOURCE_FLUSH (0x0104)"))?;
-        ensure(done.iter().all(|c| c.status == RESP_OK_NODATA), "20.2", format!(
-            "virtio-gpu 2D answered {:#06x?}; each command is answered OK_NODATA (0x1100)", done.iter().map(|c| c.status).collect::<Vec<_>>()))?;
-    }
-    if rec.backend == backend::SVGA3_SCREEN_TARGET {
-        use abi::completion::{SVGA3_CB_COMPLETED, SVGA3_READBACK_GB_SURFACE, SVGA3_UPDATE_GB_SCREENTARGET};
-        let kinds: Vec<u32> = done.iter().map(|c| c.kind).collect();
-        ensure(kinds == [SVGA3_UPDATE_GB_SCREENTARGET, SVGA3_UPDATE_GB_SCREENTARGET, SVGA3_READBACK_GB_SURFACE], "20.2", format!(
-            "SVGA3 answered commands {kinds:?} for a readback of a composite of two damaged rectangles; it answers an UPDATE_GB_SCREENTARGET (1127) per rectangle, then the readback's READBACK_GB_SURFACE (1104)"))?;
-        ensure(done.iter().all(|c| c.status == SVGA3_CB_COMPLETED), "20.2", format!(
-            "SVGA3 answered {:?}; each command buffer completes with status COMPLETED (1)", done.iter().map(|c| c.status).collect::<Vec<_>>()))?;
-    }
+    let (status, render, readback) = match word(&rec,16) {
+        4 => (0x1100, 0x207, 0x206), 5 => (1, 1152, 1104),
+        other => return at("20.2", format!("gpu-display: B13 native backend missing: {other}")),
+    };
+    ensure(quad(&rec,176)==serial && quad(&rec,104)!=0 && quad(&rec,120)!=0 && quad(&rec,184)!=0,
+        "20.1", "gpu-display: render/readback/present completions do not identify this composite")?;
+    ensure(word(&rec,112)==status && word(&rec,116)==render && word(&rec,128)==status && word(&rec,132)==readback && word(&rec,192)==status,
+        "20.2", "gpu-display: B13 requires genuine native completion statuses, not legacy per-damage 2D transfers")?;
     Ok(())
 }
 
@@ -191,7 +177,7 @@ fn scanout_atomic_record() -> CaseResult {
     let start = now_ms();
     loop {
         let (r, _, rec) = readback_raw()?;
-        let listed = rec.windows[..(rec.window_count as usize).min(16)].iter().any(|o| o.id == w.id() && o.commit_id >= 1);
+        let listed = entries(&rec).iter().any(|o| o.0 == w.id() && o.1 >= 1);
         if r == 0 && listed {
             break;
         }
@@ -225,13 +211,13 @@ fn scanout_atomic_record() -> CaseResult {
             break;
         }
         crate::remember_frame(&px,width,height,None);
-        let listed = rec.windows[..(rec.window_count as usize).min(16)].iter().find(|o| o.id == w.id()).map(|o| o.commit_id);
+        let listed = entries(&rec).iter().find(|o| o.0 == w.id()).map(|o| o.1);
         let Some(commit) = listed else {
-            result = at("20.1", format!("the record of serial {} does not list the committing window", rec.serial));
+            result = at("20.1", format!("the record of serial {} does not list the committing window", quad(&rec,8)));
             break;
         };
         if commit < last.max(1) {
-            result = at("20.1", format!("readback serial {} names commit {commit} after a readback named commit {last}", rec.serial));
+            result = at("20.1", format!("readback serial {} names commit {commit} after a readback named commit {last}", quad(&rec,8)));
             break;
         }
         // The window is at (600, 400); every one of its pixels must be the named commit's.
@@ -240,7 +226,7 @@ fn scanout_atomic_record() -> CaseResult {
             px[at..at + 3] != pattern(commit as u32, x, y)[..3]
         });
         if let Some((x, y)) = differ {
-            result = at("20.1", format!("readback serial {} names commit {commit}, but the window's pixel ({x},{y}) is not commit {commit}'s", rec.serial));
+            result = at("20.1", format!("readback serial {} names commit {commit}, but the window's pixel ({x},{y}) is not commit {commit}'s", quad(&rec,8)));
             break;
         }
         last = commit;
@@ -270,10 +256,10 @@ fn scanout_window_commits() -> CaseResult {
     wins[1].frame(12).cite("17.3")?;
     compose(&mut k)?;
     let (_, rec) = screen()?;
-    let observed = &rec.windows[..(rec.window_count as usize).min(16)];
+    let observed = entries(&rec);
     for w in wins.iter() {
         let i = listed(w.id()).cite("17.1")?.ok_or("a window is not listed").cite("17.2")?;
-        ensure(observed.iter().any(|o| o.id == w.id() && o.commit_id == i.commit_id), "20.1", format!(
+        ensure(observed.iter().any(|o| o.0 == w.id() && o.1 == i.commit_id && o.2 != 0 && o.3 != 0), "20.1", format!(
             "the record lists {observed:?}; window {} was composed at commit {}", w.id(), i.commit_id))?;
     }
     Ok(())
@@ -284,9 +270,9 @@ fn scanout_format_canonical() -> CaseResult {
     interface()?;
     let (_k, _w, p, _) = one_window(13)?;
     let (px, rec) = screen()?;
-    ensure(rec.source_format <= 1, "20.1", format!("the record names source format {}; it is 0 (RGB) or 1 (BGR)", rec.source_format))?;
+    ensure(word(&rec,28) <= 1, "20.1", format!("the record names source format {}; it is 0 (BGR) or 1 (RGB)", word(&rec,28)))?;
     // Canonical BGRX with X 0xFF, whichever the destination's order.
-    same(&px, width as u32, height as u32, true, &format!("the readback of a {} destination", if rec.source_format == 0 { "RGB" } else { "BGR" }), "20.1", formula(&[p]))
+    same(&px, width as u32, height as u32, true, &format!("the readback of a {} destination", if word(&rec,28) == 0 { "BGR" } else { "RGB" }), "20.1", formula(&[p]))
 }
 
 fn scanout_root_only() -> CaseResult {
