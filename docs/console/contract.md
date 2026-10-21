@@ -132,6 +132,10 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   background colour.
 - The logo scale `k` (pixels per design unit, section 6) follows `S`: 2 for sizes 16 and 20, 3 for 24, 4 for
   32.
+- On ARM64, a display of `1280s` by `800s` pixels for a whole scale `s` also shows the boot stage ribbon
+  (docs/gui/breengel.md section 23.7) over the grid, in the band from `x = 16s` to `1264s` and `y = 752s` to
+  `768s`. The read-back check (section 8) expects the ribbon's pixels there, in the rows it has drawn; the
+  grid, `vcs` and `TIOCGWINSZ` keep the size rule's dimensions.
 
 | Display | Where | `S` | Cell | Grid | `k` |
 |---|---|---|---|---|---|

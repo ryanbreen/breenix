@@ -1527,11 +1527,16 @@ is a stage failure at the runner deadline, never a successful hold or a lost DON
 
 ### 23.7 Boot stage ribbon
 
+<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
 The kernel draws one segment per architecture-applicable stage in `docs/boot-path.json`, in that file's
 order, across (16,752,1248,16), using the same integer segment partition as §23.5 and a two-pixel gap.
 Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
 prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
 The ribbon is restored with the kernel screen after display giveback.
+On the GPU core the console draws it over its text, in this band at the display's scale, and its
+read-back check expects it there (docs/console/contract.md section 2, ruling B35). Each segment's last
+two pixels are the background colour. A full repaint of the kernel screen (after a give-back) takes
+point 15, which then shows the first reached stage unreached until the next full repaint.
 
 ### 23.8 Agreement
 
