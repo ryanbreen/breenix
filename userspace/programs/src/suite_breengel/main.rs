@@ -183,6 +183,8 @@ fn main() {
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // Setup must always reach the table. Accounting cases report a missing directory
 // as a failure if preparation fails; setup cannot terminate the suite instead.
+// This only names the directory: a later suite's sequence reset removes what exists
+// before its START, so the raster cases create it when they record (gpu_checks).
 fn prepare_raster_audit() -> Result<(), String> {
     // Filtered runs without the category auditor need no records or directory.
     let args:Vec<_>=std::env::args().collect();
@@ -191,7 +193,6 @@ fn prepare_raster_audit() -> Result<(), String> {
     }
     let pid=process::getpid().map_err(|e|format!("suite pid: {e:?}"))?;
     let directory=format!("/tmp/breengel-raster-audit-{}",pid.raw());
-    std::fs::create_dir_all(&directory).map_err(|e|format!("gpu-raster: create accounting directory: {e}"))?;
     std::env::set_var("BREENIX_RASTER_AUDIT",directory);
     Ok(())
 }

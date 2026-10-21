@@ -200,7 +200,7 @@ pub(crate) fn audit_finish(before:Option<(ga::Counters,uploads::Mark)>){
     let Some(name)=libbreenix::suite::running_case() else{return;};
     if !name.starts_with("raster/"){return;}
     uploads::stop();
-    let Ok(directory)=std::env::var("BREENIX_RASTER_AUDIT")else{return;};
+    let Ok(directory)=audit_directory()else{return;};
     static NEXT:AtomicU64=AtomicU64::new(0);
     let Ok(pid)=process::getpid()else{return;};
     let file=format!("{directory}/{}-{}",pid.raw(),NEXT.fetch_add(1,Relaxed));
@@ -214,9 +214,15 @@ pub(crate) fn audit_finish(before:Option<(ga::Counters,uploads::Mark)>){
     let _=std::fs::write(file,record);
 }
 // Aggregate actual execution, including children, without repeating cases.
+/// The accounting directory, created on first use after the suite has started.
+fn audit_directory()->Result<String,String>{
+    let directory=std::env::var("BREENIX_RASTER_AUDIT").map_err(|e|format!("gpu-raster: accounting directory: {e}"))?;
+    std::fs::create_dir_all(&directory).map_err(|e|format!("gpu-raster: create accounting directory: {e}"))?;
+    Ok(directory)
+}
 pub(crate) fn audit_category(expected:&[Case])->CaseResult{
     if let Ok(error)=std::env::var("BREENIX_RASTER_AUDIT_ERROR"){return at("7",error);}
-    let directory=std::env::var("BREENIX_RASTER_AUDIT").map_err(|e|format!("gpu-raster: accounting directory: {e}"))?;
+    let directory=audit_directory()?;
     struct Cleanup(String);
     impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
     let _cleanup=Cleanup(directory.clone());
