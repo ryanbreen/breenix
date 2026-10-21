@@ -1,7 +1,7 @@
 //! Bounded persistent logs. One writer owns each file; descriptors are reopened
 //! after rotation; services write pipes rather than archive descriptors.
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -13,21 +13,22 @@ pub struct Log {
     path: PathBuf,
     header: Vec<u8>,
     lost: u64,
+    initialized: bool,
 }
 impl Log {
     pub fn new(directory: &Path, name: &str, boot: &str) -> io::Result<Self> {
-        fs::create_dir_all(directory)?;
-        let mut log = Self { path: directory.join(format!("{}.log", name)),
-            header: format!("BREENIX-LOG 1 boot={} source={} limit={} archives={}\n", boot, name, LIMIT, ARCHIVES).into_bytes(), lost: 0 };
-        let previous = fs::read(&log.path);
-        match previous {
-            Ok(bytes) if !bytes.starts_with(&log.header) => log.rotate()?,
-            Ok(_) => {},
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {},
-            Err(e) => return Err(e),
-        }
+        let mut log = Self::deferred(directory, name, boot);
         log.append(b"")?;
         Ok(log)
+    }
+    /// Keep consuming pipes when the filesystem is unavailable; later writes retry.
+    pub fn deferred(directory: &Path, name: &str, boot: &str) -> Self {
+        Self { path: directory.join(format!("{}.log", name)),
+            header: format!("BREENIX-LOG 1 boot={} source={} limit={} archives={}\n", boot, name, LIMIT, ARCHIVES).into_bytes(),
+            lost: 0, initialized: false }
+    }
+    pub fn retry(&mut self) {
+        if !self.initialized || self.lost > 0 { let _ = self.append(b""); }
     }
     fn rotate(&mut self) -> io::Result<()> {
         for index in (1..=ARCHIVES).rev() {
@@ -45,6 +46,19 @@ impl Log {
         Ok(())
     }
     fn append(&mut self, data: &[u8]) -> io::Result<()> {
+        if !self.initialized {
+            fs::create_dir_all(self.path.parent().unwrap())?;
+            match std::fs::File::open(&self.path) {
+                Ok(file) => {
+                    let mut header = Vec::new();
+                    file.take(self.header.len() as u64).read_to_end(&mut header)?;
+                    if header != self.header { self.rotate()?; }
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+                Err(e) => return Err(e),
+            }
+            self.initialized = true;
+        }
         let size = match fs::metadata(&self.path) {
             Ok(m) => m.len(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
@@ -79,6 +93,16 @@ fn protect(file: &std::fs::File) -> io::Result<()> {
 pub struct Lines { pending: Vec<u8>, discarded: bool }
 impl Lines {
     pub fn new() -> Self { Self { pending: Vec::new(), discarded: false } }
+    pub fn checkpoint(&self) -> Vec<u8> {
+        let mut bytes = vec![u8::from(self.discarded)];
+        bytes.extend_from_slice(&self.pending);
+        bytes
+    }
+    pub fn restore(bytes: &[u8]) -> Option<Self> {
+        let (&discarded, pending) = bytes.split_first()?;
+        if discarded > 1 || pending.len() > LINE_LIMIT || (discarded == 1 && !pending.is_empty()) { return None; }
+        Some(Self { pending: pending.to_vec(), discarded: discarded == 1 })
+    }
     pub fn feed(&mut self, bytes: &[u8], stream: &str, log: &mut Log) {
         let mut output = Vec::new();
         for &byte in bytes {

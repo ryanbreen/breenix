@@ -1010,12 +1010,16 @@ a new boot archives the previous boot's active file before writing its header.
 
 A stream line over 4096 bytes is discarded through its newline and records
 `lost lines=1` with the stream and reason. A failed file write is counted and
-reported on the next successful write. blogd uses `/proc/kmsg-sequence`, a
+reported on the next successful write. An unavailable log sink does not block
+service startup: init drains the pipes, counts discarded lines and retries the sink.
+blogd uses `/proc/kmsg-sequence`, a
 root-only snapshot carrying absolute raw-byte offsets and a hex payload, to
 append new kernel records to `kernel.log` with the same format and rotation.
 When the ring has overwritten unread bytes it records the exact missing byte
 count and `lost lines=unknown`, because the overwritten newlines are unavailable.
-The existing `/proc/kmsg` text interface is retained.
+blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed by
+the boot ID, and finishes a batch before honouring SIGTERM so service restarts
+resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
 ### Persistent sessions
 

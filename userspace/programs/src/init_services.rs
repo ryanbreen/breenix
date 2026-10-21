@@ -308,6 +308,7 @@ impl Supervisor {
     fn drain_logs(&mut self) {
         for entry in &mut self.entries {
             let Some(log) = &mut entry.log else { continue };
+            log.retry();
             for output in &mut entry.outputs {
                 if output.ended { continue; }
                 let mut bytes = [0u8; 4096];
@@ -381,13 +382,16 @@ impl Supervisor {
         if let Some(def) = entry.replacement.take() {
             entry.def = def;
         }
-        let logging = if self.publish && entry.log.is_none() {
-            Log::new(Path::new("/var/log"), &entry.def.name, &self.boot_id)
-                .map(|log| entry.log = Some(log)).map_err(|e| format!("service log: {}", e))
-        } else { Ok(()) };
-        let result = logging.and_then(|_| account::read_account(Path::new("/"), &entry.def.user)
+        if self.publish && entry.log.is_none() {
+            entry.log = Some(Log::new(Path::new("/var/log"), &entry.def.name, &self.boot_id)
+                .unwrap_or_else(|e| {
+                    println!("[init] {}: log unavailable; starting anyway: {}", entry.def.name, e);
+                    Log::deferred(Path::new("/var/log"), &entry.def.name, &self.boot_id)
+                }));
+        }
+        let result = account::read_account(Path::new("/"), &entry.def.user)
             .map_err(|why| why.to_string())
-            .and_then(|account| launch(&entry.def, &account, self.publish)));
+            .and_then(|account| launch(&entry.def, &account, self.publish));
         self.changed = true;
         match result {
             Ok((pid, outputs)) => {
