@@ -69,6 +69,12 @@ impl Mount {
         }.map_err(fs_errno)
     }
 
+    /// Exclude mapping creation and inode mutation while copying an exec image.
+    /// This reads the filesystem, so a read-only or write-failed mount is valid.
+    pub fn read_exclusive(self) -> Result<ext2::Ext2WriteGuard, u64> {
+        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(fs_errno)
+    }
+
     pub fn write(self) -> Result<ext2::Ext2WriteGuard, u64> {
         match self {
             Mount::Root => ext2::root_fs_write(),
