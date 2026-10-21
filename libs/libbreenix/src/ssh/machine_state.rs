@@ -351,6 +351,10 @@ mod tests {
             fs::write(root.join("etc/passwd"), "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/nonexistent:/bin/false\n").unwrap();
             fs::write(root.join("etc/group"), "root:x:0:\nnobody:x:65534:\n").unwrap();
             fs::write(root.join("etc/shadow"), "root:$6$console:::::::\n").unwrap();
+            fs::write(root.join("etc/shells"), "/bin/sh\n/bin/bsh\n").unwrap();
+            for (file, mode) in [("passwd", 0o644), ("group", 0o644), ("shadow", 0o600)] {
+                fs::set_permissions(root.join("etc").join(file), fs::Permissions::from_mode(mode)).unwrap();
+            }
             let (uid, gid) = unsafe { (getuid(), getgid()) };
             Tree { root, uid, gid }
         }

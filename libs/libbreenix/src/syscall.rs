@@ -118,6 +118,7 @@ pub mod nr {
     pub const UMASK: u64 = 95;
     pub const GETGROUPS: u64 = 115;
     pub const SETGROUPS: u64 = 116;
+    pub const SETUID: u64 = 105;
     pub const SETREUID: u64 = 113;
     pub const SETREGID: u64 = 114;
     pub const SETRESUID: u64 = 117;
@@ -253,6 +254,7 @@ pub mod nr {
     pub const GETGROUPS: u64 = 158;
     pub const SETGROUPS: u64 = 159;
     pub const SETREGID: u64 = 143;
+    pub const SETUID: u64 = 146;
     pub const SETREUID: u64 = 145;
     pub const SETRESUID: u64 = 147;
     pub const GETRESUID: u64 = 148;
