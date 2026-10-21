@@ -45,6 +45,7 @@ pub mod fs;
 pub mod gpu;
 pub mod graphics;
 pub mod http;
+#[cfg(feature = "suite")]
 pub mod image;
 pub mod io;
 pub mod memory;
