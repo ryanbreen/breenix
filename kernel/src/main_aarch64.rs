@@ -1244,6 +1244,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::process_task::start_reclaim_daemon();
     // Terminal signals the input interrupt generates are sent from a thread.
     kernel::tty::driver::start_foreground_signal_thread();
+    kernel::tty::pty::init_hangup_daemon();
     kernel::drivers::xhci::init();
     serial_println!("[boot] Softirq subsystem initialized");
     #[cfg(feature = "btrt")]

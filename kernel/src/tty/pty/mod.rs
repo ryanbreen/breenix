@@ -236,6 +236,14 @@ static HANGUP_DAEMON_STATE: AtomicU8 = AtomicU8::new(DAEMON_STOPPED);
 /// How long the idle hangup thread sleeps before looking again unprompted.
 const HANGUP_DAEMON_IDLE_NS: u64 = 10_000_000_000;
 
+/// Start the hangup thread at boot, once kernel threads can be made. It lives
+/// for the rest of the boot; the first master starts it only if this failed.
+pub fn init_hangup_daemon() {
+    if ensure_hangup_daemon().is_err() {
+        log::error!("failed to start kptyhup; the first PTY master retries");
+    }
+}
+
 /// Make sure the hangup thread runs, starting it if need be. Called with no
 /// locks held, before a master descriptor is made. A start that fails is
 /// tried again by the next caller; until one succeeds, no master is made
