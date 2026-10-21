@@ -1175,8 +1175,10 @@ Getty creates a session, opens the console, acquires it as the controlling termi
 sets canonical termios and checks the foreground group. It executes login, which reads with echo disabled and
 starts the session through the accounts library ([logins and administration](../users/login.md)): the staged
 SHA-512-crypt hash, the account's groups and IDs, the terminal, the umask, its home and the shell with a login
-argv[0] and a fresh environment. Missing, locked, expired or unsupported shadow entries refuse authentication,
-and so does root under the shipped `ROOT_LOGIN no`.
+argv[0] and a fresh environment. Missing, locked, expired or unsupported shadow entries refuse authentication.
+Root logs in on the console with its own password; `ROOT_LOGIN` governs only root's logins on other lines
+(ruling S14). Before each prompt getty revokes the console from the descriptors the last session left open on
+it (`vhangup`).
 
 The private site file supplies `CONSOLE_USER=root` and a generated `CONSOLE_PASSWORD`; the operator's
 copy belongs in their private credentials store. `CONSOLE_IDENTITY_KEY` is a separate random 32-byte key
@@ -1185,9 +1187,9 @@ so records alone do not provide a password verifier. These fields are host-only.
 salt and hashes through a host helper compiled from the same Breenix SHA-512-crypt code used by login.
 It writes and reads back `/etc/shadow` with root ownership and mode 0600, setting that password for root (su's
 target) and for the users suite's wheel fixture `uw`, each with its own salt, and keeping the image's other lines.
-The cached image has no password. On an image that carries `uw`, the console account is `uw`; login refuses root
-there, and root is reached with `sudo` or `su -`. An image from before the users effort's login milestone has no
-`uw`, and the console account is root.
+The cached image has no password. On an image that carries `uw`, the console account is `uw`, so the challenge
+exercises an ordinary account's login, and root is reached with `sudo` or `su -`. An image from before the users
+effort's login milestone has no `uw`, and the console account is root.
 Passwords reach the helper and SOL input over stdin, without command arguments or event text.
 
 The SOL challenge logs in as the console account. It requires a wrong password refusal before the successful
@@ -1272,7 +1274,8 @@ The pure parts have host tests in their own files, run with `rustc --edition=202
 The **site file** (inside the service container, 0600): `IDRAC_HOST`, `IDRAC_USER`, `IDRAC_PASSWORD`,
 `IDRAC_ACCOUNT_SLOT`, `INTERNAL_USB`, `USB_MANAGED_PORT` (fresh as-found BIOS values), `SATA_MODE` (`AhciMode` under the current disk policy), `BOOT_URL`, `HTTP_LISTEN_PORT`, `HTTP_DEV_INTERFACE`, `HTTP_DEV_ADDRESSING` (`dhcp`, or
 `static` with `HTTP_DEV_IP`, `HTTP_DEV_MASK`, `HTTP_DEV_GATEWAY`), `REDACT_IDENTIFIERS`, and for
-`install-persistent` `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"). It must also
+`install-persistent` and for users suite boots (staged as the test root's `/etc/breenix/test-ssh/operator-account`, which
+`users-hostssh` answers from the boot host) `OPERATOR_USER` and `OPERATOR_SSH_PUBLIC_KEY` ("SSH and the machine state store"). It must also
 be valid `sh`, because `metal-sol` sources it. `SERVER_SSH_HOST` names the persistent server for host-driven server suite checks.
 
 The **host file** (on the boot host): `METAL_INSTANCE`, `METAL_IMAGE`, `METAL_CPUS`, `METAL_MEMORY`, `METAL_LISTEN`

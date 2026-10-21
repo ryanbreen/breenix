@@ -1437,10 +1437,28 @@ Its `kernel-checks` milestone's categories have cases: `credentials` (7), `files
 `sticky` (7), `setid-exec` (8), `signals` (5), `proc-dev` (8) and `umask` (4), 54 cases. The
 layout category has 5 cases, and accounts has 18 cases covering the library and
 installed administration tools ([account protocol](../users/accounts.md)).
-The login milestone's `login` (8) and `ssh` (5) and the admin milestone's `su` (7) and `sudo`
-(8) categories run the installed getty, login, su, sudo, passwd, bsshd and bssh as per-case
+The login milestone's `login` (9) and `ssh` (7) and the admin milestone's `su` (7) and `sudo`
+(10) categories run the installed getty, login, su, sudo, passwd, bsshd and bssh as per-case
 accounts ([logins and administration](../users/login.md), "The users suite's categories").
 The `operator` category arrives with its milestone (design section 7).
+
+On the R240 the `ssh` category's `openssh-operator` and `openssh-root-refused` cases are answered by
+the boot host's OpenSSH. The boot loop stages the operator's account name and public key on a users
+suite boot's test root; run the answering runner on the boot host while that boot runs:
+
+```sh
+python3 ~/.local/share/breenix-metal/metal-run boot --mode suite --suite users --milestone users/login --branch BRANCH --sha SHA
+python3 ~/.local/share/breenix-metal/users-hostssh --boot ID
+```
+
+Each case prints `SUITE users HOSTSSH ssh/<case> seq=<n> try=account|root addr=<address> port=22
+user=<account> fp=SHA256:<fingerprint>`. The runner scans the host key, requires the fingerprint
+this boot printed, and pins it with strict host-key checking; it then requires a deliberately wrong
+pinned key to fail verification (`try=account`) or root to be refused with the operator's key
+(`try=root`), and logs in as the account to run `report <what it saw>`. Its transcript is
+`users-hostssh.json` in the boot's private store. Each case has 30 seconds (a named allowance) and
+fails when no login arrives; a target whose boot loop stages no operator account fails both until
+the catch-up gives it a host client.
 
 The suite runs as root. A case that needs another identity forks a child that becomes a
 fixture account (its supplementary groups, then setresgid and setresuid, then a refused
