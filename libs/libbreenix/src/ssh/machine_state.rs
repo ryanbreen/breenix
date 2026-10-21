@@ -177,7 +177,7 @@ fn accepted<'a>(file: &str, entries: &'a str, existing: &str, problems: &mut Vec
                 problems.push(format!("store passwd line for '{}' has no numeric uid", parts[0]));
                 continue;
             };
-            let taken = existing.lines().any(|line| {
+            let taken = existing.lines().chain(entries.lines()).any(|line| {
                 let other: Vec<&str> = line.split(':').collect();
                 other.len() == 7 && other[0] != parts[0] && other[2].parse::<u32>() == Ok(uid)
             });
@@ -424,6 +424,17 @@ mod tests {
         assert!(report.accounts.is_empty());
         assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
         assert!(!tree.read("etc/passwd").contains("toor") && !tree.read("etc/passwd").contains("imposter"));
+    }
+
+    #[test]
+    fn incoming_accounts_cannot_share_a_uid() {
+        let tree = Tree::new("incoming-collision");
+        tree.store_file("etc/passwd", "alice:x:1000:1000:alice:/home/alice:/bin/sh\nbob:x:1000:1001:bob:/home/bob:/bin/sh\n", 0o644);
+        let report = reconcile(&tree.root, true).unwrap().unwrap();
+        assert!(report.accounts.is_empty());
+        assert_eq!(report.problems.len(), 2);
+        let passwd = tree.read("etc/passwd");
+        assert!(!passwd.contains("alice:") && !passwd.contains("bob:"));
     }
 
     #[test]
