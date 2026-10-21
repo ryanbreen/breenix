@@ -3,7 +3,9 @@
 //! code or read-only statics of the program rather than heap, stack, mapped or writable
 //! memory.
 
+#[cfg(any(target_os = "breenix", test))]
 const PT_LOAD: u32 = 1;
+#[cfg(any(target_os = "breenix", test))]
 const PF_W: u32 = 2;
 
 /// Whether `bytes` starts and ends inside one of the executable's read-only loaded segments.
@@ -30,6 +32,7 @@ pub fn read_only(_bytes: &[u8]) -> bool {
 /// # Safety
 /// `ehdr` must address a readable ELF header followed, at `e_phoff`, by its readable
 /// program headers.
+#[cfg(any(target_os = "breenix", test))]
 pub(crate) unsafe fn in_image(ehdr: *const u8, start: u64, len: u64) -> bool {
     let read = |offset: usize, n: usize| {
         let mut v = 0u64;
@@ -87,5 +90,37 @@ mod tests {
         let mut bad = h;
         bad[0] = 0;
         assert!(!unsafe { in_image(bad.as_ptr(), 0x4000_0010, 16) }, "not an ELF header");
+    }
+}
+
+/// Whether the row descriptors and their referenced bytes are read-only.
+/// Checking the descriptors prevents CPU-selected palette rows from declaring an image.
+pub fn static_rows(rows: &[&[u8]]) -> bool {
+    rows_in_image(rows, read_only)
+}
+fn rows_in_image(rows: &[&[u8]], read_only: impl Fn(&[u8]) -> bool) -> bool {
+    let descriptors = unsafe { core::slice::from_raw_parts(rows.as_ptr().cast::<u8>(), core::mem::size_of_val(rows)) };
+    read_only(descriptors) && rows.iter().all(|r| read_only(r))
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+    #[test]
+    fn read_only_palette_bytes_do_not_authorize_cpu_selected_row_order() {
+        static PALETTE: [[u8; 4]; 2] = [[0, 0, 0, 255], [255; 4]];
+        static ORDER: [&[u8]; 2] = [&PALETTE[0], &PALETTE[1]];
+        let selected = std::vec![&PALETTE[1][..], &PALETTE[0][..]];
+        let inside = |bytes: &[u8]| {
+            let start = bytes.as_ptr() as usize;
+            let end = start + bytes.len();
+            let palette = PALETTE.as_ptr() as usize;
+            let order = ORDER.as_ptr() as usize;
+            (start >= palette && end <= palette + core::mem::size_of_val(&PALETTE))
+                || (start >= order && end <= order + core::mem::size_of_val(&ORDER))
+        };
+        assert!(selected.iter().all(|row| inside(row)), "each palette row is read-only");
+        assert!(!rows_in_image(&selected, inside), "the CPU selected descriptor order is outside the image");
+        assert!(rows_in_image(&ORDER, inside), "a whole declared static row table is legal");
     }
 }

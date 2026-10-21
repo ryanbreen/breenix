@@ -51,13 +51,19 @@ pub fn stop() {
     locked().active = false;
 }
 pub fn declare(bytes: &'static [u8]) {
-    declare_rows(std::vec![bytes]);
+    let mut a = locked();
+    if crate::image::read_only(bytes) {
+        a.declare(std::vec![bytes], crate::image::read_only);
+    } else { a.nonstatic += 1; }
 }
 /// A static table may be stored as separate static rows (the bitmap-font dependency).
 /// The rows must lie in the executable's read-only image: a leaked heap allocation or a
 /// writable static is refused, whatever its lifetime says.
-pub fn declare_rows(rows: Vec<&'static [u8]>) {
-    locked().declare(rows, crate::image::read_only);
+pub fn declare_rows(rows: &'static [&'static [u8]]) {
+    let mut a = locked();
+    if crate::image::static_rows(rows) {
+        a.declare(rows.to_vec(), crate::image::read_only);
+    } else { a.nonstatic += 1; }
 }
 pub fn mark() -> Mark {
     locked().mark
@@ -305,6 +311,17 @@ mod tests {
         a.declare(std::vec![FONT, leaked], image);
         assert_eq!(a.tables.len(), 1, "a table with a leaked row is not declared");
         assert_eq!(a.refusal(a.mark, 0, 0), Some("non-static-table"));
+    }
+    #[test]
+    fn dynamic_palette_order_is_not_a_static_table() {
+        static PALETTE: [[u8; 4]; 2] = [[0, 0, 0, 255], [255; 4]];
+        let selected: &'static [&'static [u8]] = std::vec![&PALETTE[1][..], &PALETTE[0][..]].leak();
+        assert!(!crate::image::static_rows(selected));
+        // The real declaration path refuses even though each palette entry is static.
+        start();
+        declare_rows(selected);
+        assert_eq!(refusal(mark(), 0, 0), Some("non-static-table"));
+        stop();
     }
     #[test]
     fn declared_table_licenses_one_upload() {

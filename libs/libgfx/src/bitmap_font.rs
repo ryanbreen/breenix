@@ -51,9 +51,31 @@ pub fn metrics_at(height: RasterHeight) -> FontMetrics {
     }
 }
 
-/// The table's characters, in order (ruling B10).
-fn table_chars() -> impl Iterator<Item = char> {
-    (0x20u8..=0x7E).map(char::from).chain(core::iter::once('\u{fffd}'))
+/// B10 fixes the complete glyph order at compile time, including row descriptors.
+const fn rows<const N: usize>(height: RasterHeight) -> [&'static [u8]; N] {
+    let mut out: [&'static [u8]; N] = [&[]; N];
+    let mut glyph = 0;
+    while glyph < 96 {
+        let ch = if glyph == 95 { '\u{fffd}' } else { (glyph as u8 + 32) as char };
+        let raster = match get_raster(ch, FontWeight::Regular, height) {
+            Some(r) => r,
+            None => panic!("missing B10 bitmap glyph"),
+        };
+        let mut row = 0;
+        while row < height.val() {
+            out[glyph * height.val() + row] = raster.raster()[row];
+            row += 1;
+        }
+        glyph += 1;
+    }
+    out
+}
+pub static TABLE16: [&[u8]; 96 * 16] = rows(RasterHeight::Size16);
+pub static TABLE32: [&[u8]; 96 * 32] = rows(RasterHeight::Size32);
+
+/// The whole static table for this size, including its fixed row order.
+pub fn table_rows(height: RasterHeight) -> &'static [&'static [u8]] {
+    match height { RasterHeight::Size16 => &TABLE16, _ => &TABLE32 }
 }
 
 /// The table row of `ch`: its own glyph, or `?`'s for a character the table lacks.
@@ -71,11 +93,7 @@ fn texture(height: RasterHeight) -> Result<Table, i64> {
     device::with(|d| {
         d.table(index, |context| {
             let (w, h) = (get_raster_width(FontWeight::Regular, height) as u32, height.val() as u32);
-            let mut rows: Vec<&'static [u8]> = Vec::with_capacity(96 * h as usize);
-            for ch in table_chars() {
-                let glyph = get_raster(ch, FontWeight::Regular, height).ok_or(-abi::errno::EINVAL)?;
-                rows.extend_from_slice(glyph.raster());
-            }
+            let rows = table_rows(height);
             let rect = [0, 0, w, 96 * h];
             let texture = gpu::texture_create(abi::format::R8, w, 96 * h)?;
             match bgl::fixture_upload(DeclaredFixture::rows(rows), context, texture, rect, w, abi::upload_source::R8) {
