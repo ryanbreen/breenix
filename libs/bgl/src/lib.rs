@@ -279,3 +279,12 @@ mod tests {
         assert_eq!(c.words.len(),c.words[1] as usize);
     }
 }
+
+/// Upload generated crossing geometry into a Buffer, never CPU pixels (ruling B21).
+/// The table's private representation can only be produced by libfont's crossing builder.
+pub fn geometry_upload(table: libfont::crossings::CrossingTable, context: &Context, buffer: u64) -> Result<(), i64> {
+    let bytes = table.bytes();
+    match gpu::upload(context.handle(), buffer, [0; 4], bytes, 0, 0, gpu::abi::purpose::FIXTURE).0 {
+        0 => Ok(()), e => Err(e),
+    }
+}

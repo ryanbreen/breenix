@@ -18,3 +18,5 @@ pub mod font;
 pub mod shapes;
 pub mod surface;
 pub mod work;
+
+pub mod ttf_font;

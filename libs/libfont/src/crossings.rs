@@ -84,3 +84,38 @@ impl Crossings {
         sorted
     }
 }
+
+/// A validated geometry table. Only the crossing builder can construct its bytes.
+/// Offsets count entries, not bytes, as gpu-abi.md specifies.
+pub struct CrossingTable { bytes: Vec<u8>, entries: usize }
+impl CrossingTable {
+    pub fn new(segments: &[LineSegment], first_row: usize, rows: usize) -> Self {
+        let scans = rows * 8;
+        let mut offsets = Vec::with_capacity(scans + 1);
+        let mut entries = Vec::new();
+        let mut scratch = Crossings::new(segments.len());
+        offsets.push(0u32);
+        for row in first_row..first_row + rows {
+            for sub in 0..8 {
+                for c in scratch.scanline(segments, row, sub) {
+                    entries.extend_from_slice(&c.x.to_bits().to_le_bytes());
+                    entries.extend_from_slice(&c.direction.to_le_bytes());
+                }
+                offsets.push((entries.len() / 8) as u32);
+            }
+        }
+        let count = entries.len() / 8;
+        let mut bytes = Vec::with_capacity(offsets.len() * 4 + entries.len());
+        for o in offsets { bytes.extend_from_slice(&o.to_le_bytes()); }
+        bytes.extend_from_slice(&entries);
+        Self { bytes, entries: count }
+    }
+    pub fn bytes(&self) -> &[u8] { &self.bytes }
+    pub fn entries(&self) -> usize { self.entries }
+}
+
+/// LCD geometry scales x in binary32 before scanline interpolation.
+pub fn lcd_segments(segments: &[LineSegment]) -> Vec<LineSegment> {
+    work::add(segments.len() as u64);
+    segments.iter().map(|s| LineSegment { x0: s.x0 * 3.0, x1: s.x1 * 3.0, ..*s }).collect()
+}
