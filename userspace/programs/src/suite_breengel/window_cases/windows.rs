@@ -1372,11 +1372,18 @@ fn windows_commit_waits_render()->CaseResult {
             let commit=w.commit(a.buffer,&[full(&w.c)]);
             ensure(commit.err()==Some(-(abi::errno::EIO as i64)),"17.3","gpu-window: COMMIT accepted a failed render fence")?;
         } else {
-            w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
+            let accepted = w.commit(a.buffer,&[full(&w.c)]).map_err(|r|format!("gpu-window: pending COMMIT {}",outcome(r))).cite("17.3")?;
+            let id = w.id();
+            let (acquired, acquisition) = std::sync::mpsc::channel();
+            let acquiring = std::thread::spawn(move || {
+                let _ = acquired.send(acquire(id, 5_000_000_000));
+            });
             let (ret,before)=gpu::modes();want_ok(ret,"17.3","gpu-window: binding before pending composition")?;
             let (sent,received)=std::sync::mpsc::channel();
             let composing=std::thread::spawn(move||{let reply=k.ask("composite");let _=sent.send(reply);k});
             let _=time::sleep_ms(50);
+            ensure(matches!(acquisition.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+                "17.3", "B18: ACQUIRE chose a replay base before the accepted commit's publication decision")?;
             let early=match received.try_recv(){Ok(r)=>Some(r),Err(std::sync::mpsc::TryRecvError::Empty)=>None,
                 Err(e)=>return at("17.3",format!("gpu-window: composition worker: {e}"))};
             if let Some(reply)=&early {ensure(matches!(reply,Ok(s) if s=="err 11"),"17.3","gpu-window: composition published a pending render instead of waiting or EAGAIN")?;}
@@ -1388,6 +1395,9 @@ fn windows_commit_waits_render()->CaseResult {
             let (r,last)=gpu::submit(c.handle(),c.encoded());want_ok(r,"17.3","gpu-window: release held render fences")?;
             gpu::resource_destroy(release);
             want_ok(gpu::wait(c.handle(),last.fence,2_000_000_000).0,"17.3","gpu-window: completed render")?;
+            let next = acquisition.recv().map_err(|e| e.to_string())?.map_err(|r| format!("B18: ACQUIRE {}", outcome(r))).cite("17.3")?;
+            acquiring.join().map_err(|_| "B18: acquisition worker panicked")?;
+            ensure(next.base == accepted.commit_id, "17.3", "B18: ACQUIRE replayed a frame older than the last accepted commit")?;
             k=composing.join().map_err(|_|"gpu-window: composition worker panicked".to_string()).cite("17.3")?;
             let reply=match early{Some(r)=>r,None=>received.recv().map_err(|e|e.to_string())?}.cite("17.3")?;
             if reply=="err 11" {super::composition::compose(&mut k)?;}
