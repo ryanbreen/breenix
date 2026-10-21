@@ -17,9 +17,11 @@ pub trait Source {
     fn resource(&self) -> u64;
     fn width(&self) -> usize;
     fn height(&self) -> usize;
+    fn format(&self) -> Format;
 }
 
 impl Source for Surface {
+    fn format(&self) -> Format { Surface::format(self) }
     fn resource(&self) -> u64 {
         self.handle()
     }
@@ -38,6 +40,7 @@ pub struct Texture {
     width: usize,
     height: usize,
     owner: u64,
+    format: Format,
 }
 
 impl Texture {
@@ -49,7 +52,7 @@ impl Texture {
             return Err(SurfaceError::SizeOverflow);
         }
         let handle = gpu::texture_create(abi::format::B8G8R8A8, width as u32, height as u32).map_err(SurfaceError::Device)?;
-        let texture = Texture { handle, width, height, owner: device::pid() };
+        let texture = Texture { handle, width, height, owner: device::pid(), format: layout };
         let rect = [0, 0, width as u32, height as u32];
         let stride = (width * layout.bpp) as u32;
         device::with(|d| bgl::fixture_upload(table, &d.context, handle, rect, stride, layout.upload_source()))
@@ -59,6 +62,7 @@ impl Texture {
 }
 
 impl Source for Texture {
+    fn format(&self) -> Format { self.format }
     fn resource(&self) -> u64 {
         self.handle
     }
@@ -85,12 +89,12 @@ fn placed(dst: &Surface, src: &dyn Source, x: i32, y: i32, n: i64) -> (Box64, Bo
 }
 
 /// One instance of a sampling pipeline: `params` are its origins, already anchored.
-fn sampled(dst: &mut Surface, pipe: u32, texture: u64, visible: Box64, params: &[i64]) {
+fn sampled(dst: &mut Surface, pipe: u32, texture: u64, visible: Box64, params: &[i64], flags: u32) {
     let mut p = [0u32; 16];
     for (slot, v) in p.iter_mut().zip(params) {
         *slot = *v as i32 as u32;
     }
-    dst.submit(|c| c.draw(pipe, 0, texture, 0, 0, &[Instance { rect: visible.corners(), params: p }]));
+    dst.submit(|c| c.draw(pipe, flags, texture, 0, 0, &[Instance { rect: visible.corners(), params: p }]));
 }
 
 /// Destination pixel `(x + i, y + j)` becomes source pixel `(i, j)`, converted by channel,
@@ -102,9 +106,10 @@ pub fn blit(dst: &mut Surface, src: &dyn Source, x: i32, y: i32) {
     }
     work::add(1);
     let (sx, sy) = ((v.x0 - x as i64) as i32, (v.y0 - y as i64) as i32);
-    let [x0, y0, x1, y1] = v.corners();
-    let texture = src.resource();
-    dst.submit(|c| c.copy(texture, &[[x0, y0, x1, y1, sx, sy]]));
+    let [x0, y0, _, _] = v.corners();
+    let force_opaque = !(src.format().premultiplied && dst.format().premultiplied);
+    sampled(dst, pipeline::COPY, src.resource(), v,
+        &[(sx as i64) - x0 as i64, (sy as i64) - y0 as i64, i64::from(force_opaque)], 0);
     dst.mark(whole);
 }
 
@@ -125,7 +130,9 @@ fn blend(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, pipe: u32) {
         return;
     }
     work::add(1);
-    sampled(dst, pipe, src.resource(), v, &[v.x0, v.y0, v.x0 - x as i64, v.y0 - y as i64]);
+    let flags = if pipe == pipeline::OVER && !src.format().premultiplied { gpu::abi::draw::SOURCE_OPAQUE } else { 0 }
+        | if !dst.format().premultiplied { gpu::abi::draw::DESTINATION_OPAQUE } else { 0 };
+    sampled(dst, pipe, src.resource(), v, &[v.x0, v.y0, v.x0 - x as i64, v.y0 - y as i64], flags);
     dst.mark(whole);
 }
 
@@ -144,6 +151,7 @@ pub fn blit_scaled(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, n: i32) 
     work::add(1);
     let (kx, ky) = ((v.x0 - x as i64) / n64, (v.y0 - y as i64) / n64);
     let (ox, oy) = (x as i64 + kx * n64, y as i64 + ky * n64);
-    sampled(dst, pipeline::COPY_SCALED, src.resource(), v, &[ox, oy, kx, ky, n64]);
+    let flags = if src.format().premultiplied && dst.format().premultiplied { 0 } else { gpu::abi::draw::SOURCE_OPAQUE };
+    sampled(dst, pipeline::COPY_SCALED, src.resource(), v, &[ox, oy, kx, ky, n64], flags);
     dst.mark(whole);
 }
