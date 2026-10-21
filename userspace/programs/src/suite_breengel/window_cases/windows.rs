@@ -89,7 +89,11 @@ fn windows_create_zeroed() -> CaseResult {
     interface()?;
     let w = W::new(37, 29, 3)?;
     for i in 0..3 {
-        window_pixels(w.buf(i),37,29,&format!("new buffer {i}"),"17.2",|_,_|[0;4])?;
+        let mut pixels = vec![0xA5;37*29*4];
+        let mut record = [0;libbreenix::gpu::abi::record::SIZE];
+        want_ok(libbreenix::gpu::readback(w.c.buffer[i as usize],[0,0,37,29],&mut pixels,37*4,&mut record),
+            "17.2","new buffer device readback")?;
+        window_pixels(&pixels,37,29,&format!("new buffer {i}"),"17.2",|_,_|[0;4])?;
         if let Some(pos) = w.tree(i).iter().position(|&b| b != 0) {
             return at("17.2", format!("tree page {i} of a new window holds a nonzero byte at {pos}"));
         }
